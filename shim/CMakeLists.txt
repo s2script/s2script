@@ -46,8 +46,16 @@ target_compile_options(s2script PRIVATE
     -fvisibility=hidden
 )
 
+# Link the resident Rust core (built by `cargo build --release`).
+target_link_libraries(s2script PRIVATE
+    ${CMAKE_SOURCE_DIR}/../target/release/libs2script_core.so
+)
+target_include_directories(s2script PRIVATE include)
+# Ensure the runtime can find libs2script_core.so next to the plugin.
 # Output as s2script.so (no lib prefix) to match Metamod's loader expectations.
 set_target_properties(s2script PROPERTIES
     PREFIX ""
     OUTPUT_NAME "s2script"
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN"
 )

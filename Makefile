@@ -8,7 +8,7 @@ core:
 check-boundary:
 	./scripts/check-core-boundary.sh
 
-shim:
+shim: core
 	cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release
 	cmake --build build/shim -j
 
