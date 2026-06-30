@@ -37,6 +37,10 @@ fi
 # --- Metamod plugin registration VDF ---
 cp docker/s2script.vdf "$DIST/metamod/s2script.vdf"
 
+# --- Copy VDF into docker/metamod/ so compose only needs a single dir mount ---
+mkdir -p docker/metamod
+cp docker/s2script.vdf docker/metamod/s2script.vdf
+
 echo ""
 echo "packaged: $DIST"
 find "$DIST" -type f | sort

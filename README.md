@@ -75,9 +75,14 @@ server — without any V8 wiring (the shim is log-only at this stage).
 | Plugin binary | `addons/s2script/bin/linuxsteamrt64/s2script.so` |
 | VDF `file` key | `addons/s2script/bin/linuxsteamrt64/s2script` |
 
-The `file` key has no extension; MM:S 2.0 appends the platform suffix
-(`/linuxsteamrt64`) and `.so` when loading on Linux amd64 (see
-`third_party/metamod-source/loader/gamedll.cpp`, `PLATFORM_SUBDIR_S2`).
+The `file` key has no extension. Metamod resolves it in
+`MetamodSource::GetFullPluginPath` (`third_party/metamod-source/core/metamod.cpp`):
+on Linux x86_64 it first tries `<file>.x64.so`; if that file does not exist on
+disk it falls back to `<file>.so`. It does **not** append `/linuxsteamrt64` —
+that subdirectory is already part of the VDF `file` value itself
+(`addons/s2script/bin/linuxsteamrt64/s2script`). Because we ship
+`s2script.so` (not `s2script.x64.so`), the plugin loads via the `.so` fallback;
+MM:S may probe `s2script.x64.so` first and not find it — that is benign.
 
 ### Prerequisites
 
@@ -98,7 +103,7 @@ dist/addons/
       linuxsteamrt64/
         libs2script_core.so
         s2script.so
-    gamedata/               (empty until Task 5+)
+    gamedata/               (empty until the interface-acquisition task, Task 7)
 ```
 
 **2. Install Metamod:Source 2.0 into `docker/metamod/`:**

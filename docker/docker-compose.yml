@@ -26,12 +26,10 @@ services:
       - ../dist/addons/s2script:/home/steam/cs2-dedicated/game/csgo/addons/s2script:ro
 
       # Metamod:Source itself — operator must pre-install into docker/metamod/.
-      # See "Docker verification runbook" in README.md for how to obtain it.
+      # scripts/package-addon.sh also places s2script.vdf here, so a single
+      # dir mount is sufficient.
+      # See "Docker verification runbook" in README.md for how to obtain MM:S.
       - ./metamod:/home/steam/cs2-dedicated/game/csgo/addons/metamod
-
-      # Plugin registration VDF — mounted AFTER the metamod directory so the
-      # file bind-mount takes precedence over the directory mount at the same path.
-      - ../dist/addons/metamod/s2script.vdf:/home/steam/cs2-dedicated/game/csgo/addons/metamod/s2script.vdf:ro
 
       # gameinfo.gi patcher script (called manually after first CS2 download)
       - ./patch-gameinfo.sh:/patch-gameinfo.sh:ro
