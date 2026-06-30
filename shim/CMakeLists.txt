@@ -17,12 +17,17 @@ add_library(s2script SHARED
 
 target_include_directories(s2script PRIVATE
     src
+    # sdk_stubs must come before ${HL2SDK}/public so that the compiler finds
+    # our stub network_connection.pb.h before hitting the missing generated file.
+    ${CMAKE_SOURCE_DIR}/src/sdk_stubs
     ${MMS}/core
     ${MMS}/core/sourcehook
     ${AMTL}
     ${HL2SDK}/public
     ${HL2SDK}/public/tier0
     ${HL2SDK}/public/tier1
+    ${HL2SDK}/public/mathlib
+    ${HL2SDK}/public/appframework
 )
 
 # Source 2 / CS2 build defines.
@@ -30,11 +35,13 @@ target_include_directories(s2script PRIVATE
 #   the PLUGIN_EXPOSE macro then emits a plain extern-"C" CreateInterface symbol.
 # _GLIBCXX_USE_CXX11_ABI=0: matches Valve's prebuilt ABI (needed if we ever link tier0/tier1).
 target_compile_definitions(s2script PRIVATE
+    LINUX
     _LINUX
     POSIX
     COMPILER_GCC
     PLATFORM_64BITS
     META_NO_HL2SDK
+    _FILE_OFFSET_BITS=64
     _GLIBCXX_USE_CXX11_ABI=0
     stricmp=strcasecmp
     strnicmp=strncasecmp
