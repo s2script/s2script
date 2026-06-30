@@ -15,6 +15,11 @@ pub enum DetourChange { None, Install, Remove }
 
 pub type SubId = u64;
 
+pub const MAX_HANDLER_ERRORS: u32 = 10;
+
+#[derive(Clone, Copy, Debug)]
+pub struct DispatchOutcome { pub result: HookResult, pub detour: DetourChange }
+
 struct Subscription<H> {
     id: SubId,
     priority: Priority,
@@ -76,6 +81,38 @@ impl<H: Clone> Descriptor<H> {
         (id, change)
     }
 
+    pub fn unsubscribe(&mut self, id: SubId) -> DetourChange {
+        if let Some(pos) = self.subs.iter().position(|s| s.id == id) {
+            let was_enabled = self.subs[pos].enabled;
+            self.subs.remove(pos);
+            if was_enabled { return self.dec_enabled(); }
+        }
+        DetourChange::None
+    }
+
+    fn dec_enabled(&mut self) -> DetourChange {
+        self.enabled_count -= 1;
+        if self.enabled_count == 0 { DetourChange::Remove } else { DetourChange::None }
+    }
+
+    /// Phase 3: bump error_count for each errored id; auto-disable at the threshold; if that
+    /// dropped the enabled count to 0, return Remove.
+    pub fn apply_errors(&mut self, errored: &[SubId]) -> DetourChange {
+        let mut disabled = 0usize;
+        for id in errored {
+            if let Some(s) = self.subs.iter_mut().find(|s| s.id == *id) {
+                if !s.enabled { continue; }
+                s.error_count += 1;
+                if s.error_count >= MAX_HANDLER_ERRORS { s.enabled = false; disabled += 1; }
+            }
+        }
+        let mut detour = DetourChange::None;
+        for _ in 0..disabled {
+            if let DetourChange::Remove = self.dec_enabled() { detour = DetourChange::Remove; }
+        }
+        detour
+    }
+
     /// Phase 1: clone the ordered, enabled handlers for `phase`. `subs` is kept priority-sorted
     /// (Monitor last), so the snapshot is already in dispatch order.
     pub fn snapshot(&self, phase: Phase) -> Vec<(SubId, Priority, H)> {
@@ -85,12 +122,12 @@ impl<H: Clone> Descriptor<H> {
             .collect()
     }
 
-    /// Convenience composing snapshot + run_chain (Task 2 adds apply_errors). Used by unit tests
-    /// for NON-re-entrant invokers; the V8 glue (Task 3) calls the three phases separately so it
-    /// does not hold a borrow across invocation.
-    pub fn dispatch(&mut self, phase: Phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> HookResult {
+    /// Recomposed convenience: snapshot + run_chain + apply_errors. Replaces Task 1's dispatch.
+    pub fn dispatch(&mut self, phase: Phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> DispatchOutcome {
         let snap = self.snapshot(phase);
-        run_chain(&snap, invoke).result
+        let out = run_chain(&snap, invoke);
+        let detour = self.apply_errors(&out.errored);
+        DispatchOutcome { result: out.result, detour }
     }
 }
 
@@ -103,7 +140,7 @@ mod tests {
     struct Mock { tag: &'static str, ret: HookResult }
 
     fn run(d: &mut Descriptor<Mock>, phase: Phase, log: &std::cell::RefCell<Vec<&'static str>>) -> HookResult {
-        d.dispatch(phase, |h| { log.borrow_mut().push(h.tag); Ok(h.ret) })
+        d.dispatch(phase, |h| { log.borrow_mut().push(h.tag); Ok(h.ret) }).result
     }
 
     #[test]
@@ -179,5 +216,44 @@ mod tests {
         assert!(matches!(c1, DetourChange::Install));
         let (_, c2) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
         assert!(matches!(c2, DetourChange::None));
+    }
+
+    #[test]
+    fn snapshot_excludes_subs_added_after_it() {
+        // The snapshot taken at dispatch start is the set that runs this frame; a sub added
+        // afterward (the re-entrancy case) is NOT in it — it runs next frame.
+        let mut d = Descriptor::new("d");
+        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
+        let snap = d.snapshot(Phase::Pre);
+        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
+        assert_eq!(snap.len(), 1);            // "b" not in the earlier snapshot
+        assert_eq!(d.snapshot(Phase::Pre).len(), 2); // but a fresh snapshot includes it
+    }
+
+    #[test]
+    fn unsubscribe_excludes_from_future_snapshots_and_lazy_removes() {
+        let mut d: Descriptor<Mock> = Descriptor::new("d");
+        let (a, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
+        let (b, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
+        assert!(matches!(d.unsubscribe(a), DetourChange::None));   // one still enabled
+        assert_eq!(d.snapshot(Phase::Pre).len(), 1);              // "a" gone from snapshots
+        assert!(matches!(d.unsubscribe(b), DetourChange::Remove)); // last one gone → remove detour
+        assert!(matches!(d.unsubscribe(b), DetourChange::None));   // already gone, idempotent
+        assert_eq!(d.snapshot(Phase::Pre).len(), 0);
+    }
+
+    #[test]
+    fn handler_error_is_continue_and_counts_then_auto_disables() {
+        let mut d = Descriptor::new("d");
+        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "bad", ret: HookResult::Stop });
+        // invoke always errors; error must be treated as Continue (NOT the handler's scripted Stop),
+        // and after MAX_HANDLER_ERRORS the sub auto-disables (being last → requests Remove).
+        let mut last = DispatchOutcome { result: HookResult::Continue, detour: DetourChange::None };
+        for _ in 0..MAX_HANDLER_ERRORS {
+            last = d.dispatch(Phase::Pre, |_h| Err(()));
+            assert_eq!(last.result, HookResult::Continue);
+        }
+        assert!(matches!(last.detour, DetourChange::Remove));
+        assert_eq!(d.snapshot(Phase::Pre).len(), 0); // auto-disabled → excluded from snapshots
     }
 }
