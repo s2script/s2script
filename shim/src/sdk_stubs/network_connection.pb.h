@@ -14,7 +14,7 @@ class Message;
 } // namespace google
 
 // Enum generated from network_connection.proto — values must match the proto.
-enum ENetworkDisconnectionReason {
+enum ENetworkDisconnectionReason : int {
     NETWORK_DISCONNECT_INVALID                              = 0,
     NETWORK_DISCONNECT_SHUTDOWN                             = 1,
     NETWORK_DISCONNECT_DISCONNECT_BY_USER                   = 2,

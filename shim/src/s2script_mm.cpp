@@ -65,7 +65,7 @@ static std::string GamedataPath() {
 static void s2_request_hook(const char* descriptor, int enable) {
     if (strcmp(descriptor, "OnGameFrame") != 0) return;
 
-    if (enable && !g_S2ScriptPlugin.m_frameHookInstalled) {
+    if (enable && !g_S2ScriptPlugin.m_frameHookInstalled && g_S2ScriptPlugin.m_server) {
         SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
                     SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePre),  false);
         SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
