@@ -12,6 +12,7 @@ set(AMTL   ${MMS}/third_party/amtl)
 
 add_library(s2script SHARED
     src/s2script_mm.cpp
+    src/gamedata.cpp
 )
 
 target_include_directories(s2script PRIVATE
@@ -58,4 +59,5 @@ set_target_properties(s2script PROPERTIES
     OUTPUT_NAME "s2script"
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
+    BUILD_WITH_INSTALL_RPATH TRUE
 )

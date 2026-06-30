@@ -1,0 +1,10 @@
+{
+  // Source 2 engine interface version strings. Confirmed against the live CS2
+  // binaries at build time — never hardcoded in C++/Rust (ARCHITECTURE §2.7).
+  "interfaces": {
+    "Source2Server": "Source2Server001",
+    "SchemaSystem": "SchemaSystem_001",
+    "EngineCvar": "VEngineCvar007",
+    "NetworkServerService": "NetworkServerService_001"
+  }
+}
