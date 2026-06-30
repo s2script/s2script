@@ -1,0 +1,8 @@
+[submodule "third_party/hl2sdk"]
+	path = third_party/hl2sdk
+	url = https://github.com/alliedmodders/hl2sdk
+	branch = cs2
+[submodule "third_party/metamod-source"]
+	path = third_party/metamod-source
+	url = https://github.com/alliedmodders/metamod-source
+	branch = master
