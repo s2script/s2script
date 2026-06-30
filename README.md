@@ -1,5 +1,22 @@
 # s2script
 
+## Building the Rust core
+
+```bash
+cargo build --release          # builds libs2script_core.so (cdylib, V8 embedded)
+cargo test -p s2script-core -- --test-threads=1
+```
+
+`--test-threads=1` is required: the V8 platform is process-global and
+initialized exactly once, so parallel tests race that init.
+
+The `v8` crate is pinned to **149.4.0** because its prebuilt binary was compiled
+with `v8_monolithic_for_shared_library=true`, which is required to link V8 into a
+`-shared` object (our `dlopen`'d Metamod plugin `.so`). The stock `v8 = 150.0.0`
+prebuilt uses local-exec TLS and fails to link a cdylib with
+`R_X86_64_TPOFF32 ... cannot be used with -shared`. To move to v150+, build from
+source: `V8_FROM_SOURCE=1 GN_ARGS=v8_monolithic_for_shared_library=true cargo build`.
+
 ## Vendored SDKs (hl2sdk, Metamod:Source)
 
 Two upstream SDKs are vendored as pinned git submodules under `third_party/`:

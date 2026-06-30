@@ -9,4 +9,11 @@ name = "s2script_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-v8 = "150.0.0"
+# Pinned to 149.4.0: its prebuilt librusty_v8.a was compiled with the GN arg
+# `v8_monolithic_for_shared_library=true` (routes V8_TLS_USED_IN_LIBRARY into V8's
+# TLS config), which is REQUIRED to link V8 into a -shared object (our dlopen'd
+# Metamod plugin .so). The stock v150.0.0 prebuilt shipped 2 days before that fix
+# landed and uses local-exec TLS, which fails with R_X86_64_TPOFF32 against -shared.
+# To move to v150+, either wait for a fixed prebuilt or build from source with
+# `V8_FROM_SOURCE=1 GN_ARGS=v8_monolithic_for_shared_library=true`.
+v8 = "149.4.0"
