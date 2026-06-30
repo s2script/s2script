@@ -1,0 +1,5 @@
+"Metamod Plugin"
+{
+	"alias"	"s2script"
+	"file"	"addons/s2script/bin/linuxsteamrt64/s2script"
+}

@@ -1,0 +1,37 @@
+services:
+  cs2:
+    image: joedwards32/cs2
+    container_name: s2script-cs2
+    stdin_open: true
+    tty: true
+    environment:
+      # Confirmed from image env (STEAMAPPDIR=/home/steam/cs2-dedicated)
+      CS2_SERVERNAME: "s2script-slice0"
+      CS2_LAN: "1"           # LAN mode — no SRCDS_TOKEN required
+      CS2_RCONPW: "s2script"
+      CS2_PORT: "27015"
+      CS2_MAXPLAYERS: "2"
+      CS2_GAMETYPE: "0"
+      CS2_GAMEMODE: "1"
+      CS2_STARTMAP: "de_inferno"
+      SRCDS_TOKEN: ""
+    ports:
+      - "27015:27015/udp"
+      - "27015:27015/tcp"
+    volumes:
+      # Persistent CS2 install (downloaded on first start, ~30 GB)
+      - ./cs2-data:/home/steam/cs2-dedicated
+
+      # s2script addon (our plugin + core SO)
+      - ../dist/addons/s2script:/home/steam/cs2-dedicated/game/csgo/addons/s2script:ro
+
+      # Metamod:Source itself — operator must pre-install into docker/metamod/.
+      # See "Docker verification runbook" in README.md for how to obtain it.
+      - ./metamod:/home/steam/cs2-dedicated/game/csgo/addons/metamod
+
+      # Plugin registration VDF — mounted AFTER the metamod directory so the
+      # file bind-mount takes precedence over the directory mount at the same path.
+      - ../dist/addons/metamod/s2script.vdf:/home/steam/cs2-dedicated/game/csgo/addons/metamod/s2script.vdf:ro
+
+      # gameinfo.gi patcher script (called manually after first CS2 download)
+      - ./patch-gameinfo.sh:/patch-gameinfo.sh:ro
