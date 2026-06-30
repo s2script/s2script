@@ -34,6 +34,7 @@ Same pattern applies for `third_party/metamod-source`.
 hl2sdk occasionally lags Valve SDK updates, so we carry local patches ahead of upstream.
 
 - Make changes directly in `third_party/hl2sdk`.
-- Export the patch: `git -C third_party/hl2sdk diff > patches/hl2sdk/NNNN-description.patch`
+- Export the patch: `git -C third_party/hl2sdk diff HEAD > patches/hl2sdk/NNNN-description.patch`
+  Note: use `diff HEAD` to capture both staged and unstaged changes; otherwise staged hunks may be silently dropped.
 - On a fresh checkout, patches in `patches/hl2sdk/` are re-applied in order via `make apply-patches` (added when the first patch is needed).
 - Each patch is reviewed and tracked in the update-day fire drill.
