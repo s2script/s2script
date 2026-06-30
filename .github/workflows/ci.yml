@@ -1,0 +1,14 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo build
+        run: cargo build --release
+      - name: core boundary check
+        run: ./scripts/check-core-boundary.sh
+      # The CMake shim build is added in Task 3 (needs vendored SDKs).

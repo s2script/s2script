@@ -1,0 +1,5 @@
+/target
+/build
+/dist
+*.so
+docker/cs2-data/

@@ -1,0 +1,8 @@
+[package]
+name = "s2script-cs2"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Intentionally empty in Slice 0. CS2-specific code arrives in Slice 3+.

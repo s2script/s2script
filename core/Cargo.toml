@@ -1,0 +1,12 @@
+[package]
+name = "s2script-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "s2script_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+v8 = "150.0.0"
