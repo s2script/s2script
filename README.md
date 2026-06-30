@@ -217,7 +217,7 @@ and reload.
 `meta list` should show:
 ```
 Listing 1 plugin:
-  [01] s2script (0.0.0-slice0)  by s2script
+  [01] s2script (0.0.0-slice1)  by s2script
 ```
 
 `meta unload s2script` should show:
@@ -253,7 +253,7 @@ loaded via Metamod with CounterStrikeSharp removed, and driven over RCON.
 | # | Criterion | Live result |
 |---|---|---|
 | 1 | Builds for Linux x86-64 | ✅ `make check-boundary` → `core boundary OK`; **sniper build** (`scripts/build-sniper.sh`) produces server-loadable `s2script.so` (GLIBC_2.14) + `libs2script_core.so` (GLIBC_2.30) |
-| 2 | Loads on live CS2; `meta list` shows it; `meta unload` no crash | ✅ `meta list` → `[02] s2script (0.0.0-slice0) by s2script`; `meta unload` → `[s2script] Unload(): shutting down V8 core`, server stays up |
+| 2 | Loads on live CS2; `meta list` shows it; `meta unload` no crash | ✅ `meta list` → `[02] s2script (0.0.0-slice1) by s2script`; `meta unload` → `[s2script] Unload(): shutting down V8 core`, server stays up |
 | 3 | Per-interface acquisition logged; missing = named warn | ✅ `interface OK: Source2Server (Source2Server001)`, `EngineCvar (VEngineCvar007)`, `NetworkServerService (NetworkServerService_001)`; `SchemaSystem` deferred NOTE; missing-gamedata → `WARN`, V8 still boots (degrade proven) |
 | 4 | V8 embedded; `console.log` → server console | ✅ `[s2script] hello from V8 in CS2` printed to the server console on load |
 | 5 | Clean teardown; `meta load` reprints hello without restart | ✅ `meta unload` → `meta load` reprinted `hello from V8 in CS2` on a fresh isolate; **server never restarted, never crashed** — the §5 resident-cdylib + platform-once posture validated against Metamod's real `dlclose`/`dlopen` |
