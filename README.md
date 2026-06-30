@@ -22,7 +22,7 @@ s2script is a TypeScript plugin framework for Source 2 engine games (Counter-Str
 
 ```bash
 # 1. Clone and pull submodules
-git clone https://github.com/gabriel-gkh/s2script.git
+git clone https://github.com/GabeHirakawa/s2script.git
 cd s2script
 git submodule update --init --recursive
 
@@ -189,14 +189,14 @@ results depend on the live binary version):
 ```
 
 If a version string in `gamedata/core.gamedata.jsonc` does not match the live binary, the
-corresponding line reads `WARN: interface MISSING: <name> (<version>)` — this is non-fatal;
+corresponding line reads `[s2script] WARN: interface MISSING: <name> (<version>)` — this is non-fatal;
 V8 still boots. Fix the version string in the gamedata file (confirm with `meta interfaces`)
 and reload.
 
 `meta list` should show:
 ```
 Listing 1 plugin:
-  [01] s2script (0.0.0-slice0)  by <author>
+  [01] s2script (0.0.0-slice0)  by s2script
 ```
 
 `meta unload s2script` should show:
@@ -217,7 +217,7 @@ and the server must **not** crash.
 **Degradation sub-test (interface version string):** to verify non-fatal degradation, temporarily
 change one version string in `gamedata/core.gamedata.jsonc` to a deliberately wrong value
 (e.g. `"Source2Server": "Source2Server_BAD"`), rebuild, and remount. The startup log should show
-`WARN: interface MISSING: Source2Server (Source2Server_BAD)` for that interface but still print
+`[s2script] WARN: interface MISSING: Source2Server (Source2Server_BAD)` for that interface but still print
 `hello from V8 in CS2` — confirming that a broken interface string never crashes or silences V8.
 Restore the correct string when done.
 
@@ -231,7 +231,7 @@ Operator-run live gate. The "operator confirms" column is left unchecked; fill i
 |---|---|---|---|
 | 1 | Builds for Linux x86-64 | `make core && make shim && make package` produces `s2script.so` + `libs2script_core.so` + gamedata in `dist/addons/`; `make check-boundary` prints `core boundary OK` | [ ] |
 | 2 | Loads on live CS2; `meta list` shows it with a version; `meta unload` no crash | `meta list` shows `s2script (0.0.0-slice0)`; `meta unload` prints `[s2script] Unload(): shutting down V8 core` and the server keeps running | [ ] |
-| 3 | Per-interface acquisition logged; missing interface = named non-fatal warning | Startup log shows `interface OK: <name>` per acquired interface; a deliberately wrong version string produces `WARN: interface MISSING: <name>` and V8 still boots | [ ] |
+| 3 | Per-interface acquisition logged; missing interface = named non-fatal warning | Startup log shows `interface OK: <name>` per acquired interface; a deliberately wrong version string produces `[s2script] WARN: interface MISSING: <name>` and V8 still boots | [ ] |
 | 4 | V8 embedded; `console.log` → server console | `[s2script] hello from V8 in CS2` appears in the server console during load | [ ] |
 | 5 | Clean teardown; subsequent `meta load` reprints hello without server restart | After `meta unload`, `meta load` reprints the full startup block including `hello from V8 in CS2` — **no restart required.** This is the sharpest validation of the §5 resident-cdylib + platform-once posture | [ ] |
 | 6 | Reproduces from this README | A clean checkout following this README end-to-end reaches criterion 5 with no undocumented steps | [ ] |
@@ -264,7 +264,7 @@ expected and non-fatal.
 
 **Interface version strings are best-effort data, not code.** The strings in `gamedata/core.gamedata.jsonc`
 were confirmed against the live CS2 binary at the time of writing but will drift as Valve ships
-updates. On any live-gate failure showing `WARN: interface MISSING`, run `meta interfaces` on the
+updates. On any live-gate failure showing `[s2script] WARN: interface MISSING`, run `meta interfaces` on the
 server to see the actual strings, update `gamedata/core.gamedata.jsonc`, and rebuild — never
 hardcode a version string in C++ or Rust.
 
