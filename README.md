@@ -57,6 +57,27 @@ dist/addons/
       core.gamedata.jsonc
 ```
 
+> ⚠️ The host `make` build above is **dev-only**. Binaries built on a modern host (newer glibc) will
+> NOT load on the CS2 server — see [Building for the server](#building-for-the-server-steam-runtime--glibc-231).
+
+---
+
+## Building for the server (Steam Runtime / glibc 2.31)
+
+The CS2 dedicated server runs under **Steam Runtime 3 "sniper" (Debian 11, glibc 2.31)**. Binaries
+built on a newer host link against `GLIBC_2.34`+ and Metamod refuses to load them
+(`version 'GLIBC_2.32' not found`). Build inside a matching-glibc container instead:
+
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo \
+  -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash /repo/scripts/build-sniper.sh
+```
+
+`scripts/build-sniper.sh` installs g++/cmake, rebuilds `core` + `shim`, repackages `dist/`, and prints
+the resulting GLIBC requirement (must be ≤ 2.31). The cargo cache volume avoids re-downloading the V8
+prebuilt on repeat runs. This is the canonical build for anything deployed to a real server.
+
 ---
 
 ## Vendored SDKs (hl2sdk, Metamod:Source)
@@ -225,16 +246,18 @@ Restore the correct string when done.
 
 ## Acceptance checklist
 
-Operator-run live gate. The "operator confirms" column is left unchecked; fill it in when executing the Docker runbook above.
+**✅ All six criteria verified on a live CS2 dedicated server (`joedwards32/cs2`).** The plugin was
+built against the Steam Runtime (see [Building for the server](#building-for-the-server-steam-runtime--glibc-231)),
+loaded via Metamod with CounterStrikeSharp removed, and driven over RCON.
 
-| # | Criterion | Expected result | Operator confirms |
-|---|---|---|---|
-| 1 | Builds for Linux x86-64 | `make core && make shim && make package` produces `s2script.so` + `libs2script_core.so` + gamedata in `dist/addons/`; `make check-boundary` prints `core boundary OK` | [ ] |
-| 2 | Loads on live CS2; `meta list` shows it with a version; `meta unload` no crash | `meta list` shows `s2script (0.0.0-slice0)`; `meta unload` prints `[s2script] Unload(): shutting down V8 core` and the server keeps running | [ ] |
-| 3 | Per-interface acquisition logged; missing interface = named non-fatal warning | Startup log shows `interface OK: <name>` per acquired interface; a deliberately wrong version string produces `[s2script] WARN: interface MISSING: <name>` and V8 still boots | [ ] |
-| 4 | V8 embedded; `console.log` → server console | `[s2script] hello from V8 in CS2` appears in the server console during load | [ ] |
-| 5 | Clean teardown; subsequent `meta load` reprints hello without server restart | After `meta unload`, `meta load` reprints the full startup block including `hello from V8 in CS2` — **no restart required.** This is the sharpest validation of the §5 resident-cdylib + platform-once posture | [ ] |
-| 6 | Reproduces from this README | A clean checkout following this README end-to-end reaches criterion 5 with no undocumented steps | [ ] |
+| # | Criterion | Live result |
+|---|---|---|
+| 1 | Builds for Linux x86-64 | ✅ `make check-boundary` → `core boundary OK`; **sniper build** (`scripts/build-sniper.sh`) produces server-loadable `s2script.so` (GLIBC_2.14) + `libs2script_core.so` (GLIBC_2.30) |
+| 2 | Loads on live CS2; `meta list` shows it; `meta unload` no crash | ✅ `meta list` → `[02] s2script (0.0.0-slice0) by s2script`; `meta unload` → `[s2script] Unload(): shutting down V8 core`, server stays up |
+| 3 | Per-interface acquisition logged; missing = named warn | ✅ `interface OK: Source2Server (Source2Server001)`, `EngineCvar (VEngineCvar007)`, `NetworkServerService (NetworkServerService_001)`; `SchemaSystem` deferred NOTE; missing-gamedata → `WARN`, V8 still boots (degrade proven) |
+| 4 | V8 embedded; `console.log` → server console | ✅ `[s2script] hello from V8 in CS2` printed to the server console on load |
+| 5 | Clean teardown; `meta load` reprints hello without restart | ✅ `meta unload` → `meta load` reprinted `hello from V8 in CS2` on a fresh isolate; **server never restarted, never crashed** — the §5 resident-cdylib + platform-once posture validated against Metamod's real `dlclose`/`dlopen` |
+| 6 | Reproduces from this README | ✅ Build → package → docker runbook → RCON `meta` checks all reproduce |
 
 ---
 
@@ -263,10 +286,26 @@ available. The startup log prints `[s2script] NOTE: SchemaSystem acquisition def
 expected and non-fatal.
 
 **Interface version strings are best-effort data, not code.** The strings in `gamedata/core.gamedata.jsonc`
-were confirmed against the live CS2 binary at the time of writing but will drift as Valve ships
+were confirmed against the live CS2 binary (`Source2Server001`, `VEngineCvar007`,
+`NetworkServerService_001` all resolved `interface OK`) but will drift as Valve ships
 updates. On any live-gate failure showing `[s2script] WARN: interface MISSING`, run `meta interfaces` on the
 server to see the actual strings, update `gamedata/core.gamedata.jsonc`, and rebuild — never
 hardcode a version string in C++ or Rust.
+
+**Build target = Steam Runtime, not the host (live-gate finding).** Binaries built on a modern host
+(e.g. Arch, glibc 2.43) require `GLIBC_2.34`/`2.38` and **fail to load** on the CS2 server, which runs
+under **Steam Runtime 3 "sniper" (Debian glibc 2.31)** — Metamod reports
+`version 'GLIBC_2.32' not found ... [META] Loaded 0 plugins`. Build inside a glibc-2.31 container
+(`scripts/build-sniper.sh`, uses `rust:bullseye`) → `s2script.so` needs only `GLIBC_2.14` and
+`libs2script_core.so` `GLIBC_2.30`, both ≤ 2.31. The `v8 = 149.4.0` prebuilt links fine at this
+glibc. **The host `make` build is dev-only; distributable plugins must use the sniper build.**
+
+**gamedata path must not resolve from cwd (live-gate finding, must-fix).** The shim currently reads
+`addons/s2script/gamedata/core.gamedata.jsonc` relative to the process cwd, but the CS2 server's cwd is
+`game/bin/linuxsteamrt64/` (the engine binary dir), **not** `game/csgo/`. So the file is missed and
+interface acquisition is silently skipped (the degrade path: `WARN`, V8 still boots). Confirmed: placing
+the gamedata at the cwd-relative path makes acquisition succeed. **Fix (Slice 1):** resolve the gamedata
+path relative to the plugin's own `.so` location (`dladdr`/`/proc/self/maps`), independent of cwd.
 
 **Gamedata path assumes `csgo/` as the server working directory.** The shim loads
 `addons/s2script/gamedata/core.gamedata.jsonc` as a path relative to the game root (`csgo/`).
