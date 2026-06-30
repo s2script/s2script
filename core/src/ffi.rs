@@ -9,8 +9,8 @@ pub extern "C" fn s2script_core_init(
     request_hook: Option<HookRequestFn>,
 ) -> c_int {
     catch_unwind(|| {
-        let Some(logger) = logger else { return -2 };
         v8host::set_hook_request(request_hook);
+        let Some(logger) = logger else { return -2 };
         match v8host::init(logger) {
             Ok(()) => 0,
             Err(_) => -1,
