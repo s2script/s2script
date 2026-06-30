@@ -140,7 +140,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
     }
-    s2script_core_eval("console.log('hello from V8 in CS2')");
+    // Slice 1 live demo: subscribe two OnGameFrame handlers at different priorities.
+    // Subscribing the first one drives request_hook("OnGameFrame", 1) -> the SourceHook
+    // detour installs lazily; each frame then dispatches through the multiplexer, and
+    // HIGH must log before LOW within a frame (priority-ordered composition).
+    // (Baked into Load like Slice 0's hello; removed when real plugin loading lands in Slice 4.)
+    s2script_core_eval(R"JS(
+        console.log('hello from V8 in CS2');
+        var __n = 0;
+        onGameFrame(function (f) {
+            if (__n % 256 === 0) console.log('[demo] HIGH tick=' + __n + ' firstTick=' + f.firstTick);
+        }, { priority: 'high' });
+        onGameFrame(function (f) {
+            if (__n % 256 === 0) console.log('[demo] low');
+            __n++;
+        }, { priority: 'low' });
+        console.log('[demo] subscribed 2 OnGameFrame handlers; HIGH should log before low each frame');
+    )JS");
     return true;
 }
 

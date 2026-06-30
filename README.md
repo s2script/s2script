@@ -261,6 +261,49 @@ loaded via Metamod with CounterStrikeSharp removed, and driven over RCON.
 
 ---
 
+## OnGameFrame multiplexer (Slice 1)
+
+Slice 1 adds the generic hook multiplexer (`core/src/multiplexer.rs` — priority ladder
+`High<Normal<Low<Monitor`, `HookResult` collapse `Continue<Changed<Handled<Stop`, Pre/Post,
+snapshot re-entrancy, error isolation/auto-disable, lazy detour) bound to one engine touchpoint,
+`ISource2Server::GameFrame`, via a SourceHook detour installed lazily on first subscription.
+
+The full contract (Stop short-circuit, Monitor-after, re-entrancy snapshot, auto-disable, lazy
+install/remove) is proven in `cargo test -p s2script-core -- --test-threads=1` (the V8-free
+`multiplexer` suite + the `frame_tests` V8-integration suite, including a re-entrancy test where a
+JS handler subscribes mid-dispatch without panicking).
+
+**Live demonstration.** `Load()` evals a baked-in demo that subscribes two `onGameFrame` handlers at
+different priorities (a Slice-1 stand-in for the future `import { onGameFrame } from "@s2script/events"`;
+removed when real plugin loading lands in Slice 4). On a live CS2 server the console shows the detour
+installing on first subscribe and dispatch firing every tick with priority-ordered composition:
+
+```
+[s2script] [demo] subscribed 2 OnGameFrame handlers; HIGH should log before low each frame
+[s2script] [demo] HIGH tick=0    firstTick=true
+[s2script] [demo] low
+[s2script] [demo] HIGH tick=256  firstTick=true
+[s2script] [demo] low
+[s2script] [demo] HIGH tick=512  firstTick=true
+[s2script] [demo] low
+```
+
+`HIGH` logs before `low` every frame (priority composition); the tick counter advances (the detour
+fires each frame); the server never crashes. `firstTick=true` every frame is correct — a dedicated
+server simulates one tick per `GameFrame`, so each frame is both the first and last tick of its batch.
+
+**Slice 1 acceptance (live + cargo):**
+
+| # | Criterion | Result |
+|---|---|---|
+| build | `cargo test` (multiplexer + V8 integration) + sniper build | ✅ 17 core tests pass; `make check-boundary` green; sniper `s2script.so` GLIBC_2.14 |
+| detour | installs on first subscription, fires per tick | ✅ live (`request_hook("OnGameFrame",1)` → `SH_ADD_HOOK`; ticks advance) |
+| compose | two handlers compose, priority order | ✅ live (`HIGH` before `low` each frame) |
+| contract | Stop short-circuit / Monitor-after / re-entrancy / auto-disable / lazy remove | ✅ cargo (`multiplexer` + `frame_tests`, incl. re-entrancy) |
+| gamedata | `dladdr` path fix — interfaces resolve without cwd workaround | ✅ live (cwd-path gamedata removed; `interface OK:` lines still appear) |
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
