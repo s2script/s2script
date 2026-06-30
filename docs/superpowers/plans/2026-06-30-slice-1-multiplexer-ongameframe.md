@@ -16,6 +16,7 @@
 - **Collapse semantics (verbatim):** `HookResult` precedence `Continue < Changed < Handled < Stop`; collapse = **max**; `Stop` short-circuits the chain; `Handled` does **not**; `Monitor` priority runs **after** the collapse and its return is **ignored**. Priority order `High < Normal < Low < Monitor`; within a tier, registration order.
 - **Error isolation:** a handler error is logged + treated as `Continue` + increments `error_count`; at `MAX_HANDLER_ERRORS = 10` the subscription is auto-disabled with a named reason.
 - **Lazy detour:** install on first enabled subscription (`0→1`), remove on last (`1→0`, including via unsubscribe/auto-disable).
+- **Re-entrancy borrow discipline (load-bearing).** The V8 dispatch MUST NOT hold the `FRAME` `RefCell` borrow across JS handler invocation — a handler that calls `onGameFrame(...)`/`dispose()` mid-dispatch re-enters `__s2_subscribe`/`__s2_unsubscribe` (which borrow `FRAME`), and a held borrow would panic. Dispatch is therefore three phases: **`snapshot`** (brief `&FRAME` borrow → clone the ordered enabled handlers for the phase), **`run_chain`** (a free fn that invokes the snapshot with the collapse rules — NO `FRAME` borrow held; this is where JS runs and may safely re-subscribe), **`apply_errors`** (brief `&mut FRAME` borrow → error-count/auto-disable bookkeeping). The pure `dispatch(&mut self, …)` convenience composes these three for non-re-entrant callers (the unit tests); the V8 glue calls the three separately. `H` is therefore `Clone` (cloning a `v8::Global<Function>` is a cheap refcount bump).
 - **Subscriptions are process-global this slice** (single shared context, no plugin identity). Auto-ledger-to-plugin + auto-remove-on-unload is Slice 4/5 — do NOT build it here.
 - **The authoring DX target is named-import calls + auto-ledger** (`import { onGameFrame } from "@s2script/events"`); Slice 1 mirrors only the *shape* via a provisional global prelude. The real import/bundler/package is Slice 4/5 — do NOT build it here.
 - **Build target = Steam Runtime sniper (glibc 2.31).** Verify loadable binaries via `scripts/build-sniper.sh`; the host `make` build is dev-only.
@@ -60,16 +61,21 @@ Task map: **T1–T2** build `multiplexer.rs` (pure Rust, TDD). **T3** the V8 bin
   pub enum Priority { High, Normal, Low, Monitor }            // derive Ord, this order
   pub enum Phase { Pre, Post }                                // derive PartialEq
   pub type SubId = u64;
-  pub struct Descriptor<H> { /* name, subs, next_id, enabled_count */ }
-  impl<H> Descriptor<H> {
+  pub struct Descriptor<H: Clone> { /* name, subs, next_id, enabled_count */ }
+  impl<H: Clone> Descriptor<H> {
       pub fn new(name: &str) -> Self;
       pub fn subscribe(&mut self, priority: Priority, phase: Phase, handler: H) -> (SubId, DetourChange);
-      // dispatch invokes `invoke(&H, &FrameCtx) -> Result<HookResult, ()>` per matching-phase, enabled sub
+      // Phase 1 of dispatch: clone the ordered, enabled handlers for this phase (High→Low then Monitor).
+      pub fn snapshot(&self, phase: Phase) -> Vec<(SubId, Priority, H)>;
+      // Convenience that composes snapshot+run_chain (+apply_errors in Task 2); used by the unit tests.
       pub fn dispatch(&mut self, phase: Phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> HookResult;
   }
+  // Phase 2 of dispatch (FREE fn — holds NO Descriptor borrow, so JS run here may re-subscribe safely):
+  pub struct ChainOutcome { pub result: HookResult, pub errored: Vec<SubId> }
+  pub fn run_chain<H>(snapshot: &[(SubId, Priority, H)], invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> ChainOutcome;
   pub enum DetourChange { None, Install, Remove }
   ```
-  (Unsubscribe/error-isolation/lazy-remove come in Task 2; `subscribe` already returns `DetourChange` — `Install` on `0→1`.)
+  (Unsubscribe / `apply_errors` / lazy-remove come in Task 2; `subscribe` already returns `DetourChange` — `Install` on `0→1`. `H: Clone` because `snapshot` clones handlers out so the borrow is released before invocation.)
 
 - [ ] **Step 1: Write the failing tests for ordering + collapse**
 
@@ -80,6 +86,7 @@ mod tests {
     use super::*;
 
     // A mock handler: records that it ran (via the shared log) and returns a scripted result.
+    #[derive(Clone)]
     struct Mock { tag: &'static str, ret: HookResult }
 
     fn run(d: &mut Descriptor<Mock>, phase: Phase, log: &std::cell::RefCell<Vec<&'static str>>) -> HookResult {
@@ -198,7 +205,7 @@ struct Subscription<H> {
     error_count: u32,
 }
 
-pub struct Descriptor<H> {
+pub struct Descriptor<H: Clone> {
     #[allow(dead_code)]
     name: String,
     subs: Vec<Subscription<H>>,
@@ -206,7 +213,34 @@ pub struct Descriptor<H> {
     enabled_count: usize,
 }
 
-impl<H> Descriptor<H> {
+#[derive(Debug)]
+pub struct ChainOutcome { pub result: HookResult, pub errored: Vec<SubId> }
+
+/// Phase 2: run the snapshot with collapse rules. FREE fn — holds NO Descriptor borrow,
+/// so the `invoke` closure (JS in the V8 path) may safely re-subscribe/unsubscribe.
+pub fn run_chain<H>(
+    snapshot: &[(SubId, Priority, H)],
+    mut invoke: impl FnMut(&H) -> Result<HookResult, ()>,
+) -> ChainOutcome {
+    let mut result = HookResult::Continue;
+    let mut stopped = false;
+    let mut errored = Vec::new();
+    for (id, prio, h) in snapshot {
+        let is_monitor = *prio == Priority::Monitor;
+        if !is_monitor && stopped { continue; }
+        match invoke(h) {
+            Ok(r) if !is_monitor => {
+                if r > result { result = r; }
+                if r == HookResult::Stop { stopped = true; }
+            }
+            Ok(_) => { /* monitor: return ignored */ }
+            Err(()) => errored.push(*id),
+        }
+    }
+    ChainOutcome { result, errored }
+}
+
+impl<H: Clone> Descriptor<H> {
     pub fn new(name: &str) -> Self {
         Descriptor { name: name.to_string(), subs: Vec::new(), next_id: 1, enabled_count: 0 }
     }
@@ -223,23 +257,21 @@ impl<H> Descriptor<H> {
         (id, change)
     }
 
-    /// Dispatch the given phase. `invoke` runs one handler and returns its HookResult (Task 2 adds Err handling).
-    pub fn dispatch(&mut self, phase: Phase, mut invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> HookResult {
-        let mut collapsed = HookResult::Continue;
-        let mut stopped = false;
-        for s in self.subs.iter() {
-            if !s.enabled || s.phase != phase { continue; }
-            if s.priority == Priority::Monitor {
-                let _ = invoke(&s.handler); // ran after collapse; return ignored (handled below)
-                continue;
-            }
-            if stopped { continue; }
-            if let Ok(r) = invoke(&s.handler) {
-                if r > collapsed { collapsed = r; }
-                if r == HookResult::Stop { stopped = true; }
-            }
-        }
-        collapsed
+    /// Phase 1: clone the ordered, enabled handlers for `phase`. `subs` is kept priority-sorted
+    /// (Monitor last), so the snapshot is already in dispatch order.
+    pub fn snapshot(&self, phase: Phase) -> Vec<(SubId, Priority, H)> {
+        self.subs.iter()
+            .filter(|s| s.enabled && s.phase == phase)
+            .map(|s| (s.id, s.priority, s.handler.clone()))
+            .collect()
+    }
+
+    /// Convenience composing snapshot + run_chain (Task 2 adds apply_errors). Used by unit tests
+    /// for NON-re-entrant invokers; the V8 glue (Task 3) calls the three phases separately so it
+    /// does not hold a borrow across invocation.
+    pub fn dispatch(&mut self, phase: Phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> HookResult {
+        let snap = self.snapshot(phase);
+        run_chain(&snap, invoke).result
     }
 }
 ```
@@ -271,82 +303,59 @@ git commit -m "feat(core): multiplexer types + priority-ordered dispatch + colla
 - Produces:
   ```rust
   pub const MAX_HANDLER_ERRORS: u32 = 10;
-  impl<H> Descriptor<H> {
+  impl<H: Clone> Descriptor<H> {
       pub fn unsubscribe(&mut self, id: SubId) -> DetourChange;
-      // dispatch now returns the collapsed result AND any detour change caused by auto-disable:
+      // Phase 3: apply error bookkeeping for the ids run_chain reported errored; auto-disable at
+      // MAX_HANDLER_ERRORS; returns Remove if that dropped the enabled count to 0.
+      pub fn apply_errors(&mut self, errored: &[SubId]) -> DetourChange;
+      // dispatch now composes snapshot+run_chain+apply_errors → collapsed result + any detour change.
       pub fn dispatch(&mut self, phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> DispatchOutcome;
   }
   pub struct DispatchOutcome { pub result: HookResult, pub detour: DetourChange }
   ```
-  (Task 1's `dispatch` returned `HookResult`; this task changes it to return `DispatchOutcome` and updates Task 1's tests' `run()` helper to read `.result`.)
+  (Task 1's `dispatch` returned `HookResult`; this task changes it to return `DispatchOutcome`. Task 1's collapse/ordering tests call `d.dispatch(...).result` — update them to read `.result`.)
 
 - [ ] **Step 1: Write the failing tests for re-entrancy, errors, and lazy remove**
 
 Append to the `#[cfg(test)] mod tests`:
 ```rust
     #[test]
-    fn unsubscribe_during_dispatch_skips_not_yet_run_handler() {
-        // Snapshot the id list, but re-check enabled/presence before each call so a mid-dispatch
-        // unsubscribe of a later handler is honored.
-        let log = std::cell::RefCell::new(vec![]);
+    fn snapshot_excludes_subs_added_after_it() {
+        // The snapshot taken at dispatch start is the set that runs this frame; a sub added
+        // afterward (the re-entrancy case) is NOT in it — it runs next frame.
         let mut d = Descriptor::new("d");
-        let (_a, _) = d.subscribe(Priority::High, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
-        let (b, _)  = d.subscribe(Priority::Low,  Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
-        // Dispatch where handler "a" removes "b" before "b" would run.
-        d.dispatch(Phase::Pre, |h| {
-            log.borrow_mut().push(h.tag);
-            if h.tag == "a" { /* removal happens out-of-band below via a second pass */ }
-            Ok(h.ret)
-        });
-        // Simpler deterministic check: removing b then dispatching must skip b.
-        log.borrow_mut().clear();
-        d.unsubscribe(b);
-        d.dispatch(Phase::Pre, |h| { log.borrow_mut().push(h.tag); Ok(h.ret) });
-        assert_eq!(*log.borrow(), vec!["a"]);
+        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
+        let snap = d.snapshot(Phase::Pre);
+        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
+        assert_eq!(snap.len(), 1);            // "b" not in the earlier snapshot
+        assert_eq!(d.snapshot(Phase::Pre).len(), 2); // but a fresh snapshot includes it
     }
 
     #[test]
-    fn subscribe_during_dispatch_is_not_run_this_pass() {
-        // A handler that subscribes a new handler mid-dispatch: the new one must not run this pass.
-        let log = std::cell::RefCell::new(vec![]);
-        let mut d = Descriptor::new("d");
-        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
-        // We can't mutate `d` from inside its own &mut dispatch closure; instead assert the
-        // snapshot property: capture len before, and that dispatch iterates exactly the pre-existing subs.
-        let before = 1usize;
-        let mut count = 0;
-        d.dispatch(Phase::Pre, |_h| { count += 1; Ok(HookResult::Continue) });
-        assert_eq!(count, before);
-        let _ = log;
+    fn unsubscribe_excludes_from_future_snapshots_and_lazy_removes() {
+        let mut d: Descriptor<Mock> = Descriptor::new("d");
+        let (a, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
+        let (b, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
+        assert!(matches!(d.unsubscribe(a), DetourChange::None));   // one still enabled
+        assert_eq!(d.snapshot(Phase::Pre).len(), 1);              // "a" gone from snapshots
+        assert!(matches!(d.unsubscribe(b), DetourChange::Remove)); // last one gone → remove detour
+        assert!(matches!(d.unsubscribe(b), DetourChange::None));   // already gone, idempotent
+        assert_eq!(d.snapshot(Phase::Pre).len(), 0);
     }
 
     #[test]
     fn handler_error_is_continue_and_counts_then_auto_disables() {
         let mut d = Descriptor::new("d");
-        let (id, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "bad", ret: HookResult::Stop });
-        // invoke always errors; error must be treated as Continue (so collapse stays Continue),
-        // and after MAX_HANDLER_ERRORS the sub auto-disables (and, being the last, requests Remove).
+        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "bad", ret: HookResult::Stop });
+        // invoke always errors; error must be treated as Continue (NOT the handler's scripted Stop),
+        // and after MAX_HANDLER_ERRORS the sub auto-disables (being last → requests Remove).
         let mut last = DispatchOutcome { result: HookResult::Continue, detour: DetourChange::None };
         for _ in 0..MAX_HANDLER_ERRORS {
             last = d.dispatch(Phase::Pre, |_h| Err(()));
-            assert_eq!(last.result, HookResult::Continue); // error != the handler's Stop
+            assert_eq!(last.result, HookResult::Continue);
         }
-        assert!(matches!(last.detour, DetourChange::Remove)); // auto-disabled the last enabled sub
-        // After auto-disable, the handler no longer runs.
-        let mut ran = false;
-        d.dispatch(Phase::Pre, |_h| { ran = true; Ok(HookResult::Continue) });
-        assert!(!ran);
-        let _ = id;
-    }
-
-    #[test]
-    fn unsubscribe_last_requests_remove() {
-        let mut d: Descriptor<Mock> = Descriptor::new("d");
-        let (a, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
-        let (b, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
-        assert!(matches!(d.unsubscribe(a), DetourChange::None));   // one still enabled
-        assert!(matches!(d.unsubscribe(b), DetourChange::Remove)); // last one gone
-        assert!(matches!(d.unsubscribe(b), DetourChange::None));   // already gone, idempotent
+        assert!(matches!(last.detour, DetourChange::Remove));
+        assert_eq!(d.snapshot(Phase::Pre).len(), 0); // auto-disabled → excluded from snapshots
     }
 ```
 > Update Task 1's `run()` helper and its tests to read `.result` from the new `DispatchOutcome` (e.g. `d.dispatch(...).result`). Keep all Task 1 assertions intact.
@@ -358,14 +367,14 @@ Expected: FAIL — `unsubscribe`/`DispatchOutcome`/`MAX_HANDLER_ERRORS` don't ex
 
 - [ ] **Step 3: Implement unsubscribe, snapshot, error isolation, DispatchOutcome**
 
-Replace `dispatch` and add `unsubscribe` + the constant:
+Add `unsubscribe`, `apply_errors`, the constant + `DispatchOutcome`, and recompose `dispatch` (replacing Task 1's `dispatch`). No `unsafe` is needed because invocation (`run_chain`) operates on the cloned snapshot, fully decoupled from the `&mut self` bookkeeping:
 ```rust
 pub const MAX_HANDLER_ERRORS: u32 = 10;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DispatchOutcome { pub result: HookResult, pub detour: DetourChange }
 
-impl<H> Descriptor<H> {
+impl<H: Clone> Descriptor<H> {
     pub fn unsubscribe(&mut self, id: SubId) -> DetourChange {
         if let Some(pos) = self.subs.iter().position(|s| s.id == id) {
             let was_enabled = self.subs[pos].enabled;
@@ -380,52 +389,34 @@ impl<H> Descriptor<H> {
         if self.enabled_count == 0 { DetourChange::Remove } else { DetourChange::None }
     }
 
-    pub fn dispatch(&mut self, phase: Phase, mut invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> DispatchOutcome {
-        // Snapshot the ids present at entry so mid-dispatch subscribe doesn't run this pass and
-        // iteration can't be corrupted; re-resolve each id and re-check enabled before invoking.
-        let snapshot: Vec<SubId> = self.subs.iter().map(|s| s.id).collect();
-        let mut collapsed = HookResult::Continue;
-        let mut stopped = false;
-        let mut to_disable: Vec<SubId> = Vec::new();
-
-        // Two ordered passes are unnecessary because subs stays priority-sorted (Monitor last);
-        // but we must look up by id each time to honor mid-dispatch removal.
-        for id in snapshot.iter() {
-            let Some(s) = self.subs.iter().find(|s| s.id == *id) else { continue }; // removed mid-dispatch
-            if !s.enabled || s.phase != phase { continue; }
-            let is_monitor = s.priority == Priority::Monitor;
-            if !is_monitor && stopped { continue; }
-            let handler_ptr = &s.handler as *const H; // borrow released before mutating error_count
-            let outcome = invoke(unsafe { &*handler_ptr });
-            match outcome {
-                Ok(r) if !is_monitor => {
-                    if r > collapsed { collapsed = r; }
-                    if r == HookResult::Stop { stopped = true; }
-                }
-                Ok(_) => { /* monitor: ignored */ }
-                Err(()) => {
-                    // error isolation: treat as Continue; count; maybe auto-disable
-                    if let Some(sm) = self.subs.iter_mut().find(|s| s.id == *id) {
-                        sm.error_count += 1;
-                        if sm.error_count >= MAX_HANDLER_ERRORS && sm.enabled {
-                            sm.enabled = false;
-                            to_disable.push(*id);
-                        }
-                    }
-                }
+    /// Phase 3: bump error_count for each errored id; auto-disable at the threshold; if that
+    /// dropped the enabled count to 0, return Remove.
+    pub fn apply_errors(&mut self, errored: &[SubId]) -> DetourChange {
+        let mut disabled = 0usize;
+        for id in errored {
+            if let Some(s) = self.subs.iter_mut().find(|s| s.id == *id) {
+                if !s.enabled { continue; }
+                s.error_count += 1;
+                if s.error_count >= MAX_HANDLER_ERRORS { s.enabled = false; disabled += 1; }
             }
         }
-
-        // Apply auto-disable bookkeeping → maybe Remove.
         let mut detour = DetourChange::None;
-        for _ in &to_disable {
+        for _ in 0..disabled {
             if let DetourChange::Remove = self.dec_enabled() { detour = DetourChange::Remove; }
         }
-        DispatchOutcome { result: collapsed, detour }
+        detour
+    }
+
+    /// Recomposed convenience: snapshot + run_chain + apply_errors. Replaces Task 1's dispatch.
+    pub fn dispatch(&mut self, phase: Phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> DispatchOutcome {
+        let snap = self.snapshot(phase);
+        let out = run_chain(&snap, invoke);
+        let detour = self.apply_errors(&out.errored);
+        DispatchOutcome { result: out.result, detour }
     }
 }
 ```
-> The `handler_ptr` unsafe deref avoids an aliasing conflict between the immutable handler borrow and the later `iter_mut()` for `error_count`; the handler is never moved during dispatch (no insert/remove inside the loop), so the pointer stays valid. If you prefer to avoid `unsafe`, restructure to collect `(id, ok_result|err)` first, then apply bookkeeping in a second loop — keep the observable behavior identical to the tests. Also update `dispatch`'s earlier `subscribe`-returned `DetourChange` callers if any.
+> Replace Task 1's `dispatch` with this version. Update Task 1's `run()` test helper to return `d.dispatch(phase, ...).result` (it previously returned the bare `HookResult`); all Task 1 collapse/ordering assertions then pass unchanged.
 
 - [ ] **Step 4: Run to verify all multiplexer tests pass**
 
@@ -520,6 +511,30 @@ mod frame_tests {
         assert_eq!(out.result, HookResult::Continue);
         shutdown();
     }
+
+    #[test]
+    fn handler_that_subscribes_during_dispatch_does_not_panic_and_runs_next_frame() {
+        // The re-entrancy guarantee: a JS handler that calls onGameFrame(...) DURING dispatch
+        // re-enters __s2_subscribe (which borrows FRAME). dispatch_onframe must NOT hold the FRAME
+        // borrow across invocation, or this double-borrows the RefCell and panics.
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval(r#"
+            let added = false;
+            onGameFrame(() => {
+                console.log("outer");
+                if (!added) { added = true; onGameFrame(() => console.log("inner")); }
+            });
+        "#).unwrap();
+        // Frame 1: only "outer" runs; it subscribes "inner" mid-dispatch (must not panic).
+        dispatch_onframe(Phase::Pre, true, false, false);
+        // Frame 2: both run (the snapshot now includes "inner").
+        dispatch_onframe(Phase::Pre, true, false, false);
+        let got = LOG.lock().unwrap().clone();
+        assert_eq!(got.iter().filter(|m| *m == "outer").count(), 2);
+        assert_eq!(got.iter().filter(|m| *m == "inner").count(), 1); // not run frame 1, run frame 2
+        shutdown();
+    }
 }
 ```
 
@@ -534,6 +549,7 @@ In `core/src/v8host.rs`:
 1. Add `use crate::multiplexer::{self, Descriptor, HookResult, Priority, Phase, DetourChange};`
 2. Add thread-locals next to `HOST`/`LOGGER`:
    ```rust
+   #[derive(Clone)] // Global<Function> is Clone (refcount bump); required because snapshot() clones H
    struct JsHandler { func: v8::Global<v8::Function> }
    thread_local! {
        static FRAME: std::cell::RefCell<Descriptor<JsHandler>> =
@@ -555,25 +571,35 @@ In `core/src/v8host.rs`:
        return { dispose: () => __s2_unsubscribe(id) };
      };
      ```
-4. The **V8 invoker** + `dispatch_onframe`:
+4. The **V8 invoker** + `dispatch_onframe` — the **three-phase split** (this is the load-bearing re-entrancy fix: the `FRAME` borrow is NOT held across JS invocation):
    ```rust
    pub(crate) fn dispatch_onframe(phase: Phase, simulating: bool, first: bool, last: bool) -> multiplexer::DispatchOutcome {
-       HOST.with(|h| {
+       use crate::multiplexer::{run_chain, DispatchOutcome};
+       // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers, then RELEASE the borrow.
+       let snap = FRAME.with(|f| f.borrow().snapshot(phase)); // Vec<(SubId, Priority, JsHandler)>
+       if snap.is_empty() {
+           return DispatchOutcome { result: HookResult::Continue, detour: DetourChange::None };
+       }
+       // Phase 2 — invoke under the V8 context. HOST is borrowed (to run JS); FRAME is NOT, so a JS
+       // handler calling onGameFrame(...) re-enters __s2_subscribe and borrows FRAME safely.
+       let outcome = HOST.with(|h| {
            let mut hb = h.borrow_mut();
-           let Some(host) = hb.as_mut() else {
-               return multiplexer::DispatchOutcome { result: HookResult::Continue, detour: DetourChange::None };
-           };
-           // Build a HandleScope+Context, then dispatch, invoking each JsHandler.func with a ctx object.
-           // (Match the existing eval()'s scope/TryCatch pattern for v8 149.4.0.)
-           // For each handler: build ctx = { simulating, firstTick, first, lastTick: last, phase },
-           // call func under TryCatch; on exception -> Err(()); else map return number -> HookResult
-           // (undefined / out-of-range -> Continue).
-           FRAME.with(|f| {
-               let mut fr = f.borrow_mut();
-               // ... open scope on host.isolate/context (see eval()), then:
-               fr.dispatch(phase, |jh| { /* invoke jh.func in-scope, return Ok(HookResult)|Err(()) */ })
+           let host = hb.as_mut().expect("dispatch_onframe before init");
+           // Open HandleScope+ContextScope on host.isolate/host.context (mirror eval()'s v8-149.4
+           // scope construction). Build the ctx object once:
+           //   { simulating, firstTick: first, lastTick: last, phase: "pre"|"post" }.
+           run_chain(&snap, |jh: &JsHandler| {
+               // Materialise jh.func into the scope; call it with [ctx] under a TryCatch.
+               //   TryCatch caught exception        -> Err(())
+               //   return undefined / non-number    -> Ok(HookResult::Continue)
+               //   return number 0..=3              -> the matching HookResult
+               unimplemented!("invoke jh.func in the open scope; return Ok(HookResult)|Err(())")
            })
-       })
+       });
+       // Phase 3 — brief &mut FRAME borrow: error/auto-disable bookkeeping; act on any Remove.
+       let detour = FRAME.with(|f| f.borrow_mut().apply_errors(&outcome.errored));
+       apply_detour(detour);
+       DispatchOutcome { result: outcome.result, detour }
    }
    fn apply_detour(change: DetourChange) {
        if let DetourChange::None = change { return; }
@@ -584,7 +610,7 @@ In `core/src/v8host.rs`:
        });
    }
    ```
-   > The tricky part is invoking `jh.func` *inside* the same `HandleScope`/`ContextScope` while the `FRAME` and `HOST` borrows are held. Reconcile the borrow structure: open the scope from `host.isolate`+`host.context` first, capture what you need, then call `fr.dispatch` with a closure that uses the open scope. Match `eval()`'s exact v8-149.4 scope/TryCatch construction. Reading the return: `value.is_undefined()` → Continue; else `value.uint32_value(scope)` → map 0..=3.
+   > The only hard part left is filling the `unimplemented!` invoker: open the scope from `host.isolate`+`host.context` (match `eval()`'s exact v8-149.4 `HandleScope`/`ContextScope`/`TryCatch` construction), build `ctx`, materialise `jh.func` with `v8::Local::new(scope, &jh.func)`, call it, and read the return: `value.is_undefined()` → `Continue`; else `value.uint32_value(scope)` → map `0..=3` (else `Continue`). Do NOT reintroduce a `FRAME` borrow inside this closure.
 5. Reset `FRAME` in `shutdown()` (clear subscriptions) so re-init starts clean.
 
 - [ ] **Step 4: Run to verify the integration tests pass**
