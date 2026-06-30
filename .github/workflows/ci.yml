@@ -11,8 +11,6 @@ jobs:
         run: cargo build --release
       - name: core boundary check
         run: ./scripts/check-core-boundary.sh
-      - name: install cmake
-        run: sudo apt-get install -y cmake
       - name: build shim
         run: |
           cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release
