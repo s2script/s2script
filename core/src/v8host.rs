@@ -47,7 +47,6 @@ thread_local! {
 }
 
 /// Install the embedder's detour-request callback.  Wired by `ffi.rs` (Task 4).
-#[allow(dead_code)]
 pub fn set_hook_request(f: Option<HookRequestFn>) {
     HOOK_REQUEST.with(|c| c.set(f));
 }
@@ -321,7 +320,6 @@ pub fn eval(src: &str) -> Result<(), String> {
 ///   borrowed here, so a handler that calls `onGameFrame(...)` re-enters
 ///   `__s2_subscribe` → `FRAME.borrow_mut()` without a double-borrow panic.
 /// - Phase 3: briefly borrow `FRAME` mutably for error/auto-disable bookkeeping.
-#[allow(dead_code)]
 pub(crate) fn dispatch_onframe(
     phase: Phase,
     simulating: bool,

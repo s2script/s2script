@@ -4,12 +4,12 @@
 extern "C" {
 #endif
 
-/* level: 0=info (reserved for warn/error in later slices) */
 typedef void (*s2_log_fn)(int level, const char* utf8_msg);
+typedef void (*s2_hook_request_fn)(const char* descriptor, int enable); /* core -> shim: install(1)/remove(0) */
 
-/* Returns 0 on success, negative on error. */
-int  s2script_core_init(s2_log_fn logger);
+int  s2script_core_init(s2_log_fn logger, s2_hook_request_fn request_hook);
 int  s2script_core_eval(const char* utf8_js);
+int  s2script_core_dispatch_game_frame(int phase, int simulating, int first, int last); /* phase 0=Pre,1=Post; returns collapsed HookResult */
 void s2script_core_shutdown(void);
 
 #ifdef __cplusplus
