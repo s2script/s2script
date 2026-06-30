@@ -42,23 +42,31 @@ struct Host {
 ///
 /// Signature matches the HRTB required by `MapFnTo<FunctionCallback>` in v8 150:
 ///   `for<'s, 'i> Fn(&mut PinScope<'s, 'i>, FunctionCallbackArguments<'s>, ReturnValue<'s, Value>)`
+///
+/// The body is wrapped in `catch_unwind(AssertUnwindSafe(...))` because this
+/// function is invoked as a V8 `FunctionCallback` from C++.  A Rust panic that
+/// unwinds through V8's C++ frames is undefined behaviour (spec §6: no panic
+/// may cross the FFI boundary).  Swallowing the panic here is safe: the log
+/// output is simply lost for that call, which is acceptable.
 fn console_log(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let msg = if args.length() > 0 {
-        args.get(0).to_rust_string_lossy(scope)
-    } else {
-        String::new()
-    };
-    LOGGER.with(|l| {
-        if let Some(f) = l.get() {
-            if let Ok(c) = CString::new(msg) {
-                f(0, c.as_ptr());
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let msg = if args.length() > 0 {
+            args.get(0).to_rust_string_lossy(scope)
+        } else {
+            String::new()
+        };
+        LOGGER.with(|l| {
+            if let Some(f) = l.get() {
+                if let Ok(c) = CString::new(msg) {
+                    f(0, c.as_ptr());
+                }
             }
-        }
-    });
+        });
+    }));
 }
 
 pub fn init(logger: LogFn) -> Result<(), String> {
