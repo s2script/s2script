@@ -1,0 +1,6 @@
+{
+  "name": "@s2script/std",
+  "version": "0.1.0",
+  "types": "index.d.ts",
+  "description": "Type stubs for the @s2script/std injected API. No runtime code — the engine injects the implementation."
+}

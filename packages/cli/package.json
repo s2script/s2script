@@ -1,0 +1,19 @@
+{
+  "name": "@s2script/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "s2script": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --experimental-strip-types --no-warnings test/build.test.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.0",
+    "adm-zip": "^0.5.16"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7"
+  }
+}
