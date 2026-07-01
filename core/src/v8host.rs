@@ -1165,6 +1165,94 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
     }));
 }
 
+/// `__s2_iface_on(name, event, handler) -> subId` — the consumer subscribes to a producer event.
+/// Stores the handler Global keyed by a fresh sub_id; records the Subscriber in the registry (tagged
+/// with the consumer's (id, generation)); ledgers `EventSub(subId)` on the consumer.
+fn s2_iface_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let event = args.get(1).to_rust_string_lossy(scope);
+        let Ok(handler) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return; };
+        let Some(consumer) = current_plugin(scope) else { return; };
+        let generation = REGISTRY.with(|r| r.borrow().generation_of(&consumer)).unwrap_or(0);
+        let sub_id = NEXT_SUB_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+
+        let ok = IFACES.with(|r| r.borrow_mut().add_subscriber(&name, crate::interfaces::Subscriber {
+            sub_id, consumer_id: consumer.clone(), consumer_gen: generation, event,
+        }));
+        if !ok { return; } // interface not published → no-op (degrade)
+
+        let g = v8::Global::new(scope.as_ref(), handler);
+        IFACE_SUBS.with(|m| { m.borrow_mut().insert(sub_id, g); });
+        REGISTRY.with(|r| { if let Some(l) = r.borrow_mut().ledger_mut(&consumer) { l.record_event_sub(sub_id); } });
+        rv.set_double(sub_id as f64);
+    }));
+}
+
+/// `__s2_iface_off(name, event, handler)` — best-effort unsubscribe of the current consumer's subs
+/// on (name, event). For the thin slice this drops ALL of the current consumer's subs on that
+/// (name, event) pair (handler identity match is not required — consumers rarely double-subscribe).
+fn s2_iface_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let event = args.get(1).to_rust_string_lossy(scope);
+        let Some(consumer) = current_plugin(scope) else { return; };
+        let dropped = IFACES.with(|r| r.borrow_mut().remove_subscribers_by_consumer_on(&consumer, &name, &event));
+        IFACE_SUBS.with(|m| { let mut mm = m.borrow_mut(); for id in dropped { mm.remove(&id); } });
+    }));
+}
+
+/// `__s2_iface_emit(name, event, payload)` — the producer forwards an event to every LIVE consumer
+/// subscribed to (name, event). Payload is structured-copied per consumer. Producer-side: no throw
+/// (a bad payload logs a WARN and skips that dispatch).
+fn s2_iface_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let event = args.get(1).to_rust_string_lossy(scope);
+        // Stringify the payload once, in the producer context (the neutral carrier).
+        let payload_json = match iface_to_json(scope, args.get(2)) {
+            Some(s) => s,
+            None => {
+                log_warn(&format!("WARN: iface_emit('{}','{}'): payload not serializable", name, event));
+                return;
+            }
+        };
+        // Compute live subscriber ids (IFACES borrow released before entering any consumer context).
+        let is_live = |id: &str, gen: u64| REGISTRY.with(|r| r.borrow().is_live(id, gen));
+        let sub_ids = IFACES.with(|r| r.borrow().live_subscriber_ids(&name, &event, &is_live));
+
+        for sub_id in sub_ids {
+            // Collect all info (brief borrows; all released before the ContextScope).
+            let handler_g = IFACE_SUBS.with(|m| m.borrow().get(&sub_id).cloned());
+            let Some(handler_g) = handler_g else { continue; };
+            let consumer = IFACES.with(|r| r.borrow().consumer_of_sub(&name, sub_id));
+            let Some(consumer) = consumer else { continue; };
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&consumer).map(|pi| pi.context.clone())) else { continue; };
+
+            // Enter the consumer's context and call the handler with a fresh copy of the payload.
+            let ctx_local = v8::Local::new(scope, &g_ctx);
+            let cscope = &mut v8::ContextScope::new(scope, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(cscope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            if let Some(payload) = iface_from_json(tc, &payload_json) {
+                let f = v8::Local::new(tc, &handler_g);
+                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                if f.call(tc, recv, &[payload]).is_none() {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: iface_emit('{}','{}') handler: {}", name, event, msg));
+                }
+            }
+            // tc, tc_storage, cscope drop here (TryCatch absorbs any pending exception).
+        }
+    }));
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -1204,6 +1292,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
     set_native(scope, global_obj, "__s2_iface_is_published", s2_iface_is_published);
     set_native(scope, global_obj, "__s2_iface_call", s2_iface_call);
+    // Event subscription / emission (Slice 4.5 events half).
+    set_native(scope, global_obj, "__s2_iface_on", s2_iface_on);
+    set_native(scope, global_obj, "__s2_iface_off", s2_iface_off);
+    set_native(scope, global_obj, "__s2_iface_emit", s2_iface_emit);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -2713,6 +2805,27 @@ mod frame_tests {
             catch (e) { globalThis.__void = "threw:" + String(e); }
         "#);
         assert_eq!(read_global_string("consVoid", "__void"), "undefined");
+        shutdown();
+    }
+
+    /// Task 6 (events half): a producer emits an event on its published interface; the LIVE
+    /// consumer that subscribed receives it with the payload structured-copied into its context.
+    #[test]
+    fn producer_emit_forwards_to_live_consumer_only() {
+        let _ = init(dummy_logger());
+        set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        load_plugin_js("prod", r#"
+            const { publishInterface } = require("@s2script/std");
+            globalThis.__h = publishInterface("@x/greeter","1.0.0",{ greet:function(){return "";} });
+        "#);
+        load_plugin_js("cons", r#"
+            const g = require("@x/greeter");
+            globalThis.__seen = [];
+            g.on("greeted", function (p) { globalThis.__seen.push(p.slot); });
+        "#);
+        // Producer emits (payload structured-copied to the consumer).
+        eval_in_context("prod", r#"__h.emit("greeted", { slot: 7 });"#).unwrap();
+        assert_eq!(eval_in_context_string("cons", "JSON.stringify(globalThis.__seen)"), "[7]");
         shutdown();
     }
 }

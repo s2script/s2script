@@ -142,6 +142,27 @@ impl InterfaceRegistry {
         removed
     }
 
+    /// Drop (and return the ids of) the given consumer's subs on a specific (name, event).
+    pub fn remove_subscribers_by_consumer_on(&mut self, consumer_id: &str, name: &str, event: &str) -> Vec<u64> {
+        let mut dropped = Vec::new();
+        if let Some(e) = self.ifaces.get_mut(name) {
+            e.subscribers.retain(|s| {
+                if s.consumer_id == consumer_id && s.event == event {
+                    dropped.push(s.sub_id);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        dropped
+    }
+
+    /// The consumer id owning `sub_id` on interface `name`, if present.
+    pub fn consumer_of_sub(&self, name: &str, sub_id: u64) -> Option<String> {
+        self.ifaces.get(name)?.subscribers.iter().find(|s| s.sub_id == sub_id).map(|s| s.consumer_id.clone())
+    }
+
     pub fn live_subscriber_ids(&self, name: &str, event: &str, is_live: &dyn Fn(&str, u64) -> bool) -> Vec<u64> {
         let Some(e) = self.ifaces.get(name) else { return Vec::new() };
         e.subscribers.iter()
@@ -316,6 +337,34 @@ mod tests {
         r.clear();
         assert!(r.lookup("@x").is_none());
         assert_eq!(r.dep_kind("cons", "@x"), None);
+    }
+
+    #[test]
+    fn remove_subscribers_by_consumer_on_drops_only_matching_name_event() {
+        let mut r = reg();
+        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.add_subscriber("@x", Subscriber { sub_id: 1, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
+        r.add_subscriber("@x", Subscriber { sub_id: 2, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
+        r.add_subscriber("@x", Subscriber { sub_id: 3, consumer_id: "cons".into(), consumer_gen: 0, event: "other".into() });
+        r.add_subscriber("@x", Subscriber { sub_id: 4, consumer_id: "other_cons".into(), consumer_gen: 0, event: "greeted".into() });
+        // Only drop cons's subs on (name=@x, event=greeted); leave other and other_cons alone.
+        let mut dropped = r.remove_subscribers_by_consumer_on("cons", "@x", "greeted");
+        dropped.sort();
+        assert_eq!(dropped, vec![1u64, 2]);
+        let remaining: Vec<u64> = r.lookup("@x").unwrap().subscribers.iter().map(|s| s.sub_id).collect();
+        assert!(remaining.contains(&3), "cons's 'other' event sub must survive");
+        assert!(remaining.contains(&4), "other_cons's sub must survive");
+        assert!(!remaining.contains(&1) && !remaining.contains(&2));
+    }
+
+    #[test]
+    fn consumer_of_sub_returns_owner() {
+        let mut r = reg();
+        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.add_subscriber("@x", Subscriber { sub_id: 42, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
+        assert_eq!(r.consumer_of_sub("@x", 42), Some("cons".to_string()));
+        assert_eq!(r.consumer_of_sub("@x", 99), None);  // sub_id not found
+        assert_eq!(r.consumer_of_sub("@nope", 42), None); // interface not found
     }
 
     #[test]
