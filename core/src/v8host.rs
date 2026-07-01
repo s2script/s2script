@@ -1634,6 +1634,15 @@ pub(crate) fn unload_plugin(id: &str) {
                     // AFTER (a)'s remove_by_owner).
                     let _ = FRAME.with(|f| f.borrow_mut().unsubscribe(sid));
                 }
+                plugin::Resource::Interface(_name) => {
+                    // TODO: Slice 4.5 / 5 — teardown removes the registry entry + method Globals + subscriber list.
+                }
+                plugin::Resource::EventSub(_id) => {
+                    // TODO: Slice 4.5 / 5 — teardown removes from producer's subscriber list + drops handler Global.
+                }
+                plugin::Resource::Import(_name) => {
+                    // TODO: Slice 4.5 / 5 — teardown drops the edge (no Global).
+                }
             }
         }
     }
