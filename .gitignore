@@ -4,3 +4,9 @@
 *.so
 docker/cs2-data/
 docker/metamod/
+
+# Example/plugin build artifacts (regenerable via `npx s2script build`)
+examples/**/dist/
+packages/**/dist/
+packages/**/node_modules/
+**/*.s2sp

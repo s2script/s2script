@@ -59,6 +59,15 @@ impl TimerQueue {
     pub fn len(&self) -> usize { self.entries.len() }
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
 
+    /// Remove a pending timer by id (used by the ledger teardown when its owning plugin unloads,
+    /// so a dropped continuation's timer stops keeping the frame detour alive).  Returns true if a
+    /// timer with that id was present.
+    pub fn remove(&mut self, id: u64) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|(tid, _)| *tid != id);
+        self.entries.len() != before
+    }
+
     pub fn due(&mut self, now: std::time::Instant, frame: u64) -> Vec<u64> {
         let mut ready = Vec::new();
         self.entries.retain(|(id, kind)| {

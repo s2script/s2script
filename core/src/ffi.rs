@@ -55,7 +55,10 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
     catch_unwind(|| {
         let phase = if phase == 0 { Phase::Pre } else { Phase::Post };
         let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
-        if phase == Phase::Post { v8host::frame_async_drain(); } // Post: resolve async + microtask checkpoint
+        if phase == Phase::Post {
+            v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
+            crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
+        }
         out.result as c_int
     })
     .unwrap_or(-99)
@@ -92,21 +95,63 @@ pub extern "C" fn s2script_core_dispatch_concommand(
     });
 }
 
-/// C-ABI entry point: read a game JS file from `path` and evaluate it in the HOST context.
-/// Engine-generic: the path is supplied by the shim; no game identifiers appear here.
-/// Degrade-never-crash: a null/invalid path or unreadable file logs a WARN and returns.
+/// C-ABI entry point retained for shim link-compatibility.  Now a degrade-safe no-op: game JS
+/// is provided to core via `s2script_core_register_package` instead (see below).
 /// `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
 #[no_mangle]
-pub extern "C" fn s2script_core_load_cs2(path: *const c_char) {
+pub extern "C" fn s2script_core_load_cs2(_path: *const c_char) {
+    // No-op: the per-plugin require model (register_injected_package) supersedes this entry.
+}
+
+/// Register a game-package JS source under `name` so core can inject it per-plugin-context
+/// without baking game JS into the core binary at compile time.
+///
+/// Called by the shim at load time (engine-generic: core never knows which game package is being
+/// registered — the name and source come entirely from the caller).
+///
+/// # Safety
+/// `name` and `js` must be valid null-terminated UTF-8 C strings.  Null pointers degrade to a
+/// no-op (never crash).  `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
+///
+/// The shim calls this at load time with ("@s2script/cs2", <packaged pawn.js>), so each plugin
+/// context receives the @s2script/cs2 package via the runtime registry.
+#[no_mangle]
+pub extern "C" fn s2script_core_register_package(name: *const c_char, js: *const c_char) {
+    let _ = catch_unwind(|| {
+        if name.is_null() || js.is_null() {
+            return;
+        }
+        let name_str = match unsafe { CStr::from_ptr(name) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let js_str = match unsafe { CStr::from_ptr(js) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        v8host::register_injected_package(name_str, js_str);
+    });
+}
+
+/// Set the plugins directory path for the `.s2sp` watcher (`loader::poll_plugins`).
+///
+/// Called by the shim at load time with the resolved `addons/s2script/plugins/` path
+/// (derived via `dladdr` — see `PluginsDir()` in `s2script_mm.cpp`).  Must be called
+/// before the first Post-phase frame dispatch for the watcher to activate.
+///
+/// # Safety
+/// `path` must be a valid null-terminated UTF-8 C string.  A null pointer or
+/// invalid UTF-8 degrades to a no-op (degrade-never-crash, spec §6).
+#[no_mangle]
+pub extern "C" fn s2script_core_set_plugins_dir(path: *const c_char) {
     let _ = catch_unwind(|| {
         if path.is_null() {
             return;
         }
-        let s = match unsafe { CStr::from_ptr(path) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        v8host::load_cs2_file(s);
+        match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(s) => crate::loader::set_plugins_dir(s),
+            Err(_) => {}
+        }
     });
 }
 
@@ -175,24 +220,28 @@ mod tests {
 
     #[test]
     fn subscribe_installs_dispatch_runs_unsubscribe_removes() {
+        // Same behavior as Slice 1 (subscribe → install request; dispatch runs; unsubscribe →
+        // remove request), reworked onto the per-plugin model: subscription now goes through a
+        // plugin context's injected `OnGameFrame.subscribe`, while the C-ABI dispatch/hook-request
+        // wiring is exercised unchanged via `s2script_core_dispatch_game_frame`.
         HOOKS.lock().unwrap().clear();
         assert_eq!(s2script_core_init(Some(test_logger), Some(mock_request), std::ptr::null()), 0);
-        // subscribing the first handler must request install:
-        assert_eq!(
-            s2script_core_eval(
-                b"globalThis._sub = onGameFrame(() => {});\0".as_ptr() as *const c_char
-            ),
-            0
-        );
+        v8host::create_plugin_context("p");
+        // Subscribing the first handler (via the injected API) must request install:
+        v8host::eval_in_context(
+            "p",
+            r#"
+                const { OnGameFrame } = __s2require("@s2script/std");
+                globalThis._sub = OnGameFrame.subscribe(() => {});
+            "#,
+        )
+        .unwrap();
         assert!(HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1));
         // dispatch (Pre=0) must not crash and returns a HookResult code:
         let rc = s2script_core_dispatch_game_frame(0, 1, 1, 0);
         assert!(rc >= 0);
         // unsubscribe the last handler must request remove:
-        assert_eq!(
-            s2script_core_eval(b"_sub.dispose();\0".as_ptr() as *const c_char),
-            0
-        );
+        v8host::eval_in_context("p", "_sub.dispose();").unwrap();
         assert!(HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0));
         s2script_core_shutdown();
     }

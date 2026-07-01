@@ -19,4 +19,8 @@
 
 ## Current state
 
-**Slice 0 — Boot handshake.** Scope is strictly: host a V8 isolate inside CS2 via Metamod:Source, run `console.log`, tear down cleanly. See `docs/superpowers/specs/2026-06-30-slice-0-boot-handshake-design.md` and `docs/ARCHITECTURE.md`. **Do not build past Slice 0** — no multiplexer, schema pipeline, lifecycle/ledger, `.s2sp`, inter-plugin layer, registry, or base plugins yet. Note later needs as TODOs and stop.
+**Slices 0–4 complete and merged to `main`** (each proven on a live CS2 server). 0 — boot handshake (V8 in CS2 via Metamod). 1 — the `OnGameFrame` multiplexer (priority ladder, `HookResult` collapse, re-entrancy-safe snapshot, lazy detour). 2 — tick-integrated async (explicit microtask policy, `delay`/`nextTick`/`nextFrame`, a threadpool `threadSleep` marshalled back on the frame drain). 3 — a schema-backed typed accessor (`Pawn.health`, offset resolved live from SchemaSystem, `NetworkStateChanged` folded into the setter) living in `@s2script/cs2`. 4 — the milestone: one `.s2sp` that loads/hot-reloads/tears-down via **context-per-plugin + the ledger + the async-liveness guard**, built by `@s2script/cli` (`npx s2script build`). See the per-slice specs/plans under `docs/superpowers/`.
+
+**Naming convention (locked in Slice 4):** PascalCase events + types (`OnGameFrame`, `Pawn`), camelCase functions + properties (`delay`, `nextTick`, `pawn.health`).
+
+**Current focus: Slice 4.5 next** — two plugins talk (the inter-plugin typed-interface contract; §2.9). Deferred to later slices (do NOT build ahead): the `tsc` typecheck gate; the handle/`EntityRef` wrapper system + full schema codegen + the engine-generic `@s2script/std` breadth (Slice 5); config materialization + permissions enforcement + reload state-handoff; the registry/platform (Slice 5.5); the base-plugin suite (Slice 6). Note later needs as TODOs and stop.

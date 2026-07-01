@@ -283,6 +283,31 @@ static std::string Cs2JsPath() {
 }
 
 // ---------------------------------------------------------------------------
+// PluginsDir: resolve the plugins directory relative to the plugin .so via dladdr
+// (mirrors Cs2JsPath / GamedataPath).  Expected layout:
+//   addons/s2script/bin/linuxsteamrt64/s2script.so
+//     dirname ×1 → bin/linuxsteamrt64
+//     dirname ×2 → bin
+//     dirname ×3 → s2script addon root
+//   + /plugins
+// ---------------------------------------------------------------------------
+static std::string PluginsDir() {
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(&PluginsDir), &info) && info.dli_fname) {
+        char buf[4096];
+        snprintf(buf, sizeof buf, "%s", info.dli_fname);
+        std::string dir = dirname(buf);             // linuxsteamrt64
+        snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);                         // bin
+        snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);                         // s2script addon root
+        return dir + "/plugins";
+    }
+    // Fallback: relative to the server's cwd.
+    return "addons/s2script/plugins";
+}
+
+// ---------------------------------------------------------------------------
 // Hook-request callback: invoked by the Rust core to install/remove the
 // SourceHook detour.  Called while the core holds an internal borrow —
 // MUST NOT call back into the core (no eval/dispatch/shutdown).
@@ -439,73 +464,46 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         return true; // degrade, do not fail the load (spec §7)
     }
 
-    // Load the @s2script/cs2 JS package (pawn.js) — CS2 names live in the file, never in core.
-    // Degrade-never-crash: a missing or unreadable pawn.js logs a WARN and continues.
-    s2script_core_load_cs2(Cs2JsPath().c_str());
-    // Slice 1 live demo: subscribe two OnGameFrame handlers at different priorities.
-    // Subscribing the first one drives request_hook("OnGameFrame", 1) -> the SourceHook
-    // detour installs lazily; each frame then dispatches through the multiplexer, and
-    // HIGH must log before LOW within a frame (priority-ordered composition).
-    // Slice 2 appends an async demo: `await Delay(1000)` must not block the tick (the frame
-    // counter keeps advancing), and an off-thread `threadSleep` must resume on the main thread.
-    // (Baked into Load like Slice 0's hello; removed when real plugin loading lands in Slice 4.)
-    s2script_core_eval(R"JS(
-        console.log('hello from V8 in CS2');
-        var __n = 0;
-        onGameFrame(function (f) {
-            if (__n % 256 === 0) console.log('[demo] HIGH tick=' + __n + ' firstTick=' + f.firstTick);
-        }, { priority: 'high' });
-        onGameFrame(function (f) {
-            if (__n % 256 === 0) console.log('[demo] low');
-            __n++;
-        }, { priority: 'low' });
-        console.log('[demo] subscribed 2 OnGameFrame handlers; HIGH should log before low each frame');
-
-        // Slice 2 async demo: a monitor-priority handler fires once per engine frame (Pre phase, the
-        // default) and counts frames. It ARMS the demo only after the server is genuinely live-ticking
-        // — reaching 128 frames is impossible during the boot window (which produces ~0 frames/sec), so
-        // this cleanly excludes boot. Once armed, `await Delay(1000)` must NOT block the tick: the frame
-        // counter advances by ~tickrate during the await. Then an off-thread threadSleep resumes on main.
-        var __frames = 0;
-        var __armed = false;
-        onGameFrame(function (f) {
-            __frames++;
-            if (!__armed && __frames >= 128) {
-                __armed = true;
-                var f0 = __frames;
-                (async function () {
-                    console.log('[async] before Delay(1000) at frame ' + f0);
-                    await Delay(1000);
-                    console.log('[async] after Delay(1000); frames elapsed ~' + (__frames - f0) + ' (tick was NOT blocked)');
-                    await threadSleep(50);
-                    console.log('[async] after threadSleep(50) - resumed on the main thread');
-                })();
+    // Register the @s2script/cs2 package (pawn.js) with the core so each plugin context
+    // gets the game API injected at creation.  CS2 names live in the file, never in core.
+    // Degrade-never-crash: a missing or unreadable pawn.js logs a WARN and continues;
+    // require("@s2script/cs2") will return null in plugin contexts until it is registered.
+    {
+        std::string cs2JsPath = Cs2JsPath();
+        FILE* f = fopen(cs2JsPath.c_str(), "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (sz > 0) {
+                std::string js(static_cast<size_t>(sz), '\0');
+                size_t n = fread(&js[0], 1, static_cast<size_t>(sz), f);
+                fclose(f);
+                if (n == static_cast<size_t>(sz)) {
+                    s2script_core_register_package("@s2script/cs2", js.c_str());
+                    META_CONPRINTF("[s2script] @s2script/cs2 registered (%ld bytes from %s)\n",
+                                   sz, cs2JsPath.c_str());
+                } else {
+                    META_CONPRINTF("[s2script] WARN: short read for %s (%zu/%ld bytes)"
+                                   " — @s2script/cs2 not registered\n",
+                                   cs2JsPath.c_str(), n, sz);
+                }
+            } else {
+                fclose(f);
+                META_CONPRINTF("[s2script] WARN: %s is empty — @s2script/cs2 not registered\n",
+                               cs2JsPath.c_str());
             }
-        }, { priority: 'monitor' });
+        } else {
+            META_CONPRINTF("[s2script] WARN: could not open %s — @s2script/cs2 not registered\n",
+                           cs2JsPath.c_str());
+        }
+    }
 
-        // Slice 3 demo (auto readback): once live-ticking, scan slots for the first player pawn
-        // (a bot added post-boot via bot_add) and prove `pawn.health` get/set + the folded-in
-        // network state-change by reading the value straight back. Retries each frame until a pawn
-        // exists, then stops. cs2.* comes from @s2script/cs2 (games/cs2/js/pawn.js), loaded above.
-        var __s3done = false;
-        onGameFrame(function () {
-            if (__s3done || __frames < 150) return;   // wait until the server is live-ticking
-            for (var slot = 0; slot < 64; slot++) {
-                var p = cs2.pawnForSlot(slot);
-                if (!p) continue;
-                var got = p.health;
-                console.log('[cs2] slot=' + slot + ' HEALTH_OFFSET=' + cs2.HEALTH_OFFSET + ' health get=' + got);
-                p.health = 1234;                       // write + NetworkStateChanged (in the setter)
-                console.log('[cs2] slot=' + slot + ' health set=1234 readback=' + p.health);
-                __s3done = true;
-                break;
-            }
-        }, { priority: 'monitor' });
-        // NOTE: a console-command-triggered manual HUD demo (e.g. `s2_sethp`) is deferred to Slice 5 —
-        // registering a Source 2 ConCommand needs ConCommand::Create, which no CS2 module exports, so
-        // command registration belongs to the Slice-5 command framework. The auto readback above proves
-        // the accessor + the folded-in NetworkStateChanged server-side.
-    )JS");
+    // Set the plugins directory so the per-frame .s2sp watcher knows where to look.
+    // Real plugins are loaded from .s2sp archives placed under addons/s2script/plugins/.
+    s2script_core_set_plugins_dir(PluginsDir().c_str());
+    META_CONPRINTF("[s2script] plugins dir: %s\n", PluginsDir().c_str());
+
     return true;
 }
 

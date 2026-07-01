@@ -422,6 +422,69 @@ fired); the client-observed HUD lands with Slice 5.
 
 ---
 
+## Plugin lifecycle — one `.s2sp` that hot-reloads (Slice 4)
+
+Slice 4 is the **milestone**: the whole architecture proven end-to-end on a thin thread. You author a
+TypeScript plugin, `npx s2script build` it into a `.s2sp`, drop it into `addons/s2script/plugins/`, and it
+loads into **its own V8 context** exercising Slices 1–3 — then hot-reloads on re-drop without a server
+restart, and tears down cleanly on delete. This replaces the baked-in demos with real plugin loading.
+
+**The runtime.** One shared V8 isolate hosts a registry of plugin instances, each with **its own
+`v8::Context`**; the calling plugin is identified by the current context's `set_slot::<PluginId>` (not a
+thread-local — correct across the microtask checkpoint). Every persistent effect (hook subscriptions,
+timers, pending async) is auto-recorded in a per-plugin **ledger**, which is the teardown authority:
+unload walks it in reverse at a frame boundary, then disposes the context. The **async-liveness guard**
+tags each timer/job resolver `(plugin_id, generation)` and drops any continuation whose plugin was
+unloaded or reloaded — a threadpool result completing after its plugin is gone never runs into a disposed
+context (the use-after-free killer).
+
+**Authoring & injection.** Plugins are TypeScript; `@s2script/cli` (`npx s2script build`) esbuild-bundles
+them to a CJS `plugin.js` with `@s2script/*` marked **external** and derives a minimal `manifest.json`.
+The runtime evals the bundle under a `(function(require, module, exports){…})` wrapper whose `require`
+resolves `@s2script/std` (`OnGameFrame`, `delay`, `nextTick`, `nextFrame`, `threadSleep`, `console`) and
+`@s2script/cs2` (`Pawn`) to the per-context injected API, and captures `module.exports` (`onLoad`/`onUnload`).
+Core stays **engine-generic**: `@s2script/std` is built in-core over the natives, but the CS2 `@s2script/cs2`
+JS is registered as **external data** (the shim reads the packaged `pawn.js` → `register_injected_package`),
+never baked into the core binary — a boundary gate rejects `include_str!` of `games/`.
+
+**Naming convention** (locked here): PascalCase events + types (`OnGameFrame`, `Pawn`), camelCase functions +
+properties (`delay`, `nextTick`, `pawn.health`).
+
+**Live demonstration.** `npx s2script build examples/demo-plugin` → drop the `.s2sp` into
+`addons/s2script/plugins/`; edit + rebuild + re-drop to hot-reload; delete to tear down. On a live CS2 server:
+
+```
+[s2script] @s2script/cs2 registered (… from …/js/pawn.js)
+[s2script] plugins dir: …/addons/s2script/plugins
+[s2script] [demo] onLoad                       # dropped .s2sp loaded into its own context
+[s2script] [demo] tick 1 hp=100                # OnGameFrame + Pawn.forSlot(0).health, per-context
+[s2script] [demo] after delay(1000)            # await delay resolved
+[s2script] [demo] onUnload                     # re-drop → old torn down (ledger) …
+[s2script] [demo] onLoad                       #   … new loaded, fresh state, NO server restart
+[s2script] [demo] onUnload                     # delete → clean teardown, then silence (no more ticks)
+```
+
+No restart, no crash; the reloaded instance starts fresh (old context disposed) and the deleted instance's
+subscription stops firing. The whole spine — context-per-plugin, the ledger, async-liveness, the loader/watch,
+the CLI-built `.s2sp`, and the externally-registered cs2 — proven end to end.
+
+**Slice 4 acceptance (live + cargo):**
+
+| # | Criterion | Result |
+|---|---|---|
+| build | `cargo test` (registry/ledger/liveness + loader + context/dispatch/drain) + the CLI test + sniper | ✅ 49 core tests; `@s2script/cli` test; both boundary gates green; sniper GLIBC ≤ 2.30 |
+| build tool | `npx s2script build` turns a TS plugin into a loadable `.s2sp` (cjs + external + derived manifest) | ✅ cargo (`read_s2sp`) + the CLI round-trip test |
+| load | a dropped `.s2sp` loads into its own context and runs Slices 1–3 (`OnGameFrame`, `await delay`, `Pawn.health`) | ✅ live (`[demo] onLoad` → ticks `hp=100` → `after delay`) |
+| hot-reload | edit + rebuild + re-drop reloads with no server restart (old torn down, new active) | ✅ live (`onUnload` → `onLoad`, fresh state, same process) |
+| teardown | delete tears down cleanly via the ledger (subscription gone, context disposed, no crash) | ✅ live (`onUnload`, no more ticks, server stable) |
+| async-liveness | a continuation whose plugin unloaded/reloaded is dropped (no use-after-free) | ✅ cargo (`drain_drops_continuation_when_owner_no_longer_live`, `delay_continuation_for_unloaded_plugin_is_dropped`) |
+| boundary | core stays engine-generic — cs2 JS is external data, not baked in (`include_str!(games/)` gated) | ✅ cargo (`check-core-boundary.sh` + name-leak/include_str gate) |
+
+Deferred to later slices: the `tsc` typecheck gate; inter-plugin deps/proxies (Slice 4.5); the handle/`EntityRef`
+system + reload state-handoff (Slice 5); config materialization + permissions enforcement.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

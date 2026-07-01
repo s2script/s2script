@@ -36,10 +36,17 @@ void s2script_core_shutdown(void);
  * name = Arg(0) (command name), slot = CPlayerSlot::Get() (-1 for server console),
  * args = ArgS() (everything after the command name). */
 void s2script_core_dispatch_concommand(const char* name, int slot, const char* args);
-/* Load and evaluate a game JS file in the host context.  Engine-generic: the path is
- * supplied by the shim (via Cs2JsPath()); the CS2 names live in the file itself, never
- * in core.  Degrade-never-crash: null/unreadable path -> named WARN + return. */
+/* Retained for shim link-compatibility; now a no-op (game JS is provided via
+ * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);
+/* Register a game-package JS source under `name` so core can inject it into each
+ * plugin context at runtime without baking game JS into the core binary.
+ * name and js must be null-terminated UTF-8.  Null pointers degrade to a no-op. */
+void s2script_core_register_package(const char* name, const char* js);
+/* Set the plugins directory for the .s2sp watcher.  Called once by the shim at
+ * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
+ * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */
+void s2script_core_set_plugins_dir(const char* path);
 
 #ifdef __cplusplus
 }
