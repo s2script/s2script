@@ -79,6 +79,17 @@ struct JsHandler {
 /// `Global<Context>` is dropped from `PLUGINS` and the isolate reclaims it).
 struct PluginId(String);
 
+/// A loaded plugin instance: its per-plugin `v8::Context` plus the captured `module.exports`
+/// object (present once `load_plugin_js` has run the CJS bundle).  Field order is load-bearing
+/// for teardown: `exports` (a `Global<Object>` pointing INTO the context) is declared FIRST so
+/// Rust drops it BEFORE `context` — the spike's teardown discipline (inner Globals released
+/// before the `Global<Context>`, while the isolate is still alive).  Task 6 walks the ledger to
+/// call `onUnload` off `exports` before disposing the context.
+struct PluginInstance {
+    exports: Option<v8::Global<v8::Object>>,
+    context: v8::Global<v8::Context>,
+}
+
 thread_local! {
     static LOGGER: std::cell::Cell<Option<LogFn>> = std::cell::Cell::new(None);
     static HOST: std::cell::RefCell<Option<Host>> = std::cell::RefCell::new(None);
@@ -128,7 +139,7 @@ thread_local! {
     /// ALONGSIDE `HOST` for this task: the existing single-context path is untouched.  Dropped
     /// (per id in `dispose_plugin_context`, or all in `shutdown`) while the isolate is still alive
     /// — same discipline as `RESOLVERS`/`CONCOMMANDS`.
-    static PLUGINS: std::cell::RefCell<std::collections::HashMap<String, v8::Global<v8::Context>>>
+    static PLUGINS: std::cell::RefCell<std::collections::HashMap<String, PluginInstance>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Plugin registry (Task 2): generation counter + per-plugin teardown ledger, keyed by the
     /// same id string as `PLUGINS`.  Reset on `shutdown` so a re-init starts empty.
@@ -178,22 +189,42 @@ fn refresh_detour() {
     });
 }
 
-/// Provisional JS prelude installed once per context, AFTER the native primitives
-/// and `console` are in place.  Defines the user-facing `onGameFrame` plus the
-/// `HookResult` / `Priority` / `Phase` enum-like globals.
-const PRELUDE: &str = r#"
+/// The injected `@s2script/std` prelude, evaluated per plugin context AFTER the native
+/// primitives are in place.  Builds the renamed, engine-generic API over the `__s2_*` natives
+/// (whose internal names are unchanged) and stashes it at `globalThis.__s2pkg_std` for the
+/// `__s2require` native to hand back.  The `HookResult`/`Priority`/`Phase` enum globals stay on
+/// `globalThis` (ambient, engine-generic).  No game identifiers appear here.
+const INJECTED_STD_PRELUDE: &str = r#"
 globalThis.HookResult = { Continue:0, Changed:1, Handled:2, Stop:3 };
 globalThis.Priority   = { High:"high", Normal:"normal", Low:"low", Monitor:"monitor" };
 globalThis.Phase      = { Pre:"pre", Post:"post" };
-globalThis.onGameFrame = (fn, opts) => {
-  const id = __s2_subscribe("OnGameFrame", fn, opts || {});
-  return { dispose: () => __s2_unsubscribe(id) };
-};
-globalThis.Delay = (ms) => __s2_delay(ms || 0);
-globalThis.NextTick = () => __s2_next_tick();
-globalThis.NextFrame = () => __s2_next_frame();
-globalThis.threadSleep = (ms) => __s2_thread_sleep(ms || 0);
+(function () {
+  const OnGameFrame = {
+    subscribe: (fn, opts) => {
+      const id = __s2_subscribe("OnGameFrame", fn, opts || {});
+      return { dispose: () => __s2_unsubscribe(id) };
+    },
+  };
+  const std = {
+    OnGameFrame,
+    delay: (ms) => __s2_delay(ms || 0),
+    nextTick: () => __s2_next_tick(),
+    nextFrame: () => __s2_next_frame(),
+    threadSleep: (ms) => __s2_thread_sleep(ms || 0),
+    console,
+  };
+  globalThis.__s2pkg_std = std;
+})();
 "#;
+
+/// The injected `@s2script/cs2` prelude — the reshaped `games/cs2/js/pawn.js`, embedded at COMPILE
+/// time via `include_str!`.  The CS2 schema/game identifiers (class + field names) live ONLY in
+/// that file, never in `core/src` — so the name-leak gate (which greps `core/src`) stays green.
+/// The file sets `globalThis.__s2pkg_cs2 = { Pawn }`, which the `__s2require` native returns for
+/// `"@s2script/cs2"`.  NOTE (architectural TODO, later slice): a game package should eventually
+/// PROVIDE its JS to core rather than core `include_str!`-reaching into `games/`; for Slice 4 this
+/// is the sanctioned mechanism that keeps CS2 names out of `core/src`.
+const INJECTED_CS2_PRELUDE: &str = include_str!("../../games/cs2/js/pawn.js");
 
 /// Initialize the V8 platform exactly once for the process.  Never torn down.
 fn ensure_platform() {
@@ -298,9 +329,24 @@ fn s2_subscribe(
             }
         }
 
+        // Owner = the CALLING plugin context's id (read fresh from the current context — correct
+        // across the microtask checkpoint).  Falls back to "legacy" for a non-plugin context (e.g.
+        // the shared HOST context), which no longer subscribes in the per-context model.
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+
         // The combined predicate supersedes the DetourChange the multiplexer returns; ignore it.
-        let (id, _change) =
-            FRAME.with(|f| f.borrow_mut().subscribe(priority, phase, "legacy".into(), JsHandler { func: global }));
+        // FRAME borrow is released before we touch REGISTRY (no borrow held across the ledger call).
+        let (id, _change) = FRAME.with(|f| {
+            f.borrow_mut()
+                .subscribe(priority, phase, owner.clone(), JsHandler { func: global })
+        });
+        // Ledger this hook against the owning plugin (Task 6's teardown authority).  A miss (owner
+        // not registered) is a safe no-op.  Neither borrow is held across a JS call.
+        REGISTRY.with(|r| {
+            if let Some(l) = r.borrow_mut().ledger_mut(&owner) {
+                l.record_hook(id);
+            }
+        });
         refresh_detour();
         rv.set_double(id as f64);
     }));
@@ -334,6 +380,15 @@ fn make_timer_promise<'s>(
     let id = next_async_id();
     RESOLVERS.with(|m| m.borrow_mut().insert(id, v8::Global::new(scope.as_ref(), resolver)));
     TIMERS.with(|t| t.borrow_mut().push(id, kind));
+    // Ledger this timer against the CALLING plugin (read fresh from the current context).  A
+    // non-plugin/unknown owner is a safe no-op.  No thread-local borrow held across a JS call.
+    if let Some(owner) = current_plugin(scope) {
+        REGISTRY.with(|r| {
+            if let Some(l) = r.borrow_mut().ledger_mut(&owner) {
+                l.record_timer(id);
+            }
+        });
+    }
     refresh_detour();
     promise.into()
 }
@@ -396,6 +451,15 @@ fn s2_thread_sleep(
         let id = next_async_id();
         RESOLVERS.with(|m| m.borrow_mut().insert(id, v8::Global::new(scope.as_ref(), resolver)));
         PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        // Ledger this async-FFI job against the CALLING plugin (read fresh from the current
+        // context).  A non-plugin/unknown owner is a safe no-op; no borrow held across a JS call.
+        if let Some(owner) = current_plugin(scope) {
+            REGISTRY.with(|r| {
+                if let Some(l) = r.borrow_mut().ledger_mut(&owner) {
+                    l.record_job(id);
+                }
+            });
+        }
         pool().submit(id, Box::new(move || {
             std::thread::sleep(std::time::Duration::from_millis(ms));
             Ok(())
@@ -691,6 +755,113 @@ fn log_warn(msg: &str) {
     }
 }
 
+/// Native `__s2require(name) -> object|null` — the injected CJS `require` shim (spike PROVE #1).
+///
+/// Maps a package specifier to the per-context API object the injected prelude stashed on the
+/// calling context's global: `"@s2script/std"` → `globalThis.__s2pkg_std` (`{ OnGameFrame, delay,
+/// nextTick, nextFrame, threadSleep, console }`), `"@s2script/cs2"` → `globalThis.__s2pkg_cs2`
+/// (`{ Pawn }`).  Any other specifier returns JS `null`.  The objects are HOST-authored (built by
+/// the prelude over the `__s2_*` natives); this native only hands the right one back for the
+/// current context — so `require` is per-plugin without any side table.
+///
+/// Like every native, the body runs under `catch_unwind` (no panic may cross the FFI boundary).
+fn s2require(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 1 {
+            return;
+        }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let key = match name.as_str() {
+            "@s2script/std" => "__s2pkg_std",
+            "@s2script/cs2" => "__s2pkg_cs2",
+            _ => return, // unknown specifier → null
+        };
+        let global = scope.get_current_context().global(scope);
+        let Some(k) = v8::String::new(scope, key) else { return };
+        if let Some(v) = global.get(scope, k.into()) {
+            if !v.is_undefined() {
+                rv.set(v);
+            }
+        }
+    }));
+}
+
+/// Set a named native function on `global_obj` in `scope`.  Small helper used by
+/// `install_natives` to keep the per-context install table declarative.
+fn set_native(
+    scope: &mut v8::PinScope,
+    global_obj: v8::Local<v8::Object>,
+    name: &str,
+    cb: impl v8::MapFnTo<v8::FunctionCallback>,
+) {
+    let key = v8::String::new(scope, name).unwrap();
+    let func = v8::Function::new(scope, cb).unwrap();
+    global_obj.set(scope, key.into(), func.into());
+}
+
+/// Install the full native API on a context's global object: `console` plus every `__s2_*`
+/// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
+/// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
+/// The native internal names are unchanged from Slice 0–3; the RENAMED, engine-generic API
+/// (`OnGameFrame.subscribe`/`delay`/…) is layered on top by the injected prelude (per-context).
+fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    // console = { log: fn }.
+    let console_obj = v8::Object::new(scope);
+    let log_key = v8::String::new(scope, "log").unwrap();
+    let log_fn = v8::Function::new(scope, console_log).unwrap();
+    console_obj.set(scope, log_key.into(), log_fn.into());
+    let console_key = v8::String::new(scope, "console").unwrap();
+    global_obj.set(scope, console_key.into(), console_obj.into());
+
+    // Multiplexer primitives.
+    set_native(scope, global_obj, "__s2_subscribe", s2_subscribe);
+    set_native(scope, global_obj, "__s2_unsubscribe", s2_unsubscribe);
+    // Async timer primitives (Delay / NextTick / NextFrame / threadSleep).
+    set_native(scope, global_obj, "__s2_delay", s2_delay);
+    set_native(scope, global_obj, "__s2_next_tick", s2_next_tick);
+    set_native(scope, global_obj, "__s2_next_frame", s2_next_frame);
+    set_native(scope, global_obj, "__s2_thread_sleep", s2_thread_sleep);
+    // Schema + entity system.
+    set_native(scope, global_obj, "__s2_schema_offset", s2_schema_offset);
+    set_native(scope, global_obj, "__s2_entity_by_index", s2_entity_by_index);
+    set_native(scope, global_obj, "__s2_deref_handle", s2_deref_handle);
+    set_native(scope, global_obj, "__s2_ent_read_i32", s2_ent_read_i32);
+    set_native(scope, global_obj, "__s2_ent_write_i32", s2_ent_write_i32);
+    set_native(scope, global_obj, "__s2_ent_state_changed", s2_ent_state_changed);
+    // ConCommand registration.
+    set_native(scope, global_obj, "__s2_concommand", s2_concommand);
+    // Per-context identity probe + the CJS require shim.
+    set_native(scope, global_obj, "__s2_current_plugin", s2_current_plugin);
+    set_native(scope, global_obj, "__s2require", s2require);
+}
+
+/// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
+/// prelude compile/run error logs a named WARN and returns rather than propagating an exception).
+fn run_prelude(scope: &mut v8::PinScope, what: &str, src: &str) {
+    let mut tc_storage = v8::TryCatch::new(scope);
+    let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+    let tc = &mut tc;
+    let Some(code) = v8::String::new(tc, src) else {
+        log_warn(&format!("WARN: {} prelude: failed to intern source", what));
+        return;
+    };
+    match v8::Script::compile(tc, code, None).and_then(|s| s.run(tc)) {
+        Some(_) => {}
+        None => {
+            let msg = tc
+                .exception()
+                .map(|e| e.to_rust_string_lossy(&*tc))
+                .unwrap_or_else(|| "unknown error".into());
+            log_warn(&format!("WARN: {} prelude eval error: {}", what, msg));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-plugin context registry (Task 4 — first step of the single→multi refactor).
 //
@@ -734,9 +905,10 @@ fn s2_current_plugin(
 }
 
 /// Create a fresh per-plugin `v8::Context` on the shared isolate (borrowed from `HOST`), stamp it
-/// with the plugin id via `set_slot::<PluginId>`, install the MINIMAL per-context API (just the
-/// `__s2_current_plugin` probe for now — Task 5 adds the full injected API), store its
-/// `Global<Context>` in `PLUGINS`, register the plugin in `REGISTRY`, and return the generation.
+/// with the plugin id via `set_slot::<PluginId>`, install the FULL per-context API (all natives +
+/// `__s2require`) and evaluate the injected `@s2script/std` + `@s2script/cs2` preludes over them,
+/// store its `PluginInstance` in `PLUGINS`, register the plugin in `REGISTRY`, and return the
+/// generation.
 ///
 /// Panics only if called before `init` (no isolate yet) — an internal invariant, not an FFI path.
 pub(crate) fn create_plugin_context(id: &str) -> u64 {
@@ -759,17 +931,27 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
 
             let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-            // Minimal per-context install: the `__s2_current_plugin` probe native.
+            // Full per-context API: install the natives first, THEN evaluate the injected preludes
+            // (which build the renamed `@s2script/std` / `@s2script/cs2` objects over those
+            // natives and stash them at `globalThis.__s2pkg_*` for `__s2require`).
             let global_obj = ctx_local.global(scope);
-            let key = v8::String::new(scope, "__s2_current_plugin").unwrap();
-            let func = v8::Function::new(scope, s2_current_plugin).unwrap();
-            global_obj.set(scope, key.into(), func.into());
+            install_natives(scope, global_obj);
+            run_prelude(scope, "@s2script/std", INJECTED_STD_PRELUDE);
+            run_prelude(scope, "@s2script/cs2", INJECTED_CS2_PRELUDE);
 
             v8::Global::new(scope.as_ref(), ctx_local)
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };
 
-        PLUGINS.with(|p| p.borrow_mut().insert(id.to_string(), g_ctx));
+        PLUGINS.with(|p| {
+            p.borrow_mut().insert(
+                id.to_string(),
+                PluginInstance {
+                    exports: None,
+                    context: g_ctx,
+                },
+            )
+        });
         REGISTRY.with(|r| r.borrow_mut().insert(id))
     })
 }
@@ -805,7 +987,7 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
         // Clone the plugin's Global<Context> out of PLUGINS (cheap refcount bump) so we don't hold
         // the PLUGINS borrow across the HandleScope on HOST.isolate.
         let g_ctx = PLUGINS
-            .with(|p| p.borrow().get(id).cloned())
+            .with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))
             .ok_or_else(|| format!("eval_in_context: no context for plugin '{}'", id))?;
 
         let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
@@ -841,6 +1023,108 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
     })
 }
 
+/// Load a built plugin bundle `plugin_js` under plugin id `id` (the spike-PROVEN CJS wrapper).
+///
+/// Steps: (1) `create_plugin_context(id)` — a fresh per-plugin context with the full injected API
+/// (`__s2require` + the `@s2script/std` / `@s2script/cs2` preludes); (2) evaluate the CJS wrapper
+/// `(function(require,module,exports){…})(require, module, module.exports)` in that context and
+/// CAPTURE the RETURNED `module.exports` (esbuild REASSIGNS `module.exports`, so the return value
+/// — not the `exports` arg — is the plugin's real export object; spike [risk]); (3) call
+/// `exports.onLoad()` if present; (4) store the exports `Global<Object>` on the `PluginInstance`
+/// (Task 6 reads `onUnload` off it at teardown; it is dropped before the context).
+///
+/// Degrade-never-crash: a compile/run/onLoad error logs a named WARN and returns; no exception
+/// propagates (the whole JS run is under a `TryCatch`).
+pub(crate) fn load_plugin_js(id: &str, plugin_js: &str) {
+    // (1) Fresh context with the full injected API installed.
+    create_plugin_context(id);
+
+    // The spike's PROVEN wrapper — the outer arrow-IIFE returns `module.exports` so `script.run`
+    // hands it straight back to Rust.  `{PLUGIN_JS}` is spliced verbatim.
+    let wrapper = format!(
+        "(() => {{\n  const module = {{ exports: {{}} }};\n  const require = __s2require;\n  (function (require, module, exports) {{\n{}\n}})(require, module, module.exports);\n  return module.exports;\n}})()",
+        plugin_js
+    );
+
+    HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let Some(host) = borrow.as_mut() else {
+            log_warn("WARN: load_plugin_js called before init");
+            return;
+        };
+
+        // Clone the plugin's Global<Context> out of PLUGINS (cheap refcount bump); release the
+        // borrow before opening the HandleScope on HOST.isolate.
+        let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) else {
+            log_warn(&format!("WARN: load_plugin_js('{}'): context missing after create", id));
+            return;
+        };
+
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let hs = &mut hs;
+        let ctx_local = v8::Local::new(hs, &g_ctx);
+        let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+        // (2)+(3) Compile+run the wrapper, capture module.exports, call onLoad — all under one
+        // TryCatch so a throwing plugin can't leak a pending exception into later frames.
+        let exports_global: Option<v8::Global<v8::Object>> = 'blk: {
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let Some(code) = v8::String::new(tc, &wrapper) else {
+                log_warn(&format!("WARN: load_plugin_js('{}'): failed to intern source", id));
+                break 'blk None;
+            };
+            let ret = match v8::Script::compile(tc, code, None).and_then(|s| s.run(tc)) {
+                Some(r) => r,
+                None => {
+                    let msg = tc
+                        .exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "unknown error".into());
+                    log_warn(&format!("WARN: load_plugin_js('{}'): eval error: {}", id, msg));
+                    break 'blk None;
+                }
+            };
+            // The wrapper returns `module.exports` — must be an object (spike fact 2).
+            let Ok(exports) = v8::Local::<v8::Object>::try_from(ret) else {
+                log_warn(&format!("WARN: load_plugin_js('{}'): module.exports is not an object", id));
+                break 'blk None;
+            };
+
+            // Call onLoad() if the plugin exported one (a throwing onLoad is caught here).
+            if let Some(k) = v8::String::new(tc, "onLoad") {
+                if let Some(v) = exports.get(tc, k.into()) {
+                    if let Ok(f) = v8::Local::<v8::Function>::try_from(v) {
+                        let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                        if f.call(tc, recv, &[]).is_none() {
+                            let msg = tc
+                                .exception()
+                                .map(|e| e.to_rust_string_lossy(&*tc))
+                                .unwrap_or_else(|| "onLoad threw".into());
+                            log_warn(&format!("WARN: load_plugin_js('{}'): onLoad error: {}", id, msg));
+                        }
+                    }
+                }
+            }
+
+            // (4) Capture module.exports for teardown (Task 6 reads onUnload off it).  `tc.as_ref()`
+            // yields the isolate ref (AsRef<Isolate> for the TryCatch pinned ref).
+            Some(v8::Global::new(tc.as_ref(), exports))
+        };
+
+        if let Some(g) = exports_global {
+            PLUGINS.with(|p| {
+                if let Some(pi) = p.borrow_mut().get_mut(id) {
+                    pi.exports = Some(g);
+                }
+            });
+        }
+    });
+}
+
 pub fn init(logger: LogFn) -> Result<(), String> {
     ensure_platform();
     LOGGER.with(|l| l.set(Some(logger)));
@@ -871,70 +1155,12 @@ pub fn init(logger: LogFn) -> Result<(), String> {
         // available for use below.
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-        // Install `console = { log: fn }` on the global object.
+        // Install the full native API on the shared HOST context.  HOST is the driver context for
+        // dispatch/drain/concommand and the C-ABI `eval` surface; it carries the natives (console,
+        // `__s2_*`, `__s2require`) but NOT the injected `@s2script/*` prelude — the renamed
+        // `OnGameFrame.subscribe`/`delay`/… API lives ONLY in per-plugin contexts (Task 5).
         let global_obj = ctx_local.global(scope);
-        let console_obj = v8::Object::new(scope);
-        let log_key = v8::String::new(scope, "log").unwrap();
-        let log_fn = v8::Function::new(scope, console_log).unwrap();
-        console_obj.set(scope, log_key.into(), log_fn.into());
-        let console_key = v8::String::new(scope, "console").unwrap();
-        global_obj.set(scope, console_key.into(), console_obj.into());
-
-        // Install the native multiplexer primitives on the global object.
-        let sub_key = v8::String::new(scope, "__s2_subscribe").unwrap();
-        let sub_fn = v8::Function::new(scope, s2_subscribe).unwrap();
-        global_obj.set(scope, sub_key.into(), sub_fn.into());
-        let unsub_key = v8::String::new(scope, "__s2_unsubscribe").unwrap();
-        let unsub_fn = v8::Function::new(scope, s2_unsubscribe).unwrap();
-        global_obj.set(scope, unsub_key.into(), unsub_fn.into());
-
-        // Install the async timer primitives (Delay / NextTick / NextFrame) on the global object.
-        let delay_key = v8::String::new(scope, "__s2_delay").unwrap();
-        let delay_fn = v8::Function::new(scope, s2_delay).unwrap();
-        global_obj.set(scope, delay_key.into(), delay_fn.into());
-        let next_tick_key = v8::String::new(scope, "__s2_next_tick").unwrap();
-        let next_tick_fn = v8::Function::new(scope, s2_next_tick).unwrap();
-        global_obj.set(scope, next_tick_key.into(), next_tick_fn.into());
-        let next_frame_key = v8::String::new(scope, "__s2_next_frame").unwrap();
-        let next_frame_fn = v8::Function::new(scope, s2_next_frame).unwrap();
-        global_obj.set(scope, next_frame_key.into(), next_frame_fn.into());
-        let thread_sleep_key = v8::String::new(scope, "__s2_thread_sleep").unwrap();
-        let thread_sleep_fn = v8::Function::new(scope, s2_thread_sleep).unwrap();
-        global_obj.set(scope, thread_sleep_key.into(), thread_sleep_fn.into());
-
-        // Install the schema-offset native (`__s2_schema_offset`) on the global object.
-        let schema_offset_key = v8::String::new(scope, "__s2_schema_offset").unwrap();
-        let schema_offset_fn = v8::Function::new(scope, s2_schema_offset).unwrap();
-        global_obj.set(scope, schema_offset_key.into(), schema_offset_fn.into());
-
-        // Install the entity-system natives (Task 4): entity-by-index, handle-deref,
-        // i32 field read/write, and NetworkStateChanged.  Engine-dependent paths are
-        // verified live in Task 7; the pure read/write helpers are unit-tested in entity.rs.
-        let ent_by_idx_key = v8::String::new(scope, "__s2_entity_by_index").unwrap();
-        let ent_by_idx_fn  = v8::Function::new(scope, s2_entity_by_index).unwrap();
-        global_obj.set(scope, ent_by_idx_key.into(), ent_by_idx_fn.into());
-
-        let deref_handle_key = v8::String::new(scope, "__s2_deref_handle").unwrap();
-        let deref_handle_fn  = v8::Function::new(scope, s2_deref_handle).unwrap();
-        global_obj.set(scope, deref_handle_key.into(), deref_handle_fn.into());
-
-        let ent_read_i32_key = v8::String::new(scope, "__s2_ent_read_i32").unwrap();
-        let ent_read_i32_fn  = v8::Function::new(scope, s2_ent_read_i32).unwrap();
-        global_obj.set(scope, ent_read_i32_key.into(), ent_read_i32_fn.into());
-
-        let ent_write_i32_key = v8::String::new(scope, "__s2_ent_write_i32").unwrap();
-        let ent_write_i32_fn  = v8::Function::new(scope, s2_ent_write_i32).unwrap();
-        global_obj.set(scope, ent_write_i32_key.into(), ent_write_i32_fn.into());
-
-        let ent_state_changed_key = v8::String::new(scope, "__s2_ent_state_changed").unwrap();
-        let ent_state_changed_fn  = v8::Function::new(scope, s2_ent_state_changed).unwrap();
-        global_obj.set(scope, ent_state_changed_key.into(), ent_state_changed_fn.into());
-
-        // Install __s2_concommand (Task 5): register a raw Source 2 ConCommand; the shim's
-        // trampoline calls s2script_core_dispatch_concommand (C-ABI) when the command fires.
-        let concommand_key = v8::String::new(scope, "__s2_concommand").unwrap();
-        let concommand_fn  = v8::Function::new(scope, s2_concommand).unwrap();
-        global_obj.set(scope, concommand_key.into(), concommand_fn.into());
+        install_natives(scope, global_obj);
 
         // scope.as_ref() gives &Isolate (via AsRef<Isolate> for ContextScope).
         v8::Global::new(scope.as_ref(), ctx_local)
@@ -942,9 +1168,6 @@ pub fn init(logger: LogFn) -> Result<(), String> {
     };
 
     HOST.with(|h| *h.borrow_mut() = Some(Host { isolate, context }));
-
-    // Provisional prelude — defines `onGameFrame` etc. on top of the natives.
-    eval(PRELUDE)?;
     Ok(())
 }
 
@@ -1005,7 +1228,7 @@ pub fn eval(src: &str) -> Result<(), String> {
 /// - Phase 1: borrow `FRAME` only long enough to clone the ordered snapshot, then
 ///   RELEASE it.
 /// - Phase 2: borrow `HOST` (for the V8 scope) and run the chain.  `FRAME` is NOT
-///   borrowed here, so a handler that calls `onGameFrame(...)` re-enters
+///   borrowed here, so a handler that calls `OnGameFrame.subscribe(...)` re-enters
 ///   `__s2_subscribe` → `FRAME.borrow_mut()` without a double-borrow panic.
 /// - Phase 3: briefly borrow `FRAME` mutably for error/auto-disable bookkeeping.
 pub(crate) fn dispatch_onframe(
@@ -1101,24 +1324,6 @@ pub(crate) fn dispatch_onframe(
     DispatchOutcome {
         result: outcome.result,
         detour,
-    }
-}
-
-/// Read a JS file from `path` and evaluate it in the HOST context (identical scope construction
-/// to `eval`).  Engine-generic: the path is supplied by the caller; NO game identifiers appear
-/// here.  On a read error logs a named WARN and returns (degrade-never-crash).  On a JS error
-/// logs a WARN and returns (same policy).  A missing or unreadable cs2 JS file must never
-/// crash or panic.
-pub fn load_cs2_file(path: &str) {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            log_warn(&format!("WARN: load_cs2_file: failed to read '{}': {}", path, e));
-            return;
-        }
-    };
-    if let Err(e) = eval(&src) {
-        log_warn(&format!("WARN: load_cs2_file: JS error in '{}': {}", path, e));
     }
 }
 
@@ -1225,41 +1430,8 @@ mod frame_tests {
     extern "C" fn dummy_log_fn(_l: c_int, _m: *const c_char) {}
     fn dummy_logger() -> LogFn { dummy_log_fn }
 
-    // Read `globalThis[name]` as a bool from the current isolate/context.
-    fn read_bool_global(name: &str) -> bool {
-        HOST.with(|h| {
-            let mut borrow = h.borrow_mut();
-            let host = borrow.as_mut().expect("read_bool_global: no host");
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &host.context);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-            let global = ctx_local.global(scope);
-            let key = v8::String::new(scope, name).unwrap();
-            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
-            val.is_true()
-        })
-    }
-
-    // Read `globalThis[name]` as an i32 from the current isolate/context (mirrors read_bool_global).
-    fn read_i32_global(name: &str) -> i32 {
-        HOST.with(|h| {
-            let mut borrow = h.borrow_mut();
-            let host = borrow.as_mut().expect("read_i32_global: no host");
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &host.context);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-            let global = ctx_local.global(scope);
-            let key = v8::String::new(scope, name).unwrap();
-            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
-            val.integer_value(scope).unwrap_or(0) as i32
-        })
-    }
-
-    // Read `globalThis[name]` as a String from the current isolate/context (mirrors read_bool_global).
+    // Read `globalThis[name]` as a String from the current (HOST) isolate/context.  Still used by
+    // the ConCommand dispatch test, which exercises the shared HOST context.
     fn read_string_global(name: &str) -> String {
         HOST.with(|h| {
             let mut borrow = h.borrow_mut();
@@ -1283,7 +1455,7 @@ mod frame_tests {
             let mut borrow = h.borrow_mut();
             let host = borrow.as_mut().expect("read_string_global_in: no host");
             let g_ctx = PLUGINS
-                .with(|p| p.borrow().get(id).cloned())
+                .with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))
                 .expect("read_string_global_in: no context for id");
             let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
             let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
@@ -1295,6 +1467,66 @@ mod frame_tests {
             let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
             val.to_rust_string_lossy(scope)
         })
+    }
+
+    // Read `globalThis[name]` as an i32 from a specific PLUGIN context (mirrors read_string_global_in).
+    fn read_i32_global_in(id: &str, name: &str) -> i32 {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("read_i32_global_in: no host");
+            let g_ctx = PLUGINS
+                .with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))
+                .expect("read_i32_global_in: no context for id");
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let global = ctx_local.global(scope);
+            let key = v8::String::new(scope, name).unwrap();
+            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+            val.integer_value(scope).unwrap_or(0) as i32
+        })
+    }
+
+    // Read `globalThis[name]` as a bool from a specific PLUGIN context (mirrors read_string_global_in).
+    fn read_bool_global_in(id: &str, name: &str) -> bool {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("read_bool_global_in: no host");
+            let g_ctx = PLUGINS
+                .with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))
+                .expect("read_bool_global_in: no context for id");
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let global = ctx_local.global(scope);
+            let key = v8::String::new(scope, name).unwrap();
+            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+            val.is_true()
+        })
+    }
+
+    // Create a fresh plugin context `id` and eval `src` in it with the `@s2script/std` API
+    // destructured into scope (so tests can write `OnGameFrame.subscribe(...)`, `delay(...)`, etc.
+    // directly).  The renamed API is only reachable via `require`, matching the plugin model.
+    fn eval_std(id: &str, src: &str) {
+        create_plugin_context(id);
+        let full = format!(
+            "const {{ OnGameFrame, delay, nextTick, nextFrame, threadSleep }} = __s2require(\"@s2script/std\");\n{}",
+            src
+        );
+        eval_in_context(id, &full).expect("eval_std");
+    }
+
+    // Drive one full game frame: Pre dispatch, Post dispatch, then the async drain (mirrors the
+    // engine order the C-ABI `s2script_core_dispatch_game_frame` uses — Post triggers the drain).
+    fn dispatch_game_frame_pre_post() {
+        dispatch_onframe(Phase::Pre, true, true, false);
+        dispatch_onframe(Phase::Post, true, false, true);
+        frame_async_drain();
     }
 
     // Two per-plugin contexts on the shared isolate each report their OWN id via the
@@ -1328,10 +1560,10 @@ mod frame_tests {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
         // High-priority logs "high"; Normal logs "normal". Both Pre. Console logs prove order.
-        eval(r#"
-            onGameFrame((f) => { console.log("high:" + f.firstTick); }, { priority: "high" });
-            onGameFrame((f) => { console.log("normal"); });
-        "#).unwrap();
+        eval_std("p", r#"
+            OnGameFrame.subscribe((f) => { console.log("high:" + f.firstTick); }, { priority: "high" });
+            OnGameFrame.subscribe((f) => { console.log("normal"); });
+        "#);
 
         let out = dispatch_onframe(Phase::Pre, true, true, false);
         assert_eq!(out.result, HookResult::Continue);
@@ -1346,10 +1578,10 @@ mod frame_tests {
     fn stop_at_high_skips_low_handler() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        eval(r#"
-            onGameFrame(() => { console.log("h"); return HookResult.Stop; }, { priority: "high" });
-            onGameFrame(() => { console.log("l"); }, { priority: "low" });
-        "#).unwrap();
+        eval_std("p", r#"
+            OnGameFrame.subscribe(() => { console.log("h"); return HookResult.Stop; }, { priority: "high" });
+            OnGameFrame.subscribe(() => { console.log("l"); }, { priority: "low" });
+        "#);
         let out = dispatch_onframe(Phase::Pre, true, false, false);
         assert_eq!(out.result, HookResult::Stop);
         let got = LOG.lock().unwrap().clone();
@@ -1362,7 +1594,7 @@ mod frame_tests {
     fn throwing_handler_is_isolated() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        eval(r#" onGameFrame(() => { throw new Error("boom"); }); "#).unwrap();
+        eval_std("p", r#" OnGameFrame.subscribe(() => { throw new Error("boom"); }); "#);
         // Must not panic / crash; result stays Continue.
         let out = dispatch_onframe(Phase::Pre, true, false, false);
         assert_eq!(out.result, HookResult::Continue);
@@ -1371,18 +1603,18 @@ mod frame_tests {
 
     #[test]
     fn handler_that_subscribes_during_dispatch_does_not_panic_and_runs_next_frame() {
-        // The re-entrancy guarantee: a JS handler that calls onGameFrame(...) DURING dispatch
-        // re-enters __s2_subscribe (which borrows FRAME). dispatch_onframe must NOT hold the FRAME
-        // borrow across invocation, or this double-borrows the RefCell and panics.
+        // The re-entrancy guarantee: a JS handler that calls OnGameFrame.subscribe(...) DURING
+        // dispatch re-enters __s2_subscribe (which borrows FRAME). dispatch_onframe must NOT hold
+        // the FRAME borrow across invocation, or this double-borrows the RefCell and panics.
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        eval(r#"
+        eval_std("p", r#"
             let added = false;
-            onGameFrame(() => {
+            OnGameFrame.subscribe(() => {
                 console.log("outer");
-                if (!added) { added = true; onGameFrame(() => console.log("inner")); }
+                if (!added) { added = true; OnGameFrame.subscribe(() => console.log("inner")); }
             });
-        "#).unwrap();
+        "#);
         // Frame 1: only "outer" runs; it subscribes "inner" mid-dispatch (must not panic).
         dispatch_onframe(Phase::Pre, true, false, false);
         // Frame 2: both run (the snapshot now includes "inner").
@@ -1396,11 +1628,14 @@ mod frame_tests {
     #[test]
     fn microtasks_do_not_run_until_frame_drain() {
         init(dummy_logger()).unwrap();
-        // With kExplicit, a resolved-promise continuation must NOT run during eval.
-        eval("globalThis.__ran = false; Promise.resolve().then(() => { globalThis.__ran = true; });").unwrap();
-        assert_eq!(read_bool_global("__ran"), false, "microtask ran before the drain");
+        create_plugin_context("p");
+        // With kExplicit, a resolved-promise continuation must NOT run during eval.  The plugin
+        // context's microtasks share the isolate's default queue, so the HOST-context checkpoint
+        // in frame_async_drain drains them (the continuation runs in the plugin's own realm).
+        eval_in_context("p", "globalThis.__ran = false; Promise.resolve().then(() => { globalThis.__ran = true; });").unwrap();
+        assert_eq!(read_bool_global_in("p", "__ran"), false, "microtask ran before the drain");
         frame_async_drain(); // runs the checkpoint
-        assert_eq!(read_bool_global("__ran"), true, "microtask did not run at the drain");
+        assert_eq!(read_bool_global_in("p", "__ran"), true, "microtask did not run at the drain");
         shutdown();
     }
 
@@ -1408,7 +1643,7 @@ mod frame_tests {
     fn onframe_handler_out_of_range_result_warns_and_continues() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        eval("onGameFrame(() => 99);").unwrap(); // 99 is out of range for HookResult
+        eval_std("p", "OnGameFrame.subscribe(() => 99);"); // 99 is out of range for HookResult
         let out = dispatch_onframe(crate::multiplexer::Phase::Pre, true, false, false);
         assert_eq!(out.result, crate::multiplexer::HookResult::Continue); // out-of-range → Continue
         let got = LOG.lock().unwrap().clone();
@@ -1423,24 +1658,24 @@ mod frame_tests {
     #[test]
     fn delay_resolves_only_after_its_deadline() {
         init(dummy_logger()).unwrap();
-        eval("globalThis.__d = false; Delay(30).then(() => { globalThis.__d = true; });").unwrap();
+        eval_std("p", "globalThis.__d = false; delay(30).then(() => { globalThis.__d = true; });");
         frame_async_drain();                       // well before 30ms
-        assert_eq!(read_bool_global("__d"), false);
+        assert_eq!(read_bool_global_in("p", "__d"), false);
         std::thread::sleep(std::time::Duration::from_millis(40));
         frame_async_drain();                       // now past the deadline
-        assert_eq!(read_bool_global("__d"), true);
+        assert_eq!(read_bool_global_in("p", "__d"), true);
         shutdown();
     }
 
     #[test]
     fn next_frame_resolves_one_frame_later() {
         init(dummy_logger()).unwrap();
-        eval("globalThis.__n = 0; NextFrame().then(() => { globalThis.__n = 1; });").unwrap();
+        eval_std("p", "globalThis.__n = 0; nextFrame().then(() => { globalThis.__n = 1; });");
         frame_async_drain(); // frame that schedules resolution for the NEXT frame → not yet
-        // NextFrame targets FRAME_COUNTER+1 measured at call time; the drain that reaches it resolves it.
-        assert_eq!(read_i32_global("__n"), 0);
+        // nextFrame targets FRAME_COUNTER+1 measured at call time; the drain that reaches it resolves it.
+        assert_eq!(read_i32_global_in("p", "__n"), 0);
         frame_async_drain();
-        assert_eq!(read_i32_global("__n"), 1);
+        assert_eq!(read_i32_global_in("p", "__n"), 1);
         shutdown();
     }
 
@@ -1450,9 +1685,9 @@ mod frame_tests {
         HOOKS.lock().unwrap().clear();
         set_hook_request(Some(record_hook));
         init(dummy_logger()).unwrap();
-        eval("Delay(1000);").unwrap();  // pending async, zero onGameFrame subscribers
+        eval_std("p", "delay(1000);");  // pending async, zero OnGameFrame subscribers
         assert!(HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1),
-                "Delay() should request the detour install");
+                "delay() should request the detour install");
         shutdown();
         set_hook_request(None);
     }
@@ -1464,9 +1699,9 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
         // Drain any stray pool completions from earlier tests so PENDING_JOBS starts clean.
         while pool().try_recv_completed().is_some() {}
-        // With ZERO onGameFrame subscribers, start one async op that will complete on its own.
+        // With ZERO OnGameFrame subscribers, start one async op that will complete on its own.
         // threadSleep(20) increments PENDING_JOBS → 1 and must drive an install.
-        eval("threadSleep(20);").unwrap();
+        eval_std("p", "threadSleep(20);");
         // Assert the install was requested.
         assert!(
             HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1),
@@ -1515,26 +1750,26 @@ mod frame_tests {
         // re-enters TIMERS/RESOLVERS from INSIDE perform_microtask_checkpoint. frame_async_drain
         // must hold no such borrow across the checkpoint, or this double-borrows and panics.
         init(dummy_logger()).unwrap();
-        eval(r#"
+        eval_std("p", r#"
             globalThis.__reentry = 0;
-            NextTick().then(() => { NextTick().then(() => { globalThis.__reentry = 1; }); });
-        "#).unwrap();
-        // Drain 1 resolves the outer NextTick; its continuation queues the inner NextTick from
+            nextTick().then(() => { nextTick().then(() => { globalThis.__reentry = 1; }); });
+        "#);
+        // Drain 1 resolves the outer nextTick; its continuation queues the inner nextTick from
         // within the checkpoint (must not panic). A later drain resolves the inner → __reentry = 1.
         for _ in 0..5 { frame_async_drain(); }
-        assert_eq!(read_i32_global("__reentry"), 1);
+        assert_eq!(read_i32_global_in("p", "__reentry"), 1);
         shutdown();
     }
 
     #[test]
     fn thread_sleep_runs_off_thread_and_resolves_on_a_drain() {
         init(dummy_logger()).unwrap();
-        eval("globalThis.__t = false; threadSleep(20).then(() => { globalThis.__t = true; });").unwrap();
+        eval_std("p", "globalThis.__t = false; threadSleep(20).then(() => { globalThis.__t = true; });");
         // Drive frames until the worker completes (bounded).
         let mut resolved = false;
         for _ in 0..500 {
             frame_async_drain();
-            if read_bool_global("__t") { resolved = true; break; }
+            if read_bool_global_in("p", "__t") { resolved = true; break; }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!(resolved, "threadSleep promise never resolved on a drain");
@@ -1557,18 +1792,37 @@ mod frame_tests {
         shutdown();
     }
 
-    /// `load_cs2_file` reads a JS file and evaluates it in the shared context (same scope
-    /// construction as `eval`).  This verifies the load path is wired: a file that sets
-    /// `globalThis.__loaded = 42` must be visible after the call.
+    /// `load_plugin_js` creates the plugin context (full injected API), wraps the bundle in the CJS
+    /// `require`/`module` wrapper, and runs the module body.  This replaces the Slice-3 `load_cs2_file`
+    /// path (removed): the same "a loaded bundle's top-level code runs and its globals are visible"
+    /// behavior, now under the per-plugin loader.  The body sets `globalThis.__loaded = 42`.
     #[test]
-    fn load_cs2_file_evaluates_in_context() {
+    fn load_plugin_js_runs_module_body() {
         init(dummy_logger()).unwrap();
-        let dir = std::env::temp_dir().join("s2_cs2_load_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("probe.js");
-        std::fs::write(&f, "globalThis.__loaded = 41 + 1;").unwrap();
-        load_cs2_file(f.to_str().unwrap());
-        assert_eq!(read_i32_global("__loaded"), 42);
+        load_plugin_js("probe", "globalThis.__loaded = 41 + 1;");
+        assert_eq!(read_i32_global_in("probe", "__loaded"), 42);
+        shutdown();
+    }
+
+    /// The brief's acceptance test: a CJS bundle requires the injected API, subscribes in `onLoad`,
+    /// and its handler runs once per frame — tagged to the CALLING plugin ("demo") in the ledger +
+    /// the multiplexer owner.
+    #[test]
+    fn load_plugin_js_runs_onload_and_tags_subscription() {
+        init(dummy_logger()).unwrap();
+        // Minimal CJS bundle: require the injected API, subscribe, export onLoad.
+        let plugin_js = r#"
+            const { OnGameFrame, delay } = require("@s2script/std");
+            module.exports.onLoad = function () {
+                OnGameFrame.subscribe(function () { globalThis.__ticks = (globalThis.__ticks||0)+1; });
+            };
+        "#;
+        load_plugin_js("demo", plugin_js);
+        // One frame → the demo's handler ran, tagged to "demo".
+        dispatch_game_frame_pre_post();  // helper: Pre then Post dispatch (drives the multiplexer)
+        assert_eq!(read_i32_global_in("demo", "__ticks"), 1);
+        // The subscription is owned by "demo":
+        assert!(FRAME.with(|f| f.borrow().snapshot(Phase::Pre).iter().any(|(_,_,owner,_)| owner=="demo")));
         shutdown();
     }
 
@@ -1591,7 +1845,7 @@ mod frame_tests {
         );
 
         // Submit a real in-flight job with a long sleep so it stays pending throughout.
-        eval("threadSleep(1000).then(()=>{});").unwrap();
+        eval_std("p", "threadSleep(1000).then(()=>{});");
         assert_eq!(PENDING_JOBS.with(|c| c.get()), 1, "PENDING_JOBS should be 1 after submitting real job");
 
         // Inject a STALE completion for an id that has no resolver (mimics a prior isolate's leftover).

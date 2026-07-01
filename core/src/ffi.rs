@@ -92,22 +92,17 @@ pub extern "C" fn s2script_core_dispatch_concommand(
     });
 }
 
-/// C-ABI entry point: read a game JS file from `path` and evaluate it in the HOST context.
-/// Engine-generic: the path is supplied by the shim; no game identifiers appear here.
-/// Degrade-never-crash: a null/invalid path or unreadable file logs a WARN and returns.
-/// `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
+/// C-ABI entry point retained for shim link-compatibility.  As of Slice 4 the `@s2script/cs2`
+/// package (`games/cs2/js/pawn.js`) is EMBEDDED per plugin context (via core's `include_str!` +
+/// the injected prelude) and returned through `require("@s2script/cs2")`, so there is no longer a
+/// single-context "load a cs2 JS file" step.  This entry is now a degrade-safe no-op — the `path`
+/// argument is ignored.  `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
+///
+/// TODO(shim, later slice): drop the shim's `s2script_core_load_cs2(Cs2JsPath())` call and its
+/// HOST-context `cs2.*` demo; the per-plugin `require` model supersedes both.
 #[no_mangle]
-pub extern "C" fn s2script_core_load_cs2(path: *const c_char) {
-    let _ = catch_unwind(|| {
-        if path.is_null() {
-            return;
-        }
-        let s = match unsafe { CStr::from_ptr(path) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        v8host::load_cs2_file(s);
-    });
+pub extern "C" fn s2script_core_load_cs2(_path: *const c_char) {
+    // Intentionally empty: pawn.js is compiled into each plugin context (see v8host::create_plugin_context).
 }
 
 #[cfg(test)]
@@ -175,24 +170,28 @@ mod tests {
 
     #[test]
     fn subscribe_installs_dispatch_runs_unsubscribe_removes() {
+        // Same behavior as Slice 1 (subscribe → install request; dispatch runs; unsubscribe →
+        // remove request), reworked onto the per-plugin model: subscription now goes through a
+        // plugin context's injected `OnGameFrame.subscribe`, while the C-ABI dispatch/hook-request
+        // wiring is exercised unchanged via `s2script_core_dispatch_game_frame`.
         HOOKS.lock().unwrap().clear();
         assert_eq!(s2script_core_init(Some(test_logger), Some(mock_request), std::ptr::null()), 0);
-        // subscribing the first handler must request install:
-        assert_eq!(
-            s2script_core_eval(
-                b"globalThis._sub = onGameFrame(() => {});\0".as_ptr() as *const c_char
-            ),
-            0
-        );
+        v8host::create_plugin_context("p");
+        // Subscribing the first handler (via the injected API) must request install:
+        v8host::eval_in_context(
+            "p",
+            r#"
+                const { OnGameFrame } = __s2require("@s2script/std");
+                globalThis._sub = OnGameFrame.subscribe(() => {});
+            "#,
+        )
+        .unwrap();
         assert!(HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1));
         // dispatch (Pre=0) must not crash and returns a HookResult code:
         let rc = s2script_core_dispatch_game_frame(0, 1, 1, 0);
         assert!(rc >= 0);
         // unsubscribe the last handler must request remove:
-        assert_eq!(
-            s2script_core_eval(b"_sub.dispose();\0".as_ptr() as *const c_char),
-            0
-        );
+        v8host::eval_in_context("p", "_sub.dispose();").unwrap();
         assert!(HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0));
         s2script_core_shutdown();
     }
