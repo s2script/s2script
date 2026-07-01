@@ -619,8 +619,8 @@ pub(crate) fn frame_async_drain() {
         }
         // Resolve completed threadpool jobs.
         while let Some((id, _res)) = pool().try_recv_completed() {
-            PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
             if let Some(g) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
+                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));   // only for a job we own
                 let resolver = v8::Local::new(scope, &g);
                 let undef = v8::undefined(scope);
                 resolver.resolve(scope, undef.into());
@@ -859,6 +859,47 @@ mod frame_tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!(resolved, "threadSleep promise never resolved on a drain");
+        shutdown();
+    }
+
+    /// Regression test: a stale completion from a prior isolate (id with no resolver in the current
+    /// isolate) must NOT decrement PENDING_JOBS, or the detour would be removed while a real job is
+    /// still in flight, causing the real completion to never be drained.
+    ///
+    /// Before the fix the unconditional decrement makes PENDING_JOBS go 1→0 on the stale id,
+    /// causing the final assert to fail.  After the fix it stays at 1.
+    #[test]
+    fn stale_job_completion_does_not_undercount_pending() {
+        init(dummy_logger()).unwrap();
+
+        // Drain any completions left in the process-global pool from earlier tests.
+        while pool().try_recv_completed().is_some() {}
+        assert_eq!(
+            PENDING_JOBS.with(|c| c.get()),
+            0,
+            "baseline: PENDING_JOBS should be 0 after draining strays"
+        );
+
+        // Submit a real in-flight job with a long sleep so it stays pending throughout.
+        eval("threadSleep(1000).then(()=>{});").unwrap();
+        assert_eq!(PENDING_JOBS.with(|c| c.get()), 1, "PENDING_JOBS should be 1 after submitting real job");
+
+        // Inject a STALE completion for an id that has no resolver (mimics a prior isolate's leftover).
+        // This does NOT touch PENDING_JOBS and stores no resolver.
+        pool().submit(9_999_999, Box::new(|| Ok(())));
+
+        // Wait briefly for the trivial stale job to land on the completion channel.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        // Drain — the stale completion surfaces here; the 1000ms real job is still pending.
+        frame_async_drain();
+
+        assert_eq!(
+            PENDING_JOBS.with(|c| c.get()),
+            1,
+            "stale completion must not undercount PENDING_JOBS"
+        );
+
         shutdown();
     }
 }
