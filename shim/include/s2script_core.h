@@ -36,6 +36,10 @@ void s2script_core_shutdown(void);
  * name = Arg(0) (command name), slot = CPlayerSlot::Get() (-1 for server console),
  * args = ArgS() (everything after the command name). */
 void s2script_core_dispatch_concommand(const char* name, int slot, const char* args);
+/* Load and evaluate a game JS file in the host context.  Engine-generic: the path is
+ * supplied by the shim (via Cs2JsPath()); the CS2 names live in the file itself, never
+ * in core.  Degrade-never-crash: null/unreadable path -> named WARN + return. */
+void s2script_core_load_cs2(const char* path);
 
 #ifdef __cplusplus
 }

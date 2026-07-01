@@ -199,6 +199,31 @@ static std::string GamedataPath() {
 }
 
 // ---------------------------------------------------------------------------
+// Cs2JsPath: resolve pawn.js relative to the plugin .so via dladdr (mirrors
+// GamedataPath).  Expected layout (three dirname steps from the .so):
+//   addons/s2script/bin/linuxsteamrt64/s2script.so
+//     dirname ×1 → bin/linuxsteamrt64
+//     dirname ×2 → bin
+//     dirname ×3 → s2script addon root
+//   + /js/pawn.js
+// ---------------------------------------------------------------------------
+static std::string Cs2JsPath() {
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(&Cs2JsPath), &info) && info.dli_fname) {
+        char buf[4096];
+        snprintf(buf, sizeof buf, "%s", info.dli_fname);
+        std::string dir = dirname(buf);             // linuxsteamrt64
+        snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);                         // bin
+        snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);                         // s2script addon root
+        return dir + "/js/pawn.js";
+    }
+    // Fallback: relative to the server's cwd (mirrors the GamedataPath fallback).
+    return "addons/s2script/js/pawn.js";
+}
+
+// ---------------------------------------------------------------------------
 // Hook-request callback: invoked by the Rust core to install/remove the
 // SourceHook detour.  Called while the core holds an internal borrow —
 // MUST NOT call back into the core (no eval/dispatch/shutdown).
@@ -357,6 +382,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
     }
+
+    // Load the @s2script/cs2 JS package (pawn.js) — CS2 names live in the file, never in core.
+    // Degrade-never-crash: a missing or unreadable pawn.js logs a WARN and continues.
+    s2script_core_load_cs2(Cs2JsPath().c_str());
     // Slice 1 live demo: subscribe two OnGameFrame handlers at different priorities.
     // Subscribing the first one drives request_hook("OnGameFrame", 1) -> the SourceHook
     // detour installs lazily; each frame then dispatches through the multiplexer, and

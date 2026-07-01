@@ -928,6 +928,24 @@ pub(crate) fn dispatch_onframe(
     }
 }
 
+/// Read a JS file from `path` and evaluate it in the HOST context (identical scope construction
+/// to `eval`).  Engine-generic: the path is supplied by the caller; NO game identifiers appear
+/// here.  On a read error logs a named WARN and returns (degrade-never-crash).  On a JS error
+/// logs a WARN and returns (same policy).  A missing or unreadable cs2 JS file must never
+/// crash or panic.
+pub fn load_cs2_file(path: &str) {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            log_warn(&format!("WARN: load_cs2_file: failed to read '{}': {}", path, e));
+            return;
+        }
+    };
+    if let Err(e) = eval(&src) {
+        log_warn(&format!("WARN: load_cs2_file: JS error in '{}': {}", path, e));
+    }
+}
+
 pub fn shutdown() {
     // Clear async state BEFORE dropping the isolate: RESOLVERS holds `Global`s into it, so their
     // handles must be reset while the isolate is still alive (HOST still owns it here).
@@ -1314,6 +1332,21 @@ mod frame_tests {
         // Simulate the engine invoking the command (bypasses ConCommand registration):
         dispatch_concommand("s2_test", 3, "1234");
         assert_eq!(read_string_global("__cc"), "3:1234");
+        shutdown();
+    }
+
+    /// `load_cs2_file` reads a JS file and evaluates it in the shared context (same scope
+    /// construction as `eval`).  This verifies the load path is wired: a file that sets
+    /// `globalThis.__loaded = 42` must be visible after the call.
+    #[test]
+    fn load_cs2_file_evaluates_in_context() {
+        init(dummy_logger()).unwrap();
+        let dir = std::env::temp_dir().join("s2_cs2_load_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("probe.js");
+        std::fs::write(&f, "globalThis.__loaded = 41 + 1;").unwrap();
+        load_cs2_file(f.to_str().unwrap());
+        assert_eq!(read_i32_global("__loaded"), 42);
         shutdown();
     }
 

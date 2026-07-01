@@ -34,6 +34,12 @@ if [ -f gamedata/core.gamedata.jsonc ]; then
     cp gamedata/core.gamedata.jsonc "$DIST/s2script/gamedata/"
 fi
 
+# --- CS2 JS package (pawn.js — CS2 names live here, never in core) ---
+mkdir -p "$DIST/s2script/js"
+if [ -f games/cs2/js/pawn.js ]; then
+    cp games/cs2/js/pawn.js "$DIST/s2script/js/pawn.js"
+fi
+
 # --- Metamod plugin registration VDF ---
 cp docker/s2script.vdf "$DIST/metamod/s2script.vdf"
 

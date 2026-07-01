@@ -92,6 +92,24 @@ pub extern "C" fn s2script_core_dispatch_concommand(
     });
 }
 
+/// C-ABI entry point: read a game JS file from `path` and evaluate it in the HOST context.
+/// Engine-generic: the path is supplied by the shim; no game identifiers appear here.
+/// Degrade-never-crash: a null/invalid path or unreadable file logs a WARN and returns.
+/// `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
+#[no_mangle]
+pub extern "C" fn s2script_core_load_cs2(path: *const c_char) {
+    let _ = catch_unwind(|| {
+        if path.is_null() {
+            return;
+        }
+        let s = match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        v8host::load_cs2_file(s);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
