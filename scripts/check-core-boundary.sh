@@ -21,4 +21,13 @@ for g in "${GAME_PKGS[@]}"; do
 done
 
 if [ "$violation" -ne 0 ]; then exit 1; fi
+
+# --- CS2 name-leak gate: core/ must contain no CS2 identifier (engine-generic only). ---
+# Patterns are CS2 schema/game identifiers that must live only in games/cs2 (JS) or gamedata.
+NAME_LEAK_RE='CCSPlayer|CCSPlayerPawn|CCSPlayerController|m_iHealth|m_hPlayerPawn'
+if grep -rInE "$NAME_LEAK_RE" core/src 2>/dev/null; then
+  echo "BOUNDARY VIOLATION: CS2 identifier found in core/ (must live in games/cs2 or gamedata)" >&2
+  exit 1
+fi
+
 echo "core boundary OK: s2script-core depends on no games/* crate"
