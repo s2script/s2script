@@ -104,6 +104,16 @@ const POLL_THROTTLE: u64 = 64;
 /// Called once by the shim at load time via the `s2script_core_set_plugins_dir` C-ABI.
 pub(crate) fn set_plugins_dir(path: &str) {
     PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(PathBuf::from(path)));
+    // The watcher runs on the GameFrame Post drain, which only fires while the detour is installed.
+    // With no plugin loaded there is no subscriber, so poke the lazy-detour predicate now (it now
+    // includes `is_watching()`) to install the detour and start the poll loop.
+    crate::v8host::refresh_detour();
+}
+
+/// True once a plugins directory has been set — feeds the lazy-detour predicate so the Post drain
+/// (and thus `poll_plugins`) runs every frame even before the first plugin subscribes anything.
+pub(crate) fn is_watching() -> bool {
+    PLUGINS_DIR.with(|d| d.borrow().is_some())
 }
 
 // ---------------------------------------------------------------------------

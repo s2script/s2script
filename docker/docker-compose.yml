@@ -22,7 +22,9 @@ services:
       # Persistent CS2 install (downloaded on first start, ~30 GB)
       - ./cs2-data:/home/steam/cs2-dedicated
 
-      # s2script addon (our plugin + core SO)
+      # s2script addon (our plugin + core SO). :ro blocks CONTAINER writes; the host can still
+      # drop/remove .s2sp into dist/addons/s2script/plugins/ during the live gate (the mount
+      # reflects host FS changes, and the shim only READS the plugins dir).
       - ../dist/addons/s2script:/home/steam/cs2-dedicated/game/csgo/addons/s2script:ro
 
       # Metamod:Source itself — operator must pre-install into docker/metamod/.

@@ -206,11 +206,16 @@ fn async_pending() -> usize {
     TIMERS.with(|t| t.borrow().len()) + PENDING_JOBS.with(|c| c.get())
 }
 
-/// Combined lazy-detour reconciler.  Desired = any onGameFrame subscriber OR any pending async.
+/// Combined lazy-detour reconciler.  Desired = any onGameFrame subscriber OR any pending async
+/// OR the plugin watcher is active (once a plugins dir is set, the `GameFrame` Post hook must fire
+/// every frame so `loader::poll_plugins` runs — otherwise, with no plugin loaded there is no
+/// subscriber, so the detour would never install and the FIRST plugin could never be discovered).
 /// Only pokes the embedder on a real transition, keeping `DETOUR_INSTALLED` the single source of
 /// truth.  Borrows FRAME + TIMERS (via `async_pending`) — callers must hold NEITHER borrow.
-fn refresh_detour() {
-    let desired = FRAME.with(|f| f.borrow().enabled_count() > 0) || async_pending() > 0;
+pub(crate) fn refresh_detour() {
+    let desired = FRAME.with(|f| f.borrow().enabled_count() > 0)
+        || async_pending() > 0
+        || crate::loader::is_watching();
     let installed = DETOUR_INSTALLED.with(|c| c.get());
     if desired == installed {
         return;
