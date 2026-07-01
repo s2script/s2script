@@ -1053,6 +1053,9 @@ fn s2_iface_is_published(
 /// version range + method existence, structured-copies args consumer→producer via the JSON carrier,
 /// enters the producer context, calls the method Global, structured-copies the return back. Named
 /// throws on the failure modes; the whole body is catch_unwind.
+/// A throwing producer method surfaces as `InterfaceCallError`; an `undefined`/void return resolves
+/// to `undefined` in the consumer (not an error — only a genuinely non-serializable value throws
+/// `InterfaceValueNotSerializable`).
 fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_undefined();
@@ -1080,6 +1083,8 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         // Producer context + method Global — extract into owned locals so no IFACES/IFACE_METHODS/PLUGINS
         // borrow is held across the V8 context-switch or the method call (borrow discipline).
         let Some((producer_id, _gen)) = IFACES.with(|r| r.borrow().producer_of(&name)) else {
+            // _gen unused: re-resolve-by-name each call always targets the current producer; a generation guard
+            // on method_g's origin is a future hardening (publish updates IFACES+IFACE_METHODS atomically today).
             throw_named(scope, "InterfaceUnavailable", &name); return;
         };
         let method_g = IFACE_METHODS.with(|m| m.borrow().get(&(name.clone(), method.clone())).cloned());
@@ -1088,32 +1093,74 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
             throw_named(scope, "InterfaceUnavailable", &name); return;
         };
 
-        // Enter the producer context: parse args there, call, stringify the result there. The whole
-        // producer-side sequence returns Option<String> (the result JSON) — None on any failure.
-        // CRITICAL: iface_to_json is called INSIDE this block (while cscope is live) so the result
-        // string is extracted before the ContextScope drops and the Local<Value> would become invalid.
-        let result_json: Option<String> = {
+        // Producer-side outcome, extracted as context-free Rust values BEFORE cscope drops.
+        enum Outcome {
+            Ok(String),      // serialized return JSON (a COPY)
+            Void,            // producer returned undefined → resolve undefined in the consumer
+            Threw(String),   // producer method threw; captured message
+            NotSerializable, // return is cyclic/BigInt/function (and NOT undefined)
+            Internal,        // args failed to parse/spread (unexpected for valid JSON)
+        }
+
+        // Enter the producer context under a TryCatch so a THROWING producer method is captured here
+        // (absorbed when the TryCatch drops) rather than left pending — otherwise the consumer-side
+        // throw_named would double-throw over it. iface_to_json/iface_from_json open their own inner
+        // TryCatches, so nesting is fine. CRITICAL: the return is serialized to a Rust String INSIDE
+        // this block (before cscope drops) — no Local<Value> may escape the producer scope.
+        let outcome: Outcome = {
             let ctx_local = v8::Local::new(scope, &g_ctx);
             let cscope = &mut v8::ContextScope::new(scope, ctx_local);
-            (|| -> Option<String> {
-                let args_val = iface_from_json(cscope, &args_json)?;         // parse args (a COPY)
-                let arr = v8::Local::<v8::Array>::try_from(args_val).ok()?;  // it's an array
+            let mut tc_storage = v8::TryCatch::new(cscope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Parse args (a COPY) + spread positionally.
+            let argv_opt = (|| -> Option<Vec<v8::Local<v8::Value>>> {
+                let args_val = iface_from_json(tc, &args_json)?;
+                let arr = v8::Local::<v8::Array>::try_from(args_val).ok()?;
                 let mut argv: Vec<v8::Local<v8::Value>> = Vec::with_capacity(arr.length() as usize);
-                for i in 0..arr.length() { argv.push(arr.get_index(cscope, i)?); }
-                let f = v8::Local::new(cscope, &method_g);
-                let recv: v8::Local<v8::Value> = v8::undefined(cscope).into();
-                let ret = f.call(cscope, recv, &argv)?;                      // call the producer method
-                iface_to_json(cscope, ret)                                   // stringify result here
-            })()
+                for i in 0..arr.length() { argv.push(arr.get_index(tc, i)?); }
+                Some(argv)
+            })();
+
+            match argv_opt {
+                None => Outcome::Internal,
+                Some(argv) => {
+                    let f = v8::Local::new(tc, &method_g);
+                    let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                    match f.call(tc, recv, &argv) {
+                        None => {
+                            // Producer method threw — capture its message (absorbed when tc drops).
+                            let msg = tc.exception()
+                                .map(|e| e.to_rust_string_lossy(&*tc))
+                                .unwrap_or_else(|| "producer method threw".into());
+                            Outcome::Threw(msg)
+                        }
+                        Some(ret) => {
+                            if ret.is_undefined() {
+                                Outcome::Void
+                            } else {
+                                match iface_to_json(tc, ret) {
+                                    Some(json) => Outcome::Ok(json),
+                                    None => Outcome::NotSerializable,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         };
 
-        // Back in the consumer context: parse the result JSON into a fresh Local (a COPY).
-        match result_json {
-            Some(json) => match iface_from_json(scope, &json) {
+        // Back in the consumer context: map the outcome to a return value or a single named throw.
+        match outcome {
+            Outcome::Ok(json) => match iface_from_json(scope, &json) {
                 Some(v) => rv.set(v),
                 None => throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} return", name, method)),
             },
-            None => throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} return", name, method)),
+            Outcome::Void => rv.set_undefined(),
+            Outcome::NotSerializable => throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} return", name, method)),
+            Outcome::Threw(msg) => throw_named(scope, "InterfaceCallError", &format!("{}.{}: {}", name, method, msg)),
+            Outcome::Internal => throw_named(scope, "InterfaceUnavailable", &name),
         }
     }));
 }
@@ -2638,6 +2685,34 @@ mod frame_tests {
             catch (e) { globalThis.__e2 = String(e); }
         "#);
         assert!(read_global_string("cyc", "__e2").contains("InterfaceValueNotSerializable"));
+
+        // Producer method THROWS → consumer sees InterfaceCallError carrying the producer message
+        // (not a crash, not a mislabeled InterfaceValueNotSerializable).
+        load_plugin_js("prodBoom", r#"
+            const { publishInterface } = require("@s2script/std");
+            publishInterface("@x/boom", "1.0.0", { boom: function(){ throw new Error("kaboom"); } });
+        "#);
+        set_plugin_imports("consBoom", vec![("@x/boom".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        load_plugin_js("consBoom", r#"
+            const g = require("@x/boom");
+            try { g.boom(); globalThis.__boom = "no throw"; } catch (e) { globalThis.__boom = String(e); }
+        "#);
+        let boom = read_global_string("consBoom", "__boom");
+        assert!(boom.contains("InterfaceCallError"), "producer throw → InterfaceCallError, got: {}", boom);
+        assert!(boom.contains("kaboom"), "producer message surfaced, got: {}", boom);
+
+        // Producer method returns undefined (void) → consumer receives undefined, NOT a throw.
+        load_plugin_js("prodVoid", r#"
+            const { publishInterface } = require("@s2script/std");
+            publishInterface("@x/void", "1.0.0", { poke: function(){ /* returns undefined */ } });
+        "#);
+        set_plugin_imports("consVoid", vec![("@x/void".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        load_plugin_js("consVoid", r#"
+            const g = require("@x/void");
+            try { globalThis.__void = (g.poke() === undefined) ? "undefined" : "value"; }
+            catch (e) { globalThis.__void = "threw:" + String(e); }
+        "#);
+        assert_eq!(read_global_string("consVoid", "__void"), "undefined");
         shutdown();
     }
 }
