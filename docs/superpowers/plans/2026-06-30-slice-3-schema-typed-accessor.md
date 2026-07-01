@@ -545,3 +545,21 @@ docker stop s2script-cs2 && docker rm s2script-cs2
 - **Spec coverage:** §1 thesis → all tasks. §2.1 JS accessor + core natives → T3–T6. §2.2 live offset → T3. §2.3 two demos → T7. §2.4 name-leak gate → T2. §3 core natives (schema/entity/memory/state-change/concommand) → T3/T4/T5. §4 cs2 package + load path → T6. §5 demos → T7. §6 boundary → T2 + T6. §7 testing (unit: schema cache T3, memory helpers T4; integration: bridge T3–T6; live T7) → covered. §8 acceptance → T3–T7. §9 out-of-scope honored (no codegen, no EntityRef wrapper, no command framework, no loader, one field/i32 only). §10 files → matches. §11 open items → T1 recon resolves them, cited by T3–T6. No spec section unmapped.
 - **Placeholder scan:** engine-dependent steps (live SchemaSystem/entity/NetworkStateChanged/ConCommand calls) are deliberately delegated to the T1 recon findings + verified in the T7 live gate — not vague "add error handling." The unit-testable logic (schema cache, memory read/write, concommand dispatch, cs2-file load) has complete code. No "TBD".
 - **Type consistency:** `OffsetCache::resolve(class, field, raw, log) -> i32`; `entity::{read_i32(*const u8,i32)->i32, write_i32(*mut u8,i32,i32)}`; natives `__s2_schema_offset`/`__s2_entity_by_index`/`__s2_deref_handle`/`__s2_ent_read_i32`/`__s2_ent_write_i32`/`__s2_ent_state_changed`/`__s2_concommand`; C ABI `s2script_core_init(logger, request_hook, schema_system)` + `s2script_core_load_cs2(path)`; `dispatch_concommand(name, slot, args)`; cs2 `Pawn`/`pawnForSlot(slot)`/`HEALTH_OFFSET`. Consistent across tasks. The `-1` miss sentinel is uniform (schema offset). `External`-wrapped pointers uniform for entities.
+
+---
+
+## Architecture amendment (post-Task-1 recon)
+
+Task 1 confirmed every engine operation (SchemaSystem virtuals, entity-system access,
+`NetworkStateChanged` vtable call, `ConCommand` construction) is a **C++** call. Therefore the
+engine glue for Tasks 3–5 lives in the **C++ shim** as C-ABI helper functions, passed to core as
+**function-pointer callbacks** (the existing `logger`/`request_hook` pattern) so the dependency
+direction stays shim→core. Core's Rust V8 natives call through the stored pointers; a null pointer
+degrades that native with a named WARN. Pure pointer read/write (`ent_read_i32`/`write_i32`) and the
+`OffsetCache` + concommand-dispatch logic stay inline Rust (unit-tested with fakes). The shim gains
+`shim/src/sdk_stubs/entitydatainstantiator.h` (one-line forward-declare) to compile
+`entity2/entitysystem.h`, and reaches `CGameEntitySystem*` via an `IGameResourceService`-anchored
+offset in `gamedata/` (`GameResourceServiceServerV001`; offset value dumped live in Task 7). Helper
+set: `s2_schema_offset(cls,field)->int`, `s2_ent_by_index(idx)->void*`, `s2_deref_handle(u32)->void*`,
+`s2_ent_state_changed(ent,off)`, `s2_concommand_register(name)`; core exposes
+`s2script_core_dispatch_concommand(name,slot,args)` for the ConCommand trampoline.
