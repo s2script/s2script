@@ -2053,6 +2053,10 @@ pub(crate) fn unload_plugin(id: &str) {
                 }
                 plugin::Resource::Interface(name) => {
                     // Remove the registry entry(ies) this producer owned + drop its method Globals.
+                    // TODO(slice5): this prunes IFACE_METHODS by interface NAME only. Safe today (one
+                    // namespaced producer per name), but once manifest-vs-runtime `publishes`
+                    // cross-validation lands, key the prune by (producer_id, name) so unloading one
+                    // producer can never drop a different producer's method Globals for the same name.
                     IFACES.with(|r| { let _ = r.borrow_mut().remove_by_producer(id); });
                     IFACE_METHODS.with(|m| {
                         m.borrow_mut().retain(|(iface, _method), _| iface != &name);
