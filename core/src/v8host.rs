@@ -13,6 +13,7 @@
 
 use crate::async_rt::{Pool, TimerKind, TimerQueue};
 use crate::multiplexer::{self, Descriptor, DetourChange, HookResult, Phase, Priority};
+use crate::plugin;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::{Once, OnceLock};
@@ -70,6 +71,14 @@ struct JsHandler {
     func: v8::Global<v8::Function>,
 }
 
+/// Per-plugin identity stamped on each plugin `v8::Context` via `Context::set_slot::<PluginId>`
+/// (the spike-RECOMMENDED mechanism — a Rust-typed slot needs no scope to read and no side
+/// table).  A native reads it back via `scope.get_current_context().get_slot::<PluginId>()`,
+/// which resolves to the CALLING context's id (per-context, correct across the microtask
+/// checkpoint).  The `Rc<PluginId>` is dropped when the context is GC'd (i.e. when its
+/// `Global<Context>` is dropped from `PLUGINS` and the isolate reclaims it).
+struct PluginId(String);
+
 thread_local! {
     static LOGGER: std::cell::Cell<Option<LogFn>> = std::cell::Cell::new(None);
     static HOST: std::cell::RefCell<Option<Host>> = std::cell::RefCell::new(None);
@@ -113,6 +122,18 @@ thread_local! {
     /// `shutdown` (BEFORE the isolate is dropped — same discipline as `RESOLVERS`).
     static CONCOMMANDS: std::cell::RefCell<std::collections::HashMap<String, v8::Global<v8::Function>>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Per-plugin `v8::Context` registry, keyed by plugin id — the multi-context path that will
+    /// eventually replace the single shared `HOST.context` (Task 5 migrates the natives/dispatch
+    /// onto it).  Each `Global<Context>` is stamped with a `PluginId` slot at creation.  ADDED
+    /// ALONGSIDE `HOST` for this task: the existing single-context path is untouched.  Dropped
+    /// (per id in `dispose_plugin_context`, or all in `shutdown`) while the isolate is still alive
+    /// — same discipline as `RESOLVERS`/`CONCOMMANDS`.
+    static PLUGINS: std::cell::RefCell<std::collections::HashMap<String, v8::Global<v8::Context>>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Plugin registry (Task 2): generation counter + per-plugin teardown ledger, keyed by the
+    /// same id string as `PLUGINS`.  Reset on `shutdown` so a re-init starts empty.
+    static REGISTRY: std::cell::RefCell<plugin::Registry>
+        = std::cell::RefCell::new(plugin::Registry::new());
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -670,6 +691,156 @@ fn log_warn(msg: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-plugin context registry (Task 4 — first step of the single→multi refactor).
+//
+// ADDED ALONGSIDE the single-context `HOST` path, which is intentionally left intact:
+// every existing native/dispatch/drain still runs on `HOST.context`.  These functions add a
+// PARALLEL, per-plugin `v8::Context` registry (`PLUGINS`) + identity (`set_slot::<PluginId>`)
+// on the SAME shared isolate that lives in `HOST`.  Task 5 migrates the existing surface onto
+// this path; Task 6 hangs the teardown ledger off `REGISTRY`.
+// ---------------------------------------------------------------------------
+
+/// Read the CALLING context's plugin id from its `PluginId` slot (spike PROVE #2).
+///
+/// `get_current_context()` in a `FunctionCallback` returns the context of the currently running
+/// JS (per-context, correct across the microtask checkpoint), so a native must read it FRESH on
+/// each invocation.  Returns `None` for a context with no stamped id (e.g. the shared `HOST`
+/// context, which is not a plugin context).
+pub(crate) fn current_plugin(scope: &mut v8::PinScope) -> Option<String> {
+    scope
+        .get_current_context()
+        .get_slot::<PluginId>()
+        .map(|p| p.0.clone())
+}
+
+/// Native `__s2_current_plugin() -> string`.  Minimal per-context probe installed by
+/// `create_plugin_context` (Task 5 replaces this with the full injected API).  Returns the
+/// calling context's plugin id, or `""` if unstamped.
+///
+/// Like every native, the body runs under `catch_unwind` — a Rust panic must never unwind across
+/// the V8/C++ FFI boundary (degrade-never-crash, spec §6).
+fn s2_current_plugin(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id = current_plugin(scope).unwrap_or_default();
+        if let Some(s) = v8::String::new(scope, &id) {
+            rv.set(s.into());
+        }
+    }));
+}
+
+/// Create a fresh per-plugin `v8::Context` on the shared isolate (borrowed from `HOST`), stamp it
+/// with the plugin id via `set_slot::<PluginId>`, install the MINIMAL per-context API (just the
+/// `__s2_current_plugin` probe for now — Task 5 adds the full injected API), store its
+/// `Global<Context>` in `PLUGINS`, register the plugin in `REGISTRY`, and return the generation.
+///
+/// Panics only if called before `init` (no isolate yet) — an internal invariant, not an FFI path.
+pub(crate) fn create_plugin_context(id: &str) -> u64 {
+    HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let host = borrow
+            .as_mut()
+            .expect("create_plugin_context called before init");
+
+        // Build the context in a nested block so the HandleScope borrow on the shared isolate is
+        // released before we touch PLUGINS.  Mirrors `init`'s scope construction.
+        let g_ctx = {
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Context::new(hs, Default::default());
+
+            // Stamp the plugin identity (no scope needed — Rust-typed slot).
+            let _ = ctx_local.set_slot(std::rc::Rc::new(PluginId(id.to_string())));
+
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            // Minimal per-context install: the `__s2_current_plugin` probe native.
+            let global_obj = ctx_local.global(scope);
+            let key = v8::String::new(scope, "__s2_current_plugin").unwrap();
+            let func = v8::Function::new(scope, s2_current_plugin).unwrap();
+            global_obj.set(scope, key.into(), func.into());
+
+            v8::Global::new(scope.as_ref(), ctx_local)
+            // scope, hs, hs_storage drop here — the isolate borrow is released.
+        };
+
+        PLUGINS.with(|p| p.borrow_mut().insert(id.to_string(), g_ctx));
+        REGISTRY.with(|r| r.borrow_mut().insert(id))
+    })
+}
+
+/// Dispose a plugin's context: drop its `Global<Context>` (making the context GC-eligible while
+/// the isolate is still alive) and remove it from both `PLUGINS` and `REGISTRY`.
+///
+/// NOTE: the `Global`s pointing INTO this context (handlers/resolvers/exports) must be dropped
+/// BEFORE its `Global<Context>` — that ordered teardown is Task 6's ledger job.  For THIS task
+/// (minimal per-context install, no such inner Globals yet) dropping the `Global<Context>` is
+/// sufficient.
+pub(crate) fn dispose_plugin_context(id: &str) {
+    // Dropping the Global<Context> here (map removal) is safe: the isolate lives in HOST.
+    PLUGINS.with(|p| {
+        p.borrow_mut().remove(id);
+    });
+    REGISTRY.with(|r| {
+        r.borrow_mut().remove(id);
+    });
+}
+
+/// Enter the `id`'s plugin context and evaluate `src` in it (test/integration helper — the
+/// per-plugin analogue of `eval`).  Uses the shared isolate from `HOST`; mirrors `eval`'s scope +
+/// `TryCatch` construction.  Returns `Err` if `init` hasn't run, the id has no context, or the JS
+/// fails to compile/run.
+pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
+    HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let host = borrow
+            .as_mut()
+            .ok_or_else(|| "eval_in_context called before init".to_string())?;
+
+        // Clone the plugin's Global<Context> out of PLUGINS (cheap refcount bump) so we don't hold
+        // the PLUGINS borrow across the HandleScope on HOST.isolate.
+        let g_ctx = PLUGINS
+            .with(|p| p.borrow().get(id).cloned())
+            .ok_or_else(|| format!("eval_in_context: no context for plugin '{}'", id))?;
+
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let hs = &mut hs;
+        let ctx_local = v8::Local::new(hs, &g_ctx);
+        let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+        let mut tc_storage = v8::TryCatch::new(scope);
+        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+        let tc = &mut tc;
+
+        let code = v8::String::new(tc, src)
+            .ok_or_else(|| "failed to intern source string in V8".to_string())?;
+
+        let script = match v8::Script::compile(tc, code, None) {
+            Some(s) => s,
+            None => {
+                return Err(tc
+                    .exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "unknown JavaScript error (compile)".into()));
+            }
+        };
+
+        match script.run(tc) {
+            Some(_) => Ok(()),
+            None => Err(tc
+                .exception()
+                .map(|e| e.to_rust_string_lossy(&*tc))
+                .unwrap_or_else(|| "unknown JavaScript error (run)".into())),
+        }
+    })
+}
+
 pub fn init(logger: LogFn) -> Result<(), String> {
     ensure_platform();
     LOGGER.with(|l| l.set(Some(logger)));
@@ -959,6 +1130,12 @@ pub fn shutdown() {
     // Clear CONCOMMANDS BEFORE dropping the isolate — same discipline as RESOLVERS: the map holds
     // Global<Function>s into the isolate; dropping them while the isolate is alive is required.
     CONCOMMANDS.with(|m| m.borrow_mut().clear());
+    // Drop all per-plugin contexts BEFORE the isolate: each `Global<Context>` points into the
+    // isolate, so (like RESOLVERS/CONCOMMANDS) the handles must be released while the isolate is
+    // still alive.  Task 6's ledger will additionally drop each plugin's inner Globals first.
+    PLUGINS.with(|p| p.borrow_mut().clear());
+    // Clear the plugin registry so a re-init starts with an empty generation space + no ledgers.
+    REGISTRY.with(|r| *r.borrow_mut() = plugin::Registry::new());
     PENDING_JOBS.with(|c| c.set(0));
     DETOUR_INSTALLED.with(|c| c.set(false));
     // Drop the isolate and context.  The platform is never torn down.
@@ -1097,6 +1274,46 @@ mod frame_tests {
             let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
             val.to_rust_string_lossy(scope)
         })
+    }
+
+    // Read `globalThis[name]` as a String from a specific PLUGIN context (enters the id's
+    // Global<Context>, mirrors read_string_global but for the per-plugin registry).
+    fn read_string_global_in(id: &str, name: &str) -> String {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("read_string_global_in: no host");
+            let g_ctx = PLUGINS
+                .with(|p| p.borrow().get(id).cloned())
+                .expect("read_string_global_in: no context for id");
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let global = ctx_local.global(scope);
+            let key = v8::String::new(scope, name).unwrap();
+            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+            val.to_rust_string_lossy(scope)
+        })
+    }
+
+    // Two per-plugin contexts on the shared isolate each report their OWN id via the
+    // `__s2_current_plugin` probe native (identity via `set_slot::<PluginId>` +
+    // `get_current_context`), and disposing one removes it from PLUGINS.  The single-context HOST
+    // path is untouched (this test never uses `eval`).
+    #[test]
+    fn two_contexts_have_distinct_plugin_identity() {
+        init(dummy_logger()).unwrap();
+        create_plugin_context("alpha");
+        create_plugin_context("beta");
+        // A tiny probe native reads current_plugin() and stashes it on the context global.
+        eval_in_context("alpha", "globalThis.__who = __s2_current_plugin();").unwrap();
+        eval_in_context("beta",  "globalThis.__who = __s2_current_plugin();").unwrap();
+        assert_eq!(read_string_global_in("alpha", "__who"), "alpha");
+        assert_eq!(read_string_global_in("beta",  "__who"), "beta");
+        dispose_plugin_context("alpha");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("alpha")));
+        shutdown();
     }
 
     // A recording hook-request callback: appends (descriptor, enable) to HOOKS.
