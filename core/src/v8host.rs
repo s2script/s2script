@@ -88,6 +88,23 @@ struct PluginId(String);
 struct PluginInstance {
     exports: Option<v8::Global<v8::Object>>,
     context: v8::Global<v8::Context>,
+    /// The plugin's REGISTRY-assigned generation (set together with the REGISTRY entry at
+    /// `create_plugin_context`).  Read when a native creates an async resolver so the resolver is
+    /// tagged with `(id, generation)`; `frame_async_drain` later checks `REGISTRY.is_live` against
+    /// this to DROP a continuation whose plugin unloaded or reloaded.
+    generation: u64,
+}
+
+/// A pending async resolver (`Delay`/`NextTick`/`NextFrame`/`threadSleep`) plus the OWNING plugin's
+/// `(id, generation)` captured at creation.  `owner` is `None` for a resolver created from a
+/// non-plugin context (the shared `HOST` context via the C-ABI `eval` surface): such a resolver has
+/// no plugin liveness to check and is always resolved.  For a plugin-owned resolver,
+/// `frame_async_drain` checks `REGISTRY.is_live(id, generation)` before resolving and DROPS it (never
+/// resolves into a disposed/replaced context) if the plugin unloaded or its generation advanced — the
+/// use-after-free killer.  Same id space as the ledger's timer/job ids.
+struct ResolverEntry {
+    owner: Option<(String, u64)>,
+    resolver: v8::Global<v8::PromiseResolver>,
 }
 
 thread_local! {
@@ -108,9 +125,11 @@ thread_local! {
     /// in `RESOLVERS`.  Borrowed briefly in `make_timer_promise`/`frame_async_drain`/`refresh_detour`;
     /// NEVER held across `perform_microtask_checkpoint` (a continuation re-enters it).
     static TIMERS: std::cell::RefCell<TimerQueue> = std::cell::RefCell::new(TimerQueue::new());
-    /// `async id → Global<PromiseResolver>`.  The Global is dropped (removed) when the timer fires.
-    /// Cleared in `shutdown` BEFORE the isolate is dropped.  Never held across the checkpoint.
-    static RESOLVERS: std::cell::RefCell<std::collections::HashMap<u64, v8::Global<v8::PromiseResolver>>>
+    /// `async id → ResolverEntry` (the resolver Global + its owning-plugin `(id, generation)` tag).
+    /// The entry is dropped (removed) when the timer/job fires, when its plugin unloads, or when the
+    /// async-liveness guard drops it (unloaded/reloaded plugin).  Cleared in `shutdown` BEFORE the
+    /// isolate is dropped.  Never held across the checkpoint.
+    static RESOLVERS: std::cell::RefCell<std::collections::HashMap<u64, ResolverEntry>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Monotonic async-id allocator (1-based; 0 is reserved as "none").
     static NEXT_ASYNC_ID: std::cell::Cell<u64> = std::cell::Cell::new(1);
@@ -380,8 +399,26 @@ fn s2_unsubscribe(
     }));
 }
 
-/// Shared helper for the timer natives: create a `PromiseResolver`, stash its `Global` under a
-/// fresh async id, push the timer, reconcile the detour, and return the pending promise.
+/// The CALLING plugin's `(id, current generation)` for tagging an async resolver, or `None` for a
+/// non-plugin context (the shared `HOST` context).  The generation is read from the plugin's
+/// `PluginInstance` — which is set together with its REGISTRY entry at `create_plugin_context`, so it
+/// equals the plugin's current REGISTRY generation.  A later unload (id removed) or reload
+/// (generation advanced) then makes the captured tag fail `REGISTRY.is_live` in `frame_async_drain`,
+/// which DROPS the continuation instead of resolving it into a disposed/replaced context.
+///
+/// Reads the current context id (no borrow) then briefly borrows `PLUGINS` — the caller must hold no
+/// `PLUGINS` borrow across this (none do: every JS-call site clones its context out first).
+fn resolver_owner_tag(scope: &mut v8::PinScope) -> Option<(String, u64)> {
+    current_plugin(scope).map(|owner| {
+        let generation =
+            PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        (owner, generation)
+    })
+}
+
+/// Shared helper for the timer natives: create a `PromiseResolver`, stash its `Global` (tagged with
+/// the owning plugin) under a fresh async id, push the timer, reconcile the detour, and return the
+/// pending promise.
 fn make_timer_promise<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     kind: TimerKind,
@@ -389,17 +426,22 @@ fn make_timer_promise<'s>(
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
     let id = next_async_id();
-    RESOLVERS.with(|m| m.borrow_mut().insert(id, v8::Global::new(scope.as_ref(), resolver)));
-    TIMERS.with(|t| t.borrow_mut().push(id, kind));
-    // Ledger this timer against the CALLING plugin (read fresh from the current context).  A
-    // non-plugin/unknown owner is a safe no-op.  No thread-local borrow held across a JS call.
-    if let Some(owner) = current_plugin(scope) {
+    // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
+    let owner = resolver_owner_tag(scope);
+    // Ledger this timer against the CALLING plugin (Task 6's teardown authority).  A non-plugin/
+    // unknown owner is a safe no-op.  No thread-local borrow held across a JS call.
+    if let Some((ref oid, _)) = owner {
         REGISTRY.with(|r| {
-            if let Some(l) = r.borrow_mut().ledger_mut(&owner) {
+            if let Some(l) = r.borrow_mut().ledger_mut(oid) {
                 l.record_timer(id);
             }
         });
     }
+    RESOLVERS.with(|m| {
+        m.borrow_mut()
+            .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+    });
+    TIMERS.with(|t| t.borrow_mut().push(id, kind));
     refresh_detour();
     promise.into()
 }
@@ -460,17 +502,22 @@ fn s2_thread_sleep(
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let id = next_async_id();
-        RESOLVERS.with(|m| m.borrow_mut().insert(id, v8::Global::new(scope.as_ref(), resolver)));
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
+        let owner = resolver_owner_tag(scope);
         // Ledger this async-FFI job against the CALLING plugin (read fresh from the current
         // context).  A non-plugin/unknown owner is a safe no-op; no borrow held across a JS call.
-        if let Some(owner) = current_plugin(scope) {
+        if let Some((ref oid, _)) = owner {
             REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(&owner) {
+                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
                     l.record_job(id);
                 }
             });
         }
+        RESOLVERS.with(|m| {
+            m.borrow_mut()
+                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+        });
+        PENDING_JOBS.with(|c| c.set(c.get() + 1));
         pool().submit(id, Box::new(move || {
             std::thread::sleep(std::time::Duration::from_millis(ms));
             Ok(())
@@ -960,16 +1007,20 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };
 
+        // Register in REGISTRY first so we can stamp the assigned generation onto the PluginInstance
+        // (kept in lockstep — a resolver tags itself with this same generation via resolver_owner_tag).
+        let generation = REGISTRY.with(|r| r.borrow_mut().insert(id));
         PLUGINS.with(|p| {
             p.borrow_mut().insert(
                 id.to_string(),
                 PluginInstance {
                     exports: None,
                     context: g_ctx,
+                    generation,
                 },
             )
         });
-        REGISTRY.with(|r| r.borrow_mut().insert(id))
+        generation
     })
 }
 
@@ -1239,14 +1290,22 @@ pub fn eval(src: &str) -> Result<(), String> {
     })
 }
 
-/// Dispatch one `OnGameFrame` tick to all enabled JS handlers for `phase`.
+/// Dispatch one `OnGameFrame` tick to all enabled JS handlers for `phase`, EACH IN ITS OWNING
+/// PLUGIN CONTEXT.
 ///
-/// **Three-phase borrow split (load-bearing for re-entrancy):**
-/// - Phase 1: borrow `FRAME` only long enough to clone the ordered snapshot, then
-///   RELEASE it.
-/// - Phase 2: borrow `HOST` (for the V8 scope) and run the chain.  `FRAME` is NOT
-///   borrowed here, so a handler that calls `OnGameFrame.subscribe(...)` re-enters
-///   `__s2_subscribe` → `FRAME.borrow_mut()` without a double-borrow panic.
+/// **Per-handler context (Task 6):** the snapshot carries each sub's `owner`; before invoking a
+/// handler we enter that owner's `PLUGINS[owner]` context with its own `ContextScope`, build the
+/// per-frame `ctx` object there, and call under a per-handler `TryCatch` — so the handler (and any
+/// native it calls → `current_plugin`) runs in its own realm.  If the owner's context is gone
+/// (disposed by `unload_plugin`), the handler is SKIPPED (never call a `Global<Function>` whose
+/// realm was disposed).
+///
+/// **Three-phase borrow split (load-bearing for re-entrancy), preserved:**
+/// - Phase 1: borrow `FRAME` only long enough to clone the ordered (owner-tagged) snapshot, release.
+/// - Phase 2: borrow `HOST` (for the isolate) and run the chain.  `FRAME`/`PLUGINS` are NOT borrowed
+///   across a handler call, so a handler that calls `OnGameFrame.subscribe(...)`/`delay(...)`
+///   re-enters `FRAME`/`PLUGINS` without a double-borrow panic (each owner context is cloned out of
+///   `PLUGINS` before the call).
 /// - Phase 3: briefly borrow `FRAME` mutably for error/auto-disable bookkeeping.
 pub(crate) fn dispatch_onframe(
     phase: Phase,
@@ -1256,8 +1315,8 @@ pub(crate) fn dispatch_onframe(
 ) -> multiplexer::DispatchOutcome {
     use crate::multiplexer::{run_chain, DispatchOutcome};
 
-    // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers, then release.
-    // snapshot() returns 4-tuples (SubId, Priority, owner, H); strip owner for run_chain.
+    // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers (KEEPING the owner tag so we
+    // can enter each handler's own context), then release.
     let snap4 = FRAME.with(|f| f.borrow().snapshot(phase));
     if snap4.is_empty() {
         return DispatchOutcome {
@@ -1265,39 +1324,50 @@ pub(crate) fn dispatch_onframe(
             detour: DetourChange::None,
         };
     }
-    let snap: Vec<_> = snap4.into_iter().map(|(id, prio, _owner, h)| (id, prio, h)).collect();
+    // run_chain wants (SubId, Priority, H); carry H = (owner, handler) so invoke can route context.
+    let snap: Vec<(multiplexer::SubId, Priority, (String, JsHandler))> =
+        snap4.into_iter().map(|(id, prio, owner, h)| (id, prio, (owner, h))).collect();
 
-    // Phase 2 — invoke under the V8 context.  HOST is borrowed; FRAME is NOT.
+    // Phase 2 — invoke under EACH handler's OWN plugin context.  HOST is borrowed for the isolate;
+    // FRAME/PLUGINS are NOT held across a handler call.
     let outcome = HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let host = borrow.as_mut().expect("dispatch_onframe before init");
 
-        // Open HandleScope + ContextScope on the stored isolate/context (mirrors `eval`).
-        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-        let hs = &mut hs;
-        let ctx_local = v8::Local::new(hs, &host.context);
-        let scope = &mut v8::ContextScope::new(hs, ctx_local);
+        run_chain(&snap, |(owner, jh): &(String, JsHandler)| {
+            // Route to the owner's context; SKIP (never enter a disposed context) if it is gone.
+            // Cloning the Global<Context> releases the PLUGINS borrow before the JS call, so the
+            // handler may re-enter PLUGINS (subscribe/delay) without a double borrow.
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+            else {
+                return Ok(HookResult::Continue); // owner's context disposed → skip, not an error
+            };
 
-        // Build the per-frame `ctx` object once: { simulating, firstTick, lastTick, phase }.
-        let ctx_obj = v8::Object::new(scope);
-        let k = v8::String::new(scope, "simulating").unwrap();
-        let v = v8::Boolean::new(scope, simulating);
-        ctx_obj.set(scope, k.into(), v.into());
-        let k = v8::String::new(scope, "firstTick").unwrap();
-        let v = v8::Boolean::new(scope, first);
-        ctx_obj.set(scope, k.into(), v.into());
-        let k = v8::String::new(scope, "lastTick").unwrap();
-        let v = v8::Boolean::new(scope, last);
-        ctx_obj.set(scope, k.into(), v.into());
-        let k = v8::String::new(scope, "phase").unwrap();
-        let v = v8::String::new(scope, if phase == Phase::Pre { "pre" } else { "post" }).unwrap();
-        ctx_obj.set(scope, k.into(), v.into());
+            // Fresh HandleScope + ContextScope on the OWNER's context.
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-        let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
-        let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
+            // Build the per-frame `ctx` object IN THIS CONTEXT: { simulating, firstTick, lastTick, phase }.
+            let ctx_obj = v8::Object::new(scope);
+            let k = v8::String::new(scope, "simulating").unwrap();
+            let v = v8::Boolean::new(scope, simulating);
+            ctx_obj.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "firstTick").unwrap();
+            let v = v8::Boolean::new(scope, first);
+            ctx_obj.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "lastTick").unwrap();
+            let v = v8::Boolean::new(scope, last);
+            ctx_obj.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "phase").unwrap();
+            let v = v8::String::new(scope, if phase == Phase::Pre { "pre" } else { "post" }).unwrap();
+            ctx_obj.set(scope, k.into(), v.into());
 
-        run_chain(&snap, |jh: &JsHandler| {
+            let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
+            let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
+
             // Per-handler TryCatch isolates a throwing handler from the rest of the chain.
             let mut tc_storage = v8::TryCatch::new(scope);
             let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
@@ -1373,61 +1443,196 @@ pub fn shutdown() {
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
 }
 
-/// Per-frame async drain: resolve every due timer, advance the frame counter, then run the single
-/// V8 microtask checkpoint for this frame.  Called once per Post-phase game frame (wired in `ffi.rs`).
+/// Resolve one pending async `entry` in its OWNING plugin's context, or DROP it (the async-liveness
+/// guard) if the plugin unloaded or reloaded.
 ///
-/// **Re-entrancy discipline (load-bearing):** a resolved continuation (a `Delay`/`NextTick`
-/// handler that itself calls `Delay`/`NextTick`/`NextFrame`/`onGameFrame`) re-enters the
-/// TIMERS/RESOLVERS/FRAME thread-locals from INSIDE `perform_microtask_checkpoint`.  So we must
-/// hold NONE of those borrows across the checkpoint: collect due ids (TIMERS borrow dropped),
-/// remove+resolve each resolver (RESOLVERS borrow dropped per id), advance FRAME_COUNTER (Cell,
-/// no borrow), THEN run the checkpoint.  Resolving a promise does NOT run JS under kExplicit — the
-/// continuations wait for the checkpoint.  Holding HOST across the checkpoint is fine (no primitive
-/// borrows HOST).  `refresh_detour` (borrows FRAME + TIMERS) runs only after the scope is dropped.
+/// A plugin-tagged entry is resolved only if `REGISTRY.is_live(id, generation)` — otherwise it is
+/// DROPPED (returns without resolving; the `ResolverEntry` — and its `Global<PromiseResolver>` — is
+/// dropped by the caller, releasing the handle while the isolate is still alive, sound even if the
+/// owner's context was already disposed).  This is the use-after-free killer: never resolve a promise
+/// into a disposed/replaced context.  An untagged entry (`owner == None`, a non-plugin/HOST-context
+/// resolver) has no plugin liveness to check and is resolved in the shared `HOST` context.
 ///
-/// Task 5 will insert job (async-FFI) resolution before the checkpoint, using the same scope.
+/// The owner's `Global<Context>` is cloned out of `PLUGINS` (borrow released) before the resolve; a
+/// resolve does NOT run JS under kExplicit, so no continuation re-enters here.
+fn resolve_or_drop(host: &mut Host, entry: &ResolverEntry) {
+    let g_ctx = match &entry.owner {
+        Some((id, generation)) => {
+            if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
+                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
+            }
+            match PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) {
+                Some(g) => g,
+                None => return, // context gone (defensive) → drop
+            }
+        }
+        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
+    };
+
+    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+    let hs = &mut hs;
+    let ctx_local = v8::Local::new(hs, &g_ctx);
+    let scope = &mut v8::ContextScope::new(hs, ctx_local);
+    let resolver = v8::Local::new(scope, &entry.resolver);
+    let undef = v8::undefined(scope);
+    resolver.resolve(scope, undef.into());
+}
+
+/// Per-frame async drain: resolve every due timer + completed job IN ITS OWNING PLUGIN CONTEXT
+/// (dropping any whose plugin is gone/reloaded — the async-liveness guard), advance the frame
+/// counter, then run the single V8 microtask checkpoint for this frame.  Called once per Post-phase
+/// game frame (wired in `ffi.rs`).
+///
+/// **Re-entrancy discipline (load-bearing):** a resolved continuation (a `Delay`/`NextTick` handler
+/// that itself calls `Delay`/`NextTick`/`NextFrame`/`onGameFrame`) re-enters the
+/// TIMERS/RESOLVERS/FRAME/PLUGINS/REGISTRY thread-locals from INSIDE `perform_microtask_checkpoint`.
+/// So we hold NONE of those borrows across the checkpoint OR across a resolve: collect due ids
+/// (TIMERS borrow dropped), remove each `ResolverEntry` (RESOLVERS borrow dropped per id), resolve it
+/// via `resolve_or_drop` (which clones the owner context out of PLUGINS and checks REGISTRY with no
+/// borrow held across the resolve), advance FRAME_COUNTER (Cell), THEN run the checkpoint on the HOST
+/// context (continuations run in their OWN realms regardless of the checkpoint's entered context).
+/// `refresh_detour` (borrows FRAME + TIMERS) runs only after the scope is dropped.
 pub(crate) fn frame_async_drain() {
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
-
-        // Open a HandleScope + ContextScope on the stored isolate/context (mirrors `eval`).
-        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-        let hs = &mut hs;
-        let ctx_local = v8::Local::new(hs, &host.context);
-        let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
         // Resolve due timers using the PRE-increment counter (= drains completed so far).  A
         // `Frame(t)` timer fires when this `frame >= t`; a `Deadline(d)` fires when `now >= d`.
         let frame = FRAME_COUNTER.with(|c| c.get());
         let due = TIMERS.with(|t| t.borrow_mut().due(Instant::now(), frame));
         for id in due {
-            if let Some(g) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
-                let resolver = v8::Local::new(scope, &g);
-                let undef = v8::undefined(scope);
-                resolver.resolve(scope, undef.into());
-            }
+            // Remove the tagged resolver (RESOLVERS borrow released), then resolve-or-drop it in its
+            // owner's context.  A None entry means the timer was already dropped (e.g. by unload).
+            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) else { continue };
+            resolve_or_drop(host, &entry);
         }
         // Resolve completed threadpool jobs.
         while let Some((id, _res)) = pool().try_recv_completed() {
-            if let Some(g) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
-                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));   // only for a job we own
-                let resolver = v8::Local::new(scope, &g);
-                let undef = v8::undefined(scope);
-                resolver.resolve(scope, undef.into());
-            }
+            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) else { continue };
+            // Only decrement for a resolver we actually held (a job we own — matches the stale-
+            // completion rule): a stale id from a prior isolate has no entry and skips this.
+            PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+            resolve_or_drop(host, &entry);
         }
 
         // Advance the counter BEFORE the checkpoint so continuations observe the new count.
         FRAME_COUNTER.with(|c| c.set(frame.wrapping_add(1)));
 
-        // The one microtask checkpoint for this frame — no TIMERS/RESOLVERS/FRAME borrow held.
+        // The one microtask checkpoint for this frame, on the HOST context — no TIMERS/RESOLVERS/
+        // FRAME/PLUGINS/REGISTRY borrow held.  Continuations run in their own plugin realms.
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let hs = &mut hs;
+        let ctx_local = v8::Local::new(hs, &host.context);
+        let scope = &mut v8::ContextScope::new(hs, ctx_local);
         scope.perform_microtask_checkpoint();
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
     refresh_detour();
+}
+
+/// Unload a plugin at a frame boundary (never mid-dispatch): the ledger reverse-walk teardown
+/// authority.  Order matches the spike's Global-drop-before-context discipline (all `Global`s
+/// pointing INTO the plugin's context are dropped BEFORE its `Global<Context>`, isolate alive):
+///
+/// (a) `FRAME.remove_by_owner(id)` — drops the plugin's handler `Global<Function>`s + reconciles the
+///     detour (removes the `OnGameFrame` detour if this was the only subscriber).
+/// (b) best-effort `onUnload` (enter the plugin's context, call `module.exports.onUnload` if present
+///     under a `TryCatch` — a throw is logged, teardown proceeds).
+/// (c) `REGISTRY.remove(id)` → walk `ledger.teardown_order()` (reverse acquisition): `Timer` → remove
+///     from `TIMERS` + drop its `RESOLVERS` entry; `Job` → drop its `RESOLVERS` entry (a late worker
+///     completion is then a no-op; decrement `PENDING_JOBS` for a still-pending job we drop); `Hook`
+///     → already removed by (a), dropped defensively.  Drops the resolver `Global`s.
+/// (d) drop the captured `module.exports` `Global<Object>`.
+/// (e) `dispose_plugin_context(id)` — NOW drop the `Global<Context>` (all inner Globals released in
+///     a–d, isolate alive → sound, no leak).
+pub(crate) fn unload_plugin(id: &str) {
+    // (a) Mark unloading: drop the plugin's OnGameFrame subscriptions (handler Globals) and reconcile
+    // the detour.  remove_by_owner returns a DetourChange, but the combined predicate in
+    // refresh_detour is the source of truth — call it to apply the transition.
+    let _change = FRAME.with(|f| f.borrow_mut().remove_by_owner(id));
+    refresh_detour();
+
+    // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
+    // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
+    HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let Some(host) = borrow.as_mut() else { return };
+        let Some((g_ctx, Some(exports))) =
+            PLUGINS.with(|p| p.borrow().get(id).map(|pi| (pi.context.clone(), pi.exports.clone())))
+        else {
+            return; // no context or no captured exports → nothing to call
+        };
+
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let hs = &mut hs;
+        let ctx_local = v8::Local::new(hs, &g_ctx);
+        let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+        let mut tc_storage = v8::TryCatch::new(scope);
+        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+        let tc = &mut tc;
+
+        let exports_local = v8::Local::new(tc, &exports);
+        if let Some(k) = v8::String::new(tc, "onUnload") {
+            if let Some(v) = exports_local.get(tc, k.into()) {
+                if let Ok(f) = v8::Local::<v8::Function>::try_from(v) {
+                    let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                    if f.call(tc, recv, &[]).is_none() {
+                        let msg = tc
+                            .exception()
+                            .map(|e| e.to_rust_string_lossy(&*tc))
+                            .unwrap_or_else(|| "onUnload threw".into());
+                        log_warn(&format!("WARN: unload_plugin('{}'): onUnload error: {}", id, msg));
+                    }
+                }
+            }
+        }
+    });
+
+    // (c) Ledger reverse-walk: the teardown authority.  REGISTRY.remove yields the entry (also makes
+    // is_live false for any lingering resolver of this generation).
+    if let Some(entry) = REGISTRY.with(|r| r.borrow_mut().remove(id)) {
+        for res in entry.ledger.teardown_order() {
+            match res {
+                plugin::Resource::Timer(tid) => {
+                    TIMERS.with(|t| { t.borrow_mut().remove(tid); });
+                    RESOLVERS.with(|m| { m.borrow_mut().remove(&tid); });
+                }
+                plugin::Resource::Job(jid) => {
+                    // The worker may still run; its late completion is a no-op (resolver gone).  Drop
+                    // the resolver and, for a still-pending job we own, decrement PENDING_JOBS now so
+                    // the (guarded) drain decrement does NOT double-count on the late completion.
+                    if RESOLVERS.with(|m| m.borrow_mut().remove(&jid)).is_some() {
+                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+                    }
+                }
+                plugin::Resource::Hook(sid) => {
+                    // Already removed by (a); drop defensively (also catches a hook onUnload added
+                    // AFTER (a)'s remove_by_owner).
+                    let _ = FRAME.with(|f| f.borrow_mut().unsubscribe(sid));
+                }
+            }
+        }
+    }
+    // Removing timers/jobs (or an onUnload-added hook) changed the detour predicate — reconcile.
+    refresh_detour();
+
+    // (d) Drop the captured module.exports Global<Object> while the isolate is alive (before the
+    // context Global).
+    PLUGINS.with(|p| {
+        if let Some(pi) = p.borrow_mut().get_mut(id) {
+            pi.exports = None;
+        }
+    });
+
+    // (e) NOW drop the Global<Context> (all inner Globals were released in a–d).  dispose_plugin_context
+    // removes the PLUGINS entry (dropping the context Global) and the REGISTRY entry (already gone → no-op).
+    dispose_plugin_context(id);
 }
 
 #[cfg(test)]
@@ -1881,6 +2086,75 @@ mod frame_tests {
             "stale completion must not undercount PENDING_JOBS"
         );
 
+        shutdown();
+    }
+
+    /// Brief test: `unload_plugin` removes the plugin's OnGameFrame hook (so its handler no longer
+    /// runs) AND disposes its context.  Also (merged) closes the untested `remove_by_owner` `Remove`
+    /// path from Task 3: wiring the recording detour-request callback, the unload of the ONLY
+    /// plugin's ONLY subscription must fire an `("OnGameFrame", 0)` detour REMOVE.
+    #[test]
+    fn unload_removes_the_plugins_hook_and_disposes_context() {
+        // Wire the recording hook-request callback BEFORE init so subscribe/unload transitions record.
+        HOOKS.lock().unwrap().clear();
+        set_hook_request(Some(record_hook));
+        init(dummy_logger()).unwrap();
+        load_plugin_js("demo", r#"const {OnGameFrame}=require("@s2script/std");
+            module.exports.onLoad=()=>OnGameFrame.subscribe(()=>{globalThis.__n=(globalThis.__n||0)+1;});"#);
+        dispatch_game_frame_pre_post();
+        // The subscribe (the only subscriber) requested the detour INSTALL.
+        assert!(
+            HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1),
+            "the only subscriber must have requested the detour install"
+        );
+        assert_eq!(read_i32_global_in("demo", "__n"), 1, "handler ran once before unload");
+
+        unload_plugin("demo");
+        dispatch_game_frame_pre_post();            // demo's handler must NOT run now (context disposed)
+        assert!(!FRAME.with(|f| f.borrow().snapshot(Phase::Pre).iter().any(|(_,_,o,_)| o=="demo")));
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("demo")), "context disposed");
+        // The ONLY subscriber unloaded → the OnGameFrame detour must be REMOVED (enable=0).
+        assert!(
+            HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0),
+            "unload of the only subscriber must request the detour remove"
+        );
+        shutdown();
+        set_hook_request(None);
+    }
+
+    /// Brief test: a `delay` continuation whose plugin is UNLOADED before the deadline must be
+    /// DROPPED — `frame_async_drain` must NOT run the continuation into a disposed context (no
+    /// panic; the resolver was dropped by the ledger teardown).
+    #[test]
+    fn delay_continuation_for_unloaded_plugin_is_dropped() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js("demo", r#"const {delay}=require("@s2script/std");
+            module.exports.onLoad=()=>{ (async()=>{ await delay(30); globalThis.__resumed=true; })(); };"#);
+        unload_plugin("demo");                     // unload BEFORE the deadline
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        frame_async_drain();                       // must NOT run the continuation into a disposed context
+        // The plugin/context is gone; nothing to read — assert no panic + the resolver was dropped:
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("demo")));
+        shutdown();
+    }
+
+    /// Directly exercises the async-liveness guard's `is_live`-DROP branch in `resolve_or_drop`: a
+    /// due timer whose owner is NO LONGER LIVE in REGISTRY (its generation is gone/advanced) must be
+    /// DROPPED, not resolved — even when its context still exists.  We kill ONLY the REGISTRY entry
+    /// (keeping the PLUGINS context so we can observe the continuation did NOT run).  This is the
+    /// use-after-free killer's core: never resolve into a stale/replaced realm.
+    #[test]
+    fn drain_drops_continuation_when_owner_no_longer_live() {
+        init(dummy_logger()).unwrap();
+        eval_std("demo", "globalThis.__resumed = false; nextTick().then(() => { globalThis.__resumed = true; });");
+        // Kill liveness: drop demo's REGISTRY entry (generation now stale) but keep its context.
+        REGISTRY.with(|r| { r.borrow_mut().remove("demo"); });
+        frame_async_drain(); // the Frame(0) timer is due; owner not live → resolve_or_drop DROPS it
+        assert_eq!(
+            read_bool_global_in("demo", "__resumed"),
+            false,
+            "continuation for a non-live owner must be dropped, not resolved into the stale realm"
+        );
         shutdown();
     }
 }
