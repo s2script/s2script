@@ -78,26 +78,42 @@ static CGameEntitySystem* GetEntitySystem() {
 // supplies.  Returns -1 (degrade-never-crash) when the SchemaSystem is missing or
 // the scope / class / field can't be resolved.
 // ---------------------------------------------------------------------------
-static int s2_schema_offset(const char* cls, const char* field) {
-    if (!s_pSchemaSystem || !cls || !field) return -1;
-
-    // "libserver.so" is the CS2 Linux server module string (recon [LC]) — a module *filename*,
-    // not a CS2 schema identifier; hardcoded here.
-    // TODO: gamedata key if it ever varies across games/platforms (recon Q1 [LC]).
-    CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
-    if (!scope) scope = s_pSchemaSystem->GlobalTypeScope();  // fallback scope (recon Q1)
-    if (!scope) return -1;
-
-    CSchemaClassInfo* info = scope->FindRawClassBinding(cls);  // direct pointer, no handle unwrap
+// Recursively resolve a field's flattened byte offset on a class, walking base classes.
+// A field such as m_iHealth is defined on a base (e.g. CBaseEntity), not on the leaf pawn, so
+// m_pFields (a class's OWN fields only) won't list it — we descend into m_pBaseClasses. For
+// single inheritance the base sits at m_nOffset 0, so the recursion returns the flattened offset.
+static int schema_find_field(CSchemaClassInfo* info, const char* field) {
     if (!info) return -1;
-
     for (int i = 0; i < info->m_nFieldCount; ++i) {
         const SchemaClassFieldData_t& f = info->m_pFields[i];
         if (f.m_pszName && strcmp(f.m_pszName, field) == 0) {
             return f.m_nSingleInheritanceOffset;  // THE offset getter (recon Q1)
         }
     }
-    return -1;  // field not found on the class
+    for (int b = 0; b < info->m_nBaseClassCount; ++b) {
+        const SchemaBaseClassInfoData_t& base = info->m_pBaseClasses[b];
+        int sub = schema_find_field(base.m_pClass, field);
+        if (sub >= 0) return static_cast<int>(base.m_nOffset) + sub;
+    }
+    return -1;
+}
+
+static int s2_schema_offset(const char* cls, const char* field) {
+    if (!s_pSchemaSystem || !cls || !field) return -1;
+
+    // Resolve the class in the server-module scope, then the global scope (a class may be in either).
+    // "libserver.so" is the CS2 Linux server module SONAME (recon Q1 [LC]; confirmed live in the T7 gate).
+    // TODO: gamedata key if the module name ever varies across games/platforms.
+    CSchemaSystemTypeScope* srvScope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
+    CSchemaClassInfo* info = srvScope ? srvScope->FindRawClassBinding(cls) : nullptr;
+    if (!info) {
+        CSchemaSystemTypeScope* gScope = s_pSchemaSystem->GlobalTypeScope();
+        if (gScope) info = gScope->FindRawClassBinding(cls);
+    }
+    if (!info) return -1;  // class not found → degrade (core emits a named WARN once per key)
+
+    // Walk base classes: m_iHealth (and most fields) are inherited, not on the leaf class directly.
+    return schema_find_field(info, field);
 }
 
 // ---------------------------------------------------------------------------
@@ -483,16 +499,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 break;
             }
         }, { priority: 'monitor' });
-
-        // Slice 3 manual HUD: `s2_sethp <value>` sets the CALLING client's pawn health (connect a
-        // client, run it in console, watch the HUD change — proves the state-change networks).
-        __s2_concommand('s2_sethp', function (slot, args) {
-            var p = cs2.pawnForSlot(slot);
-            if (!p) { console.log('[cs2] s2_sethp: no pawn for slot ' + slot); return; }
-            var v = parseInt(args) || 100;
-            p.health = v;
-            console.log('[cs2] s2_sethp: slot ' + slot + ' -> health ' + v);
-        });
+        // NOTE: a console-command-triggered manual HUD demo (e.g. `s2_sethp`) is deferred to Slice 5 —
+        // registering a Source 2 ConCommand needs ConCommand::Create, which no CS2 module exports, so
+        // command registration belongs to the Slice-5 command framework. The auto readback above proves
+        // the accessor + the folded-in NetworkStateChanged server-side.
     )JS");
     return true;
 }

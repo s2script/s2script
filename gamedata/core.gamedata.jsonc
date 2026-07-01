@@ -16,9 +16,9 @@
   // never crashes.
   "offsets": {
     // Offset within IGameResourceService* to the CGameEntitySystem* field (recon Q3).
-    // Community value ≈ 0x58 (Win) / 0x50 (Linux); placeholder — exact value must be
-    // dumped from the live CS2 process.
-    // TODO(T7): confirm live and replace placeholder.
-    "GameEntitySystem": { "linuxsteamrt64": 88 }
+    // 0x50 (Linux) = 80; CONFIRMED live against CS2 build 2000854 in the T7 gate (yields a valid
+    // entity-system pointer). This is the one entity value that isn't resolved dynamically — a wrong
+    // offset reads garbage, so it must be re-confirmed on the update treadmill if entity access breaks.
+    "GameEntitySystem": { "linuxsteamrt64": 80 }
   }
 }

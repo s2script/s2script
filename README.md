@@ -354,6 +354,74 @@ The Slice-1 `HIGH`-before-`low` composition still fires each tick and the server
 
 ---
 
+## Schema-backed typed accessor (Slice 3)
+
+Slice 3 is the **first crossing of the engine-generic/per-game boundary**: it resolves one field —
+`CCSPlayerPawn::m_iHealth` — from the live Source 2 SchemaSystem in-process and exposes `pawn.health`
+get/set, with the network state-change folded into the setter. Core gains only **engine-generic**
+Source 2 machinery with **zero CS2 names in Rust**; all the CS2 knowledge lives in `@s2script/cs2` (JS).
+
+**Where each thing lives (the boundary):**
+- **Core (`core/`, engine-generic):** the V8 natives `__s2_schema_offset` / `__s2_entity_by_index` /
+  `__s2_deref_handle` / `__s2_ent_read_i32` / `__s2_ent_write_i32` / `__s2_ent_state_changed`. The actual
+  C++ engine calls (SchemaSystem virtuals, the entity chunk walk, `NetworkStateChanged`) live in the C++
+  shim and are passed to core as C-ABI function pointers (an `S2EngineOps` table) — the same
+  shim→core callback pattern as `logger`/`request_hook`. Core never names a CS2 class or field.
+- **`@s2script/cs2` (`games/cs2/js/pawn.js`, JS):** the names (`CCSPlayerPawn`, `m_iHealth`,
+  `CCSPlayerController`, `m_hPlayerPawn`), the `slot → controller → pawn` walk, and `class Pawn { get/set
+  health }` (the setter writes **and** calls `__s2_ent_state_changed`). Loaded at boot via
+  `s2script_core_load_cs2` (real plugin loading is Slice 4).
+
+A CI gate (`scripts/check-core-boundary.sh` + `scripts/test-boundary-nameleak.sh`) fails the build if any
+CS2 identifier appears in `core/`. **Layout is data:** the `m_iHealth` offset is resolved live from
+SchemaSystem every run (never hardcoded); a Valve offset shift needs no code change. The one exception is
+the `IGameResourceService → CGameEntitySystem*` byte offset, which lives in `gamedata/` (`offsets.GameEntitySystem`,
+`0x50`/`80` on Linux) and is re-confirmed on the update treadmill.
+
+**Live demonstration (auto readback gate).** The baked demo arms once the server is live-ticking, then
+scans slots for the first player pawn and proves `pawn.health` get/set + the folded-in state-change by
+reading the value straight back:
+
+```
+[s2script] interface OK: SchemaSystem (SchemaSystem_001)
+[s2script] interface OK: GameResourceService (GameResourceServiceServerV001, entity-system offset=80 cached; resolved per-call)
+[s2script] [cs2] slot=0 HEALTH_OFFSET=1456 health get=100
+[s2script] [cs2] slot=0 health set=1234 readback=1234
+```
+
+The offset resolved live (`m_iHealth` at 1456, found by walking the schema base-class chain — it is
+inherited, not a direct field of `CCSPlayerPawn`); `health` read the live pawn's value (100), the setter
+wrote 1234 and called `NetworkStateChanged`, and the readback confirms the write — all on a real CS2
+server, no crash, with Slices 1–2 still regressing. The engine-generic core stayed free of CS2 names
+throughout.
+
+**Update-treadmill note.** This slice's live gate landed during a real CS2 update (build 2000854), which
+is the treadmill in miniature: the update reset `gameinfo.gi` (re-patch + restart), and two engine methods
+the standard SDK paths use — `CEntitySystem::GetEntityIdentity` and `ConCommand::Create` — turned out to be
+exported by **no** CS2 module. The handle deref was switched to a signature-free entity chunk walk (no
+dependency on the unexported symbol), and every offset/schema failure **degraded per-descriptor** (a named
+`WARN`, never a crash) while the layout facts were re-confirmed — exactly the posture the framework is built
+for.
+
+**Deferred to Slice 5.** A console-command-triggered *manual* HUD demo (e.g. `s2_sethp <hp>`) is deferred:
+registering a Source 2 `ConCommand` needs `ConCommand::Create`, which no CS2 module exports, so
+command registration belongs to the Slice-5 command framework. The auto gate above already proves the
+accessor **and** the state-change server-side (the readback confirms the field changed and `NetworkStateChanged`
+fired); the client-observed HUD lands with Slice 5.
+
+**Slice 3 acceptance (live + cargo):**
+
+| # | Criterion | Result |
+|---|---|---|
+| build | `cargo test` (schema cache + memory helpers + bridge) + sniper build | ✅ 37 core tests; both boundary gates green; sniper GLIBC ≤ 2.30 |
+| boundary | zero CS2 identifiers in `core/`; accessor + names in `games/cs2/js/pawn.js` | ✅ cargo (`check-core-boundary.sh` + `test-boundary-nameleak.sh`) |
+| live offset | `m_iHealth` resolved live from SchemaSystem (not hardcoded); missing field degrades named | ✅ live (`HEALTH_OFFSET=1456`, via base-class walk) + cargo (`OffsetCache` tests) |
+| get/set | `pawn.health` reads a live pawn, writes a marker, state-change fires, readback confirms | ✅ live (`get=100`, `set=1234 readback=1234`) + cargo (`entity::read_i32`/`write_i32`) |
+| degrade | wrong offset / null entity system / unresolved field degrades, never crashes | ✅ live (graceful WARNs throughout the update-day debugging; no crash) |
+| manual HUD | console-command HUD (`s2_sethp`) | ⏸ deferred to Slice 5 (`ConCommand::Create` unexported — command framework) |
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
