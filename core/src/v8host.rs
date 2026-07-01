@@ -914,7 +914,11 @@ fn iface_from_json<'s>(scope: &mut v8::PinScope<'s, '_>, json: &str) -> Option<v
     let parsefn = v8::Local::<v8::Function>::try_from(parsefn).ok()?;
     let arg = v8::String::new(scope, json)?;
     let recv: v8::Local<v8::Value> = jobj.into();
-    parsefn.call(scope, recv, &[arg.into()])
+    // Open a TryCatch around the parse call to absorb any pending exception (malformed JSON, etc.).
+    let mut tc_storage = v8::TryCatch::new(scope);
+    let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+    let tc = &mut tc;
+    parsefn.call(tc, recv, &[arg.into()])
 }
 
 /// Store a plugin's declared inter-plugin imports (from its manifest) so `iface_dep_kind` /
@@ -1598,6 +1602,8 @@ pub fn shutdown() {
     IFACE_SUBS.with(|m| m.borrow_mut().clear());
     // Clear the interface registry (pure Rust, no V8 handles; cleared for re-init hygiene).
     IFACES.with(|r| r.borrow_mut().clear());
+    // Reset the subscription-id allocator for a clean slate (symmetric with TimerQueue::new()).
+    NEXT_SUB_ID.with(|c| c.set(1));
     // Drop all per-plugin contexts BEFORE the isolate: each `Global<Context>` points into the
     // isolate, so (like RESOLVERS/CONCOMMANDS) the handles must be released while the isolate is
     // still alive.  Task 6's ledger will additionally drop each plugin's inner Globals first.
