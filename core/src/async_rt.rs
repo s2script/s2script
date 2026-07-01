@@ -43,11 +43,77 @@ impl Pool {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum TimerKind {
+    Deadline(std::time::Instant),
+    Frame(u64), // resolve when the frame counter reaches this target
+}
+
+pub struct TimerQueue {
+    entries: Vec<(u64, TimerKind)>,
+}
+
+impl TimerQueue {
+    pub fn new() -> Self { TimerQueue { entries: Vec::new() } }
+    pub fn push(&mut self, id: u64, kind: TimerKind) { self.entries.push((id, kind)); }
+    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+
+    pub fn due(&mut self, now: std::time::Instant, frame: u64) -> Vec<u64> {
+        let mut ready = Vec::new();
+        self.entries.retain(|(id, kind)| {
+            let is_due = match kind {
+                TimerKind::Deadline(t) => now >= *t,
+                TimerKind::Frame(target) => frame >= *target,
+            };
+            if is_due { ready.push(*id); false } else { true }
+        });
+        ready
+    }
+}
+
+impl Default for TimerQueue { fn default() -> Self { Self::new() } }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn deadline_timer_is_due_only_after_its_instant() {
+        let mut q = TimerQueue::new();
+        let now = Instant::now();
+        q.push(1, TimerKind::Deadline(now + Duration::from_millis(50)));
+        assert_eq!(q.due(now, 0), Vec::<u64>::new());              // not yet
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.due(now + Duration::from_millis(60), 0), vec![1]); // now due, removed
+        assert_eq!(q.len(), 0);
+    }
+
+    #[test]
+    fn frame_timer_is_due_at_or_after_target_frame() {
+        let mut q = TimerQueue::new();
+        let now = Instant::now();
+        q.push(7, TimerKind::Frame(5));
+        assert_eq!(q.due(now, 4), Vec::<u64>::new()); // frame 4 < 5
+        assert_eq!(q.due(now, 5), vec![7]);           // frame 5 reached
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn multiple_due_timers_all_returned_and_removed() {
+        let mut q = TimerQueue::new();
+        let now = Instant::now();
+        q.push(1, TimerKind::Deadline(now));            // already due
+        q.push(2, TimerKind::Frame(1));                 // due at frame 1
+        q.push(3, TimerKind::Deadline(now + Duration::from_secs(10))); // not due
+        let mut due = q.due(now, 1);
+        due.sort();
+        assert_eq!(due, vec![1, 2]);
+        assert_eq!(q.len(), 1); // only #3 remains
+    }
 
     #[test]
     fn pool_runs_job_off_thread_and_reports_completion() {
