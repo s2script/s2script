@@ -169,6 +169,19 @@ thread_local! {
     /// NOT cleared on `shutdown` — package registrations are valid for the process lifetime.
     static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, String>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Inter-plugin interface bookkeeping (Slice 4.5). Pure state lives here; the V8 handles are in
+    /// IFACE_METHODS / IFACE_SUBS. Cleared on shutdown (BEFORE the isolate drops).
+    static IFACES: std::cell::RefCell<crate::interfaces::InterfaceRegistry>
+        = std::cell::RefCell::new(crate::interfaces::InterfaceRegistry::new());
+    /// (interface_name, method) → producer method Global<Function>. Dropped on producer unload +
+    /// cleared on shutdown.
+    static IFACE_METHODS: std::cell::RefCell<std::collections::HashMap<(String, String), v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// sub_id → consumer event-handler Global<Function>. Dropped on consumer unload + cleared on shutdown.
+    static IFACE_SUBS: std::cell::RefCell<std::collections::HashMap<u64, v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Monotonic event-subscription id allocator (1-based; 0 = none).
+    static NEXT_SUB_ID: std::cell::Cell<u64> = std::cell::Cell::new(1);
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -854,6 +867,63 @@ fn s2require(
     }));
 }
 
+/// Throw a named JS Error (`"<name>: <detail>"`) in the current context. The caller returns
+/// immediately after; an uncaught throw bubbles to the enclosing dispatch TryCatch → WARN → degrade.
+fn throw_named(scope: &mut v8::PinScope, name: &str, detail: &str) {
+    let msg = format!("{}: {}", name, detail);
+    if let Some(s) = v8::String::new(scope, &msg) {
+        let err = v8::Exception::error(scope, s);
+        scope.throw_exception(err);
+    }
+}
+
+/// Stringify `value` via the CURRENT context's `JSON.stringify` → owned Rust String (the neutral,
+/// context-free carrier for the structured-copy wire). Returns None if the result is JS `undefined`
+/// (e.g. a function/live object) — the data-only-wire enforcement (spike step 2).
+///
+/// The `JSON.stringify` call is wrapped in a `TryCatch` to absorb any pending exception (e.g. from
+/// a cyclic value): without this, `Function::call` returning `None` leaves a pending exception on
+/// the isolate that would poison later frames.
+fn iface_to_json(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Option<String> {
+    let global = scope.get_current_context().global(scope);
+    let json_key = v8::String::new(scope, "JSON")?;
+    let json = global.get(scope, json_key.into())?;
+    let json = v8::Local::<v8::Object>::try_from(json).ok()?;
+    let fn_key = v8::String::new(scope, "stringify")?;
+    let strfn = json.get(scope, fn_key.into())?;
+    let strfn = v8::Local::<v8::Function>::try_from(strfn).ok()?;
+    let recv: v8::Local<v8::Value> = json.into();
+    // Open a TryCatch around the stringify call to absorb any pending exception (cyclic value, etc.).
+    let mut tc_storage = v8::TryCatch::new(scope);
+    let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+    let tc = &mut tc;
+    let out = strfn.call(tc, recv, &[value])?;
+    if out.is_undefined() { return None; }   // non-serializable
+    Some(out.to_rust_string_lossy(tc))
+}
+
+/// Parse `json` via the CURRENT context's `JSON.parse` → a fresh Local in this context (a COPY; no
+/// shared identity with the source context). Returns None on parse failure.
+fn iface_from_json<'s>(scope: &mut v8::PinScope<'s, '_>, json: &str) -> Option<v8::Local<'s, v8::Value>> {
+    let global = scope.get_current_context().global(scope);
+    let json_key = v8::String::new(scope, "JSON")?;
+    let jobj = global.get(scope, json_key.into())?;
+    let jobj = v8::Local::<v8::Object>::try_from(jobj).ok()?;
+    let fn_key = v8::String::new(scope, "parse")?;
+    let parsefn = jobj.get(scope, fn_key.into())?;
+    let parsefn = v8::Local::<v8::Function>::try_from(parsefn).ok()?;
+    let arg = v8::String::new(scope, json)?;
+    let recv: v8::Local<v8::Value> = jobj.into();
+    parsefn.call(scope, recv, &[arg.into()])
+}
+
+/// Store a plugin's declared inter-plugin imports (from its manifest) so `iface_dep_kind` /
+/// `iface_is_published` can categorise `require`. Called by the loader BEFORE `load_plugin_js` runs
+/// the module eval. Cleared in `unload_plugin` (Task 7).
+pub fn set_plugin_imports(id: &str, decls: Vec<(String, String, crate::interfaces::Kind)>) {
+    IFACES.with(|r| r.borrow_mut().set_imports(id, decls));
+}
+
 /// Set a named native function on `global_obj` in `scope`.  Small helper used by
 /// `install_natives` to keep the per-context install table declarative.
 fn set_native(
@@ -865,6 +935,84 @@ fn set_native(
     let key = v8::String::new(scope, name).unwrap();
     let func = v8::Function::new(scope, cb).unwrap();
     global_obj.set(scope, key.into(), func.into());
+}
+
+/// `__s2_iface_publish(name, version, implObj)` — the producer registers a versioned interface.
+/// Reflects `implObj`'s own function properties into method Globals; records the registry entry
+/// tagged with the producer (id, generation); ledgers `Interface(name)` on the producer. Degrade:
+/// missing plugin identity / bad args → WARN + return (no throw; publish is producer-side).
+fn s2_iface_publish(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        if args.length() < 3 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let version = args.get(1).to_rust_string_lossy(scope);
+        let Ok(impl_obj) = v8::Local::<v8::Object>::try_from(args.get(2)) else {
+            log_warn(&format!("WARN: iface_publish('{}'): impl is not an object", name));
+            return;
+        };
+        let Some(owner) = current_plugin(scope) else {
+            log_warn("WARN: iface_publish: no current plugin");
+            return;
+        };
+        let generation = REGISTRY.with(|r| r.borrow().generation_of(&owner)).unwrap_or(0);
+
+        // Enumerate own function properties → method names + capture Globals.
+        let mut method_names: Vec<String> = Vec::new();
+        if let Some(prop_names) = impl_obj.get_own_property_names(scope, Default::default()) {
+            for i in 0..prop_names.length() {
+                let Some(key) = prop_names.get_index(scope, i) else { continue };
+                let Some(val) = impl_obj.get(scope, key) else { continue };
+                if let Ok(f) = v8::Local::<v8::Function>::try_from(val) {
+                    let m = key.to_rust_string_lossy(scope);
+                    method_names.push(m.clone());
+                    let g = v8::Global::new(scope.as_ref(), f);
+                    IFACE_METHODS.with(|mm| { mm.borrow_mut().insert((name.clone(), m), g); });
+                }
+            }
+        }
+
+        IFACES.with(|r| r.borrow_mut().publish(&name, &version, &owner, generation, method_names));
+        REGISTRY.with(|r| {
+            if let Some(l) = r.borrow_mut().ledger_mut(&owner) { l.record_interface(name.clone()); }
+        });
+    }));
+}
+
+/// `__s2_iface_dep_kind(name) -> "hard" | "optional" | "none"` for the CURRENT plugin.
+fn s2_iface_dep_kind(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let kind = current_plugin(scope).and_then(|id| IFACES.with(|r| r.borrow().dep_kind(&id, &name)));
+        let s = match kind {
+            Some(crate::interfaces::Kind::Hard) => "hard",
+            Some(crate::interfaces::Kind::Optional) => "optional",
+            None => "none",
+        };
+        let out = v8::String::new(scope, s).unwrap();
+        rv.set(out.into());
+    }));
+}
+
+/// `__s2_iface_is_published(name) -> bool` — published AND version-compatible for the current plugin.
+fn s2_iface_is_published(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let avail = current_plugin(scope).map_or(false, |id| IFACES.with(|r| r.borrow().is_available(&id, &name)));
+        rv.set_bool(avail);
+    }));
 }
 
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
@@ -901,6 +1049,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Per-context identity probe + the CJS require shim.
     set_native(scope, global_obj, "__s2_current_plugin", s2_current_plugin);
     set_native(scope, global_obj, "__s2require", s2require);
+    // Inter-plugin interface primitives (Slice 4.5).
+    set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
+    set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
+    set_native(scope, global_obj, "__s2_iface_is_published", s2_iface_is_published);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -1440,6 +1592,12 @@ pub fn shutdown() {
     // Clear CONCOMMANDS BEFORE dropping the isolate — same discipline as RESOLVERS: the map holds
     // Global<Function>s into the isolate; dropping them while the isolate is alive is required.
     CONCOMMANDS.with(|m| m.borrow_mut().clear());
+    // Clear inter-plugin method + subscriber Globals BEFORE the isolate drops (same discipline as
+    // RESOLVERS/CONCOMMANDS: they hold Global<Function>s into the isolate).
+    IFACE_METHODS.with(|m| m.borrow_mut().clear());
+    IFACE_SUBS.with(|m| m.borrow_mut().clear());
+    // Clear the interface registry (pure Rust, no V8 handles; cleared for re-init hygiene).
+    IFACES.with(|r| r.borrow_mut().clear());
     // Drop all per-plugin contexts BEFORE the isolate: each `Global<Context>` points into the
     // isolate, so (like RESOLVERS/CONCOMMANDS) the handles must be released while the isolate is
     // still alive.  Task 6's ledger will additionally drop each plugin's inner Globals first.
@@ -2236,6 +2394,73 @@ mod frame_tests {
             "new generation must be live"
         );
 
+        shutdown();
+    }
+
+    // Evaluate `src` in a named plugin context and return the result via `coerce`.
+    // Mirrors the borrow discipline of `load_plugin_js`: clone the Global<Context> out of PLUGINS
+    // before opening the HandleScope on HOST.isolate, run under a TryCatch.
+    fn eval_in_context_string(id: &str, src: &str) -> String {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("eval_in_context_string: no host");
+            let g_ctx = PLUGINS
+                .with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))
+                .unwrap_or_else(|| panic!("eval_in_context_string: no context for '{}'", id));
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            let code = v8::String::new(tc, src).expect("failed to intern");
+            let script = v8::Script::compile(tc, code, None).expect("compile failed");
+            script.run(tc).map(|v| v.to_rust_string_lossy(tc)).unwrap_or_default()
+        })
+    }
+
+    fn eval_in_context_bool(id: &str, src: &str) -> bool {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("eval_in_context_bool: no host");
+            let g_ctx = PLUGINS
+                .with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))
+                .unwrap_or_else(|| panic!("eval_in_context_bool: no context for '{}'", id));
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            let code = v8::String::new(tc, src).expect("failed to intern");
+            let script = v8::Script::compile(tc, code, None).expect("compile failed");
+            script.run(tc).map(|v| v.boolean_value(tc)).unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn iface_publish_records_methods_and_dep_kind() {
+        let _ = init(dummy_logger());
+        set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        create_plugin_context("prod");
+        create_plugin_context("cons");
+
+        // Producer publishes.
+        eval_in_context("prod", r#"__s2_iface_publish("@x/greeter","1.0.0",{ greet:function(n){return "hi "+n;} });"#).expect("publish");
+        // Registry has the method name.
+        let has = IFACES.with(|r| r.borrow().lookup("@x/greeter").map(|e| e.method_names.clone()));
+        assert_eq!(has, Some(vec!["greet".to_string()]));
+        // Consumer sees it as a hard dep and available.
+        let kind = eval_in_context_string("cons", r#"__s2_iface_dep_kind("@x/greeter")"#);
+        assert_eq!(kind, "hard");
+        let pub_ok = eval_in_context_bool("cons", r#"__s2_iface_is_published("@x/greeter")"#);
+        assert!(pub_ok);
+        // A JSON round-trip across the two contexts preserves data, not identity.
+        assert_eq!(eval_in_context_string("prod", r#"JSON.stringify({a:1,b:"x"})"#), r#"{"a":1,"b":"x"}"#);
         shutdown();
     }
 

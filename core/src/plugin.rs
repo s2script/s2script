@@ -172,6 +172,11 @@ impl Registry {
     pub fn ids(&self) -> Vec<String> {
         self.entries.keys().cloned().collect()
     }
+
+    /// The current generation for `id`, if present.
+    pub fn generation_of(&self, id: &str) -> Option<u64> {
+        self.entries.get(id).map(|e| e.generation)
+    }
 }
 
 impl Default for Registry {
