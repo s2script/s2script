@@ -69,6 +69,10 @@ impl<H: Clone> Descriptor<H> {
         Descriptor { name: name.to_string(), subs: Vec::new(), next_id: 1, enabled_count: 0 }
     }
 
+    /// Number of currently-enabled subscriptions (accessor for the private field; used by the
+    /// v8host combined lazy-detour predicate).
+    pub fn enabled_count(&self) -> usize { self.enabled_count }
+
     pub fn subscribe(&mut self, priority: Priority, phase: Phase, handler: H) -> (SubId, DetourChange) {
         let id = self.next_id;
         self.next_id += 1;

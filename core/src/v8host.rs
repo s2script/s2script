@@ -11,10 +11,12 @@
 //! - `eval` is intentionally an arbitrary-JS-execution surface — it is the purpose of
 //!   this crate (CS2 game scripting engine).
 
+use crate::async_rt::{TimerKind, TimerQueue};
 use crate::multiplexer::{self, Descriptor, DetourChange, HookResult, Phase, Priority};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
 pub type LogFn = extern "C" fn(c_int, *const c_char);
 
@@ -44,14 +46,63 @@ thread_local! {
     /// Embedder callback for detour install/remove.  `None` until `set_hook_request`
     /// is called (Task 4); while `None`, `apply_detour` is a safe no-op.
     static HOOK_REQUEST: std::cell::Cell<Option<HookRequestFn>> = std::cell::Cell::new(None);
-    /// Monotonic frame counter incremented once per `frame_async_drain` call.
-    /// Task 4/5 use this to schedule timers and jobs relative to the current frame.
+    /// Frame counter = number of `frame_async_drain` calls COMPLETED (starts at 0).  Used to
+    /// schedule `Frame(target)` timers: a drain resolves `Frame(t)` when the PRE-increment value
+    /// it reads satisfies `frame >= t`.  `NextTick` targets the current count (resolves next drain);
+    /// `NextFrame` targets `current + 1` (resolves one drain later).
     static FRAME_COUNTER: std::cell::Cell<u64> = std::cell::Cell::new(0);
+    /// Pending timer queue (Delay/NextTick/NextFrame).  Holds only `u64` ids; the promise lives
+    /// in `RESOLVERS`.  Borrowed briefly in `make_timer_promise`/`frame_async_drain`/`refresh_detour`;
+    /// NEVER held across `perform_microtask_checkpoint` (a continuation re-enters it).
+    static TIMERS: std::cell::RefCell<TimerQueue> = std::cell::RefCell::new(TimerQueue::new());
+    /// `async id → Global<PromiseResolver>`.  The Global is dropped (removed) when the timer fires.
+    /// Cleared in `shutdown` BEFORE the isolate is dropped.  Never held across the checkpoint.
+    static RESOLVERS: std::cell::RefCell<std::collections::HashMap<u64, v8::Global<v8::PromiseResolver>>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Monotonic async-id allocator (1-based; 0 is reserved as "none").
+    static NEXT_ASYNC_ID: std::cell::Cell<u64> = std::cell::Cell::new(1);
+    /// Count of in-flight async-FFI jobs (Task 5 populates this); feeds the combined detour predicate.
+    static PENDING_JOBS: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    /// Cached view of "is the OnGameFrame detour currently installed?" — the source of truth the
+    /// combined lazy-detour reconciles against, so we only call `HOOK_REQUEST` on a real transition.
+    static DETOUR_INSTALLED: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 /// Install the embedder's detour-request callback.  Wired by `ffi.rs` (Task 4).
 pub fn set_hook_request(f: Option<HookRequestFn>) {
     HOOK_REQUEST.with(|c| c.set(f));
+}
+
+/// Allocate the next async id (timers + Task-5 jobs share this space).
+fn next_async_id() -> u64 {
+    NEXT_ASYNC_ID.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    })
+}
+
+/// Total in-flight async work: pending timers + pending jobs.  Reads TIMERS (brief borrow).
+fn async_pending() -> usize {
+    TIMERS.with(|t| t.borrow().len()) + PENDING_JOBS.with(|c| c.get())
+}
+
+/// Combined lazy-detour reconciler.  Desired = any onGameFrame subscriber OR any pending async.
+/// Only pokes the embedder on a real transition, keeping `DETOUR_INSTALLED` the single source of
+/// truth.  Borrows FRAME + TIMERS (via `async_pending`) — callers must hold NEITHER borrow.
+fn refresh_detour() {
+    let desired = FRAME.with(|f| f.borrow().enabled_count() > 0) || async_pending() > 0;
+    let installed = DETOUR_INSTALLED.with(|c| c.get());
+    if desired == installed {
+        return;
+    }
+    DETOUR_INSTALLED.with(|c| c.set(desired));
+    HOOK_REQUEST.with(|c| {
+        if let Some(req) = c.get() {
+            let name = CString::new("OnGameFrame").unwrap();
+            req(name.as_ptr(), desired as c_int);
+        }
+    });
 }
 
 /// Provisional JS prelude installed once per context, AFTER the native primitives
@@ -65,6 +116,9 @@ globalThis.onGameFrame = (fn, opts) => {
   const id = __s2_subscribe("OnGameFrame", fn, opts || {});
   return { dispose: () => __s2_unsubscribe(id) };
 };
+globalThis.Delay = (ms) => __s2_delay(ms || 0);
+globalThis.NextTick = () => __s2_next_tick();
+globalThis.NextFrame = () => __s2_next_frame();
 "#;
 
 /// Initialize the V8 platform exactly once for the process.  Never torn down.
@@ -170,9 +224,10 @@ fn s2_subscribe(
             }
         }
 
-        let (id, change) =
+        // The combined predicate supersedes the DetourChange the multiplexer returns; ignore it.
+        let (id, _change) =
             FRAME.with(|f| f.borrow_mut().subscribe(priority, phase, JsHandler { func: global }));
-        apply_detour(change);
+        refresh_detour();
         rv.set_double(id as f64);
     }));
 }
@@ -188,24 +243,68 @@ fn s2_unsubscribe(
             return;
         }
         let id = args.get(0).integer_value(scope).unwrap_or(0) as multiplexer::SubId;
-        let change = FRAME.with(|f| f.borrow_mut().unsubscribe(id));
-        apply_detour(change);
+        // The combined predicate supersedes the DetourChange the multiplexer returns; ignore it.
+        let _change = FRAME.with(|f| f.borrow_mut().unsubscribe(id));
+        refresh_detour();
     }));
 }
 
-/// Forward a detour change to the embedder, if one is registered.  No-op when no
-/// `HOOK_REQUEST` callback is installed (e.g. all of Task 3's tests).
-fn apply_detour(change: DetourChange) {
-    if let DetourChange::None = change {
-        return;
-    }
-    HOOK_REQUEST.with(|c| {
-        if let Some(req) = c.get() {
-            let enable = matches!(change, DetourChange::Install) as c_int;
-            let name = CString::new("OnGameFrame").unwrap();
-            req(name.as_ptr(), enable);
-        }
-    });
+/// Shared helper for the timer natives: create a `PromiseResolver`, stash its `Global` under a
+/// fresh async id, push the timer, reconcile the detour, and return the pending promise.
+fn make_timer_promise<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    kind: TimerKind,
+) -> v8::Local<'s, v8::Value> {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let id = next_async_id();
+    RESOLVERS.with(|m| m.borrow_mut().insert(id, v8::Global::new(scope.as_ref(), resolver)));
+    TIMERS.with(|t| t.borrow_mut().push(id, kind));
+    refresh_detour();
+    promise.into()
+}
+
+/// Native `__s2_delay(ms) -> Promise`.  Resolves after a wall-clock deadline.
+fn s2_delay(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ms = args.get(0).integer_value(scope).unwrap_or(0);
+        let ms = if ms > 0 { ms as u64 } else { 0 };
+        let kind = TimerKind::Deadline(Instant::now() + Duration::from_millis(ms));
+        let promise = make_timer_promise(scope, kind);
+        rv.set(promise);
+    }));
+}
+
+/// Native `__s2_next_tick() -> Promise`.  Resolves on the very next frame drain
+/// (`Frame(FRAME_COUNTER)` → the next drain reads that same count and fires it).
+fn s2_next_tick(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let target = FRAME_COUNTER.with(|c| c.get());
+        let promise = make_timer_promise(scope, TimerKind::Frame(target));
+        rv.set(promise);
+    }));
+}
+
+/// Native `__s2_next_frame() -> Promise`.  Resolves exactly one frame later than `NextTick`
+/// (`Frame(FRAME_COUNTER + 1)` → the drain after next).
+fn s2_next_frame(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let target = FRAME_COUNTER.with(|c| c.get().wrapping_add(1));
+        let promise = make_timer_promise(scope, TimerKind::Frame(target));
+        rv.set(promise);
+    }));
 }
 
 pub fn init(logger: LogFn) -> Result<(), String> {
@@ -254,6 +353,17 @@ pub fn init(logger: LogFn) -> Result<(), String> {
         let unsub_key = v8::String::new(scope, "__s2_unsubscribe").unwrap();
         let unsub_fn = v8::Function::new(scope, s2_unsubscribe).unwrap();
         global_obj.set(scope, unsub_key.into(), unsub_fn.into());
+
+        // Install the async timer primitives (Delay / NextTick / NextFrame) on the global object.
+        let delay_key = v8::String::new(scope, "__s2_delay").unwrap();
+        let delay_fn = v8::Function::new(scope, s2_delay).unwrap();
+        global_obj.set(scope, delay_key.into(), delay_fn.into());
+        let next_tick_key = v8::String::new(scope, "__s2_next_tick").unwrap();
+        let next_tick_fn = v8::Function::new(scope, s2_next_tick).unwrap();
+        global_obj.set(scope, next_tick_key.into(), next_tick_fn.into());
+        let next_frame_key = v8::String::new(scope, "__s2_next_frame").unwrap();
+        let next_frame_fn = v8::Function::new(scope, s2_next_frame).unwrap();
+        global_obj.set(scope, next_frame_key.into(), next_frame_fn.into());
 
         // scope.as_ref() gives &Isolate (via AsRef<Isolate> for ContextScope).
         v8::Global::new(scope.as_ref(), ctx_local)
@@ -410,9 +520,11 @@ pub(crate) fn dispatch_onframe(
         })
     });
 
-    // Phase 3 — brief &mut FRAME borrow: error/auto-disable bookkeeping; act on any Remove.
+    // Phase 3 — brief &mut FRAME borrow: error/auto-disable bookkeeping (the FRAME borrow is
+    // released by the `.with` before we reconcile).  Route the actual install/remove through the
+    // combined predicate so an auto-disable can't tear down the detour while async is still pending.
     let detour = FRAME.with(|f| f.borrow_mut().apply_errors(&outcome.errored));
-    apply_detour(detour);
+    refresh_detour();
     DispatchOutcome {
         result: outcome.result,
         detour,
@@ -420,6 +532,13 @@ pub(crate) fn dispatch_onframe(
 }
 
 pub fn shutdown() {
+    // Clear async state BEFORE dropping the isolate: RESOLVERS holds `Global`s into it, so their
+    // handles must be reset while the isolate is still alive (HOST still owns it here).
+    TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new());
+    RESOLVERS.with(|m| m.borrow_mut().clear());
+    NEXT_ASYNC_ID.with(|c| c.set(1));
+    PENDING_JOBS.with(|c| c.set(0));
+    DETOUR_INSTALLED.with(|c| c.set(false));
     // Drop the isolate and context.  The platform is never torn down.
     HOST.with(|h| {
         let _ = h.borrow_mut().take();
@@ -430,21 +549,53 @@ pub fn shutdown() {
     FRAME_COUNTER.with(|c| c.set(0));
 }
 
-/// Per-frame async drain: increment the frame counter, then run the V8 microtask
-/// checkpoint.  Called once per Post-phase game frame (wired in `ffi.rs`).
+/// Per-frame async drain: resolve every due timer, advance the frame counter, then run the single
+/// V8 microtask checkpoint for this frame.  Called once per Post-phase game frame (wired in `ffi.rs`).
 ///
-/// Task 4 will insert timer resolution before the checkpoint.
-/// Task 5 will insert job (async-FFI) resolution before the checkpoint.
+/// **Re-entrancy discipline (load-bearing):** a resolved continuation (a `Delay`/`NextTick`
+/// handler that itself calls `Delay`/`NextTick`/`NextFrame`/`onGameFrame`) re-enters the
+/// TIMERS/RESOLVERS/FRAME thread-locals from INSIDE `perform_microtask_checkpoint`.  So we must
+/// hold NONE of those borrows across the checkpoint: collect due ids (TIMERS borrow dropped),
+/// remove+resolve each resolver (RESOLVERS borrow dropped per id), advance FRAME_COUNTER (Cell,
+/// no borrow), THEN run the checkpoint.  Resolving a promise does NOT run JS under kExplicit — the
+/// continuations wait for the checkpoint.  Holding HOST across the checkpoint is fine (no primitive
+/// borrows HOST).  `refresh_detour` (borrows FRAME + TIMERS) runs only after the scope is dropped.
+///
+/// Task 5 will insert job (async-FFI) resolution before the checkpoint, using the same scope.
 pub(crate) fn frame_async_drain() {
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
-        // (Task 4 inserts: resolve due timers here.)
-        // (Task 5 inserts: resolve completed jobs here.)
-        FRAME_COUNTER.with(|c| c.set(c.get().wrapping_add(1)));
-        // Run the one microtask checkpoint for this frame.
-        host.isolate.perform_microtask_checkpoint();
+
+        // Open a HandleScope + ContextScope on the stored isolate/context (mirrors `eval`).
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let hs = &mut hs;
+        let ctx_local = v8::Local::new(hs, &host.context);
+        let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+        // Resolve due timers using the PRE-increment counter (= drains completed so far).  A
+        // `Frame(t)` timer fires when this `frame >= t`; a `Deadline(d)` fires when `now >= d`.
+        let frame = FRAME_COUNTER.with(|c| c.get());
+        let due = TIMERS.with(|t| t.borrow_mut().due(Instant::now(), frame));
+        for id in due {
+            if let Some(g) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
+                let resolver = v8::Local::new(scope, &g);
+                let undef = v8::undefined(scope);
+                resolver.resolve(scope, undef.into());
+            }
+        }
+        // (Task 5 inserts completed-job resolution here, using the same `scope`.)
+
+        // Advance the counter BEFORE the checkpoint so continuations observe the new count.
+        FRAME_COUNTER.with(|c| c.set(frame.wrapping_add(1)));
+
+        // The one microtask checkpoint for this frame — no TIMERS/RESOLVERS/FRAME borrow held.
+        scope.perform_microtask_checkpoint();
     });
+    // HOST + scope released: a just-completed last timer may make the detour undesired, or a
+    // continuation may have queued new async keeping it desired.  Reconcile now.
+    refresh_detour();
 }
 
 #[cfg(test)]
@@ -479,6 +630,30 @@ mod frame_tests {
             let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
             val.is_true()
         })
+    }
+
+    // Read `globalThis[name]` as an i32 from the current isolate/context (mirrors read_bool_global).
+    fn read_i32_global(name: &str) -> i32 {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("read_i32_global: no host");
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &host.context);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let global = ctx_local.global(scope);
+            let key = v8::String::new(scope, name).unwrap();
+            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+            val.integer_value(scope).unwrap_or(0) as i32
+        })
+    }
+
+    // A recording hook-request callback: appends (descriptor, enable) to HOOKS.
+    static HOOKS: Mutex<Vec<(String, i32)>> = Mutex::new(Vec::new());
+    extern "C" fn record_hook(name: *const c_char, enable: c_int) {
+        let n = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        HOOKS.lock().unwrap().push((n, enable));
     }
 
     #[test]
@@ -575,6 +750,60 @@ mod frame_tests {
             "expected an out-of-range warning, got: {:?}",
             got
         );
+        shutdown();
+    }
+
+    #[test]
+    fn delay_resolves_only_after_its_deadline() {
+        init(dummy_logger()).unwrap();
+        eval("globalThis.__d = false; Delay(30).then(() => { globalThis.__d = true; });").unwrap();
+        frame_async_drain();                       // well before 30ms
+        assert_eq!(read_bool_global("__d"), false);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        frame_async_drain();                       // now past the deadline
+        assert_eq!(read_bool_global("__d"), true);
+        shutdown();
+    }
+
+    #[test]
+    fn next_frame_resolves_one_frame_later() {
+        init(dummy_logger()).unwrap();
+        eval("globalThis.__n = 0; NextFrame().then(() => { globalThis.__n = 1; });").unwrap();
+        frame_async_drain(); // frame that schedules resolution for the NEXT frame → not yet
+        // NextFrame targets FRAME_COUNTER+1 measured at call time; the drain that reaches it resolves it.
+        assert_eq!(read_i32_global("__n"), 0);
+        frame_async_drain();
+        assert_eq!(read_i32_global("__n"), 1);
+        shutdown();
+    }
+
+    #[test]
+    fn delay_with_no_onframe_subscriber_still_requests_detour_install() {
+        // Wire a recording request_hook (the ffi mock pattern) via set_hook_request BEFORE init.
+        HOOKS.lock().unwrap().clear();
+        set_hook_request(Some(record_hook));
+        init(dummy_logger()).unwrap();
+        eval("Delay(1000);").unwrap();  // pending async, zero onGameFrame subscribers
+        assert!(HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1),
+                "Delay() should request the detour install");
+        shutdown();
+        set_hook_request(None);
+    }
+
+    #[test]
+    fn continuation_may_reenter_timer_primitives_during_checkpoint() {
+        // Re-entrancy discipline: a resolved continuation that itself queues another timer
+        // re-enters TIMERS/RESOLVERS from INSIDE perform_microtask_checkpoint. frame_async_drain
+        // must hold no such borrow across the checkpoint, or this double-borrows and panics.
+        init(dummy_logger()).unwrap();
+        eval(r#"
+            globalThis.__reentry = 0;
+            NextTick().then(() => { NextTick().then(() => { globalThis.__reentry = 1; }); });
+        "#).unwrap();
+        // Drain 1 resolves the outer NextTick; its continuation queues the inner NextTick from
+        // within the checkpoint (must not panic). A later drain resolves the inner → __reentry = 1.
+        for _ in 0..5 { frame_async_drain(); }
+        assert_eq!(read_i32_global("__reentry"), 1);
         shutdown();
     }
 }
