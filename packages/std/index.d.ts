@@ -51,3 +51,22 @@ export declare function publishInterface(
   version: string,
   impl: Record<string, (...args: any[]) => any>,
 ): PublishHandle;
+
+/**
+ * A serial-gated handle to a live entity. Wraps the `__s2_ent_ref_*` natives; the raw
+ * entity pointer never crosses to JS. All accessors degrade safely (return null/false)
+ * when the entity slot has been reused or the ops table is absent.
+ */
+export declare class EntityRef {
+  readonly index: number;
+  readonly serial: number;
+  constructor(index: number, serial: number);
+  /** True iff the slot's current serial still matches the captured serial. */
+  isValid(): boolean;
+  /** Read an i32 at `offset` bytes into the entity, or null if the ref is stale. */
+  readInt32(offset: number): number | null;
+  /** Write an i32 at `offset` bytes into the entity. Returns true on success, false if stale. */
+  writeInt32(offset: number, value: number): boolean;
+  /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */
+  notifyStateChanged(offset: number): void;
+}
