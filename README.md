@@ -304,6 +304,56 @@ server simulates one tick per `GameFrame`, so each frame is both the first and l
 
 ---
 
+## Tick-integrated async (Slice 2)
+
+Slice 2 owns the V8 microtask checkpoint so `await` resolves at controlled **frame boundaries** and
+never preempts mid-tick. The isolate runs with `MicrotasksPolicy::Explicit`; once per frame, on the
+Post `GameFrame`, `frame_async_drain` resolves due timers + completed threadpool jobs and then runs
+the single `perform_microtask_checkpoint` — the one point where `await`/`.then` continuations execute.
+It adds the provisional globals `Delay(ms)` / `NextTick()` / `NextFrame()` (cooperative timers that
+never block a thread) and `threadSleep(ms)` (a demo op that runs genuinely blocking work on a fixed
+4-worker pool and marshals the result back as a resolved Promise on a later drain). The combined
+lazy-detour keeps `GameFrame` installed while `(onGameFrame subscribers > 0) OR (async pending > 0)`,
+so an `await Delay(...)` with no frame subscriber still drives the drain. All engine-generic → `core`;
+the C++ shim and the C ABI are unchanged (only the baked-in demo string). These globals are provisional
+(the typed `@s2script/std` async API is Slice 5), like Slice 1's `onGameFrame`.
+
+The full contract (kExplicit defers microtasks to the drain; `Delay` at/after its deadline;
+`NextTick`/`NextFrame` at the expected drain; the cross-thread marshal; non-blocking `await`; the
+combined lazy-detour; the re-entrancy discipline where a resolved continuation re-enters the timer
+primitives mid-checkpoint; the process-global pool's job accounting across `shutdown`/re-init) is
+proven in `cargo test -p s2script-core -- --test-threads=1` (the V8-free `async_rt` unit suite + the
+`frame_tests` V8-integration suite).
+
+**Live demonstration.** The baked-in demo arms after 128 live frames (past the boot window, where the
+server barely ticks), then runs `await Delay(1000)` followed by `await threadSleep(50)`. A
+monitor-priority handler counts frames so the post-`Delay` log proves the tick advanced throughout the
+await:
+
+```
+GC Connection established for server version 2000848, instance idx 1
+[s2script] [async] before Delay(1000) at frame 128
+[s2script] [async] after Delay(1000); frames elapsed ~64 (tick was NOT blocked)
+[s2script] [async] after threadSleep(50) - resumed on the main thread
+```
+
+The frame counter advanced ~64 (≈ tickrate) during the 1-second `await` — proving `await Delay(1000)`
+does **not** block the tick — and the off-thread `threadSleep` continuation resumed on the main thread.
+The Slice-1 `HIGH`-before-`low` composition still fires each tick and the server never crashes.
+
+**Slice 2 acceptance (live + cargo):**
+
+| # | Criterion | Result |
+|---|---|---|
+| build | `cargo test` (async_rt + V8 integration) + sniper build | ✅ 30 core tests pass; `make check-boundary` green; sniper GLIBC ≤ 2.30 |
+| policy | explicit microtask policy; continuations only at the drain | ✅ cargo (`microtasks_do_not_run_until_frame_drain`) |
+| timers | `Delay` at/after deadline; `NextTick`/`NextFrame` at expected drain | ✅ cargo (`delay_resolves_only_after_its_deadline`, `next_frame_resolves_one_frame_later`) |
+| marshal | off-thread op resolves on a later frame drain | ✅ live (`threadSleep(50)` resumed on main) + cargo (`thread_sleep_runs_off_thread_and_resolves_on_a_drain`) |
+| non-block | `await Delay(1000)` does not block the tick | ✅ live (frames elapsed ~64 during the 1 s await) |
+| detour | `GameFrame` stays installed while async pending, removed when both counts reach zero | ✅ cargo (`delay_with_no_onframe_subscriber_still_requests_detour_install` + re-entrancy/accounting tests) |
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

@@ -144,6 +144,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Subscribing the first one drives request_hook("OnGameFrame", 1) -> the SourceHook
     // detour installs lazily; each frame then dispatches through the multiplexer, and
     // HIGH must log before LOW within a frame (priority-ordered composition).
+    // Slice 2 appends an async demo: `await Delay(1000)` must not block the tick (the frame
+    // counter keeps advancing), and an off-thread `threadSleep` must resume on the main thread.
     // (Baked into Load like Slice 0's hello; removed when real plugin loading lands in Slice 4.)
     s2script_core_eval(R"JS(
         console.log('hello from V8 in CS2');
@@ -156,6 +158,28 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             __n++;
         }, { priority: 'low' });
         console.log('[demo] subscribed 2 OnGameFrame handlers; HIGH should log before low each frame');
+
+        // Slice 2 async demo: a monitor-priority handler fires once per engine frame (Pre phase, the
+        // default) and counts frames. It ARMS the demo only after the server is genuinely live-ticking
+        // — reaching 128 frames is impossible during the boot window (which produces ~0 frames/sec), so
+        // this cleanly excludes boot. Once armed, `await Delay(1000)` must NOT block the tick: the frame
+        // counter advances by ~tickrate during the await. Then an off-thread threadSleep resumes on main.
+        var __frames = 0;
+        var __armed = false;
+        onGameFrame(function (f) {
+            __frames++;
+            if (!__armed && __frames >= 128) {
+                __armed = true;
+                var f0 = __frames;
+                (async function () {
+                    console.log('[async] before Delay(1000) at frame ' + f0);
+                    await Delay(1000);
+                    console.log('[async] after Delay(1000); frames elapsed ~' + (__frames - f0) + ' (tick was NOT blocked)');
+                    await threadSleep(50);
+                    console.log('[async] after threadSleep(50) - resumed on the main thread');
+                })();
+            }
+        }, { priority: 'monitor' });
     )JS");
     return true;
 }
