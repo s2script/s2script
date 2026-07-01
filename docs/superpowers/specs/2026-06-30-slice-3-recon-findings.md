@@ -345,12 +345,15 @@ inherit these from the shim build; a standalone compile must supply them.
 
 ### Vendored-SDK gap — action item for Tasks 3–5
 
-`entity2/entitysystem.h:23` does `#include "entitydatainstantiator.h"`, but **that header does
-not exist anywhere under `third_party/hl2sdk/public`** (only `entity2/{concreteentitylist,
-entityclass, entitycomponent, entityidentity, entityinstance, entitykeyvalues, entitysystem}.h`
-are present). `IEntityDataInstantiator` is used solely as a pointer
-(`IEntityDataInstantiator* m_Accessors[MAX_ACCESSORS]`, `entitysystem.h:356`), so a **one-line
-forward-declare stub** satisfies it. The probe used a throwaway stub; **the real fix is to add
+`entity2/entitysystem.h:23` does `#include "entitydatainstantiator.h"`. That header **is not under
+`third_party/hl2sdk/public`** (only `entity2/{concreteentitylist, entityclass, entitycomponent,
+entityidentity, entityinstance, entitykeyvalues, entitysystem}.h` are present there). It **does**
+exist at `third_party/hl2sdk/game/shared/entitydatainstantiator.h`, but that file is **unusable from
+the `public/` build context** — it pulls in `utlhash.h`, `tier0/memdbgon.h`, and forward-references
+the game-specific `CBaseEntity`. Since `IEntityDataInstantiator` is used solely as a pointer
+(`IEntityDataInstantiator* m_Accessors[MAX_ACCESSORS]`, `entitysystem.h:356`), a **one-line
+forward-declare stub** is the correct fix (do NOT add the `game/shared` include path — it would drag
+in game-specific deps). The probe used a throwaway stub; **the real fix is to add
 `shim/src/sdk_stubs/entitydatainstantiator.h`:**
 
 ```cpp
