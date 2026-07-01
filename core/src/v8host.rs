@@ -61,6 +61,12 @@ pub struct S2EngineOps {
     pub concommand_register: Option<ConCommandRegisterFn>,
 }
 
+/// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
+// TODO(gamedata): migrate to a regenerable gamedata file.
+const ENT_IDENTITY_PTR_OFFSET: i32 = 0x10; // spike-confirmed (2026-07-01-slice-5a-spike-findings.md)
+/// Byte offset within a `CEntityIdentity` of the `CEntityHandle` uint32 (index+serial) (spike-confirmed).
+const ENT_IDENTITY_HANDLE_OFFSET: i32 = 0x10; // spike-confirmed (2026-07-01-slice-5a-spike-findings.md)
+
 static PLATFORM_INIT: Once = Once::new();
 
 /// A JS handler stored as a persistent function reference.  `Clone` is required
@@ -773,6 +779,143 @@ fn s2_ent_state_changed(
     }));
 }
 
+// ---------------------------------------------------------------------------
+// Slice 5A: (index, serial) entity natives — serial-gated read/write/valid/decode.
+//
+// Raw pointers are used and discarded ENTIRELY WITHIN `entity_current_serial` and
+// `entity_resolve_ptr` — they NEVER cross to JS.  Only numbers/null/boolean/the
+// decode array cross the JS boundary.  This is the core of the EntityRef serial-
+// safety contract (spec §handle/EntityRef).
+// ---------------------------------------------------------------------------
+
+/// Current serial for an entity index via the engine's identity, or -1 if the slot is empty / no ops.
+/// The raw pointer is used and discarded HERE — it never crosses to JS.
+fn entity_current_serial(index: i32) -> i32 {
+    let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
+    let Some(by_index) = ops.ent_by_index else { return -1 };
+    let ent = by_index(index) as *const u8;
+    if ent.is_null() { return -1; }
+    let identity = crate::entity::read_ptr(ent, ENT_IDENTITY_PTR_OFFSET);
+    if identity.is_null() { return -1; }
+    let handle = crate::entity::read_u32(identity, ENT_IDENTITY_HANDLE_OFFSET);
+    let (_idx, serial) = crate::entity::decode_handle(handle);
+    serial
+}
+
+/// Resolve (index, serial) to a live entity pointer, or null if the serial no longer matches.
+/// Raw pointer stays in Rust — callers read/write through it and discard it within the native.
+fn entity_resolve_ptr(index: i32, serial: i32) -> *mut u8 {
+    if !crate::entity::resolve(entity_current_serial(index), serial) {
+        return std::ptr::null_mut();
+    }
+    let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return std::ptr::null_mut() };
+    let Some(by_index) = ops.ent_by_index else { return std::ptr::null_mut() };
+    by_index(index) as *mut u8
+}
+
+/// Native `__s2_ent_current_serial(index) -> number`.
+/// Returns the current serial for an entity slot, or -1 if the slot is empty / no ops.
+fn s2_ent_current_serial(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        rv.set_int32(entity_current_serial(index));
+    }));
+}
+
+/// Native `__s2_ent_ref_valid(index, serial) -> boolean`.
+/// True iff the slot's current serial matches the captured serial (entity is still alive).
+fn s2_ent_ref_valid(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        rv.set_bool(crate::entity::resolve(entity_current_serial(index), serial));
+    }));
+}
+
+/// Native `__s2_ent_ref_read_i32(index, serial, offset) -> number|null`.
+/// Resolves (index, serial), reads an i32 at `offset`, or returns null on stale ref.
+fn s2_ent_ref_read_i32(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }               // invalid → null (already set)
+        rv.set_int32(crate::entity::read_i32(ent as *const u8, off));
+    }));
+}
+
+/// Native `__s2_ent_ref_write_i32(index, serial, offset, value) -> boolean`.
+/// Resolves (index, serial), writes an i32 at `offset`, returns true on success / false on stale.
+fn s2_ent_ref_write_i32(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let val = args.get(3).integer_value(scope).unwrap_or(0) as i32;
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }               // invalid → false (already set)
+        crate::entity::write_i32(ent, off, val);
+        rv.set_bool(true);
+    }));
+}
+
+/// Native `__s2_ent_ref_state_changed(index, serial, offset)`.
+/// Resolves (index, serial) then calls `ent_state_changed` engine-op. No-op on stale ref / no ops.
+fn s2_ent_ref_state_changed(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }               // invalid → no-op
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.ent_state_changed else { return };
+        func(ent as *mut c_void, off);
+    }));
+}
+
+/// Native `__s2_handle_decode(handleValue) -> [index, serial]`.
+/// Pure bit-math (no engine ops): decodes a CEntityHandle uint32 into a [index, serial] array.
+fn s2_handle_decode(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = args.get(0).integer_value(scope).unwrap_or(0) as u32;
+        let (index, serial) = crate::entity::decode_handle(handle);
+        let arr = v8::Array::new(scope, 2);
+        let i = v8::Integer::new(scope, index);
+        let s = v8::Integer::new(scope, serial);
+        arr.set_index(scope, 0, i.into());
+        arr.set_index(scope, 1, s.into());
+        rv.set(arr.into());
+    }));
+}
+
 /// Native `__s2_concommand(name: string, fn: (slot: number, argString: string) => void)`.
 /// Stores the JS callback `Global<Function>` keyed by command name in `CONCOMMANDS`, then
 /// calls `ops.concommand_register(name)` to register the raw ConCommand engine-side (shim).
@@ -1282,6 +1425,13 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ent_read_i32", s2_ent_read_i32);
     set_native(scope, global_obj, "__s2_ent_write_i32", s2_ent_write_i32);
     set_native(scope, global_obj, "__s2_ent_state_changed", s2_ent_state_changed);
+    // Slice 5A: (index, serial) entity natives — serial-gated read/write/valid/decode.
+    set_native(scope, global_obj, "__s2_ent_current_serial", s2_ent_current_serial);
+    set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
+    set_native(scope, global_obj, "__s2_ent_ref_read_i32", s2_ent_ref_read_i32);
+    set_native(scope, global_obj, "__s2_ent_ref_write_i32", s2_ent_ref_write_i32);
+    set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
+    set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     // ConCommand registration.
     set_native(scope, global_obj, "__s2_concommand", s2_concommand);
     // Per-context identity probe + the CJS require shim.
@@ -2913,6 +3063,25 @@ mod frame_tests {
         // (Assert via a log capture or a side channel; here we assert no crash + registry cleared.)
         assert!(IFACES.with(|r| r.borrow().lookup("@x/greeter").is_none()));
         assert!(PLUGINS.with(|p| p.borrow().is_empty()));
+        shutdown();
+    }
+
+    /// Slice 5A Task 3: the six (index, serial) natives degrade safely when no engine-ops table
+    /// is wired (no crash, no UB — they return -1/false/null/no-op as documented).
+    /// `__s2_handle_decode` is pure bit-math and works without ops.
+    #[test]
+    fn ent_ref_natives_degrade_without_engine_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);                 // no ops table → every entity op is a safe miss
+        create_plugin_context("p");
+        // current_serial → -1 ; valid → false ; read → null ; write → false ; state_changed → no-op/undefined
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_current_serial(1))"), "-1");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_valid(1, 7))"), "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_i32(1, 7, 8))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_i32(1, 7, 8, 5))"), "false");
+        // handle_decode is PURE (no ops needed). BITS-agnostic assertion: 64 < 2^7 <= 2^HANDLE_ENTRY_BITS,
+        // so index==64, serial==0 for any real bit-split (the exact split is validated live in the gate).
+        assert_eq!(eval_in_context_string("p", "var d=__s2_handle_decode(64); d[0]+','+d[1]"), "64,0");
         shutdown();
     }
 }
