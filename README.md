@@ -485,6 +485,117 @@ system + reload state-handoff (Slice 5); config materialization + permissions en
 
 ---
 
+## Two plugins talk — inter-plugin interfaces (Slice 4.5)
+
+Slice 4.5 proves the **inter-plugin typed-interface contract** end to end. A producer plugin
+`publishInterface(name, version, impl)`s a versioned interface (`@demo/greeter@1.0.0`) whose methods
+become natives and whose `PublishHandle.emit` fans forwarded events out to subscribers; a consumer
+`require("@demo/greeter")`s it as a **hard dependency** and gets a producer-backed **proxy** — it calls
+`greet(0)` across the context boundary and subscribes to the `greeted` event. Method args and event
+payloads cross by **structured copy** (never a live pointer or cross-context reference). When the
+producer unloads, the proxy throws `InterfaceUnavailable` and the consumer **degrades** (its `try/catch`
+logs and it keeps ticking — no crash); when the producer reloads, calls **recover with no consumer
+reload**. Imports are auto-ledgered, so teardown resolves in reverse-dependency order.
+
+The two demos live in [`examples/greeter-plugin`](examples/greeter-plugin) (producer) and
+[`examples/greeter-consumer`](examples/greeter-consumer) (consumer). Because interface `.d.ts` codegen is
+deferred, the consumer hand-writes an ambient `src/greeter.d.ts` declaring the producer's published shape
+so `import greeter = require("@demo/greeter")` type-checks.
+
+### Runbook
+
+```bash
+# Build the CLI + both plugins → .s2sp
+node packages/cli/build.mjs
+( cd packages/cli && npm link )                 # so `npx s2script` resolves to this repo's CLI
+npx s2script build examples/greeter-plugin
+npx s2script build examples/greeter-consumer
+
+# Sniper build the runtime (GLIBC <= 2.31) and bring the server up
+docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash /repo/scripts/build-sniper.sh
+mkdir -p dist/addons/s2script/plugins
+docker compose -f docker/docker-compose.yml up -d
+# A CS2 update resets gameinfo.gi (metamod SearchPath dropped) — re-patch + restart if so:
+docker exec s2script-cs2 /patch-gameinfo.sh
+docker compose -f docker/docker-compose.yml restart cs2
+# Get the map ticking (a hibernating LAN server barely fires GameFrame):
+python3 scripts/rcon.py "bot_quota 1" "sv_hibernate_when_empty 0"
+
+# --- The 5-step gate (host writes into the :ro-mounted plugins dir; the shim READS it) ---
+# 1. Drop producer then consumer → publish + load + call + forwarded event
+cp examples/greeter-plugin/dist/_demo_greeter.s2sp             dist/addons/s2script/plugins/
+cp examples/greeter-consumer/dist/_demo_greeter-consumer.s2sp dist/addons/s2script/plugins/
+# 2. Unload the producer → consumer degrades (InterfaceUnavailable), server keeps ticking
+rm dist/addons/s2script/plugins/_demo_greeter.s2sp
+# 3. Re-drop the producer → consumer's greet recovers, NO consumer reload
+cp examples/greeter-plugin/dist/_demo_greeter.s2sp dist/addons/s2script/plugins/
+# 4. Unload the consumer → clean teardown, producer runs on, no crash
+rm dist/addons/s2script/plugins/_demo_greeter-consumer.s2sp
+```
+
+### Captured live log
+
+Captured on a live `joedwards32/cs2` server (build 2000855; the run landed on the update treadmill —
+the CS2 update reset `gameinfo.gi`, re-patched + restarted per the runbook):
+
+```
+# --- boot: s2script loads over Metamod and watches the plugins dir ---
+[s2script] interface OK: Source2Server (Source2Server001)
+[s2script] interface OK: SchemaSystem (SchemaSystem_001)
+[s2script] @s2script/cs2 registered (2054 bytes from …/addons/s2script/js/pawn.js)
+[s2script] plugins dir: …/game/csgo/addons/s2script/plugins
+[META] Loaded 1 plugin.
+
+# 1. drop greeter-plugin then greeter-consumer → publish, load, call, forwarded event
+[s2script] [greeter] onLoad — publishing @demo/greeter@1.0.0
+[s2script] [consumer] onLoad
+[s2script] [consumer] greet -> hello, player 0
+[s2script] [consumer] event greeted: slot=0 tick=1025
+[s2script] [consumer] greet -> hello, player 0
+[s2script] [consumer] event greeted: slot=0 tick=1281
+
+# 2. delete greeter-plugin.s2sp (unload producer) → consumer degrades; server keeps ticking, no crash
+[s2script] [greeter] onUnload
+[s2script] [consumer] greet failed (degraded): Error: InterfaceUnavailable: @demo/greeter
+[s2script] [consumer] greet failed (degraded): Error: InterfaceUnavailable: @demo/greeter
+
+# 3. re-drop greeter-plugin (reload producer) → greet recovers with NO consumer reload
+[s2script] [greeter] onLoad — publishing @demo/greeter@1.0.0
+[s2script] [consumer] greet -> hello, player 0
+[s2script] [consumer] greet -> hello, player 0
+
+# 4. delete greeter-consumer.s2sp (unload consumer) → clean teardown, then silence; container stays Up
+[s2script] [consumer] onUnload
+```
+
+The consumer's `greet -> hello, player 0` (a cross-context native call) and `event greeted: slot=0
+tick=…` (a forwarded event) fire live; deleting the producer flips every subsequent `greet` to the
+degraded `InterfaceUnavailable` path **without a crash** (`docker ps` shows `Up` throughout); re-dropping
+the producer recovers `greet` with **no `[consumer] onLoad`** (the consumer never reloaded); deleting the
+consumer prints `[consumer] onUnload` and then silence, producer still resident. The whole inter-plugin
+spine — publish/require proxy, cross-context call + forwarded event, hard-dep degrade/recover, and
+ledgered reverse-dependency teardown — proven end to end.
+
+### Slice 4.5 acceptance (live + cargo)
+
+| # | Criterion | Result |
+|---|---|---|
+| build | `cargo test` (publish/require/call/emit/teardown + loader dep maps) + CLI test + sniper | ✅ 74 core tests; `@s2script/cli` test; both boundary gates green; sniper GLIBC ≤ 2.31 |
+| publish | producer `publishInterface(name, version, impl)` exposes methods-as-natives + a `PublishHandle` | ✅ live (`[greeter] onLoad — publishing @demo/greeter@1.0.0`) |
+| call | consumer hard-dep proxy calls `greet(0)` cross-context (structured-copy args/return) | ✅ live (`[consumer] greet -> hello, player 0`) |
+| event | producer `handle.emit("greeted", …)` forwards to the consumer's `on("greeted", …)` | ✅ live (`[consumer] event greeted: slot=0 tick=1025`) |
+| degrade | producer-unload → hard-dep proxy throws `InterfaceUnavailable`; consumer `try/catch` degrades, no crash | ✅ live (`greet failed (degraded): Error: InterfaceUnavailable: @demo/greeter`; container `Up`) |
+| recover | producer-reload → consumer's `greet` recovers with **no consumer reload** | ✅ live (`greet -> hello, player 0` returns; no `[consumer] onLoad`) |
+| teardown | consumer-unload tears down cleanly via the ledger; producer runs on; no leak/crash | ✅ live (`[consumer] onUnload`, then silence; `docker ps` `Up`) |
+| boundary | core stays engine-generic — no game names in the inter-plugin path | ✅ cargo (`check-core-boundary.sh` + name-leak gate) |
+
+Deferred to later slices: interface `.d.ts` codegen (consumers hand-write the ambient `.d.ts` today);
+the `tsc` typecheck gate; the handle/`EntityRef` system + schema codegen + `@s2script/std` breadth (Slice 5);
+config materialization + permissions enforcement + reload state-handoff.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

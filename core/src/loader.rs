@@ -27,6 +27,10 @@ pub struct Manifest {
     pub version: String,
     #[serde(rename = "apiVersion")]
     pub api_version: String,
+    #[serde(rename = "pluginDependencies", default)]
+    pub plugin_dependencies: std::collections::HashMap<String, String>,
+    #[serde(rename = "optionalPluginDependencies", default)]
+    pub optional_plugin_dependencies: std::collections::HashMap<String, String>,
 }
 
 /// The major apiVersion this host speaks.  A plugin whose declared apiVersion major differs is
@@ -46,6 +50,22 @@ fn parse_api_major(api_version: &str) -> Option<u32> {
 /// True if a plugin declaring `api_version` is compatible with this host (same major) — spec §5.
 fn api_version_compatible(api_version: &str) -> bool {
     matches!(parse_api_major(api_version), Some(m) if m == HOST_API_VERSION_MAJOR)
+}
+
+/// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects,
+/// skipping the builtin packages (@s2script/std, @s2script/cs2 resolve via __s2require, not the
+/// interface registry).
+fn imports_from_manifest(m: &Manifest) -> Vec<(String, String, crate::interfaces::Kind)> {
+    let mut out = Vec::new();
+    for (name, range) in &m.plugin_dependencies {
+        if name == "@s2script/std" || name == "@s2script/cs2" { continue; }
+        out.push((name.clone(), range.clone(), crate::interfaces::Kind::Hard));
+    }
+    for (name, range) in &m.optional_plugin_dependencies {
+        if name == "@s2script/std" || name == "@s2script/cs2" { continue; }
+        out.push((name.clone(), range.clone(), crate::interfaces::Kind::Optional));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +206,7 @@ pub(crate) fn poll_plugins() {
                         ));
                         continue;
                     }
+                    crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     crate::v8host::load_plugin_js(&manifest.id, &js);
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
@@ -210,6 +231,7 @@ pub(crate) fn poll_plugins() {
                     // `load_plugin_js` also carries a defensive guard, but we unload here
                     // explicitly so the intent is clear and the ledger is the authority.
                     crate::v8host::unload_plugin(&old_id);
+                    crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     crate::v8host::load_plugin_js(&manifest.id, &js);
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
@@ -403,5 +425,29 @@ mod tests {
         assert!(!api_version_compatible("0.9.0"));
         assert!(!api_version_compatible("x"));
         assert!(!api_version_compatible(""));
+    }
+
+    #[test]
+    fn manifest_parses_both_dependency_maps() {
+        let bytes = make_test_s2sp(
+            r#"{"id":"@demo/consumer","version":"0.1.0","apiVersion":"1.x",
+                "pluginDependencies":{"@s2script/std":"^1.0.0","@demo/greeter":"^1.0.0"},
+                "optionalPluginDependencies":{"@demo/extra":"^1.0.0"}}"#,
+            "module.exports={};",
+        );
+        let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
+        assert_eq!(m.plugin_dependencies.get("@demo/greeter").map(String::as_str), Some("^1.0.0"));
+        assert_eq!(m.optional_plugin_dependencies.get("@demo/extra").map(String::as_str), Some("^1.0.0"));
+    }
+
+    #[test]
+    fn manifest_defaults_missing_dependency_maps_to_empty() {
+        let bytes = make_test_s2sp(
+            r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"1.x"}"#,
+            "module.exports={};",
+        );
+        let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
+        assert!(m.plugin_dependencies.is_empty());
+        assert!(m.optional_plugin_dependencies.is_empty());
     }
 }

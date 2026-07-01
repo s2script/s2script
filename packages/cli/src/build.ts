@@ -23,6 +23,7 @@ interface PluginPackageJson {
     apiVersion?: string;
     main?: string;
     pluginDependencies?: Record<string, string>;
+    optionalPluginDependencies?: Record<string, string>;
     publishes?: Record<string, unknown>;
   };
 }
@@ -42,7 +43,16 @@ export async function buildPlugin(dir: string): Promise<string> {
   const s2 = pkg.s2script ?? {};
   const apiVersion = s2.apiVersion ?? "";
   const pluginDependencies = s2.pluginDependencies ?? {};
+  const optionalPluginDependencies = s2.optionalPluginDependencies ?? {};
   const publishes = s2.publishes;
+
+  // Every builtin package + every inter-plugin dependency name is esbuild-external (resolved at
+  // runtime by core, never bundled).
+  const external = Array.from(new Set([
+    "@s2script/std", "@s2script/cs2",
+    ...Object.keys(pluginDependencies),
+    ...Object.keys(optionalPluginDependencies),
+  ]));
 
   // Entry point: s2script.main takes precedence, then package.main.
   const entryRelative = s2.main ?? pkg.main;
@@ -59,7 +69,7 @@ export async function buildPlugin(dir: string): Promise<string> {
     bundle: true,
     platform: "neutral",
     format: "cjs",
-    external: ["@s2script/std", "@s2script/cs2"],
+    external,
     target: "es2020",
     write: false,
   });
@@ -73,6 +83,7 @@ export async function buildPlugin(dir: string): Promise<string> {
     version,
     apiVersion,           // <-- MUST be "apiVersion" to match #[serde(rename = "apiVersion")]
     pluginDependencies,
+    optionalPluginDependencies,
   };
   if (publishes !== undefined) {
     manifest.publishes = publishes;

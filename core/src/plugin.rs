@@ -14,6 +14,14 @@ pub enum Resource {
     Hook(u64),
     Timer(u64),
     Job(u64),
+    /// A published interface name (producer-owned). Teardown removes the registry entry +
+    /// method Globals + subscriber list.
+    Interface(String),
+    /// A consumer's event-subscription id. Teardown removes it from the producer's subscriber
+    /// list + drops the handler Global.
+    EventSub(u64),
+    /// A consumer→producer import edge (interface name). Teardown drops the edge (no Global).
+    Import(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -31,6 +39,12 @@ pub struct PluginLedger {
     pub timers: Vec<u64>,
     /// Convenience: job ids in acquisition order.
     pub jobs: Vec<u64>,
+    /// Convenience: published interface names in acquisition order.
+    pub interfaces: Vec<String>,
+    /// Convenience: event subscription ids in acquisition order.
+    pub event_subs: Vec<u64>,
+    /// Convenience: import edges (interface names) in acquisition order.
+    pub imports: Vec<String>,
 }
 
 impl PluginLedger {
@@ -40,6 +54,9 @@ impl PluginLedger {
             hook_subs: Vec::new(),
             timers: Vec::new(),
             jobs: Vec::new(),
+            interfaces: Vec::new(),
+            event_subs: Vec::new(),
+            imports: Vec::new(),
         }
     }
 
@@ -56,6 +73,21 @@ impl PluginLedger {
     pub fn record_job(&mut self, id: u64) {
         self.order.push(Resource::Job(id));
         self.jobs.push(id);
+    }
+
+    pub fn record_interface(&mut self, name: String) {
+        self.order.push(Resource::Interface(name.clone()));
+        self.interfaces.push(name);
+    }
+
+    pub fn record_event_sub(&mut self, id: u64) {
+        self.order.push(Resource::EventSub(id));
+        self.event_subs.push(id);
+    }
+
+    pub fn record_import(&mut self, name: String) {
+        self.order.push(Resource::Import(name.clone()));
+        self.imports.push(name);
     }
 
     /// Resources in REVERSE acquisition order — last-acquired torn down first.
@@ -140,6 +172,11 @@ impl Registry {
     pub fn ids(&self) -> Vec<String> {
         self.entries.keys().cloned().collect()
     }
+
+    /// The current generation for `id`, if present.
+    pub fn generation_of(&self, id: &str) -> Option<u64> {
+        self.entries.get(id).map(|e| e.generation)
+    }
 }
 
 impl Default for Registry {
@@ -185,5 +222,29 @@ mod tests {
         assert_eq!(entry.ledger.timers, vec![7]);
         assert!(!r.is_live("a", g), "removed plugin is not live");
         assert!(r.remove("a").is_none());
+    }
+
+    #[test]
+    fn teardown_includes_iface_resources_in_reverse_order() {
+        let mut l = PluginLedger::new();
+        l.record_interface("@x/if".into());
+        l.record_import("@y/dep".into());
+        l.record_event_sub(9);
+        // reverse of [Interface("@x/if"), Import("@y/dep"), EventSub(9)]:
+        assert_eq!(
+            l.teardown_order(),
+            vec![Resource::EventSub(9), Resource::Import("@y/dep".into()), Resource::Interface("@x/if".into())]
+        );
+    }
+
+    #[test]
+    fn record_iface_resources_populate_convenience_vecs() {
+        let mut l = PluginLedger::new();
+        l.record_interface("@x/if".into());
+        l.record_event_sub(3);
+        l.record_import("@y/dep".into());
+        assert_eq!(l.interfaces, vec!["@x/if".to_string()]);
+        assert_eq!(l.event_subs, vec![3]);
+        assert_eq!(l.imports, vec!["@y/dep".to_string()]);
     }
 }

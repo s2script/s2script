@@ -1,0 +1,6 @@
+{
+  "name": "@demo/greeter",
+  "version": "1.0.0",
+  "main": "src/plugin.ts",
+  "s2script": { "apiVersion": "1.x", "pluginDependencies": { "@s2script/std": "^1.0.0" }, "publishes": { "@demo/greeter": "1.0.0" } }
+}
