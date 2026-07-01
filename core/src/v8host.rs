@@ -2990,12 +2990,18 @@ mod frame_tests {
         let _ = init(dummy_logger());
         register_injected_package(
             "@s2script/cs2",
+            // Also pin the NEGATIVE case: the CJS `require` is genuinely undefined in the raw prelude
+            // scope, so a package prelude MUST use `__s2require` — that is the exact bug the live gate
+            // caught. `noRequire` proves the scope, `hasEntityRef` proves the native reaches EntityRef.
             r#"var ER = __s2require("@s2script/std").EntityRef;
-               globalThis.__s2pkg_cs2 = { hasEntityRef: (typeof ER === "function") };"#,
+               globalThis.__s2pkg_cs2 = {
+                 hasEntityRef: (typeof ER === "function"),
+                 noRequire: (typeof require === "undefined"),
+               };"#,
         );
         load_plugin_js("p", r#"
             const cs2 = require("@s2script/cs2");
-            globalThis.__ok = String(cs2 !== null && cs2.hasEntityRef === true);
+            globalThis.__ok = String(cs2 !== null && cs2.hasEntityRef === true && cs2.noRequire === true);
         "#);
         assert_eq!(read_global_string("p", "__ok"), "true");
         shutdown();
