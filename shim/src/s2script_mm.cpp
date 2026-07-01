@@ -10,6 +10,10 @@
 // one missing generated include that eiface.h unconditionally pulls in.
 #include <eiface.h>
 
+// SchemaSystem: ISchemaSystem + the type-scope / class-info / field-data layout used by the
+// schema-offset engine-op (recon Q1/Q2; include paths mirror shim/CMakeLists.txt).
+#include <schemasystem/schemasystem.h>
+
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <cstring>
@@ -29,6 +33,42 @@ PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 // ---------------------------------------------------------------------------
 static void s2_logger([[maybe_unused]] int level, const char* msg) {
     META_CONPRINTF("[s2script] %s\n", msg);
+}
+
+// ---------------------------------------------------------------------------
+// SchemaSystem — acquired in Load() (recon Q2), queried by the schema-offset
+// engine-op below.  File-scope so the C-ABI callback can reach it; null when
+// acquisition failed (schema natives then degrade to a miss, never crash).
+// ---------------------------------------------------------------------------
+static ISchemaSystem* s_pSchemaSystem = nullptr;
+
+// ---------------------------------------------------------------------------
+// Engine-op: resolve a schema field's flattened byte offset within a class via
+// the live SchemaSystem (recon Q1).  C-ABI, called by the Rust core through the
+// S2EngineOps table; `cls`/`field` are opaque strings the JS @s2script/cs2 layer
+// supplies.  Returns -1 (degrade-never-crash) when the SchemaSystem is missing or
+// the scope / class / field can't be resolved.
+// ---------------------------------------------------------------------------
+static int s2_schema_offset(const char* cls, const char* field) {
+    if (!s_pSchemaSystem || !cls || !field) return -1;
+
+    // "libserver.so" is the CS2 Linux server module string (recon [LC]) — a module *filename*,
+    // not a CS2 schema identifier; hardcoded here.
+    // TODO: gamedata key if it ever varies across games/platforms (recon Q1 [LC]).
+    CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
+    if (!scope) scope = s_pSchemaSystem->GlobalTypeScope();  // fallback scope (recon Q1)
+    if (!scope) return -1;
+
+    CSchemaClassInfo* info = scope->FindRawClassBinding(cls);  // direct pointer, no handle unwrap
+    if (!info) return -1;
+
+    for (int i = 0; i < info->m_nFieldCount; ++i) {
+        const SchemaClassFieldData_t& f = info->m_pFields[i];
+        if (f.m_pszName && strcmp(f.m_pszName, field) == 0) {
+            return f.m_nSingleInheritanceOffset;  // THE offset getter (recon Q1)
+        }
+    }
+    return -1;  // field not found on the class
 }
 
 // ---------------------------------------------------------------------------
@@ -128,15 +168,43 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         };
         tryGet("EngineCvar",           engineFactory);
         tryGet("NetworkServerService", engineFactory);
-        META_CONPRINTF("[s2script] NOTE: SchemaSystem acquisition deferred — schemasystem module factory not yet wired\n");
+
+        // Acquire and store ISchemaSystem* — backs the schema-offset engine-op (recon Q2).
+        // Reuse the engine-factory path (as for EngineCvar/NetworkServerService); the community
+        // CS2 pattern resolves SchemaSystem_001 through the engine factory even though it lives in
+        // libschemasystem.so.  Degrade-never-crash: leave the pointer null on any failure.
+        {
+            auto it = versions.find("SchemaSystem");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : SCHEMASYSTEM_INTERFACE_VERSION;
+            int ret = 0;
+            s_pSchemaSystem = engineFactory
+                ? reinterpret_cast<ISchemaSystem*>(engineFactory(verStr, &ret))
+                : nullptr;
+            if (s_pSchemaSystem && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: SchemaSystem (%s)\n", verStr);
+            } else {
+                s_pSchemaSystem = nullptr;  // do not keep a partially-resolved pointer
+                META_CONPRINTF("[s2script] WARN: interface MISSING: SchemaSystem (%s) — schema natives degrade\n", verStr);
+                // TODO(T7): if the engine factory can't resolve SchemaSystem_001 live, fall back to
+                // dlopen/dlsym of libschemasystem.so's own CreateInterface (recon Q2 fallback).
+            }
+        }
     }
     // --- end interface acquisition ---
 
     META_CONPRINTF("[s2script] Load(): initializing V8 core\n");
 
-    // Pass both callbacks; the core calls s2_request_hook("OnGameFrame", 1)
+    // Assemble the engine-ops table for the core.  Only schema_offset is wired in Slice-3 Task 3;
+    // Tasks 4-5 fill the remaining fields.  A null field (or a null SchemaSystem inside
+    // s2_schema_offset) degrades the matching native to a miss.  The core copies this struct by
+    // value at init, so the stack-local is safe to let die when Load() returns.
+    S2EngineOps ops = {};
+    ops.schema_offset = &s2_schema_offset;
+
+    // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
-    if (s2script_core_init(&s2_logger, &s2_request_hook) != 0) {
+    if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
     }

@@ -14,7 +14,7 @@
 use crate::async_rt::{Pool, TimerKind, TimerQueue};
 use crate::multiplexer::{self, Descriptor, DetourChange, HookResult, Phase, Priority};
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::{Once, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,34 @@ pub type LogFn = extern "C" fn(c_int, *const c_char);
 /// Defined here (not in `ffi.rs`) so `v8host` has no forward reference into the
 /// FFI layer; Task 4's `ffi.rs` wires the real callback via `set_hook_request`.
 pub type HookRequestFn = extern "C" fn(descriptor: *const c_char, enable: c_int);
+
+// ---------------------------------------------------------------------------
+// Engine-ops: C-ABI function pointers the shim implements and the core calls.
+//
+// Every Slice-3 engine touchpoint is a C++ call living shim-side; the core only
+// ever sees these opaque C-ABI pointers (no Rust-side C++ vtable dispatch).  This
+// is a `#[repr(C)]` mirror of `S2EngineOps` in shim/include/s2script_core.h; the
+// two must stay in lockstep (contract, not layout — treadmill-checked).
+//
+// All fields are nullable (`Option<extern "C" fn ...>` is the null-optimized FFI
+// representation): a null field degrades the matching native to a safe miss.  Only
+// `schema_offset` is wired in Slice-3 Task 3; Tasks 4–5 fill the remaining fields.
+// ---------------------------------------------------------------------------
+pub type SchemaOffsetFn = extern "C" fn(cls: *const c_char, field: *const c_char) -> c_int;
+pub type EntByIndexFn = extern "C" fn(idx: c_int) -> *mut c_void;
+pub type DerefHandleFn = extern "C" fn(handle: c_uint) -> *mut c_void;
+pub type EntStateChangedFn = extern "C" fn(ent: *mut c_void, offset: c_int);
+pub type ConCommandRegisterFn = extern "C" fn(name: *const c_char);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2EngineOps {
+    pub schema_offset: Option<SchemaOffsetFn>,
+    pub ent_by_index: Option<EntByIndexFn>,
+    pub deref_handle: Option<DerefHandleFn>,
+    pub ent_state_changed: Option<EntStateChangedFn>,
+    pub concommand_register: Option<ConCommandRegisterFn>,
+}
 
 static PLATFORM_INIT: Once = Once::new();
 
@@ -71,6 +99,20 @@ thread_local! {
     /// Cached view of "is the OnGameFrame detour currently installed?" — the source of truth the
     /// combined lazy-detour reconciles against, so we only call `HOOK_REQUEST` on a real transition.
     static DETOUR_INSTALLED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    /// Engine-ops table (copied by value at init from the shim's stack-local struct — the shim's
+    /// pointer must NOT be retained past init).  `None` until `set_engine_ops` runs; while `None`
+    /// (or a given field is null) the matching native degrades to a safe miss.
+    static ENGINE_OPS: std::cell::Cell<Option<S2EngineOps>> = std::cell::Cell::new(None);
+    /// `(class, field) → offset` cache backing `__s2_schema_offset`; keys are opaque JS strings
+    /// (NO game names in core).  Reset on `shutdown` so a re-init can re-resolve (avoids a stale
+    /// `-1` miss cached before the schema was loaded).
+    static SCHEMA_OFFSETS: std::cell::RefCell<crate::schema::OffsetCache> =
+        std::cell::RefCell::new(crate::schema::OffsetCache::new());
+}
+
+/// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
+pub fn set_engine_ops(ops: Option<S2EngineOps>) {
+    ENGINE_OPS.with(|c| c.set(ops));
 }
 
 /// Install the embedder's detour-request callback.  Wired by `ffi.rs` (Task 4).
@@ -337,6 +379,51 @@ fn s2_thread_sleep(
     }));
 }
 
+/// Native `__s2_schema_offset(class, field) -> i32`.  Resolves a schema field's byte offset
+/// within a class via the live SchemaSystem (through the shim's `schema_offset` engine-op),
+/// caching the result.  Returns `-1` on any miss (no ops / null pointer / class or field not
+/// found) and WARNs at most once per key.  `class`/`field` are OPAQUE JS strings — no game
+/// identifiers appear in core.
+///
+/// Like the other natives, the body runs under `catch_unwind` because it is invoked as a V8
+/// `FunctionCallback` from C++: a Rust panic must never unwind across the FFI boundary.  It does
+/// NOT touch `HOST`; it borrows only `SCHEMA_OFFSETS` (and, transitively, the `ENGINE_OPS`/`LOGGER`
+/// `Cell`s), none of which the shim's `schema_offset` call re-enters.
+fn s2_schema_offset(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 {
+            rv.set_int32(-1);
+            return;
+        }
+        let class = args.get(0).to_rust_string_lossy(scope);
+        let field = args.get(1).to_rust_string_lossy(scope);
+
+        // Live resolver: marshal to C strings and call the shim's engine-op (recon Q1 lives shim
+        // side).  Degrades to `-1` if no ops table, a null `schema_offset`, or interior NULs.
+        let live_raw = |c: &str, f: &str| -> i32 {
+            let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
+            let Some(func) = ops.schema_offset else { return -1 };
+            let (Ok(cc), Ok(cf)) = (CString::new(c), CString::new(f)) else { return -1 };
+            func(cc.as_ptr(), cf.as_ptr())
+        };
+        let live_log = |msg: &str| {
+            if let Some(l) = LOGGER.with(|l| l.get()) {
+                if let Ok(cs) = CString::new(msg) {
+                    l(0, cs.as_ptr());
+                }
+            }
+        };
+
+        let off =
+            SCHEMA_OFFSETS.with(|c| c.borrow_mut().resolve(&class, &field, live_raw, live_log));
+        rv.set_int32(off);
+    }));
+}
+
 pub fn init(logger: LogFn) -> Result<(), String> {
     ensure_platform();
     LOGGER.with(|l| l.set(Some(logger)));
@@ -397,6 +484,11 @@ pub fn init(logger: LogFn) -> Result<(), String> {
         let thread_sleep_key = v8::String::new(scope, "__s2_thread_sleep").unwrap();
         let thread_sleep_fn = v8::Function::new(scope, s2_thread_sleep).unwrap();
         global_obj.set(scope, thread_sleep_key.into(), thread_sleep_fn.into());
+
+        // Install the schema-offset native (`__s2_schema_offset`) on the global object.
+        let schema_offset_key = v8::String::new(scope, "__s2_schema_offset").unwrap();
+        let schema_offset_fn = v8::Function::new(scope, s2_schema_offset).unwrap();
+        global_obj.set(scope, schema_offset_key.into(), schema_offset_fn.into());
 
         // scope.as_ref() gives &Isolate (via AsRef<Isolate> for ContextScope).
         v8::Global::new(scope.as_ref(), ctx_local)
@@ -579,6 +671,9 @@ pub fn shutdown() {
     FRAME.with(|f| *f.borrow_mut() = Descriptor::new("OnGameFrame"));
     // Reset the frame counter so a re-init starts from zero.
     FRAME_COUNTER.with(|c| c.set(0));
+    // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
+    // loaded must not persist across an init cycle).
+    SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
 }
 
 /// Per-frame async drain: resolve every due timer, advance the frame counter, then run the single

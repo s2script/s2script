@@ -1,5 +1,5 @@
 use crate::multiplexer::Phase;
-use crate::v8host::{self, HookRequestFn, LogFn};
+use crate::v8host::{self, HookRequestFn, LogFn, S2EngineOps};
 use std::os::raw::{c_char, c_int};
 use std::panic::catch_unwind;
 
@@ -7,9 +7,16 @@ use std::panic::catch_unwind;
 pub extern "C" fn s2script_core_init(
     logger: Option<LogFn>,
     request_hook: Option<HookRequestFn>,
+    ops: *const S2EngineOps,
 ) -> c_int {
     catch_unwind(|| {
         v8host::set_hook_request(request_hook);
+        // Copy the engine-ops table by value: the shim passes a pointer to a stack-local struct
+        // that dies when its Load() returns, so we must NOT retain the pointer.  Null → no ops
+        // (every engine native degrades to a safe miss).  Stored before the logger guard so the
+        // ops are in place even if init bails.
+        let ops = if ops.is_null() { None } else { Some(unsafe { *ops }) };
+        v8host::set_engine_ops(ops);
         let Some(logger) = logger else { return -2 };
         match v8host::init(logger) {
             Ok(()) => 0,
@@ -76,7 +83,7 @@ mod tests {
     fn init_eval_console_log_shutdown_and_reinit() {
         CAPTURED.lock().unwrap().clear();
 
-        assert_eq!(s2script_core_init(Some(test_logger), None), 0);
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
         assert_eq!(
             s2script_core_eval(
                 b"console.log('hello from V8 in CS2')\0".as_ptr() as *const c_char
@@ -86,7 +93,7 @@ mod tests {
         s2script_core_shutdown();
 
         // platform must survive shutdown: a second cycle works without re-init of the platform
-        assert_eq!(s2script_core_init(Some(test_logger), None), 0);
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
         assert_eq!(
             s2script_core_eval(b"console.log('second cycle')\0".as_ptr() as *const c_char),
             0
@@ -108,7 +115,7 @@ mod tests {
 
     #[test]
     fn eval_with_js_exception_returns_nonzero_and_does_not_panic() {
-        assert_eq!(s2script_core_init(Some(test_logger), None), 0);
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
         let rc = s2script_core_eval(b"throw new Error('boom')\0".as_ptr() as *const c_char);
         assert_ne!(rc, 0);
         s2script_core_shutdown();
@@ -124,7 +131,7 @@ mod tests {
     #[test]
     fn subscribe_installs_dispatch_runs_unsubscribe_removes() {
         HOOKS.lock().unwrap().clear();
-        assert_eq!(s2script_core_init(Some(test_logger), Some(mock_request)), 0);
+        assert_eq!(s2script_core_init(Some(test_logger), Some(mock_request), std::ptr::null()), 0);
         // subscribing the first handler must request install:
         assert_eq!(
             s2script_core_eval(

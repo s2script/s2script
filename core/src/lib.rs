@@ -4,4 +4,5 @@
 mod async_rt;
 mod ffi;
 mod multiplexer;
+mod schema;
 mod v8host;
