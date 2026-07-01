@@ -21,3 +21,28 @@ std::map<std::string, std::string> LoadInterfaceVersions(const std::string& path
     }
     return out;
 }
+
+std::map<std::string, int> LoadOffsets(const std::string& path,
+                                        const std::string& platform,
+                                        std::string& error) {
+    std::map<std::string, int> out;
+    std::ifstream f(path);
+    if (!f) {
+        error = "gamedata file not found: " + path;
+        return out;
+    }
+    try {
+        auto j = nlohmann::json::parse(f, nullptr, /*allow_exceptions=*/true, /*ignore_comments=*/true);
+        // "offsets" section is optional — not present is not an error.
+        if (!j.contains("offsets")) return out;
+        for (auto& [key, platforms] : j.at("offsets").items()) {
+            if (platforms.contains(platform)) {
+                out[key] = platforms.at(platform).get<int>();
+            }
+        }
+    } catch (const std::exception& e) {
+        error = std::string("gamedata parse error: ") + e.what();
+        out.clear();
+    }
+    return out;
+}

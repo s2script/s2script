@@ -14,6 +14,13 @@
 // schema-offset engine-op (recon Q1/Q2; include paths mirror shim/CMakeLists.txt).
 #include <schemasystem/schemasystem.h>
 
+// Entity system: CGameEntitySystem, CEntitySystem, CConcreteEntityList, CEntityIdentity,
+// CEntityHandle, CEntityIndex, MAX_ENTITIES_IN_LIST, MAX_ENTITY_LISTS (recon Q3/Q4).
+// Requires sdk_stubs/entitydatainstantiator.h (see shim/src/sdk_stubs/ stub — recon gap).
+#include <entity2/entitysystem.h>
+// CEntityInstance, NetworkStateChangedData (recon Q6).
+#include <entity2/entityinstance.h>
+
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <cstring>
@@ -43,6 +50,14 @@ static void s2_logger([[maybe_unused]] int level, const char* msg) {
 static ISchemaSystem* s_pSchemaSystem = nullptr;
 
 // ---------------------------------------------------------------------------
+// Entity system — derived in Load() by reading CGameEntitySystem* from
+// IGameResourceService* at a gamedata-provided byte offset (recon Q3).
+// File-scope so the entity engine-ops below can reach it; null when acquisition
+// failed (entity natives then degrade to null, never crash).
+// ---------------------------------------------------------------------------
+static CGameEntitySystem* s_pGameEntitySystem = nullptr;
+
+// ---------------------------------------------------------------------------
 // Engine-op: resolve a schema field's flattened byte offset within a class via
 // the live SchemaSystem (recon Q1).  C-ABI, called by the Rust core through the
 // S2EngineOps table; `cls`/`field` are opaque strings the JS @s2script/cs2 layer
@@ -69,6 +84,56 @@ static int s2_schema_offset(const char* cls, const char* field) {
         }
     }
     return -1;  // field not found on the class
+}
+
+// ---------------------------------------------------------------------------
+// Engine-op: resolve entity by index → CEntityInstance* (opaque void*, or null).
+// Uses the signature-free manual chunk walk (recon Q3) — no gamedata signature needed
+// beyond the CGameEntitySystem* anchor already loaded from the interface offset.
+// C-ABI, called by the Rust core through the S2EngineOps table.
+// ---------------------------------------------------------------------------
+static void* s2_ent_by_index(int idx) {
+    if (!s_pGameEntitySystem) return nullptr;
+    if (idx < 0 || idx >= MAX_TOTAL_ENTITIES) return nullptr;
+
+    int chunk = idx / MAX_ENTITIES_IN_LIST;
+    int slot  = idx % MAX_ENTITIES_IN_LIST;
+
+    // Guard: the chunk pointer may be null for unallocated (sparse) chunks.
+    CEntityIdentity* chunk_base = s_pGameEntitySystem->m_EntityList.m_pIdentityChunks[chunk];
+    if (!chunk_base) return nullptr;
+
+    CEntityIdentity* id = &chunk_base[slot];
+    // EF_IS_INVALID_EHANDLE: identity slot is free/unallocated (recon Q3 [HC]).
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return nullptr;
+
+    return id->m_pInstance;  // may still be null (entity removed in progress); caller checks
+}
+
+// ---------------------------------------------------------------------------
+// Engine-op: resolve a packed entity handle (u32) → CEntityInstance* or null.
+// Routes through CEntitySystem::GetEntityInstance(CEntityHandle) which validates
+// the stored serial against the identity's serial — null on stale handle (recon Q4).
+// C-ABI, called by the Rust core through the S2EngineOps table.
+// ---------------------------------------------------------------------------
+static void* s2_deref_handle(unsigned int handle) {
+    if (!s_pGameEntitySystem) return nullptr;
+    CEntityHandle h(static_cast<uint32>(handle));
+    return s_pGameEntitySystem->GetEntityInstance(h);
+}
+
+// ---------------------------------------------------------------------------
+// Engine-op: mark an entity field dirty for network transmission (recon Q6).
+// Calls CEntityInstance::NetworkStateChanged(NetworkStateChangedData(offset))
+// via the vtable — no export needed; null-guards the entity pointer.
+// C-ABI, called by the Rust core through the S2EngineOps table.
+// ---------------------------------------------------------------------------
+static void s2_ent_state_changed(void* ent, int offset) {
+    if (!ent) return;
+    // SAFETY: the Rust caller holds a block-scoped entity pointer obtained from
+    // s2_ent_by_index or s2_deref_handle and must not cross an await boundary.
+    static_cast<CEntityInstance*>(ent)->NetworkStateChanged(
+        NetworkStateChangedData(static_cast<uint32>(offset)));
 }
 
 // ---------------------------------------------------------------------------
@@ -190,17 +255,64 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 // dlopen/dlsym of libschemasystem.so's own CreateInterface (recon Q2 fallback).
             }
         }
+
+        // Acquire IGameResourceService* and derive CGameEntitySystem* at a gamedata-provided
+        // offset (recon Q3).  The offset is DATA, never hardcoded here; a wrong value degrades
+        // (null entity system → entity natives return null), never crashes.
+        {
+            auto it = versions.find("GameResourceService");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : "GameResourceServiceServerV001";
+            int ret = 0;
+            void* pGameResSvc = engineFactory
+                ? engineFactory(verStr, &ret)
+                : nullptr;
+
+            if (pGameResSvc && ret == 0) {
+                // Read entity-system offset from gamedata (layout-is-data, never hardcoded).
+                std::string offsetError;
+                auto offsets = LoadOffsets(GamedataPath(), "linuxsteamrt64", offsetError);
+                if (!offsetError.empty()) {
+                    META_CONPRINTF("[s2script] WARN: %s — entity-system offset unavailable\n",
+                                   offsetError.c_str());
+                }
+                auto oit = offsets.find("GameEntitySystem");
+                if (oit != offsets.end() && oit->second >= 0) {
+                    int entSysOffset = oit->second;
+                    // Deref: IGameResourceService* + offset → CGameEntitySystem* (recon Q3).
+                    // TODO(T7): confirm the offset value live against the running CS2 process.
+                    s_pGameEntitySystem = *reinterpret_cast<CGameEntitySystem**>(
+                        reinterpret_cast<uint8_t*>(pGameResSvc) + static_cast<size_t>(entSysOffset));
+                    if (s_pGameEntitySystem) {
+                        META_CONPRINTF("[s2script] interface OK: GameResourceService+entity-system (offset=%d)\n",
+                                       entSysOffset);
+                    } else {
+                        META_CONPRINTF("[s2script] WARN: CGameEntitySystem* null at offset %d — entity natives degrade\n",
+                                       entSysOffset);
+                    }
+                } else {
+                    META_CONPRINTF("[s2script] WARN: GameEntitySystem offset not in gamedata — entity natives degrade\n");
+                }
+            } else {
+                META_CONPRINTF("[s2script] WARN: GameResourceService interface MISSING (%s) — entity natives degrade\n",
+                               verStr);
+            }
+        }
     }
     // --- end interface acquisition ---
 
     META_CONPRINTF("[s2script] Load(): initializing V8 core\n");
 
-    // Assemble the engine-ops table for the core.  Only schema_offset is wired in Slice-3 Task 3;
-    // Tasks 4-5 fill the remaining fields.  A null field (or a null SchemaSystem inside
-    // s2_schema_offset) degrades the matching native to a miss.  The core copies this struct by
-    // value at init, so the stack-local is safe to let die when Load() returns.
+    // Assemble the engine-ops table for the core.  Task 3 wired schema_offset; Task 4 adds the
+    // three entity ops below.  Task 5 fills concommand_register.  A null field (or a null
+    // backing pointer inside the helper) degrades the matching native to a miss.
+    // The core copies this struct by value at init, so the stack-local is safe to let die when
+    // Load() returns.
     S2EngineOps ops = {};
-    ops.schema_offset = &s2_schema_offset;
+    ops.schema_offset     = &s2_schema_offset;
+    ops.ent_by_index      = &s2_ent_by_index;
+    ops.deref_handle      = &s2_deref_handle;
+    ops.ent_state_changed = &s2_ent_state_changed;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

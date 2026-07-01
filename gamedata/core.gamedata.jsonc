@@ -5,6 +5,20 @@
     "Source2Server": "Source2Server001",
     "SchemaSystem": "SchemaSystem_001",
     "EngineCvar": "VEngineCvar007",
-    "NetworkServerService": "NetworkServerService_001"
+    "NetworkServerService": "NetworkServerService_001",
+    // IGameResourceService acquired via the engine factory; backs the entity-system pointer
+    // (recon Q3). Interface string [HC]; confirmed community name for CS2 server-side service.
+    "GameResourceService": "GameResourceServiceServerV001"
+  },
+  // Byte offsets into engine interface objects — keyed by platform string.
+  // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked
+  // into C++ logic.  A wrong offset degrades (null entity system → helpers return null),
+  // never crashes.
+  "offsets": {
+    // Offset within IGameResourceService* to the CGameEntitySystem* field (recon Q3).
+    // Community value ≈ 0x58 (Win) / 0x50 (Linux); placeholder — exact value must be
+    // dumped from the live CS2 process.
+    // TODO(T7): confirm live and replace placeholder.
+    "GameEntitySystem": { "linuxsteamrt64": 88 }
   }
 }

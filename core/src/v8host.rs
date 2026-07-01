@@ -424,6 +424,166 @@ fn s2_schema_offset(
     }));
 }
 
+/// Native `__s2_entity_by_index(i: number) -> External|null`.
+/// Calls the shim's `ent_by_index` engine-op (recon Q3 — manual chunk walk).
+/// Returns a `v8::External` wrapping the opaque `CEntityInstance*`, or JS `null` on any miss.
+/// Degrades (null + named WARN) if the ops table or the fn pointer is absent.
+fn s2_entity_by_index(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 {
+            rv.set_null();
+            return;
+        }
+        let idx = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
+            log_warn("WARN: __s2_entity_by_index: no engine ops table");
+            rv.set_null();
+            return;
+        };
+        let Some(func) = ops.ent_by_index else {
+            log_warn("WARN: __s2_entity_by_index: ent_by_index not wired in ops");
+            rv.set_null();
+            return;
+        };
+        let ptr = func(idx);
+        if ptr.is_null() {
+            rv.set_null();
+        } else {
+            let ext = v8::External::new(scope, ptr);
+            rv.set(ext.into());
+        }
+    }));
+}
+
+/// Native `__s2_deref_handle(h: number) -> External|null`.
+/// Calls the shim's `deref_handle` engine-op (recon Q4 — validates serial, null on stale).
+/// Returns a `v8::External` wrapping `CEntityInstance*`, or JS `null` when the handle is stale.
+fn s2_deref_handle(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 {
+            rv.set_null();
+            return;
+        }
+        let handle = args.get(0).uint32_value(scope).unwrap_or(0) as c_uint;
+
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
+            log_warn("WARN: __s2_deref_handle: no engine ops table");
+            rv.set_null();
+            return;
+        };
+        let Some(func) = ops.deref_handle else {
+            log_warn("WARN: __s2_deref_handle: deref_handle not wired in ops");
+            rv.set_null();
+            return;
+        };
+        let ptr = func(handle);
+        if ptr.is_null() {
+            rv.set_null();
+        } else {
+            let ext = v8::External::new(scope, ptr);
+            rv.set(ext.into());
+        }
+    }));
+}
+
+/// Native `__s2_ent_read_i32(ent: External, off: number) -> number`.
+/// Unwraps the `v8::External` to a `*const u8` (opaque entity pointer) and calls
+/// `entity::read_i32`.  Returns 0 on null base or negative offset (degrade-safe).
+fn s2_ent_read_i32(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 {
+            rv.set_int32(0);
+            return;
+        }
+        let base = match v8::Local::<v8::External>::try_from(args.get(0)) {
+            Ok(ext) => ext.value() as *const u8,
+            Err(_) => {
+                rv.set_int32(0);
+                return;
+            }
+        };
+        let off = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+        rv.set_int32(crate::entity::read_i32(base, off));
+    }));
+}
+
+/// Native `__s2_ent_write_i32(ent: External, off: number, v: number)`.
+/// Unwraps the `v8::External` to a `*mut u8` (opaque entity pointer) and calls
+/// `entity::write_i32`.  No-op on null base or negative offset (degrade-safe).
+fn s2_ent_write_i32(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 {
+            return;
+        }
+        let base = match v8::Local::<v8::External>::try_from(args.get(0)) {
+            Ok(ext) => ext.value() as *mut u8,
+            Err(_) => return,
+        };
+        let off = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+        let val = args.get(2).integer_value(scope).unwrap_or(0) as i32;
+        crate::entity::write_i32(base, off, val);
+    }));
+}
+
+/// Native `__s2_ent_state_changed(ent: External, off: number)`.
+/// Calls the shim's `ent_state_changed` engine-op (recon Q6 — virtual
+/// `CEntityInstance::NetworkStateChanged`).  No return value; no-op on bad args.
+fn s2_ent_state_changed(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 {
+            return;
+        }
+        let ent = match v8::Local::<v8::External>::try_from(args.get(0)) {
+            Ok(ext) => ext.value(),
+            Err(_) => return,
+        };
+        if ent.is_null() {
+            return;
+        }
+        let off = args.get(1).integer_value(scope).unwrap_or(0) as c_int;
+
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
+            log_warn("WARN: __s2_ent_state_changed: no engine ops table");
+            return;
+        };
+        let Some(func) = ops.ent_state_changed else {
+            log_warn("WARN: __s2_ent_state_changed: ent_state_changed not wired in ops");
+            return;
+        };
+        func(ent, off);
+    }));
+}
+
+/// Shared logging helper for named WARNs in the engine-op natives above.
+fn log_warn(msg: &str) {
+    if let Some(l) = LOGGER.with(|l| l.get()) {
+        if let Ok(cs) = CString::new(msg) {
+            l(0, cs.as_ptr());
+        }
+    }
+}
+
 pub fn init(logger: LogFn) -> Result<(), String> {
     ensure_platform();
     LOGGER.with(|l| l.set(Some(logger)));
@@ -489,6 +649,29 @@ pub fn init(logger: LogFn) -> Result<(), String> {
         let schema_offset_key = v8::String::new(scope, "__s2_schema_offset").unwrap();
         let schema_offset_fn = v8::Function::new(scope, s2_schema_offset).unwrap();
         global_obj.set(scope, schema_offset_key.into(), schema_offset_fn.into());
+
+        // Install the entity-system natives (Task 4): entity-by-index, handle-deref,
+        // i32 field read/write, and NetworkStateChanged.  Engine-dependent paths are
+        // verified live in Task 7; the pure read/write helpers are unit-tested in entity.rs.
+        let ent_by_idx_key = v8::String::new(scope, "__s2_entity_by_index").unwrap();
+        let ent_by_idx_fn  = v8::Function::new(scope, s2_entity_by_index).unwrap();
+        global_obj.set(scope, ent_by_idx_key.into(), ent_by_idx_fn.into());
+
+        let deref_handle_key = v8::String::new(scope, "__s2_deref_handle").unwrap();
+        let deref_handle_fn  = v8::Function::new(scope, s2_deref_handle).unwrap();
+        global_obj.set(scope, deref_handle_key.into(), deref_handle_fn.into());
+
+        let ent_read_i32_key = v8::String::new(scope, "__s2_ent_read_i32").unwrap();
+        let ent_read_i32_fn  = v8::Function::new(scope, s2_ent_read_i32).unwrap();
+        global_obj.set(scope, ent_read_i32_key.into(), ent_read_i32_fn.into());
+
+        let ent_write_i32_key = v8::String::new(scope, "__s2_ent_write_i32").unwrap();
+        let ent_write_i32_fn  = v8::Function::new(scope, s2_ent_write_i32).unwrap();
+        global_obj.set(scope, ent_write_i32_key.into(), ent_write_i32_fn.into());
+
+        let ent_state_changed_key = v8::String::new(scope, "__s2_ent_state_changed").unwrap();
+        let ent_state_changed_fn  = v8::Function::new(scope, s2_ent_state_changed).unwrap();
+        global_obj.set(scope, ent_state_changed_key.into(), ent_state_changed_fn.into());
 
         // scope.as_ref() gives &Isolate (via AsRef<Isolate> for ContextScope).
         v8::Global::new(scope.as_ref(), ctx_local)
