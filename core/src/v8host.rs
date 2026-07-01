@@ -400,8 +400,11 @@ fn s2_schema_offset(
     mut rv: v8::ReturnValue,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Default the return to the -1 miss sentinel up front: a panic anywhere below (e.g. an
+        // allocation failure in the string/cache ops) then leaves a well-formed -1, never a JS
+        // `undefined` — which would slip past pawn.js's `HEALTH < 0` guard and be used as an offset.
+        rv.set_int32(-1);
         if args.length() < 2 {
-            rv.set_int32(-1);
             return;
         }
         let class = args.get(0).to_rust_string_lossy(scope);

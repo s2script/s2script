@@ -82,8 +82,10 @@ static CGameEntitySystem* GetEntitySystem() {
 // A field such as m_iHealth is defined on a base (e.g. CBaseEntity), not on the leaf pawn, so
 // m_pFields (a class's OWN fields only) won't list it — we descend into m_pBaseClasses. For
 // single inheritance the base sits at m_nOffset 0, so the recursion returns the flattened offset.
-static int schema_find_field(CSchemaClassInfo* info, const char* field) {
-    if (!info) return -1;
+static int schema_find_field(CSchemaClassInfo* info, const char* field, int depth = 0) {
+    // Depth cap: C++ inheritance graphs are acyclic + shallow, but a corrupt schema table could
+    // cycle; bound the recursion so a bad pointer degrades to a miss instead of overflowing the stack.
+    if (!info || depth > 32) return -1;
     for (int i = 0; i < info->m_nFieldCount; ++i) {
         const SchemaClassFieldData_t& f = info->m_pFields[i];
         if (f.m_pszName && strcmp(f.m_pszName, field) == 0) {
@@ -92,7 +94,7 @@ static int schema_find_field(CSchemaClassInfo* info, const char* field) {
     }
     for (int b = 0; b < info->m_nBaseClassCount; ++b) {
         const SchemaBaseClassInfoData_t& base = info->m_pBaseClasses[b];
-        int sub = schema_find_field(base.m_pClass, field);
+        int sub = schema_find_field(base.m_pClass, field, depth + 1);
         if (sub >= 0) return static_cast<int>(base.m_nOffset) + sub;
     }
     return -1;
