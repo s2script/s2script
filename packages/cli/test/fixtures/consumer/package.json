@@ -1,0 +1,10 @@
+{
+  "name": "@demo/consumer",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "apiVersion": "1.x",
+    "pluginDependencies": { "@s2script/std": "^1.0.0", "@demo/greeter": "^1.0.0" },
+    "optionalPluginDependencies": { "@demo/extra": "^1.0.0" }
+  }
+}
