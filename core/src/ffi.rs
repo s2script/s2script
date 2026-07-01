@@ -47,6 +47,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
     catch_unwind(|| {
         let phase = if phase == 0 { Phase::Pre } else { Phase::Post };
         let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
+        if phase == Phase::Post { v8host::frame_async_drain(); } // Post: resolve async + microtask checkpoint
         out.result as c_int
     })
     .unwrap_or(-99)

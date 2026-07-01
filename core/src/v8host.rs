@@ -44,6 +44,9 @@ thread_local! {
     /// Embedder callback for detour install/remove.  `None` until `set_hook_request`
     /// is called (Task 4); while `None`, `apply_detour` is a safe no-op.
     static HOOK_REQUEST: std::cell::Cell<Option<HookRequestFn>> = std::cell::Cell::new(None);
+    /// Monotonic frame counter incremented once per `frame_async_drain` call.
+    /// Task 4/5 use this to schedule timers and jobs relative to the current frame.
+    static FRAME_COUNTER: std::cell::Cell<u64> = std::cell::Cell::new(0);
 }
 
 /// Install the embedder's detour-request callback.  Wired by `ffi.rs` (Task 4).
@@ -210,6 +213,10 @@ pub fn init(logger: LogFn) -> Result<(), String> {
     LOGGER.with(|l| l.set(Some(logger)));
 
     let mut isolate = v8::Isolate::new(v8::CreateParams::default());
+
+    // We own the microtask checkpoint: with Explicit policy, await/.then continuations run ONLY
+    // when we call perform_microtask_checkpoint() in frame_async_drain (once per frame).
+    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
 
     // Build the context inside a nested block so the HandleScope borrow on
     // `isolate` is released before we move `isolate` into `Host`.
@@ -381,11 +388,21 @@ pub(crate) fn dispatch_onframe(
                     if ret.is_undefined() {
                         Ok(HookResult::Continue)
                     } else {
-                        Ok(match ret.uint32_value(tc) {
-                            Some(1) => HookResult::Changed,
-                            Some(2) => HookResult::Handled,
-                            Some(3) => HookResult::Stop,
-                            _ => HookResult::Continue,
+                        Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                            0 => HookResult::Continue,
+                            1 => HookResult::Changed,
+                            2 => HookResult::Handled,
+                            3 => HookResult::Stop,
+                            n => {
+                                if let Some(f) = LOGGER.with(|l| l.get()) {
+                                    if let Ok(c) = CString::new(format!(
+                                        "WARN: onGameFrame handler returned out-of-range HookResult {n}; treating as Continue"
+                                    )) {
+                                        f(0, c.as_ptr());
+                                    }
+                                }
+                                HookResult::Continue
+                            }
                         })
                     }
                 }
@@ -409,6 +426,25 @@ pub fn shutdown() {
     });
     // Reset the descriptor so a re-init starts with a clean, empty registry.
     FRAME.with(|f| *f.borrow_mut() = Descriptor::new("OnGameFrame"));
+    // Reset the frame counter so a re-init starts from zero.
+    FRAME_COUNTER.with(|c| c.set(0));
+}
+
+/// Per-frame async drain: increment the frame counter, then run the V8 microtask
+/// checkpoint.  Called once per Post-phase game frame (wired in `ffi.rs`).
+///
+/// Task 4 will insert timer resolution before the checkpoint.
+/// Task 5 will insert job (async-FFI) resolution before the checkpoint.
+pub(crate) fn frame_async_drain() {
+    HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let Some(host) = borrow.as_mut() else { return };
+        // (Task 4 inserts: resolve due timers here.)
+        // (Task 5 inserts: resolve completed jobs here.)
+        FRAME_COUNTER.with(|c| c.set(c.get().wrapping_add(1)));
+        // Run the one microtask checkpoint for this frame.
+        host.isolate.perform_microtask_checkpoint();
+    });
 }
 
 #[cfg(test)]
@@ -422,6 +458,27 @@ mod frame_tests {
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
     extern "C" fn logger(_l: c_int, m: *const c_char) {
         LOG.lock().unwrap().push(unsafe { CStr::from_ptr(m) }.to_string_lossy().into_owned());
+    }
+
+    // A no-op logger for tests that don't care about log output.
+    extern "C" fn dummy_log_fn(_l: c_int, _m: *const c_char) {}
+    fn dummy_logger() -> LogFn { dummy_log_fn }
+
+    // Read `globalThis[name]` as a bool from the current isolate/context.
+    fn read_bool_global(name: &str) -> bool {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("read_bool_global: no host");
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &host.context);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let global = ctx_local.global(scope);
+            let key = v8::String::new(scope, name).unwrap();
+            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+            val.is_true()
+        })
     }
 
     #[test]
@@ -491,6 +548,33 @@ mod frame_tests {
         let got = LOG.lock().unwrap().clone();
         assert_eq!(got.iter().filter(|m| *m == "outer").count(), 2);
         assert_eq!(got.iter().filter(|m| *m == "inner").count(), 1); // not run frame 1, run frame 2
+        shutdown();
+    }
+
+    #[test]
+    fn microtasks_do_not_run_until_frame_drain() {
+        init(dummy_logger()).unwrap();
+        // With kExplicit, a resolved-promise continuation must NOT run during eval.
+        eval("globalThis.__ran = false; Promise.resolve().then(() => { globalThis.__ran = true; });").unwrap();
+        assert_eq!(read_bool_global("__ran"), false, "microtask ran before the drain");
+        frame_async_drain(); // runs the checkpoint
+        assert_eq!(read_bool_global("__ran"), true, "microtask did not run at the drain");
+        shutdown();
+    }
+
+    #[test]
+    fn onframe_handler_out_of_range_result_warns_and_continues() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval("onGameFrame(() => 99);").unwrap(); // 99 is out of range for HookResult
+        let out = dispatch_onframe(crate::multiplexer::Phase::Pre, true, false, false);
+        assert_eq!(out.result, crate::multiplexer::HookResult::Continue); // out-of-range → Continue
+        let got = LOG.lock().unwrap().clone();
+        assert!(
+            got.iter().any(|m| m.to_lowercase().contains("out-of-range") || m.contains("99")),
+            "expected an out-of-range warning, got: {:?}",
+            got
+        );
         shutdown();
     }
 }
