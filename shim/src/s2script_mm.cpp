@@ -53,12 +53,23 @@ static void s2_logger([[maybe_unused]] int level, const char* msg) {
 static ISchemaSystem* s_pSchemaSystem = nullptr;
 
 // ---------------------------------------------------------------------------
-// Entity system — derived in Load() by reading CGameEntitySystem* from
-// IGameResourceService* at a gamedata-provided byte offset (recon Q3).
-// File-scope so the entity engine-ops below can reach it; null when acquisition
-// failed (entity natives then degrade to null, never crash).
+// Entity system — IGameResourceService* and the gamedata byte-offset are cached
+// at Load().  The CGameEntitySystem* itself is NOT cached at Load (the map and
+// entity-system don't exist yet at that point); instead GetEntitySystem() reads
+// it fresh on every entity-native call so it becomes valid once the map is live.
 // ---------------------------------------------------------------------------
-static CGameEntitySystem* s_pGameEntitySystem = nullptr;
+static void* s_pGameResourceService   = nullptr;
+static int   s_gameEntitySystemOffset = -1;
+
+/// Read CGameEntitySystem* fresh from the IGameResourceService* on each call.
+/// Returns nullptr when the service pointer or offset is not yet available,
+/// or when the field hasn't been written yet (e.g. before the first map load).
+static CGameEntitySystem* GetEntitySystem() {
+    if (!s_pGameResourceService || s_gameEntitySystemOffset < 0) return nullptr;
+    return *reinterpret_cast<CGameEntitySystem**>(
+        reinterpret_cast<uintptr_t>(s_pGameResourceService)
+        + static_cast<size_t>(s_gameEntitySystemOffset));
+}
 
 // ---------------------------------------------------------------------------
 // Engine-op: resolve a schema field's flattened byte offset within a class via
@@ -96,14 +107,15 @@ static int s2_schema_offset(const char* cls, const char* field) {
 // C-ABI, called by the Rust core through the S2EngineOps table.
 // ---------------------------------------------------------------------------
 static void* s2_ent_by_index(int idx) {
-    if (!s_pGameEntitySystem) return nullptr;
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return nullptr;
     if (idx < 0 || idx >= MAX_TOTAL_ENTITIES) return nullptr;
 
     int chunk = idx / MAX_ENTITIES_IN_LIST;
     int slot  = idx % MAX_ENTITIES_IN_LIST;
 
     // Guard: the chunk pointer may be null for unallocated (sparse) chunks.
-    CEntityIdentity* chunk_base = s_pGameEntitySystem->m_EntityList.m_pIdentityChunks[chunk];
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[chunk];
     if (!chunk_base) return nullptr;
 
     CEntityIdentity* id = &chunk_base[slot];
@@ -123,7 +135,8 @@ static void* s2_ent_by_index(int idx) {
 // C-ABI, called by the Rust core through the S2EngineOps table.
 // ---------------------------------------------------------------------------
 static void* s2_deref_handle(unsigned int handle) {
-    if (!s_pGameEntitySystem) return nullptr;
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return nullptr;
 
     CEntityHandle h(static_cast<uint32>(handle));
     // GetEntryIndex() is inline (entityhandle.h:106); returns -1 for INVALID_EHANDLE_INDEX.
@@ -134,7 +147,7 @@ static void* s2_deref_handle(unsigned int handle) {
     int slot  = idx % MAX_ENTITIES_IN_LIST;
 
     // Guard: the chunk pointer may be null for unallocated (sparse) chunks.
-    CEntityIdentity* chunk_base = s_pGameEntitySystem->m_EntityList.m_pIdentityChunks[chunk];
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[chunk];
     if (!chunk_base) return nullptr;
 
     CEntityIdentity* id = &chunk_base[slot];
@@ -368,17 +381,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 auto oit = offsets.find("GameEntitySystem");
                 if (oit != offsets.end() && oit->second >= 0) {
                     int entSysOffset = oit->second;
-                    // Deref: IGameResourceService* + offset → CGameEntitySystem* (recon Q3).
-                    // TODO(T7): confirm the offset value live against the running CS2 process.
-                    s_pGameEntitySystem = *reinterpret_cast<CGameEntitySystem**>(
-                        reinterpret_cast<uint8_t*>(pGameResSvc) + static_cast<size_t>(entSysOffset));
-                    if (s_pGameEntitySystem) {
-                        META_CONPRINTF("[s2script] interface OK: GameResourceService+entity-system (offset=%d)\n",
-                                       entSysOffset);
-                    } else {
-                        META_CONPRINTF("[s2script] WARN: CGameEntitySystem* null at offset %d — entity natives degrade\n",
-                                       entSysOffset);
-                    }
+                    // Cache the service pointer and offset; do NOT read CGameEntitySystem* here.
+                    // The entity-system field is null at Load (the map doesn't exist yet); we read
+                    // it fresh on each entity-native call via GetEntitySystem() so it becomes valid
+                    // once a map loads.  A null at Load is expected and not a WARN.
+                    s_pGameResourceService   = pGameResSvc;
+                    s_gameEntitySystemOffset = entSysOffset;
+                    META_CONPRINTF("[s2script] interface OK: GameResourceService (%s, entity-system offset=%d cached; resolved per-call)\n",
+                                   verStr, entSysOffset);
                 } else {
                     META_CONPRINTF("[s2script] WARN: GameEntitySystem offset not in gamedata — entity natives degrade\n");
                 }
