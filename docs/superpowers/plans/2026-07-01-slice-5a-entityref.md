@@ -536,7 +536,7 @@ Expected: a `.s2sp` + `s2script.so` (GLIBC ≤ 2.30). If a CS2 update reset `gam
 
 - [ ] **Step 3: Run the host-invalidation LIVE GATE on Docker CS2.** Bring up the server, drop the demo, add a bot, get the map ticking (`bot_quota 1`, `sv_hibernate_when_empty 0`), then via `scripts/rcon.py` + the container logs:
   1. Load → `[demo] tick … stashed.health=100 fresh.health=100` (a live pawn reads).
-  2. Kill the stashed pawn (`mp_restartgame 1`, or a round death) → the stashed pawn's entity is destroyed → the NEXT tick logs `stashed.health=null` (the serial no longer matches — **not** garbage, **not** a crash); the server keeps ticking (`Up` in `docker ps`).
+  2. Force a REAL pawn destruction — `bot_kick` (destroys the controller+pawn) or lethal damage / a natural round death. **NOT `mp_restartgame`** — the spike found it does NOT destroy the pawn (serials persist), so it won't exercise the null path. The stashed pawn's entity is destroyed → the NEXT tick logs `stashed.health=null` (the serial no longer matches — **not** garbage, **not** a crash); the server keeps ticking (`Up` in `docker ps`). (If using `bot_kick`, the controller at index `slot+1` is also gone, so `fresh` reads `none` until a bot re-joins; if using lethal damage, the controller persists and `fresh` recovers on respawn.)
   3. Respawn → `fresh.health=100` again (a fresh `forSlot` gets the new serial); the demo re-stashes.
   Capture the excerpts. If the live infra genuinely won't cooperate after reasonable attempts, report BLOCKED with the exact commands/errors so the controller can drive it.
 
