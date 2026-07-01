@@ -11,12 +11,17 @@
 //! - `eval` is intentionally an arbitrary-JS-execution surface — it is the purpose of
 //!   this crate (CS2 game scripting engine).
 
-use crate::async_rt::{TimerKind, TimerQueue};
+use crate::async_rt::{Pool, TimerKind, TimerQueue};
 use crate::multiplexer::{self, Descriptor, DetourChange, HookResult, Phase, Priority};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use std::time::{Duration, Instant};
+
+static POOL: OnceLock<Pool> = OnceLock::new();
+fn pool() -> &'static Pool {
+    POOL.get_or_init(|| Pool::new(4))
+}
 
 pub type LogFn = extern "C" fn(c_int, *const c_char);
 
@@ -119,6 +124,7 @@ globalThis.onGameFrame = (fn, opts) => {
 globalThis.Delay = (ms) => __s2_delay(ms || 0);
 globalThis.NextTick = () => __s2_next_tick();
 globalThis.NextFrame = () => __s2_next_frame();
+globalThis.threadSleep = (ms) => __s2_thread_sleep(ms || 0);
 "#;
 
 /// Initialize the V8 platform exactly once for the process.  Never torn down.
@@ -307,6 +313,30 @@ fn s2_next_frame(
     }));
 }
 
+/// Native `__s2_thread_sleep(ms) -> Promise`.  Submits a blocking sleep to the worker pool;
+/// the Promise resolves the next drain after the worker finishes.
+fn s2_thread_sleep(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ms = args.get(0).integer_value(scope).unwrap_or(0);
+        let ms = if ms > 0 { ms as u64 } else { 0 };
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let id = next_async_id();
+        RESOLVERS.with(|m| m.borrow_mut().insert(id, v8::Global::new(scope.as_ref(), resolver)));
+        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        pool().submit(id, Box::new(move || {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            Ok(())
+        }));
+        refresh_detour();
+        rv.set(promise.into());
+    }));
+}
+
 pub fn init(logger: LogFn) -> Result<(), String> {
     ensure_platform();
     LOGGER.with(|l| l.set(Some(logger)));
@@ -364,6 +394,9 @@ pub fn init(logger: LogFn) -> Result<(), String> {
         let next_frame_key = v8::String::new(scope, "__s2_next_frame").unwrap();
         let next_frame_fn = v8::Function::new(scope, s2_next_frame).unwrap();
         global_obj.set(scope, next_frame_key.into(), next_frame_fn.into());
+        let thread_sleep_key = v8::String::new(scope, "__s2_thread_sleep").unwrap();
+        let thread_sleep_fn = v8::Function::new(scope, s2_thread_sleep).unwrap();
+        global_obj.set(scope, thread_sleep_key.into(), thread_sleep_fn.into());
 
         // scope.as_ref() gives &Isolate (via AsRef<Isolate> for ContextScope).
         v8::Global::new(scope.as_ref(), ctx_local)
@@ -536,7 +569,6 @@ pub fn shutdown() {
     // handles must be reset while the isolate is still alive (HOST still owns it here).
     TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new());
     RESOLVERS.with(|m| m.borrow_mut().clear());
-    NEXT_ASYNC_ID.with(|c| c.set(1));
     PENDING_JOBS.with(|c| c.set(0));
     DETOUR_INSTALLED.with(|c| c.set(false));
     // Drop the isolate and context.  The platform is never torn down.
@@ -585,7 +617,15 @@ pub(crate) fn frame_async_drain() {
                 resolver.resolve(scope, undef.into());
             }
         }
-        // (Task 5 inserts completed-job resolution here, using the same `scope`.)
+        // Resolve completed threadpool jobs.
+        while let Some((id, _res)) = pool().try_recv_completed() {
+            PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+            if let Some(g) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
+                let resolver = v8::Local::new(scope, &g);
+                let undef = v8::undefined(scope);
+                resolver.resolve(scope, undef.into());
+            }
+        }
 
         // Advance the counter BEFORE the checkpoint so continuations observe the new count.
         FRAME_COUNTER.with(|c| c.set(frame.wrapping_add(1)));
@@ -804,6 +844,21 @@ mod frame_tests {
         // within the checkpoint (must not panic). A later drain resolves the inner → __reentry = 1.
         for _ in 0..5 { frame_async_drain(); }
         assert_eq!(read_i32_global("__reentry"), 1);
+        shutdown();
+    }
+
+    #[test]
+    fn thread_sleep_runs_off_thread_and_resolves_on_a_drain() {
+        init(dummy_logger()).unwrap();
+        eval("globalThis.__t = false; threadSleep(20).then(() => { globalThis.__t = true; });").unwrap();
+        // Drive frames until the worker completes (bounded).
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            if read_bool_global("__t") { resolved = true; break; }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(resolved, "threadSleep promise never resolved on a drain");
         shutdown();
     }
 }

@@ -9,7 +9,7 @@ pub type Job = Box<dyn FnOnce() -> JobResult + Send + 'static>;
 
 pub struct Pool {
     job_tx: Sender<(u64, Job)>,
-    completion_rx: Receiver<(u64, JobResult)>,
+    completion_rx: std::sync::Mutex<Receiver<(u64, JobResult)>>,
     _workers: Vec<JoinHandle<()>>,
 }
 
@@ -31,7 +31,7 @@ impl Pool {
                 }
             }));
         }
-        Pool { job_tx, completion_rx, _workers: handles }
+        Pool { job_tx, completion_rx: std::sync::Mutex::new(completion_rx), _workers: handles }
     }
 
     pub fn submit(&self, id: u64, job: Job) {
@@ -39,7 +39,7 @@ impl Pool {
     }
 
     pub fn try_recv_completed(&self) -> Option<(u64, JobResult)> {
-        self.completion_rx.try_recv().ok()
+        self.completion_rx.lock().unwrap().try_recv().ok()
     }
 }
 
