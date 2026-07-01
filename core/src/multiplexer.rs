@@ -24,6 +24,7 @@ struct Subscription<H> {
     id: SubId,
     priority: Priority,
     phase: Phase,
+    owner: String,
     handler: H,
     enabled: bool,
     error_count: u32,
@@ -73,16 +74,32 @@ impl<H: Clone> Descriptor<H> {
     /// v8host combined lazy-detour predicate).
     pub fn enabled_count(&self) -> usize { self.enabled_count }
 
-    pub fn subscribe(&mut self, priority: Priority, phase: Phase, handler: H) -> (SubId, DetourChange) {
+    pub fn subscribe(&mut self, priority: Priority, phase: Phase, owner: String, handler: H) -> (SubId, DetourChange) {
         let id = self.next_id;
         self.next_id += 1;
         // Insert keeping (priority, then registration order). Stable: find first sub with a
         // strictly-greater priority and insert before it; else push.
         let pos = self.subs.iter().position(|s| s.priority > priority).unwrap_or(self.subs.len());
-        self.subs.insert(pos, Subscription { id, priority, phase, handler, enabled: true, error_count: 0 });
+        self.subs.insert(pos, Subscription { id, priority, phase, owner, handler, enabled: true, error_count: 0 });
         let change = if self.enabled_count == 0 { DetourChange::Install } else { DetourChange::None };
         self.enabled_count += 1;
         (id, change)
+    }
+
+    /// Unsubscribe ALL subscriptions whose `owner` matches, recompute `enabled_count`, and
+    /// return the `DetourChange` (Remove when the last enabled sub goes away, else None).
+    pub fn remove_by_owner(&mut self, owner: &str) -> DetourChange {
+        let before_enabled: usize = self.subs.iter().filter(|s| s.enabled && s.owner == owner).count();
+        self.subs.retain(|s| s.owner != owner);
+        // Recompute enabled_count from scratch to stay consistent.
+        self.enabled_count = self.subs.iter().filter(|s| s.enabled).count();
+        // Mirror the remove-detour logic: was there at least one enabled sub owned by the plugin,
+        // and now there are zero enabled subs total?
+        if before_enabled > 0 && self.enabled_count == 0 {
+            DetourChange::Remove
+        } else {
+            DetourChange::None
+        }
     }
 
     pub fn unsubscribe(&mut self, id: SubId) -> DetourChange {
@@ -119,17 +136,19 @@ impl<H: Clone> Descriptor<H> {
 
     /// Phase 1: clone the ordered, enabled handlers for `phase`. `subs` is kept priority-sorted
     /// (Monitor last), so the snapshot is already in dispatch order.
-    pub fn snapshot(&self, phase: Phase) -> Vec<(SubId, Priority, H)> {
+    pub fn snapshot(&self, phase: Phase) -> Vec<(SubId, Priority, String, H)> {
         self.subs.iter()
             .filter(|s| s.enabled && s.phase == phase)
-            .map(|s| (s.id, s.priority, s.handler.clone()))
+            .map(|s| (s.id, s.priority, s.owner.clone(), s.handler.clone()))
             .collect()
     }
 
     /// Recomposed convenience: snapshot + run_chain + apply_errors. Replaces Task 1's dispatch.
     pub fn dispatch(&mut self, phase: Phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> DispatchOutcome {
         let snap = self.snapshot(phase);
-        let out = run_chain(&snap, invoke);
+        // run_chain operates on 3-tuples; strip the owner tag before passing in.
+        let snap3: Vec<(SubId, Priority, H)> = snap.into_iter().map(|(id, prio, _owner, h)| (id, prio, h)).collect();
+        let out = run_chain(&snap3, invoke);
         let detour = self.apply_errors(&out.errored);
         DispatchOutcome { result: out.result, detour }
     }
@@ -151,11 +170,11 @@ mod tests {
     fn priority_order_high_to_monitor_then_registration_order() {
         let log = std::cell::RefCell::new(vec![]);
         let mut d = Descriptor::new("OnGameFrame");
-        d.subscribe(Priority::Low,     Phase::Pre, Mock { tag: "low",  ret: HookResult::Continue });
-        d.subscribe(Priority::High,    Phase::Pre, Mock { tag: "high", ret: HookResult::Continue });
-        d.subscribe(Priority::Normal,  Phase::Pre, Mock { tag: "n1",   ret: HookResult::Continue });
-        d.subscribe(Priority::Normal,  Phase::Pre, Mock { tag: "n2",   ret: HookResult::Continue });
-        d.subscribe(Priority::Monitor, Phase::Pre, Mock { tag: "mon",  ret: HookResult::Continue });
+        d.subscribe(Priority::Low,     Phase::Pre, "test".into(), Mock { tag: "low",  ret: HookResult::Continue });
+        d.subscribe(Priority::High,    Phase::Pre, "test".into(), Mock { tag: "high", ret: HookResult::Continue });
+        d.subscribe(Priority::Normal,  Phase::Pre, "test".into(), Mock { tag: "n1",   ret: HookResult::Continue });
+        d.subscribe(Priority::Normal,  Phase::Pre, "test".into(), Mock { tag: "n2",   ret: HookResult::Continue });
+        d.subscribe(Priority::Monitor, Phase::Pre, "test".into(), Mock { tag: "mon",  ret: HookResult::Continue });
         run(&mut d, Phase::Pre, &log);
         assert_eq!(*log.borrow(), vec!["high", "n1", "n2", "low", "mon"]);
     }
@@ -164,8 +183,8 @@ mod tests {
     fn collapse_is_max_by_precedence() {
         let log = std::cell::RefCell::new(vec![]);
         let mut d = Descriptor::new("d");
-        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Changed });
-        d.subscribe(Priority::Low,    Phase::Pre, Mock { tag: "b", ret: HookResult::Handled });
+        d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "a", ret: HookResult::Changed });
+        d.subscribe(Priority::Low,    Phase::Pre, "test".into(), Mock { tag: "b", ret: HookResult::Handled });
         assert_eq!(run(&mut d, Phase::Pre, &log), HookResult::Handled);
     }
 
@@ -173,9 +192,9 @@ mod tests {
     fn stop_short_circuits_remaining_non_monitor() {
         let log = std::cell::RefCell::new(vec![]);
         let mut d = Descriptor::new("d");
-        d.subscribe(Priority::High,    Phase::Pre, Mock { tag: "high", ret: HookResult::Stop });
-        d.subscribe(Priority::Low,     Phase::Pre, Mock { tag: "low",  ret: HookResult::Continue });
-        d.subscribe(Priority::Monitor, Phase::Pre, Mock { tag: "mon",  ret: HookResult::Continue });
+        d.subscribe(Priority::High,    Phase::Pre, "test".into(), Mock { tag: "high", ret: HookResult::Stop });
+        d.subscribe(Priority::Low,     Phase::Pre, "test".into(), Mock { tag: "low",  ret: HookResult::Continue });
+        d.subscribe(Priority::Monitor, Phase::Pre, "test".into(), Mock { tag: "mon",  ret: HookResult::Continue });
         let r = run(&mut d, Phase::Pre, &log);
         assert_eq!(r, HookResult::Stop);
         assert_eq!(*log.borrow(), vec!["high", "mon"]); // low skipped; monitor still runs
@@ -185,8 +204,8 @@ mod tests {
     fn handled_does_not_short_circuit() {
         let log = std::cell::RefCell::new(vec![]);
         let mut d = Descriptor::new("d");
-        d.subscribe(Priority::High, Phase::Pre, Mock { tag: "high", ret: HookResult::Handled });
-        d.subscribe(Priority::Low,  Phase::Pre, Mock { tag: "low",  ret: HookResult::Continue });
+        d.subscribe(Priority::High, Phase::Pre, "test".into(), Mock { tag: "high", ret: HookResult::Handled });
+        d.subscribe(Priority::Low,  Phase::Pre, "test".into(), Mock { tag: "low",  ret: HookResult::Continue });
         run(&mut d, Phase::Pre, &log);
         assert_eq!(*log.borrow(), vec!["high", "low"]);
     }
@@ -196,8 +215,8 @@ mod tests {
         let log = std::cell::RefCell::new(vec![]);
         let mut d = Descriptor::new("d");
         // Monitor returns Stop, but it must NOT affect the collapse (its return is ignored).
-        d.subscribe(Priority::Monitor, Phase::Pre, Mock { tag: "mon", ret: HookResult::Stop });
-        d.subscribe(Priority::Normal,  Phase::Pre, Mock { tag: "n",   ret: HookResult::Changed });
+        d.subscribe(Priority::Monitor, Phase::Pre, "test".into(), Mock { tag: "mon", ret: HookResult::Stop });
+        d.subscribe(Priority::Normal,  Phase::Pre, "test".into(), Mock { tag: "n",   ret: HookResult::Changed });
         let r = run(&mut d, Phase::Pre, &log);
         assert_eq!(r, HookResult::Changed);          // monitor's Stop ignored
         assert_eq!(*log.borrow(), vec!["n", "mon"]); // monitor last
@@ -207,8 +226,8 @@ mod tests {
     fn phases_are_isolated() {
         let log = std::cell::RefCell::new(vec![]);
         let mut d = Descriptor::new("d");
-        d.subscribe(Priority::Normal, Phase::Pre,  Mock { tag: "pre",  ret: HookResult::Continue });
-        d.subscribe(Priority::Normal, Phase::Post, Mock { tag: "post", ret: HookResult::Continue });
+        d.subscribe(Priority::Normal, Phase::Pre,  "test".into(), Mock { tag: "pre",  ret: HookResult::Continue });
+        d.subscribe(Priority::Normal, Phase::Post, "test".into(), Mock { tag: "post", ret: HookResult::Continue });
         run(&mut d, Phase::Pre, &log);
         assert_eq!(*log.borrow(), vec!["pre"]);
     }
@@ -216,9 +235,9 @@ mod tests {
     #[test]
     fn first_subscription_requests_install() {
         let mut d: Descriptor<Mock> = Descriptor::new("d");
-        let (_, c1) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
+        let (_, c1) = d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "a", ret: HookResult::Continue });
         assert!(matches!(c1, DetourChange::Install));
-        let (_, c2) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
+        let (_, c2) = d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "b", ret: HookResult::Continue });
         assert!(matches!(c2, DetourChange::None));
     }
 
@@ -227,9 +246,9 @@ mod tests {
         // The snapshot taken at dispatch start is the set that runs this frame; a sub added
         // afterward (the re-entrancy case) is NOT in it — it runs next frame.
         let mut d = Descriptor::new("d");
-        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
+        d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "a", ret: HookResult::Continue });
         let snap = d.snapshot(Phase::Pre);
-        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
+        d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "b", ret: HookResult::Continue });
         assert_eq!(snap.len(), 1);            // "b" not in the earlier snapshot
         assert_eq!(d.snapshot(Phase::Pre).len(), 2); // but a fresh snapshot includes it
     }
@@ -237,8 +256,8 @@ mod tests {
     #[test]
     fn unsubscribe_excludes_from_future_snapshots_and_lazy_removes() {
         let mut d: Descriptor<Mock> = Descriptor::new("d");
-        let (a, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "a", ret: HookResult::Continue });
-        let (b, _) = d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "b", ret: HookResult::Continue });
+        let (a, _) = d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "a", ret: HookResult::Continue });
+        let (b, _) = d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "b", ret: HookResult::Continue });
         assert!(matches!(d.unsubscribe(a), DetourChange::None));   // one still enabled
         assert_eq!(d.snapshot(Phase::Pre).len(), 1);              // "a" gone from snapshots
         assert!(matches!(d.unsubscribe(b), DetourChange::Remove)); // last one gone → remove detour
@@ -249,7 +268,7 @@ mod tests {
     #[test]
     fn handler_error_is_continue_and_counts_then_auto_disables() {
         let mut d = Descriptor::new("d");
-        d.subscribe(Priority::Normal, Phase::Pre, Mock { tag: "bad", ret: HookResult::Stop });
+        d.subscribe(Priority::Normal, Phase::Pre, "test".into(), Mock { tag: "bad", ret: HookResult::Stop });
         // invoke always errors; error must be treated as Continue (NOT the handler's scripted Stop),
         // and after MAX_HANDLER_ERRORS the sub auto-disables (being last → requests Remove).
         let mut last = DispatchOutcome { result: HookResult::Continue, detour: DetourChange::None };
@@ -259,5 +278,17 @@ mod tests {
         }
         assert!(matches!(last.detour, DetourChange::Remove));
         assert_eq!(d.snapshot(Phase::Pre).len(), 0); // auto-disabled → excluded from snapshots
+    }
+
+    #[test]
+    fn remove_by_owner_drops_that_plugins_subs_only() {
+        let mut d = Descriptor::<Mock>::new("d");
+        d.subscribe(Priority::Normal, Phase::Pre, "a".into(), Mock { tag: "a1", ret: HookResult::Continue });
+        d.subscribe(Priority::Normal, Phase::Pre, "b".into(), Mock { tag: "b1", ret: HookResult::Continue });
+        d.subscribe(Priority::Normal, Phase::Pre, "a".into(), Mock { tag: "a2", ret: HookResult::Continue });
+        d.remove_by_owner("a");
+        let snap = d.snapshot(Phase::Pre);
+        let tags: Vec<_> = snap.iter().map(|(_, _, owner, h)| (owner.clone(), h.tag)).collect();
+        assert_eq!(tags, vec![("b".to_string(), "b1")], "only b's sub remains, still owner-tagged");
     }
 }

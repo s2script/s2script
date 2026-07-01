@@ -279,7 +279,7 @@ fn s2_subscribe(
 
         // The combined predicate supersedes the DetourChange the multiplexer returns; ignore it.
         let (id, _change) =
-            FRAME.with(|f| f.borrow_mut().subscribe(priority, phase, JsHandler { func: global }));
+            FRAME.with(|f| f.borrow_mut().subscribe(priority, phase, "legacy".into(), JsHandler { func: global }));
         refresh_detour();
         rv.set_double(id as f64);
     }));
@@ -846,13 +846,15 @@ pub(crate) fn dispatch_onframe(
     use crate::multiplexer::{run_chain, DispatchOutcome};
 
     // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers, then release.
-    let snap = FRAME.with(|f| f.borrow().snapshot(phase));
-    if snap.is_empty() {
+    // snapshot() returns 4-tuples (SubId, Priority, owner, H); strip owner for run_chain.
+    let snap4 = FRAME.with(|f| f.borrow().snapshot(phase));
+    if snap4.is_empty() {
         return DispatchOutcome {
             result: HookResult::Continue,
             detour: DetourChange::None,
         };
     }
+    let snap: Vec<_> = snap4.into_iter().map(|(id, prio, _owner, h)| (id, prio, h)).collect();
 
     // Phase 2 — invoke under the V8 context.  HOST is borrowed; FRAME is NOT.
     let outcome = HOST.with(|h| {
