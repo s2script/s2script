@@ -115,14 +115,37 @@ static void* s2_ent_by_index(int idx) {
 
 // ---------------------------------------------------------------------------
 // Engine-op: resolve a packed entity handle (u32) → CEntityInstance* or null.
-// Routes through CEntitySystem::GetEntityInstance(CEntityHandle) which validates
-// the stored serial against the identity's serial — null on stale handle (recon Q4).
+// Signature-free chunk walk (recon Q4): mirrors s2_ent_by_index but adds serial
+// validation via CEntityIdentity::GetRefEHandle() (inline, entityidentity.h:74).
+// Does NOT call CEntitySystem::GetEntityIdentity(CEntityHandle const&) — that
+// non-inline method is not exported by any CS2 module (confirmed via nm; dlopen
+// blocker).  All helpers used here are inline or field accesses.
 // C-ABI, called by the Rust core through the S2EngineOps table.
 // ---------------------------------------------------------------------------
 static void* s2_deref_handle(unsigned int handle) {
     if (!s_pGameEntitySystem) return nullptr;
+
     CEntityHandle h(static_cast<uint32>(handle));
-    return s_pGameEntitySystem->GetEntityInstance(h);
+    // GetEntryIndex() is inline (entityhandle.h:106); returns -1 for INVALID_EHANDLE_INDEX.
+    int idx = h.GetEntryIndex();
+    if (idx < 0 || idx >= MAX_TOTAL_ENTITIES) return nullptr;
+
+    int chunk = idx / MAX_ENTITIES_IN_LIST;
+    int slot  = idx % MAX_ENTITIES_IN_LIST;
+
+    // Guard: the chunk pointer may be null for unallocated (sparse) chunks.
+    CEntityIdentity* chunk_base = s_pGameEntitySystem->m_EntityList.m_pIdentityChunks[chunk];
+    if (!chunk_base) return nullptr;
+
+    CEntityIdentity* id = &chunk_base[slot];
+    // EF_IS_INVALID_EHANDLE: identity slot is free/unallocated (recon Q3 [HC]).
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return nullptr;
+    // Serial validation: GetRefEHandle() is inline (entityidentity.h:74); it returns
+    // the identity's stored handle, adjusted for EF_IS_INVALID_EHANDLE so a free slot
+    // never matches a live handle.  If index+serial differ from h → stale → null.
+    if (!(id->GetRefEHandle() == h)) return nullptr;
+
+    return id->m_pInstance;  // may still be null (entity removed in progress); caller checks
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +170,7 @@ static void s2_ent_state_changed(void* ent, int offset) {
 // Destroy() to unregister.  Objects live for the plugin lifetime.
 // TODO(teardown): iterate s_concommands in Unload() and delete each one (ledger item).
 // ---------------------------------------------------------------------------
-static std::vector<ConCommand*> s_concommands;
+[[maybe_unused]] static std::vector<ConCommand*> s_concommands;
 
 // ONE shared trampoline for every registered ConCommand.  Source 2 puts the command
 // name at Arg(0); ArgS() is everything after it.  Reads the name, slot, and args, then
@@ -159,17 +182,22 @@ static void s2_concommand_trampoline(const CCommandContext& ctx, const CCommand&
     s2script_core_dispatch_concommand(name, slot, args ? args : "");
 }
 
-// Engine-op: construct and self-register a ConCommand with the shared trampoline.
+// Engine-op: register a ConCommand with the shared trampoline.
 // Called by the Rust core's __s2_concommand native (through the S2EngineOps table).
 // C-ABI; degrade-never-crash if name is null.
-// [LC] T7: confirm the ConCommand self-registration is effective from within the
-//          Metamod plugin (depends on g_pCVar / ICvar being live at construction time).
+//
+// NEUTRALIZED: ConCommand::Create is NOT exported by any CS2 module (confirmed via nm;
+// it was a dlopen blocker).  This function logs a WARN and returns without registering.
+// The trampoline, the s_concommands vector, and this wiring in S2EngineOps are kept
+// intact so the full ConCommand machinery assembles cleanly for the Slice-5 command
+// framework, which will route through an exported/vtable path.
+// TODO(slice-5): replace this body with the Slice-5 command-registration path once the
+//               correct exported or vtable-routed ConCommand::Create equivalent is identified.
 static void s2_concommand_register(const char* name) {
     if (!name) return;
-    // Heap-allocate so the ConCommand is not tied to a stack frame.  The ctor calls
-    // Create() which self-registers into the cvar system.  Stored for plugin lifetime.
-    ConCommand* cmd = new ConCommand(name, &s2_concommand_trampoline, "s2script command", 0);
-    s_concommands.push_back(cmd);
+    META_CONPRINTF("[s2script] WARN: ConCommand registration unavailable on this build "
+                   "(ConCommand::Create not exported by CS2); command '%s' not registered "
+                   "— console-command support arrives with the Slice-5 command framework\n", name);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +454,35 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 })();
             }
         }, { priority: 'monitor' });
+
+        // Slice 3 demo (auto readback): once live-ticking, scan slots for the first player pawn
+        // (a bot added post-boot via bot_add) and prove `pawn.health` get/set + the folded-in
+        // network state-change by reading the value straight back. Retries each frame until a pawn
+        // exists, then stops. cs2.* comes from @s2script/cs2 (games/cs2/js/pawn.js), loaded above.
+        var __s3done = false;
+        onGameFrame(function () {
+            if (__s3done || __frames < 150) return;   // wait until the server is live-ticking
+            for (var slot = 0; slot < 64; slot++) {
+                var p = cs2.pawnForSlot(slot);
+                if (!p) continue;
+                var got = p.health;
+                console.log('[cs2] slot=' + slot + ' HEALTH_OFFSET=' + cs2.HEALTH_OFFSET + ' health get=' + got);
+                p.health = 1234;                       // write + NetworkStateChanged (in the setter)
+                console.log('[cs2] slot=' + slot + ' health set=1234 readback=' + p.health);
+                __s3done = true;
+                break;
+            }
+        }, { priority: 'monitor' });
+
+        // Slice 3 manual HUD: `s2_sethp <value>` sets the CALLING client's pawn health (connect a
+        // client, run it in console, watch the HUD change — proves the state-change networks).
+        __s2_concommand('s2_sethp', function (slot, args) {
+            var p = cs2.pawnForSlot(slot);
+            if (!p) { console.log('[cs2] s2_sethp: no pawn for slot ' + slot); return; }
+            var v = parseInt(args) || 100;
+            p.health = v;
+            console.log('[cs2] s2_sethp: slot ' + slot + ' -> health ' + v);
+        });
     )JS");
     return true;
 }
