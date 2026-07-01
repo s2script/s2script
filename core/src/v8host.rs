@@ -831,6 +831,58 @@ mod frame_tests {
     }
 
     #[test]
+    fn async_completion_removes_detour_when_pending_reaches_zero() {
+        HOOKS.lock().unwrap().clear();
+        set_hook_request(Some(record_hook));
+        init(dummy_logger()).unwrap();
+        // Drain any stray pool completions from earlier tests so PENDING_JOBS starts clean.
+        while pool().try_recv_completed().is_some() {}
+        // With ZERO onGameFrame subscribers, start one async op that will complete on its own.
+        // threadSleep(20) increments PENDING_JOBS → 1 and must drive an install.
+        eval("threadSleep(20);").unwrap();
+        // Assert the install was requested.
+        assert!(
+            HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1),
+            "threadSleep should request detour install"
+        );
+        // Drive the drain until the job completes and the remove fires.
+        for _ in 0..500 {
+            frame_async_drain();
+            if HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // Assert the remove transition was recorded: when PENDING_JOBS reached zero,
+        // refresh_detour must have requested enable=0.
+        assert!(
+            HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0),
+            "async pending→0 must request detour remove"
+        );
+        // Assert install strictly precedes remove in HOOKS order, proving a real install→remove
+        // transition rather than a spurious 0.
+        let hooks = HOOKS.lock().unwrap();
+        let install_idx = hooks
+            .iter()
+            .position(|(n, e)| n == "OnGameFrame" && *e == 1)
+            .expect("install entry must be present");
+        let remove_idx = hooks
+            .iter()
+            .skip(install_idx + 1)
+            .position(|(n, e)| n == "OnGameFrame" && *e == 0)
+            .map(|i| i + install_idx + 1)
+            .expect("remove entry must follow install entry");
+        assert!(
+            install_idx < remove_idx,
+            "install must precede remove in HOOKS: {:?}",
+            *hooks
+        );
+        drop(hooks);
+        shutdown();
+        set_hook_request(None);
+    }
+
+    #[test]
     fn continuation_may_reenter_timer_primitives_during_checkpoint() {
         // Re-entrancy discipline: a resolved continuation that itself queues another timer
         // re-enters TIMERS/RESOLVERS from INSIDE perform_microtask_checkpoint. frame_async_drain

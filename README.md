@@ -350,7 +350,7 @@ The Slice-1 `HIGH`-before-`low` composition still fires each tick and the server
 | timers | `Delay` at/after deadline; `NextTick`/`NextFrame` at expected drain | ✅ cargo (`delay_resolves_only_after_its_deadline`, `next_frame_resolves_one_frame_later`) |
 | marshal | off-thread op resolves on a later frame drain | ✅ live (`threadSleep(50)` resumed on main) + cargo (`thread_sleep_runs_off_thread_and_resolves_on_a_drain`) |
 | non-block | `await Delay(1000)` does not block the tick | ✅ live (frames elapsed ~64 during the 1 s await) |
-| detour | `GameFrame` stays installed while async pending, removed when both counts reach zero | ✅ cargo (`delay_with_no_onframe_subscriber_still_requests_detour_install` + re-entrancy/accounting tests) |
+| detour | `GameFrame` stays installed while async pending, removed when both counts reach zero | ✅ cargo (install: `delay_with_no_onframe_subscriber_still_requests_detour_install`; remove: `async_completion_removes_detour_when_pending_reaches_zero`) |
 
 ---
 
