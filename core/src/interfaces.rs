@@ -61,12 +61,16 @@ impl InterfaceRegistry {
     }
 
     pub fn publish(&mut self, name: &str, version: &str, producer_id: &str, producer_gen: u64, method_names: Vec<String>) {
+        // Preserve any existing subscribers on republish of the same name: a producer updating its
+        // interface in place keeps its consumers subscribed. (A fresh producer's entry starts empty
+        // because `remove_by_producer` cleared the prior one on unload.)
+        let subscribers = self.ifaces.get(name).map(|e| e.subscribers.clone()).unwrap_or_default();
         self.ifaces.insert(name.to_string(), InterfaceEntry {
             version: version.to_string(),
             producer_id: producer_id.to_string(),
             producer_gen,
             method_names,
-            subscribers: Vec::new(),
+            subscribers,
         });
     }
 
@@ -159,6 +163,9 @@ impl InterfaceRegistry {
     /// Reverse-dependency unload order: a consumer (importer) is emitted BEFORE the producer it
     /// imports from, so its onUnload can still call producer methods. Cycles degrade to arbitrary
     /// order (appended as-is).
+    /// Call this BEFORE any `remove_by_producer` / entry removal — edges are derived
+    /// from currently-published interfaces, so a removed producer's edges become invisible. (Task 7's
+    /// `unload_all` computes the order once up front, then unloads.)
     pub fn unload_order(&self, ids: &[String]) -> Vec<String> {
         let mut remaining: Vec<String> = ids.to_vec();
         let mut order = Vec::new();
@@ -291,5 +298,35 @@ mod tests {
         // input order must not matter:
         assert_eq!(r.unload_order(&["prod".into(), "cons".into()]), vec!["cons".to_string(), "prod".to_string()]);
         assert_eq!(r.unload_order(&["cons".into(), "prod".into()]), vec!["cons".to_string(), "prod".to_string()]);
+    }
+
+    #[test]
+    fn producer_of_returns_id_and_generation() {
+        let mut r = reg();
+        assert!(r.producer_of("@x").is_none());
+        r.publish("@x", "1.0.0", "prod", 3, vec![]);
+        assert_eq!(r.producer_of("@x"), Some(("prod".to_string(), 3)));
+    }
+
+    #[test]
+    fn clear_empties_ifaces_and_imports() {
+        let mut r = reg();
+        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.set_imports("cons", vec![("@x".into(), "^1.0.0".into(), Kind::Hard)]);
+        r.clear();
+        assert!(r.lookup("@x").is_none());
+        assert_eq!(r.dep_kind("cons", "@x"), None);
+    }
+
+    #[test]
+    fn republish_preserves_existing_subscribers() {
+        let mut r = reg();
+        r.publish("@x", "1.0.0", "prod", 0, vec!["greet".into()]);
+        r.add_subscriber("@x", Subscriber { sub_id: 5, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
+        r.publish("@x", "1.1.0", "prod", 0, vec!["greet".into(), "wave".into()]); // in-place update
+        let e = r.lookup("@x").unwrap();
+        assert_eq!(e.version, "1.1.0");
+        assert_eq!(e.method_names, vec!["greet".to_string(), "wave".to_string()]);
+        assert_eq!(e.subscribers.len(), 1, "existing subscriber preserved across republish");
     }
 }
