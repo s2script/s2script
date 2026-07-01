@@ -9,7 +9,12 @@
 // a plugin loads).  `Pawn.forSlot()` resolves them lazily on each call; once the schema is ready
 // the core OffsetCache caches the hit so the repeated lookup is free.
 (function () {
-  var EntityRef = require("@s2script/std").EntityRef;
+  // The cs2 prelude is evaluated per-context AFTER the @s2script/std prelude, in the raw
+  // context scope (NOT inside the plugin's CJS `(function(require,module,exports){…})` wrapper),
+  // so the bundler-injected `require` is NOT in scope here.  Resolve EntityRef through the
+  // `__s2require` native (the same primitive the std prelude uses) — it hands back
+  // `globalThis.__s2pkg_std`, which the std prelude already stashed EntityRef on.
+  var EntityRef = __s2require("@s2script/std").EntityRef;
 
   function Pawn(ref, healthOff) { this.ref = ref; this.healthOff = healthOff; }
   Pawn.prototype = {
