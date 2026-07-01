@@ -803,14 +803,29 @@ fn entity_current_serial(index: i32) -> i32 {
 }
 
 /// Resolve (index, serial) to a live entity pointer, or null if the serial no longer matches.
-/// Raw pointer stays in Rust — callers read/write through it and discard it within the native.
+/// A SINGLE `ent_by_index` lookup: the current serial is read from the SAME pointer that is returned,
+/// so the validated serial and the returned pointer are guaranteed to be the same entity — no
+/// double-lookup, no TOCTOU window. The raw pointer stays in Rust; callers read/write through it and
+/// discard it within the native, so it never crosses to JS.
+/// SAFETY: entity natives run synchronously within a game frame; no entity is destroyed between the
+/// serial read and the caller's deref on this same pointer.
 fn entity_resolve_ptr(index: i32, serial: i32) -> *mut u8 {
-    if !crate::entity::resolve(entity_current_serial(index), serial) {
-        return std::ptr::null_mut();
-    }
     let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return std::ptr::null_mut() };
     let Some(by_index) = ops.ent_by_index else { return std::ptr::null_mut() };
-    by_index(index) as *mut u8
+    let ent = by_index(index) as *mut u8;
+    if ent.is_null() {
+        return std::ptr::null_mut();
+    }
+    let identity = crate::entity::read_ptr(ent as *const u8, ENT_IDENTITY_PTR_OFFSET);
+    if identity.is_null() {
+        return std::ptr::null_mut();
+    }
+    let handle = crate::entity::read_u32(identity, ENT_IDENTITY_HANDLE_OFFSET);
+    let (_idx, cur_serial) = crate::entity::decode_handle(handle);
+    if !crate::entity::resolve(cur_serial, serial) {
+        return std::ptr::null_mut();
+    }
+    ent
 }
 
 /// Native `__s2_ent_current_serial(index) -> number`.
@@ -821,6 +836,7 @@ fn s2_ent_current_serial(
     mut rv: v8::ReturnValue,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         rv.set_int32(entity_current_serial(index));
     }));
@@ -834,6 +850,7 @@ fn s2_ent_ref_valid(
     mut rv: v8::ReturnValue,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
         rv.set_bool(crate::entity::resolve(entity_current_serial(index), serial));
@@ -899,6 +916,9 @@ fn s2_ent_ref_state_changed(
 
 /// Native `__s2_handle_decode(handleValue) -> [index, serial]`.
 /// Pure bit-math (no engine ops): decodes a CEntityHandle uint32 into a [index, serial] array.
+/// Note: a negative JS number wraps to `u32` (`... as u32`) and decodes to a nonsensical
+/// `(index, serial)` — callers pass a valid `CEntityHandle` uint32 (e.g. from a schema
+/// handle field coerced with `>>> 0` in JS). No error is raised (pure bit-math).
 fn s2_handle_decode(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
