@@ -2979,4 +2979,25 @@ mod frame_tests {
         assert_eq!(read_global_string("er", "__write"), "false");
         shutdown();
     }
+
+    /// Slice 5A Task 5: a game-package prelude (registered via `register_injected_package`)
+    /// runs in the RAW context scope where the CJS `require` is NOT defined — it must use
+    /// the `__s2require` native to reach `@s2script/std`. This guards that mechanism
+    /// (the Slice-5A live gate caught a bare-`require` bug the unit tests missed).
+    /// Synthetic prelude — engine-generic, no CS2 names.
+    #[test]
+    fn registered_package_prelude_reaches_std_entityref_via_native_require() {
+        let _ = init(dummy_logger());
+        register_injected_package(
+            "@s2script/cs2",
+            r#"var ER = __s2require("@s2script/std").EntityRef;
+               globalThis.__s2pkg_cs2 = { hasEntityRef: (typeof ER === "function") };"#,
+        );
+        load_plugin_js("p", r#"
+            const cs2 = require("@s2script/cs2");
+            globalThis.__ok = String(cs2 !== null && cs2.hasEntityRef === true);
+        "#);
+        assert_eq!(read_global_string("p", "__ok"), "true");
+        shutdown();
+    }
 }

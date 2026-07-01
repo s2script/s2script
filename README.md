@@ -591,7 +591,7 @@ ledgered reverse-dependency teardown — proven end to end.
 | boundary | core stays engine-generic — no game names in the inter-plugin path | ✅ cargo (`check-core-boundary.sh` + name-leak gate) |
 
 Deferred to later slices: interface `.d.ts` codegen (consumers hand-write the ambient `.d.ts` today);
-the `tsc` typecheck gate; the handle/`EntityRef` system + schema codegen + `@s2script/std` breadth (Slice 5);
+the `tsc` typecheck gate; full schema codegen (5B) + the engine-generic `@s2script/std` breadth (5C);
 config materialization + permissions enforcement + reload state-handoff.
 
 ---
