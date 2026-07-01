@@ -55,7 +55,10 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
     catch_unwind(|| {
         let phase = if phase == 0 { Phase::Pre } else { Phase::Post };
         let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
-        if phase == Phase::Post { v8host::frame_async_drain(); } // Post: resolve async + microtask checkpoint
+        if phase == Phase::Post {
+            v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
+            crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
+        }
         out.result as c_int
     })
     .unwrap_or(-99)
@@ -127,6 +130,28 @@ pub extern "C" fn s2script_core_register_package(name: *const c_char, js: *const
             Err(_) => return,
         };
         v8host::register_injected_package(name_str, js_str);
+    });
+}
+
+/// Set the plugins directory path for the `.s2sp` watcher (`loader::poll_plugins`).
+///
+/// Called by the shim at load time with the resolved `addons/s2script/plugins/` path
+/// (derived via `dladdr` — see `PluginsDir()` in `s2script_mm.cpp`).  Must be called
+/// before the first Post-phase frame dispatch for the watcher to activate.
+///
+/// # Safety
+/// `path` must be a valid null-terminated UTF-8 C string.  A null pointer or
+/// invalid UTF-8 degrades to a no-op (degrade-never-crash, spec §6).
+#[no_mangle]
+pub extern "C" fn s2script_core_set_plugins_dir(path: *const c_char) {
+    let _ = catch_unwind(|| {
+        if path.is_null() {
+            return;
+        }
+        match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(s) => crate::loader::set_plugins_dir(s),
+            Err(_) => {}
+        }
     });
 }
 

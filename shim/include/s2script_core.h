@@ -41,9 +41,12 @@ void s2script_core_dispatch_concommand(const char* name, int slot, const char* a
 void s2script_core_load_cs2(const char* path);
 /* Register a game-package JS source under `name` so core can inject it into each
  * plugin context at runtime without baking game JS into the core binary.
- * name and js must be null-terminated UTF-8.  Null pointers degrade to a no-op.
- * TODO(T7): shim calls this with ("@s2script/cs2", <packaged pawn.js content>) at load. */
+ * name and js must be null-terminated UTF-8.  Null pointers degrade to a no-op. */
 void s2script_core_register_package(const char* name, const char* js);
+/* Set the plugins directory for the .s2sp watcher.  Called once by the shim at
+ * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
+ * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */
+void s2script_core_set_plugins_dir(const char* path);
 
 #ifdef __cplusplus
 }

@@ -804,8 +804,8 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
     });
 }
 
-/// Shared logging helper for named WARNs in the engine-op natives above.
-fn log_warn(msg: &str) {
+/// Shared logging helper for named WARNs in the engine-op natives and the loader.
+pub(crate) fn log_warn(msg: &str) {
     if let Some(l) = LOGGER.with(|l| l.get()) {
         if let Ok(cs) = CString::new(msg) {
             l(0, cs.as_ptr());
@@ -1104,6 +1104,19 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
 /// Degrade-never-crash: a compile/run/onLoad error logs a named WARN and returns; no exception
 /// propagates (the whole JS run is under a `TryCatch`).
 pub(crate) fn load_plugin_js(id: &str, plugin_js: &str) {
+    // Defensive guard: if the plugin is already loaded (e.g. the caller is performing a
+    // reload but did not call unload_plugin first), tear it down now so the old handler
+    // Global/context can never leak into the new instance.  The loader's explicit
+    // unload-before-load (T7 reload discipline) makes this a belt-and-suspenders no-op
+    // in the normal reload path; it protects against accidental double-loads in other paths.
+    if PLUGINS.with(|p| p.borrow().contains_key(id)) {
+        log_warn(&format!(
+            "WARN: load_plugin_js('{}'): plugin already loaded — unloading old instance first (reload guard)",
+            id
+        ));
+        unload_plugin(id);
+    }
+
     // (1) Fresh context with the full injected API installed.
     create_plugin_context(id);
 
@@ -2135,6 +2148,80 @@ mod frame_tests {
         frame_async_drain();                       // must NOT run the continuation into a disposed context
         // The plugin/context is gone; nothing to read — assert no panic + the resolver was dropped:
         assert!(!PLUGINS.with(|p| p.borrow().contains_key("demo")));
+        shutdown();
+    }
+
+    /// T7 integration test: RELOAD tears down the old plugin and runs only the new handler.
+    ///
+    /// Proof requirements (brief §RELOAD DISCIPLINE):
+    /// - load v1 (sets a global via an OnGameFrame handler), dispatch → only the NEW handler's
+    ///   effect is present after reload
+    /// - old subscription is gone (subscription count = 1, not 2)
+    /// - generation advanced (old generation is stale, new generation is live)
+    ///
+    /// The defensive guard in `load_plugin_js` is the mechanism under test here: when
+    /// `load_plugin_js("demo", v2_js)` is called while "demo" is still in PLUGINS, it detects
+    /// the existing instance, calls `unload_plugin("demo")` first (teardown: removes the v1
+    /// handler, disposes the context), then loads v2 in a fresh context.
+    #[test]
+    fn reload_tears_down_old_and_runs_new_handler() {
+        init(dummy_logger()).unwrap();
+
+        // v1: subscribes an OnGameFrame handler that writes "v1" to a global.
+        let v1_js = r#"
+            const { OnGameFrame } = require("@s2script/std");
+            module.exports.onLoad = function () {
+                OnGameFrame.subscribe(function () { globalThis.__v = "v1"; });
+            };
+        "#;
+        load_plugin_js("demo", v1_js);
+        dispatch_game_frame_pre_post();
+        assert_eq!(read_string_global_in("demo", "__v"), "v1", "v1 handler ran before reload");
+
+        // Capture the v1 generation so we can assert it becomes stale after reload.
+        let old_gen = PLUGINS
+            .with(|p| p.borrow().get("demo").expect("demo loaded").generation);
+
+        // RELOAD: call load_plugin_js with the same id — the defensive guard fires.
+        // v2 writes "v2" to the global.
+        let v2_js = r#"
+            const { OnGameFrame } = require("@s2script/std");
+            module.exports.onLoad = function () {
+                OnGameFrame.subscribe(function () { globalThis.__v = "v2"; });
+            };
+        "#;
+        load_plugin_js("demo", v2_js);
+
+        // Old generation is now stale (unload bumped or removed it).
+        assert!(
+            !REGISTRY.with(|r| r.borrow().is_live("demo", old_gen)),
+            "old generation must be stale after reload"
+        );
+
+        // Dispatch: only the v2 handler runs; the v1 handler must not be present.
+        dispatch_game_frame_pre_post();
+        assert_eq!(
+            read_string_global_in("demo", "__v"),
+            "v2",
+            "v2 handler must run after reload"
+        );
+
+        // There must be exactly ONE OnGameFrame subscription (v2's), not two.
+        let sub_count = FRAME.with(|f| f.borrow().snapshot(Phase::Pre).len());
+        assert_eq!(
+            sub_count, 1,
+            "old (v1) subscription must be gone; only v2's subscription remains"
+        );
+
+        // New generation is live.
+        let new_gen = PLUGINS
+            .with(|p| p.borrow().get("demo").expect("demo still loaded").generation);
+        assert_ne!(old_gen, new_gen, "generation must have advanced");
+        assert!(
+            REGISTRY.with(|r| r.borrow().is_live("demo", new_gen)),
+            "new generation must be live"
+        );
+
         shutdown();
     }
 
