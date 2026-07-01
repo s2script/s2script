@@ -22,9 +22,30 @@ use std::time::SystemTime;
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
     pub id: String,
+    /// Carried in the manifest contract; not yet validated (semver enforcement deferred).
+    #[allow(dead_code)]
     pub version: String,
     #[serde(rename = "apiVersion")]
     pub api_version: String,
+}
+
+/// The major apiVersion this host speaks.  A plugin whose declared apiVersion major differs is
+/// refused at load (degrade-never-crash: WARN + skip) — spec §5.  Bumping the host's breaking
+/// contract bumps this constant.
+pub(crate) const HOST_API_VERSION_MAJOR: u32 = 1;
+
+/// Parse the leading integer (semver major) from a plugin's declared apiVersion string.
+/// Tolerates a leading range operator: "1.x", "1.0.0", "^1.2.3", "~1.0" all → Some(1).
+/// Returns None when there is no leading integer ("x", "").
+fn parse_api_major(api_version: &str) -> Option<u32> {
+    let after_op = api_version.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let digits: String = after_op.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u32>().ok()
+}
+
+/// True if a plugin declaring `api_version` is compatible with this host (same major) — spec §5.
+fn api_version_compatible(api_version: &str) -> bool {
+    matches!(parse_api_major(api_version), Some(m) if m == HOST_API_VERSION_MAJOR)
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +179,13 @@ pub(crate) fn poll_plugins() {
         match action {
             Action::Load { path, mtime } => match read_file_and_parse(&path) {
                 Ok((manifest, js)) => {
+                    if !api_version_compatible(&manifest.api_version) {
+                        crate::v8host::log_warn(&format!(
+                            "WARN: poll_plugins: refusing {:?}: apiVersion {:?} incompatible with host major {}",
+                            path, manifest.api_version, HOST_API_VERSION_MAJOR
+                        ));
+                        continue;
+                    }
                     crate::v8host::load_plugin_js(&manifest.id, &js);
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
@@ -171,6 +199,13 @@ pub(crate) fn poll_plugins() {
 
             Action::Reload { path, mtime, old_id } => match read_file_and_parse(&path) {
                 Ok((manifest, js)) => {
+                    if !api_version_compatible(&manifest.api_version) {
+                        crate::v8host::log_warn(&format!(
+                            "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {}",
+                            path, manifest.api_version, HOST_API_VERSION_MAJOR
+                        ));
+                        continue;
+                    }
                     // RELOAD discipline (T7): explicit unload of the old id BEFORE load.
                     // `load_plugin_js` also carries a defensive guard, but we unload here
                     // explicitly so the intent is clear and the ledger is the authority.
@@ -352,5 +387,21 @@ mod tests {
             "error must mention 'manifest', got: {}",
             err
         );
+    }
+
+    #[test]
+    fn api_version_compatible_accepts_matching_major() {
+        assert!(api_version_compatible("1.x"));
+        assert!(api_version_compatible("1.0.0"));
+        assert!(api_version_compatible("^1.2.3"));
+        assert!(api_version_compatible("~1.0"));
+    }
+
+    #[test]
+    fn api_version_incompatible_rejects_wrong_or_missing_major() {
+        assert!(!api_version_compatible("2.x"));
+        assert!(!api_version_compatible("0.9.0"));
+        assert!(!api_version_compatible("x"));
+        assert!(!api_version_compatible(""));
     }
 }

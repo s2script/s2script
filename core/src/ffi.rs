@@ -113,8 +113,8 @@ pub extern "C" fn s2script_core_load_cs2(_path: *const c_char) {
 /// `name` and `js` must be valid null-terminated UTF-8 C strings.  Null pointers degrade to a
 /// no-op (never crash).  `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
 ///
-/// TODO(T7): shim calls s2script_core_register_package("@s2script/cs2", <packaged pawn.js content>)
-/// at load time so each plugin context gets the @s2script/cs2 package via the runtime registry.
+/// The shim calls this at load time with ("@s2script/cs2", <packaged pawn.js>), so each plugin
+/// context receives the @s2script/cs2 package via the runtime registry.
 #[no_mangle]
 pub extern "C" fn s2script_core_register_package(name: *const c_char, js: *const c_char) {
     let _ = catch_unwind(|| {

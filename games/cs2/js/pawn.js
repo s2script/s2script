@@ -1,7 +1,9 @@
 // @s2script/cs2 — the injected game package.  CS2 schema/game identifiers live ONLY in this file
-// (never in core): core embeds this file via `include_str!` and evaluates it per plugin context,
-// so the name-leak gate (which greps core/src) stays green.  This file sets
-// `globalThis.__s2pkg_cs2 = { Pawn }`, which core's `__s2require` returns for `require("@s2script/cs2")`.
+// (never in core): the shim reads this file at load and hands it to core via
+// `s2script_core_register_package` (→ core's `register_injected_package`).  Core NEVER embeds a game
+// file — the boundary gate forbids `include_str!(games/…)` in core/src — so the name-leak gate stays
+// green.  Core evaluates this source per plugin context, where it sets `globalThis.__s2pkg_cs2 =
+// { Pawn }`, which core's `__s2require` returns for `require("@s2script/cs2")`.
 //
 // Offsets are NOT resolved at load time — the schema isn't populated until a map loads (long after
 // a plugin loads).  `Pawn.forSlot()` resolves them lazily on each call; once the schema is ready

@@ -1001,7 +1001,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             install_natives(scope, global_obj);
             run_prelude(scope, "@s2script/std", INJECTED_STD_PRELUDE);
             // @s2script/cs2: provided externally at runtime via register_injected_package
-            // (the shim calls s2script_core_register_package at load — see ffi.rs TODO(T7)).
+            // (the shim calls s2script_core_register_package at load — see ffi.rs).
             // If not registered, __s2pkg_cs2 stays undefined and require("@s2script/cs2") → null.
             let cs2_src = INJECTED_PACKAGES.with(|p| p.borrow().get("@s2script/cs2").cloned());
             if let Some(src) = cs2_src {
