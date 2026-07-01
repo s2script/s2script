@@ -108,6 +108,11 @@ thread_local! {
     /// `-1` miss cached before the schema was loaded).
     static SCHEMA_OFFSETS: std::cell::RefCell<crate::schema::OffsetCache> =
         std::cell::RefCell::new(crate::schema::OffsetCache::new());
+    /// `name → Global<Function>` map for registered ConCommands.  The shim calls back via
+    /// `s2script_core_dispatch_concommand` (C-ABI) when a registered command fires.  Reset on
+    /// `shutdown` (BEFORE the isolate is dropped — same discipline as `RESOLVERS`).
+    static CONCOMMANDS: std::cell::RefCell<std::collections::HashMap<String, v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -575,6 +580,84 @@ fn s2_ent_state_changed(
     }));
 }
 
+/// Native `__s2_concommand(name: string, fn: (slot: number, argString: string) => void)`.
+/// Stores the JS callback `Global<Function>` keyed by command name in `CONCOMMANDS`, then
+/// calls `ops.concommand_register(name)` to register the raw ConCommand engine-side (shim).
+/// Degrades (WARN) if ops/fn null; `catch_unwind`; does NOT touch `HOST`.
+fn s2_concommand(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 {
+            return;
+        }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let func_local = match v8::Local::<v8::Function>::try_from(args.get(1)) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let global = v8::Global::new(scope.as_ref(), func_local);
+
+        // Store the Global<Function> — CONCOMMANDS borrow is released before the engine call.
+        CONCOMMANDS.with(|m| m.borrow_mut().insert(name.clone(), global));
+
+        // Register the raw ConCommand engine-side via the shim's ops table.
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
+            log_warn("WARN: __s2_concommand: no engine ops table");
+            return;
+        };
+        let Some(func) = ops.concommand_register else {
+            log_warn("WARN: __s2_concommand: concommand_register not wired in ops");
+            return;
+        };
+        let Ok(cname) = CString::new(name.as_str()) else { return };
+        func(cname.as_ptr());
+    }));
+}
+
+/// Dispatch a ConCommand callback to the registered JS function.
+///
+/// Called from `ffi.rs`'s `s2script_core_dispatch_concommand` (C-ABI export), which the shim's
+/// ConCommand trampoline invokes when a registered command fires.
+///
+/// **Re-entrancy discipline:** borrow `CONCOMMANDS`, CLONE the `Global<Function>`, DROP the
+/// borrow — then open a `HOST` scope and call JS.  A command handler may call `__s2_concommand`
+/// again (re-enters `CONCOMMANDS.borrow_mut()`); holding the borrow across the JS call would
+/// panic.  No `CONCOMMANDS` borrow is held across the JS invocation.
+pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
+    // Phase 1: clone the Global, release the borrow before JS.
+    let maybe_fn = CONCOMMANDS.with(|m| m.borrow().get(name).cloned());
+    let Some(global) = maybe_fn else { return };
+
+    // Phase 2: open a V8 scope (borrows HOST) and invoke the JS fn.
+    HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let Some(host) = borrow.as_mut() else { return };
+
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let hs = &mut hs;
+        let ctx_local = v8::Local::new(hs, &host.context);
+        let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+        // Build JS arguments: (slot: number, args: string).
+        let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
+        let slot_val: v8::Local<v8::Value> = v8::Number::new(scope, slot as f64).into();
+        let Some(args_str) = v8::String::new(scope, args) else { return };
+        let args_val: v8::Local<v8::Value> = args_str.into();
+
+        // Per-call TryCatch so a throwing handler doesn't propagate outside dispatch.
+        let mut tc_storage = v8::TryCatch::new(scope);
+        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+        let tc = &mut tc;
+
+        let func = v8::Local::new(tc, &global);
+        let _ = func.call(tc, recv, &[slot_val, args_val]);
+    });
+}
+
 /// Shared logging helper for named WARNs in the engine-op natives above.
 fn log_warn(msg: &str) {
     if let Some(l) = LOGGER.with(|l| l.get()) {
@@ -672,6 +755,12 @@ pub fn init(logger: LogFn) -> Result<(), String> {
         let ent_state_changed_key = v8::String::new(scope, "__s2_ent_state_changed").unwrap();
         let ent_state_changed_fn  = v8::Function::new(scope, s2_ent_state_changed).unwrap();
         global_obj.set(scope, ent_state_changed_key.into(), ent_state_changed_fn.into());
+
+        // Install __s2_concommand (Task 5): register a raw Source 2 ConCommand; the shim's
+        // trampoline calls s2script_core_dispatch_concommand (C-ABI) when the command fires.
+        let concommand_key = v8::String::new(scope, "__s2_concommand").unwrap();
+        let concommand_fn  = v8::Function::new(scope, s2_concommand).unwrap();
+        global_obj.set(scope, concommand_key.into(), concommand_fn.into());
 
         // scope.as_ref() gives &Isolate (via AsRef<Isolate> for ContextScope).
         v8::Global::new(scope.as_ref(), ctx_local)
@@ -844,6 +933,9 @@ pub fn shutdown() {
     // handles must be reset while the isolate is still alive (HOST still owns it here).
     TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new());
     RESOLVERS.with(|m| m.borrow_mut().clear());
+    // Clear CONCOMMANDS BEFORE dropping the isolate — same discipline as RESOLVERS: the map holds
+    // Global<Function>s into the isolate; dropping them while the isolate is alive is required.
+    CONCOMMANDS.with(|m| m.borrow_mut().clear());
     PENDING_JOBS.with(|c| c.set(0));
     DETOUR_INSTALLED.with(|c| c.set(false));
     // Drop the isolate and context.  The platform is never torn down.
@@ -964,6 +1056,23 @@ mod frame_tests {
             let key = v8::String::new(scope, name).unwrap();
             let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
             val.integer_value(scope).unwrap_or(0) as i32
+        })
+    }
+
+    // Read `globalThis[name]` as a String from the current isolate/context (mirrors read_bool_global).
+    fn read_string_global(name: &str) -> String {
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("read_string_global: no host");
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &host.context);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let global = ctx_local.global(scope);
+            let key = v8::String::new(scope, name).unwrap();
+            let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+            val.to_rust_string_lossy(scope)
         })
     }
 
@@ -1189,6 +1298,22 @@ mod frame_tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!(resolved, "threadSleep promise never resolved on a drain");
+        shutdown();
+    }
+
+    /// `__s2_concommand` stores the JS callback in CONCOMMANDS; `dispatch_concommand` invokes it
+    /// with (slot, argString).  This test exercises the store + dispatch path without the engine
+    /// (calls `dispatch_concommand` directly, bypassing ConCommand registration).
+    #[test]
+    fn concommand_callback_receives_slot_and_args() {
+        init(dummy_logger()).unwrap();
+        eval(r#"
+            globalThis.__cc = null;
+            __s2_concommand("s2_test", function (slot, args) { globalThis.__cc = slot + ":" + args; });
+        "#).unwrap();
+        // Simulate the engine invoking the command (bypasses ConCommand registration):
+        dispatch_concommand("s2_test", 3, "1234");
+        assert_eq!(read_string_global("__cc"), "3:1234");
         shutdown();
     }
 

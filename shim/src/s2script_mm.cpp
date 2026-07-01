@@ -21,6 +21,9 @@
 // CEntityInstance, NetworkStateChangedData (recon Q6).
 #include <entity2/entityinstance.h>
 
+// ConCommand, FnCommandCallback_t, ConCommandCallbackInfo_t, CCommandContext, CCommand (recon Q7).
+#include <convar.h>
+
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <cstring>
@@ -134,6 +137,39 @@ static void s2_ent_state_changed(void* ent, int offset) {
     // s2_ent_by_index or s2_deref_handle and must not cross an await boundary.
     static_cast<CEntityInstance*>(ent)->NetworkStateChanged(
         NetworkStateChangedData(static_cast<uint32>(offset)));
+}
+
+// ---------------------------------------------------------------------------
+// ConCommand support (recon Q7).
+//
+// s_concommands: persistent storage for heap-allocated ConCommand objects.  The
+// ConCommand constructor self-registers into the cvar system; the destructor calls
+// Destroy() to unregister.  Objects live for the plugin lifetime.
+// TODO(teardown): iterate s_concommands in Unload() and delete each one (ledger item).
+// ---------------------------------------------------------------------------
+static std::vector<ConCommand*> s_concommands;
+
+// ONE shared trampoline for every registered ConCommand.  Source 2 puts the command
+// name at Arg(0); ArgS() is everything after it.  Reads the name, slot, and args, then
+// calls back into the Rust core via C-ABI so the registered JS function is invoked.
+static void s2_concommand_trampoline(const CCommandContext& ctx, const CCommand& cmd) {
+    const char* name = cmd.Arg(0);   // command name is always arg 0 in Source 2
+    int slot         = ctx.GetPlayerSlot().Get();  // -1 for server-console invocations
+    const char* args = cmd.ArgS();   // everything after the command name
+    s2script_core_dispatch_concommand(name, slot, args ? args : "");
+}
+
+// Engine-op: construct and self-register a ConCommand with the shared trampoline.
+// Called by the Rust core's __s2_concommand native (through the S2EngineOps table).
+// C-ABI; degrade-never-crash if name is null.
+// [LC] T7: confirm the ConCommand self-registration is effective from within the
+//          Metamod plugin (depends on g_pCVar / ICvar being live at construction time).
+static void s2_concommand_register(const char* name) {
+    if (!name) return;
+    // Heap-allocate so the ConCommand is not tied to a stack frame.  The ctor calls
+    // Create() which self-registers into the cvar system.  Stored for plugin lifetime.
+    ConCommand* cmd = new ConCommand(name, &s2_concommand_trampoline, "s2script command", 0);
+    s_concommands.push_back(cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -309,10 +345,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // The core copies this struct by value at init, so the stack-local is safe to let die when
     // Load() returns.
     S2EngineOps ops = {};
-    ops.schema_offset     = &s2_schema_offset;
-    ops.ent_by_index      = &s2_ent_by_index;
-    ops.deref_handle      = &s2_deref_handle;
-    ops.ent_state_changed = &s2_ent_state_changed;
+    ops.schema_offset      = &s2_schema_offset;
+    ops.ent_by_index       = &s2_ent_by_index;
+    ops.deref_handle       = &s2_deref_handle;
+    ops.ent_state_changed  = &s2_ent_state_changed;
+    ops.concommand_register = &s2_concommand_register;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
