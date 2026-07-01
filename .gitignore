@@ -10,3 +10,6 @@ examples/**/dist/
 packages/**/dist/
 packages/**/node_modules/
 **/*.s2sp
+
+# superpowers SDD scratch (ledger, task briefs/reports) — never tracked
+.superpowers/
