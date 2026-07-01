@@ -92,17 +92,42 @@ pub extern "C" fn s2script_core_dispatch_concommand(
     });
 }
 
-/// C-ABI entry point retained for shim link-compatibility.  As of Slice 4 the `@s2script/cs2`
-/// package (`games/cs2/js/pawn.js`) is EMBEDDED per plugin context (via core's `include_str!` +
-/// the injected prelude) and returned through `require("@s2script/cs2")`, so there is no longer a
-/// single-context "load a cs2 JS file" step.  This entry is now a degrade-safe no-op — the `path`
-/// argument is ignored.  `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
-///
-/// TODO(shim, later slice): drop the shim's `s2script_core_load_cs2(Cs2JsPath())` call and its
-/// HOST-context `cs2.*` demo; the per-plugin `require` model supersedes both.
+/// C-ABI entry point retained for shim link-compatibility.  Now a degrade-safe no-op: game JS
+/// is provided to core via `s2script_core_register_package` instead (see below).
+/// `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
 #[no_mangle]
 pub extern "C" fn s2script_core_load_cs2(_path: *const c_char) {
-    // Intentionally empty: pawn.js is compiled into each plugin context (see v8host::create_plugin_context).
+    // No-op: the per-plugin require model (register_injected_package) supersedes this entry.
+}
+
+/// Register a game-package JS source under `name` so core can inject it per-plugin-context
+/// without baking game JS into the core binary at compile time.
+///
+/// Called by the shim at load time (engine-generic: core never knows which game package is being
+/// registered — the name and source come entirely from the caller).
+///
+/// # Safety
+/// `name` and `js` must be valid null-terminated UTF-8 C strings.  Null pointers degrade to a
+/// no-op (never crash).  `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
+///
+/// TODO(T7): shim calls s2script_core_register_package("@s2script/cs2", <packaged pawn.js content>)
+/// at load time so each plugin context gets the @s2script/cs2 package via the runtime registry.
+#[no_mangle]
+pub extern "C" fn s2script_core_register_package(name: *const c_char, js: *const c_char) {
+    let _ = catch_unwind(|| {
+        if name.is_null() || js.is_null() {
+            return;
+        }
+        let name_str = match unsafe { CStr::from_ptr(name) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let js_str = match unsafe { CStr::from_ptr(js) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        v8host::register_injected_package(name_str, js_str);
+    });
 }
 
 #[cfg(test)]

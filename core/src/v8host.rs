@@ -145,6 +145,11 @@ thread_local! {
     /// same id string as `PLUGINS`.  Reset on `shutdown` so a re-init starts empty.
     static REGISTRY: std::cell::RefCell<plugin::Registry>
         = std::cell::RefCell::new(plugin::Registry::new());
+    /// Runtime package registry: maps package name (e.g. `"@s2script/cs2"`) to JS source.
+    /// Populated by the shim at load time via `s2script_core_register_package` (C-ABI, see ffi.rs).
+    /// NOT cleared on `shutdown` — package registrations are valid for the process lifetime.
+    static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, String>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -155,6 +160,17 @@ pub fn set_engine_ops(ops: Option<S2EngineOps>) {
 /// Install the embedder's detour-request callback.  Wired by `ffi.rs` (Task 4).
 pub fn set_hook_request(f: Option<HookRequestFn>) {
     HOOK_REQUEST.with(|c| c.set(f));
+}
+
+/// Register a game-package JS source string under `name` (e.g. `"@s2script/cs2"`).
+///
+/// Called by the shim at load time (via the C-ABI `s2script_core_register_package`) to provide
+/// game-specific JS to core without baking it in at compile time.  Each call overwrites any prior
+/// value for the same name (idempotent for the shim's load-once use).  The stored source is then
+/// evaluated per-context in `create_plugin_context` and stashed at `globalThis.__s2pkg_*` for
+/// the `__s2require` native.
+pub fn register_injected_package(name: &str, js: &str) {
+    INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), js.to_string()));
 }
 
 /// Allocate the next async id (timers + Task-5 jobs share this space).
@@ -217,14 +233,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
 })();
 "#;
 
-/// The injected `@s2script/cs2` prelude — the reshaped `games/cs2/js/pawn.js`, embedded at COMPILE
-/// time via `include_str!`.  The CS2 schema/game identifiers (class + field names) live ONLY in
-/// that file, never in `core/src` — so the name-leak gate (which greps `core/src`) stays green.
-/// The file sets `globalThis.__s2pkg_cs2 = { Pawn }`, which the `__s2require` native returns for
-/// `"@s2script/cs2"`.  NOTE (architectural TODO, later slice): a game package should eventually
-/// PROVIDE its JS to core rather than core `include_str!`-reaching into `games/`; for Slice 4 this
-/// is the sanctioned mechanism that keeps CS2 names out of `core/src`.
-const INJECTED_CS2_PRELUDE: &str = include_str!("../../games/cs2/js/pawn.js");
+// @s2script/cs2 is NOT embedded here. It is provided externally at runtime by the shim via
+// `register_injected_package("@s2script/cs2", <js>)` (see `ffi.rs`).  Core contains zero cs2 JS.
+// If the package is not registered, `require("@s2script/cs2")` returns null (graceful degrade).
 
 /// Initialize the V8 platform exactly once for the process.  Never torn down.
 fn ensure_platform() {
@@ -937,7 +948,13 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             let global_obj = ctx_local.global(scope);
             install_natives(scope, global_obj);
             run_prelude(scope, "@s2script/std", INJECTED_STD_PRELUDE);
-            run_prelude(scope, "@s2script/cs2", INJECTED_CS2_PRELUDE);
+            // @s2script/cs2: provided externally at runtime via register_injected_package
+            // (the shim calls s2script_core_register_package at load — see ffi.rs TODO(T7)).
+            // If not registered, __s2pkg_cs2 stays undefined and require("@s2script/cs2") → null.
+            let cs2_src = INJECTED_PACKAGES.with(|p| p.borrow().get("@s2script/cs2").cloned());
+            if let Some(src) = cs2_src {
+                run_prelude(scope, "@s2script/cs2", &src);
+            }
 
             v8::Global::new(scope.as_ref(), ctx_local)
             // scope, hs, hs_storage drop here — the isolate borrow is released.
