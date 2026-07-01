@@ -266,6 +266,35 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     threadSleep: (ms) => __s2_thread_sleep(ms || 0),
     console,
   };
+  // --- Slice 4.5: inter-plugin interfaces ---
+  function makeIfaceProxy(name) {
+    return new Proxy({}, {
+      get: function (_t, prop) {
+        if (prop === "on")  return function (ev, h) { return __s2_iface_on(name, ev, h); };
+        if (prop === "off") return function (ev, h) { return __s2_iface_off(name, ev, h); };
+        if (typeof prop !== "string") return undefined;
+        return function () {
+          var args = Array.prototype.slice.call(arguments);
+          return __s2_iface_call(name, prop, args);
+        };
+      }
+    });
+  }
+  function resolveInterface(name) {
+    var kind = __s2_iface_dep_kind(name);
+    if (kind === "none") return null;                       // undeclared specifier
+    if (kind === "optional" && !__s2_iface_is_published(name)) return null;
+    return makeIfaceProxy(name);                             // hard → always a proxy
+  }
+  globalThis.__s2_require = function (name) {
+    var pkg = __s2require(name);                             // @s2script/std | @s2script/cs2
+    if (pkg !== null && pkg !== undefined) return pkg;
+    return resolveInterface(name);                          // inter-plugin, or null
+  };
+  std.publishInterface = function (name, version, impl) {
+    __s2_iface_publish(name, version, impl);
+    return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
+  };
   globalThis.__s2pkg_std = std;
 })();
 "#;
@@ -1019,6 +1048,76 @@ fn s2_iface_is_published(
     }));
 }
 
+/// `__s2_iface_call(name, method, argsArray) -> result` — the consumer-side cross-context call.
+/// Re-resolves the registry by name each call (so producer hot-reload auto-recovers), checks the
+/// version range + method existence, structured-copies args consumer→producer via the JSON carrier,
+/// enters the producer context, calls the method Global, structured-copies the return back. Named
+/// throws on the failure modes; the whole body is catch_unwind.
+fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let method = args.get(1).to_rust_string_lossy(scope);
+        let Some(consumer) = current_plugin(scope) else {
+            throw_named(scope, "InterfaceUnavailable", &name);
+            return;
+        };
+
+        // Decide what to do from the pure registry.
+        let target = IFACES.with(|r| r.borrow().call_target(&consumer, &name, &method));
+        match target {
+            crate::interfaces::CallTarget::Unavailable => { throw_named(scope, "InterfaceUnavailable", &name); return; }
+            crate::interfaces::CallTarget::VersionMismatch => { throw_named(scope, "InterfaceVersionMismatch", &name); return; }
+            crate::interfaces::CallTarget::Ok => {}
+        }
+
+        // Marshal args (the 3rd arg, an array) OUT of the consumer context to a JSON String.
+        let args_json = match iface_to_json(scope, args.get(2)) {
+            Some(s) => s,
+            None => { throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} args", name, method)); return; }
+        };
+
+        // Producer context + method Global — extract into owned locals so no IFACES/IFACE_METHODS/PLUGINS
+        // borrow is held across the V8 context-switch or the method call (borrow discipline).
+        let Some((producer_id, _gen)) = IFACES.with(|r| r.borrow().producer_of(&name)) else {
+            throw_named(scope, "InterfaceUnavailable", &name); return;
+        };
+        let method_g = IFACE_METHODS.with(|m| m.borrow().get(&(name.clone(), method.clone())).cloned());
+        let Some(method_g) = method_g else { throw_named(scope, "InterfaceUnavailable", &name); return; };
+        let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&producer_id).map(|pi| pi.context.clone())) else {
+            throw_named(scope, "InterfaceUnavailable", &name); return;
+        };
+
+        // Enter the producer context: parse args there, call, stringify the result there. The whole
+        // producer-side sequence returns Option<String> (the result JSON) — None on any failure.
+        // CRITICAL: iface_to_json is called INSIDE this block (while cscope is live) so the result
+        // string is extracted before the ContextScope drops and the Local<Value> would become invalid.
+        let result_json: Option<String> = {
+            let ctx_local = v8::Local::new(scope, &g_ctx);
+            let cscope = &mut v8::ContextScope::new(scope, ctx_local);
+            (|| -> Option<String> {
+                let args_val = iface_from_json(cscope, &args_json)?;         // parse args (a COPY)
+                let arr = v8::Local::<v8::Array>::try_from(args_val).ok()?;  // it's an array
+                let mut argv: Vec<v8::Local<v8::Value>> = Vec::with_capacity(arr.length() as usize);
+                for i in 0..arr.length() { argv.push(arr.get_index(cscope, i)?); }
+                let f = v8::Local::new(cscope, &method_g);
+                let recv: v8::Local<v8::Value> = v8::undefined(cscope).into();
+                let ret = f.call(cscope, recv, &argv)?;                      // call the producer method
+                iface_to_json(cscope, ret)                                   // stringify result here
+            })()
+        };
+
+        // Back in the consumer context: parse the result JSON into a fresh Local (a COPY).
+        match result_json {
+            Some(json) => match iface_from_json(scope, &json) {
+                Some(v) => rv.set(v),
+                None => throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} return", name, method)),
+            },
+            None => throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} return", name, method)),
+        }
+    }));
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -1057,6 +1156,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
     set_native(scope, global_obj, "__s2_iface_is_published", s2_iface_is_published);
+    set_native(scope, global_obj, "__s2_iface_call", s2_iface_call);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -1284,7 +1384,7 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str) {
     // The spike's PROVEN wrapper — the outer arrow-IIFE returns `module.exports` so `script.run`
     // hands it straight back to Rust.  `{PLUGIN_JS}` is spliced verbatim.
     let wrapper = format!(
-        "(() => {{\n  const module = {{ exports: {{}} }};\n  const require = __s2require;\n  (function (require, module, exports) {{\n{}\n}})(require, module, module.exports);\n  return module.exports;\n}})()",
+        "(() => {{\n  const module = {{ exports: {{}} }};\n  const require = globalThis.__s2_require;\n  (function (require, module, exports) {{\n{}\n}})(require, module, module.exports);\n  return module.exports;\n}})()",
         plugin_js
     );
 
@@ -1880,6 +1980,11 @@ mod frame_tests {
             let val = global.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
             val.to_rust_string_lossy(scope)
         })
+    }
+
+    // Alias used by Task 5 tests — reads `globalThis[name]` as a String from a named plugin context.
+    fn read_global_string(id: &str, name: &str) -> String {
+        read_string_global_in(id, name)
     }
 
     // Read `globalThis[name]` as an i32 from a specific PLUGIN context (mirrors read_string_global_in).
@@ -2487,6 +2592,52 @@ mod frame_tests {
             false,
             "continuation for a non-live owner must be dropped, not resolved into the stale realm"
         );
+        shutdown();
+    }
+
+    /// Task 5 load-bearing test: a consumer plugin calls a producer plugin's published interface
+    /// method across V8 contexts, with values copied (never shared) via a JSON string carrier.
+    ///
+    /// Exercises: `globalThis.__s2_require` dispatch, `makeIfaceProxy`, `resolveInterface`,
+    /// `std.publishInterface`, and the `__s2_iface_call` cross-context structured-copy native.
+    #[test]
+    fn consumer_calls_producer_method_structured_copy() {
+        let _ = init(dummy_logger());
+        set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        // Producer publishes via the plugin path so the prelude publishInterface is exercised.
+        load_plugin_js("prod", r#"
+            const { publishInterface } = require("@s2script/std");
+            publishInterface("@x/greeter","1.0.0",{ greet:function(n){ return "hi "+n.who; } });
+        "#);
+        // Consumer resolves a hard proxy and calls across (arg + return structured-copied).
+        load_plugin_js("cons", r#"
+            const g = require("@x/greeter");
+            globalThis.__test_out = g.greet({ who: "world" });
+        "#);
+        assert_eq!(read_global_string("cons", "__test_out"), "hi world");
+
+        // Producer-absent hard dep → InterfaceUnavailable (caught by the wrapper TryCatch → WARN).
+        set_plugin_imports("lonely", vec![("@missing".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        load_plugin_js("lonely", r#"
+            try { require("@missing").foo(); globalThis.__err = "no throw"; }
+            catch (e) { globalThis.__err = String(e); }
+        "#);
+        assert!(read_global_string("lonely", "__err").contains("InterfaceUnavailable"));
+
+        // Optional dep, not published → require returns null.
+        set_plugin_imports("optc", vec![("@absent".into(), "^1.0.0".into(), crate::interfaces::Kind::Optional)]);
+        load_plugin_js("optc", r#"globalThis.__opt = (require("@absent") === null) ? "null" : "proxy";"#);
+        assert_eq!(read_global_string("optc", "__opt"), "null");
+
+        // Non-serializable (cyclic) arg → InterfaceValueNotSerializable (JSON.stringify throws → None → throw).
+        set_plugin_imports("cyc", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        load_plugin_js("cyc", r#"
+            const g = require("@x/greeter");
+            const a = {}; a.self = a;
+            try { g.greet(a); globalThis.__e2 = "no throw"; }
+            catch (e) { globalThis.__e2 = String(e); }
+        "#);
+        assert!(read_global_string("cyc", "__e2").contains("InterfaceValueNotSerializable"));
         shutdown();
     }
 }
