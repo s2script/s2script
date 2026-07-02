@@ -21,6 +21,9 @@ treadmill regenerates after every CS2 update. Acceptance: on a live CS2 server, 
   shim's `SchemaOffsetFn = fn(class, field) -> c_int` is **lookup-only** — it resolves ONE known
   `(class, field)` to an offset, with no enumeration and no field TYPE. `OffsetCache` caches hits +
   a miss-once-WARN policy. The runtime resolves offsets LIVE from the in-process SchemaSystem.
+  **The shim links `<schemasystem/schemasystem.h>`** and uses the typed SDK APIs (`ISchemaSystem`,
+  `CSchemaSystemTypeScope`, `CSchemaClassInfo`, `FindDeclaredClass`, `m_pSchemaType` field/base walks)
+  to implement `schema_offset` — so it already reaches exactly the types 5B.1's enumeration needs.
 - **Slice 5A `EntityRef`** + `core/src/entity.rs` (read helpers) — consumed by 5B.2/5B.3, not 5B.1.
 - **`S2EngineOps`** C-ABI fn-pointer table — the shim provides engine access; core does the logic
   (the 5A pattern: shim hands core a pointer, core walks the layout via offset constants).
@@ -43,19 +46,26 @@ treadmill regenerates after every CS2 update. Acceptance: on a live CS2 server, 
    so no console command. A native `__s2_schema_dump(path) -> bool` writes the catalog; a tiny dev
    dump plugin calls it on `OnGameFrame` once the schema is ready.
 
-## 4. Architecture — shim hands the type-scope pointer, core walks the layout
+## 4. Architecture — the shim enumerates via the SDK schema headers, core assembles the catalog
 
-Mirrors the 5A split: the shim provides a pointer, core reads the struct layout via offset constants,
-staying **engine-generic** (it reads a *schema* layout + builds JSON — no CS2 class name lives in core;
-class/field names are DATA read out of the schema at runtime).
+The shim ALREADY links the hl2sdk SchemaSystem headers (`<schemasystem/schemasystem.h>`) and uses the
+TYPED SDK APIs (`ISchemaSystem`, `CSchemaSystemTypeScope`, `CSchemaClassInfo`, `FindDeclaredClass`,
+field/base walks) for `schema_offset`. So the enumeration is done IN THE SHIM with those typed SDK
+types — NOT by reverse-engineering raw struct offsets in core (a strict de-risk over the 5A-style raw
+walk; the schema is a Source-2 engine concept the shim legitimately knows, like the interfaces it
+already resolves). Core stays **engine-generic**: it receives each class/field as C-ABI primitives and
+assembles + serializes the catalog — no schema-struct offsets and no CS2 names live in `core/src`;
+class/field names are DATA streamed out of the schema at runtime.
 
-- **New shim op** `SchemaTypeScopeFn = fn() -> *mut c_void` — returns the global `CSchemaSystemTypeScope`
-  pointer (the shim already reaches the SchemaSystem for `schema_offset`).
-- **Core enumeration** walks: type scope → its class-bindings container → each `CSchemaClassBinding`
-  `{name, base-class ptr, field count, fields ptr}` → each `CSchemaClassFieldData`
-  `{name, offset, type ptr}` → `CSchemaType` `{category, name}`. Offsets/container layout are named
-  engine-generic Source 2 constants (`// TODO(gamedata)` migration). Core builds the catalog + writes
-  JSON. No plugin V8 context is required for the walk (it's a pure engine read + serialize).
+- **New shim op** `schema_enumerate(ctx, emit_class, emit_field) -> bool` — the shim iterates the
+  server type scope's declared classes (`CSchemaSystemTypeScope`) and, for each `CSchemaClassInfo`, its
+  fields (`CSchemaClassFieldData` → `m_pszName`, `m_nSingleInheritanceOffset`, `m_pSchemaType`), calling
+  core-provided callbacks: `emit_class(ctx, name, parent)` per class, `emit_field(ctx, class, name,
+  offset, kind, type_name, inner)` per field. The shim maps the `CSchemaType` category enum → a stable
+  `kind` string (`atomic`/`handle`/`class`/`ptr`/`enum`/`unknown`); core records it verbatim.
+- **Core** — the `emit_*` callbacks accumulate into an in-memory catalog builder (pure Rust);
+  `__s2_schema_dump` drives `schema_enumerate`, then serializes the builder → JSON → writes the file.
+  The build+serialize path is unit-testable from synthetic `emit_*` calls (no engine).
 
 ## 5. Catalog format
 
@@ -91,17 +101,21 @@ update day, run the server on a map, drop the dump plugin, commit the regenerate
 
 ## 7. Front-loaded spike (the engine-touchpoint unknown)
 
-Confirm the enumeration walk on a live server; findings → a dated spike doc:
-1. The global `CSchemaSystemTypeScope` pointer (the shim's `schema_offset` path already reaches it —
-   expose it via the new op).
-2. The class-bindings container layout (array vs `CUtlTSHash`/hashtable — count + element access) and
-   `CSchemaClassBinding` `{name, base, field count, fields ptr}` offsets.
-3. `CSchemaClassFieldData` `{name, offset, type ptr}` offsets + `CSchemaType` `{category, name}` and the
-   category enum values → the `type.kind` mapping.
+Confirm the SDK enumeration on a live server (C++/SDK level, lower-risk than raw-offset RE); findings →
+a dated spike doc:
+1. How to iterate a `CSchemaSystemTypeScope`'s declared classes via the hl2sdk headers — the
+   class-bindings container the scope exposes (e.g. `m_DeclaredClasses` / a `CUtlTSHash` iterator; the
+   shim already reaches the scope for `schema_offset`). If the header exposes NO enumeration (only
+   `FindDeclaredClass` by name), that's the key finding — fall back to a raw walk of the container
+   struct IN THE SHIM (using the SDK type as the base + a spike-confirmed member offset), still C++.
+2. `CSchemaClassInfo` field access (`m_pFields`/`m_nFieldCount` or the SDK's field iterator) + the
+   base-class link, and `CSchemaClassFieldData` `{m_pszName, m_nSingleInheritanceOffset, m_pSchemaType}`.
+3. The `CSchemaType` category enum values → the `kind` mapping (`atomic`/`handle`/`class`/`ptr`/`enum`),
+   incl. how a `CHandle<T>` surfaces its inner class name.
 4. Validate: enumerate `CCSPlayerPawn`, confirm `m_iHealth` = int32 at the offset `__s2_schema_offset`
-   returns, and a `CHandle<>` field maps to `{kind:"handle"}`.
-If the enumeration proves unworkable, revise before the load-bearing work. Escalation path for the live
-RE (like the 5A spike).
+   returns, and a `CHandle<>` field maps to `{kind:"handle"}` with the inner class name.
+If the SDK genuinely can't enumerate (even via a shim-side raw container walk), that's a NO-GO to revise
+before the load-bearing work. Escalation path for the live RE (like the 5A spike).
 
 ## 8. Error handling — degrade-per-descriptor, never crash globally
 
@@ -133,12 +147,17 @@ one `class`/embedded field present; the file parses as valid JSON with many clas
 
 ## 10. File structure
 
-- **Modify** `core/src/v8host.rs` (`__s2_schema_dump` native + install; the enumeration walk, or call
-  into schema_catalog.rs), `core/src/schema.rs` OR **create** `core/src/schema_catalog.rs` (the pure
-  catalog-build + serialization + type-mapping, unit-tested), `core/src/lib.rs` (if a new module),
-  the `S2EngineOps` `SchemaTypeScopeFn` field.
-- **Modify** the shim (`shim/include/s2script_core.h` + `shim/src/s2script_mm.cpp`) — the new
-  type-scope-pointer op.
+- **Create** `core/src/schema_catalog.rs` — the pure catalog builder: the `emit_class`/`emit_field`
+  callbacks accumulate into an in-memory repr + JSON serialization; unit-tested from synthetic
+  `emit_*` calls (no engine). Add `mod schema_catalog;` to `core/src/lib.rs`.
+- **Modify** `core/src/v8host.rs` — the `__s2_schema_dump(path)` native (drives the shim's
+  `schema_enumerate` with core callbacks into a `schema_catalog` builder, then serializes + writes the
+  file); install it. Add the `S2EngineOps` `schema_enumerate` field + the `emit_class`/`emit_field`
+  callback typedefs.
+- **Modify** the shim (`shim/include/s2script_core.h` + `shim/src/s2script_mm.cpp`) — implement
+  `schema_enumerate`: iterate the server type scope's declared classes via the SDK, map the
+  `CSchemaType` category → a `kind` string, and invoke the core-provided `emit_class`/`emit_field`
+  callbacks. (This is the bulk of the engine work — the spike de-risks it.)
 - **Create** `examples/schema-dump/{package.json, src/plugin.ts}` (the dev dump plugin); the
   spike-findings doc; commit `games/cs2/gamedata/schema-catalog.json` (the dumped catalog).
 - **Modify** `README.md`, `CLAUDE.md`.
@@ -159,9 +178,10 @@ split + std breadth (5C); the tsc gate; config/permissions; the registry (5.5); 
 - **Core stays engine-generic.** No CS2 identifiers, no `include_str!`/`games/` in `core/src`. The
   enumeration reads a *schema layout* + emits class/field names as DATA (read from the engine at
   runtime), never a hardcoded CS2 name. Both boundary gates green.
-- **Layout is data, semantics are code.** Schema-struct offsets are named constants with
-  `// TODO(gamedata)`; the catalog is regenerable data; the runtime resolves offsets live (never bakes
-  them).
+- **Layout is data, semantics are code.** The enumeration uses the hl2sdk schema types in the SHIM
+  (no raw schema-struct offsets in `core/src`); any shim-side raw container-member offset the spike
+  requires is a named constant `// TODO(gamedata)`. The catalog is regenerable data; the runtime
+  resolves field offsets live (never bakes them).
 - **Degrade-per-descriptor, never crash globally.** A broken class/field/type → skip with a named
   WARN (or `{kind:"unknown"}`), never fatal; `catch_unwind` on the native; no panic across FFI.
 - **cdylib test constraint:** unit tests inline `#[cfg(test)] mod` in the source file.
