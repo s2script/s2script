@@ -1062,6 +1062,48 @@ the generated layer.
 
 ---
 
+## Module packages (Slice 5C.1)
+
+The engine-generic standard library is not one package — it's a set of per-capability packages under the
+`@s2script/*` scope. Authors import from the specific module:
+
+```ts
+import { EntityRef } from "@s2script/entity";
+import { OnGameFrame } from "@s2script/frame";
+import { delay, nextTick, nextFrame, threadSleep } from "@s2script/timers";
+import { console } from "@s2script/console";
+import { publishInterface } from "@s2script/interfaces";
+```
+
+| Package | Provides |
+|---|---|
+| `@s2script/entity` | `EntityRef` (serial-gated entity access + typed read/write/`readHandle`) |
+| `@s2script/frame` | `OnGameFrame`, `SubscribeOptions` |
+| `@s2script/timers` | `delay`, `nextTick`, `nextFrame`, `threadSleep` |
+| `@s2script/console` | `console` |
+| `@s2script/interfaces` | `publishInterface`, `PublishHandle` |
+
+There is no `@s2script/std` umbrella — one import path per capability. Resolution is one engine-generic rule:
+core's `require` maps any `@s2script/<name>` to the injected `globalThis.__s2pkg_<name>` (a game package like
+`@s2script/cs2` uses the very same rule), so new first-party modules never need a core change. The CLI
+externalizes `@s2script/*` by wildcard, so those imports stay `require()` calls the engine resolves at load.
+
+**Live-gate log** (Docker CS2, `de_inferno`, one bot; the demo imports `OnGameFrame` from `@s2script/frame`
+and `Pawn` from `@s2script/cs2`):
+
+```
+[demo] tick 3073 health=100 friction=1 ragdoll=false team=2 controller=idx=1 valid=true stashed.health=100
+bot_kick
+[demo] tick 4097 health=none friction=none ragdoll=none team=none controller=null stashed.health=null
+```
+
+The demo loading and ticking at all proves the module resolution end-to-end (`require("@s2script/frame")`,
+`require("@s2script/cs2")`, and `pawn.js`'s `require("@s2script/entity")` all resolve live through the one
+generalized rule); the generated `Pawn` accessors still read correctly and still degrade to `null` on entity
+death — the split changed how the API is *packaged*, not how it behaves.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
