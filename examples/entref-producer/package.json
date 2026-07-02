@@ -1,0 +1,15 @@
+{
+  "name": "@demo/entref-producer",
+  "version": "1.0.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "apiVersion": "1.x",
+    "pluginDependencies": {
+      "@s2script/std": "^1.0.0",
+      "@s2script/cs2": "^1.0.0"
+    },
+    "publishes": {
+      "@demo/ent": "1.0.0"
+    }
+  }
+}

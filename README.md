@@ -704,6 +704,114 @@ Deferred to later slices: full schema codegen + the engine-generic `@s2script/st
 
 ---
 
+## EntityRef across the wire (5A fast-follow)
+
+Slice 4.5 wired two plugins together; Slice 5A made entity access serial-safe. This fast-follow closes
+the seam **between** them — the last 5A deferral, *"entity refs on the inter-plugin wire"*. An `EntityRef`
+now round-trips across the typed inter-plugin boundary **as a live ref**, not a dead copy: the producer's
+`pawnRef(slot)` returns a pawn's `EntityRef`, the marshaller tags it crossing the structured-copy wire
+(the `__s2_entref_replacer`), and the consumer's context rehydrates it into an `EntityRef` bound to **its
+own** natives (the `__s2_entref_reviver`). The consumer then validates that ref against the **shared**
+entity system — and it **flips to invalid across the plugin boundary** when the pawn is destroyed. That is
+cross-plugin host-invalidation: the same `{index, serial}` guardrail that protects a stashed `Pawn` within
+one plugin now protects a ref handed *between* plugins.
+
+The two demos live in [`examples/entref-producer`](examples/entref-producer) (publishes `@demo/ent@1.0.0`
+with `pawnRef(slot) → EntityRef | null` and a producer-side `pawnHealth(slot) → number | null`) and
+[`examples/entref-consumer`](examples/entref-consumer) (hard-deps `@demo/ent`). The consumer is
+**offset-free** — it never resolves a schema offset; it holds the received `EntityRef` and calls
+`ref.isValid()` (TRUE while the pawn lives, FALSE once it is destroyed — the host-invalidation proof) and
+reads the number through the producer's `pawnHealth(0)` while alive. Because interface `.d.ts` codegen is
+deferred, the consumer hand-writes an ambient [`src/entref-iface.d.ts`](examples/entref-consumer/src/entref-iface.d.ts)
+declaring `pawnRef`/`pawnHealth` — `pawnRef` returns the same `@s2script/std` `EntityRef` type the entity
+system uses.
+
+### Runbook (build → drop → read → kill)
+
+```bash
+cd /home/gkh/projects/s2script
+# 1. Build the CLI + both demo .s2sp
+node packages/cli/build.mjs
+( cd packages/cli && npm link )                 # so `npx s2script` resolves to this repo's CLI
+npx s2script build examples/entref-producer
+npx s2script build examples/entref-consumer
+
+# 2. Sniper-build the runtime (GLIBC <= 2.31) — MUST post-date the Task-1 commit (fresh replacer/reviver core)
+docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash /repo/scripts/build-sniper.sh
+mkdir -p dist/addons/s2script/plugins           # package-addon.sh rebuilds dist/ — recreate the plugins dir
+
+# 3. Bring the server up; a CS2 update resets gameinfo.gi — re-patch + restart if the addon won't load
+docker compose -f docker/docker-compose.yml up -d
+docker exec s2script-cs2 /patch-gameinfo.sh && docker compose -f docker/docker-compose.yml restart cs2
+python3 scripts/rcon.py "sv_hibernate_when_empty 0" "bot_quota 1"   # get the map ticking + a bot in slot 0
+
+# --- The cross-plugin host-invalidation gate (host writes into the :ro-mounted plugins dir) ---
+cp examples/entref-producer/dist/_demo_entref-producer.s2sp dist/addons/s2script/plugins/   # 1a. producer publishes @demo/ent
+cp examples/entref-consumer/dist/_demo_entref-consumer.s2sp dist/addons/s2script/plugins/   # 1b. consumer reads the wired ref → valid=true health=100
+python3 scripts/rcon.py "bot_quota 0" "bot_kick"                                            # 2.  REAL destruction → received ref → valid=false health=null
+```
+
+**Force a REAL destruction, not `mp_restartgame`.** The 5A spike proved `mp_restartgame` does *not* destroy
+the pawn (serials persist), so it never flips the serial. `bot_kick` destroys the controller **and** the
+pawn; the received `{index, serial}` then fails the equality check against the engine's live
+`CEntityIdentity` — in the *consumer's* context, over a ref that originated in the *producer's* context.
+
+### Captured live log
+
+Captured on a live `joedwards32/cs2` server (version `1.41.6.6/14166`), on a freshly sniper-built core that
+post-dates the Task-1 replacer/reviver commit. `bot_kick` (with `bot_quota 0`) destroyed the pawn:
+
+```
+# --- boot: fresh core (Task-1 wire marshalling) loads; the EntityRef-backed pawn.js registers ---
+[s2script] interface OK: SchemaSystem (SchemaSystem_001)
+[s2script] @s2script/cs2 registered (2737 bytes from …/addons/s2script/js/pawn.js)
+[s2script] plugins dir: …/game/csgo/addons/s2script/plugins
+[META] Loaded 1 plugin.
+
+# 1. drop producer then consumer + a live bot in slot 0 → a producer-passed pawn EntityRef arrives LIVE
+[s2script] [producer] onLoad — publishing @demo/ent@1.0.0
+[s2script] [consumer] onLoad
+[s2script] [consumer] tick 1 received-ref valid=true health=100
+[s2script] [consumer] tick 257 received-ref valid=true health=100
+[s2script] [consumer] tick 513 received-ref valid=true health=100
+[s2script] [consumer] tick 769 received-ref valid=true health=100
+[s2script] [consumer] tick 1025 received-ref valid=true health=100
+
+# 2. bot_quota 0; bot_kick → the pawn's entity is DESTROYED; the received ref invalidates ACROSS the
+#    plugin boundary — valid=false, health=null (serial mismatch — NOT garbage, NOT a crash). Server ticks on.
+[s2script] [consumer] tick 1281 received-ref valid=false health=null
+[s2script] [consumer] tick 1537 received-ref valid=false health=null
+[s2script] [consumer] tick 1793 received-ref valid=false health=null
+[s2script] [consumer] tick 2049 received-ref valid=false health=null
+[s2script] [consumer] tick 2305 received-ref valid=false health=null
+```
+
+The consumer holds an `EntityRef` it **received across the wire** from the producer: while the pawn lived
+it validated `true` against the shared entity system and read `health=100` (via the producer's offset-free
+`pawnHealth`); the tick its entity was destroyed the ref flipped to `valid=false`/`health=null` — the
+serial no longer matched the engine's `CEntityIdentity`. The server **kept ticking** across the destruction
+(`docker ps` showed `Up` throughout; no panic/segfault, no `[s2script]` WARN in the logs — the only
+`with error:` line is the unrelated benign `steamclient.so` LAN-mode notice). Cross-plugin
+host-invalidation — a live ref handed between plugins, invalidated by a real entity death — proven live.
+
+### 5A-fast-follow acceptance (live + cargo)
+
+| # | Criterion | Result |
+|---|---|---|
+| build | `cargo test` (82 prior + the in-isolate wire round-trip tests) + both boundary gates + sniper | ✅ 85 core tests; `check-core-boundary` + name-leak gates green; sniper GLIBC ≤ 2.31 (s2script.so 2.14 / core 2.30) |
+| wire | `s2script build` produces the producer + consumer `.s2sp`s; the producer publishes `@demo/ent`, the consumer hard-deps it | ✅ both `.s2sp` built; manifests carry `publishes` / `pluginDependencies` |
+| live-ref | a producer-passed pawn `EntityRef` arrives LIVE in the consumer and validates against the shared entity system | ✅ live (`[consumer] tick 1 received-ref valid=true health=100`) |
+| invalidate | a REAL entity destruction (`bot_kick`) flips the received ref to `isValid()===false` / `health=null` ACROSS the plugin boundary, no crash | ✅ live (`tick 1281 received-ref valid=false health=null`; container `Up`, no panic/segfault) |
+| offset-free | the consumer proves invalidation with `ref.isValid()` alone — it resolves no schema offset (the producer's `pawnHealth` is the only offset read) | ✅ consumer `.s2sp` has no schema native; `valid=false` is the proof |
+| boundary | core stays engine-generic — the EntityRef replacer/reviver + wire path carry no game names | ✅ cargo (both gates) |
+
+Deferred to later slices: typed `@s2script/cs2` accessors *over* a wired ref (a consumer reconstructing a
+`Pawn` from a received `EntityRef` without a producer-side read) come in 5B; the `tsc` typecheck gate;
+interface `.d.ts` codegen.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

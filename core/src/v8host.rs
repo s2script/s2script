@@ -310,6 +310,17 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     notifyStateChanged: function (offset) { __s2_ent_ref_state_changed(this.index, this.serial, offset); },
   };
   std.EntityRef = EntityRef;
+  // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
+  // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
+  // plain data. `__entref__` is a reserved wire key. Used by iface_to_json / iface_from_json.
+  globalThis.__s2_entref_replacer = function (key, value) {
+    return (value instanceof EntityRef) ? { __entref__: [value.index, value.serial] } : value;
+  };
+  globalThis.__s2_entref_reviver = function (key, value) {
+    return (value && typeof value === "object" && Array.isArray(value.__entref__))
+      ? new EntityRef(value.__entref__[0], value.__entref__[1])
+      : value;
+  };
   globalThis.__s2pkg_std = std;
 })();
 "#;
@@ -947,7 +958,15 @@ fn iface_to_json(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Optio
     let mut tc_storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
     let tc = &mut tc;
-    let out = strfn.call(tc, recv, &[value])?;
+    // Best-effort: pass the @s2script/std EntityRef replacer so an EntityRef in `value` crosses the
+    // wire as a tagged envelope. Absent (e.g. the shared HOST context) -> plain stringify (no crash).
+    let replacer = tc.get_current_context().global(tc)
+        .get(tc, v8::String::new(tc, "__s2_entref_replacer")?.into())
+        .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok());
+    let out = match replacer {
+        Some(rep) => strfn.call(tc, recv, &[value, rep.into()])?,
+        None => strfn.call(tc, recv, &[value])?,
+    };
     if out.is_undefined() { return None; }   // non-serializable
     Some(out.to_rust_string_lossy(tc))
 }
@@ -968,7 +987,14 @@ fn iface_from_json<'s>(scope: &mut v8::PinScope<'s, '_>, json: &str) -> Option<v
     let mut tc_storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
     let tc = &mut tc;
-    parsefn.call(tc, recv, &[arg.into()])
+    // Best-effort: pass the reviver so a tagged EntityRef rehydrates into a live ref in THIS context.
+    let reviver = tc.get_current_context().global(tc)
+        .get(tc, v8::String::new(tc, "__s2_entref_reviver")?.into())
+        .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok());
+    match reviver {
+        Some(rev) => parsefn.call(tc, recv, &[arg.into(), rev.into()]),
+        None => parsefn.call(tc, recv, &[arg.into()]),
+    }
 }
 
 /// Store a plugin's declared inter-plugin imports (from its manifest) so `iface_dep_kind` /
@@ -3004,6 +3030,73 @@ mod frame_tests {
             globalThis.__ok = String(cs2 !== null && cs2.hasEntityRef === true && cs2.noRequire === true);
         "#);
         assert_eq!(read_global_string("p", "__ok"), "true");
+        shutdown();
+    }
+
+    // --- Slice 4.5 Task 1: EntityRef replacer/reviver wire round-trip ---
+
+    #[test]
+    fn iface_call_return_rehydrates_entityref() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None); // degrade path: a real EntityRef -> isValid()==false, readInt32()==null
+        set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        // Producer returns an EntityRef from a method.
+        load_plugin_js("prod", r#"
+            const { publishInterface, EntityRef } = require("@s2script/std");
+            publishInterface("@x/ent", "1.0.0", { getRef: function(){ return new EntityRef(1, 7); } });
+        "#);
+        // Consumer receives it: must be a LIVE EntityRef (methods present), not plain data.
+        load_plugin_js("cons", r#"
+            const { EntityRef } = require("@s2script/std");
+            const r = require("@x/ent").getRef();
+            globalThis.__isRef  = String(r instanceof EntityRef);        // "true" — rehydrated
+            globalThis.__idx    = String(r.index) + "," + String(r.serial); // "1,7" — data crossed
+            globalThis.__valid  = String(r.isValid());                   // "false" (no ops) — it's callable
+            globalThis.__read   = String(r.readInt32(8));                // "null"  (no ops)
+        "#);
+        assert_eq!(read_global_string("cons", "__isRef"), "true");
+        assert_eq!(read_global_string("cons", "__idx"), "1,7");
+        assert_eq!(read_global_string("cons", "__valid"), "false");
+        assert_eq!(read_global_string("cons", "__read"), "null");
+        shutdown();
+    }
+
+    #[test]
+    fn iface_emit_payload_rehydrates_entityref() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        load_plugin_js("prod", r#"
+            const { publishInterface, EntityRef } = require("@s2script/std");
+            globalThis.__h = publishInterface("@x/ent", "1.0.0", { noop: function(){} });
+        "#);
+        load_plugin_js("cons", r#"
+            const { EntityRef } = require("@s2script/std");
+            const g = require("@x/ent");
+            globalThis.__seen = "none";
+            g.on("spawned", function (r) {
+                globalThis.__seen = (r instanceof EntityRef) ? (r.index + "," + r.serial) : "plain";
+            });
+        "#);
+        // EntityRef is a closure var inside the CJS wrapper; use the globalThis prelude reference.
+        eval_in_context("prod", r#"__h.emit("spawned", new __s2pkg_std.EntityRef(2, 9));"#).unwrap();
+        assert_eq!(read_global_string("cons", "__seen"), "2,9"); // live EntityRef, not "plain"
+        shutdown();
+    }
+
+    #[test]
+    fn non_entityref_payload_round_trips_unchanged() {
+        let _ = init(dummy_logger());
+        set_plugin_imports("cons", vec![("@x/data".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        load_plugin_js("prod", r#"
+            const { publishInterface } = require("@s2script/std");
+            publishInterface("@x/data", "1.0.0", { echo: function(){ return { a: 1, b: "hi", c: [1,2,3] }; } });
+        "#);
+        load_plugin_js("cons", r#"
+            const d = require("@x/data").echo();
+            globalThis.__out = d.a + "," + d.b + "," + d.c.join("-");
+        "#);
+        assert_eq!(read_global_string("cons", "__out"), "1,hi,1-2-3"); // ordinary data intact
         shutdown();
     }
 }

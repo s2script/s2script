@@ -1,0 +1,12 @@
+{
+  "name": "@demo/entref-consumer",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "apiVersion": "1.x",
+    "pluginDependencies": {
+      "@s2script/std": "^1.0.0",
+      "@demo/ent": "^1.0.0"
+    }
+  }
+}
