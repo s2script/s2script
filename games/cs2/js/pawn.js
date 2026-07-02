@@ -30,10 +30,18 @@
   });
 
   var MAX_PLAYERS = 64;
+  // CS2 pre-allocates all 64 controller entities, so isValid() (entity-exists) does NOT distinguish an
+  // occupied slot from an empty one (m_iConnected reads 0 for both; verified live). The clean, schema-readable
+  // occupancy signal is that an occupied slot's controller has a valid player pawn (m_hPlayerPawn). This yields
+  // in-game (spawned) players; connected-but-pawnless (dead/spectating) is deferred to the engine-identity/
+  // connection follow. Offsets stay live-resolved (layout-is-data).
   Player.fromSlot = function (slot) {
     var idx = slot + 1;                                          // controller entity index
     var ref = new EntityRef(idx, __s2_ent_current_serial(idx));
-    return ref.isValid() ? new Player(ref) : null;
+    if (!ref.isValid()) return null;                            // the controller entity must exist
+    var poff = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
+    if (poff < 0 || ref.readHandle(poff) === null) return null; // occupied iff the controller has a live pawn
+    return new Player(ref);
   };
   Player.all = function () {
     var out = [];

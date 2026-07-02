@@ -72,9 +72,14 @@ accessors with typed ones (`configurable:true` makes the override clean).
 - `player.pawn` → **`Pawn | null`** — `this.ref.readHandle(off("CCSPlayerController","m_hPlayerPawn"))`, wrapped
   as a `Pawn` (or `null`). Shadows the raw generated `pawn`(m_hPawn).
 - `Player.fromSlot(slot)` → **`Player | null`** — `new EntityRef(slot+1, __s2_ent_current_serial(slot+1))`;
-  `null` if `!isValid()`.
+  `null` if the controller isn't valid OR the slot is unoccupied. **Occupancy filter (live-verified):** CS2
+  pre-allocates all 64 controller entities, so `isValid()` (entity-exists) does NOT distinguish an occupied
+  slot from an empty one — and `m_iConnected` reads `0` for both (unusable here). The clean, schema-readable
+  occupancy signal is that an occupied controller has a **live player pawn** (`m_hPlayerPawn` → `readHandle`
+  ≠ null). So `fromSlot` returns a `Player` only when the controller has a pawn (in-game/spawned players);
+  connected-but-pawnless (dead/spectating) is deferred to the engine-identity/connection follow.
 - `Player.all()` → **`Player[]`** — iterate `slot` in `0..MAX_PLAYERS-1` (`MAX_PLAYERS = 64`), `fromSlot`, keep
-  the non-null (valid-controller) results.
+  the non-null (occupied) results = the in-game players.
 
 **`Pawn`** (additions):
 - `pawn.controller` → **`Player | null`** — `this.ref.readHandle(off("CBasePlayerPawn","m_hController"))`,
