@@ -594,8 +594,9 @@ Note: `dirname(fileURLToPath(import.meta.url))` is `packages/cli/dist` when bund
 - [ ] **Step 6: Update the test script** in `packages/cli/package.json` to run all test files:
 
 ```json
-    "test": "node --experimental-strip-types --no-warnings --test",
+    "test": "node --experimental-strip-types --no-warnings --test test/*.test.mjs",
 ```
+**Important:** scope the glob to `test/*.test.mjs` (top-level only) — NOT bare `--test` auto-discovery, which node's runner would extend into `test/fixtures/*/src/plugin.ts` (plugin fixtures that `import "@s2script/std"` → `ERR_MODULE_NOT_FOUND`, 3 spurious failures). The non-recursive `test/*.test.mjs` matches only the real test files.
 
 - [ ] **Step 7: Build the CLI + generate the committed artifacts**
 
@@ -622,7 +623,7 @@ echo "PASS: schema codegen is up to date"
 ```bash
 cd /home/gkh/projects/s2script
 bash scripts/check-schema-generated.sh          # PASS (just generated → no drift)
-cd packages/cli && node --experimental-strip-types --no-warnings --test   # all green (build + schemagen tests)
+cd packages/cli && node --experimental-strip-types --no-warnings --test test/*.test.mjs   # all green (build + schemagen tests)
 cd /home/gkh/projects/s2script && bash scripts/check-core-boundary.sh && bash scripts/test-boundary-nameleak.sh
 ```
 Sanity-check drift detection: temporarily add a class to `codegen-classes.json`, run `bash scripts/check-schema-generated.sh` → it must FAIL; revert.
@@ -763,7 +764,7 @@ fi
 - [ ] **Step 7: Full verification**
 
 ```bash
-cd /home/gkh/projects/s2script/packages/cli && node --experimental-strip-types --no-warnings --test
+cd /home/gkh/projects/s2script/packages/cli && node --experimental-strip-types --no-warnings --test test/*.test.mjs
 cd /home/gkh/projects/s2script && bash scripts/check-schema-generated.sh && bash scripts/check-core-boundary.sh && bash scripts/test-boundary-nameleak.sh
 ```
 All green (the runtime-compose test proves pawn.js + generated accessors work offline; gates confirm no core leak).
@@ -835,7 +836,7 @@ Confirm `dist/addons/s2script/js/pawn.js` (or the packaged path) begins with the
 - [ ] **Step 6: Final verification + commit** (do NOT commit build artifacts — `.s2sp`, `dist/`):
 
 ```bash
-cd /home/gkh/projects/s2script/packages/cli && node --experimental-strip-types --no-warnings --test
+cd /home/gkh/projects/s2script/packages/cli && node --experimental-strip-types --no-warnings --test test/*.test.mjs
 cd /home/gkh/projects/s2script && bash scripts/check-schema-generated.sh && bash scripts/check-core-boundary.sh && bash scripts/test-boundary-nameleak.sh
 git add examples/demo-plugin/src/plugin.ts README.md CLAUDE.md
 git commit -m "feat(slice5b3): live gate PASSED — demo reads generated pawn.health/friction; README treadmill + CLAUDE
