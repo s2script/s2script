@@ -1002,6 +1002,66 @@ scalar type, not just `i32`.
 
 ---
 
+## Schema codegen (Slice 5B.3)
+
+Slice 5B.3 turns the raw plumbing above into **generated typed accessors**. Authors write idiomatic
+properties; the `__s2_schema_offset` + `EntityRef.read*` calls become internal to the generated code:
+
+```ts
+import { Pawn } from "@s2script/cs2";
+
+const p = Pawn.forSlot(0);
+if (p) {
+  const hp = p.health;             // number | null   (generated from m_iHealth)
+  p.health = 100;                  // setter writes + auto-notifyStateChanged
+  const f  = p.friction;           // number | null   (m_flFriction)
+  const rag = p.clientSideRagdoll; // boolean | null  (m_bClientSideRagdoll)
+  const ctrl = p.controller;       // EntityRef | null (m_hController, a handle field)
+}
+```
+
+No offsets, no `readFloat32`, no `__s2_schema_offset` in author code — and offsets are still resolved
+**live** at runtime (never baked), so a per-patch offset move is absorbed by regenerating, not editing code.
+
+**How it's generated (`s2script gen-schema`).** A pure offline transform over the committed
+[`schema-catalog.json`](games/cs2/gamedata/schema-catalog.json) + a curated class list
+([`games/cs2/codegen-classes.json`](games/cs2/codegen-classes.json) = `CCSPlayerPawn`,
+`CCSPlayerController`, `CCSWeaponBase`, whose ancestor chains are pulled in automatically). It emits two
+**committed** artifacts: the runtime accessors [`games/cs2/js/schema.generated.js`](games/cs2/js/schema.generated.js)
+(injected ahead of `pawn.js`) and the author types [`packages/cs2/schema.generated.d.ts`](packages/cs2/schema.generated.d.ts)
+(`export interface CCSPlayerPawn extends CCSPlayerPawnBase { … }`). Property names are idiomatic (strip the
+`m_` + Hungarian tag, camelCase); the generated code hardcodes the raw name + declaring class as the resolve
+key (`off("CBaseEntity","m_iHealth")`), and idiomatic collisions fall back to the raw name. Only scalar +
+handle fields are generated this slice — strings, vectors, embedded structs, `enum` (the catalog lacks enum
+byte-width), and 64-bit ints are skipped with a logged per-class reason.
+
+**Treadmill runbook (per CS2 update).** Offsets move every patch, so after a game update: re-dump the
+catalog (Slice 5B.1) → `node packages/cli/dist/cli.js gen-schema` → commit the regenerated
+`schema.generated.{js,d.ts}`. [`scripts/check-schema-generated.sh`](scripts/check-schema-generated.sh)
+regenerates and `git diff --exit-code`s to fail CI if the catalog changed but the codegen wasn't rerun. The
+generator is deterministic (byte-identical output), so the gate is meaningful. The curated list grows as the
+base-plugin suite (Slice 6) needs more classes.
+
+**Live-gate log** (Docker CS2, `de_inferno`, one bot; **no sniper rebuild** — 5B.3 changed no Rust/core/shim,
+only the CLI tooling + injected JS):
+
+```
+[demo] tick 513  health=100 friction=1 ragdoll=false team=2 controller=idx=1 valid=true stashed.health=100
+...
+bot_quota 0 ; bot_kick        # destroy the pawn entity (NOT mp_restartgame)
+[demo] tick 4865 health=100  friction=1    ragdoll=false ... controller=idx=1 valid=true stashed.health=100
+[demo] tick 5121 health=none friction=none ragdoll=none team=none controller=null      stashed.health=null
+[demo] tick 5377 health=none friction=none ragdoll=none team=none controller=null      stashed.health=none
+```
+
+Every value (`health`, `friction`, `clientSideRagdoll`, `teamNum`, and the `controller` handle) is read
+through a **generated** accessor. Alive they read correct values; after `bot_kick` the pawn's entity is
+destroyed and every generated getter — including the stashed pawn's `health` — returns `null` on the serial
+mismatch, with the server still ticking, no crash. The serial-gated `T | null` guarantee is preserved through
+the generated layer.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
