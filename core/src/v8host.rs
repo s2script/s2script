@@ -14,7 +14,7 @@
 use crate::async_rt::{Pool, TimerKind, TimerQueue};
 use crate::multiplexer::{self, Descriptor, DetourChange, HookResult, Phase, Priority};
 use crate::plugin;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::{Once, OnceLock};
 use std::time::{Duration, Instant};
@@ -50,6 +50,15 @@ pub type EntByIndexFn = extern "C" fn(idx: c_int) -> *mut c_void;
 pub type DerefHandleFn = extern "C" fn(handle: c_uint) -> *mut c_void;
 pub type EntStateChangedFn = extern "C" fn(ent: *mut c_void, offset: c_int);
 pub type ConCommandRegisterFn = extern "C" fn(name: *const c_char);
+/// Schema enumeration callbacks + engine-op (5B.1). The shim provides `SchemaEnumerateFn`; core
+/// provides `EmitClassFn`/`EmitFieldFn` as callbacks into the `Catalog` builder. Returns c_int
+/// (NOT bool): 0 = schema not ready / error, non-zero = success.
+pub type EmitClassFn = extern "C" fn(ctx: *mut c_void, name: *const c_char, parent: *const c_char);
+pub type EmitFieldFn = extern "C" fn(
+    ctx: *mut c_void, cls: *const c_char, name: *const c_char, offset: c_int,
+    kind: *const c_char, type_name: *const c_char, inner: *const c_char,
+);
+pub type SchemaEnumerateFn = extern "C" fn(ctx: *mut c_void, emit_class: EmitClassFn, emit_field: EmitFieldFn) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -59,6 +68,9 @@ pub struct S2EngineOps {
     pub deref_handle: Option<DerefHandleFn>, // unused since 5A (EntityRef path supersedes deref_handle)
     pub ent_state_changed: Option<EntStateChangedFn>,
     pub concommand_register: Option<ConCommandRegisterFn>,
+    /// Schema enumeration engine-op (5B.1): the shim walks the SchemaSystem and streams classes/fields
+    /// to core via the C-ABI emit callbacks.  Null → `__s2_schema_dump` degrades to false.
+    pub schema_enumerate: Option<SchemaEnumerateFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -1004,6 +1016,81 @@ pub fn set_plugin_imports(id: &str, decls: Vec<(String, String, crate::interface
     IFACES.with(|r| r.borrow_mut().set_imports(id, decls));
 }
 
+// ---------------------------------------------------------------------------
+// Slice 5B.1: schema enumeration callbacks + `__s2_schema_dump` native.
+//
+// The shim's `schema_enumerate` engine-op walks the live SchemaSystem and calls
+// `cb_emit_class`/`cb_emit_field` back via C ABI, streaming into a `Catalog`.
+// All callbacks are wrapped in `catch_unwind(AssertUnwindSafe(...))` — they are
+// invoked FROM C++ and must never unwind across the FFI boundary.
+// ---------------------------------------------------------------------------
+
+/// C-ABI callback invoked by the shim's `schema_enumerate` once per class.
+extern "C" fn cb_emit_class(ctx: *mut c_void, name: *const c_char, parent: *const c_char) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if ctx.is_null() || name.is_null() { return; }
+        let catalog = unsafe { &mut *(ctx as *mut crate::schema_catalog::Catalog) };
+        let name = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let parent = if parent.is_null() {
+            None
+        } else {
+            Some(unsafe { CStr::from_ptr(parent) }.to_string_lossy().into_owned())
+        };
+        catalog.add_class(&name, parent.as_deref());
+    }));
+}
+
+/// C-ABI callback invoked by the shim's `schema_enumerate` once per field.
+extern "C" fn cb_emit_field(
+    ctx: *mut c_void, cls: *const c_char, name: *const c_char, offset: c_int,
+    kind: *const c_char, type_name: *const c_char, inner: *const c_char,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if ctx.is_null() || cls.is_null() || name.is_null() || kind.is_null() { return; }
+        let catalog = unsafe { &mut *(ctx as *mut crate::schema_catalog::Catalog) };
+        let s = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        let opt = |p: *const c_char| if p.is_null() { None } else { Some(s(p)) };
+        catalog.add_field(&s(cls), &s(name), offset as i32, &s(kind),
+                          opt(type_name).as_deref(), opt(inner).as_deref());
+    }));
+}
+
+/// Native `__s2_schema_dump(path: string) -> boolean`.
+///
+/// Drives the shim's `schema_enumerate` op: builds a `Catalog` from the live SchemaSystem (via the
+/// `cb_emit_class`/`cb_emit_field` C-ABI callbacks), then serializes it and writes JSON to `path`.
+/// Returns `false` (never throws) on any failure: no ops table, enumerate returns 0, zero classes
+/// (schema not yet warm), or file-write error.  Degrade-never-crash (body under `catch_unwind`).
+fn s2_schema_dump(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
+            log_warn("WARN: __s2_schema_dump: no engine ops table");
+            return;
+        };
+        let Some(enumerate) = ops.schema_enumerate else {
+            log_warn("WARN: __s2_schema_dump: schema_enumerate not wired in ops");
+            return;
+        };
+        let mut catalog = crate::schema_catalog::Catalog::new();
+        let ok = enumerate(&mut catalog as *mut _ as *mut c_void, cb_emit_class, cb_emit_field);
+        if ok == 0 || catalog.class_count() == 0 {
+            log_warn("WARN: __s2_schema_dump: schema not ready (no classes) — try again once a map is live");
+            return;
+        }
+        match std::fs::write(&path, catalog.to_json()) {
+            Ok(()) => rv.set_bool(true),
+            Err(e) => log_warn(&format!("WARN: __s2_schema_dump: write '{}' failed: {}", path, e)),
+        }
+    }));
+}
+
 /// Set a named native function on `global_obj` in `scope`.  Small helper used by
 /// `install_natives` to keep the per-context install table declarative.
 fn set_native(
@@ -1335,6 +1422,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     // ConCommand registration.
     set_native(scope, global_obj, "__s2_concommand", s2_concommand);
+    // Schema dump (5B.1): drives the shim's schema_enumerate op into a Catalog and writes JSON.
+    set_native(scope, global_obj, "__s2_schema_dump", s2_schema_dump);
     // Per-context identity probe + the CJS require shim.
     set_native(scope, global_obj, "__s2_current_plugin", s2_current_plugin);
     set_native(scope, global_obj, "__s2require", s2require);
@@ -3097,6 +3186,56 @@ mod frame_tests {
             globalThis.__out = d.a + "," + d.b + "," + d.c.join("-");
         "#);
         assert_eq!(read_global_string("cons", "__out"), "1,hi,1-2-3"); // ordinary data intact
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice 5B.1 Task 3: schema_enumerate op + __s2_schema_dump native
+    // ---------------------------------------------------------------------------
+
+    /// A stub shim-side enumerate: emits one class + two fields via the core callbacks.
+    /// Generic names only (CTest/CBase/m_x/m_h/CThing) — no CS2 identifiers.
+    extern "C" fn stub_enumerate(ctx: *mut c_void, ec: EmitClassFn, ef: EmitFieldFn) -> c_int {
+        ec(ctx, b"CTest\0".as_ptr() as *const c_char, b"CBase\0".as_ptr() as *const c_char);
+        ef(ctx, b"CTest\0".as_ptr() as *const c_char, b"m_x\0".as_ptr() as *const c_char, 8,
+           b"atomic\0".as_ptr() as *const c_char, b"int32\0".as_ptr() as *const c_char, std::ptr::null());
+        ef(ctx, b"CTest\0".as_ptr() as *const c_char, b"m_h\0".as_ptr() as *const c_char, 12,
+           b"handle\0".as_ptr() as *const c_char, std::ptr::null(), b"CThing\0".as_ptr() as *const c_char);
+        1
+    }
+
+    /// Full core path: stub enumerate → callbacks → Catalog → JSON → file. No real shim needed.
+    #[test]
+    fn schema_dump_writes_catalog_via_stub_enumerate() {
+        let _ = init(dummy_logger());
+        // Wire an ops table whose schema_enumerate is the stub (all other fields None).
+        set_engine_ops(Some(S2EngineOps {
+            schema_offset: None, ent_by_index: None, deref_handle: None,
+            ent_state_changed: None, concommand_register: None,
+            schema_enumerate: Some(stub_enumerate),
+        }));
+        create_plugin_context("p");
+        let path = std::env::temp_dir().join("s2_schema_test.json");
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+        let ok = eval_in_context_string("p", &format!("String(__s2_schema_dump(\"{}\"))", path_s));
+        assert_eq!(ok, "true");
+        let written = std::fs::read_to_string(&path).expect("catalog file written");
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["CTest"]["parent"], "CBase");
+        assert_eq!(v["CTest"]["fields"][0]["name"], "m_x");
+        assert_eq!(v["CTest"]["fields"][0]["type"]["kind"], "atomic");
+        assert_eq!(v["CTest"]["fields"][1]["type"]["inner"], "CThing");
+        let _ = std::fs::remove_file(&path);
+        shutdown();
+    }
+
+    /// Degrade path: no ops table → __s2_schema_dump returns false, no file written.
+    #[test]
+    fn schema_dump_degrades_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);              // no ops table → no schema_enumerate → false, no file
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_schema_dump(\"/tmp/should_not_exist.json\"))"), "false");
         shutdown();
     }
 }

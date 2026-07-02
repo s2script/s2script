@@ -812,6 +812,100 @@ interface `.d.ts` codegen.
 
 ---
 
+## Schema catalog dump (Slice 5B.1 — treadmill)
+
+Slice 5B.1 produces the **schema catalog** — [`games/cs2/gamedata/schema-catalog.json`](games/cs2/gamedata/schema-catalog.json),
+a regenerable snapshot of the live CS2 SchemaSystem (every class → `{parent, fields}`; each field →
+`{name, offset, type:{kind, name?/inner?}}`). It is the **source of truth** the 5B.3 typed-accessor
+codegen consumes, and it is **regenerated after every CS2 update** (offsets/fields move each patch —
+this is the maintenance treadmill).
+
+**How it's produced (offsets/signatures are data, not code).** The pure catalog builder lives in
+`core/src/schema_catalog.rs` (engine-generic, V8-free, no CS2 names). The live SDK walk lives in the
+**shim** (`schema_enumerate` in `shim/src/s2script_mm.cpp`), which streams classes/fields to core over
+C-ABI callbacks. The dev/treadmill native `__s2_schema_dump(path) -> boolean` drives that walk, builds a
+`Catalog`, and writes JSON — returning `true` only when the schema is warm (classes enumerated) **and**
+the file was written. `__s2_schema_dump` is a dev native (not part of the typed `@s2script/std` surface);
+the dump plugin declares it ambiently. The catalog stores **per-class own-fields**; inheritance is the
+`parent` chain (e.g. `m_iHealth` lives on `CBaseEntity`, so a consumer resolves it by walking
+`CCSPlayerPawn → … → CBaseEntity`).
+
+The dump plugin is [`examples/schema-dump`](examples/schema-dump): it subscribes to `OnGameFrame`, waits
+~128 ticks for a map to go live + the schema to populate, then retries `__s2_schema_dump("/tmp/schema-catalog.json")`
+until it returns `true`.
+
+### Runbook (regenerate after a CS2 update)
+
+```bash
+# 1. Build the CLI + the dump plugin → .s2sp
+node packages/cli/build.mjs
+( cd packages/cli && npm link )                 # so `npx s2script` resolves to this repo's CLI
+npx s2script build examples/schema-dump
+
+# 2. Sniper-build the runtime (GLIBC <= 2.31; carries the shim's schema_enumerate) and bring the server up
+docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash /repo/scripts/build-sniper.sh
+mkdir -p dist/addons/s2script/plugins
+docker compose -f docker/docker-compose.yml up -d
+# A CS2 update resets gameinfo.gi (metamod SearchPath dropped, addon loads 0 plugins) — re-patch + restart if so:
+docker exec s2script-cs2 /patch-gameinfo.sh
+docker compose -f docker/docker-compose.yml restart cs2
+
+# 3. Get a map fully live so the SchemaSystem is populated (a hibernating LAN server barely ticks)
+python3 scripts/rcon.py "sv_hibernate_when_empty 0" "bot_quota 1" "status"
+
+# 4. Drop the dump plugin (host writes into the :ro-mounted plugins dir; the shim READS it)
+cp examples/schema-dump/dist/_demo_schema-dump.s2sp dist/addons/s2script/plugins/
+docker logs -f s2script-cs2 | grep schema-dump      # wait for: dump OK -> /tmp/schema-catalog.json
+
+# 5. Copy the catalog out of the container and commit it (the path is relative to the server CWD;
+#    the plugin passes an absolute /tmp path, so it lands at /tmp/schema-catalog.json in the container)
+docker cp s2script-cs2:/tmp/schema-catalog.json games/cs2/gamedata/schema-catalog.json
+git add games/cs2/gamedata/schema-catalog.json && git commit -m "chore(gamedata): regen schema-catalog.json"
+```
+
+Captured live log (`joedwards32/cs2`, de_inferno, 2 bots active):
+
+```
+[s2script] [schema-dump] onLoad — will dump once the schema is live
+[s2script] [schema-dump] dump OK -> /tmp/schema-catalog.json
+```
+
+(No `not ready, retrying` lines here because the map was already fully live when the plugin loaded — the
+schema was warm on the first attempt at tick 128. On a cold boot the plugin logs retries until the schema
+populates.)
+
+### Spot-check the committed catalog
+
+```bash
+python3 - <<'PY'
+import json
+d = json.load(open('games/cs2/gamedata/schema-catalog.json'))
+print('classes', len(d))                                   # 2429 (many — all schema scopes)
+print('parent', d['CCSPlayerPawn']['parent'])              # CCSPlayerPawnBase
+# m_iHealth is INHERITED — resolve it by walking the parent chain (as codegen will):
+def resolve(cls, field):
+    while cls in d:
+        for f in d[cls]['fields']:
+            if f['name'] == field: return cls, f
+        cls = d[cls].get('parent')
+    return None, None
+oc, f = resolve('CCSPlayerPawn', 'm_iHealth')
+print('m_iHealth', oc, f['type'], f['offset'])             # CBaseEntity {kind:atomic,name:int32} 1456
+print('has_handle', any(f['type']['kind']=='handle' for c in d.values() for f in c['fields']))  # True
+print('has_class',  any(f['type']['kind']=='class'  for c in d.values() for f in c['fields']))  # True
+PY
+```
+
+Verified on the committed artifact: **2429 classes**; `CCSPlayerPawn` → parent `CCSPlayerPawnBase`;
+`m_iHealth` = `{kind:atomic, name:int32}` at offset **1456** (owned by `CBaseEntity`, cross-checks the
+Slice-3 `__s2_schema_offset` resolve of 1456 on de_inferno); field-kind distribution atomic 9591 /
+class 1918 / enum 529 / unknown 309 / handle 247 / ptr 113 (≥1 `handle` with an `inner`, ≥1 `class` with
+a `name`). The file is deterministic (classes sorted; fields in schema order), so a re-dump on the same
+build yields byte-identical JSON.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

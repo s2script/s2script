@@ -9,4 +9,5 @@ mod ffi;
 mod loader;
 mod multiplexer;
 mod schema;
+mod schema_catalog;
 mod v8host;
