@@ -1104,6 +1104,53 @@ death — the split changed how the API is *packaged*, not how it behaves.
 
 ---
 
+## The player model (Slice 5C.2)
+
+CS2 splits SourceMod's single "client" into two entities: the **controller** (`CCSPlayerController` — the
+persistent player: team/score/ping; survives death) and the **pawn** (`CCSPlayerPawn` — the in-world body:
+health/position; respawns). The player model makes that honest — `Player` **is** the controller, with typed
+navigation to the pawn:
+
+```ts
+import { Player } from "@s2script/cs2";
+
+for (const p of Player.all()) {          // the in-game players
+  const team = p.teamNum;                // generated CCSPlayerController accessor
+  const body = p.pawn;                   // controller -> pawn (Pawn | null)
+  const hp = body ? body.health : null;  // the pawn's generated accessor
+  const back = body ? body.controller : null;  // pawn -> controller reverse hop
+}
+const p0 = Player.fromSlot(0);           // Player | null (0-based CPlayerSlot)
+```
+
+`Player` wraps the controller `EntityRef` (entity index `slot+1`); `player.pawn` reads `m_hPlayerPawn` and
+`pawn.controller` reads `m_hController` — both typed, both serial-gated (`T | null`). A stored `Player`
+degrades to `null` on reuse/disconnect (no dangling — the safety CSSharp uses userid re-lookup for, we get
+from serial-gating). It's entirely in the `@s2script/cs2` JS + types layer — **no core/shim change**.
+
+**Occupancy** was a live-gate finding: CS2 pre-allocates all 64 controller entities, so `isValid()` alone
+returns every slot, and `m_iConnected` reads `0` for occupied *and* empty slots (verified via a diagnostic).
+The clean signal is that an occupied controller has a **live player pawn** — so `Player.all()`/`fromSlot`
+keep the in-game (spawned) players. Connected-but-pawnless (dead/spectating) plus `player.userId`/`name`/
+`steamId` are the **engine-identity follow** (they need engine natives; userId/name/steamId aren't
+schema-readable).
+
+**Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`; **no sniper rebuild** — JS-only):
+
+```
+[demo] tick 3585 players=2
+  slot=0 teamNum=2 health=100 backSlot=0
+  slot=1 teamNum=3 health=100 backSlot=1
+bot_kick
+[demo] tick 4353 players=0
+```
+
+`Player.all()` returns exactly the two bots (filtered from 64 controllers); `player.teamNum` reads, `player.pawn`
+→ `health`, and `pawn.controller` round-trips back to the same slot; all drop to `players=0` on disconnect,
+server ticking, no crash.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
