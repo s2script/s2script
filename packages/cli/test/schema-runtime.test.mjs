@@ -86,3 +86,21 @@ test("schema.generated.js + pawn.js compose: Pawn.prototype has generated access
   assert.equal(p.health, 100);
   assert.equal(p.friction, 0.25);
 });
+
+test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter, offline vm)", () => {
+  // A pre-allocated-but-empty controller: the entity is valid, but readHandle(m_hPlayerPawn) is null.
+  // The occupancy filter (5C.2 live finding) must reject it — CS2 pre-allocates all 64 controllers.
+  function EntityRef(i, s) { this.index = i; this.serial = s; }
+  EntityRef.prototype.isValid = function () { return true; };    // controller entity exists...
+  EntityRef.prototype.readHandle = function () { return null; };  // ...but has no player pawn (empty slot)
+  const ctx = {
+    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : null),
+    __s2_schema_offset: () => 8, __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
+  };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  const { Player } = ctx.__s2pkg_cs2;
+  assert.equal(Player.fromSlot(0), null, "valid controller but no pawn → not occupied → null");
+  assert.deepEqual(Player.all(), [], "Player.all() excludes controllers without a pawn");
+});
