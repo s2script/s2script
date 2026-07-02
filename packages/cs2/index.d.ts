@@ -9,8 +9,8 @@
 
 /** A CS2 player pawn. */
 export declare interface Pawn {
-  /** Current health value of the pawn. */
-  readonly health: number;
+  /** Current health value of the pawn, or null if the entity ref is stale. */
+  health: number | null;
 }
 
 export declare const Pawn: {

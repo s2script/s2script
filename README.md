@@ -591,8 +591,116 @@ ledgered reverse-dependency teardown — proven end to end.
 | boundary | core stays engine-generic — no game names in the inter-plugin path | ✅ cargo (`check-core-boundary.sh` + name-leak gate) |
 
 Deferred to later slices: interface `.d.ts` codegen (consumers hand-write the ambient `.d.ts` today);
-the `tsc` typecheck gate; the handle/`EntityRef` system + schema codegen + `@s2script/std` breadth (Slice 5);
+the `tsc` typecheck gate; full schema codegen (5B) + the engine-generic `@s2script/std` breadth (5C);
 config materialization + permissions enforcement + reload state-handoff.
+
+---
+
+## Safe entities — the EntityRef guardrail (Slice 5A)
+
+Slice 5A closes the Slice-3 **use-after-free**: back then `Pawn` held a raw entity pointer, so a `Pawn`
+stashed across time would dereference freed memory the moment its entity was destroyed. Now every `Pawn`
+holds an **`EntityRef` = `{index, serial}`** (no raw pointer ever crosses to JS), and **every field access
+re-validates the captured serial against the engine's live `CEntityIdentity` before touching memory**. A
+stale ref degrades safely to `null`/`false` — never garbage, never a crash.
+
+**Where each thing lives (the boundary holds):**
+- **Core (`core/`, engine-generic):** the serial-gated natives `__s2_ent_ref_valid` / `__s2_ent_ref_read_i32` /
+  `__s2_ent_ref_write_i32` / `__s2_ent_ref_state_changed`, plus `__s2_ent_current_serial` and the
+  `__s2_handle_decode` `CEntityHandle` bit-split (`entity.rs`). Each read/write resolves the entity pointer
+  **and** compares the slot's current serial to the ref's captured serial in a single lookup (no TOCTOU); a
+  mismatch returns `null`/`false`. `EntityRef` itself is the engine-generic `@s2script/std` class wrapping
+  those natives. **Zero CS2 names in Rust** (both boundary gates green).
+- **`@s2script/cs2` (`games/cs2/js/pawn.js`, JS):** `Pawn` now stores an `EntityRef` (+ the resolved health
+  offset); `Pawn.forSlot(slot)` walks `slot → controller (index slot+1) → m_hPlayerPawn handle → pawn
+  EntityRef`, decoding the controller's handle via `__s2_handle_decode` and capturing the pawn's live serial.
+  `get health` is `ref.readInt32(off)` (→ `number | null`); `set health` writes then
+  `ref.notifyStateChanged(off)` only if the write succeeded.
+
+### Runbook (build → load → kill → respawn)
+
+```bash
+cd /home/gkh/projects/s2script
+# 1. Build the demo .s2sp (stashes a Pawn, logs stashed vs fresh health every ~256 frames)
+node packages/cli/build.mjs                 # (run from packages/cli/ if it can't resolve src/cli.ts)
+npx s2script build examples/demo-plugin
+# 2. Sniper-build the runtime (GLIBC <= 2.31) — MUST post-date the 5A commits (fresh EntityRef core)
+docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash /repo/scripts/build-sniper.sh
+# 3. Bring the server up; a CS2 update resets gameinfo.gi — re-patch + restart if the addon won't load
+docker compose -f docker/docker-compose.yml up -d
+docker exec s2script-cs2 /patch-gameinfo.sh && docker compose -f docker/docker-compose.yml restart cs2
+python3 scripts/rcon.py "sv_hibernate_when_empty 0" "bot_quota 1"   # get the map ticking + a bot in slot 0
+
+# --- The 3-step host-invalidation gate (host writes into the :ro-mounted plugins dir) ---
+cp examples/demo-plugin/dist/_demo_hello.s2sp dist/addons/s2script/plugins/   # 1. load → live pawn reads 100
+python3 scripts/rcon.py "bot_quota 0" "bot_kick"                              # 2. REAL destruction → stashed → null
+python3 scripts/rcon.py "bot_quota 1"                                         # 3. respawn → fresh reads 100 (new serial)
+```
+
+**Force a REAL destruction, not `mp_restartgame`.** The Task-1 spike proved `mp_restartgame` does *not*
+destroy the pawn (serials persist), so it never exercises the null path. `bot_kick` destroys the controller
+**and** the pawn; a re-added bot at the same index gets an **incremented serial**, so the stashed
+`{index, serial}` fails the equality check. (Lethal damage / a natural round death also works — there the
+controller persists and `fresh` recovers on respawn.)
+
+### Captured live log
+
+Captured on a live `joedwards32/cs2` server (build 2000856). `bot_kick` was used, so after the kill the
+controller at index `slot+1` is also gone and `fresh` reads `none` until a bot re-joins:
+
+```
+# --- boot: fresh EntityRef core loads; the (larger) EntityRef-backed pawn.js registers ---
+[s2script] interface OK: SchemaSystem (SchemaSystem_001)
+[s2script] @s2script/cs2 registered (2737 bytes from …/addons/s2script/js/pawn.js)
+[s2script] plugins dir: …/game/csgo/addons/s2script/plugins
+[META] Loaded 1 plugin.
+
+# 1. drop the .s2sp + a live bot in slot 0 → the STASHED pawn and a FRESH forSlot both read 100
+[s2script] [demo] onLoad
+[s2script] [demo] tick 1 stashed.health=100 fresh.health=100
+[s2script] [demo] tick 257 stashed.health=100 fresh.health=100
+[s2script] [demo] tick 769 stashed.health=100 fresh.health=100
+
+# 2. bot_quota 0; bot_kick → the stashed pawn's entity is DESTROYED; the next tick reads null (serial
+#    mismatch — NOT garbage, NOT a crash). fresh=none (the controller is gone too). server keeps ticking.
+[s2script] [demo] tick 1025 stashed.health=null fresh.health=none
+[s2script] [demo] tick 1281 stashed.health=none fresh.health=none     # demo re-stashes; no bot yet
+
+# 3. bot_quota 1 → a bot re-joins slot 0 with an INCREMENTED serial; a fresh forSlot reads 100 again and
+#    the demo re-stashes the new pawn (so stashed reads 100 too).
+[s2script] [demo] tick 2561 stashed.health=100 fresh.health=100
+[s2script] [demo] tick 2817 stashed.health=100 fresh.health=100
+```
+
+The stashed `Pawn` read `100` while its entity lived, flipped to `null` the tick its entity was destroyed
+(the serial no longer matched the engine's `CEntityIdentity`), and the server **kept ticking** across the
+destruction (`docker ps` showed `Up` throughout; no panic/segfault in the logs). A fresh `forSlot` recovered
+with the new serial once a bot re-joined. The whole guardrail — `EntityRef` capture, per-access serial
+validation, safe `null` degrade, host-invalidation across a real entity death — proven end to end.
+
+**Live-gate finding (the gate earned its keep).** The first drop logged
+`WARN: @s2script/cs2 prelude eval error: ReferenceError: require is not defined` and never ticked. The
+Task-4 `pawn.js` prelude resolved `EntityRef` via bare `require("@s2script/std")`, but the game-package
+prelude is evaluated in the raw context scope (**not** inside the plugin's
+`(function(require,module,exports){…})` wrapper), so `require` is out of scope and `__s2pkg_cs2` never got
+set — the demo's frame handler then threw every tick. Fixed by resolving through the `__s2require` native
+(the same primitive the `@s2script/std` prelude itself uses). No unit test covered the cs2 prelude's
+require-scope, so this was exactly the integration gap the live gate exists to catch. Core was untouched.
+
+### Slice 5A acceptance (live + cargo)
+
+| # | Criterion | Result |
+|---|---|---|
+| build | `cargo test` (entity decode/serial-resolve + in-isolate degrade) + both boundary gates + sniper | ✅ 81 core tests; `check-core-boundary` + name-leak gates green; sniper GLIBC ≤ 2.31 (s2script.so 2.14 / core 2.30) |
+| load | the EntityRef-backed demo `.s2sp` loads; a live pawn reads via the stashed ref | ✅ live (`tick 1 stashed.health=100 fresh.health=100`) |
+| invalidate | a REAL entity destruction (`bot_kick`) flips the stashed `Pawn.health` to `null` (serial mismatch), no crash | ✅ live (`tick 1025 stashed.health=null`; container `Up`, no panic/segfault) |
+| keep-alive | the server keeps ticking through the destruction | ✅ live (frame counter advanced 769→1025→…→2561; `docker ps` `Up`) |
+| recover | a fresh `forSlot` gets the new serial after respawn; the demo re-stashes | ✅ live (`tick 2561 stashed.health=100 fresh.health=100`) |
+| boundary | raw pointer never crosses to JS; `EntityRef` engine-generic in `@s2script/std`; CS2 names only in `pawn.js` | ✅ cargo (both gates) + the serial-gated natives in `entity.rs` |
+
+Deferred to later slices: full schema codegen + the engine-generic `@s2script/std` breadth (Slice 5B); the
+`tsc` typecheck gate; interface `.d.ts` codegen; config materialization + permissions + reload state-handoff.
 
 ---
 
