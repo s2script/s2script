@@ -1457,6 +1457,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Slice 5A: (index, serial) entity natives — serial-gated read/write/valid/decode.
     // The five Slice-3 raw-pointer natives (entity-by-index, deref-handle, ent-read/write-i32,
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.
+    // __s2_ent_ref_read_i32/__s2_ent_ref_write_i32 (introduced in Slice 5A) were retired in 5B.2 → generic __s2_ent_ref_read/write.
     set_native(scope, global_obj, "__s2_ent_current_serial", s2_ent_current_serial);
     set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);

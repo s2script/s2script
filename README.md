@@ -906,6 +906,77 @@ build yields byte-identical JSON.
 
 ---
 
+## Typed field access (Slice 5B.2)
+
+Slice 5B.2 extends the `EntityRef` API with **kind-dispatched typed read/write methods** so plugins
+can access any field from the committed schema catalog — not just `i32` — via the same serial-gated
+`T | null` contract as `Pawn.health`. All reads are serial-gated: if the entity slot has been reused
+or destroyed, every accessor returns `null` (or `false`), never garbage.
+
+### `EntityRef` typed-method surface
+
+| Method | Return | Description |
+|---|---|---|
+| `readInt32(off)` | `number \| null` | Read a signed 32-bit integer (existing) |
+| `writeInt32(off, v)` | `boolean` | Write a signed 32-bit integer (existing) |
+| `readFloat32(off)` | `number \| null` | Read an IEEE-754 float32 |
+| `writeFloat32(off, v)` | `boolean` | Write a float32 |
+| `readBool(off)` | `boolean \| null` | Read a single byte as bool |
+| `writeBool(off, v)` | `boolean` | Write a bool |
+| `readInt8(off)` | `number \| null` | Read a sign-extended int8 |
+| `readInt16(off)` | `number \| null` | Read a sign-extended int16 |
+| `readUInt8(off)` | `number \| null` | Read an unsigned uint8 |
+| `readUInt16(off)` | `number \| null` | Read an unsigned uint16 |
+| `readUInt32(off)` | `number \| null` | Read an unsigned uint32 |
+| `readHandle(off)` | `EntityRef \| null` | Read a `CEntityHandle` field, decode it, and return a **live, serial-gated** `EntityRef` — or `null` if the source ref is stale or the handle slot is invalid |
+
+All methods live on the engine-generic `EntityRef` class in `@s2script/std`. Offsets come from
+`__s2_schema_offset("ClassName", "fieldName")`, which walks the inheritance chain (so an inherited
+field resolves correctly regardless of which base class owns it). The runtime dispatches on the
+`kind` parameter passed by the caller — `"f32"`, `"bool"`, `"i8"`, etc. — to a single
+`__s2_ent_ref_read` / `__s2_ent_ref_write` native.
+
+### Usage snippet (from `examples/demo-plugin`)
+
+```ts
+import { OnGameFrame, EntityRef } from "@s2script/std";
+import { Pawn } from "@s2script/cs2";
+
+declare const __s2_schema_offset: (cls: string, field: string) => number;
+
+let FRICTION_OFF = -1;  // m_flFriction  (float32, CBaseEntity)
+let RAGDOLL_OFF  = -1;  // m_bClientSideRagdoll (bool, CBaseEntity)
+let OWNER_OFF    = -1;  // m_hOwnerEntity (handle → CBaseEntity, CBaseEntity)
+
+OnGameFrame.subscribe(() => {
+  const p = Pawn.forSlot(0);   // Pawn | null (EntityRef-backed)
+  if (!p) return;
+
+  // Resolve offsets once (schema warm after map load; OffsetCache makes repeated calls free)
+  if (FRICTION_OFF < 0) FRICTION_OFF = __s2_schema_offset("CCSPlayerPawn", "m_flFriction");
+  if (RAGDOLL_OFF  < 0) RAGDOLL_OFF  = __s2_schema_offset("CCSPlayerPawn", "m_bClientSideRagdoll");
+  if (OWNER_OFF    < 0) OWNER_OFF    = __s2_schema_offset("CCSPlayerPawn", "m_hOwnerEntity");
+
+  const friction: number | null  = FRICTION_OFF >= 0 ? p.ref.readFloat32(FRICTION_OFF) : null;
+  const ragdoll: boolean | null  = RAGDOLL_OFF  >= 0 ? p.ref.readBool(RAGDOLL_OFF)     : null;
+  // readHandle decodes the CEntityHandle and returns a live, serial-gated EntityRef:
+  const owner: EntityRef | null  = OWNER_OFF    >= 0 ? p.ref.readHandle(OWNER_OFF)     : null;
+  const ownerInfo = owner
+    ? ("idx=" + owner.index + " valid=" + owner.isValid()) : "null";
+
+  console.log("friction=" + friction + " ragdoll=" + ragdoll + " owner=" + ownerInfo);
+});
+```
+
+All three chosen fields (`m_flFriction`, `m_bClientSideRagdoll`, `m_hOwnerEntity`) live on
+`CBaseEntity` and are inherited by `CCSPlayerPawn` — `__s2_schema_offset` walks the base-class
+chain, so passing `"CCSPlayerPawn"` resolves them correctly. The `readHandle` call demonstrates
+the full handle round-trip: decode → serial-validate → live `EntityRef` (or `null`).
+
+> Live verification: see the Slice 5B.2 live-gate log (added by the controller run).
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
