@@ -231,7 +231,7 @@ mod tests {
         v8host::eval_in_context(
             "p",
             r#"
-                const { OnGameFrame } = __s2require("@s2script/std");
+                const { OnGameFrame } = __s2require("@s2script/frame");
                 globalThis._sub = OnGameFrame.subscribe(() => {});
             "#,
         )

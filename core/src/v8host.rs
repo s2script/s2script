@@ -260,9 +260,9 @@ pub(crate) fn refresh_detour() {
     });
 }
 
-/// The injected `@s2script/std` prelude, evaluated per plugin context AFTER the native
-/// primitives are in place.  Builds the renamed, engine-generic API over the `__s2_*` natives
-/// (whose internal names are unchanged) and stashes it at `globalThis.__s2pkg_std` for the
+/// The injected engine-generic prelude, evaluated per plugin context AFTER the native
+/// primitives are in place.  Builds the five module globals over the `__s2_*` natives
+/// (whose internal names are unchanged) and stashes them at `globalThis.__s2pkg_<name>` for the
 /// `__s2require` native to hand back.  The `HookResult`/`Priority`/`Phase` enum globals stay on
 /// `globalThis` (ambient, engine-generic).  No game identifiers appear here.
 const INJECTED_STD_PRELUDE: &str = r#"
@@ -276,13 +276,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return { dispose: () => __s2_unsubscribe(id) };
     },
   };
-  const std = {
-    OnGameFrame,
+  const timers = {
     delay: (ms) => __s2_delay(ms || 0),
     nextTick: () => __s2_next_tick(),
     nextFrame: () => __s2_next_frame(),
     threadSleep: (ms) => __s2_thread_sleep(ms || 0),
-    console,
   };
   // --- Slice 4.5: inter-plugin interfaces ---
   function makeIfaceProxy(name) {
@@ -305,13 +303,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return makeIfaceProxy(name);                             // hard → always a proxy
   }
   globalThis.__s2_require = function (name) {
-    var pkg = __s2require(name);                             // @s2script/std | @s2script/cs2
+    var pkg = __s2require(name);                             // first-party @s2script/* module or game package
     if (pkg !== null && pkg !== undefined) return pkg;
     return resolveInterface(name);                          // inter-plugin, or null
   };
-  std.publishInterface = function (name, version, impl) {
-    __s2_iface_publish(name, version, impl);
-    return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
+  const interfaces = {
+    publishInterface: function (name, version, impl) {
+      __s2_iface_publish(name, version, impl);
+      return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
+    },
   };
   // --- Slice 5A/5B.2: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
   var K = { I32: 1, F32: 2, BOOL: 3, I8: 4, I16: 5, U8: 6, U16: 7, U32: 8 }; // mirrors core KIND_*
@@ -338,7 +338,6 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     notifyStateChanged: function (offset) { __s2_ent_ref_state_changed(this.index, this.serial, offset); },
   };
-  std.EntityRef = EntityRef;
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
   // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
   // plain data. `__entref__` is a reserved wire key. Used by iface_to_json / iface_from_json.
@@ -350,7 +349,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       ? new EntityRef(value.__entref__[0], value.__entref__[1])
       : value;
   };
-  globalThis.__s2pkg_std = std;
+  globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
+  globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
+  globalThis.__s2pkg_timers     = timers;
+  globalThis.__s2pkg_console    = { console: console };
+  globalThis.__s2pkg_interfaces = interfaces;
 })();
 "#;
 
@@ -947,14 +950,12 @@ pub(crate) fn log_warn(msg: &str) {
     }
 }
 
-/// Native `__s2require(name) -> object|null` — the injected CJS `require` shim (spike PROVE #1).
-///
-/// Maps a package specifier to the per-context API object the injected prelude stashed on the
-/// calling context's global: `"@s2script/std"` → `globalThis.__s2pkg_std` (`{ OnGameFrame, delay,
-/// nextTick, nextFrame, threadSleep, console }`), `"@s2script/cs2"` → `globalThis.__s2pkg_cs2`
-/// (`{ Pawn }`).  Any other specifier returns JS `null`.  The objects are HOST-authored (built by
-/// the prelude over the `__s2_*` natives); this native only hands the right one back for the
-/// current context — so `require` is per-plugin without any side table.
+/// Native `__s2require(name) -> object|null` — resolves first-party `@s2script/<name>` specifiers
+/// to their per-context module globals (e.g. `"@s2script/frame"` → `globalThis.__s2pkg_frame`,
+/// `"@s2script/entity"` → `globalThis.__s2pkg_entity`).  Non-`@s2script/` specifiers → `null`
+/// (the JS `__s2_require` shim resolves those as inter-plugin deps).  A retired/unknown name
+/// (global undefined) → `null`.  Engine-generic: no module list hardcoded; `@s2script/cs2` maps
+/// to `__s2pkg_cs2` by the same rule.
 ///
 /// Like every native, the body runs under `catch_unwind` (no panic may cross the FFI boundary).
 fn s2require(
@@ -968,13 +969,14 @@ fn s2require(
             return;
         }
         let name = args.get(0).to_rust_string_lossy(scope);
-        let key = match name.as_str() {
-            "@s2script/std" => "__s2pkg_std",
-            "@s2script/cs2" => "__s2pkg_cs2",
-            _ => return, // unknown specifier → null
-        };
+        // First-party rule: @s2script/<name> → globalThis.__s2pkg_<name> (engine-generic; no module list
+        // hardcoded; @s2script/cs2 → __s2pkg_cs2 subsumed). Non-@s2script specifiers → null (the JS
+        // `__s2_require` shim resolves those as inter-plugin deps). A retired/unknown name → the global is
+        // undefined → null.
+        let Some(rest) = name.strip_prefix("@s2script/") else { return };
+        let key = format!("__s2pkg_{}", rest);
         let global = scope.get_current_context().global(scope);
-        let Some(k) = v8::String::new(scope, key) else { return };
+        let Some(k) = v8::String::new(scope, &key) else { return };
         if let Some(v) = global.get(scope, k.into()) {
             if !v.is_undefined() {
                 rv.set(v);
@@ -1013,7 +1015,7 @@ fn iface_to_json(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Optio
     let mut tc_storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
     let tc = &mut tc;
-    // Best-effort: pass the @s2script/std EntityRef replacer so an EntityRef in `value` crosses the
+    // Best-effort: pass the EntityRef replacer so an EntityRef in `value` crosses the
     // wire as a tagged envelope. Absent (e.g. the shared HOST context) -> plain stringify (no crash).
     let replacer = tc.get_current_context().global(tc)
         .get(tc, v8::String::new(tc, "__s2_entref_replacer")?.into())
@@ -1548,7 +1550,7 @@ fn s2_current_plugin(
 
 /// Create a fresh per-plugin `v8::Context` on the shared isolate (borrowed from `HOST`), stamp it
 /// with the plugin id via `set_slot::<PluginId>`, install the FULL per-context API (all natives +
-/// `__s2require`) and evaluate the injected `@s2script/std` + `@s2script/cs2` preludes over them,
+/// `__s2require`) and evaluate the injected engine-generic prelude + any registered game preludes,
 /// store its `PluginInstance` in `PLUGINS`, register the plugin in `REGISTRY`, and return the
 /// generation.
 ///
@@ -1574,11 +1576,11 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
             // Full per-context API: install the natives first, THEN evaluate the injected preludes
-            // (which build the renamed `@s2script/std` / `@s2script/cs2` objects over those
+            // (which build the five module globals + any registered game package globals over those
             // natives and stash them at `globalThis.__s2pkg_*` for `__s2require`).
             let global_obj = ctx_local.global(scope);
             install_natives(scope, global_obj);
-            run_prelude(scope, "@s2script/std", INJECTED_STD_PRELUDE);
+            run_prelude(scope, "engine-prelude", INJECTED_STD_PRELUDE);
             // @s2script/cs2: provided externally at runtime via register_injected_package
             // (the shim calls s2script_core_register_package at load — see ffi.rs).
             // If not registered, __s2pkg_cs2 stays undefined and require("@s2script/cs2") → null.
@@ -1678,7 +1680,7 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
 /// Load a built plugin bundle `plugin_js` under plugin id `id` (the spike-PROVEN CJS wrapper).
 ///
 /// Steps: (1) `create_plugin_context(id)` — a fresh per-plugin context with the full injected API
-/// (`__s2require` + the `@s2script/std` / `@s2script/cs2` preludes); (2) evaluate the CJS wrapper
+/// (`__s2require` + the engine-generic prelude + any registered game preludes); (2) evaluate the CJS wrapper
 /// `(function(require,module,exports){…})(require, module, module.exports)` in that context and
 /// CAPTURE the RETURNED `module.exports` (esbuild REASSIGNS `module.exports`, so the return value
 /// — not the `exports` arg — is the plugin's real export object; spike [risk]); (3) call
@@ -2380,13 +2382,13 @@ mod frame_tests {
         })
     }
 
-    // Create a fresh plugin context `id` and eval `src` in it with the `@s2script/std` API
+    // Create a fresh plugin context `id` and eval `src` in it with the frame + timers API
     // destructured into scope (so tests can write `OnGameFrame.subscribe(...)`, `delay(...)`, etc.
     // directly).  The renamed API is only reachable via `require`, matching the plugin model.
     fn eval_std(id: &str, src: &str) {
         create_plugin_context(id);
         let full = format!(
-            "const {{ OnGameFrame, delay, nextTick, nextFrame, threadSleep }} = __s2require(\"@s2script/std\");\n{}",
+            "const {{ OnGameFrame }} = __s2require(\"@s2script/frame\");\nconst {{ delay, nextTick, nextFrame, threadSleep }} = __s2require(\"@s2script/timers\");\n{}",
             src
         );
         eval_in_context(id, &full).expect("eval_std");
@@ -2683,7 +2685,8 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
         // Minimal CJS bundle: require the injected API, subscribe, export onLoad.
         let plugin_js = r#"
-            const { OnGameFrame, delay } = require("@s2script/std");
+            const { OnGameFrame } = require("@s2script/frame");
+            const { delay } = require("@s2script/timers");
             module.exports.onLoad = function () {
                 OnGameFrame.subscribe(function () { globalThis.__ticks = (globalThis.__ticks||0)+1; });
             };
@@ -2748,7 +2751,7 @@ mod frame_tests {
         HOOKS.lock().unwrap().clear();
         set_hook_request(Some(record_hook));
         init(dummy_logger()).unwrap();
-        load_plugin_js("demo", r#"const {OnGameFrame}=require("@s2script/std");
+        load_plugin_js("demo", r#"const {OnGameFrame}=require("@s2script/frame");
             module.exports.onLoad=()=>OnGameFrame.subscribe(()=>{globalThis.__n=(globalThis.__n||0)+1;});"#);
         dispatch_game_frame_pre_post();
         // The subscribe (the only subscriber) requested the detour INSTALL.
@@ -2777,7 +2780,7 @@ mod frame_tests {
     #[test]
     fn delay_continuation_for_unloaded_plugin_is_dropped() {
         init(dummy_logger()).unwrap();
-        load_plugin_js("demo", r#"const {delay}=require("@s2script/std");
+        load_plugin_js("demo", r#"const {delay}=require("@s2script/timers");
             module.exports.onLoad=()=>{ (async()=>{ await delay(30); globalThis.__resumed=true; })(); };"#);
         unload_plugin("demo");                     // unload BEFORE the deadline
         std::thread::sleep(std::time::Duration::from_millis(40));
@@ -2805,7 +2808,7 @@ mod frame_tests {
 
         // v1: subscribes an OnGameFrame handler that writes "v1" to a global.
         let v1_js = r#"
-            const { OnGameFrame } = require("@s2script/std");
+            const { OnGameFrame } = require("@s2script/frame");
             module.exports.onLoad = function () {
                 OnGameFrame.subscribe(function () { globalThis.__v = "v1"; });
             };
@@ -2821,7 +2824,7 @@ mod frame_tests {
         // RELOAD: call load_plugin_js with the same id — the defensive guard fires.
         // v2 writes "v2" to the global.
         let v2_js = r#"
-            const { OnGameFrame } = require("@s2script/std");
+            const { OnGameFrame } = require("@s2script/frame");
             module.exports.onLoad = function () {
                 OnGameFrame.subscribe(function () { globalThis.__v = "v2"; });
             };
@@ -2952,14 +2955,14 @@ mod frame_tests {
     /// method across V8 contexts, with values copied (never shared) via a JSON string carrier.
     ///
     /// Exercises: `globalThis.__s2_require` dispatch, `makeIfaceProxy`, `resolveInterface`,
-    /// `std.publishInterface`, and the `__s2_iface_call` cross-context structured-copy native.
+    /// `interfaces.publishInterface`, and the `__s2_iface_call` cross-context structured-copy native.
     #[test]
     fn consumer_calls_producer_method_structured_copy() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         // Producer publishes via the plugin path so the prelude publishInterface is exercised.
         load_plugin_js("prod", r#"
-            const { publishInterface } = require("@s2script/std");
+            const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/greeter","1.0.0",{ greet:function(n){ return "hi "+n.who; } });
         "#);
         // Consumer resolves a hard proxy and calls across (arg + return structured-copied).
@@ -2995,7 +2998,7 @@ mod frame_tests {
         // Producer method THROWS → consumer sees InterfaceCallError carrying the producer message
         // (not a crash, not a mislabeled InterfaceValueNotSerializable).
         load_plugin_js("prodBoom", r#"
-            const { publishInterface } = require("@s2script/std");
+            const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/boom", "1.0.0", { boom: function(){ throw new Error("kaboom"); } });
         "#);
         set_plugin_imports("consBoom", vec![("@x/boom".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
@@ -3009,7 +3012,7 @@ mod frame_tests {
 
         // Producer method returns undefined (void) → consumer receives undefined, NOT a throw.
         load_plugin_js("prodVoid", r#"
-            const { publishInterface } = require("@s2script/std");
+            const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/void", "1.0.0", { poke: function(){ /* returns undefined */ } });
         "#);
         set_plugin_imports("consVoid", vec![("@x/void".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
@@ -3029,7 +3032,7 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("prod", r#"
-            const { publishInterface } = require("@s2script/std");
+            const { publishInterface } = require("@s2script/interfaces");
             globalThis.__h = publishInterface("@x/greeter","1.0.0",{ greet:function(){return "";} });
         "#);
         load_plugin_js("cons", r#"
@@ -3049,7 +3052,7 @@ mod frame_tests {
     fn producer_unload_invalidates_consumer_proxy() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
-        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/std");
+        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             publishInterface("@x/greeter","1.0.0",{greet:function(){return "ok";}});"#);
         load_plugin_js("cons", r#"const g=require("@x/greeter");
             globalThis.call=function(){ try { return g.greet(); } catch(e){ return String(e); } };
@@ -3070,7 +3073,7 @@ mod frame_tests {
     fn consumer_unload_removes_subscriber() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
-        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/std");
+        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             globalThis.__h=publishInterface("@x/greeter","1.0.0",{greet:function(){return "";}});"#);
         load_plugin_js("cons", r#"const g=require("@x/greeter"); g.on("greeted",function(){});"#);
         assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/greeter").unwrap().subscribers.len()), 1);
@@ -3086,7 +3089,7 @@ mod frame_tests {
     fn unload_all_runs_consumers_before_producers() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
-        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/std");
+        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             publishInterface("@x/greeter","1.0.0",{greet:function(){return "still-here";}});"#);
         // consumer's onUnload calls the producer — must still work because producer outlives it.
         load_plugin_js("cons", r#"const g=require("@x/greeter");
@@ -3119,7 +3122,7 @@ mod frame_tests {
         shutdown();
     }
 
-    /// Slice 5A Task 4: `EntityRef` from `@s2script/std` degrades safely when no engine-ops table
+    /// Slice 5A Task 4: `EntityRef` from `@s2script/entity` degrades safely when no engine-ops table
     /// is wired — `isValid` returns false, `readInt32` returns null, `writeInt32` returns false.
     /// This is the failing test: EntityRef must be exported by the prelude (Step 3 makes it pass).
     #[test]
@@ -3127,7 +3130,7 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_engine_ops(None);
         load_plugin_js("er", r#"
-            const { EntityRef } = require("@s2script/std");
+            const { EntityRef } = require("@s2script/entity");
             const ref = new EntityRef(1, 7);
             globalThis.__valid = String(ref.isValid());       // "false"
             globalThis.__read  = String(ref.readInt32(8));    // "null"
@@ -3158,7 +3161,7 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write(1,7,8,2,1.5))"), "false");
         // EntityRef typed methods degrade (proving they're wired + route a kind):
         load_plugin_js("er2", r#"
-            const { EntityRef } = require("@s2script/std");
+            const { EntityRef } = require("@s2script/entity");
             const ref = new EntityRef(1, 7);
             globalThis.__f = String(ref.readFloat32(8));
             globalThis.__b = String(ref.readBool(8));
@@ -3172,7 +3175,7 @@ mod frame_tests {
 
     /// Slice 5A Task 5: a game-package prelude (registered via `register_injected_package`)
     /// runs in the RAW context scope where the CJS `require` is NOT defined — it must use
-    /// the `__s2require` native to reach `@s2script/std`. This guards that mechanism
+    /// the `__s2require` native to reach `@s2script/entity`. This guards that mechanism
     /// (the Slice-5A live gate caught a bare-`require` bug the unit tests missed).
     /// Synthetic prelude — engine-generic, no CS2 names.
     #[test]
@@ -3183,7 +3186,7 @@ mod frame_tests {
             // Also pin the NEGATIVE case: the CJS `require` is genuinely undefined in the raw prelude
             // scope, so a package prelude MUST use `__s2require` — that is the exact bug the live gate
             // caught. `noRequire` proves the scope, `hasEntityRef` proves the native reaches EntityRef.
-            r#"var ER = __s2require("@s2script/std").EntityRef;
+            r#"var ER = __s2require("@s2script/entity").EntityRef;
                globalThis.__s2pkg_cs2 = {
                  hasEntityRef: (typeof ER === "function"),
                  noRequire: (typeof require === "undefined"),
@@ -3206,12 +3209,13 @@ mod frame_tests {
         set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         // Producer returns an EntityRef from a method.
         load_plugin_js("prod", r#"
-            const { publishInterface, EntityRef } = require("@s2script/std");
+            const { publishInterface } = require("@s2script/interfaces");
+            const { EntityRef } = require("@s2script/entity");
             publishInterface("@x/ent", "1.0.0", { getRef: function(){ return new EntityRef(1, 7); } });
         "#);
         // Consumer receives it: must be a LIVE EntityRef (methods present), not plain data.
         load_plugin_js("cons", r#"
-            const { EntityRef } = require("@s2script/std");
+            const { EntityRef } = require("@s2script/entity");
             const r = require("@x/ent").getRef();
             globalThis.__isRef  = String(r instanceof EntityRef);        // "true" — rehydrated
             globalThis.__idx    = String(r.index) + "," + String(r.serial); // "1,7" — data crossed
@@ -3231,11 +3235,12 @@ mod frame_tests {
         set_engine_ops(None);
         set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("prod", r#"
-            const { publishInterface, EntityRef } = require("@s2script/std");
+            const { publishInterface } = require("@s2script/interfaces");
+            const { EntityRef } = require("@s2script/entity");
             globalThis.__h = publishInterface("@x/ent", "1.0.0", { noop: function(){} });
         "#);
         load_plugin_js("cons", r#"
-            const { EntityRef } = require("@s2script/std");
+            const { EntityRef } = require("@s2script/entity");
             const g = require("@x/ent");
             globalThis.__seen = "none";
             g.on("spawned", function (r) {
@@ -3243,7 +3248,7 @@ mod frame_tests {
             });
         "#);
         // EntityRef is a closure var inside the CJS wrapper; use the globalThis prelude reference.
-        eval_in_context("prod", r#"__h.emit("spawned", new __s2pkg_std.EntityRef(2, 9));"#).unwrap();
+        eval_in_context("prod", r#"__h.emit("spawned", new __s2pkg_entity.EntityRef(2, 9));"#).unwrap();
         assert_eq!(read_global_string("cons", "__seen"), "2,9"); // live EntityRef, not "plain"
         shutdown();
     }
@@ -3253,7 +3258,7 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/data".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("prod", r#"
-            const { publishInterface } = require("@s2script/std");
+            const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/data", "1.0.0", { echo: function(){ return { a: 1, b: "hi", c: [1,2,3] }; } });
         "#);
         load_plugin_js("cons", r#"
@@ -3311,6 +3316,32 @@ mod frame_tests {
         set_engine_ops(None);              // no ops table → no schema_enumerate → false, no file
         create_plugin_context("p");
         assert_eq!(eval_in_context_string("p", "String(__s2_schema_dump(\"/tmp/should_not_exist.json\"))"), "false");
+        shutdown();
+    }
+
+    /// Slice 5C.1 Task 1: the five module packages resolve via `require`; `@s2script/std` is retired
+    /// (resolves null); an unknown module also resolves null.
+    #[test]
+    fn require_resolves_module_packages_and_retires_std() {
+        let _ = init(dummy_logger());
+        // Use load_plugin_js (the CJS wrapper where `require` is defined + the prelude has run),
+        // then read the results back — this exercises the full require→__s2require→module-global path.
+        load_plugin_js("mods", r#"
+            globalThis.__t_entity  = typeof require("@s2script/entity").EntityRef;            // "function"
+            globalThis.__t_frame   = typeof require("@s2script/frame").OnGameFrame;            // "object"
+            globalThis.__t_timers  = typeof require("@s2script/timers").delay;                 // "function"
+            globalThis.__t_console = typeof require("@s2script/console").console;              // "object"
+            globalThis.__t_iface   = typeof require("@s2script/interfaces").publishInterface;  // "function"
+            globalThis.__t_std     = String(require("@s2script/std"));                         // "null" (retired)
+            globalThis.__t_nope    = String(require("@s2script/nope"));                        // "null"
+        "#);
+        assert_eq!(read_global_string("mods", "__t_entity"), "function");
+        assert_eq!(read_global_string("mods", "__t_frame"), "object");
+        assert_eq!(read_global_string("mods", "__t_timers"), "function");
+        assert_eq!(read_global_string("mods", "__t_console"), "object");
+        assert_eq!(read_global_string("mods", "__t_iface"), "function");
+        assert_eq!(read_global_string("mods", "__t_std"), "null");
+        assert_eq!(read_global_string("mods", "__t_nope"), "null");
         shutdown();
     }
 }
