@@ -29,6 +29,8 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 // SourceHook hook declaration: 3 void-return parameters (bool, bool, bool).
 // ISource2Server is confirmed at eiface.h:384; GameFrame at eiface.h:407.
@@ -229,6 +231,114 @@ static void s2_concommand_register(const char* name) {
     META_CONPRINTF("[s2script] WARN: ConCommand registration unavailable on this build "
                    "(ConCommand::Create not exported by CS2); command '%s' not registered "
                    "— console-command support arrives with the Slice-5 command framework\n", name);
+}
+
+// ---------------------------------------------------------------------------
+// Schema enumeration engine-op (5B.1).
+//
+// Spike-confirmed recipe (2026-07-01-slice-5b1-spike-findings.md):
+//   • Iterate scope->m_ClassBindings (public CUtlTSHash) via Count/GetElements/Element.
+//   • Per class: name=m_pszName; parent=m_pBaseClasses[0].m_pClass->m_pszName (guard bases/null).
+//   • Per field: name=m_pszName, offset=m_nSingleInheritanceOffset, type=m_pType (NOT m_pSchemaType).
+//   • CHandle detection: SCHEMA_TYPE_ATOMIC + SCHEMA_ATOMIC_T + m_sTypeName starts with "CHandle";
+//     m_pAtomicInfo is NULL live — do NOT rely on it.  Inner class from m_pTemplateType.
+// ---------------------------------------------------------------------------
+
+/// Map a CSchemaType → the catalog kind string + optional type_name/inner pointer (spike §Step 3).
+/// kind stays "unknown" for unmapped categories; the raw type name is still forwarded so core
+/// records {kind:"unknown", name:...} rather than dropping the field.
+static void schema_type_to_kind(CSchemaType* t, const char** kind,
+                                const char** type_name, const char** inner) {
+    *kind = "unknown"; *type_name = nullptr; *inner = nullptr;
+    if (!t) return;
+    switch (t->m_eTypeCategory) {
+        case SCHEMA_TYPE_BUILTIN:
+            *kind = "atomic"; *type_name = t->m_sTypeName.Get(); break;
+        case SCHEMA_TYPE_DECLARED_CLASS:
+            *kind = "class";  *type_name = t->m_sTypeName.Get(); break;
+        case SCHEMA_TYPE_DECLARED_ENUM:
+            *kind = "enum";   *type_name = t->m_sTypeName.Get(); break;
+        case SCHEMA_TYPE_POINTER: {
+            *kind = "ptr";
+            auto* p = static_cast<CSchemaType_Ptr*>(t);
+            if (p->m_pObjectType) *inner = p->m_pObjectType->m_sTypeName.Get();
+            break;
+        }
+        case SCHEMA_TYPE_ATOMIC: {
+            const char* full = t->m_sTypeName.Get();
+            // CHandle<T>: SCHEMA_ATOMIC_T + type name starts with "CHandle".
+            // m_pAtomicInfo is NULL live — detect by m_sTypeName prefix only (spike CRITICAL finding).
+            // Inner class name from m_pTemplateType->m_sTypeName.
+            if (t->m_eAtomicCategory == SCHEMA_ATOMIC_T && full && strncmp(full, "CHandle", 7) == 0) {
+                *kind = "handle";
+                auto* at = static_cast<CSchemaType_Atomic_T*>(t);
+                if (at->m_pTemplateType) *inner = at->m_pTemplateType->m_sTypeName.Get();
+                break;
+            }
+            *kind = "atomic"; *type_name = full; break;   // CUtlString, CUtlVector<...>, ...
+        }
+        default:  // BITFIELD, FIXED_ARRAY, INVALID
+            *type_name = t->m_sTypeName.Get(); break;     // kind stays "unknown"
+    }
+}
+
+/// Schema enumeration engine-op (5B.1). Walks the server type scope's declared classes via the SDK
+/// and streams each class/field to core via the C-ABI callbacks. Also unions GlobalTypeScope so
+/// parent classes declared outside the server module are present in the catalog (Delta 3).
+/// Degrade-never-crash: null system/scope → return 0.
+static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field) {
+    if (!s_pSchemaSystem) return 0;
+    CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
+    if (!scope) scope = s_pSchemaSystem->GlobalTypeScope();
+    if (!scope) return 0;
+
+    // Helper: emit one class (parent-guarded) and its own fields.
+    auto emit_one = [&](CSchemaClassInfo* ci) {
+        if (!ci || !ci->m_pszName) return;
+        const char* parent = (ci->m_nBaseClassCount > 0 && ci->m_pBaseClasses
+                              && ci->m_pBaseClasses[0].m_pClass)
+                             ? ci->m_pBaseClasses[0].m_pClass->m_pszName : nullptr;
+        emit_class(ctx, ci->m_pszName, parent);
+        for (int j = 0; j < ci->m_nFieldCount; ++j) {
+            const SchemaClassFieldData_t& f = ci->m_pFields[j];
+            if (!f.m_pszName) continue;
+            const char* kind = "unknown"; const char* type_name = nullptr; const char* inner = nullptr;
+            schema_type_to_kind(f.m_pType, &kind, &type_name, &inner);
+            emit_field(ctx, ci->m_pszName, f.m_pszName, f.m_nSingleInheritanceOffset,
+                       kind, type_name, inner);
+        }
+    };
+
+    // Pass 1: iterate the server module scope; track emitted class names to avoid field duplication.
+    std::unordered_set<std::string> emitted;
+    int n = scope->m_ClassBindings.Count();
+    std::vector<UtlTSHashHandle_t> handles((size_t)n);
+    int got = scope->m_ClassBindings.GetElements(0, n, handles.data());
+    for (int i = 0; i < got; ++i) {
+        CSchemaClassInfo* ci = scope->m_ClassBindings.Element(handles[i]);
+        if (!ci || !ci->m_pszName) continue;
+        emit_one(ci);
+        emitted.insert(ci->m_pszName);
+    }
+
+    // Pass 2 (Delta 3 / completeness): union GlobalTypeScope so base classes registered outside
+    // the server module scope (e.g. CBaseEntity, CEntityInstance from a different module) are also
+    // present in the catalog. Skip classes already emitted from the server scope to prevent
+    // field duplication (add_field appends, so a second emit of the same class would double fields).
+    CSchemaSystemTypeScope* gScope = s_pSchemaSystem->GlobalTypeScope();
+    if (gScope && gScope != scope) {
+        int gn = gScope->m_ClassBindings.Count();
+        std::vector<UtlTSHashHandle_t> ghandles((size_t)gn);
+        int ggot = gScope->m_ClassBindings.GetElements(0, gn, ghandles.data());
+        for (int i = 0; i < ggot; ++i) {
+            CSchemaClassInfo* ci = gScope->m_ClassBindings.Element(ghandles[i]);
+            if (!ci || !ci->m_pszName) continue;
+            if (emitted.count(ci->m_pszName)) continue;  // already emitted from server scope
+            emit_one(ci);
+        }
+    }
+
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +566,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.deref_handle       = &s2_deref_handle;
     ops.ent_state_changed  = &s2_ent_state_changed;
     ops.concommand_register = &s2_concommand_register;
+    ops.schema_enumerate   = &schema_enumerate;  // 5B.1: walks SchemaSystem, streams classes/fields to core
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

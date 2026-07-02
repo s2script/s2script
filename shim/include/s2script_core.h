@@ -18,12 +18,21 @@ typedef void* (*s2_deref_handle_fn)(unsigned int handle);
 typedef void  (*s2_ent_state_changed_fn)(void* ent, int offset);
 typedef void  (*s2_concommand_register_fn)(const char* name);
 
+/* Schema enumeration (5B.1). The shim walks the SchemaSystem and streams each class/field to core
+ * via these callbacks (core provides them + an opaque ctx). kind ∈ atomic|handle|class|ptr|enum|unknown.
+ * A null parent/name/inner is an absent value. */
+typedef void (*s2_emit_class_fn)(void* ctx, const char* name, const char* parent);
+typedef void (*s2_emit_field_fn)(void* ctx, const char* cls, const char* name, int offset,
+                                 const char* kind, const char* type_name, const char* inner);
+typedef int  (*s2_schema_enumerate_fn)(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
     s2_deref_handle_fn        deref_handle;
     s2_ent_state_changed_fn   ent_state_changed;
     s2_concommand_register_fn concommand_register;
+    s2_schema_enumerate_fn    schema_enumerate;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
