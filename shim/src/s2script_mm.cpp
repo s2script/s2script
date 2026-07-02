@@ -286,7 +286,7 @@ static void schema_type_to_kind(CSchemaType* t, const char** kind,
 /// and streams each class/field to core via the C-ABI callbacks. Also unions GlobalTypeScope so
 /// parent classes declared outside the server module are present in the catalog (Delta 3).
 /// Degrade-never-crash: null system/scope → return 0.
-static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field) {
+static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field) noexcept {
     if (!s_pSchemaSystem) return 0;
     CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
     if (!scope) scope = s_pSchemaSystem->GlobalTypeScope();
@@ -299,6 +299,7 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
                               && ci->m_pBaseClasses[0].m_pClass)
                              ? ci->m_pBaseClasses[0].m_pClass->m_pszName : nullptr;
         emit_class(ctx, ci->m_pszName, parent);
+        if (ci->m_nFieldCount > 0 && !ci->m_pFields) return;   // degrade: skip a class with a null field array
         for (int j = 0; j < ci->m_nFieldCount; ++j) {
             const SchemaClassFieldData_t& f = ci->m_pFields[j];
             if (!f.m_pszName) continue;
