@@ -313,12 +313,29 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     __s2_iface_publish(name, version, impl);
     return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
   };
-  // --- Slice 5A: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
+  // --- Slice 5A/5B.2: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
+  var K = { I32: 1, F32: 2, BOOL: 3, I8: 4, I16: 5, U8: 6, U16: 7, U32: 8 }; // mirrors core KIND_*
   function EntityRef(index, serial) { this.index = index; this.serial = serial; }
   EntityRef.prototype = {
-    isValid: function () { return __s2_ent_ref_valid(this.index, this.serial); },
-    readInt32: function (offset) { return __s2_ent_ref_read_i32(this.index, this.serial, offset); },
-    writeInt32: function (offset, value) { return __s2_ent_ref_write_i32(this.index, this.serial, offset, value); },
+    isValid:          function ()      { return __s2_ent_ref_valid(this.index, this.serial); },
+    readInt32:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.I32); },
+    writeInt32:       function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.I32, v); },
+    readFloat32:      function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.F32); },
+    writeFloat32:     function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.F32, v); },
+    readBool:         function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.BOOL); },
+    writeBool:        function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.BOOL, v); },
+    readInt8:         function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.I8); },
+    readInt16:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.I16); },
+    readUInt8:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U8); },
+    readUInt16:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U16); },
+    readUInt32:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U32); },
+    readHandle: function (o) {
+      var h = __s2_ent_ref_read(this.index, this.serial, o, K.U32);
+      if (h === null) return null;
+      var d = __s2_handle_decode(h >>> 0);
+      var ref = new EntityRef(d[0], d[1]);
+      return ref.isValid() ? ref : null;
+    },
     notifyStateChanged: function (offset) { __s2_ent_ref_state_changed(this.index, this.serial, offset); },
   };
   std.EntityRef = EntityRef;
@@ -738,9 +755,18 @@ fn s2_ent_ref_valid(
     }));
 }
 
-/// Native `__s2_ent_ref_read_i32(index, serial, offset) -> number|null`.
-/// Resolves (index, serial), reads an i32 at `offset`, or returns null on stale ref.
-fn s2_ent_ref_read_i32(
+// Field-type kind codes — a JS<->core contract, mirrored in INJECTED_STD_PRELUDE's `K`. Keep in lockstep.
+const KIND_I32: i64 = 1;
+const KIND_F32: i64 = 2;
+const KIND_BOOL: i64 = 3;
+const KIND_I8: i64 = 4;
+const KIND_I16: i64 = 5;
+const KIND_U8: i64 = 6;
+const KIND_U16: i64 = 7;
+const KIND_U32: i64 = 8;
+
+/// Native `__s2_ent_ref_read(index, serial, offset, kind) -> number|boolean|null`. Serial-gated typed read.
+fn s2_ent_ref_read(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
@@ -750,15 +776,27 @@ fn s2_ent_ref_read_i32(
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let kind = args.get(3).integer_value(scope).unwrap_or(0);
         let ent = entity_resolve_ptr(index, serial);
         if ent.is_null() { return; }               // invalid → null (already set)
-        rv.set_int32(crate::entity::read_i32(ent as *const u8, off));
+        let p = ent as *const u8;
+        match kind {
+            KIND_I32  => rv.set_int32(crate::entity::read_i32(p, off)),
+            KIND_F32  => rv.set_double(crate::entity::read_f32(p, off) as f64),
+            KIND_BOOL => rv.set_bool(crate::entity::read_bool(p, off)),
+            KIND_I8   => rv.set_int32(crate::entity::read_i8(p, off)),
+            KIND_I16  => rv.set_int32(crate::entity::read_i16(p, off)),
+            KIND_U8   => rv.set_double(crate::entity::read_u8(p, off) as f64),
+            KIND_U16  => rv.set_double(crate::entity::read_u16(p, off) as f64),
+            KIND_U32  => rv.set_double(crate::entity::read_u32(p, off) as f64),
+            _         => { /* unknown kind → leave null */ }
+        }
     }));
 }
 
-/// Native `__s2_ent_ref_write_i32(index, serial, offset, value) -> boolean`.
-/// Resolves (index, serial), writes an i32 at `offset`, returns true on success / false on stale.
-fn s2_ent_ref_write_i32(
+/// Native `__s2_ent_ref_write(index, serial, offset, kind, value) -> boolean`. Serial-gated typed write
+/// (I32/F32/BOOL only this slice; narrow-width writes deferred → false).
+fn s2_ent_ref_write(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
@@ -768,10 +806,15 @@ fn s2_ent_ref_write_i32(
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let val = args.get(3).integer_value(scope).unwrap_or(0) as i32;
+        let kind = args.get(3).integer_value(scope).unwrap_or(0);
         let ent = entity_resolve_ptr(index, serial);
         if ent.is_null() { return; }               // invalid → false (already set)
-        crate::entity::write_i32(ent, off, val);
+        match kind {
+            KIND_I32  => crate::entity::write_i32(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
+            KIND_F32  => crate::entity::write_f32(ent, off, args.get(4).number_value(scope).unwrap_or(0.0) as f32),
+            KIND_BOOL => crate::entity::write_bool(ent, off, args.get(4).boolean_value(scope)),
+            _         => return,                   // unknown / deferred write kind → false
+        }
         rv.set_bool(true);
     }));
 }
@@ -1416,8 +1459,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.
     set_native(scope, global_obj, "__s2_ent_current_serial", s2_ent_current_serial);
     set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
-    set_native(scope, global_obj, "__s2_ent_ref_read_i32", s2_ent_ref_read_i32);
-    set_native(scope, global_obj, "__s2_ent_ref_write_i32", s2_ent_ref_write_i32);
+    set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
+    set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     // ConCommand registration.
@@ -3067,8 +3110,8 @@ mod frame_tests {
         // current_serial → -1 ; valid → false ; read → null ; write → false ; state_changed → no-op/undefined
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_current_serial(1))"), "-1");
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_valid(1, 7))"), "false");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_i32(1, 7, 8))"), "null");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_i32(1, 7, 8, 5))"), "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1, 7, 8, 1))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write(1, 7, 8, 1, 5))"), "false");
         // handle_decode is PURE (no ops needed). BITS-agnostic assertion: 64 < 2^7 <= 2^HANDLE_ENTRY_BITS,
         // so index==64, serial==0 for any real bit-split (the exact split is validated live in the gate).
         assert_eq!(eval_in_context_string("p", "var d=__s2_handle_decode(64); d[0]+','+d[1]"), "64,0");
@@ -3092,6 +3135,37 @@ mod frame_tests {
         assert_eq!(read_global_string("er", "__valid"), "false");
         assert_eq!(read_global_string("er", "__read"), "null");
         assert_eq!(read_global_string("er", "__write"), "false");
+        shutdown();
+    }
+
+    /// Slice 5B.2: kind-dispatched `__s2_ent_ref_read` / `__s2_ent_ref_write` natives degrade safely
+    /// when no engine-ops table is wired. Also verifies `EntityRef` typed methods route through the
+    /// generic native (readFloat32/readBool/readHandle all return null when the ref is stale).
+    #[test]
+    fn generic_typed_reads_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);          // no ops → entity_resolve_ptr null → read null / write false
+        create_plugin_context("p");
+        // each kind degrades to null (read) — I32=1,F32=2,BOOL=3,I8=4,I16=5,U8=6,U16=7,U32=8
+        for k in ["1","2","3","4","5","6","7","8"] {
+            assert_eq!(
+                eval_in_context_string("p", &format!("String(__s2_ent_ref_read(1,7,8,{}))", k)),
+                "null",
+            );
+        }
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1,7,8,999))"), "null"); // unknown kind
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write(1,7,8,2,1.5))"), "false");
+        // EntityRef typed methods degrade (proving they're wired + route a kind):
+        load_plugin_js("er2", r#"
+            const { EntityRef } = require("@s2script/std");
+            const ref = new EntityRef(1, 7);
+            globalThis.__f = String(ref.readFloat32(8));
+            globalThis.__b = String(ref.readBool(8));
+            globalThis.__h = String(ref.readHandle(8));
+        "#);
+        assert_eq!(read_global_string("er2", "__f"), "null");
+        assert_eq!(read_global_string("er2", "__b"), "null");
+        assert_eq!(read_global_string("er2", "__h"), "null");
         shutdown();
     }
 
