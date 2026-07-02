@@ -1,35 +1,29 @@
 import { OnGameFrame } from "@s2script/frame";
-import { Pawn } from "@s2script/cs2";
+import { Player } from "@s2script/cs2";
 
-// A minimal @s2script/cs2 plugin exercising the Slice 5B.3 GENERATED typed field accessors.
-// Every field below is a generated property on Pawn (from `s2script gen-schema` over the schema
-// catalog) — the author writes `pawn.health` / `pawn.friction`, NOT the raw
-// `__s2_schema_offset(...)` + `pawn.ref.readFloat32(...)` plumbing (that is now internal to the
-// generated getters/setters, which resolve offsets live and stay serial-gated T | null).
-// It also STASHES a Pawn once and reads its generated `health` every ~256 frames: stays 100 while
-// the entity lives, goes null the moment it's destroyed (serial mismatch) — the Slice-5A guardrail,
-// now exercised through a generated accessor. Built to a .s2sp by `s2script build`.
-let stashed: Pawn | null = null;
+// Slice 5C.2 — the player model. Every ~256 frames, iterate the in-game players (each a CONTROLLER,
+// the persistent player identity) and demonstrate the honest controller/pawn split:
+//   - Player.all()      -> the in-game players (controllers with a live pawn).
+//   - player.teamNum    -> a generated CCSPlayerController accessor (the persistent identity).
+//   - player.pawn       -> the in-world body (Pawn|null), via the m_hPlayerPawn handle.
+//   - pawn.controller   -> the reverse hop back to the Player (m_hController) — round-trips to the same slot.
+// All EntityRef-backed + serial-gated (T|null); a stored Player degrades to null on reuse/disconnect.
 let ticks = 0;
 
 export function onLoad(): void {
-  console.log("[demo] onLoad (generated accessors)");
+  console.log("[demo] onLoad (player model)");
   OnGameFrame.subscribe(() => {
     if (ticks++ % 256 !== 0) return;
-    if (!stashed) stashed = Pawn.forSlot(0);        // stash once
-    const p = Pawn.forSlot(0);
-
-    // Generated typed accessors — no offsets, no ref.read* in author code:
-    const controller = p ? p.controller : null;      // generated handle accessor → EntityRef | null
-    console.log("[demo] tick " + ticks
-      + " health=" + (p ? p.health : "none")                 // generated (m_iHealth, int32)
-      + " friction=" + (p ? p.friction : "none")             // generated (m_flFriction, float32)
-      + " ragdoll=" + (p ? p.clientSideRagdoll : "none")     // generated (m_bClientSideRagdoll, bool)
-      + " team=" + (p ? p.teamNum : "none")                  // generated (m_iTeamNum)
-      + " controller=" + (controller ? ("idx=" + controller.index + " valid=" + controller.isValid()) : "null")
-      + " stashed.health=" + (stashed ? stashed.health : "none"));  // null once that pawn dies
-
-    if (stashed && stashed.health === null) { stashed = null; }     // re-stash next tick
+    const players = Player.all();
+    console.log("[demo] tick " + ticks + " players=" + players.length);
+    for (const p of players) {
+      const body = p.pawn;                             // controller -> pawn navigation
+      const back = body ? body.controller : null;      // pawn -> controller round-trip
+      console.log("  slot=" + p.slot
+        + " teamNum=" + p.teamNum                       // generated CCSPlayerController accessor
+        + " health=" + (body ? body.health : "none")    // .pawn -> generated CCSPlayerPawn accessor
+        + " backSlot=" + (back ? back.slot : "null"));   // reverse hop resolves to the same slot
+    }
   });
 }
 
