@@ -7,8 +7,12 @@
  * "core is engine-generic; games are packages" convention.
  */
 
+import type { EntityRef } from "@s2script/std";
+
 /** A CS2 player pawn. */
 export declare interface Pawn {
+  /** The underlying serial-gated entity ref. Use its typed read/write methods for arbitrary field access. */
+  readonly ref: EntityRef;
   /** Current health value of the pawn, or null if the entity ref is stale. */
   health: number | null;
 }

@@ -906,6 +906,102 @@ build yields byte-identical JSON.
 
 ---
 
+## Typed field access (Slice 5B.2)
+
+Slice 5B.2 extends the `EntityRef` API with **kind-dispatched typed read/write methods** so plugins
+can access any field from the committed schema catalog — not just `i32` — via the same serial-gated
+`T | null` contract as `Pawn.health`. All reads are serial-gated: if the entity slot has been reused
+or destroyed, every accessor returns `null` (or `false`), never garbage.
+
+### `EntityRef` typed-method surface
+
+| Method | Return | Description |
+|---|---|---|
+| `readInt32(off)` | `number \| null` | Read a signed 32-bit integer (existing) |
+| `writeInt32(off, v)` | `boolean` | Write a signed 32-bit integer (existing) |
+| `readFloat32(off)` | `number \| null` | Read an IEEE-754 float32 |
+| `writeFloat32(off, v)` | `boolean` | Write a float32 |
+| `readBool(off)` | `boolean \| null` | Read a single byte as bool |
+| `writeBool(off, v)` | `boolean` | Write a bool |
+| `readInt8(off)` | `number \| null` | Read a sign-extended int8 |
+| `readInt16(off)` | `number \| null` | Read a sign-extended int16 |
+| `readUInt8(off)` | `number \| null` | Read an unsigned uint8 |
+| `readUInt16(off)` | `number \| null` | Read an unsigned uint16 |
+| `readUInt32(off)` | `number \| null` | Read an unsigned uint32 |
+| `readHandle(off)` | `EntityRef \| null` | Read a `CEntityHandle` field, decode it, and return a **live, serial-gated** `EntityRef` — or `null` if the source ref is stale or the handle slot is invalid |
+
+All methods live on the engine-generic `EntityRef` class in `@s2script/std`. Offsets come from
+`__s2_schema_offset("ClassName", "fieldName")`, which walks the inheritance chain (so an inherited
+field resolves correctly regardless of which base class owns it). The runtime dispatches on the
+`kind` parameter passed by the caller — `"f32"`, `"bool"`, `"i8"`, etc. — to a single
+`__s2_ent_ref_read` / `__s2_ent_ref_write` native.
+
+### Usage snippet (from `examples/demo-plugin`)
+
+```ts
+import { OnGameFrame, EntityRef } from "@s2script/std";
+import { Pawn } from "@s2script/cs2";
+
+declare const __s2_schema_offset: (cls: string, field: string) => number;
+
+let FRICTION_OFF   = -1; // m_flFriction (float32, CBaseEntity)
+let RAGDOLL_OFF    = -1; // m_bClientSideRagdoll (bool, CBaseEntity)
+let CONTROLLER_OFF = -1; // m_hController (handle → CBasePlayerController, CBasePlayerPawn)
+let PLAYERPAWN_OFF = -1; // m_hPlayerPawn (handle → CCSPlayerPawn, CCSPlayerController)
+
+OnGameFrame.subscribe(() => {
+  const p = Pawn.forSlot(0);   // Pawn | null (EntityRef-backed)
+  if (!p) return;
+
+  // Resolve offsets once (schema warm after map load; OffsetCache makes repeated calls free)
+  if (FRICTION_OFF   < 0) FRICTION_OFF   = __s2_schema_offset("CCSPlayerPawn", "m_flFriction");
+  if (RAGDOLL_OFF    < 0) RAGDOLL_OFF    = __s2_schema_offset("CCSPlayerPawn", "m_bClientSideRagdoll");
+  if (CONTROLLER_OFF < 0) CONTROLLER_OFF = __s2_schema_offset("CCSPlayerPawn", "m_hController");
+  if (PLAYERPAWN_OFF < 0) PLAYERPAWN_OFF = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
+
+  const friction: number | null  = FRICTION_OFF >= 0 ? p.ref.readFloat32(FRICTION_OFF) : null;
+  const ragdoll: boolean | null  = RAGDOLL_OFF  >= 0 ? p.ref.readBool(RAGDOLL_OFF)     : null;
+  // readHandle decodes the CEntityHandle into a live, serial-gated EntityRef (or null).
+  // Chain a read THROUGH it — the controller's m_hPlayerPawn handle back to the pawn —
+  // proving the handle-derived ref is a usable, live EntityRef, not just data.
+  const ctrl: EntityRef | null   = CONTROLLER_OFF >= 0 ? p.ref.readHandle(CONTROLLER_OFF) : null;
+  const back = ctrl && PLAYERPAWN_OFF >= 0 ? ctrl.readHandle(PLAYERPAWN_OFF) : null;
+
+  console.log("friction=" + friction + " ragdoll=" + ragdoll
+    + " controller=" + (ctrl ? ("idx=" + ctrl.index + " valid=" + ctrl.isValid()) : "null")
+    + " pawnBack=" + (back ? ("idx=" + back.index + " valid=" + back.isValid()) : "null"));
+});
+```
+
+`m_flFriction` and `m_bClientSideRagdoll` live on `CBaseEntity`, `m_hController` on
+`CBasePlayerPawn` — all inherited by `CCSPlayerPawn`, and `__s2_schema_offset` walks the base-class
+chain, so passing `"CCSPlayerPawn"` resolves them. `readHandle` demonstrates the full round-trip:
+decode the `CEntityHandle` → serial-validate → a live `EntityRef` (or `null`), which is itself
+serial-gated — so a field read *through* the handle-derived ref (here another handle, back to the
+pawn) is safe.
+
+**Live-gate log** (Docker CS2, `de_inferno`, one bot in slot 0; the runtime rebuilt via
+`scripts/build-sniper.sh`, the demo hot-reloaded from its `.s2sp`):
+
+```
+[demo] tick 1     stashed.health=100  fresh.health=100  friction=1 ragdoll=false controller=idx=1 valid=true pawnBack=idx=732 valid=true
+[demo] tick 257   stashed.health=100  fresh.health=100  friction=1 ragdoll=false controller=idx=1 valid=true pawnBack=idx=732 valid=true
+...
+bot_quota 0 ; bot_kick        # real entity destruction (NOT mp_restartgame — serials persist across that)
+[demo] tick 2305  stashed.health=100  fresh.health=100  friction=1 ragdoll=false controller=idx=1 valid=true pawnBack=idx=732 valid=true
+[demo] tick 2561  stashed.health=null fresh.health=none  friction=null ragdoll=null controller=null
+[demo] tick 2817  stashed.health=none fresh.health=none  friction=null ragdoll=null controller=null
+```
+
+Alive: `readFloat32` reads `1` (m_flFriction), `readBool` reads `false`, `readHandle` yields a live
+`EntityRef` for the controller (idx 1), and a chained `readHandle` through it reads back to the pawn
+(idx 732) — both valid. After `bot_kick` the pawn's entity is destroyed: every typed read (and the
+stashed pawn's `health`) flips to `null` on the serial mismatch, `Pawn.forSlot(0)` returns `null`,
+and the server keeps ticking with no crash — the serial-gated `T | null` contract holds for every
+scalar type, not just `i32`.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
