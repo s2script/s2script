@@ -43,6 +43,47 @@ pub fn read_ptr(base: *const u8, offset: i32) -> *const u8 {
     unsafe { *(base.add(offset as usize) as *const *const u8) }
 }
 
+/// Read an f32 at `base + offset`. 0.0 on null base / negative offset (degrade-safe).
+pub fn read_f32(base: *const u8, offset: i32) -> f32 {
+    if base.is_null() || offset < 0 { return 0.0; }
+    unsafe { *(base.add(offset as usize) as *const f32) }
+}
+/// Write an f32 at `base + offset`. No-op on null base / negative offset.
+pub fn write_f32(base: *mut u8, offset: i32, value: f32) {
+    if base.is_null() || offset < 0 { return; }
+    unsafe { *(base.add(offset as usize) as *mut f32) = value; }
+}
+/// Read a bool (a single byte; any non-zero is true). false on null / negative offset.
+pub fn read_bool(base: *const u8, offset: i32) -> bool {
+    if base.is_null() || offset < 0 { return false; }
+    unsafe { *base.add(offset as usize) != 0 }
+}
+/// Write a bool as a single byte (1/0). No-op on null / negative offset.
+pub fn write_bool(base: *mut u8, offset: i32, value: bool) {
+    if base.is_null() || offset < 0 { return; }
+    unsafe { *base.add(offset as usize) = if value { 1 } else { 0 }; }
+}
+/// Read an i8, sign-extended to i32. 0 on null / negative offset.
+pub fn read_i8(base: *const u8, offset: i32) -> i32 {
+    if base.is_null() || offset < 0 { return 0; }
+    unsafe { *(base.add(offset as usize) as *const i8) as i32 }
+}
+/// Read an i16, sign-extended to i32. 0 on null / negative offset.
+pub fn read_i16(base: *const u8, offset: i32) -> i32 {
+    if base.is_null() || offset < 0 { return 0; }
+    unsafe { *(base.add(offset as usize) as *const i16) as i32 }
+}
+/// Read a u8, zero-extended to u32. 0 on null / negative offset.
+pub fn read_u8(base: *const u8, offset: i32) -> u32 {
+    if base.is_null() || offset < 0 { return 0; }
+    unsafe { *base.add(offset as usize) as u32 }
+}
+/// Read a u16, zero-extended to u32. 0 on null / negative offset.
+pub fn read_u16(base: *const u8, offset: i32) -> u32 {
+    if base.is_null() || offset < 0 { return 0; }
+    unsafe { *(base.add(offset as usize) as *const u16) as u32 }
+}
+
 /// Decode a `CEntityHandle` uint32 into `(index, serial)` using the CS2 bit-split.
 pub fn decode_handle(handle: u32) -> (i32, i32) {
     let index = (handle & ((1u32 << HANDLE_ENTRY_BITS) - 1)) as i32;
@@ -134,5 +175,65 @@ mod tests {
         let got = read_ptr(base, 8);
         assert!(!got.is_null());
         assert_eq!(unsafe { *got }, 42);
+    }
+
+    #[test]
+    fn read_write_f32_roundtrips() {
+        #[repr(C)]
+        struct Fake { pad: [u8; 4], f: f32 }
+        let mut x = Fake { pad: [0; 4], f: 0.0 };
+        let base = &mut x as *mut Fake as *mut u8;
+        write_f32(base, 4, 12.5);
+        assert_eq!(read_f32(base as *const u8, 4), 12.5);
+    }
+
+    #[test]
+    fn read_write_bool_roundtrips_and_reads_nonzero_as_true() {
+        #[repr(C)]
+        struct Fake { pad: [u8; 4], b: u8 }
+        let mut x = Fake { pad: [0; 4], b: 0 };
+        let base = &mut x as *mut Fake as *mut u8;
+        assert_eq!(read_bool(base as *const u8, 4), false);
+        write_bool(base, 4, true);
+        assert_eq!(read_bool(base as *const u8, 4), true);
+        assert_eq!(x.b, 1);
+        // any non-zero byte reads as true:
+        x.b = 0x7F;
+        assert_eq!(read_bool(base as *const u8, 4), true);
+    }
+
+    #[test]
+    fn read_i8_i16_sign_extend() {
+        #[repr(C)]
+        struct Fake { i8v: i8, pad: u8, i16v: i16 }
+        let x = Fake { i8v: -1, pad: 0, i16v: -1000 };
+        let base = &x as *const Fake as *const u8;
+        assert_eq!(read_i8(base, 0), -1);       // 0xFF -> -1 (sign-extended to i32)
+        assert_eq!(read_i16(base, 2), -1000);   // sign-extended
+    }
+
+    #[test]
+    fn read_u8_u16_zero_extend() {
+        #[repr(C)]
+        struct Fake { u8v: u8, pad: u8, u16v: u16 }
+        let x = Fake { u8v: 0xFF, pad: 0, u16v: 0xFFFF };
+        let base = &x as *const Fake as *const u8;
+        assert_eq!(read_u8(base, 0), 255);      // zero-extended, not -1
+        assert_eq!(read_u16(base, 2), 65535);
+    }
+
+    #[test]
+    fn typed_reads_guard_null_and_negative_offset() {
+        assert_eq!(read_f32(std::ptr::null(), 4), 0.0);
+        assert_eq!(read_f32(std::ptr::null(), -4), 0.0);
+        assert_eq!(read_bool(std::ptr::null(), 4), false);
+        assert_eq!(read_i8(std::ptr::null(), 0), 0);
+        assert_eq!(read_u16(std::ptr::null(), 2), 0);
+        // writes to null / negative offset must not crash + must be a no-op:
+        write_f32(std::ptr::null_mut(), 4, 1.0);
+        write_bool(std::ptr::null_mut(), 4, true);
+        let mut v: f32 = 5.0;
+        write_f32(&mut v as *mut f32 as *mut u8, -4, 9.0);
+        assert_eq!(v, 5.0);
     }
 }
