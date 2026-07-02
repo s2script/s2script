@@ -1,46 +1,27 @@
-// @s2script/cs2 — the injected game package.  CS2 schema/game identifiers live ONLY in this file
-// (never in core): the shim reads this file at load and hands it to core via
-// `s2script_core_register_package` (→ core's `register_injected_package`).  Core NEVER embeds a game
-// file — the boundary gate forbids `include_str!(games/…)` in core/src — so the name-leak gate stays
-// green.  Core evaluates this source per plugin context, where it sets `globalThis.__s2pkg_cs2 =
-// { Pawn }`, which core's `__s2require` returns for `require("@s2script/cs2")`.
-//
-// Offsets are NOT resolved at load time — the schema isn't populated until a map loads (long after
-// a plugin loads).  `Pawn.forSlot()` resolves them lazily on each call; once the schema is ready
-// the core OffsetCache caches the hit so the repeated lookup is free.
+// @s2script/cs2 — the injected game package. CS2 identifiers live ONLY in this file (never in core).
+// The generated field accessors (schema.generated.js) run BEFORE this file (concatenated ahead of it by
+// scripts/package-addon.sh) and set globalThis.__s2pkg_cs2_schema; this file applies the generated
+// CCSPlayerPawn accessors to Pawn.prototype and keeps the behavioral entry point (Pawn.forSlot).
+// Offsets are resolved live (Slice 3) and cached by the core OffsetCache; nothing is baked.
 (function () {
-  // The cs2 prelude is evaluated per-context AFTER the @s2script/std prelude, in the raw
-  // context scope (NOT inside the plugin's CJS `(function(require,module,exports){…})` wrapper),
-  // so the bundler-injected `require` is NOT in scope here.  Resolve EntityRef through the
-  // `__s2require` native (the same primitive the std prelude uses) — it hands back
-  // `globalThis.__s2pkg_std`, which the std prelude already stashed EntityRef on.
   var EntityRef = __s2require("@s2script/std").EntityRef;
+  var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
 
-  function Pawn(ref, healthOff) { this.ref = ref; this.healthOff = healthOff; }
-  Pawn.prototype = {
-    get health() { return this.ref.readInt32(this.healthOff); },        // number | null
-    set health(v) {
-      if (this.ref.writeInt32(this.healthOff, v)) this.ref.notifyStateChanged(this.healthOff);
-    },
-  };
+  function Pawn(ref) { this.ref = ref; }
+  if (schema) schema.applyAccessors(Pawn.prototype, "CCSPlayerPawn");   // health, friction, controller, ...
 
   // slot -> controller entity (index slot+1) -> m_hPlayerPawn handle -> pawn EntityRef.
-  // CS2 convention: player controllers occupy entity indices slot+1 (confirmed in the live gate).
-  // Offsets are resolved here, on every call, so that the first call after the map loads succeeds.
   Pawn.forSlot = function (slot) {
-    var HEALTH = __s2_schema_offset("CCSPlayerPawn", "m_iHealth");
     var PAWN_HANDLE = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
-    if (HEALTH < 0 || PAWN_HANDLE < 0) return null;
-
+    if (PAWN_HANDLE < 0) return null;
     var ctrlIndex = slot + 1;
     var ctrl = new EntityRef(ctrlIndex, __s2_ent_current_serial(ctrlIndex));
     if (!ctrl.isValid()) return null;
-
-    var handle = ctrl.readInt32(PAWN_HANDLE);           // the m_hPlayerPawn CEntityHandle uint32
+    var handle = ctrl.readInt32(PAWN_HANDLE);
     if (handle === null) return null;
-    var decoded = __s2_handle_decode(handle >>> 0);      // [index, serial]
+    var decoded = __s2_handle_decode(handle >>> 0);
     var pawn = new EntityRef(decoded[0], decoded[1]);
-    return pawn.isValid() ? new Pawn(pawn, HEALTH) : null;
+    return pawn.isValid() ? new Pawn(pawn) : null;
   };
 
   globalThis.__s2pkg_cs2 = { Pawn: Pawn };

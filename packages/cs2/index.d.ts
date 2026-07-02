@@ -1,26 +1,17 @@
 /**
- * @s2script/cs2 — author-time type stubs for the injected CS2 game API.
- * NO runtime code: the s2script engine injects the real implementation at load time.
- * Plugins consume this package for TypeScript type checking only.
- *
- * CS2-specific identifiers live here (not in @s2script/std) per the
- * "core is engine-generic; games are packages" convention.
+ * @s2script/cs2 — author-time type stubs for the injected CS2 game API. NO runtime code.
+ * The typed field accessors are GENERATED (schema.generated.d.ts) from the schema catalog by
+ * `s2script gen-schema`; this file adds the hand-written entry points on top.
  */
-
 import type { EntityRef } from "@s2script/std";
+export * from "./schema.generated";
+import type { CCSPlayerPawn } from "./schema.generated";
 
-/** A CS2 player pawn. */
-export declare interface Pawn {
-  /** The underlying serial-gated entity ref. Use its typed read/write methods for arbitrary field access. */
+/** A CS2 player pawn: the generated CCSPlayerPawn schema fields + the underlying serial-gated ref. */
+export interface Pawn extends CCSPlayerPawn {
   readonly ref: EntityRef;
-  /** Current health value of the pawn, or null if the entity ref is stale. */
-  health: number | null;
 }
-
 export declare const Pawn: {
-  /**
-   * Return the Pawn for the given player slot, or null if the slot is
-   * unoccupied or the pawn has been invalidated.
-   */
+  /** The Pawn for a player slot, or null if unoccupied / invalidated. */
   forSlot(slot: number): Pawn | null;
 };
