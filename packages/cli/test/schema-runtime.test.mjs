@@ -17,7 +17,7 @@ test("schema.generated.js + pawn.js compose: Pawn.prototype has generated access
   stdPkg.EntityRef.prototype.readBool = function () { return false; };
   stdPkg.EntityRef.prototype.readHandle = function () { return new stdPkg.EntityRef(1, 7); };
   const ctx = {
-    __s2require: (name) => (name === "@s2script/std" ? stdPkg : null),
+    __s2require: (name) => (name === "@s2script/entity" ? stdPkg : null),
     __s2_schema_offset: () => 100,
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],

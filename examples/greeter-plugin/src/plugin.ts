@@ -1,4 +1,5 @@
-import { OnGameFrame, publishInterface, PublishHandle } from "@s2script/std";
+import { OnGameFrame } from "@s2script/frame";
+import { publishInterface, PublishHandle } from "@s2script/interfaces";
 
 // Producer: publishes the typed inter-plugin interface @demo/greeter@1.0.0 with a
 // single native `greet(slot) -> string`, and emits a forwarded `greeted` event every
