@@ -8,7 +8,7 @@
   "scripts": {
     "prepare": "node build.mjs",
     "build": "node build.mjs",
-    "test": "node --experimental-strip-types --no-warnings test/build.test.mjs"
+    "test": "node --experimental-strip-types --no-warnings --test test/*.test.mjs"
   },
   "dependencies": {
     "esbuild": "^0.25.0",
