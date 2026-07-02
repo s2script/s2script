@@ -49,7 +49,7 @@ export async function buildPlugin(dir: string): Promise<string> {
   // Every builtin package + every inter-plugin dependency name is esbuild-external (resolved at
   // runtime by core, never bundled).
   const external = Array.from(new Set([
-    "@s2script/std", "@s2script/cs2",
+    "@s2script/*",
     ...Object.keys(pluginDependencies),
     ...Object.keys(optionalPluginDependencies),
   ]));

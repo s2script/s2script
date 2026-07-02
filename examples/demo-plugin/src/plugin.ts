@@ -1,4 +1,4 @@
-import { OnGameFrame } from "@s2script/std";
+import { OnGameFrame } from "@s2script/frame";
 import { Pawn } from "@s2script/cs2";
 
 // A minimal @s2script/cs2 plugin exercising the Slice 5B.3 GENERATED typed field accessors.

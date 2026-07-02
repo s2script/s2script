@@ -1,4 +1,4 @@
-import { publishInterface } from "@s2script/std";
+import { publishInterface } from "@s2script/interfaces";
 import { Pawn } from "@s2script/cs2";
 
 // Producer: publishes the typed inter-plugin interface @demo/ent@1.0.0. Its pawnRef(slot)

@@ -4,7 +4,7 @@
 // CCSPlayerPawn accessors to Pawn.prototype and keeps the behavioral entry point (Pawn.forSlot).
 // Offsets are resolved live (Slice 3) and cached by the core OffsetCache; nothing is baked.
 (function () {
-  var EntityRef = __s2require("@s2script/std").EntityRef;
+  var EntityRef = __s2require("@s2script/entity").EntityRef;
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
 
   function Pawn(ref) { this.ref = ref; }

@@ -60,7 +60,7 @@ test("emitJs: flattened getters/setters, live off() resolve, notifyStateChanged 
 
 test("emitDts: extends chain, own fields only, writable vs readonly, skipped absent", () => {
   const dts = emitDts(buildModel(CATALOG, ["Leaf"]));
-  assert.match(dts, /import type \{ EntityRef \} from "@s2script\/std";/);
+  assert.match(dts, /import type \{ EntityRef \} from "@s2script\/entity";/);
   assert.match(dts, /export interface Base \{/);
   assert.match(dts, /health: number \| null;/);       // writable → mutable
   assert.match(dts, /friction: number \| null;/);

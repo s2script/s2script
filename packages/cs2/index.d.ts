@@ -3,7 +3,7 @@
  * The typed field accessors are GENERATED (schema.generated.d.ts) from the schema catalog by
  * `s2script gen-schema`; this file adds the hand-written entry points on top.
  */
-import type { EntityRef } from "@s2script/std";
+import type { EntityRef } from "@s2script/entity";
 export * from "./schema.generated";
 import type { CCSPlayerPawn } from "./schema.generated";
 

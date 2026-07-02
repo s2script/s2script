@@ -53,16 +53,16 @@ fn api_version_compatible(api_version: &str) -> bool {
 }
 
 /// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects,
-/// skipping the builtin packages (@s2script/std, @s2script/cs2 resolve via __s2require, not the
-/// interface registry).
+/// skipping the builtin packages (@s2script/* — entity/frame/timers/console/interfaces/cs2 and
+/// any future first-party module — resolve via __s2require, not the interface registry).
 fn imports_from_manifest(m: &Manifest) -> Vec<(String, String, crate::interfaces::Kind)> {
     let mut out = Vec::new();
     for (name, range) in &m.plugin_dependencies {
-        if name == "@s2script/std" || name == "@s2script/cs2" { continue; }
+        if name.starts_with("@s2script/") { continue; }
         out.push((name.clone(), range.clone(), crate::interfaces::Kind::Hard));
     }
     for (name, range) in &m.optional_plugin_dependencies {
-        if name == "@s2script/std" || name == "@s2script/cs2" { continue; }
+        if name.starts_with("@s2script/") { continue; }
         out.push((name.clone(), range.clone(), crate::interfaces::Kind::Optional));
     }
     out
@@ -431,7 +431,7 @@ mod tests {
     fn manifest_parses_both_dependency_maps() {
         let bytes = make_test_s2sp(
             r#"{"id":"@demo/consumer","version":"0.1.0","apiVersion":"1.x",
-                "pluginDependencies":{"@s2script/std":"^1.0.0","@demo/greeter":"^1.0.0"},
+                "pluginDependencies":{"@s2script/entity":"^1.0.0","@demo/greeter":"^1.0.0"},
                 "optionalPluginDependencies":{"@demo/extra":"^1.0.0"}}"#,
             "module.exports={};",
         );

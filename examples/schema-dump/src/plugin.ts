@@ -1,4 +1,4 @@
-import { OnGameFrame } from "@s2script/std";
+import { OnGameFrame } from "@s2script/frame";
 
 // Dev/treadmill plugin: once a map is live and the SchemaSystem is populated, dump the whole
 // class/field/type catalog to JSON via the __s2_schema_dump native, then stop. The committed
@@ -6,7 +6,7 @@ import { OnGameFrame } from "@s2script/std";
 // plugin is how it's regenerated after each CS2 update (the treadmill).
 //
 // __s2_schema_dump is a dev/treadmill native (drives the shim's schema_enumerate SDK walk). It is
-// NOT part of the typed @s2script/std surface, so we declare it ambiently here.
+// NOT part of the typed @s2script/* surface, so we declare it ambiently here.
 declare const __s2_schema_dump: (path: string) => boolean;
 
 let done = false;
