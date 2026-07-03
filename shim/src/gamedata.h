@@ -14,3 +14,17 @@ std::map<std::string, std::string> LoadInterfaceVersions(const std::string& path
 std::map<std::string, int> LoadOffsets(const std::string& path,
                                         const std::string& platform,
                                         std::string& error);
+
+// A byte-signature spec: which module to scan, the IDA-style pattern, and the resolve strategy.
+struct SigSpec {
+    std::string module;
+    std::string pattern;
+    std::string resolve;
+};
+
+// Reads platform-keyed byte signatures from the "signatures" section of a gamedata .jsonc file.
+// Returns a map of signature-name → SigSpec for `platform`, or an empty map. `error` is left empty
+// on success (including when the "signatures" section is absent); set on parse failure.
+std::map<std::string, SigSpec> LoadSignatures(const std::string& path,
+                                              const std::string& platform,
+                                              std::string& error);

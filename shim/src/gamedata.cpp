@@ -46,3 +46,31 @@ std::map<std::string, int> LoadOffsets(const std::string& path,
     }
     return out;
 }
+
+std::map<std::string, SigSpec> LoadSignatures(const std::string& path,
+                                              const std::string& platform,
+                                              std::string& error) {
+    std::map<std::string, SigSpec> out;
+    std::ifstream f(path);
+    if (!f) {
+        error = "gamedata file not found: " + path;
+        return out;
+    }
+    try {
+        auto j = nlohmann::json::parse(f, nullptr, /*allow_exceptions=*/true, /*ignore_comments=*/true);
+        if (!j.contains("signatures")) return out;      // absent is not an error
+        for (auto& [key, platforms] : j.at("signatures").items()) {
+            if (!platforms.contains(platform)) continue;
+            auto& p = platforms.at(platform);
+            SigSpec s;
+            s.module  = p.value("module", "");
+            s.pattern = p.value("pattern", "");
+            s.resolve = p.value("resolve", "");
+            out[key] = s;
+        }
+    } catch (const std::exception& e) {
+        error = std::string("gamedata parse error: ") + e.what();
+        out.clear();
+    }
+    return out;
+}

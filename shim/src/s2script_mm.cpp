@@ -30,6 +30,8 @@
 
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
+#include <link.h>       // dl_iterate_phdr, ElfW
+#include "sigscan.h"
 #include <cstring>
 #include <cstdio>
 #include <set>
@@ -551,6 +553,29 @@ static void s2_request_hook(const char* descriptor, int enable) {
 }
 
 // ---------------------------------------------------------------------------
+// FindModuleText (Slice 5D.2): locate the largest executable segment of a loaded module by soname
+// substring. Returns {nullptr, 0} if not found. Live-only (dl_iterate_phdr); the pure
+// match/extract is sigscan.
+// ---------------------------------------------------------------------------
+struct ModText { const uint8_t* text; size_t size; };
+static ModText FindModuleText(const char* soname) {
+    struct Ctx { const char* name; ModText out; } ctx{ soname, { nullptr, 0 } };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;  // keep scanning
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X) && ph.p_filesz > c->out.size) {
+                c->out.text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
+                c->out.size = ph.p_filesz;                                          // pick the largest PF_X seg
+            }
+        }
+        return 1;   // module found; stop
+    }, &ctx);
+    return ctx.out;
+}
+
+// ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
@@ -660,30 +685,46 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                verStr);
             }
         }
-        // Acquire IGameEventManager2* (Slice 5D.1). In CS2 the game-event manager is served by the
-        // GAME DLL, so try the SERVER factory first, then the engine factory as a fallback.
-        // Community-confirmed interface string: "GAMEEVENTSMANAGER002" on CS2.
-        // Degrade-never-crash: leave null on any failure → event ops become no-ops.
+        // Acquire IGameEventManager2* via signature scan (Slice 5D.2). GAMEEVENTSMANAGER002 is NOT a
+        // registered interface in CS2 (in zero modules), so the global is resolved from libserver.so
+        // by pattern. Signature + module are gamedata (layout-is-data). Degrade-never-crash: any
+        // failure leaves s_pGameEventManager null -> event ops no-op.
         {
-            auto it = versions.find("GameEventManager");
-            const char* verStr = (it != versions.end()) ? it->second.c_str()
-                                                        : "GAMEEVENTSMANAGER002";
-            int ret = 0;
-            s_pGameEventManager = serverFactory
-                ? reinterpret_cast<IGameEventManager2*>(serverFactory(verStr, &ret))
-                : nullptr;
-            if (!s_pGameEventManager || ret != 0) {   // fall back to the engine factory
-                ret = 0;
-                s_pGameEventManager = engineFactory
-                    ? reinterpret_cast<IGameEventManager2*>(engineFactory(verStr, &ret))
-                    : nullptr;
+            std::string sigErr;
+            auto sigs = LoadSignatures(GamedataPath(), "linuxsteamrt64", sigErr);
+            if (!sigErr.empty()) {
+                META_CONPRINTF("[s2script] WARN: %s — GameEventManager sig unavailable\n", sigErr.c_str());
             }
-            if (s_pGameEventManager && ret == 0) {
-                META_CONPRINTF("[s2script] interface OK: GameEventManager (%s)\n", verStr);
+            auto it = sigs.find("GameEventManager");
+            if (it == sigs.end()) {
+                META_CONPRINTF("[s2script] WARN: no GameEventManager signature in gamedata — events degrade\n");
             } else {
-                s_pGameEventManager = nullptr;
-                META_CONPRINTF("[s2script] WARN: interface MISSING: GameEventManager (%s)"
-                               " — game-event natives degrade\n", verStr);
+                const SigSpec& sig = it->second;
+                ModText mt = FindModuleText(sig.module.c_str());
+                std::vector<int> pat = s2sig::ParsePattern(sig.pattern);
+                if (!mt.text || pat.empty()) {
+                    META_CONPRINTF("[s2script] WARN: GameEventManager sig-scan setup failed (module=%s, patTokens=%zu) — events degrade\n",
+                                   sig.module.c_str(), pat.size());
+                } else {
+                    int64_t matchOff = s2sig::FindPattern(mt.text, mt.size, pat);
+                    int64_t targetOff = s2sig::kFail;
+                    if (matchOff >= 0) {
+                        if (sig.resolve == "ctor-body-xref")
+                            targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
+                        else if (sig.resolve == "lea-disp")
+                            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, 3, 7);
+                    }
+                    if (targetOff != s2sig::kFail) {
+                        s_pGameEventManager = reinterpret_cast<IGameEventManager2*>(
+                            const_cast<uint8_t*>(mt.text) + targetOff);
+                        META_CONPRINTF("[s2script] interface OK: GameEventManager (sig-scan %s, %p)\n",
+                                       sig.resolve.c_str(), (void*)s_pGameEventManager);
+                    } else {
+                        s_pGameEventManager = nullptr;
+                        META_CONPRINTF("[s2script] WARN: GameEventManager sig-scan no match (matchOff=%lld) — events degrade\n",
+                                       (long long)matchOff);
+                    }
+                }
             }
         }
     }

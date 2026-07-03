@@ -8,10 +8,7 @@
     "NetworkServerService": "NetworkServerService_001",
     // IGameResourceService acquired via the engine factory; backs the entity-system pointer
     // (recon Q3). Interface string [HC]; confirmed community name for CS2 server-side service.
-    "GameResourceService": "GameResourceServiceServerV001",
-    // IGameEventManager2 acquired via the engine factory (Slice 5D.1). Community-confirmed
-    // interface string for CS2; validated at the T5 live gate.
-    "GameEventManager": "GAMEEVENTSMANAGER002"
+    "GameResourceService": "GameResourceServiceServerV001"
   },
   // Byte offsets into engine interface objects — keyed by platform string.
   // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked
@@ -23,5 +20,21 @@
     // entity-system pointer). This is the one entity value that isn't resolved dynamically — a wrong
     // offset reads garbage, so it must be re-confirmed on the update treadmill if entity access breaks.
     "GameEntitySystem": { "linuxsteamrt64": 80 }
+  },
+  // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
+  // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
+  // docs/superpowers/specs/2026-07-03-slice-5d1b-sigscan-spike-findings.md). A missing/stale
+  // signature degrades (s_pGameEventManager stays null -> event ops no-op), never crashes.
+  "signatures": {
+    // IGameEventManager2 global in libserver.so. GAMEEVENTSMANAGER002 is NOT a registered
+    // interface in CS2 (in zero modules), so the manager is reached via this ctor-body signature:
+    // find the ctor, its sole E8 caller, the preceding lea r14 -> the global instance (offset-to-top 0).
+    "GameEventManager": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 8D 05 ? ? ? ? BE 40 00 00 00 48 89 E5 41 54 4C 8D 65 E8 53 48 89 FB",
+        "resolve": "ctor-body-xref"
+      }
+    }
   }
 }
