@@ -1387,6 +1387,50 @@ All four wrappers read correct through their chains (two distinct spawns; valid 
 
 ---
 
+## Live game events + engine identity (Slice 5D.2)
+
+Slice 5D.2 reaches two **un-exported** CS2 engine facilities through committed, regenerable gamedata facts —
+one **signature** and six **offsets** — lighting up live game-event delivery (the deferred 5D.1b) and engine
+identity (`player.userId` / `Player.fromUserId` / `Player.allConnected`). The access *mechanisms* stay
+engine-generic in core/shim; the *values* live in `gamedata/core.gamedata.jsonc`; the `Player.*` API lives in
+the CS2 game layer.
+
+**Events (Thread A).** `CreateInterface("GAMEEVENTSMANAGER002")` returns nothing in CS2 (Slice 5D.1 confirmed
+it), so a pure byte-pattern scanner (`shim/src/sigscan.{h,cpp}`, host-`g++`-tested) resolves the
+`IGameEventManager2*` global from `libserver.so` via a committed **ctor-body-xref signature** (a
+`.signatures` gamedata section + `LoadSignatures`), populating `s_pGameEventManager`. Everything downstream from
+5D.1 (`Events.on`, the `GameEvent` accessor, `event_mux`, the typed catalog) is unchanged.
+
+**Identity (Thread B).** Five engine-generic client-list ops (appended to `S2EngineOps`) read
+`INetworkServerService*` → game server → `CServerSideClient[]` at gamedata offsets; `player.userId` is the engine
+user-id (not schema), `Player.fromUserId(id)` looks a player up by it, and `Player.allConnected()` enumerates
+connected players **regardless of pawn** (complementing the pawn-gated `Player.all()`).
+
+**Live gate (de_inferno, `bot_quota 2`):**
+
+```
+[s2script] interface OK: GameEventManager (sig-scan ctor-body-xref, 0x…e0860)
+[demo] EVENT player_spawn slot=0 / slot=1
+[demo] EVENT round_start timelimit=0
+[demo] allConnected=2
+  slot=0 userId=0 teamNum=2 pawn=yes fromUserId(uid).slot=0
+  slot=1 userId=1 teamNum=3 pawn=yes fromUserId(uid).slot=1
+bot_kick → [demo] allConnected=0        (server ticking, no crash)
+```
+
+`fromUserId` round-trips to the same slot (the engine client-list index == the player slot). **Live-gate bug
+fixed:** `FindModuleText` first matched Metamod's thin `libserver.so` *proxy* (its path also contains the
+substring) — now it scans all substring matches and keeps the **largest** executable segment (the real game
+module). **Deferred:** blocking/pre-hooks + *firing* events; connected-client steam-id / HLTV typing;
+auto-regenerated signatures/offsets.
+
+> **Live-gate deploy note.** `scripts/package-addon.sh` `rm -rf`s the bind-mounted `dist/addons/s2script`, which
+> detaches the container's mount — `docker compose -f docker/docker-compose.yml restart cs2` re-binds it AND
+> preserves the `gameinfo.gi` Metamod patch. Avoid `--force-recreate` (it resets `gameinfo.gi`; if used, re-run
+> `docker exec s2script-cs2 /patch-gameinfo.sh` then restart).
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

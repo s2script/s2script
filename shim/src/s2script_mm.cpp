@@ -608,18 +608,24 @@ static void s2_request_hook(const char* descriptor, int enable) {
 // ---------------------------------------------------------------------------
 struct ModText { const uint8_t* text; size_t size; };
 static ModText FindModuleText(const char* soname) {
+    // Pick the LARGEST executable segment across ALL loaded modules whose soname contains `soname`.
+    // Why "all + largest" and not "first match": Metamod:Source inserts its own thin libserver.so
+    // proxy (csgo/addons/metamod/.../libserver.so, ~95 KB) via the gameinfo SearchPath, whose path
+    // ALSO contains the "libserver.so" substring. Stopping at the first substring match grabbed that
+    // proxy (no game code) instead of the real ~25 MB game module. The real game module's .text
+    // dwarfs the proxy's, so largest-PF_X-segment-wins selects it robustly (found live, de_inferno).
     struct Ctx { const char* name; ModText out; } ctx{ soname, { nullptr, 0 } };
     dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
         auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;  // keep scanning
+        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;  // not a match; keep scanning
         for (int i = 0; i < info->dlpi_phnum; i++) {
             const ElfW(Phdr)& ph = info->dlpi_phdr[i];
             if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X) && ph.p_filesz > c->out.size) {
                 c->out.text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-                c->out.size = ph.p_filesz;                                          // pick the largest PF_X seg
+                c->out.size = ph.p_filesz;                       // largest PF_X seg across all matches
             }
         }
-        return 1;   // module found; stop
+        return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
     }, &ctx);
     return ctx.out;
 }

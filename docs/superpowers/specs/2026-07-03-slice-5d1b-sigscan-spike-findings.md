@@ -145,3 +145,58 @@ for (int slot = 0; slot < n; slot++) {
 `%s<%i><%s><>`@0x261a39 (logaddress) · `"%s" disconnected`@0x25f583→fn 0x5d1450 (0x80/0x88) ·
 `%s kicked by %s (%s)`@0x25f272→fn 0x698840 (0x250/0x258 + fields) · steamid getter 0x6bbb20 (0xab) ·
 Connect 0x6b8c90 (userid WORD @0xa8) · ctor/factory 0x6a6ab0 (defaults).
+
+---
+
+# Slice 5D.2 LIVE-GATE RESULTS (de_inferno, bot_quota 2) — PASSED
+
+**Both threads proven live.** Server: Docker CS2, de_inferno, past the boot window.
+
+## Boot (sig-scan + offsets both resolve)
+```
+[s2script] interface OK: GameEventManager (sig-scan ctor-body-xref, 0x7f5fa3ce0860)
+[s2script] identity offsets: gs=336 cnt=592 elems=600 name=64 signon=100 uid=168
+```
+The resolved pointer `…ce0860` ends in the spike's instance RVA `0x26e0860` (base `0x7f5fa1600000`).
+
+## Thread A — game-event DELIVERY (first-ever proof of the 5D.1 mechanism)
+```
+[demo] EVENT player_spawn slot=0
+[demo] EVENT player_spawn slot=1
+[demo] EVENT round_start timelimit=0
+```
+`getPlayerSlot("userid")` and `getInt("timelimit")` read live from the `IGameEvent*`.
+
+## Thread B — engine identity (userId / fromUserId / pawnless enum)
+```
+[demo] allConnected=2
+  slot=0 userId=0 teamNum=2 pawn=yes fromUserId(uid).slot=0
+  slot=1 userId=1 teamNum=3 pawn=yes fromUserId(uid).slot=1
+```
+- `allConnected()` yields both bots (pawnless-safe enumeration).
+- `player.userId` = engine user-id (0, 1), NOT schema; `teamNum` (2, 3) via the generated schema accessor.
+- **`fromUserId(uid)` round-trips to the SAME slot** → resolves soft-point #1: `clientElems[slot]` index **==** the 0-based player slot. (Soft-point #3: `kSignonConnected=2` is correct — bots enumerate; soft-point #2: no phantom/HLTV clients appeared.)
+
+## Degrade (bot_kick)
+```
+[demo] EVENT round_start timelimit=0
+[demo] allConnected=0
+```
+`status` → `0 humans, 0 bots (not hibernating)` — server ticks past the kick, no crash.
+
+## Live-gate bug found + fixed (FindModuleText)
+The first live run showed `GameEventManager sig-scan no match (matchOff=-1)` while `identity offsets`
+loaded fine. Diagnostics revealed `FindModuleText("libserver.so")` matched **Metamod's own thin
+`libserver.so` proxy** (`csgo/addons/metamod/bin/linuxsteamrt64/libserver.so`, PF_X seg ~95 KB) via
+the gameinfo SearchPath — its path also contains the substring `"libserver.so"`, and the original
+`return 1` (stop at first match) grabbed the proxy instead of the real ~25 MB game module. **Fix:**
+`FindModuleText` now scans ALL modules whose soname contains the substring and keeps the **largest**
+PF_X segment (the real game module dwarfs the proxy) — `return 0` instead of `return 1`. Re-run → the
+sig-scan resolves the real manager and events deliver (above).
+
+## Deploy notes (treadmill hazards, for the runbook)
+- `package-addon.sh` `rm -rf`s the bind-mounted `dist/addons/s2script` → detaches the container's bind
+  mount (it keeps pointing at the deleted inode). Recovery: `docker compose restart cs2` re-binds the
+  mount to the fresh directory AND preserves the `gameinfo.gi` metamod patch (a plain restart does not
+  re-run the image's install/validate step). Avoid `--force-recreate` — it resets `gameinfo.gi`
+  (un-patching the Metamod SearchPath → `meta` becomes unknown); if used, re-run `/patch-gameinfo.sh`.
