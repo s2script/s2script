@@ -658,7 +658,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                verStr);
             }
         }
-        // Acquire IGameEventManager2* via the engine factory (Slice 5D.1).
+        // Acquire IGameEventManager2* (Slice 5D.1). In CS2 the game-event manager is served by the
+        // GAME DLL, so try the SERVER factory first, then the engine factory as a fallback.
         // Community-confirmed interface string: "GAMEEVENTSMANAGER002" on CS2.
         // Degrade-never-crash: leave null on any failure → event ops become no-ops.
         {
@@ -666,9 +667,15 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             const char* verStr = (it != versions.end()) ? it->second.c_str()
                                                         : "GAMEEVENTSMANAGER002";
             int ret = 0;
-            s_pGameEventManager = engineFactory
-                ? reinterpret_cast<IGameEventManager2*>(engineFactory(verStr, &ret))
+            s_pGameEventManager = serverFactory
+                ? reinterpret_cast<IGameEventManager2*>(serverFactory(verStr, &ret))
                 : nullptr;
+            if (!s_pGameEventManager || ret != 0) {   // fall back to the engine factory
+                ret = 0;
+                s_pGameEventManager = engineFactory
+                    ? reinterpret_cast<IGameEventManager2*>(engineFactory(verStr, &ret))
+                    : nullptr;
+            }
             if (s_pGameEventManager && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: GameEventManager (%s)\n", verStr);
             } else {

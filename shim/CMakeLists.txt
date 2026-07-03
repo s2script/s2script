@@ -13,6 +13,9 @@ set(AMTL   ${MMS}/third_party/amtl)
 add_library(s2script SHARED
     src/s2script_mm.cpp
     src/gamedata.cpp
+    # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
+    # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
+    src/tier1_shims.cpp
 )
 
 target_include_directories(s2script PRIVATE
