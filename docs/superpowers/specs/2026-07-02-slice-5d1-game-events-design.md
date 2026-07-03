@@ -13,7 +13,11 @@ A generic, engine-generic **game-event system**: `Events.on("player_death", (ev)
 engine's `IGameEventManager2`, and each fired event is dispatched to per-name JS subscriber lists; the handler
 gets a **live typed accessor** (`ev.getInt`/`getString`/`getPlayerSlot`/…) valid during the synchronous handler.
 This is the SourceMod `HookEvent`/`GetEventInt` model, and it's the critical-path unblock for the base-plugin
-suite.
+suite. **On top of the generic runtime, a typed compile-time overlay gives IntelliSense** for the event names +
+their fields: a committed **`event-catalog.json`** (reference-sourced — CS2 buries event defs in the VPK, so
+there's no live dump) is codegen'd into a typed `GameEvents` map + a typed `Events.on` overload in
+`@s2script/cs2`. So typing `Events.on("` autocompletes `player_death`/`round_start`/…, and each getter's key
+autocompletes that event's fields — while any uncatalogued event name still works via the generic string API.
 
 ## 2. What we build on (merged / grounded)
 
@@ -33,10 +37,14 @@ suite.
 
 ## 3. Decisions locked during brainstorming
 
-1. **Generic string-keyed bus + a live accessor.** `Events.on(name, handler)`; the handler gets a `GameEvent`
-   accessor (`ev.name`, `ev.getInt/getFloat/getBool/getString(key)`, `ev.getUint64(key)`→string,
-   `ev.getPlayerSlot(key)`→number). One engine-generic API (`@s2script/events`) for all events; the event names
-   are just strings. NO typed named events (`OnPlayerDeath`) + NO per-event codegen (deferred).
+1. **Generic string-keyed bus RUNTIME + a typed catalog OVERLAY.** The runtime is one engine-generic API
+   (`@s2script/events`): `Events.on(name, handler)`; the handler gets a `GameEvent` accessor (`ev.name`,
+   `ev.getInt/getFloat/getBool/getString(key)`, `ev.getUint64(key)`→string, `ev.getPlayerSlot(key)`→number).
+   **The types** (in `@s2script/cs2`, since event names are CS2 facts) are a compile-time overlay generated from
+   `event-catalog.json`: a `GameEvents` map + a typed `Events.on<K extends keyof GameEvents>` overload where each
+   event's `ev` is a per-event interface whose getters constrain the `key` to that event's fields **of the
+   matching type** (`getPlayerSlot(key: "userid"|"attacker")`, `getString(key: "weapon")`, …). Runtime stays
+   generic; the types just add IntelliSense. NO runtime per-event codegen; NO typed `OnPlayerDeath` event objects.
 2. **Live accessor, synchronous-only.** `ev` reads the **live** `IGameEvent` held by the shim during the
    synchronous handler; the raw `IGameEvent*` **never crosses to JS**. A stashed `ev` used post-`await` reads
    defaults (the shim's current-event pointer is null outside dispatch). Same block-scoped, no-`await` discipline
@@ -89,9 +97,36 @@ suite.
   (`__s2pkg_events = { Events }`) — a `GameEvent` constructor (`function GameEvent(name){ this.name = name; }` +
   the accessor methods calling the natives) and an `Events` object (`on(name, handler)`, `off(name, handler)`
   delegating to `__s2_event_subscribe`/`__s2_event_unsubscribe` natives that manage the multiplexer).
-- **Types:** `Events.on(name: string, handler: (ev: GameEvent) => void): void` / `off(...)`; `GameEvent` with
-  `readonly name: string`, `getInt(key): number`, `getFloat(key): number`, `getBool(key): boolean`,
-  `getString(key): string`, `getUint64(key): string`, `getPlayerSlot(key): number`.
+- **Types (generic):** `Events.on(name: string, handler: (ev: GameEvent) => void): void` / `off(...)`;
+  `GameEvent` with `readonly name: string`, `getInt(key): number`, `getFloat(key): number`,
+  `getBool(key): boolean`, `getString(key): string`, `getUint64(key): string`, `getPlayerSlot(key): number`.
+  This is the fallback for any event name; the CS2 typed overlay (§6.5) narrows the well-known ones.
+
+## 6.5 Architecture — the event catalog + typed codegen (CS2 layer)
+
+- **`games/cs2/gamedata/event-catalog.json`** (committed, reference-sourced): a map of the documented CS2 events →
+  `{ fieldName: fieldType }`, where `fieldType ∈ { "bool", "int", "float", "string", "uint64", "player" }`
+  (`"player"` = a `userid`/`attacker`-style field, read via `getPlayerSlot`). Sourced from the documented CS2
+  event set (CS2 buries event defs in the VPK — no live dump); accuracy is **live-validated** where events fire,
+  and events we can't source accurately are **omitted** (the generic string API still handles them). A treadmill
+  artifact — hand-updated when Valve changes events.
+- **The event codegen** (`packages/cli/src/eventgen/…`, pure + node:test; `s2script gen-events` or folded into
+  `gen-schema`): a pure transform over `event-catalog.json` → a committed typed `.d.ts`
+  (`packages/cs2/events.generated.d.ts`) with, per event, an interface whose getters constrain the key to that
+  event's fields **of the matching type**, e.g.:
+  ```ts
+  export interface PlayerDeathEvent extends GameEvent {
+    getPlayerSlot(key: "userid" | "attacker" | "assister"): number;
+    getString(key: "weapon"): string;
+    getBool(key: "headshot"): boolean;
+  }
+  export interface GameEvents { player_death: PlayerDeathEvent; round_start: RoundStartEvent; /* … */ }
+  ```
+  plus a typed overload `export function on<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => void): void;`
+  (and the `string`-fallback overload). The overload is exposed via `@s2script/cs2` (module-augmentation of
+  `@s2script/events`, or a re-exported typed `Events`). **Types only — the runtime is unchanged** (the generic
+  `GameEvent` getters; the codegen never emits runtime code). Deterministic; freshness-gated (`git diff --exit-code`
+  after regen) like `schema.generated`.
 
 ## 7. Data flow
 
@@ -123,33 +158,47 @@ engine-op sees `s_currentEvent == null` → returns defaults.
   removes a plugin's subscriptions (a later dispatch doesn't call it).
 - **`@s2script/events` (in-isolate / vm):** `Events.on`/`off` register/unregister; the `GameEvent` accessor
   methods call the right natives; degrade to defaults without ops.
+- **Event codegen (node:test):** the pure transform over a fixture `event-catalog.json` emits, per event, an
+  interface whose getters constrain the key to the right fields (`getPlayerSlot(key: "userid"|"attacker")`,
+  `getString(key: "weapon")`, …) + the `GameEvents` map + the typed `on<K>` overload; determinism holds; the
+  committed `packages/cs2/events.generated.d.ts` is freshness-gated (regenerate + `git diff --exit-code`).
 - **Live gate (sniper-rebuilt):** a plugin subscribes to `player_death` (+ a reliably-early event like
   `player_spawn`/`player_connect_full` as a fallback) on Docker CS2 (`bot_quota 2`; bots fight → `player_death`
   fires). The handler logs `ev.getPlayerSlot("attacker")`/`"userid"` resolved through `Player.fromSlot` (the
-  attacker/victim names), `ev.getString("weapon")`, `ev.getBool("headshot")`. Prove: the event fires, fields
-  marshal correctly, player resolution works, server ticking; unsubscribe/`onUnload` stops delivery, no crash.
+  attacker/victim names), `ev.getString("weapon")`, `ev.getBool("headshot")`. **Catalog validation:** for the
+  events that fire during the gate, confirm the observed fields match `event-catalog.json` (correct the catalog
+  if a documented field is absent/renamed). Prove: the event fires, fields marshal correctly, player resolution
+  works, server ticking; unsubscribe/`onUnload` stops delivery, no crash.
 
 **Acceptance:** `cargo test -p s2script-core` green (multiplexer + accessor + teardown in-isolate); the CLI
-`node:test` suite green; both boundary gates + `check-schema-generated.sh` green; the sniper build clean; the
-live gate passes; README + CLAUDE updated.
+`node:test` suite green (event codegen); both boundary gates + `check-schema-generated.sh` + the event-codegen
+freshness gate green; the sniper build clean; the live gate passes (+ catalog validation); README + CLAUDE updated.
 
 ## 10. Scope & deferrals
 
 **Scope:** the shim `IGameEventManager2` acquire + `IGameEventListener2` + the event `S2EngineOps` ops; the core
 event multiplexer + `s2script_core_dispatch_game_event` + the accessor natives; the `@s2script/events` module
-(`Events.on/off` + the `GameEvent` live accessor) + types; ledgered teardown; the live gate.
+(`Events.on/off` + the `GameEvent` live accessor) + types; ledgered teardown; the **reference-sourced committed
+`event-catalog.json` + the event codegen → the typed `GameEvents` overlay in `@s2script/cs2`** (types-only,
+freshness-gated); the live gate + catalog validation.
 
-**Deferred — do NOT build:** **blocking / pre-hooks / `HookResult`** for events (notify-only now); **firing /
-creating** events (`Events.fire`, `CreateEvent`/`FireEvent`/`Set*`); **typed named events** (`OnPlayerDeath`) +
-per-event schema codegen; an **eager stashable snapshot** + `GetDataKeys` full-field enumeration; the
-engine-identity follow (5D.2 — `userId`/`fromUserId`/pawnless-enum); the ptr-codegen generalization (5D.3); the
-`tsc` gate; the registry (5.5); the base suite (6).
+**Deferred — do NOT build:** an **auto-dump** of the event catalog (VPK + compiled-KV3 extraction tooling, OR a
+runtime-RE enumeration of `IGameEventManager2` — the catalog is reference-sourced this slice); **blocking /
+pre-hooks / `HookResult`** for events (notify-only now); **firing / creating** events (`Events.fire`,
+`CreateEvent`/`FireEvent`/`Set*`); typed `OnPlayerDeath` *event objects* + runtime per-event codegen; an **eager
+stashable snapshot** + `GetDataKeys` full-field enumeration; the engine-identity follow (5D.2 —
+`userId`/`fromUserId`/pawnless-enum); the ptr-codegen generalization (5D.3); the `tsc` gate; the registry (5.5);
+the base suite (6).
 
 ## 11. Global constraints (bind every task)
 
 - **Core stays engine-generic.** `IGameEvent`/`IGameEventManager2` + the event ops + `@s2script/events` are
-  Source2-generic; event NAMES + keys are plugin-supplied strings. NO CS2 identifiers in `core/src`. Both
-  boundary gates green.
+  Source2-generic; event NAMES + keys are plugin-supplied strings. The CS2 event catalog + the typed overlay
+  live ONLY in `games/cs2/gamedata/event-catalog.json` + `packages/cs2` (never in `core/src` or
+  `@s2script/events`). Both boundary gates green.
+- **Deterministic codegen + freshness gate.** Same `event-catalog.json` → byte-identical `events.generated.d.ts`;
+  the freshness gate (regenerate + `git diff --exit-code`) proves it (like `schema.generated`). Types only — the
+  codegen never emits runtime code.
 - **Never expose a raw pointer across time.** The `IGameEvent*` stays in the shim; the JS accessor is a
   block-scoped live view (synchronous-only, no `await`); only copied values cross. Degrade to defaults
   post-dispatch.
