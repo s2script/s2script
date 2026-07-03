@@ -1341,6 +1341,52 @@ eager stashable event snapshot.
 
 ---
 
+## Pointer-chain wrappers (Slice 5C.5)
+
+5C.4 hand-wrote `pawn.origin` by following a pointer chain (`entity → CBodyComponent → CGameSceneNode`). Slice
+5C.5 **generalizes that into codegen** over a *curated* set of navigation targets — so fields behind pointers
+become typed, pointer-backed wrappers:
+
+```ts
+import { Player } from "@s2script/cs2";
+
+for (const p of Player.all()) {
+  const b = p.pawn; if (!b) continue;
+  const pos    = b.sceneNode?.absOrigin;         // Vector — world position (via the CGameSceneNode chain)
+  const scale  = b.sceneNode?.scale;             // number
+  const weapon = b.weaponServices?.activeWeapon; // EntityRef | null — the active weapon (a handle through the chain)
+  const ducked = b.movementServices?.ducked;     // boolean
+}
+```
+
+- **Curated, not traversed.** The schema graph has 1918 embedded + 113 pointer fields, is cyclic, and is mostly
+  engine noise — so a committed [`nav-targets.json`](games/cs2/nav-targets.json) lists the *few* useful
+  `{source → path → target}` chains (the scene node + the pawn's weapon/movement/aim-punch services), exactly
+  like `codegen-classes.json` curates schema classes. `navgen` emits a pointer-backed wrapper per target (its
+  fields reused from the schema codegen) + a nav accessor on the source, freshness-gated.
+- **The runtime primitive** is one generic `EntityRef.readInt32Via`/`readFloat32Via`/`readBoolVia`/`readHandleVia`/…
+  over a `__s2_ent_ref_read_chain` native (the `KIND_*` scalar dispatch + a pointer-chain deref, all in-core);
+  vectors reuse 5C.4's `readFloatsChain`.
+- **Safety:** a wrapper holds `(rootEntityRef, pathOffsets)` — never a cached pointer. **Every field access
+  re-resolves the chain in-core, serial-gated at the root**, so a stale entity reads `null`, never garbage. The
+  nav accessor even re-resolves the path *offsets* per access (self-healing across a schema-warm boundary).
+- **`pawn.origin`/`pawn.angles`** (5C.4) are kept as thin aliases → `pawn.sceneNode.absOrigin`/`absRotation`.
+
+**Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`):
+
+```
+  slot=0 absOrigin=Vector(-1675.6, 351.7, -64.0) scale=1 activeWeapon=ref#1014 ducked=false origin(alias)=ok
+  slot=1 absOrigin=Vector(2472.3, 2006.0, 134.5) scale=1 activeWeapon=ref#1013 ducked=false origin(alias)=ok
+bot_kick
+[demo] tick 4865 players=0        (server ticking, no crash)
+```
+
+All four wrappers read correct through their chains (two distinct spawns; valid weapon `EntityRef`s), degrade to
+`null` on disconnect. **Deferred:** graph auto-traversal / non-curated targets; cyclic or deeper chains;
+`CUtlVector`/array fields (`m_hMyWeapons`); pointer-chain *writes*.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

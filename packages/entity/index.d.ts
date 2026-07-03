@@ -50,6 +50,19 @@ export declare class EntityRef {
    *  at `finalOff` into a number[]. All in-core (raw pointers never cross); null if the root is stale or any hop
    *  is null. */
   readFloatsChain(ptrOffs: number[], finalOff: number, count: number): number[] | null;
+  /** Follow a pointer chain (each an offset), then read a scalar at `finalOff`. null if the root is stale or any
+   *  hop is null. `readHandleVia` decodes a handle field → a serial-gated EntityRef; vectors use readFloatsChain. */
+  readInt32Via(pathOffs: number[], finalOff: number): number | null;
+  readInt8Via(pathOffs: number[], finalOff: number): number | null;
+  readInt16Via(pathOffs: number[], finalOff: number): number | null;
+  readUInt8Via(pathOffs: number[], finalOff: number): number | null;
+  readUInt16Via(pathOffs: number[], finalOff: number): number | null;
+  readUInt32Via(pathOffs: number[], finalOff: number): number | null;
+  readFloat32Via(pathOffs: number[], finalOff: number): number | null;
+  readBoolVia(pathOffs: number[], finalOff: number): boolean | null;
+  readUInt64Via(pathOffs: number[], finalOff: number): bigint | null;
+  readInt64Via(pathOffs: number[], finalOff: number): bigint | null;
+  readHandleVia(pathOffs: number[], finalOff: number): EntityRef | null;
   /** Read a `CEntityHandle` at `offset`, decode it, and return a live `EntityRef` — or null if stale/invalid. */
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */

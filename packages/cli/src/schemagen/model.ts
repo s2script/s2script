@@ -46,7 +46,7 @@ const ATOMIC: Record<string, { k: AccessorKind; w: boolean }> = {
 };
 
 // atomic vector-type name → kind (only the fixed-3-float types this slice; 2D/4D/Color/Quaternion deferred).
-const VEC: Record<string, AccessorKind> = { Vector: "vector", QAngle: "qangle" };
+const VEC: Record<string, AccessorKind> = { Vector: "vector", VectorWS: "vector", QAngle: "qangle" };
 // kind → value-class + float count, for the emitters + import detection.
 export const VEC_INFO: Partial<Record<AccessorKind, { cls: string; count: number }>> = {
   vector: { cls: "Vector", count: 3 },

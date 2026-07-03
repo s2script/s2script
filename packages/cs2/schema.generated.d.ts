@@ -23,6 +23,7 @@ export interface CBaseEntity extends CEntityInstance {
   simulationTime: number | null;
   clientSideRagdoll: boolean | null;
   readonly ubInterpolationFrame: number | null;
+  readonly prevVPhysicsUpdatePos: Vector | null;
   readonly teamNum: number | null;
   sentToClients: number | null;
   speed: number | null;

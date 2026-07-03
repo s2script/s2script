@@ -1,19 +1,23 @@
 /**
  * @s2script/cs2 — author-time type stubs for the injected CS2 game API. NO runtime code.
  * The typed field accessors are GENERATED (schema.generated.d.ts) from the schema catalog by
- * `s2script gen-schema`; the typed event interfaces are GENERATED (events.generated.d.ts) from
- * the event catalog by `s2script gen-events`; this file adds the hand-written entry points on top.
+ * `s2script gen-schema`; the typed nav wrappers are GENERATED (nav.generated.d.ts) from
+ * nav-targets.json by `s2script gen-nav`; the typed event interfaces are GENERATED (events.generated.d.ts)
+ * from the event catalog by `s2script gen-events`; this file adds the hand-written entry points on top.
  */
 import type { EntityRef } from "@s2script/entity";
 import type { Vector, QAngle } from "@s2script/math";
 export * from "./schema.generated";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
+export type { SceneNode, WeaponServices, MovementServices, AimPunchServices } from "./nav.generated";
+import type { SceneNode, WeaponServices, MovementServices, AimPunchServices } from "./nav.generated";
 export { GameEvent } from "@s2script/events";
 export type { GameEvents } from "./events.generated";
 
 /**
  * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the serial-gated ref.
  * `controller` is the typed reverse hop (shadows the raw generated m_hController handle).
+ * Nav props (sceneNode, weaponServices, movementServices, aimPunchServices) are generated from nav-targets.json.
  */
 export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly ref: EntityRef;
@@ -23,6 +27,14 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly origin: Vector | null;
   /** Body world rotation (via the CGameSceneNode pointer chain); distinct from the view/aim `eyeAngles`. */
   readonly angles: QAngle | null;
+  /** The pawn's scene node (world transform) — absOrigin/absRotation/scale/…, via the CBodyComponent→CGameSceneNode chain. */
+  readonly sceneNode: SceneNode | null;
+  /** The pawn's weapon services (active weapon, …). */
+  readonly weaponServices: WeaponServices | null;
+  /** The pawn's movement services (duck/ladder/…). */
+  readonly movementServices: MovementServices | null;
+  /** The pawn's aim-punch services (recoil angles). */
+  readonly aimPunchServices: AimPunchServices | null;
 }
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */

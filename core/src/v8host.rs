@@ -363,6 +363,19 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.serial, o, maxLen); },
     readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.serial, o, count); },
     readFloatsChain: function (chain, finalOff, count) { return __s2_ent_ref_read_floats_chain(this.index, this.serial, chain, finalOff, count); },
+    readInt32Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I32); },
+    readInt8Via:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I8); },
+    readInt16Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I16); },
+    readUInt8Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U8); },
+    readUInt16Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U16); },
+    readUInt32Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U32); },
+    readFloat32Via:function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.F32); },
+    readBoolVia:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.BOOL); },
+    readUInt64Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U64); },
+    readInt64Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I64); },
+    readHandleVia: function (c, o) { var h = __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U32);
+      if (h === null) return null; var d = __s2_handle_decode(h >>> 0); var ref = new EntityRef(d[0], d[1]);
+      return ref.isValid() ? ref : null; },   // mirror readHandle: an empty/stale handle -> null (not a dead ref)
     readHandle: function (o) {
       var h = __s2_ent_ref_read(this.index, this.serial, o, K.U32);
       if (h === null) return null;
@@ -963,6 +976,46 @@ fn s2_ent_ref_read_floats_chain(scope: &mut v8::PinScope, args: v8::FunctionCall
             out.set_index(scope, i as u32, num.into());
         }
         rv.set(out.into());
+    }));
+}
+
+/// Native `__s2_ent_ref_read_chain(index, serial, pathOffs, finalOff, kind) -> value | null`. Follows a chain
+/// of pointer derefs (each i32 offset in `pathOffs`), then reads a SCALAR of `kind` at `finalOff`. Serial-gated
+/// at the root; each hop null-checked; the raw intermediate pointers never cross to JS. Vectors use
+/// __s2_ent_ref_read_floats_chain; handles = read KIND_U32 here then __s2_handle_decode in JS.
+fn s2_ent_ref_read_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
+        let kind = args.get(4).integer_value(scope).unwrap_or(0);
+        if final_off < 0 { return; }
+        let Ok(path) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }
+        let mut p = ent as *const u8;
+        for i in 0..path.length() {
+            let off = path.get_index(scope, i).and_then(|v| v.integer_value(scope)).unwrap_or(-1) as i32;
+            if off < 0 { return; }
+            p = crate::entity::read_ptr(p, off);
+            if p.is_null() { return; }
+        }
+        let off = final_off;
+        match kind {
+            KIND_I32  => rv.set_int32(crate::entity::read_i32(p, off)),
+            KIND_F32  => rv.set_double(crate::entity::read_f32(p, off) as f64),
+            KIND_BOOL => rv.set_bool(crate::entity::read_bool(p, off)),
+            KIND_I8   => rv.set_int32(crate::entity::read_i8(p, off)),
+            KIND_I16  => rv.set_int32(crate::entity::read_i16(p, off)),
+            KIND_U8   => rv.set_double(crate::entity::read_u8(p, off) as f64),
+            KIND_U16  => rv.set_double(crate::entity::read_u16(p, off) as f64),
+            KIND_U32  => rv.set_double(crate::entity::read_u32(p, off) as f64),
+            KIND_U64  => { let bi = v8::BigInt::new_from_u64(scope, crate::entity::read_u64(p, off)); rv.set(bi.into()); }
+            KIND_I64  => { let bi = v8::BigInt::new_from_i64(scope, crate::entity::read_i64(p, off)); rv.set(bi.into()); }
+            KIND_F64  => rv.set_double(crate::entity::read_f64(p, off)),
+            _ => { }   // unknown kind → leave null
+        }
     }));
 }
 
@@ -1852,6 +1905,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats_chain", s2_ent_ref_read_floats_chain);
+    set_native(scope, global_obj, "__s2_ent_ref_read_chain", s2_ent_ref_read_chain);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     // ConCommand registration.
@@ -3636,6 +3690,25 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_floats_chain(1,7,[48,8],200,9))"), "null");
         // the EntityRef method degrades to null:
         assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readFloatsChain([48,8],200,3))"#), "null");
+        shutdown();
+    }
+
+    /// Slice 5C.5 Task 1: `__s2_ent_ref_read_chain` native + `EntityRef.*Via` methods degrade
+    /// safely without engine-ops; guards (non-array path, negative finalOff, bad kind) → null.
+    #[test]
+    fn read_chain_native_and_via_methods_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // the native degrades to null (no ops → entity_resolve_ptr null):
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_chain(1,7,[48],200,1))"), "null");   // KIND_I32
+        // guards (fire before the resolve): non-array path, negative finalOff, bad kind:
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_chain(1,7,42,200,1))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_chain(1,7,[48],-1,1))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_chain(1,7,[48],200,999))"), "null");
+        // the EntityRef via-methods degrade:
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readInt32Via([48],200))"#), "null");
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readHandleVia([48],200))"#), "null");
         shutdown();
     }
 
