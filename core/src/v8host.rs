@@ -875,6 +875,7 @@ fn s2_ent_ref_read_floats(
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let count = args.get(3).integer_value(scope).unwrap_or(0) as i32;
         if count <= 0 || count > 4 { return; }          // only small fixed vectors (Vector..Vector4D)
+        if off < 0 { return; }                           // schema-miss sentinel (-1) → null (not a partial read)
         let ent = entity_resolve_ptr(index, serial);
         if ent.is_null() { return; }                     // stale/invalid → null (already set)
         let p = ent as *const u8;
