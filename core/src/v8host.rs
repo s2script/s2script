@@ -314,7 +314,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   // --- Slice 5A/5B.2: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
-  var K = { I32: 1, F32: 2, BOOL: 3, I8: 4, I16: 5, U8: 6, U16: 7, U32: 8 }; // mirrors core KIND_*
+  var K = { I32: 1, F32: 2, BOOL: 3, I8: 4, I16: 5, U8: 6, U16: 7, U32: 8, U64: 9, I64: 10, F64: 11 }; // mirrors core KIND_*
   function EntityRef(index, serial) { this.index = index; this.serial = serial; }
   EntityRef.prototype = {
     isValid:          function ()      { return __s2_ent_ref_valid(this.index, this.serial); },
@@ -329,6 +329,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readUInt8:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U8); },
     readUInt16:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U16); },
     readUInt32:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U32); },
+    readUInt64:       function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.U64); },
+    readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.I64); },
+    readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.F64); },
+    readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.serial, o, maxLen); },
     readHandle: function (o) {
       var h = __s2_ent_ref_read(this.index, this.serial, o, K.U32);
       if (h === null) return null;
@@ -767,6 +771,9 @@ const KIND_I16: i64 = 5;
 const KIND_U8: i64 = 6;
 const KIND_U16: i64 = 7;
 const KIND_U32: i64 = 8;
+const KIND_U64: i64 = 9;
+const KIND_I64: i64 = 10;
+const KIND_F64: i64 = 11;
 
 /// Native `__s2_ent_ref_read(index, serial, offset, kind) -> number|boolean|null`. Serial-gated typed read.
 fn s2_ent_ref_read(
@@ -792,6 +799,9 @@ fn s2_ent_ref_read(
             KIND_U8   => rv.set_double(crate::entity::read_u8(p, off) as f64),
             KIND_U16  => rv.set_double(crate::entity::read_u16(p, off) as f64),
             KIND_U32  => rv.set_double(crate::entity::read_u32(p, off) as f64),
+            KIND_U64  => { let bi = v8::BigInt::new_from_u64(scope, crate::entity::read_u64(p, off)); rv.set(bi.into()); }
+            KIND_I64  => { let bi = v8::BigInt::new_from_i64(scope, crate::entity::read_i64(p, off)); rv.set(bi.into()); }
+            KIND_F64  => rv.set_double(crate::entity::read_f64(p, off)),
             _         => { /* unknown kind → leave null */ }
         }
     }));
@@ -819,6 +829,26 @@ fn s2_ent_ref_write(
             _         => return,                   // unknown / deferred write kind → false
         }
         rv.set_bool(true);
+    }));
+}
+
+/// Native `__s2_ent_ref_read_string(index, serial, offset, maxLen) -> string|null`. Serial-gated;
+/// returns a COPIED string (the pointer never crosses to JS). null on a stale ref.
+fn s2_ent_ref_read_string(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let max_len = args.get(3).integer_value(scope).unwrap_or(0) as i32;
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }                 // invalid → null (already set)
+        let s = crate::entity::read_string(ent as *const u8, off, max_len);
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
     }));
 }
 
@@ -1464,6 +1494,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
     set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
+    set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     // ConCommand registration.
@@ -3170,6 +3201,29 @@ mod frame_tests {
         assert_eq!(read_global_string("er2", "__f"), "null");
         assert_eq!(read_global_string("er2", "__b"), "null");
         assert_eq!(read_global_string("er2", "__h"), "null");
+        shutdown();
+    }
+
+    /// Slice 5B.4 Task 2: string + 64-bit natives degrade safely without engine-ops.
+    /// Proves KIND_U64/I64/F64 (9/10/11) in the generic read, `__s2_ent_ref_read_string`,
+    /// and the EntityRef prelude methods (readUInt64, readInt64, readFloat64, readString).
+    #[test]
+    fn read_string_and_64bit_natives_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // the generic read degrades for the new kinds (U64=9, I64=10, F64=11):
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1,7,8,9))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1,7,8,10))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1,7,8,11))"), "null");
+        // the string native degrades:
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_string(1,7,8,128))"), "null");
+        // EntityRef methods degrade (proving they're wired) — use `__s2require` (the native, available in a
+        // create_plugin_context raw scope, as `eval_std` uses), NOT the CJS `require` (only in load_plugin_js):
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readUInt64(8))"#), "null");
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readInt64(8))"#), "null");
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readFloat64(8))"#), "null");
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readString(8,128))"#), "null");
         shutdown();
     }
 
