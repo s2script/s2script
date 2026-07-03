@@ -289,8 +289,8 @@ test("buildModel threads strLen onto a char[N] field descriptor", () => {
   - `AccessorKind`: `… | "u64" | "i64" | "f64" | "str"`.
   - `FieldDescriptor`: add `strLen?: number;`.
   - `ATOMIC`: add `uint64: { k: "u64", w: false }, int64: { k: "i64", w: false }, float64: { k: "f64", w: false },`.
-  - `READ`: add `u64: "readUInt64", i64: "readInt64", f64: "readFloat64", str: "readString",`.
-  - `TSTYPE`: add `u64: "bigint | null", i64: "bigint | null", f64: "number | null", str: "string | null",`.
+  - `READ`: add `u64: "readUInt64", i64: "readInt64", f64: "readFloat64", str: "readString",` (the primitive method names).
+  - `TSTYPE`: add `u64: "string | null", i64: "string | null", f64: "number | null", str: "string | null",` — **generated 64-bit ints are decimal strings** (SM-parity, wire-safe; the `readUInt64`/`readInt64` primitives stay `bigint`, and `emit-js` `.toString()`s them). `f64` stays `number`.
   - `idiomaticName` — the known-tags fix:
 
 ```ts
@@ -329,28 +329,40 @@ export function classifyField(type: CatalogField["type"]): { accessorKind: Acces
 
 - [ ] **Step 4: Run the model tests** — same command → PASS.
 
-- [ ] **Step 5: The emit-js string-length case + test.** In `emit-js.ts`, where a getter's read call is built, special-case `str` for the length arg:
+- [ ] **Step 5: The emit-js getter shapes + test.** In `emit-js.ts`, where the getter is built, produce THREE shapes — `str` (length arg), `u64`/`i64` (null-safe `.toString()` → decimal string, SM-parity + wire-safe), and the default scalar/handle/f64 (a simple return):
 
 ```ts
 const resolve = `off(${S(f.declaringClass)}, ${S(f.rawName)})`;
-const readCall = f.accessorKind === "str"
-  ? `this.ref.readString(${resolve}, ${f.strLen})`
-  : `this.ref.${READ[f.accessorKind]}(${resolve})`;
-let entry = `get: function () { return ${readCall}; }`;
+let entry;
+if (f.accessorKind === "str") {
+  entry = `get: function () { return this.ref.readString(${resolve}, ${f.strLen}); }`;
+} else if (f.accessorKind === "u64" || f.accessorKind === "i64") {
+  // 64-bit ints -> decimal string (SM-parity, wire-safe); readUInt64/readInt64 are the bigint primitives.
+  entry = `get: function () { var v = this.ref.${READ[f.accessorKind]}(${resolve}); return v === null ? null : v.toString(); }`;
+} else {
+  entry = `get: function () { return this.ref.${READ[f.accessorKind]}(${resolve}); }`;
+}
 ```
-(Writes are unchanged — `u64`/`i64`/`f64`/`str` are `writable:false`, so the existing `if (f.writable)` guard emits no setter.) Append to `packages/cli/test/schemagen-emit.test.mjs`:
+(Then the existing `if (f.writable)` block appends the setter as before — `u64`/`i64`/`f64`/`str` are all `writable:false`, so no setter for them. Adjust the exact assembly to match how the current emit-js concatenates the getter + optional setter into the `defineProperty` descriptor; the point is the three getter bodies above.) Append to `packages/cli/test/schemagen-emit.test.mjs`:
 
 ```js
-test("emitJs: char[N] emits readString with the length; 64-bit emits readUInt64/readInt64", () => {
+test("emitJs: char[N] emits readString(len); 64-bit int emits a null-safe readUInt64().toString()", () => {
   const CATALOG = { Base: { parent: null, fields: [
     { name: "m_iszName", offset: 8, type: { kind: "unknown", name: "char[64]" } },
     { name: "m_steamID", offset: 16, type: { kind: "atomic", name: "uint64" } },
   ] } };
-  const js = emitJs(buildModel(CATALOG, ["Base"]));
+  const model = buildModel(CATALOG, ["Base"]);
+  const js = emitJs(model);
   assert.match(js, /readString\(off\("Base","m_iszName"\), 64\)/);
-  assert.match(js, /readUInt64\(off\("Base","m_steamID"\)\)/);
+  // 64-bit int -> decimal string: reads the bigint primitive, null-guards, stringifies.
+  assert.match(js, /var v = this\.ref\.readUInt64\(off\("Base","m_steamID"\)\); return v === null \? null : v\.toString\(\);/);
+  // and the .d.ts types the 64-bit int as string (SM-parity), NOT bigint (import emitDts if not already):
+  const dts = emitDts(model);
+  assert.match(dts, /steamID[^;\n]*: string \| null/);
+  assert.doesNotMatch(dts, /steamID[^;\n]*: bigint/);
 });
 ```
+(If `emitDts` isn't already imported at the top of `schemagen-emit.test.mjs`, add it to the import from `../src/schemagen/emit-dts.ts` alongside `emitJs`.)
 
 - [ ] **Step 6: Run the emit test** — `cd packages/cli && node --experimental-strip-types --no-warnings --test test/schemagen-emit.test.mjs` → PASS.
 
@@ -361,7 +373,7 @@ cd /home/gkh/projects/s2script/packages/cli && node build.mjs
 cd /home/gkh/projects/s2script && node packages/cli/dist/cli.js gen-schema
 bash scripts/check-schema-generated.sh          # PASS (regenerated)
 ```
-Inspect the diff of `packages/cs2/schema.generated.d.ts`: `CBasePlayerController` gains `readonly playerName: string | null;` + `readonly steamID: bigint | null;` (inherited by `CCSPlayerController` → `Player`). Sanity-check the name-transform re-idiomaticized any previously over-stripped names as intended (no regressions to `health`/`teamNum`/`friction`/`pawn`/`controller`). Confirm the vm tests (`schema-runtime.test.mjs`, `schemagen-determinism.test.mjs`) still pass after regen.
+Inspect the diff of `packages/cs2/schema.generated.d.ts`: `CBasePlayerController` gains `readonly playerName: string | null;` + `readonly steamID: string | null;` (both strings — the steamid64 is a decimal string; inherited by `CCSPlayerController` → `Player`). Sanity-check the name-transform re-idiomaticized any previously over-stripped names as intended (no regressions to `health`/`teamNum`/`friction`/`pawn`/`controller`). Confirm the vm tests (`schema-runtime.test.mjs`, `schemagen-determinism.test.mjs`) still pass after regen.
 
 - [ ] **Step 8: Full CLI suite + gates + commit** (the generated files are committed artifacts):
 
@@ -419,19 +431,19 @@ export function onLoad(): void {
     if (ticks++ % 256 !== 0) return;
     for (const p of Player.all()) {
       console.log("  slot=" + p.slot
-        + " name=" + p.playerName                    // generated (m_iszPlayerName, char[128])
-        + " steamID=" + p.steamID                    // generated (m_steamID, uint64 → bigint)
+        + " name=" + p.playerName                    // generated (m_iszPlayerName, char[128]) -> string
+        + " steamID=" + p.steamID                    // generated (m_steamID, uint64 -> decimal string)
         + " health=" + (p.pawn ? p.pawn.health : "none"));
     }
   });
 }
 export function onUnload(): void { console.log("[demo] onUnload"); }
 ```
-Rebuild the `.s2sp` + re-concat the addon JS + restart + arm. **Expect:** `slot=0 name=<bot name> steamID=<bigint> health=100`; on `bot_kick` the player drops (occupancy filter), server ticking, no crash. Capture the log. If the live infra won't cooperate after reasonable attempts, get the non-live deliverables done and report BLOCKED with commands/errors.
+Rebuild the `.s2sp` + re-concat the addon JS + restart + arm. **Expect:** `slot=0 name=<bot name> steamID=<decimal string> health=100` (a `typeof p.steamID === "string"`; bots may read `"0"`, a real player a `"7656…"`); on `bot_kick` the player drops (occupancy filter), server ticking, no crash. Capture the log. If the live infra won't cooperate after reasonable attempts, get the non-live deliverables done and report BLOCKED with commands/errors.
 
 - [ ] **Step 4: README + CLAUDE.**
-  - `README.md`: add a `## String + 64-bit fields (Slice 5B.4)` section — `EntityRef.readString`/`readUInt64`/`readInt64`/`readFloat64`, that `char[N]`/64-bit fields now generate accessors (`player.playerName` string, `player.steamID` bigint), the name-transform fix, and the captured live log. Note `CUtlSymbolLarge`/`CUtlString` + writes + BigInt-on-the-wire are deferred.
-  - `CLAUDE.md` "## Current state": Slice 5B.4 done (string + 64-bit field support — `char[N]`→string, `uint64`/`int64`→bigint, `float64`→number; `player.playerName`/`steamID` generated; the known-tags idiomaticName fix); "Current focus" → next (5C.3 std breadth / Vector, or the base-plugin surface). Do NOT alter the standing conventions.
+  - `README.md`: add a `## String + 64-bit fields (Slice 5B.4)` section — `EntityRef.readString`/`readUInt64`/`readInt64`/`readFloat64` (the `readUInt64`/`readInt64` primitives return `bigint`); that `char[N]`/64-bit fields now generate accessors — `player.playerName` (string), `player.steamID` (**decimal string**, SM-parity: SourcePawn has no 64-bit int, so `GetClientAuthId(AuthId_SteamID64)` is a string; wire-safe); the name-transform fix; and the captured live log. Note `CUtlSymbolLarge`/`CUtlString` + writes are deferred, and that generating 64-bit as strings makes the BigInt-on-the-wire concern moot (a raw `bigint` on the inter-plugin wire still hits the graceful `InterfaceValueNotSerializable`).
+  - `CLAUDE.md` "## Current state": Slice 5B.4 done (string + 64-bit field support — `char[N]`→string, `uint64`/`int64` → `bigint` **primitive** but **generated accessors are decimal strings** (SM-parity, wire-safe), `float64`→number; `player.playerName`/`steamID` generated as strings; the known-tags idiomaticName fix); "Current focus" → next (5C.3 std breadth / Vector, or the base-plugin surface). Do NOT alter the standing conventions.
 
 - [ ] **Step 5: Final verification + commit** (no build artifacts):
 
@@ -451,5 +463,5 @@ Claude-Session: https://claude.ai/code/session_01G8RQTQTdmeczdE6oihp8Pn"
 
 1. `cargo test -p s2script-core` green (new `entity.rs` + in-isolate tests); the CLI `node:test` suite green (model + emit + determinism); both boundary gates + `check-schema-generated.sh` green; sniper build clean.
 2. `s2script gen-schema` regenerates the committed schema files deterministically with `playerName`/`steamID` (+ every string/64-bit field) as accessors; the name-transform fix holds.
-3. Spike: raw `readString`/`readUInt64` read a sane name + steamid live. Live gate: `player.playerName` (string) + `player.steamID` (bigint) read via generated accessors; `null` on disconnect; no crash.
+3. Spike: raw `readString`/`readUInt64` read a sane name + steamid live. Live gate: `player.playerName` (string) + `player.steamID` (decimal **string**, `typeof === "string"`) read via generated accessors; `null` on disconnect; no crash.
 4. README + CLAUDE updated.

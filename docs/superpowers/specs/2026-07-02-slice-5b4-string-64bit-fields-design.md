@@ -36,9 +36,15 @@ model's identity with **no engine natives** — and every other string/64-bit fi
 1. **Scope = `char[N]` inline strings + 64-bit ints/float.** These are direct byte reads at a resolved offset.
    `CUtlSymbolLarge` (interned symbol → string-table deref) and `CUtlString` (heap pointer) are **deferred**
    (different representations, need a spike). Reads only (string/64-bit **writes** deferred).
-2. **64-bit → `BigInt`.** `readUInt64`/`readInt64` → `bigint | null` (the correct exact JS 64-bit type);
-   `readFloat64` → `number | null` (an `f64` fits a JS number). Caveat (documented, not blocking): a `BigInt`
-   can't cross the inter-plugin structured-copy (JSON) wire — an edge for field reads.
+2. **64-bit: `BigInt` primitive, `string`-typed generated accessors.** The low-level `EntityRef.readUInt64`/
+   `readInt64` primitives → `bigint | null` (the exact JS 64-bit type; for the rare author who wants numeric/
+   bitmask math). But the **generated** `u64`/`i64` accessors return **decimal `string`** (the getter reads the
+   bigint and `.toString()`s it, null-safe). Rationale: SourceMod-parity (`GetClientAuthId(AuthId_SteamID64)`
+   is a string — SourcePawn has no 64-bit int), **wire-safe** (strings cross the inter-plugin structured-copy
+   wire fine — this dissolves the `BigInt`-on-the-wire edge entirely, so no devalue is ever needed for field
+   reads), exact (no precision loss), and how steamids are actually used (bans/stats/keys/logging/comparison).
+   `readFloat64` → `number | null` (an `f64` fits a JS number; its generated accessor stays `number`). An author
+   who needs numeric 64-bit uses the `readUInt64` primitive directly, or `BigInt(str)`.
 3. **64-bit reuses the existing kind-dispatch; strings get a new native** (they carry a length).
 4. **A name-transform refinement is in scope** (forced by generating `m_steamID`): today `idiomaticName`
    strips *any* leading lowercase run as a Hungarian tag, so `m_steamID` → `iD` and `m_bombSite` → `site`.
@@ -67,15 +73,21 @@ model's identity with **no engine natives** — and every other string/64-bit fi
   `classifyField`: for `kind:"unknown"` whose `name` matches `/^char\[(\d+)\]$/`, return
   `{accessorKind:"str", writable:false, strLen:N}` (extend its return type with the optional `strLen`); still
   skip other `unknown`s. `buildModel` copies `strLen` onto the `FieldDescriptor`, so the emitters see it. `READ` gains
-  `u64→"readUInt64"`, `i64→"readInt64"`, `f64→"readFloat64"`, `str→"readString"`; `TSTYPE` gains
-  `u64/i64→"bigint | null"`, `f64→"number | null"`, `str→"string | null"`.
-- **`emit-js.ts`:** a `str` field emits `this.ref.readString(off("<cls>","<raw>"), <strLen>)` (the length arg);
-  `u64`/`i64`/`f64` emit their `READ` method (no length). Deterministic ordering unchanged.
-- **`emit-dts.ts`:** uses `TSTYPE` — `bigint | null` / `string | null` / `number | null` — unchanged logic.
+  `u64→"readUInt64"`, `i64→"readInt64"`, `f64→"readFloat64"`, `str→"readString"` (the primitive method names);
+  `TSTYPE` gains `u64/i64→"string | null"` (generated 64-bit ints are decimal **strings** — decision 2),
+  `f64→"number | null"`, `str→"string | null"`.
+- **`emit-js.ts`:** a `str` field emits `this.ref.readString(off("<cls>","<raw>"), <strLen>)` (the length arg).
+  A `u64`/`i64` field emits a null-safe stringify —
+  `var v = this.ref.readUInt64(off("<cls>","<raw>")); return v === null ? null : v.toString();` (so the
+  generated accessor is `string | null`, wire-safe). An `f64` emits its `READ` method directly (→ `number`).
+  Deterministic ordering unchanged.
+- **`emit-dts.ts`:** uses `TSTYPE` — `string | null` (str + 64-bit ints) / `number | null` (f64) — unchanged logic.
 - **Regenerate** the committed `games/cs2/js/schema.generated.js` + `packages/cs2/schema.generated.d.ts` via
   `s2script gen-schema`; `check-schema-generated.sh` stays green.
 - **Result in `@s2script/cs2`:** `CCSPlayerController` gains generated `playerName` (`string | null`) +
-  `steamID` (`bigint | null`); the `Player` model inherits them (its interface `extends CCSPlayerController`).
+  `steamID` (`string | null`, a decimal steamid64); the `Player` model inherits them (its interface
+  `extends CCSPlayerController`). Authors wanting the exact numeric steamid use `player.pawn`/controller
+  `ref.readUInt64(off)` → `bigint`.
 
 ## 6. The name-transform refinement
 
@@ -102,8 +114,9 @@ unchanged.
 
 ## 7. Data flow
 
-`player.steamID` → generated getter → `this.ref.readUInt64(off("CBasePlayerController","m_steamID"))` →
-`__s2_ent_ref_read(idx, serial, off, KIND_U64)` → `entity_resolve_ptr` serial-gates → `read_u64` → `BigInt`.
+`player.steamID` → generated getter → `readUInt64(off("CBasePlayerController","m_steamID"))` →
+`__s2_ent_ref_read(idx, serial, off, KIND_U64)` → `entity_resolve_ptr` serial-gates → `read_u64` → `BigInt` →
+the getter `.toString()`s it → a decimal `string` (`null` if the ref is stale).
 `player.playerName` → `readString(off("CBasePlayerController","m_iszPlayerName"), 128)` →
 `__s2_ent_ref_read_string(...)` → `read_string(ptr, off, 128)` (NUL-terminated) → a copied `string`. Stale
 ref → `null`.
@@ -114,19 +127,20 @@ ref → `null`.
   `read_f64`, `read_string` (NUL-terminated truncation, `max_len` bound, non-UTF-8 lossy, null/negative-offset
   guards), via `#[repr(C)]` fixtures.
 - **In-isolate (`frame_tests`):** `__s2_ent_ref_read` with `KIND_U64/I64` degrades → `null`, `KIND_F64` → `null`;
-  `__s2_ent_ref_read_string` degrades → `null`; `EntityRef.readUInt64`/`readInt64` return `bigint` type when
-  wired (or `null` degraded), `readString` → `null` degraded. (A live pointer isn't available in-isolate — the
-  real reads are live-gated, matching 5B.2's posture.)
+  `__s2_ent_ref_read_string` degrades → `null`; `EntityRef.readUInt64`/`readInt64`/`readString` → `null`
+  degraded. (A live pointer isn't available in-isolate — the real reads are live-gated, matching 5B.2's
+  posture; the `bigint` type is exercised at the live gate.)
 - **Codegen (node:test):** `idiomaticName` — the §6 cases (`m_steamID`→`steamID`, `m_iszPlayerName`→`playerName`,
   the known-tag cases unchanged); `classifyField` — `uint64`/`int64`/`float64` → kinds, `char[N]` → `str` with
   `strLen=N`, non-`char[N]` `unknown` still skips; emit — a `str` field emits `readString(off, N)`, a `u64`
-  field emits `readUInt64`, the TS types (`bigint|null`/`string|null`); determinism holds.
+  field emits the null-safe `readUInt64(off)...toString()` stringify, the TS types (64-bit ints + str →
+  `string|null`, f64 → `number|null`); determinism holds.
 - **Freshness gate:** regenerate → `check-schema-generated.sh` green.
 - **Spike (live, front-loaded):** confirm a `char[N]` inline read (`m_iszPlayerName` → a bot's name string)
   and a `uint64` read (`m_steamID`) on Docker CS2 — inline char arrays + uint64 are direct byte reads, but
   verify the byte layout live before committing the plan. Findings → a dated spike-findings doc.
 - **Live gate:** a plugin reads `player.playerName` + `player.steamID` (generated) live — the name is the bot's
-  name, the steamID a `bigint`; both `null` on disconnect; server ticking, no crash.
+  name, the steamID a decimal `string`; both `null` on disconnect; server ticking, no crash.
 
 **Acceptance:** `cargo test -p s2script-core` green (new `entity.rs` + in-isolate tests); the CLI `node:test`
 suite green; both boundary gates + `check-schema-generated.sh` green; the sniper build clean; the live gate
@@ -139,7 +153,9 @@ string native; the codegen for `u64`/`i64`/`f64`/`char[N]`; the name-transform r
 committed schema files; the live gate.
 
 **Deferred — do NOT build:** `CUtlSymbolLarge`/`CUtlString` string reads (pointer/table derefs — a spike/
-follow); string + 64-bit **writes**; `BigInt` across the inter-plugin wire; `enum` codegen (still needs
+follow); string + 64-bit **writes**; `BigInt` across the inter-plugin wire (now MOOT for generated fields —
+they're strings; the `readUInt64` bigint primitive is a local read, and an author who puts a raw bigint on the
+wire still hits the graceful `InterfaceValueNotSerializable`, no crash — NOT devalue); `enum` codegen (still needs
 byte-width — 5B.1 follow); the `Vector` value type + Vector/QAngle codegen (5C.3); embedded/`ptr` accessors;
 the `userId` engine op; the base-plugin suite (6); the registry (5.5); config/permissions; the `tsc` gate.
 
