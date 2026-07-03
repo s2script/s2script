@@ -34,11 +34,12 @@ if [ -f gamedata/core.gamedata.jsonc ]; then
     cp gamedata/core.gamedata.jsonc "$DIST/s2script/gamedata/"
 fi
 
-# --- CS2 JS package (schema.generated.js + pawn.js — CS2 names live here, never in core) ---
+# --- CS2 JS package (schema.generated.js + nav.generated.js + pawn.js — CS2 names live here, never in core) ---
 mkdir -p "$DIST/s2script/js"
 if [ -f games/cs2/js/pawn.js ]; then
-    # schema.generated.js MUST precede pawn.js (pawn.js reads globalThis.__s2pkg_cs2_schema).
-    cat games/cs2/js/schema.generated.js games/cs2/js/pawn.js > "$DIST/s2script/js/pawn.js"
+    # schema.generated.js MUST precede nav.generated.js (sets __s2pkg_cs2_schema).
+    # nav.generated.js MUST precede pawn.js (pawn.js reads __s2pkg_cs2_nav via applyNav).
+    cat games/cs2/js/schema.generated.js games/cs2/js/nav.generated.js games/cs2/js/pawn.js > "$DIST/s2script/js/pawn.js"
 fi
 
 # --- Metamod plugin registration VDF ---

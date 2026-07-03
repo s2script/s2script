@@ -1,0 +1,10 @@
+[
+  { "prop": "sceneNode", "wrapper": "SceneNode", "source": "CCSPlayerPawn", "target": "CGameSceneNode",
+    "path": [ {"cls":"CBaseEntity","field":"m_CBodyComponent"}, {"cls":"CBodyComponent","field":"m_pSceneNode"} ] },
+  { "prop": "weaponServices", "wrapper": "WeaponServices", "source": "CCSPlayerPawn", "target": "CCSPlayer_WeaponServices",
+    "path": [ {"cls":"CBasePlayerPawn","field":"m_pWeaponServices"} ] },
+  { "prop": "movementServices", "wrapper": "MovementServices", "source": "CCSPlayerPawn", "target": "CCSPlayer_MovementServices",
+    "path": [ {"cls":"CBasePlayerPawn","field":"m_pMovementServices"} ] },
+  { "prop": "aimPunchServices", "wrapper": "AimPunchServices", "source": "CCSPlayerPawn", "target": "CCSPlayer_AimPunchServices",
+    "path": [ {"cls":"CCSPlayerPawn","field":"m_pAimPunchServices"} ] }
+]

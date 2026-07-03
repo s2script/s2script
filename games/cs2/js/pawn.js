@@ -11,6 +11,8 @@
 
   function Pawn(ref) { this.ref = ref; }
   if (schema) schema.applyAccessors(Pawn.prototype, "CCSPlayerPawn");   // health, friction, controller, ...
+  var nav = globalThis.__s2pkg_cs2_nav;   // set by nav.generated.js (concatenated ahead of pawn.js)
+  if (nav) nav.applyNav(Pawn.prototype, "CCSPlayerPawn");   // sceneNode, weaponServices, movementServices, aimPunchServices
 
   // --- Slice 5C.2: the Player (controller) model ---
   function Player(ref) { this.ref = ref; }                       // ref = the CONTROLLER EntityRef
@@ -51,28 +53,16 @@
     return out;
   };
 
-  // pawn.origin -> world-space position: entity -> m_CBodyComponent(ptr) -> m_pSceneNode(ptr) -> m_vecAbsOrigin.
-  // The pointer chain is followed in-core (readFloatsChain); the raw component/node pointers never reach JS.
+  // pawn.origin / pawn.angles -> compat aliases delegating to the generated sceneNode wrapper.
+  // (The hand-written pointer-chain reads are superseded by the navgen SceneNode; these aliases
+  //  keep backwards-compat for any code that already uses pawn.origin or pawn.angles.)
   Object.defineProperty(Pawn.prototype, "origin", {
-    get: function () {
-      var bodyOff = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
-      var sceneOff = __s2_schema_offset("CBodyComponent", "m_pSceneNode");
-      var off = __s2_schema_offset("CGameSceneNode", "m_vecAbsOrigin");
-      if (bodyOff < 0 || sceneOff < 0 || off < 0) return null;
-      var a = this.ref.readFloatsChain([bodyOff, sceneOff], off, 3);
-      return a === null ? null : new Vector(a[0], a[1], a[2]);
-    }, enumerable: true, configurable: true,
+    get: function () { var s = this.sceneNode; return s ? s.absOrigin : null; },
+    enumerable: true, configurable: true,
   });
-  // pawn.angles -> body world rotation via the same chain -> m_angAbsRotation (distinct from eyeAngles = view/aim).
   Object.defineProperty(Pawn.prototype, "angles", {
-    get: function () {
-      var bodyOff = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
-      var sceneOff = __s2_schema_offset("CBodyComponent", "m_pSceneNode");
-      var off = __s2_schema_offset("CGameSceneNode", "m_angAbsRotation");
-      if (bodyOff < 0 || sceneOff < 0 || off < 0) return null;
-      var a = this.ref.readFloatsChain([bodyOff, sceneOff], off, 3);
-      return a === null ? null : new QAngle(a[0], a[1], a[2]);
-    }, enumerable: true, configurable: true,
+    get: function () { var s = this.sceneNode; return s ? s.absRotation : null; },
+    enumerable: true, configurable: true,
   });
 
   // pawn.controller -> the typed Player via m_hController (shadows the raw generated `controller`).

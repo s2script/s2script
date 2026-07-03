@@ -1,6 +1,7 @@
 import { buildPlugin } from "./build.ts";
 import { runGenSchema } from "./schemagen/gen.ts";
 import { runGenEvents } from "./eventgen/gen.ts";
+import { runGenNav } from "./navgen/gen.ts";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -26,10 +27,20 @@ if (command === "gen-schema") {
   } else {
     console.log(`gen-events: wrote ${r.events} events`);
   }
+} else if (command === "gen-nav") {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");   // dist/ → packages/cli → packages → repo
+  const check = arg === "--check";
+  const r = runGenNav(repoRoot, { check });
+  if (check) {
+    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2script gen-nav\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
+    console.log(`nav codegen up to date (${r.wrappers} wrappers, ${r.fields} fields)`);
+  } else {
+    console.log(`gen-nav: wrote ${r.wrappers} wrappers, ${r.fields} fields`);
+  }
 } else if (command === "build" && arg) {
   try { console.log(await buildPlugin(arg)); }
   catch (err) { console.error(String(err)); process.exit(1); }
 } else {
-  console.error("Usage: s2script build <dir> | s2script gen-schema [--check] | s2script gen-events [--check]");
+  console.error("Usage: s2script build <dir> | s2script gen-schema [--check] | s2script gen-events [--check] | s2script gen-nav [--check]");
   process.exit(1);
 }
