@@ -9,7 +9,7 @@ const CATALOG = {
   Base: { parent: null, fields: [
     { name: "m_iHealth", offset: 8, type: { kind: "atomic", name: "int32" } },
     { name: "m_flFriction", offset: 12, type: { kind: "atomic", name: "float32" } },
-    { name: "m_vecOrigin", offset: 16, type: { kind: "atomic", name: "Vector" } },   // skipped
+    { name: "m_vecOrigin", offset: 16, type: { kind: "atomic", name: "Vector2D" } },   // skipped (Vector2D deferred)
   ] },
   Leaf: { parent: "Base", fields: [
     { name: "m_hController", offset: 24, type: { kind: "handle", inner: "Base" } },
@@ -85,4 +85,22 @@ test("emitJs: char[N] emits readString(len); 64-bit int emits a null-safe readUI
   const dts = emitDts(model);
   assert.match(dts, /steamID[^;\n]*: string \| null/);
   assert.doesNotMatch(dts, /steamID[^;\n]*: bigint/);
+});
+
+test("emitJs: a Vector field emits readFloats(off,3)+new Vector; the @s2script/math require appears", () => {
+  const CATALOG = { Base: { parent: null, fields: [
+    { name: "m_angEyeAngles", offset: 8, type: { kind: "atomic", name: "QAngle" } },
+  ] } };
+  const js = emitJs(buildModel(CATALOG, ["Base"]));
+  assert.match(js, /var QAngle = __s2require\("@s2script\/math"\)\.QAngle;/);
+  assert.match(js, /var a = this\.ref\.readFloats\(off\("Base","m_angEyeAngles"\), 3\); return a === null \? null : new QAngle\(a\[0\], a\[1\], a\[2\]\);/);
+});
+
+test("emitDts: a Vector/QAngle field adds the @s2script/math import + the field type", () => {
+  const CATALOG = { Base: { parent: null, fields: [
+    { name: "m_vecAbsVelocity", offset: 8, type: { kind: "atomic", name: "Vector" } },
+  ] } };
+  const dts = emitDts(buildModel(CATALOG, ["Base"]));
+  assert.match(dts, /import type \{ Vector \} from "@s2script\/math";/);
+  assert.match(dts, /absVelocity: Vector \| null;/);
 });
