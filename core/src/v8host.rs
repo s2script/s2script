@@ -241,6 +241,11 @@ thread_local! {
     /// Reset on shutdown so a re-init starts empty.
     static EVENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Pre-hook game-event multiplexer: name → per-plugin PRE subscribers (Slice 5D.3).
+    /// Same shape as EVENT_MUX; handlers return a HookResult that is collapsed via run_chain.
+    /// Reset on shutdown so a re-init starts empty.
+    static EVENT_MUX_PRE: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -1946,6 +1951,65 @@ pub(crate) fn dispatch_game_event(name: &str) {
     });
 }
 
+/// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
+/// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
+/// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
+pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
+    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
+    // Phase 1: snapshot — release EVENT_MUX_PRE borrow before entering any context.
+    let snap0 = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));   // Vec<(owner, gen, Global<Function>)>
+    if snap0.is_empty() { return 0; }
+    // run_chain wants (SubId, Priority, H); all pre-hooks are Priority::Normal this slice (order =
+    // subscription order; a priority param is deferred). SubId = enumerate index (only used for the
+    // errored list). Carry (owner, gen, handler) so the invoke closure can route + liveness-check.
+    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
+        .into_iter().enumerate()
+        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
+        .collect();
+
+    let outcome = HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let host = borrow.as_mut().expect("dispatch_game_event_pre before init");
+        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else { return Ok(HookResult::Continue); };
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent (as in dispatch_game_event).
+            let event_arg: Option<v8::Local<v8::Value>> = (|| {
+                let global = ctx_local.global(tc);
+                let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
+                let pkg = global.get(tc, pkg_key.into())?;
+                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+                let ctor_key = v8::String::new(tc, "GameEvent")?;
+                let ctor = v8::Local::<v8::Function>::try_from(pkg.get(tc, ctor_key.into())?).ok()?;
+                let name_str = v8::String::new(tc, name)?;
+                ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+            })();
+            let event_val: v8::Local<v8::Value> = event_arg.unwrap_or_else(|| v8::undefined(tc).into());
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            match func.call(tc, recv, &[event_val]) {
+                None => Err(()),                                   // threw → drop this sub
+                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
+                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                    0 => HookResult::Continue, 1 => HookResult::Changed,
+                    2 => HookResult::Handled, 3 => HookResult::Stop,
+                    _ => HookResult::Continue,                     // out-of-range → Continue
+                }),
+            }
+        })
+    });
+    if outcome.result >= HookResult::Handled { 1 } else { 0 }
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -2584,6 +2648,8 @@ pub fn shutdown() {
     FRAME_COUNTER.with(|c| c.set(0));
     // Reset the game-event mux so a re-init starts with a clean subscriber table.
     EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the pre-hook event mux (Slice 5D.3) so a re-init starts clean.
+    EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
     // loaded must not persist across an init cycle).
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
@@ -2723,6 +2789,9 @@ pub(crate) fn unload_plugin(id: &str) {
             }
         }
     }
+    // (a2b) Drop the plugin's PRE-hook game-event subscriptions (Slice 5D.3). The PRE mux has no
+    // engine-op counterpart yet (the global FireEvent hook is installed by Task 3); just clear.
+    EVENT_MUX_PRE.with(|m| m.borrow_mut().remove_by_owner(id));
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
     // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
@@ -4348,6 +4417,16 @@ mod frame_tests {
             "After Events.off, dispatch must not invoke the handler"
         );
 
+        shutdown();
+    }
+
+    /// Slice 5D.3 Task 1: `dispatch_game_event_pre` with no subscribers returns 0 (allow).
+    #[test]
+    fn dispatch_game_event_pre_no_subs_allows() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        assert_eq!(dispatch_game_event_pre("player_hurt"), 0);   // no pre-subs → allow
         shutdown();
     }
 }

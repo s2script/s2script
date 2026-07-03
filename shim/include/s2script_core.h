@@ -89,6 +89,10 @@ void s2script_core_dispatch_concommand(const char* name, int slot, const char* a
  * read live data from the current IGameEvent*.  After dispatch returns, s_currentEvent
  * is restored to its previous value (re-entrancy guard). */
 void s2script_core_dispatch_game_event(const char* name);
+/* Shim -> core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
+ * (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
+ * (a pre-hook returned Handled/Stop), else 0. */
+int s2script_core_dispatch_game_event_pre(const char* name);
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);
