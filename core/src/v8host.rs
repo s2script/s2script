@@ -353,6 +353,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       ? new EntityRef(value.__entref__[0], value.__entref__[1])
       : value;
   };
+  // --- Slice 5C.3: math value types (Vector, QAngle) — pure JS, no engine ops ---
+  function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  Vector.prototype.length = function () { return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z); };
+  Vector.prototype.toString = function () { return "Vector(" + this.x + ", " + this.y + ", " + this.z + ")"; };
+  function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  QAngle.prototype.toString = function () { return "QAngle(" + this.x + ", " + this.y + ", " + this.z + ")"; };
+  globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -3396,6 +3403,24 @@ mod frame_tests {
         assert_eq!(read_global_string("mods", "__t_iface"), "function");
         assert_eq!(read_global_string("mods", "__t_std"), "null");
         assert_eq!(read_global_string("mods", "__t_nope"), "null");
+        shutdown();
+    }
+
+    /// Slice 5C.3 Task 1: `@s2script/math` resolves to `{ Vector, QAngle }` from the prelude;
+    /// `Vector` carries x/y/z + `length()`; `QAngle` carries x/y/z. Pure JS value types — no
+    /// engine ops needed.
+    #[test]
+    fn math_module_provides_vector_and_qangle() {
+        let _ = init(dummy_logger());
+        create_plugin_context("p");
+        // the module resolves + constructs:
+        assert_eq!(eval_in_context_string("p", r#"typeof __s2require("@s2script/math").Vector"#), "function");
+        assert_eq!(eval_in_context_string("p", r#"typeof __s2require("@s2script/math").QAngle"#), "function");
+        // Vector data + length():
+        assert_eq!(eval_in_context_string("p", r#"var V=__s2require("@s2script/math").Vector; var v=new V(3,4,0); v.x+","+v.y+","+v.z"#), "3,4,0");
+        assert_eq!(eval_in_context_string("p", r#"var V=__s2require("@s2script/math").Vector; String(new V(3,4,0).length())"#), "5");
+        // QAngle data:
+        assert_eq!(eval_in_context_string("p", r#"var Q=__s2require("@s2script/math").QAngle; var q=new Q(10,20,30); q.x+","+q.y+","+q.z"#), "10,20,30");
         shutdown();
     }
 }
