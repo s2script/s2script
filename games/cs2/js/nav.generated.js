@@ -113,23 +113,37 @@
     "isPickingUpGroundWeapon": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bIsPickingUpGroundWeapon")); } },
     "blockInspectUntilNextGraphUpdate": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bBlockInspectUntilNextGraphUpdate")); } },
   });
-  var NAV = {
-    "CCSPlayerPawn": [
-      { prop: "aimPunchServices", wrapper: AimPunchServices, path: [off("CCSPlayerPawn","m_pAimPunchServices")] },
-      { prop: "movementServices", wrapper: MovementServices, path: [off("CBasePlayerPawn","m_pMovementServices")] },
-      { prop: "sceneNode", wrapper: SceneNode, path: [off("CBaseEntity","m_CBodyComponent"), off("CBodyComponent","m_pSceneNode")] },
-      { prop: "weaponServices", wrapper: WeaponServices, path: [off("CBasePlayerPawn","m_pWeaponServices")] },
-    ],
-  };
   function applyNav(proto, className) {
-    var entries = NAV[className]; if (!entries) return;
-    for (var i = 0; i < entries.length; i++) {
-      (function(entry) {
-        Object.defineProperty(proto, entry.prop, { get: function () {
-          for (var j = 0; j < entry.path.length; j++) { if (entry.path[j] < 0) return null; }
-          return new entry.wrapper(this.ref, entry.path);
-        }, enumerable: true, configurable: true });
-      })(entries[i]);
+    if (className === "CCSPlayerPawn") {
+      Object.defineProperty(proto, "aimPunchServices", {
+        get: function () {
+          var _p = [];
+          var o0 = off("CCSPlayerPawn","m_pAimPunchServices"); if (o0 < 0) return null; _p.push(o0);
+          return new AimPunchServices(this.ref, _p);
+        }, enumerable: true, configurable: true,
+      });
+      Object.defineProperty(proto, "movementServices", {
+        get: function () {
+          var _p = [];
+          var o0 = off("CBasePlayerPawn","m_pMovementServices"); if (o0 < 0) return null; _p.push(o0);
+          return new MovementServices(this.ref, _p);
+        }, enumerable: true, configurable: true,
+      });
+      Object.defineProperty(proto, "sceneNode", {
+        get: function () {
+          var _p = [];
+          var o0 = off("CBaseEntity","m_CBodyComponent"); if (o0 < 0) return null; _p.push(o0);
+          var o1 = off("CBodyComponent","m_pSceneNode"); if (o1 < 0) return null; _p.push(o1);
+          return new SceneNode(this.ref, _p);
+        }, enumerable: true, configurable: true,
+      });
+      Object.defineProperty(proto, "weaponServices", {
+        get: function () {
+          var _p = [];
+          var o0 = off("CBasePlayerPawn","m_pWeaponServices"); if (o0 < 0) return null; _p.push(o0);
+          return new WeaponServices(this.ref, _p);
+        }, enumerable: true, configurable: true,
+      });
     }
   }
   globalThis.__s2pkg_cs2_nav = { applyNav: applyNav };

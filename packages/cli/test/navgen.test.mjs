@@ -32,9 +32,9 @@ test("emitNavJs: wrapper getters read via the chain; nav accessor resolves the p
   assert.match(js, /function SceneNode\(root, path\)/);
   assert.match(js, /this\.root\.readFloat32Via\(this\.path, off\("CGameSceneNode","m_flScale"\)\)/);
   assert.match(js, /var a = this\.root\.readFloatsChain\(this\.path, off\("CGameSceneNode","m_vecOrigin"\), 3\); return a === null \? null : new Vector/);
-  // the nav accessor + its per-hop path resolution:
-  assert.match(js, /off\("CBaseEntity","m_CBodyComponent"\)/);
-  assert.match(js, /off\("CBodyComponent","m_pSceneNode"\)/);
+  // the nav accessor + per-access hop resolution (boot-window-safe, no baked NAV table):
+  assert.match(js, /var o0 = off\("CBaseEntity","m_CBodyComponent"\); if \(o0 < 0\) return null; _p\.push\(o0\);/);
+  assert.match(js, /var o1 = off\("CBodyComponent","m_pSceneNode"\); if \(o1 < 0\) return null; _p\.push\(o1\);/);
   assert.match(js, /globalThis\.__s2pkg_cs2_nav = \{ applyNav/);
 });
 

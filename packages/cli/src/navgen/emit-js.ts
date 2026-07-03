@@ -62,44 +62,37 @@ export function emitNavJs(model: NavModel): string {
     out.push("  });");
   }
 
-  // Build the NAV table: source class → array of nav entries.
-  // The path array stores pre-computed off() calls (inlined literals) that resolve at module-load time.
-  // applyNav checks at call time whether any pre-resolved offset is < 0 (field not found → null).
-  const bySource = new Map<string, typeof model.wrappers>();
+  // Build applyNav: per source class, emit per-getter inline hop resolution.
+  // Offsets are resolved inside each getter (per access) — self-healing and boot-window-safe:
+  // if the schema hasn't warmed yet, off() returns -1 and the guard returns null; the next
+  // access re-resolves and succeeds once the schema is live.
+  const bySource = new Map<string, typeof model.wrappers[0][]>();
   for (const w of model.wrappers) {
     if (!bySource.has(w.source)) bySource.set(w.source, []);
     bySource.get(w.source)!.push(w);
   }
 
-  out.push("  var NAV = {");
+  out.push("  function applyNav(proto, className) {");
   for (const [src, wrappers] of [...bySource.entries()].sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) {
-    out.push(`    ${S(src)}: [`);
+    out.push(`    if (className === ${S(src)}) {`);
     for (const w of wrappers) {
-      // Inline off() calls in the path array — literals in the generated code, resolved at module load.
-      const pathStr = w.path.map(h => `off(${S(h.cls)},${S(h.field)})`).join(", ");
-      out.push(`      { prop: ${S(w.prop)}, wrapper: ${w.wrapper}, path: [${pathStr}] },`);
+      out.push(`      Object.defineProperty(proto, ${S(w.prop)}, {`);
+      out.push(`        get: function () {`);
+      out.push(`          var _p = [];`);
+      for (let i = 0; i < w.path.length; i++) {
+        const h = w.path[i];
+        out.push(`          var o${i} = off(${S(h.cls)},${S(h.field)}); if (o${i} < 0) return null; _p.push(o${i});`);
+      }
+      out.push(`          return new ${w.wrapper}(this.ref, _p);`);
+      out.push(`        }, enumerable: true, configurable: true,`);
+      out.push(`      });`);
     }
-    out.push("    ],");
+    out.push("    }");
   }
-  out.push("  };");
-
-  // applyNav: per source class, defines a getter per nav entry.
-  // The getter validates that no pre-resolved offset is negative, then constructs the wrapper.
-  out.push(
-    "  function applyNav(proto, className) {",
-    "    var entries = NAV[className]; if (!entries) return;",
-    "    for (var i = 0; i < entries.length; i++) {",
-    "      (function(entry) {",
-    "        Object.defineProperty(proto, entry.prop, { get: function () {",
-    "          for (var j = 0; j < entry.path.length; j++) { if (entry.path[j] < 0) return null; }",
-    "          return new entry.wrapper(this.ref, entry.path);",
-    "        }, enumerable: true, configurable: true });",
-    "      })(entries[i]);",
-    "    }",
-    "  }",
-    "  globalThis.__s2pkg_cs2_nav = { applyNav: applyNav };",
-    "})();",
-  );
+  out.push("  }");
+  out.push("  globalThis.__s2pkg_cs2_nav = { applyNav: applyNav };");
+  out.push("})();");
+  out.push("");  // trailing newline
 
   return out.join("\n");
 }

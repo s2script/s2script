@@ -225,10 +225,11 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
   assert.ok(p.origin instanceof math.Vector, "pawn.origin delegates to sceneNode.absOrigin");
   assert.ok(p.angles instanceof math.QAngle, "pawn.angles delegates to sceneNode.absRotation");
 
-  // Null-hop guard: re-eval with negative offsets so NAV paths = [-1, …] → all nav props null.
+  // Null-hop guard: re-eval with __s2_schema_offset returning -1 → each nav getter's oN < 0 guard returns null
+  // immediately (per-access resolution, boot-window-safe — no baked NAV table).
   const ctx2 = {
     __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math : null),
-    __s2_schema_offset: () => -1,     // NAV path resolution yields -1 → getter returns null
+    __s2_schema_offset: () => -1,     // per-access off() returns -1 → oN < 0 guard returns null
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],
   };
@@ -237,7 +238,7 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
   vm.runInContext(genJs + "\n" + navJs + "\n" + pawnJs, ctx2);
   const { Pawn: Pawn2 } = ctx2.__s2pkg_cs2;
   const p2 = new Pawn2(new EntityRef(5, 9));
-  assert.equal(p2.sceneNode, null, "pawn.sceneNode is null when any NAV path offset is negative");
+  assert.equal(p2.sceneNode, null, "pawn.sceneNode is null when off() returns -1 (boot-window guard)");
   assert.equal(p2.origin, null, "pawn.origin is null when sceneNode is null");
-  assert.equal(p2.weaponServices, null, "pawn.weaponServices is null when path offset is negative");
+  assert.equal(p2.weaponServices, null, "pawn.weaponServices is null when off() returns -1");
 });
