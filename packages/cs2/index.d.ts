@@ -52,12 +52,18 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   readonly slot: number;
   /** This player's in-world pawn (the body), or null if dead/absent. */
   readonly pawn: Pawn | null;
+  /** The engine user-id (session-stable; NOT a schema field). `-1` if unassigned/absent. */
+  readonly userId: number;
 }
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */
   fromSlot(slot: number): Player | null;
   /** Every connected player (slots with a valid controller). */
   all(): Player[];
+  /** Look up a connected player by engine user-id. `null` if no such player. Pawnless-safe. */
+  fromUserId(userId: number): Player | null;
+  /** Every connected player regardless of pawn (the pawnless enumeration). Complements `all()`. */
+  allConnected(): Player[];
 };
 
 import type { GameEvent } from "@s2script/events";
