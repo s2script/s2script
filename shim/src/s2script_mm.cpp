@@ -205,8 +205,9 @@ static void s2_ent_state_changed(void* ent, int offset) {
 // ---------------------------------------------------------------------------
 // IGameEventManager2 + IGameEventListener2 support (Slice 5D.1).
 //
-// s_pGameEventManager: acquired in Load() via the engine factory; null if
-//   acquisition failed (subscribe/unsubscribe become no-ops, accessors return defaults).
+// s_pGameEventManager: acquired in Load() via the sig-scan of libserver.so (Slice 5D.2 — the
+//   legacy manager is not CreateInterface-exported in CS2); null if the scan failed
+//   (subscribe/unsubscribe become no-ops, accessors return defaults).
 // s_currentEvent: set by FireGameEvent before calling core dispatch and restored after
 //   (re-entrancy: a nested FireGameEvent during dispatch sees the inner event, then the
 //   outer is restored when the inner call returns).
@@ -224,10 +225,6 @@ class S2ScriptEventListener : public IGameEventListener2 {
 public:
     void FireGameEvent(IGameEvent* ev) override {
         if (!ev) return;
-        // Shim-side diagnostic: confirm the listener fires before core dispatch.
-        // TODO(5D.1b): gate behind a debug flag (or remove) before the manager is wired — once
-        // AddListener works this logs EVERY game event (player_hurt/weapon_fire/…) = console spam.
-        Msg("[s2script] event fired: %s\n", ev->GetName());
         // Save previous (re-entrancy: if dispatch triggers another FireGameEvent, the inner
         // call will see its own event in s_currentEvent; we restore ours on return).
         IGameEvent* prev = s_currentEvent;
