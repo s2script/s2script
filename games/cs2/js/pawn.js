@@ -99,5 +99,5 @@
     return pawn.isValid() ? new Pawn(pawn) : null;
   };
 
-  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player };
+  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events };
 })();

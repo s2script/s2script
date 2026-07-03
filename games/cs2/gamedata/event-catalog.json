@@ -1,0 +1,14 @@
+{
+  "player_death": { "userid": "player", "attacker": "player", "assister": "player", "weapon": "string", "headshot": "bool", "penetrated": "int", "noscope": "bool", "thrusmoke": "bool", "attackerblind": "bool" },
+  "player_hurt": { "userid": "player", "attacker": "player", "health": "int", "armor": "int", "weapon": "string", "dmg_health": "int", "dmg_armor": "int", "hitgroup": "int" },
+  "player_spawn": { "userid": "player" },
+  "player_team": { "userid": "player", "team": "int", "oldteam": "int", "disconnect": "bool" },
+  "player_connect_full": { "userid": "player" },
+  "player_disconnect": { "userid": "player", "reason": "int", "name": "string", "networkid": "string" },
+  "round_start": { "timelimit": "int", "fraglimit": "int", "objective": "string" },
+  "round_end": { "winner": "int", "reason": "int", "message": "string" },
+  "round_freeze_end": {},
+  "bomb_planted": { "userid": "player", "site": "int" },
+  "bomb_defused": { "userid": "player", "site": "int" },
+  "weapon_fire": { "userid": "player", "weapon": "string", "silenced": "bool" }
+}
