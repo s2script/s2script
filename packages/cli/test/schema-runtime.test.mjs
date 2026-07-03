@@ -116,6 +116,35 @@ test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter
   assert.deepEqual(Player.all(), [], "Player.all() excludes controllers without a pawn");
 });
 
+test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade to null (offline vm)", () => {
+  function EntityRef(i, s) { this.index = i; this.serial = s; }
+  EntityRef.prototype.isValid = function () { return true; };
+  EntityRef.prototype.readHandle = function () { return new EntityRef(this.index + 100, 7); };
+  let chainRet = [64, 128, 256];
+  EntityRef.prototype.readFloatsChain = function () { return chainRet; };   // toggled to null below
+  function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  const math = { Vector, QAngle };
+  let offRet = 8;                                        // schema-offset stub; toggled to -1 below
+  const ctx = {
+    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math : null),
+    __s2_schema_offset: () => offRet,
+    __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
+  };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  const { Pawn } = ctx.__s2pkg_cs2;
+  const p = new Pawn(new EntityRef(5, 9));
+  assert.ok(p.origin instanceof Vector, "origin is a Vector");
+  assert.deepEqual([p.origin.x, p.origin.y, p.origin.z], [64, 128, 256]);
+  assert.ok(p.angles instanceof QAngle, "angles is a QAngle");
+  chainRet = null;                                      // stale/broken chain → readFloatsChain null
+  assert.equal(p.origin, null, "a null readFloatsChain → the accessor returns null");
+  chainRet = [1, 2, 3]; offRet = -1;                    // a schema-offset miss → null (before the chain read)
+  assert.equal(p.origin, null, "a missing offset → the accessor returns null");
+});
+
 test("generated Vector/QAngle accessor: reads a value object, degrades to null (offline vm)", () => {
   function EntityRef(i, s) { this.index = i; this.serial = s; }
   EntityRef.prototype.isValid = function () { return true; };
