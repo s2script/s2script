@@ -60,6 +60,19 @@ pub type EmitFieldFn = extern "C" fn(
 );
 pub type SchemaEnumerateFn = extern "C" fn(ctx: *mut c_void, emit_class: EmitClassFn, emit_field: EmitFieldFn) -> c_int;
 
+// ---------------------------------------------------------------------------
+// Slice 5D.1: game-event engine-ops (C-ABI; T3's C header must match exactly).
+// All are nullable (Option<...>): a null field degrades to a safe miss.
+// ---------------------------------------------------------------------------
+pub type EventSubscribeFn    = extern "C" fn(name: *const c_char) -> c_int;
+pub type EventUnsubscribeFn  = extern "C" fn(name: *const c_char) -> c_int;
+pub type EventGetIntFn       = extern "C" fn(key: *const c_char) -> i32;
+pub type EventGetFloatFn     = extern "C" fn(key: *const c_char) -> f32;
+pub type EventGetBoolFn      = extern "C" fn(key: *const c_char) -> c_int;      // 0/1
+pub type EventGetStringFn    = extern "C" fn(key: *const c_char) -> *const c_char; // valid during dispatch; copy now
+pub type EventGetUint64Fn    = extern "C" fn(key: *const c_char) -> u64;
+pub type EventGetPlayerSlotFn = extern "C" fn(key: *const c_char) -> i32;       // -1 if absent
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -71,6 +84,15 @@ pub struct S2EngineOps {
     /// Schema enumeration engine-op (5B.1): the shim walks the SchemaSystem and streams classes/fields
     /// to core via the C-ABI emit callbacks.  Null → `__s2_schema_dump` degrades to false.
     pub schema_enumerate: Option<SchemaEnumerateFn>,
+    // --- Slice 5D.1: game-event engine-ops (APPENDED — order is the ABI; do not reorder above) ---
+    pub event_subscribe:     Option<EventSubscribeFn>,
+    pub event_unsubscribe:   Option<EventUnsubscribeFn>,
+    pub event_get_int:       Option<EventGetIntFn>,
+    pub event_get_float:     Option<EventGetFloatFn>,
+    pub event_get_bool:      Option<EventGetBoolFn>,
+    pub event_get_string:    Option<EventGetStringFn>,
+    pub event_get_uint64:    Option<EventGetUint64Fn>,
+    pub event_get_player_slot: Option<EventGetPlayerSlotFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -200,6 +222,12 @@ thread_local! {
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Monotonic event-subscription id allocator (1-based; 0 = none).
     static NEXT_SUB_ID: std::cell::Cell<u64> = std::cell::Cell::new(1);
+    /// Notify-only game-event multiplexer: name → per-plugin subscribers (Slice 5D.1).
+    /// Each subscriber is tagged with (owner, generation) for liveness-gated dispatch.
+    /// `remove_by_owner` is called from `unload_plugin` (the teardown authority).
+    /// Reset on shutdown so a re-init starts empty.
+    static EVENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -361,12 +389,23 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Vector.prototype.toString = function () { return "Vector(" + this.x + ", " + this.y + ", " + this.z + ")"; };
   function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
   QAngle.prototype.toString = function () { return "QAngle(" + this.x + ", " + this.y + ", " + this.z + ")"; };
+  // --- Slice 5D.1: GameEvent constructor (dispatch_game_event constructs new GameEvent(name)
+  //     per-plugin from globalThis.__s2pkg_events.GameEvent). Events.on/off land in Task 2. ---
+  function GameEvent(name) { this.name = name; }
+  GameEvent.prototype.getInt        = function (k) { return __s2_event_get_int(k); };
+  GameEvent.prototype.getFloat      = function (k) { return __s2_event_get_float(k); };
+  GameEvent.prototype.getBool       = function (k) { return __s2_event_get_bool(k); };
+  GameEvent.prototype.getString     = function (k) { return __s2_event_get_string(k); };
+  GameEvent.prototype.getUint64     = function (k) { return __s2_event_get_uint64(k); };   // decimal string
+  GameEvent.prototype.getPlayerSlot = function (k) { return __s2_event_get_player_slot(k); };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
   globalThis.__s2pkg_console    = { console: console };
   globalThis.__s2pkg_interfaces = interfaces;
+  // Task 2 will extend this with Events (on/off); GameEvent lives here because dispatch uses it now.
+  globalThis.__s2pkg_events     = { GameEvent: GameEvent };
 })();
 "#;
 
@@ -1533,6 +1572,247 @@ fn s2_iface_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
     }));
 }
 
+// ---------------------------------------------------------------------------
+// Slice 5D.1: game-event subscribe / unsubscribe / accessor natives.
+// ---------------------------------------------------------------------------
+
+/// Native `__s2_event_subscribe(name, handler)` — subscribe a JS function to a named game event.
+/// On first subscriber for a name, calls the `event_subscribe` engine-op (null-degrade).
+/// The subscription is tagged with the calling plugin's (id, generation) for liveness-gated dispatch.
+fn s2_event_subscribe(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+
+        // Capture the calling plugin's (id, generation) for liveness-gated dispatch.
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+
+        // Subscribe: if this is the FIRST for the name, call the engine-op event_subscribe.
+        let first = EVENT_MUX.with(|m| m.borrow_mut().subscribe(&name, owner, generation, handler_g));
+        if first {
+            if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
+                if let Some(func) = ops.event_subscribe {
+                    if let Ok(cn) = CString::new(name.as_str()) {
+                        func(cn.as_ptr());
+                    }
+                }
+            }
+        }
+    }));
+}
+
+/// Native `__s2_event_unsubscribe(name, handler)` — unsubscribe the calling plugin from a named event.
+/// Removes ALL of the calling plugin's subs for `name` (handler identity match not required —
+/// mirrors iface_off's best-effort approach; callers rarely double-subscribe).
+/// If the name's subscriber list is now empty, calls `event_unsubscribe` engine-op (null-degrade).
+fn s2_event_unsubscribe(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+
+        let emptied = EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner_on(&name, &owner));
+        if emptied {
+            if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
+                if let Some(func) = ops.event_unsubscribe {
+                    if let Ok(cn) = CString::new(name.as_str()) {
+                        func(cn.as_ptr());
+                    }
+                }
+            }
+        }
+    }));
+}
+
+/// Native `__s2_event_get_int(key) -> i32`. Calls the `event_get_int` engine-op; degrades to 0.
+fn s2_event_get_int(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        if args.length() < 1 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_get_int else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        rv.set_int32(func(ck.as_ptr()));
+    }));
+}
+
+/// Native `__s2_event_get_float(key) -> f64`. Calls the `event_get_float` engine-op; degrades to 0.0.
+fn s2_event_get_float(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 1 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_get_float else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        rv.set_double(func(ck.as_ptr()) as f64);
+    }));
+}
+
+/// Native `__s2_event_get_bool(key) -> boolean`. Calls the `event_get_bool` engine-op; degrades to false.
+fn s2_event_get_bool(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_get_bool else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        rv.set_bool(func(ck.as_ptr()) != 0);
+    }));
+}
+
+/// Native `__s2_event_get_string(key) -> string`. Calls the `event_get_string` engine-op; degrades to "".
+/// The returned C string pointer is ONLY valid during the shim's event dispatch — copy it NOW.
+fn s2_event_get_string(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(empty) = v8::String::new(scope, "") { rv.set(empty.into()); }
+        if args.length() < 1 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_get_string else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        let ptr = func(ck.as_ptr());
+        if ptr.is_null() { return; }
+        // Copy the C string immediately — the pointer is only valid during the dispatch call.
+        let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_event_get_uint64(key) -> string`. Calls `event_get_uint64`; returns a DECIMAL STRING.
+/// uint64 → decimal string so JS can handle it without BigInt precision loss.
+fn s2_event_get_uint64(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(zero) = v8::String::new(scope, "0") { rv.set(zero.into()); }
+        if args.length() < 1 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_get_uint64 else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        let val = func(ck.as_ptr());
+        let s = format!("{}", val);
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_event_get_player_slot(key) -> i32`. Calls `event_get_player_slot`; degrades to -1.
+fn s2_event_get_player_slot(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        if args.length() < 1 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_get_player_slot else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        rv.set_int32(func(ck.as_ptr()));
+    }));
+}
+
+/// Dispatch a game event by name to all LIVE JS subscribers.
+///
+/// Called from `ffi.rs`'s `s2script_core_dispatch_game_event` (C-ABI export), which the shim's
+/// `IGameEventListener2` callback invokes when an event fires (the shim has already stashed the
+/// live `IGameEvent*` for the accessor engine-ops).
+///
+/// **Re-entrancy discipline:** snapshot before invoke — release `EVENT_MUX` borrow, then enter
+/// each subscriber's PLUGIN context in its own HandleScope+ContextScope+TryCatch.  `EVENT_MUX` and
+/// `PLUGINS`/`REGISTRY` are NOT held across any JS call.
+pub(crate) fn dispatch_game_event(name: &str) {
+    // Phase 1: snapshot — release EVENT_MUX borrow before entering any context.
+    let snap = EVENT_MUX.with(|m| m.borrow().snapshot(name));
+    if snap.is_empty() { return; }
+
+    // Phase 2: enter each subscriber's context and invoke the handler with new GameEvent(name).
+    HOST.with(|h| {
+        let mut borrow = h.borrow_mut();
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, gen, handler_g) in &snap {
+            // Liveness check (release REGISTRY borrow before entering context).
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { continue; }
+            // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            // Per-subscriber HandleScope+ContextScope — mirrors dispatch_onframe.
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            // Per-handler TryCatch isolates a throwing handler from the rest.
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Construct new GameEvent(name): read GameEvent from globalThis.__s2pkg_events.GameEvent.
+            let event_arg: Option<v8::Local<v8::Value>> = (|| {
+                let global = ctx_local.global(tc);
+                let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
+                let pkg = global.get(tc, pkg_key.into())?;
+                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+                let ctor_key = v8::String::new(tc, "GameEvent")?;
+                let ctor_val = pkg.get(tc, ctor_key.into())?;
+                let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+                let name_str = v8::String::new(tc, name)?;
+                ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+            })();
+
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let event_val: v8::Local<v8::Value> = match event_arg {
+                Some(v) => v,
+                None => v8::undefined(tc).into(),
+            };
+
+            if func.call(tc, recv, &[event_val]).is_none() {
+                let msg = tc.exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_game_event('{}'): handler '{}': {}", name, owner, msg));
+            }
+            // tc, tc_storage, scope drop here — TryCatch absorbs any pending exception.
+        }
+    });
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -1586,6 +1866,15 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_iface_on", s2_iface_on);
     set_native(scope, global_obj, "__s2_iface_off", s2_iface_off);
     set_native(scope, global_obj, "__s2_iface_emit", s2_iface_emit);
+    // Game-event system (Slice 5D.1): subscribe/unsubscribe + accessor natives.
+    set_native(scope, global_obj, "__s2_event_subscribe", s2_event_subscribe);
+    set_native(scope, global_obj, "__s2_event_unsubscribe", s2_event_unsubscribe);
+    set_native(scope, global_obj, "__s2_event_get_int", s2_event_get_int);
+    set_native(scope, global_obj, "__s2_event_get_float", s2_event_get_float);
+    set_native(scope, global_obj, "__s2_event_get_bool", s2_event_get_bool);
+    set_native(scope, global_obj, "__s2_event_get_string", s2_event_get_string);
+    set_native(scope, global_obj, "__s2_event_get_uint64", s2_event_get_uint64);
+    set_native(scope, global_obj, "__s2_event_get_player_slot", s2_event_get_player_slot);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -2153,6 +2442,8 @@ pub fn shutdown() {
     FRAME.with(|f| *f.borrow_mut() = Descriptor::new("OnGameFrame"));
     // Reset the frame counter so a re-init starts from zero.
     FRAME_COUNTER.with(|c| c.set(0));
+    // Reset the game-event mux so a re-init starts with a clean subscriber table.
+    EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
     // loaded must not persist across an init cycle).
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
@@ -2280,6 +2571,18 @@ pub(crate) fn unload_plugin(id: &str) {
     // refresh_detour is the source of truth — call it to apply the transition.
     let _change = FRAME.with(|f| f.borrow_mut().remove_by_owner(id));
     refresh_detour();
+
+    // (a2) Drop the plugin's game-event subscriptions from the mux (teardown authority: the mux owns
+    // the handler Globals, so drop them here — before the context is disposed).  For any names that
+    // became empty, call the engine-op event_unsubscribe so the shim can deregister.
+    let emptied_events = EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    for evname in &emptied_events {
+        if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
+            if let Some(func) = ops.event_unsubscribe {
+                if let Ok(cn) = CString::new(evname.as_str()) { func(cn.as_ptr()); }
+            }
+        }
+    }
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
     // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
@@ -3452,6 +3755,9 @@ mod frame_tests {
             schema_offset: None, ent_by_index: None, deref_handle: None,
             ent_state_changed: None, concommand_register: None,
             schema_enumerate: Some(stub_enumerate),
+            event_subscribe: None, event_unsubscribe: None,
+            event_get_int: None, event_get_float: None, event_get_bool: None,
+            event_get_string: None, event_get_uint64: None, event_get_player_slot: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -3519,6 +3825,195 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", r#"var V=__s2require("@s2script/math").Vector; String(new V(3,4,0).length())"#), "5");
         // QAngle data:
         assert_eq!(eval_in_context_string("p", r#"var Q=__s2require("@s2script/math").QAngle; var q=new Q(10,20,30); q.x+","+q.y+","+q.z"#), "10,20,30");
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice 5D.1: game-event mechanism — subscribe/accessor/dispatch/teardown
+    // ---------------------------------------------------------------------------
+
+    // Module-level statics for mock event-op tracking (shared across the 5D.1 tests).
+    static EV_SUBSCRIBED:   Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static EV_UNSUBSCRIBED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    // Mock event engine-ops: event_subscribe records the name; accessors return fixed values.
+    extern "C" fn mock_ev_subscribe(name: *const c_char) -> c_int {
+        let n = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        EV_SUBSCRIBED.lock().unwrap().push(n); 1
+    }
+    extern "C" fn mock_ev_unsubscribe(name: *const c_char) -> c_int {
+        let n = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        EV_UNSUBSCRIBED.lock().unwrap().push(n); 1
+    }
+    extern "C" fn mock_ev_get_int(_k: *const c_char) -> i32 { 42 }
+    extern "C" fn mock_ev_get_float(_k: *const c_char) -> f32 { 3.14 }
+    extern "C" fn mock_ev_get_bool(_k: *const c_char) -> c_int { 1 }
+    extern "C" fn mock_ev_get_string(_k: *const c_char) -> *const c_char {
+        b"mocked_string\0".as_ptr() as *const c_char
+    }
+    extern "C" fn mock_ev_get_uint64(_k: *const c_char) -> u64 { 999_000_000_000u64 }
+    extern "C" fn mock_ev_get_player_slot(_k: *const c_char) -> i32 { 7 }
+
+    /// Build a full mock S2EngineOps table with all event op fields wired to the mock fns above
+    /// and all non-event fields None.  Used by 5D.1 tests that need the event accessor natives.
+    fn mock_event_ops() -> S2EngineOps {
+        S2EngineOps {
+            schema_offset: None, ent_by_index: None, deref_handle: None,
+            ent_state_changed: None, concommand_register: None, schema_enumerate: None,
+            event_subscribe:      Some(mock_ev_subscribe),
+            event_unsubscribe:    Some(mock_ev_unsubscribe),
+            event_get_int:        Some(mock_ev_get_int),
+            event_get_float:      Some(mock_ev_get_float),
+            event_get_bool:       Some(mock_ev_get_bool),
+            event_get_string:     Some(mock_ev_get_string),
+            event_get_uint64:     Some(mock_ev_get_uint64),
+            event_get_player_slot: Some(mock_ev_get_player_slot),
+        }
+    }
+
+    /// Slice 5D.1 Task 1 (core): game-event subscribe/dispatch/accessor/teardown integration.
+    ///
+    /// - A plugin subscribes to "player_death" via the raw `__s2_event_subscribe` native.
+    /// - The first subscriber triggers the `event_subscribe` engine-op.
+    /// - `dispatch_game_event("player_death")` delivers a `new GameEvent("player_death")` to the
+    ///   handler; the handler reads all six accessor methods and stores the results.
+    /// - Dispatching an unsubscribed name does NOT call the handler.
+    /// - `unload_plugin` calls `remove_by_owner` on the mux and triggers `event_unsubscribe`.
+    /// - After unload, further dispatches are no-ops (no crash, no delivery).
+    #[test]
+    fn game_event_dispatch_subscribe_accessor_and_teardown() {
+        EV_SUBSCRIBED.lock().unwrap().clear();
+        EV_UNSUBSCRIBED.lock().unwrap().clear();
+
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(mock_event_ops()));
+
+        // Plugin subscribes to player_death using the raw __s2_event_subscribe native.
+        load_plugin_js("pev", r#"
+            __s2_event_subscribe("player_death", function(ev) {
+                globalThis.__ev_ran    = (globalThis.__ev_ran || 0) + 1;
+                globalThis.__ev_name   = ev.name;
+                globalThis.__ev_int    = ev.getInt("damage");
+                globalThis.__ev_str    = ev.getString("victim");
+                globalThis.__ev_slot   = ev.getPlayerSlot("attacker");
+                globalThis.__ev_uint64 = ev.getUint64("steamid");
+                globalThis.__ev_bool   = ev.getBool("headshot");
+            });
+        "#);
+
+        // First subscribe must trigger the engine-op.
+        assert!(
+            EV_SUBSCRIBED.lock().unwrap().iter().any(|n| n == "player_death"),
+            "event_subscribe engine-op must fire on the first subscriber"
+        );
+
+        // Dispatch player_death → handler runs and reads mocked accessor values.
+        dispatch_game_event("player_death");
+        assert_eq!(read_i32_global_in("pev", "__ev_ran"),  1,             "handler must run exactly once");
+        assert_eq!(read_global_string("pev", "__ev_name"), "player_death","GameEvent.name must be set");
+        assert_eq!(read_i32_global_in("pev", "__ev_int"),  42,            "getInt() returns mock 42");
+        assert_eq!(read_global_string("pev", "__ev_str"),  "mocked_string","getString() returns mock");
+        assert_eq!(read_i32_global_in("pev", "__ev_slot"), 7,             "getPlayerSlot() returns mock 7");
+        assert_eq!(read_global_string("pev", "__ev_uint64"), "999000000000","getUint64() returns decimal string");
+        assert_eq!(read_bool_global_in("pev", "__ev_bool"), true,         "getBool() returns mock true");
+
+        // Dispatching a different name must NOT call the handler.
+        dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("pev", "__ev_ran"), 1,
+                   "handler must not run for unsubscribed event name");
+
+        // Teardown: unload_plugin removes all of "pev"'s game-event subs; the name empties →
+        // event_unsubscribe engine-op fires.
+        unload_plugin("pev");
+        assert!(
+            EV_UNSUBSCRIBED.lock().unwrap().iter().any(|n| n == "player_death"),
+            "event_unsubscribe engine-op must fire when the last subscriber unloads"
+        );
+
+        // After unload, dispatching must be a safe no-op (no crash, no delivery).
+        dispatch_game_event("player_death");
+        // (No count assertion — the context is disposed; just confirm no panic.)
+
+        shutdown();
+    }
+
+    /// Slice 5D.1: a second plugin subscribes to the same event → event_subscribe engine-op fires
+    /// only ONCE (on the first subscriber); event_unsubscribe fires only when the LAST subscriber
+    /// unloads.  Both handlers receive the event; after one unloads only the other still runs.
+    #[test]
+    fn game_event_two_subscribers_first_last_semantics() {
+        EV_SUBSCRIBED.lock().unwrap().clear();
+        EV_UNSUBSCRIBED.lock().unwrap().clear();
+
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(mock_event_ops()));
+
+        load_plugin_js("p1", r#"
+            __s2_event_subscribe("player_hurt", function(ev) {
+                globalThis.__p1_ran = (globalThis.__p1_ran || 0) + 1;
+            });
+        "#);
+        // First subscriber → engine-op called once.
+        assert_eq!(EV_SUBSCRIBED.lock().unwrap().iter().filter(|n| *n == "player_hurt").count(), 1);
+
+        load_plugin_js("p2", r#"
+            __s2_event_subscribe("player_hurt", function(ev) {
+                globalThis.__p2_ran = (globalThis.__p2_ran || 0) + 1;
+            });
+        "#);
+        // Second subscriber → engine-op NOT called again (not first).
+        assert_eq!(EV_SUBSCRIBED.lock().unwrap().iter().filter(|n| *n == "player_hurt").count(), 1,
+                   "event_subscribe must only fire on the FIRST subscriber");
+
+        dispatch_game_event("player_hurt");
+        assert_eq!(read_i32_global_in("p1", "__p1_ran"), 1);
+        assert_eq!(read_i32_global_in("p2", "__p2_ran"), 1);
+
+        // Unload p1: p2 still subscribed → event_unsubscribe must NOT fire yet.
+        unload_plugin("p1");
+        assert!(!EV_UNSUBSCRIBED.lock().unwrap().iter().any(|n| n == "player_hurt"),
+                "event_unsubscribe must NOT fire while p2 is still subscribed");
+
+        // Dispatch again → only p2 runs.
+        dispatch_game_event("player_hurt");
+        assert_eq!(read_i32_global_in("p2", "__p2_ran"), 2);
+
+        // Unload p2: last subscriber → event_unsubscribe fires.
+        unload_plugin("p2");
+        assert!(EV_UNSUBSCRIBED.lock().unwrap().iter().any(|n| n == "player_hurt"),
+                "event_unsubscribe must fire when the last subscriber unloads");
+
+        shutdown();
+    }
+
+    /// Slice 5D.1: accessor natives degrade safely when no engine-ops table is wired
+    /// (each returns its documented default: 0 / 0.0 / false / "" / "0" / -1).
+    #[test]
+    fn game_event_accessor_natives_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);          // no ops → every accessor degrades
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_event_get_int('k'))"),    "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2_event_get_float('k'))"),  "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2_event_get_bool('k'))"),   "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2_event_get_string('k'))"), "");
+        assert_eq!(eval_in_context_string("p", "String(__s2_event_get_uint64('k'))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2_event_get_player_slot('k'))"), "-1");
+        shutdown();
+    }
+
+    /// Slice 5D.1: `@s2script/events` resolves via `require` and provides `GameEvent`.
+    #[test]
+    fn events_module_provides_game_event_constructor() {
+        let _ = init(dummy_logger());
+        load_plugin_js("gec", r#"
+            const { GameEvent } = require("@s2script/events");
+            const ev = new GameEvent("round_start");
+            globalThis.__ev_name = ev.name;
+            globalThis.__ev_type = typeof GameEvent;
+        "#);
+        assert_eq!(read_global_string("gec", "__ev_name"), "round_start");
+        assert_eq!(read_global_string("gec", "__ev_type"), "function");
         shutdown();
     }
 }
