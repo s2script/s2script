@@ -4016,4 +4016,105 @@ mod frame_tests {
         assert_eq!(read_global_string("gec", "__ev_type"), "function");
         shutdown();
     }
+
+    /// Slice 5D.1 Task 1: explicit `__s2_event_unsubscribe` path — single subscriber.
+    ///
+    /// After subscribing and then explicitly calling `__s2_event_unsubscribe("test_event")`,
+    /// the handler must NOT be called on the next dispatch, AND the `event_unsubscribe`
+    /// engine-op must fire (the name became empty).
+    #[test]
+    fn game_event_explicit_unsubscribe_removes_handler_and_fires_engine_op() {
+        EV_SUBSCRIBED.lock().unwrap().clear();
+        EV_UNSUBSCRIBED.lock().unwrap().clear();
+
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(mock_event_ops()));
+
+        // Plugin subscribes then immediately unsubscribes from the same module body.
+        load_plugin_js("pev", r#"
+            globalThis.__ev_ran = 0;
+            __s2_event_subscribe("test_event", function(ev) {
+                globalThis.__ev_ran = (globalThis.__ev_ran || 0) + 1;
+            });
+            __s2_event_unsubscribe("test_event");
+        "#);
+
+        // event_subscribe engine-op must have fired (on the first/only subscribe).
+        assert!(
+            EV_SUBSCRIBED.lock().unwrap().iter().any(|n| n == "test_event"),
+            "event_subscribe engine-op must fire on subscribe"
+        );
+
+        // event_unsubscribe engine-op must have fired (name is now empty after unsubscribe).
+        assert!(
+            EV_UNSUBSCRIBED.lock().unwrap().iter().any(|n| n == "test_event"),
+            "event_unsubscribe engine-op must fire when last subscriber explicitly unsubscribes"
+        );
+
+        // Dispatch must NOT invoke the removed handler.
+        dispatch_game_event("test_event");
+        assert_eq!(
+            read_i32_global_in("pev", "__ev_ran"), 0,
+            "handler must not run after explicit unsubscribe"
+        );
+
+        shutdown();
+    }
+
+    /// Slice 5D.1 Task 1: explicit `__s2_event_unsubscribe` with two plugins.
+    ///
+    /// Unsubscribing the first plugin removes only its subs; the second plugin still receives
+    /// the event.  The `event_unsubscribe` engine-op fires only when the LAST subscriber
+    /// explicitly unsubscribes (the name is then empty).
+    #[test]
+    fn game_event_explicit_unsubscribe_two_plugins_last_fires_op() {
+        EV_SUBSCRIBED.lock().unwrap().clear();
+        EV_UNSUBSCRIBED.lock().unwrap().clear();
+
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(mock_event_ops()));
+
+        load_plugin_js("p1", r#"
+            globalThis.__p1_ran = 0;
+            __s2_event_subscribe("test_event", function(ev) {
+                globalThis.__p1_ran = (globalThis.__p1_ran || 0) + 1;
+            });
+        "#);
+        load_plugin_js("p2", r#"
+            globalThis.__p2_ran = 0;
+            __s2_event_subscribe("test_event", function(ev) {
+                globalThis.__p2_ran = (globalThis.__p2_ran || 0) + 1;
+            });
+        "#);
+
+        // Confirm both handlers run on dispatch before any explicit unsubscribe.
+        dispatch_game_event("test_event");
+        assert_eq!(read_i32_global_in("p1", "__p1_ran"), 1, "p1 handler must run before unsubscribe");
+        assert_eq!(read_i32_global_in("p2", "__p2_ran"), 1, "p2 handler must run before unsubscribe");
+
+        // p1 explicitly unsubscribes: p2 still subscribed → event_unsubscribe must NOT fire yet.
+        eval_in_context("p1", r#"__s2_event_unsubscribe("test_event");"#).unwrap();
+        assert!(
+            !EV_UNSUBSCRIBED.lock().unwrap().iter().any(|n| n == "test_event"),
+            "event_unsubscribe must NOT fire while p2 is still subscribed"
+        );
+
+        // Dispatch: only p2 runs; p1's handler must be gone.
+        dispatch_game_event("test_event");
+        assert_eq!(read_i32_global_in("p1", "__p1_ran"), 1, "p1 must not run after explicit unsubscribe");
+        assert_eq!(read_i32_global_in("p2", "__p2_ran"), 2, "p2 must still receive the event");
+
+        // p2 explicitly unsubscribes: last subscriber → event_unsubscribe engine-op must now fire.
+        eval_in_context("p2", r#"__s2_event_unsubscribe("test_event");"#).unwrap();
+        assert!(
+            EV_UNSUBSCRIBED.lock().unwrap().iter().any(|n| n == "test_event"),
+            "event_unsubscribe must fire when the last subscriber explicitly unsubscribes"
+        );
+
+        // After both unsubscribed, dispatch is a safe no-op.
+        dispatch_game_event("test_event");
+        assert_eq!(read_i32_global_in("p2", "__p2_ran"), 2, "p2 must not run after explicit unsubscribe");
+
+        shutdown();
+    }
 }

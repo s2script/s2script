@@ -62,4 +62,38 @@ mod tests {
         let emptied = m.remove_by_owner("q");
         assert_eq!(emptied, vec!["player_death".to_string()]);       // now empty → event_unsubscribe
     }
+
+    /// Slice 5D.1: `remove_by_owner_on` returns false while another owner remains,
+    /// and true only when the last subscriber for that name is removed.
+    /// This guards the caller's "fire engine-op event_unsubscribe" condition: a premature
+    /// true would cause a spurious engine-level deregister while entries still exist.
+    #[test]
+    fn remove_by_owner_on_partial_then_empty() {
+        let mut m: EventMux<&'static str> = EventMux::new();
+        m.subscribe("test_event", "owner_a".into(), 1, "h_a");
+        m.subscribe("test_event", "owner_b".into(), 1, "h_b");
+
+        // Remove owner_a: owner_b still present → name is NOT empty → must return false.
+        let became_empty = m.remove_by_owner_on("test_event", "owner_a");
+        assert!(!became_empty, "name must not be reported empty while owner_b remains");
+        assert_eq!(m.snapshot("test_event").len(), 1, "exactly one subscriber remains");
+        assert_eq!(m.snapshot("test_event")[0].0, "owner_b",
+            "the surviving subscriber must be owner_b");
+
+        // Remove the last (owner_b): name becomes empty → must return true.
+        let became_empty = m.remove_by_owner_on("test_event", "owner_b");
+        assert!(became_empty, "name must become empty after removing the last subscriber");
+        assert_eq!(m.snapshot("test_event").len(), 0, "no subscribers must remain");
+    }
+
+    /// Slice 5D.1: `remove_by_owner_on` on a name that was never subscribed returns false,
+    /// not true — removing a non-existent entry must not signal "became empty" (which would
+    /// cause a spurious engine-op `event_unsubscribe` call in the caller).
+    #[test]
+    fn remove_by_owner_on_absent_name_returns_false() {
+        let mut m: EventMux<&'static str> = EventMux::new();
+        let became_empty = m.remove_by_owner_on("test_event", "owner_a");
+        assert!(!became_empty,
+            "absent name must return false, not 'became empty' — prevents a spurious event_unsubscribe call");
+    }
 }
