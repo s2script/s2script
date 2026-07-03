@@ -5,6 +5,8 @@
 // Offsets are resolved live (Slice 3) and cached by the core OffsetCache; nothing is baked.
 (function () {
   var EntityRef = __s2require("@s2script/entity").EntityRef;
+  var math = __s2require("@s2script/math");
+  var Vector = math.Vector, QAngle = math.QAngle;
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
 
   function Pawn(ref) { this.ref = ref; }
@@ -48,6 +50,30 @@
     for (var s = 0; s < MAX_PLAYERS; s++) { var p = Player.fromSlot(s); if (p) out.push(p); }
     return out;
   };
+
+  // pawn.origin -> world-space position: entity -> m_CBodyComponent(ptr) -> m_pSceneNode(ptr) -> m_vecAbsOrigin.
+  // The pointer chain is followed in-core (readFloatsChain); the raw component/node pointers never reach JS.
+  Object.defineProperty(Pawn.prototype, "origin", {
+    get: function () {
+      var bodyOff = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
+      var sceneOff = __s2_schema_offset("CBodyComponent", "m_pSceneNode");
+      var off = __s2_schema_offset("CGameSceneNode", "m_vecAbsOrigin");
+      if (bodyOff < 0 || sceneOff < 0 || off < 0) return null;
+      var a = this.ref.readFloatsChain([bodyOff, sceneOff], off, 3);
+      return a === null ? null : new Vector(a[0], a[1], a[2]);
+    }, enumerable: true, configurable: true,
+  });
+  // pawn.angles -> body world rotation via the same chain -> m_angAbsRotation (distinct from eyeAngles = view/aim).
+  Object.defineProperty(Pawn.prototype, "angles", {
+    get: function () {
+      var bodyOff = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
+      var sceneOff = __s2_schema_offset("CBodyComponent", "m_pSceneNode");
+      var off = __s2_schema_offset("CGameSceneNode", "m_angAbsRotation");
+      if (bodyOff < 0 || sceneOff < 0 || off < 0) return null;
+      var a = this.ref.readFloatsChain([bodyOff, sceneOff], off, 3);
+      return a === null ? null : new QAngle(a[0], a[1], a[2]);
+    }, enumerable: true, configurable: true,
+  });
 
   // pawn.controller -> the typed Player via m_hController (shadows the raw generated `controller`).
   Object.defineProperty(Pawn.prototype, "controller", {

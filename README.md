@@ -1247,9 +1247,54 @@ bot_kick
 `pawn.absVelocity` reads a `Vector` (`0,0,0` for the stationary bots — a correct read via the same `readFloats`
 path). Both drop to `null` on disconnect (`players=0`), server stable.
 
-**Deferred:** `origin` (it lives behind the `CGameSceneNode` pointer + a quantized wrapper — the embedded/ptr
-follow); Vector **writes** (velocity/angle networking, and `origin`-write = an engine `Teleport()`, not a field
-poke); `Vector2D`/`Vector4D`/`Color`/`Quaternion` value types + codegen; Vector arithmetic.
+**Deferred:** `origin` (behind the `CGameSceneNode` pointer — shipped in **Slice 5C.4** below); Vector **writes**
+(velocity/angle networking, and `origin`-write = an engine `Teleport()`, not a field poke);
+`Vector2D`/`Vector4D`/`Color`/`Quaternion` value types + codegen; Vector arithmetic.
+
+---
+
+## Pointer-chain fields — origin (Slice 5C.4)
+
+`origin` (a player's world position) doesn't live on the entity — it's behind a two-pointer chain
+(`entity → CBodyComponent → CGameSceneNode`). Slice 5C.4 adds the capability to follow such a chain **entirely
+in-core** and read a copied value at the end, and applies it (hand-written) to ship `pawn.origin` +
+`pawn.angles`:
+
+```ts
+import { Player } from "@s2script/cs2";
+
+for (const p of Player.all()) {
+  const body = p.pawn; if (!body) continue;
+  const pos = body.origin;    // Vector {x,y,z} | null — world position (m_vecAbsOrigin, via the chain)
+  const rot = body.angles;    // QAngle {x,y,z} | null — body rotation (m_angAbsRotation); ≠ eyeAngles (view/aim)
+}
+```
+
+- **`EntityRef.readFloatsChain(ptrOffs, finalOff, count)`** — the engine-generic primitive: serial-gate the root
+  entity, follow each pointer offset in `ptrOffs` (`p = *(p + off)`, null-checking every hop), then read `count`
+  floats at `finalOff`. The raw `CBodyComponent*`/`CGameSceneNode*` **never cross to JS** — the whole chain is
+  followed and the value copied out inside one synchronous native. A stale root or a null hop → `null`.
+- **`pawn.origin` / `pawn.angles`** are **hand-written** in `pawn.js` (like the 5C.2 player nav): they resolve
+  the chain offsets (`m_CBodyComponent` → `m_pSceneNode` → `m_vecAbsOrigin`/`m_angAbsRotation`) **live** via
+  `__s2_schema_offset` and call `readFloatsChain`. CS2 field names stay in the game layer; core stays generic.
+
+**Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`; sniper-rebuilt for the new native) — two bots at
+their (distinct) spawn points:
+
+```
+[demo] tick 257 players=2
+  slot=0 origin=Vector(-1662.18, 288.76, -63.97) angles=QAngle(0, 77.5, 0)
+  slot=1 origin=Vector(2353, 1977, 135.52)        angles=QAngle(0, 97.5, 0)
+bot_kick
+[demo] tick 2305 players=0        (server ticking, no crash)
+```
+
+Real de_inferno world coordinates (CT vs T spawns, far apart) — not zero, not garbage, not null; both drop out on
+disconnect, server stable.
+
+**Deferred:** teaching the *codegen* to auto-generate embedded/ptr accessors across the schema graph (this slice
+is the capability + a hand-written application); the quantized `m_vecOrigin` wrapper; Vector/origin **writes**
+(teleport = an engine `Teleport()` call); a generic scalar-behind-pointer read (this native reads floats only).
 
 ---
 

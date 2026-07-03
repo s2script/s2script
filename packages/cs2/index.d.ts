@@ -4,6 +4,7 @@
  * `s2script gen-schema`; this file adds the hand-written entry points on top.
  */
 import type { EntityRef } from "@s2script/entity";
+import type { Vector, QAngle } from "@s2script/math";
 export * from "./schema.generated";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
 
@@ -15,6 +16,10 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly ref: EntityRef;
   /** The player controlling this pawn, or null if stale/absent. */
   readonly controller: Player | null;
+  /** World-space position (via the CGameSceneNode pointer chain), or null if stale. */
+  readonly origin: Vector | null;
+  /** Body world rotation (via the CGameSceneNode pointer chain); distinct from the view/aim `eyeAngles`. */
+  readonly angles: QAngle | null;
 }
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */
