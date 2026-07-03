@@ -73,6 +73,13 @@ pub type EventGetStringFn    = extern "C" fn(key: *const c_char) -> *const c_cha
 pub type EventGetUint64Fn    = extern "C" fn(key: *const c_char) -> u64;
 pub type EventGetPlayerSlotFn = extern "C" fn(key: *const c_char) -> i32;       // -1 if absent
 
+// --- Slice 5D.2: engine-identity ops (C-ABI; the C header must match exactly) ---
+pub type ClientValidFn        = extern "C" fn(slot: c_int) -> c_int;
+pub type ClientUseridFn       = extern "C" fn(slot: c_int) -> i32;
+pub type ClientSignonFn       = extern "C" fn(slot: c_int) -> i32;
+pub type ClientNameFn         = extern "C" fn(slot: c_int) -> *const c_char;
+pub type ClientFindByUseridFn = extern "C" fn(userid: c_int) -> i32;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -93,6 +100,12 @@ pub struct S2EngineOps {
     pub event_get_string:    Option<EventGetStringFn>,
     pub event_get_uint64:    Option<EventGetUint64Fn>,
     pub event_get_player_slot: Option<EventGetPlayerSlotFn>,
+    // --- Slice 5D.2: engine-identity ops (APPENDED — order is the ABI; do not reorder above) ---
+    pub client_valid:          Option<ClientValidFn>,
+    pub client_userid:         Option<ClientUseridFn>,
+    pub client_signon:         Option<ClientSignonFn>,
+    pub client_name:           Option<ClientNameFn>,
+    pub client_find_by_userid: Option<ClientFindByUseridFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -1802,6 +1815,69 @@ fn s2_event_get_player_slot(
     }));
 }
 
+/// Native `__s2_client_valid(slot) -> boolean`. Calls `client_valid`; degrades to false.
+fn s2_client_valid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.client_valid else { return };
+        rv.set_bool(func(slot) != 0);
+    }));
+}
+
+/// Native `__s2_client_userid(slot) -> i32`. Calls `client_userid`; degrades to -1.
+fn s2_client_userid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.client_userid else { return };
+        rv.set_int32(func(slot));
+    }));
+}
+
+/// Native `__s2_client_signon(slot) -> i32`. Calls `client_signon`; degrades to -1.
+fn s2_client_signon(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.client_signon else { return };
+        rv.set_int32(func(slot));
+    }));
+}
+
+/// Native `__s2_client_find_by_userid(userid) -> i32`. Calls `client_find_by_userid`; degrades to -1.
+fn s2_client_find_by_userid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        if args.length() < 1 { return; }
+        let id = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.client_find_by_userid else { return };
+        rv.set_int32(func(id));
+    }));
+}
+
+/// Native `__s2_client_name(slot) -> string | null`. Calls `client_name`; copies the C string now.
+fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.client_name else { return };
+        let ptr = func(slot);
+        if ptr.is_null() { return; }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
 /// Dispatch a game event by name to all LIVE JS subscribers.
 ///
 /// Called from `ffi.rs`'s `s2script_core_dispatch_game_event` (C-ABI export), which the shim's
@@ -1933,6 +2009,12 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_event_get_string", s2_event_get_string);
     set_native(scope, global_obj, "__s2_event_get_uint64", s2_event_get_uint64);
     set_native(scope, global_obj, "__s2_event_get_player_slot", s2_event_get_player_slot);
+    // Engine-identity client-list natives (Slice 5D.2).
+    set_native(scope, global_obj, "__s2_client_valid", s2_client_valid);
+    set_native(scope, global_obj, "__s2_client_userid", s2_client_userid);
+    set_native(scope, global_obj, "__s2_client_signon", s2_client_signon);
+    set_native(scope, global_obj, "__s2_client_name", s2_client_name);
+    set_native(scope, global_obj, "__s2_client_find_by_userid", s2_client_find_by_userid);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -3587,6 +3669,21 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Slice 5D.2: the five engine-identity client natives degrade safely with no engine-ops table
+    /// (no crash — false/-1/null as documented).
+    #[test]
+    fn client_natives_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);                 // no ops table → every client op is a safe miss
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_valid(0))"), "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_userid(0))"), "-1");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_signon(0))"), "-1");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_name(0))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_find_by_userid(5))"), "-1");
+        shutdown();
+    }
+
     /// Slice 5A Task 4: `EntityRef` from `@s2script/entity` degrades safely when no engine-ops table
     /// is wired — `isValid` returns false, `readInt32` returns null, `writeInt32` returns false.
     /// This is the failing test: EntityRef must be exported by the prelude (Step 3 makes it pass).
@@ -3835,6 +3932,8 @@ mod frame_tests {
             event_subscribe: None, event_unsubscribe: None,
             event_get_int: None, event_get_float: None, event_get_bool: None,
             event_get_string: None, event_get_uint64: None, event_get_player_slot: None,
+            client_valid: None, client_userid: None, client_signon: None,
+            client_name: None, client_find_by_userid: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -3945,6 +4044,8 @@ mod frame_tests {
             event_get_string:     Some(mock_ev_get_string),
             event_get_uint64:     Some(mock_ev_get_uint64),
             event_get_player_slot: Some(mock_ev_get_player_slot),
+            client_valid: None, client_userid: None, client_signon: None,
+            client_name: None, client_find_by_userid: None,
         }
     }
 

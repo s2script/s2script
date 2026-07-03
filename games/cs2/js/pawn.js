@@ -53,6 +53,34 @@
     return out;
   };
 
+  // --- Slice 5D.2: engine identity (the connected/pawnless follow promised at Player.fromSlot) ---
+  // player.userId — the engine user-id (NOT a schema field); -1 if unassigned/absent.
+  Object.defineProperty(Player.prototype, "userId", {
+    get: function () { return __s2_client_userid(this.slot); },
+    enumerable: true, configurable: true,
+  });
+  // Construct a Player from a slot when the CONTROLLER entity is valid — pawn NOT required
+  // (unlike Player.fromSlot, which pawn-gates for the in-game-only Player.all()).
+  Player._fromSlotUnchecked = function (slot) {
+    var idx = slot + 1;                                          // controller entity index
+    var ref = new EntityRef(idx, __s2_ent_current_serial(idx));
+    return ref.isValid() ? new Player(ref) : null;
+  };
+  // Player.fromUserId(userId) — engine-userid lookup -> Player (pawnless-safe), or null.
+  Player.fromUserId = function (userId) {
+    var slot = __s2_client_find_by_userid(userId | 0);
+    return slot < 0 ? null : Player._fromSlotUnchecked(slot);
+  };
+  // Player.allConnected() — every CONNECTED player regardless of pawn (the pawnless enumeration),
+  // complementing the pawn-gated Player.all(). Uses the engine client list as the occupancy oracle.
+  Player.allConnected = function () {
+    var out = [];
+    for (var s = 0; s < MAX_PLAYERS; s++) {
+      if (__s2_client_valid(s)) { var p = Player._fromSlotUnchecked(s); if (p) out.push(p); }
+    }
+    return out;
+  };
+
   // pawn.origin / pawn.angles -> compat aliases delegating to the generated sceneNode wrapper.
   // (The hand-written pointer-chain reads are superseded by the navgen SceneNode; these aliases
   //  keep backwards-compat for any code that already uses pawn.origin or pawn.angles.)

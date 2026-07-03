@@ -30,6 +30,8 @@
 
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
+#include <link.h>       // dl_iterate_phdr, ElfW
+#include "sigscan.h"
 #include <cstring>
 #include <cstdio>
 #include <set>
@@ -203,8 +205,9 @@ static void s2_ent_state_changed(void* ent, int offset) {
 // ---------------------------------------------------------------------------
 // IGameEventManager2 + IGameEventListener2 support (Slice 5D.1).
 //
-// s_pGameEventManager: acquired in Load() via the engine factory; null if
-//   acquisition failed (subscribe/unsubscribe become no-ops, accessors return defaults).
+// s_pGameEventManager: acquired in Load() via the sig-scan of libserver.so (Slice 5D.2 — the
+//   legacy manager is not CreateInterface-exported in CS2); null if the scan failed
+//   (subscribe/unsubscribe become no-ops, accessors return defaults).
 // s_currentEvent: set by FireGameEvent before calling core dispatch and restored after
 //   (re-entrancy: a nested FireGameEvent during dispatch sees the inner event, then the
 //   outer is restored when the inner call returns).
@@ -222,10 +225,6 @@ class S2ScriptEventListener : public IGameEventListener2 {
 public:
     void FireGameEvent(IGameEvent* ev) override {
         if (!ev) return;
-        // Shim-side diagnostic: confirm the listener fires before core dispatch.
-        // TODO(5D.1b): gate behind a debug flag (or remove) before the manager is wired — once
-        // AddListener works this logs EVERY game event (player_hurt/weapon_fire/…) = console spam.
-        Msg("[s2script] event fired: %s\n", ev->GetName());
         // Save previous (re-entrancy: if dispatch triggers another FireGameEvent, the inner
         // call will see its own event in s_currentEvent; we restore ours on return).
         IGameEvent* prev = s_currentEvent;
@@ -302,6 +301,55 @@ static int s2_event_get_player_slot(const char* k) {
     return (s_currentEvent && k)
         ? s_currentEvent->GetPlayerSlot(CKV3MemberName(k)).Get()
         : -1;
+}
+
+// ---------------------------------------------------------------------------
+// Engine-identity: INetworkServerService -> INetworkGameServer -> CServerSideClient[]
+// (Slice 5D.2). s_pNetworkServerService acquired in Load() (was log-only); offsets
+// from gamedata (layout-is-data). Degrade-never-crash: any null/bad-offset returns safe miss.
+// ---------------------------------------------------------------------------
+static void* s_pNetworkServerService = nullptr;
+static int s_offGameServer  = -1, s_offClientCount = -1, s_offClientElems = -1;
+static int s_offSscName     = -1, s_offSscSignon   = -1, s_offSscUserId   = -1;
+static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connected (incl. pawnless). Pin on gate.
+
+static void* S2_ClientAt(int slot) {
+    if (!s_pNetworkServerService || s_offGameServer < 0) return nullptr;
+    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
+    if (!gs || s_offClientCount < 0 || s_offClientElems < 0) return nullptr;
+    int n = *reinterpret_cast<int*>(reinterpret_cast<char*>(gs) + s_offClientCount);
+    if (slot < 0 || slot >= n) return nullptr;
+    void** elems = *reinterpret_cast<void***>(reinterpret_cast<char*>(gs) + s_offClientElems);
+    return elems ? elems[slot] : nullptr;
+}
+static int s2_client_signon(int slot) {
+    void* c = S2_ClientAt(slot);
+    return (c && s_offSscSignon >= 0)
+        ? *reinterpret_cast<int*>(reinterpret_cast<char*>(c) + s_offSscSignon) : -1;
+}
+static int s2_client_userid(int slot) {
+    void* c = S2_ClientAt(slot);
+    if (!c || s_offSscUserId < 0) return -1;
+    return static_cast<int>(*reinterpret_cast<int16_t*>(reinterpret_cast<char*>(c) + s_offSscUserId));
+}
+static int s2_client_valid(int slot) {
+    int s = s2_client_signon(slot);
+    return (s >= kSignonConnected) ? 1 : 0;
+}
+static const char* s2_client_name(int slot) {
+    void* c = S2_ClientAt(slot);
+    if (!c || s_offSscName < 0) return nullptr;
+    return *reinterpret_cast<const char**>(reinterpret_cast<char*>(c) + s_offSscName);  // core copies now
+}
+static int s2_client_find_by_userid(int id) {
+    if (!s_pNetworkServerService || s_offGameServer < 0) return -1;
+    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
+    if (!gs || s_offClientCount < 0) return -1;
+    int n = *reinterpret_cast<int*>(reinterpret_cast<char*>(gs) + s_offClientCount);
+    for (int slot = 0; slot < n; slot++) {
+        if (s2_client_valid(slot) && s2_client_userid(slot) == id) return slot;
+    }
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +599,35 @@ static void s2_request_hook(const char* descriptor, int enable) {
 }
 
 // ---------------------------------------------------------------------------
+// FindModuleText (Slice 5D.2): locate the largest executable segment of a loaded module by soname
+// substring. Returns {nullptr, 0} if not found. Live-only (dl_iterate_phdr); the pure
+// match/extract is sigscan.
+// ---------------------------------------------------------------------------
+struct ModText { const uint8_t* text; size_t size; };
+static ModText FindModuleText(const char* soname) {
+    // Pick the LARGEST executable segment across ALL loaded modules whose soname contains `soname`.
+    // Why "all + largest" and not "first match": Metamod:Source inserts its own thin libserver.so
+    // proxy (csgo/addons/metamod/.../libserver.so, ~95 KB) via the gameinfo SearchPath, whose path
+    // ALSO contains the "libserver.so" substring. Stopping at the first substring match grabbed that
+    // proxy (no game code) instead of the real ~25 MB game module. The real game module's .text
+    // dwarfs the proxy's, so largest-PF_X-segment-wins selects it robustly (found live, de_inferno).
+    struct Ctx { const char* name; ModText out; } ctx{ soname, { nullptr, 0 } };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;  // not a match; keep scanning
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X) && ph.p_filesz > c->out.size) {
+                c->out.text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
+                c->out.size = ph.p_filesz;                       // largest PF_X seg across all matches
+            }
+        }
+        return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
+    }, &ctx);
+    return ctx.out;
+}
+
+// ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
@@ -597,7 +674,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
         };
         tryGet("EngineCvar",           engineFactory);
-        tryGet("NetworkServerService", engineFactory);
+        // Acquire + STORE INetworkServerService* (Slice 5D.2 engine identity; was log-only).
+        {
+            auto it = versions.find("NetworkServerService");
+            const char* verStr = (it != versions.end()) ? it->second.c_str() : "NetworkServerService_001";
+            int ret = 0;
+            s_pNetworkServerService = engineFactory ? engineFactory(verStr, &ret) : nullptr;
+            if (s_pNetworkServerService && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: NetworkServerService (%s)\n", verStr);
+            } else {
+                s_pNetworkServerService = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkServerService (%s) — identity natives degrade\n", verStr);
+            }
+        }
 
         // Acquire and store ISchemaSystem* — backs the schema-offset engine-op (recon Q2).
         // Reuse the engine-factory path (as for EngineCvar/NetworkServerService); the community
@@ -660,31 +749,62 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                verStr);
             }
         }
-        // Acquire IGameEventManager2* (Slice 5D.1). In CS2 the game-event manager is served by the
-        // GAME DLL, so try the SERVER factory first, then the engine factory as a fallback.
-        // Community-confirmed interface string: "GAMEEVENTSMANAGER002" on CS2.
-        // Degrade-never-crash: leave null on any failure → event ops become no-ops.
+        // Acquire IGameEventManager2* via signature scan (Slice 5D.2). GAMEEVENTSMANAGER002 is NOT a
+        // registered interface in CS2 (in zero modules), so the global is resolved from libserver.so
+        // by pattern. Signature + module are gamedata (layout-is-data). Degrade-never-crash: any
+        // failure leaves s_pGameEventManager null -> event ops no-op.
         {
-            auto it = versions.find("GameEventManager");
-            const char* verStr = (it != versions.end()) ? it->second.c_str()
-                                                        : "GAMEEVENTSMANAGER002";
-            int ret = 0;
-            s_pGameEventManager = serverFactory
-                ? reinterpret_cast<IGameEventManager2*>(serverFactory(verStr, &ret))
-                : nullptr;
-            if (!s_pGameEventManager || ret != 0) {   // fall back to the engine factory
-                ret = 0;
-                s_pGameEventManager = engineFactory
-                    ? reinterpret_cast<IGameEventManager2*>(engineFactory(verStr, &ret))
-                    : nullptr;
+            std::string sigErr;
+            auto sigs = LoadSignatures(GamedataPath(), "linuxsteamrt64", sigErr);
+            if (!sigErr.empty()) {
+                META_CONPRINTF("[s2script] WARN: %s — GameEventManager sig unavailable\n", sigErr.c_str());
             }
-            if (s_pGameEventManager && ret == 0) {
-                META_CONPRINTF("[s2script] interface OK: GameEventManager (%s)\n", verStr);
+            auto it = sigs.find("GameEventManager");
+            if (it == sigs.end()) {
+                META_CONPRINTF("[s2script] WARN: no GameEventManager signature in gamedata — events degrade\n");
             } else {
-                s_pGameEventManager = nullptr;
-                META_CONPRINTF("[s2script] WARN: interface MISSING: GameEventManager (%s)"
-                               " — game-event natives degrade\n", verStr);
+                const SigSpec& sig = it->second;
+                ModText mt = FindModuleText(sig.module.c_str());
+                std::vector<int> pat = s2sig::ParsePattern(sig.pattern);
+                if (!mt.text || pat.empty()) {
+                    META_CONPRINTF("[s2script] WARN: GameEventManager sig-scan setup failed (module=%s, patTokens=%zu) — events degrade\n",
+                                   sig.module.c_str(), pat.size());
+                } else {
+                    int64_t matchOff = s2sig::FindPattern(mt.text, mt.size, pat);
+                    int64_t targetOff = s2sig::kFail;
+                    if (matchOff >= 0) {
+                        if (sig.resolve == "ctor-body-xref")
+                            targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
+                        else if (sig.resolve == "lea-disp")
+                            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, 3, 7);
+                    }
+                    if (targetOff != s2sig::kFail) {
+                        s_pGameEventManager = reinterpret_cast<IGameEventManager2*>(
+                            const_cast<uint8_t*>(mt.text) + targetOff);
+                        META_CONPRINTF("[s2script] interface OK: GameEventManager (sig-scan %s, %p)\n",
+                                       sig.resolve.c_str(), (void*)s_pGameEventManager);
+                    } else {
+                        s_pGameEventManager = nullptr;
+                        META_CONPRINTF("[s2script] WARN: GameEventManager sig-scan no match (matchOff=%lld) — events degrade\n",
+                                       (long long)matchOff);
+                    }
+                }
             }
+        }
+        // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
+        {
+            std::string offErr;
+            auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
+            auto pick = [&](const char* k) { auto i = offs.find(k); return i != offs.end() ? i->second : -1; };
+            s_offGameServer  = pick("NetworkServerService.gameServer");
+            s_offClientCount = pick("NetworkGameServer.clientCount");
+            s_offClientElems = pick("NetworkGameServer.clientElems");
+            s_offSscName     = pick("ServerSideClient.name");
+            s_offSscSignon   = pick("ServerSideClient.signon");
+            s_offSscUserId   = pick("ServerSideClient.userId");
+            META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d\n",
+                           s_offGameServer, s_offClientCount, s_offClientElems,
+                           s_offSscName, s_offSscSignon, s_offSscUserId);
         }
     }
     // --- end interface acquisition ---
@@ -712,6 +832,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.event_get_string     = &s2_event_get_string;
     ops.event_get_uint64     = &s2_event_get_uint64;
     ops.event_get_player_slot = &s2_event_get_player_slot;
+    // Engine-identity ops (Slice 5D.2): order MUST match S2EngineOps in s2script_core.h + Rust v8host.rs.
+    ops.client_valid          = &s2_client_valid;
+    ops.client_userid         = &s2_client_userid;
+    ops.client_signon         = &s2_client_signon;
+    ops.client_name           = &s2_client_name;
+    ops.client_find_by_userid = &s2_client_find_by_userid;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

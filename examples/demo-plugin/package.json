@@ -5,7 +5,6 @@
   "s2script": {
     "apiVersion": "1.x",
     "pluginDependencies": {
-      "@s2script/frame": "^1.0.0",
       "@s2script/cs2": "^1.0.0"
     }
   }
