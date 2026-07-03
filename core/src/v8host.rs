@@ -390,7 +390,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
   QAngle.prototype.toString = function () { return "QAngle(" + this.x + ", " + this.y + ", " + this.z + ")"; };
   // --- Slice 5D.1: GameEvent constructor (dispatch_game_event constructs new GameEvent(name)
-  //     per-plugin from globalThis.__s2pkg_events.GameEvent). Events.on/off land in Task 2. ---
+  //     per-plugin from globalThis.__s2pkg_events.GameEvent). ---
   function GameEvent(name) { this.name = name; }
   GameEvent.prototype.getInt        = function (k) { return __s2_event_get_int(k); };
   GameEvent.prototype.getFloat      = function (k) { return __s2_event_get_float(k); };
@@ -398,14 +398,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   GameEvent.prototype.getString     = function (k) { return __s2_event_get_string(k); };
   GameEvent.prototype.getUint64     = function (k) { return __s2_event_get_uint64(k); };   // decimal string
   GameEvent.prototype.getPlayerSlot = function (k) { return __s2_event_get_player_slot(k); };
+  // --- Slice 5D.1 Task 2: Events.on/off — prelude module object for @s2script/events. ---
+  var Events = {
+    on:  function (name, handler) { __s2_event_subscribe(name, handler); },
+    off: function (name, handler) { __s2_event_unsubscribe(name, handler); },
+  };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
   globalThis.__s2pkg_console    = { console: console };
   globalThis.__s2pkg_interfaces = interfaces;
-  // Task 2 will extend this with Events (on/off); GameEvent lives here because dispatch uses it now.
-  globalThis.__s2pkg_events     = { GameEvent: GameEvent };
+  globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events };
 })();
 "#;
 
@@ -4114,6 +4118,61 @@ mod frame_tests {
         // After both unsubscribed, dispatch is a safe no-op.
         dispatch_game_event("test_event");
         assert_eq!(read_i32_global_in("p2", "__p2_ran"), 2, "p2 must not run after explicit unsubscribe");
+
+        shutdown();
+    }
+
+    /// Slice 5D.1 Task 2: `@s2script/events` `Events.on/off` — end-to-end in-isolate test.
+    ///
+    /// - Subscribe via `require("@s2script/events").Events.on` (the prelude module object, NOT the raw native).
+    /// - `dispatch_game_event("player_death")` delivers a `GameEvent`; the handler reads `ev.name`
+    ///   + `ev.getInt("attacker")` (mock returns 42) and stores `"player_death:42"` in `__saw`.
+    /// - `Events.off("player_death", handler)` removes all of the plugin's subs for the name;
+    ///   subsequent dispatch must NOT change `__saw`.
+    #[test]
+    fn events_module_events_on_off_drives_dispatch_via_pkg() {
+        EV_SUBSCRIBED.lock().unwrap().clear();
+        EV_UNSUBSCRIBED.lock().unwrap().clear();
+
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(mock_event_ops()));
+
+        load_plugin_js("ep", r#"
+            var evMod = require("@s2script/events");
+            var handler = function(ev) {
+                globalThis.__saw = ev.name + ":" + ev.getInt("attacker");
+            };
+            evMod.Events.on("player_death", handler);
+        "#);
+
+        // Events.on must delegate to __s2_event_subscribe → engine-op must have fired.
+        assert!(
+            EV_SUBSCRIBED.lock().unwrap().iter().any(|n| n == "player_death"),
+            "Events.on must trigger the event_subscribe engine-op"
+        );
+
+        // Dispatch → handler runs; ev.name="player_death", ev.getInt → mock 42.
+        dispatch_game_event("player_death");
+        assert_eq!(
+            read_global_string("ep", "__saw"),
+            "player_death:42",
+            "Events.on handler must receive a GameEvent with correct name and getInt"
+        );
+
+        // Events.off removes all of the plugin's subs for the name; handler identity not checked.
+        // Use globalThis.__s2_require directly — eval_in_context has no CJS `require` alias.
+        eval_in_context("ep", r#"
+            globalThis.__s2_require("@s2script/events").Events.off("player_death", null);
+        "#).unwrap();
+
+        // Dispatch again → __saw must remain unchanged (handler must NOT run).
+        let saw_before = read_global_string("ep", "__saw");
+        dispatch_game_event("player_death");
+        assert_eq!(
+            read_global_string("ep", "__saw"),
+            saw_before,
+            "After Events.off, dispatch must not invoke the handler"
+        );
 
         shutdown();
     }
