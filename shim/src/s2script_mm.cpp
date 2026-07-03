@@ -250,11 +250,19 @@ static int s2_event_subscribe(const char* name) {
 }
 
 static int s2_event_unsubscribe(const char* name) {
-    if (name) s_subscribedNames.erase(name);
-    // Note: IGameEventManager2::RemoveListener removes the listener from ALL events at once;
-    // we therefore do NOT call it here (that would break other active subscriptions).
-    // The listener stays registered; it simply won't be called for events with no JS subscribers
-    // because core will not dispatch them.  RemoveListener is called in Unload() only.
+    // We intentionally do NOT erase `name` from s_subscribedNames here.
+    // s_subscribedNames tracks "names ever registered with the engine via AddListener" so
+    // that a later re-subscribe to the same name sees insert().second == false and skips
+    // the second AddListener call.  Erasing on unsubscribe would break that guard: a
+    // subscribe → unsubscribe → re-subscribe sequence would call AddListener twice for the
+    // same (listener, name) pair, risking double-fire of the event.
+    //
+    // IGameEventManager2::RemoveListener is an all-names call (it cannot remove a single
+    // name), so we leave the listener registered with the engine.  Any engine deliveries
+    // for a name that has no active JS subscriber are silently dropped by core's empty
+    // subscriber list — no JS handler runs.  The single RemoveListener + clear() happen in
+    // Unload() only.
+    (void)name;
     return 0;
 }
 
