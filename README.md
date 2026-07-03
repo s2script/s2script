@@ -1298,6 +1298,49 @@ is the capability + a hand-written application); the quantized `m_vecOrigin` wra
 
 ---
 
+## Game events (Slice 5D.1)
+
+A generic engine-generic game-event bus with a typed CS2 overlay for IntelliSense:
+
+```ts
+import { Events, Player } from "@s2script/cs2";   // typed overlay (event names + fields autocomplete)
+
+Events.on("player_death", (ev) => {               // "player_death" autocompletes; ev is typed to it
+  const victim   = Player.fromSlot(ev.getPlayerSlot("userid"));   // key "userid" autocompletes (player field)
+  const attacker = Player.fromSlot(ev.getPlayerSlot("attacker"));
+  const weapon   = ev.getString("weapon");                        // key "weapon" autocompletes (string field)
+  const headshot = ev.getBool("headshot");
+});
+```
+
+- **The mechanism** — `@s2script/events` (engine-generic): the shim registers an `IGameEventListener2` with the
+  engine's `IGameEventManager2`, holds the live `IGameEvent*` (it **never crosses to JS**), and calls into a
+  core event multiplexer (per-name subscriber lists, re-entrancy-safe snapshot, ledgered teardown — mirrors
+  `OnGameFrame`). The handler gets a **live `GameEvent` accessor** valid only during the synchronous handler
+  (`getInt`/`getFloat`/`getBool`/`getString`, `getUint64` → decimal string, `getPlayerSlot` → slot); a stashed
+  `ev` used after an `await` reads defaults. Player resolution is `Player.fromSlot(ev.getPlayerSlot(key))` — so
+  events need no engine-identity dependency.
+- **The typed overlay** — event names are CS2 facts, so the IntelliSense lives in `@s2script/cs2`: a committed,
+  reference-sourced [`event-catalog.json`](games/cs2/gamedata/event-catalog.json) (CS2 buries event defs in the
+  VPK — no live dump) is codegen'd (types-only, freshness-gated) into
+  [`packages/cs2/events.generated.d.ts`](packages/cs2/events.generated.d.ts): a `GameEvents` map + a typed
+  `Events.on<K>` overload where each getter's `key` is constrained to that event's fields of the matching type.
+  The runtime stays the generic bus; any uncatalogued event still works via the string API.
+
+**Status — mechanism + types complete; live delivery pending a signature.** The core mechanism (in-isolate
+tested), the `@s2script/events` module, and the typed catalog all ship and work. But **CS2 does not export
+`IGameEventManager2` via `CreateInterface`** (neither the engine nor the server factory resolves
+`GAMEEVENTSMANAGER002`) — the manager must be found via a **signature scan** (as CounterStrikeSharp/Swiftly do),
+which is a per-update gamedata/treadmill item deferred to **5D.1b**. Until then the event ops degrade gracefully
+(`Events.on` is a no-op receiver; nothing crashes). See
+[the live-gate findings](docs/superpowers/specs/2026-07-02-slice-5d1-spike-findings.md).
+
+**Deferred:** the `IGameEventManager2` signature-scan acquisition (5D.1b); blocking/pre-hooks/`HookResult` for
+events; *firing* events (`Events.fire`); an auto-dumped event catalog (VPK/KV3 extraction or runtime-RE); an
+eager stashable event snapshot.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

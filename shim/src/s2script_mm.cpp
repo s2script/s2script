@@ -24,10 +24,15 @@
 // ConCommand, FnCommandCallback_t, ConCommandCallbackInfo_t, CCommandContext, CCommand (recon Q7).
 #include <convar.h>
 
+// IGameEvent, IGameEventListener2, IGameEventManager2, GameEventKeySymbol_t (= CKV3MemberName)
+// (Slice 5D.1). CKV3MemberName is in tier1/keyvalues3.h (pulled by igameevents.h).
+#include <igameevents.h>
+
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <cstring>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -193,6 +198,110 @@ static void s2_ent_state_changed(void* ent, int offset) {
     // s2_ent_by_index or s2_deref_handle and must not cross an await boundary.
     static_cast<CEntityInstance*>(ent)->NetworkStateChanged(
         NetworkStateChangedData(static_cast<uint32>(offset)));
+}
+
+// ---------------------------------------------------------------------------
+// IGameEventManager2 + IGameEventListener2 support (Slice 5D.1).
+//
+// s_pGameEventManager: acquired in Load() via the engine factory; null if
+//   acquisition failed (subscribe/unsubscribe become no-ops, accessors return defaults).
+// s_currentEvent: set by FireGameEvent before calling core dispatch and restored after
+//   (re-entrancy: a nested FireGameEvent during dispatch sees the inner event, then the
+//   outer is restored when the inner call returns).
+// s_subscribedNames: tracks which event names the JS layer has subscribed to so that
+//   AddListener is only called once per unique name (AddListener is idempotent on some
+//   versions of the SDK but we track it explicitly to be safe).  RemoveListener removes
+//   the listener from all events at once (it's an all-names call per the SDK), so we
+//   don't need to iterate names on teardown.
+// ---------------------------------------------------------------------------
+static IGameEventManager2* s_pGameEventManager = nullptr;
+static IGameEvent*         s_currentEvent      = nullptr;
+static std::set<std::string> s_subscribedNames;
+
+class S2ScriptEventListener : public IGameEventListener2 {
+public:
+    void FireGameEvent(IGameEvent* ev) override {
+        if (!ev) return;
+        // Shim-side diagnostic: confirm the listener fires before core dispatch.
+        // TODO(5D.1b): gate behind a debug flag (or remove) before the manager is wired — once
+        // AddListener works this logs EVERY game event (player_hurt/weapon_fire/…) = console spam.
+        Msg("[s2script] event fired: %s\n", ev->GetName());
+        // Save previous (re-entrancy: if dispatch triggers another FireGameEvent, the inner
+        // call will see its own event in s_currentEvent; we restore ours on return).
+        IGameEvent* prev = s_currentEvent;
+        s_currentEvent = ev;
+        s2script_core_dispatch_game_event(ev->GetName());
+        s_currentEvent = prev;  // restore
+    }
+};
+static S2ScriptEventListener s_eventListener;
+
+// ---------------------------------------------------------------------------
+// Event engine-ops (Slice 5D.1).  C-ABI, called by the Rust core through the
+// S2EngineOps table.  All degrade-never-crash: null manager / null event / null key
+// → safe default.
+// ---------------------------------------------------------------------------
+
+static int s2_event_subscribe(const char* name) {
+    if (!s_pGameEventManager || !name) return -1;
+    // Track per-name: AddListener only the first time JS subscribes to this event name.
+    if (s_subscribedNames.insert(name).second) {
+        s_pGameEventManager->AddListener(&s_eventListener, name, /*bServerSide=*/true);
+    }
+    return 0;
+}
+
+static int s2_event_unsubscribe(const char* name) {
+    // We intentionally do NOT erase `name` from s_subscribedNames here.
+    // s_subscribedNames tracks "names ever registered with the engine via AddListener" so
+    // that a later re-subscribe to the same name sees insert().second == false and skips
+    // the second AddListener call.  Erasing on unsubscribe would break that guard: a
+    // subscribe → unsubscribe → re-subscribe sequence would call AddListener twice for the
+    // same (listener, name) pair, risking double-fire of the event.
+    //
+    // IGameEventManager2::RemoveListener is an all-names call (it cannot remove a single
+    // name), so we leave the listener registered with the engine.  Any engine deliveries
+    // for a name that has no active JS subscriber are silently dropped by core's empty
+    // subscriber list — no JS handler runs.  The single RemoveListener + clear() happen in
+    // Unload() only.
+    (void)name;
+    return 0;
+}
+
+static int s2_event_get_int(const char* k) {
+    return (s_currentEvent && k) ? s_currentEvent->GetInt(CKV3MemberName(k), 0) : 0;
+}
+
+static float s2_event_get_float(const char* k) {
+    return (s_currentEvent && k) ? s_currentEvent->GetFloat(CKV3MemberName(k), 0.0f) : 0.0f;
+}
+
+static int s2_event_get_bool(const char* k) {
+    return (s_currentEvent && k)
+        ? (s_currentEvent->GetBool(CKV3MemberName(k), false) ? 1 : 0)
+        : 0;
+}
+
+static const char* s2_event_get_string(const char* k) {
+    return (s_currentEvent && k) ? s_currentEvent->GetString(CKV3MemberName(k), "") : "";
+}
+
+// Returns uint64_t.  The SDK's uint64 is unsigned long long on Linux (tier0/platform.h:303);
+// uint64_t (from <stdint.h> via s2script_core.h) resolves to the same underlying type.
+static uint64_t s2_event_get_uint64(const char* k) {
+    return (s_currentEvent && k)
+        ? static_cast<uint64_t>(s_currentEvent->GetUint64(CKV3MemberName(k), 0))
+        : 0u;
+}
+
+// Returns the CPlayerSlot index as int (-1 means absent/invalid).
+// GetPlayerSlot() has no default-value parameter in the SDK — if the key is absent the
+// returned CPlayerSlot value is implementation-defined; .Get() on it is the right call
+// (T5 live gate confirms the fallback value; expected -1 on absence in CS2).
+static int s2_event_get_player_slot(const char* k) {
+    return (s_currentEvent && k)
+        ? s_currentEvent->GetPlayerSlot(CKV3MemberName(k)).Get()
+        : -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +660,32 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                verStr);
             }
         }
+        // Acquire IGameEventManager2* (Slice 5D.1). In CS2 the game-event manager is served by the
+        // GAME DLL, so try the SERVER factory first, then the engine factory as a fallback.
+        // Community-confirmed interface string: "GAMEEVENTSMANAGER002" on CS2.
+        // Degrade-never-crash: leave null on any failure → event ops become no-ops.
+        {
+            auto it = versions.find("GameEventManager");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : "GAMEEVENTSMANAGER002";
+            int ret = 0;
+            s_pGameEventManager = serverFactory
+                ? reinterpret_cast<IGameEventManager2*>(serverFactory(verStr, &ret))
+                : nullptr;
+            if (!s_pGameEventManager || ret != 0) {   // fall back to the engine factory
+                ret = 0;
+                s_pGameEventManager = engineFactory
+                    ? reinterpret_cast<IGameEventManager2*>(engineFactory(verStr, &ret))
+                    : nullptr;
+            }
+            if (s_pGameEventManager && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: GameEventManager (%s)\n", verStr);
+            } else {
+                s_pGameEventManager = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: GameEventManager (%s)"
+                               " — game-event natives degrade\n", verStr);
+            }
+        }
     }
     // --- end interface acquisition ---
 
@@ -568,6 +703,15 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.ent_state_changed  = &s2_ent_state_changed;
     ops.concommand_register = &s2_concommand_register;
     ops.schema_enumerate   = &schema_enumerate;  // 5B.1: walks SchemaSystem, streams classes/fields to core
+    // Game-event ops (Slice 5D.1): order MUST match S2EngineOps in s2script_core.h + Rust v8host.rs.
+    ops.event_subscribe      = &s2_event_subscribe;
+    ops.event_unsubscribe    = &s2_event_unsubscribe;
+    ops.event_get_int        = &s2_event_get_int;
+    ops.event_get_float      = &s2_event_get_float;
+    ops.event_get_bool       = &s2_event_get_bool;
+    ops.event_get_string     = &s2_event_get_string;
+    ops.event_get_uint64     = &s2_event_get_uint64;
+    ops.event_get_player_slot = &s2_event_get_player_slot;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -634,6 +778,15 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFramePost), true);
         m_frameHookInstalled = false;
     }
+
+    // Unregister the game-event listener before core shutdown (Slice 5D.1).
+    // RemoveListener is an all-names call per the SDK — one call removes the listener
+    // from every subscribed event.  Degrade-never-crash: null manager → skip.
+    if (s_pGameEventManager) {
+        s_pGameEventManager->RemoveListener(&s_eventListener);
+        s_pGameEventManager = nullptr;
+    }
+    s_subscribedNames.clear();
 
     s2script_core_shutdown();
     return true;

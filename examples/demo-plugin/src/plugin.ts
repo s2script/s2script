@@ -1,27 +1,25 @@
-import { OnGameFrame } from "@s2script/frame";
+import { Events } from "@s2script/cs2";
 import { Player } from "@s2script/cs2";
 
-// Slice 5C.4 — pointer-chain nav. Every ~256 frames, read each in-game player's pawn world position +
-// rotation via the generated pointer-chain accessors (entity -> CBodyComponent -> CGameSceneNode).
-//   - pawn.origin -> m_vecAbsOrigin (Vector) — world position.
-//   - pawn.angles -> m_angAbsRotation (QAngle) — body rotation (distinct from eyeAngles = view/aim).
-let ticks = 0;
-
+// Slice 5D.1 — game events. Subscribe to a couple of CS2 events via the typed Events.on overlay;
+// resolve players with Player.fromSlot(ev.getPlayerSlot(...)). The GameEvent accessor is live during
+// the synchronous handler (raw engine event never crosses to JS).
 export function onLoad(): void {
-  console.log("[demo] onLoad (origin/angles pointer-chain)");
-  OnGameFrame.subscribe(() => {
-    if (ticks++ % 256 !== 0) return;
-    const players = Player.all();
-    console.log("[demo] tick " + ticks + " players=" + players.length);
-    for (const p of players) {
-      const body = p.pawn;
-      if (!body) { console.log("  slot=" + p.slot + " (no pawn)"); continue; }
-      const o = body.origin;                              // Vector | null (world position)
-      const a = body.angles;                              // QAngle | null (body rotation)
-      console.log("  slot=" + p.slot
-        + " origin=" + (o ? o.toString() : "null")
-        + " angles=" + (a ? a.toString() : "null"));
-    }
+  console.log("[demo] onLoad (game events)");
+
+  Events.on("player_spawn", (ev) => {
+    const p = Player.fromSlot(ev.getPlayerSlot("userid"));
+    console.log("[demo] player_spawn slot=" + ev.getPlayerSlot("userid")
+      + " name=" + (p ? p.playerName : "?"));
+  });
+
+  Events.on("player_death", (ev) => {
+    const victim = Player.fromSlot(ev.getPlayerSlot("userid"));
+    const attacker = Player.fromSlot(ev.getPlayerSlot("attacker"));
+    console.log("[demo] player_death victim=" + (victim ? victim.playerName : "?")
+      + " attacker=" + (attacker ? attacker.playerName : "?")
+      + " weapon=" + ev.getString("weapon")
+      + " headshot=" + ev.getBool("headshot"));
   });
 }
 

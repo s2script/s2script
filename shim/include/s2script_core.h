@@ -1,5 +1,6 @@
 #ifndef S2SCRIPT_CORE_H
 #define S2SCRIPT_CORE_H
+#include <stdint.h>   /* uint64_t */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,6 +27,20 @@ typedef void (*s2_emit_field_fn)(void* ctx, const char* cls, const char* name, i
                                  const char* kind, const char* type_name, const char* inner);
 typedef int  (*s2_schema_enumerate_fn)(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field);
 
+/* Game-event engine-ops (Slice 5D.1). The shim implements these; the core calls them.
+ * event_subscribe/unsubscribe track which events the JS layer has subscribed to and
+ * install/remove the IGameEventListener2 per-name.  The six accessors read the current
+ * IGameEvent* (set by FireGameEvent before calling s2script_core_dispatch_game_event).
+ * All return safe defaults when the manager or current event is null (degrade-never-crash). */
+typedef int          (*s2_event_subscribe_fn)(const char* name);
+typedef int          (*s2_event_unsubscribe_fn)(const char* name);
+typedef int          (*s2_event_get_int_fn)(const char* key);
+typedef float        (*s2_event_get_float_fn)(const char* key);
+typedef int          (*s2_event_get_bool_fn)(const char* key);        /* 0/1 */
+typedef const char*  (*s2_event_get_string_fn)(const char* key);      /* valid during dispatch; core copies now */
+typedef uint64_t     (*s2_event_get_uint64_fn)(const char* key);
+typedef int          (*s2_event_get_player_slot_fn)(const char* key); /* -1 if absent */
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -33,6 +48,15 @@ typedef struct {
     s2_ent_state_changed_fn   ent_state_changed;
     s2_concommand_register_fn concommand_register;
     s2_schema_enumerate_fn    schema_enumerate;
+    /* Game-event ops (Slice 5D.1) — MUST remain in this order; mirrors S2EngineOps in core/src/v8host.rs */
+    s2_event_subscribe_fn     event_subscribe;
+    s2_event_unsubscribe_fn   event_unsubscribe;
+    s2_event_get_int_fn       event_get_int;
+    s2_event_get_float_fn     event_get_float;
+    s2_event_get_bool_fn      event_get_bool;
+    s2_event_get_string_fn    event_get_string;
+    s2_event_get_uint64_fn    event_get_uint64;
+    s2_event_get_player_slot_fn event_get_player_slot;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -45,6 +69,12 @@ void s2script_core_shutdown(void);
  * name = Arg(0) (command name), slot = CPlayerSlot::Get() (-1 for server console),
  * args = ArgS() (everything after the command name). */
 void s2script_core_dispatch_concommand(const char* name, int slot, const char* args);
+/* Shim -> core: called by the IGameEventListener2 trampoline when a game event fires.
+ * name = ev->GetName().  During this call the shim's s_currentEvent is set so the
+ * event accessor ops (event_get_int / float / bool / string / uint64 / player_slot)
+ * read live data from the current IGameEvent*.  After dispatch returns, s_currentEvent
+ * is restored to its previous value (re-entrancy guard). */
+void s2script_core_dispatch_game_event(const char* name);
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);

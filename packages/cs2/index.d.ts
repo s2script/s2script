@@ -1,12 +1,15 @@
 /**
  * @s2script/cs2 — author-time type stubs for the injected CS2 game API. NO runtime code.
  * The typed field accessors are GENERATED (schema.generated.d.ts) from the schema catalog by
- * `s2script gen-schema`; this file adds the hand-written entry points on top.
+ * `s2script gen-schema`; the typed event interfaces are GENERATED (events.generated.d.ts) from
+ * the event catalog by `s2script gen-events`; this file adds the hand-written entry points on top.
  */
 import type { EntityRef } from "@s2script/entity";
 import type { Vector, QAngle } from "@s2script/math";
 export * from "./schema.generated";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
+export { GameEvent } from "@s2script/events";
+export type { GameEvents } from "./events.generated";
 
 /**
  * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the serial-gated ref.
@@ -43,4 +46,17 @@ export declare const Player: {
   fromSlot(slot: number): Player | null;
   /** Every connected player (slots with a valid controller). */
   all(): Player[];
+};
+
+import type { GameEvent } from "@s2script/events";
+import type { GameEvents } from "./events.generated";
+/**
+ * Game-event subscription (typed overlay). Importing from `@s2script/cs2` gives the typed overload:
+ * `Events.on("player_death", ev => ev.getPlayerSlot("attacker"))` typechecks via the GameEvents map.
+ * The `off` signature matches `@s2script/events` semantics: removes ALL of this plugin's handlers for `name`.
+ */
+export declare const Events: {
+  on<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => void): void;
+  on(name: string, handler: (ev: GameEvent) => void): void;
+  off(name: string, handler: (ev: GameEvent) => void): void;
 };

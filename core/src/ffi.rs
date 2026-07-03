@@ -69,6 +69,20 @@ pub extern "C" fn s2script_core_shutdown() {
     let _ = catch_unwind(|| v8host::shutdown());
 }
 
+/// Shim → core: called by the shim's `IGameEventListener2` when an event fires (the shim has already
+/// stashed the live `IGameEvent*` for the accessor engine-ops). Dispatches to the name's JS subscribers.
+///
+/// `catch_unwind`-wrapped; null pointer and invalid UTF-8 degrade to a no-op (never panic across
+/// the FFI boundary per spec §6).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) {
+    let _ = catch_unwind(|| {
+        if name.is_null() { return; }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
+        v8host::dispatch_game_event(name_str);
+    });
+}
+
 /// C-ABI entry point the shim's ConCommand trampoline calls when a registered command fires.
 /// `name` = command name (Arg(0)), `slot` = CPlayerSlot::Get() (-1 for server console),
 /// `args` = CCommand::ArgS() (everything after the name).
