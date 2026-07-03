@@ -1186,8 +1186,10 @@ are deferred). A **name-transform fix** shipped alongside: `idiomaticName` now s
 set, so `m_steamID` → `steamID` (was the over-stripped `iD`) and `m_bombSite` → `bombSite` (was `site`), while
 the existing gameplay names (`health`/`teamNum`/`friction`/`pawn`/`controller`) are unchanged.
 
-**Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`; sniper-rebuilt for the new natives). Each player is
-read twice — the generated accessors and the raw primitives — and they agree:
+**Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`; sniper-rebuilt for the new natives). This log is from
+an *instrumented* form of the demo that reads each player twice — the generated accessors (`GEN`) and the raw
+primitives (`RAW`) — to prove they agree; the committed `examples/demo-plugin` emits just the generated form. See
+[the spike-findings doc](docs/superpowers/specs/2026-07-02-slice-5b4-spike-findings.md) for the full comparison:
 
 ```
 [demo] tick 257 players=2
