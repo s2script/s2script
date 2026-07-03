@@ -19,8 +19,10 @@ test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (
   EntityRef.prototype.readBool = function () { return false; };
   EntityRef.prototype.readHandle = function () { return new EntityRef(this.index + 100, 7); }; // a live nav target
   const stdEntity = { EntityRef };
+  const math = { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
+                  QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } };
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? stdEntity : null),
+    __s2require: (n) => (n === "@s2script/entity" ? stdEntity : n === "@s2script/math" ? math : null),
     __s2_schema_offset: () => 8,               // any non-negative offset
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],
@@ -52,7 +54,10 @@ test("Player.fromSlot degrades to null when the controller is invalid (offline v
   function EntityRef(i, s) { this.index = i; this.serial = s; }
   EntityRef.prototype.isValid = function () { return false; };   // invalid slot
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : null),
+    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef }
+      : n === "@s2script/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
+                                   QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
+      : null),
     __s2_schema_offset: () => 8, __s2_ent_current_serial: () => -1, __s2_handle_decode: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
@@ -71,7 +76,10 @@ test("schema.generated.js + pawn.js compose: Pawn.prototype has generated access
   stdPkg.EntityRef.prototype.readBool = function () { return false; };
   stdPkg.EntityRef.prototype.readHandle = function () { return new stdPkg.EntityRef(1, 7); };
   const ctx = {
-    __s2require: (name) => (name === "@s2script/entity" ? stdPkg : null),
+    __s2require: (name) => (name === "@s2script/entity" ? stdPkg
+      : name === "@s2script/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
+                                      QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
+      : null),
     __s2_schema_offset: () => 100,
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],
@@ -94,7 +102,10 @@ test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter
   EntityRef.prototype.isValid = function () { return true; };    // controller entity exists...
   EntityRef.prototype.readHandle = function () { return null; };  // ...but has no player pawn (empty slot)
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : null),
+    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef }
+      : n === "@s2script/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
+                                   QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
+      : null),
     __s2_schema_offset: () => 8, __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
@@ -103,4 +114,30 @@ test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter
   const { Player } = ctx.__s2pkg_cs2;
   assert.equal(Player.fromSlot(0), null, "valid controller but no pawn → not occupied → null");
   assert.deepEqual(Player.all(), [], "Player.all() excludes controllers without a pawn");
+});
+
+test("generated Vector/QAngle accessor: reads a value object, degrades to null (offline vm)", () => {
+  function EntityRef(i, s) { this.index = i; this.serial = s; }
+  EntityRef.prototype.isValid = function () { return true; };
+  EntityRef.prototype.readHandle = function () { return new EntityRef(this.index + 100, 7); };
+  let floatsRet = [1, 2, 3];
+  EntityRef.prototype.readFloats = function () { return floatsRet; };   // toggled to null below
+  // minimal stub value types (match the real shape):
+  function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  const math = { Vector, QAngle };
+  const ctx = {
+    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math : null),
+    __s2_schema_offset: () => 8, __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
+  };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  const { Pawn } = ctx.__s2pkg_cs2;
+  const p = new Pawn(new EntityRef(5, 9));
+  const ang = p.eyeAngles;                          // generated QAngle accessor
+  assert.ok(ang instanceof QAngle, "eyeAngles is a QAngle");
+  assert.deepEqual([ang.x, ang.y, ang.z], [1, 2, 3]);
+  floatsRet = null;                                 // stale ref → readFloats null
+  assert.equal(p.eyeAngles, null, "a null readFloats → the accessor returns null");
 });

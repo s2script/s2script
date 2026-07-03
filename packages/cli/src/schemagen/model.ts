@@ -8,7 +8,7 @@ export interface CatalogField {
   type: { kind: string; name?: string; inner?: string };
 }
 
-export type AccessorKind = "f32" | "bool" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "handle" | "u64" | "i64" | "f64" | "str";
+export type AccessorKind = "f32" | "bool" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "handle" | "u64" | "i64" | "f64" | "str" | "vector" | "qangle";
 
 export interface FieldDescriptor {
   propName: string;
@@ -27,12 +27,14 @@ export const READ: Record<AccessorKind, string> = {
   f32: "readFloat32", bool: "readBool", i8: "readInt8", i16: "readInt16",
   i32: "readInt32", u8: "readUInt8", u16: "readUInt16", u32: "readUInt32", handle: "readHandle",
   u64: "readUInt64", i64: "readInt64", f64: "readFloat64", str: "readString",
+  vector: "readFloats", qangle: "readFloats",
 };
 export const WRITE: Partial<Record<AccessorKind, string>> = { f32: "writeFloat32", bool: "writeBool", i32: "writeInt32" };
 export const TSTYPE: Record<AccessorKind, string> = {
   f32: "number | null", bool: "boolean | null", i8: "number | null", i16: "number | null",
   i32: "number | null", u8: "number | null", u16: "number | null", u32: "number | null", handle: "EntityRef | null",
   u64: "string | null", i64: "string | null", f64: "number | null", str: "string | null",
+  vector: "Vector | null", qangle: "QAngle | null",
 };
 
 // atomic subtype → (kind, writable). Only genuine scalars; everything else falls through to skip.
@@ -41,6 +43,14 @@ const ATOMIC: Record<string, { k: AccessorKind; w: boolean }> = {
   int8: { k: "i8", w: false }, int16: { k: "i16", w: false }, int32: { k: "i32", w: true },
   uint8: { k: "u8", w: false }, uint16: { k: "u16", w: false }, uint32: { k: "u32", w: false },
   uint64: { k: "u64", w: false }, int64: { k: "i64", w: false }, float64: { k: "f64", w: false },
+};
+
+// atomic vector-type name → kind (only the fixed-3-float types this slice; 2D/4D/Color/Quaternion deferred).
+const VEC: Record<string, AccessorKind> = { Vector: "vector", QAngle: "qangle" };
+// kind → value-class + float count, for the emitters + import detection.
+export const VEC_INFO: Partial<Record<AccessorKind, { cls: string; count: number }>> = {
+  vector: { cls: "Vector", count: 3 },
+  qangle: { cls: "QAngle", count: 3 },
 };
 
 const KNOWN_TAGS = new Set(["i","n","b","h","fl","f","u","e","p","a","v","vec","ang","q","sz","isz","ch","clr","un"]);
@@ -54,6 +64,8 @@ export function idiomaticName(raw: string): string {
 export function classifyField(type: CatalogField["type"]): { accessorKind: AccessorKind; writable: boolean; strLen?: number } | { skip: string } {
   if (type.kind === "handle") return { accessorKind: "handle", writable: false };
   if (type.kind === "atomic") {
+    const vk = VEC[type.name ?? ""];
+    if (vk) return { accessorKind: vk, writable: false };
     const m = ATOMIC[type.name ?? ""];
     if (m) return { accessorKind: m.k, writable: m.w };
     return { skip: `atomic '${type.name}' is not a scalar (string/vector/compound)` };

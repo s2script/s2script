@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { idiomaticName, classifyField, buildModel, flattenedFields } from "../src/schemagen/model.ts";
+import { idiomaticName, classifyField, buildModel, flattenedFields, TSTYPE } from "../src/schemagen/model.ts";
 
 test("idiomaticName strips m_ + Hungarian tag, camelCases", () => {
   assert.equal(idiomaticName("m_iHealth"), "health");
@@ -19,7 +19,7 @@ test("classifyField maps in-scope kinds, skips the rest with a reason", () => {
   assert.deepEqual(classifyField({ kind: "handle", inner: "CBaseEntity" }), { accessorKind: "handle", writable: false });
   assert.ok("skip" in classifyField({ kind: "enum", name: "Team_t" }));
   assert.ok("skip" in classifyField({ kind: "atomic", name: "CUtlSymbolLarge" }));
-  assert.ok("skip" in classifyField({ kind: "atomic", name: "Vector" }));
+  assert.ok("skip" in classifyField({ kind: "atomic", name: "Vector2D" }));  // Vector2D/4D deferred
   // uint64/int64/float64 are now supported (not skipped) — see the new test below
   assert.ok("skip" in classifyField({ kind: "class", name: "CTransform" }));
   assert.ok("skip" in classifyField({ kind: "ptr" }));
@@ -30,7 +30,7 @@ test("buildModel: closure includes ancestors, own fields per class, skips logged
   const catalog = {
     Base: { parent: null, fields: [
       { name: "m_iHealth", offset: 8, type: { kind: "atomic", name: "int32" } },
-      { name: "m_vecStuff", offset: 12, type: { kind: "atomic", name: "Vector" } },   // skipped
+      { name: "m_vecStuff", offset: 12, type: { kind: "atomic", name: "Vector2D" } },   // skipped (Vector2D deferred)
     ] },
     Mid: { parent: "Base", fields: [
       { name: "m_hOwner", offset: 20, type: { kind: "handle", inner: "Base" } },
@@ -102,4 +102,28 @@ test("buildModel threads strLen onto a char[N] field descriptor", () => {
   const sid = m.classes[0].ownFields.find(x => x.rawName === "m_steamID");
   assert.equal(sid.propName, "steamID");
   assert.equal(sid.accessorKind, "u64");
+});
+
+test("classifyField maps Vector/QAngle atomics to vector/qangle kinds", () => {
+  assert.deepEqual(classifyField({ kind: "atomic", name: "Vector" }), { accessorKind: "vector", writable: false });
+  assert.deepEqual(classifyField({ kind: "atomic", name: "QAngle" }), { accessorKind: "qangle", writable: false });
+  // an unmapped vector-ish atomic still skips (Vector2D/Color/Quaternion deferred):
+  assert.ok("skip" in classifyField({ kind: "atomic", name: "Vector2D" }));
+  assert.ok("skip" in classifyField({ kind: "atomic", name: "Color" }));
+});
+
+test("buildModel emits a vector/qangle field with the right kind + TS type", () => {
+  const catalog = { Base: { parent: null, fields: [
+    { name: "m_vecAbsVelocity", offset: 8, type: { kind: "atomic", name: "Vector" } },
+    { name: "m_angEyeAngles", offset: 24, type: { kind: "atomic", name: "QAngle" } },
+  ] } };
+  const m = buildModel(catalog, ["Base"]);
+  const vel = m.classes[0].ownFields.find(x => x.rawName === "m_vecAbsVelocity");
+  assert.equal(vel.propName, "absVelocity");     // vec ∈ tags stripped
+  assert.equal(vel.accessorKind, "vector");
+  assert.equal(TSTYPE.vector, "Vector | null");
+  const ang = m.classes[0].ownFields.find(x => x.rawName === "m_angEyeAngles");
+  assert.equal(ang.propName, "eyeAngles");        // ang ∈ tags stripped
+  assert.equal(ang.accessorKind, "qangle");
+  assert.equal(TSTYPE.qangle, "QAngle | null");
 });

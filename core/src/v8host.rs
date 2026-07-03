@@ -333,6 +333,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.I64); },
     readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.F64); },
     readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.serial, o, maxLen); },
+    readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.serial, o, count); },
     readHandle: function (o) {
       var h = __s2_ent_ref_read(this.index, this.serial, o, K.U32);
       if (h === null) return null;
@@ -353,6 +354,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       ? new EntityRef(value.__entref__[0], value.__entref__[1])
       : value;
   };
+  // --- Slice 5C.3: math value types (Vector, QAngle) — pure JS, no engine ops ---
+  function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  Vector.prototype.length = function () { return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z); };
+  Vector.prototype.toString = function () { return "Vector(" + this.x + ", " + this.y + ", " + this.z + ")"; };
+  function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
+  QAngle.prototype.toString = function () { return "QAngle(" + this.x + ", " + this.y + ", " + this.z + ")"; };
+  globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -849,6 +857,35 @@ fn s2_ent_ref_read_string(
         if ent.is_null() { return; }                 // invalid → null (already set)
         let s = crate::entity::read_string(ent as *const u8, off, max_len);
         if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_ent_ref_read_floats(index, serial, offset, count) -> number[] | null`. Serial-gated;
+/// reads `count` (1..=4) contiguous f32s into a JS array (a COPY; the pointer never crosses to JS).
+/// null on a stale/invalid ref or an out-of-range count.
+fn s2_ent_ref_read_floats(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let count = args.get(3).integer_value(scope).unwrap_or(0) as i32;
+        if count <= 0 || count > 4 { return; }          // only small fixed vectors (Vector..Vector4D)
+        if off < 0 { return; }                           // schema-miss sentinel (-1) → null (not a partial read)
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }                     // stale/invalid → null (already set)
+        let p = ent as *const u8;
+        let arr = v8::Array::new(scope, count);
+        for i in 0..count {
+            let v = crate::entity::read_f32(p, off + i * 4) as f64;
+            let num = v8::Number::new(scope, v);
+            arr.set_index(scope, i as u32, num.into());
+        }
+        rv.set(arr.into());
     }));
 }
 
@@ -1495,6 +1532,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
     set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
     set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
+    set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     // ConCommand registration.
@@ -3227,6 +3265,20 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Slice 5C.3 Task 2: `__s2_ent_ref_read_floats` native + `EntityRef.readFloats` degrade safely
+    /// without engine-ops (serial-gated → null on stale ref / no ops table).
+    #[test]
+    fn read_floats_native_and_method_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // the native degrades to null (no engine ops → entity_resolve_ptr null):
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_floats(1,7,8,3))"), "null");
+        // the EntityRef method degrades to null:
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readFloats(8,3))"#), "null");
+        shutdown();
+    }
+
     /// Slice 5A Task 5: a game-package prelude (registered via `register_injected_package`)
     /// runs in the RAW context scope where the CJS `require` is NOT defined — it must use
     /// the `__s2require` native to reach `@s2script/entity`. This guards that mechanism
@@ -3396,6 +3448,24 @@ mod frame_tests {
         assert_eq!(read_global_string("mods", "__t_iface"), "function");
         assert_eq!(read_global_string("mods", "__t_std"), "null");
         assert_eq!(read_global_string("mods", "__t_nope"), "null");
+        shutdown();
+    }
+
+    /// Slice 5C.3 Task 1: `@s2script/math` resolves to `{ Vector, QAngle }` from the prelude;
+    /// `Vector` carries x/y/z + `length()`; `QAngle` carries x/y/z. Pure JS value types — no
+    /// engine ops needed.
+    #[test]
+    fn math_module_provides_vector_and_qangle() {
+        let _ = init(dummy_logger());
+        create_plugin_context("p");
+        // the module resolves + constructs:
+        assert_eq!(eval_in_context_string("p", r#"typeof __s2require("@s2script/math").Vector"#), "function");
+        assert_eq!(eval_in_context_string("p", r#"typeof __s2require("@s2script/math").QAngle"#), "function");
+        // Vector data + length():
+        assert_eq!(eval_in_context_string("p", r#"var V=__s2require("@s2script/math").Vector; var v=new V(3,4,0); v.x+","+v.y+","+v.z"#), "3,4,0");
+        assert_eq!(eval_in_context_string("p", r#"var V=__s2require("@s2script/math").Vector; String(new V(3,4,0).length())"#), "5");
+        // QAngle data:
+        assert_eq!(eval_in_context_string("p", r#"var Q=__s2require("@s2script/math").QAngle; var q=new Q(10,20,30); q.x+","+q.y+","+q.z"#), "10,20,30");
         shutdown();
     }
 }
