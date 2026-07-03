@@ -44,6 +44,8 @@ export declare class EntityRef {
   readFloat64(offset: number): number | null;
   /** Read a NUL-terminated string (up to `maxLen` bytes) at `offset`, or null if the ref is stale. */
   readString(offset: number, maxLen: number): string | null;
+  /** Read `count` (1..4) contiguous float32s at `offset` into a number[], or null if the ref is stale. */
+  readFloats(offset: number, count: number): number[] | null;
   /** Read a `CEntityHandle` at `offset`, decode it, and return a live `EntityRef` — or null if stale/invalid. */
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */
