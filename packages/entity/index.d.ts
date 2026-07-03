@@ -46,6 +46,10 @@ export declare class EntityRef {
   readString(offset: number, maxLen: number): string | null;
   /** Read `count` (1..4) contiguous float32s at `offset` into a number[], or null if the ref is stale. */
   readFloats(offset: number, count: number): number[] | null;
+  /** Follow a chain of pointer derefs (each an offset into the current target), then read `count` (1..4) floats
+   *  at `finalOff` into a number[]. All in-core (raw pointers never cross); null if the root is stale or any hop
+   *  is null. */
+  readFloatsChain(ptrOffs: number[], finalOff: number, count: number): number[] | null;
   /** Read a `CEntityHandle` at `offset`, decode it, and return a live `EntityRef` — or null if stale/invalid. */
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */
