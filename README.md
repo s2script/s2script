@@ -1205,6 +1205,54 @@ bot_kick
 
 ---
 
+## Vector value type (Slice 5C.3)
+
+Slice 5C.3 opens the `@s2script/std`-breadth taxonomy with the first engine-generic value-type module,
+`@s2script/math`, and extends the codegen to **direct atomic `Vector`/`QAngle` fields**:
+
+```ts
+import { Player } from "@s2script/cs2";
+
+for (const p of Player.all()) {
+  const body = p.pawn; if (!body) continue;
+  const aim = body.eyeAngles;      // m_angEyeAngles (QAngle) -> { x: pitch, y: yaw, z: roll } | null
+  const vel = body.absVelocity;    // m_vecAbsVelocity (Vector) -> { x, y, z } | null
+  const speed = vel ? vel.length() : 0;   // magnitude helper
+}
+```
+
+- **`@s2script/math`** — the `Vector` / `QAngle` value types (copied `{x,y,z}` snapshots; `Vector.length()` is
+  the magnitude). They live in the core prelude alongside `entity`/`frame`/… because a vector is engine-generic
+  (true on any Source 2 game), not CS2-specific. A `Vector` is a plain object, so it crosses the inter-plugin
+  structured-copy wire cleanly — no wire caveat.
+- **`EntityRef.readFloats(off, count)`** — one serial-gated lookup reading `count` (1–4) contiguous `float32`s
+  into a `number[]`. The **generated getter** (game layer) wraps it: `var a = this.ref.readFloats(off, 3);
+  return a === null ? null : new Vector(a[0], a[1], a[2]);`. `@s2script/entity` stays independent of
+  `@s2script/math` — the value-type construction lives in the generated code, which requires `@s2script/math`
+  itself.
+- **Codegen** maps the `atomic` `Vector`/`QAngle` type-names (fixed 3-float layout) to `vector`/`qangle` kinds;
+  `pawn.eyeAngles`, `pawn.absVelocity` (and ~15 more direct Vector/QAngle fields) become generated accessors.
+
+**Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`; sniper-rebuilt for the new native):
+
+```
+[demo] tick 513 players=2
+  slot=0 eyeAngles=QAngle(1.716, 78.596, 0) absVelocity=Vector(0, 0, 0) speed=0.0
+  slot=1 eyeAngles=QAngle(1.716, -107.403, 0) absVelocity=Vector(0, 0, 0) speed=0.0
+bot_kick
+[demo] tick 7425 players=0        (server ticking, no crash)
+```
+
+`pawn.eyeAngles` reads the bots' live, frame-varying view angles (pitch/yaw change each tick, roll = 0);
+`pawn.absVelocity` reads a `Vector` (`0,0,0` for the stationary bots — a correct read via the same `readFloats`
+path). Both drop to `null` on disconnect (`players=0`), server stable.
+
+**Deferred:** `origin` (it lives behind the `CGameSceneNode` pointer + a quantized wrapper — the embedded/ptr
+follow); Vector **writes** (velocity/angle networking, and `origin`-write = an engine `Teleport()`, not a field
+poke); `Vector2D`/`Vector4D`/`Color`/`Quaternion` value types + codegen; Vector arithmetic.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

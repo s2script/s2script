@@ -1,27 +1,27 @@
 import { OnGameFrame } from "@s2script/frame";
 import { Player } from "@s2script/cs2";
 
-// Slice 5B.4 — player identity through generated string + 64-bit accessors. Every ~256 frames, list
-// the in-game players (each a CONTROLLER) and read their identity via the generated
-// CCSPlayerController accessors:
-//   - player.playerName -> m_iszPlayerName (a char[128] inline buffer) as a string.
-//   - player.steamID    -> m_steamID (uint64) as a DECIMAL STRING (SourceMod-parity, wire-safe;
-//                          SourcePawn has no 64-bit int, so GetClientAuthId(AuthId_SteamID64) is a string).
-//   - player.pawn.health -> the pawn's generated accessor.
-// All EntityRef-backed + serial-gated (T|null); Player.all() drops disconnected players (occupancy filter).
+// Slice 5C.3 — Vector/QAngle value types. Every ~256 frames, read each in-game player's pawn view
+// angles (QAngle) + velocity (Vector) via the generated accessors — copied {x,y,z} snapshots.
+//   - pawn.eyeAngles   -> m_angEyeAngles (QAngle) — where the player is aiming.
+//   - pawn.absVelocity -> m_vecAbsVelocity (Vector) — .length() is the player's speed.
 let ticks = 0;
 
 export function onLoad(): void {
-  console.log("[demo] onLoad (player identity)");
+  console.log("[demo] onLoad (Vector/QAngle)");
   OnGameFrame.subscribe(() => {
     if (ticks++ % 256 !== 0) return;
     const players = Player.all();
     console.log("[demo] tick " + ticks + " players=" + players.length);
     for (const p of players) {
+      const body = p.pawn;
+      if (!body) { console.log("  slot=" + p.slot + " (no pawn)"); continue; }
+      const ang = body.eyeAngles;                          // generated QAngle | null
+      const vel = body.absVelocity;                        // generated Vector | null
       console.log("  slot=" + p.slot
-        + " name=" + JSON.stringify(p.playerName)   // generated: m_iszPlayerName (char[128]) -> string
-        + " steamID=" + p.steamID                    // generated: m_steamID (uint64) -> decimal string
-        + " health=" + (p.pawn ? p.pawn.health : "none"));
+        + " eyeAngles=" + (ang ? ang.toString() : "null")
+        + " absVelocity=" + (vel ? vel.toString() : "null")
+        + " speed=" + (vel ? vel.length().toFixed(1) : "null"));
     }
   });
 }
