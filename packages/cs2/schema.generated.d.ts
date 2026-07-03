@@ -7,10 +7,10 @@ export interface CEntityInstance {
 export interface CBaseEntity extends CEntityInstance {
   currentThinkContext: number | null;
   disabledContextThinks: boolean | null;
-  networkChange: number | null;
+  lastNetworkChange: number | null;
   health: number | null;
   maxHealth: number | null;
-  readonly state: number | null;
+  readonly lifeState: number | null;
   damageAccumulator: number | null;
   takesDamage: boolean | null;
   readonly waterTouch: number | null;
@@ -21,7 +21,7 @@ export interface CBaseEntity extends CEntityInstance {
   animTime: number | null;
   simulationTime: number | null;
   clientSideRagdoll: boolean | null;
-  readonly interpolationFrame: number | null;
+  readonly ubInterpolationFrame: number | null;
   readonly teamNum: number | null;
   sentToClients: number | null;
   speed: number | null;
@@ -69,19 +69,21 @@ export interface CBaseModelEntity extends CBaseEntity {
   renderToCubemaps: boolean | null;
   noInterpolate: boolean | null;
   glowBackfaceMult: number | null;
-  minDist: number | null;
-  maxDist: number | null;
+  fadeMinDist: number | null;
+  fadeMaxDist: number | null;
   fadeScale: number | null;
   shadowStrength: number | null;
   readonly objectCulling: number | null;
 }
 
 export interface CBasePlayerController extends CBaseEntity {
+  readonly inButtonsWhichAreToggles: string | null;
   readonly tickBase: number | null;
   readonly pawn: EntityRef | null;
   knownTeamMismatch: boolean | null;
   readonly splitOwner: EntityRef | null;
   isHLTV: boolean | null;
+  readonly playerName: string | null;
   lerpTime: number | null;
   lagCompensation: boolean | null;
   predict: boolean | null;
@@ -91,6 +93,7 @@ export interface CBasePlayerController extends CBaseEntity {
   lastEntitySteadyState: number | null;
   availableEntitySteadyState: number | null;
   hasAnySteadyStateEnts: boolean | null;
+  readonly steamID: string | null;
   noClipEnabled: boolean | null;
   readonly desiredFOV: number | null;
 }
@@ -107,7 +110,7 @@ export interface CBaseAnimGraph extends CBaseModelEntity {
 export interface CCSPlayerController extends CBasePlayerController {
   readonly ping: number | null;
   hasCommunicationAbuseMute: boolean | null;
-  readonly communicationMuteFlags: number | null;
+  readonly uiCommunicationMuteFlags: number | null;
   readonly pendingTeamNum: number | null;
   compTeammateColor: number | null;
   everPlayedOnTeam: boolean | null;
@@ -120,6 +123,8 @@ export interface CCSPlayerController extends CBasePlayerController {
   switchTeamsOnNextRoundReset: boolean | null;
   removeAllItemsOnNextRoundReset: boolean | null;
   coachingTeam: number | null;
+  readonly playerDominated: string | null;
+  readonly playerDominatingMe: string | null;
   competitiveRanking: number | null;
   competitiveWins: number | null;
   readonly competitiveRankType: number | null;
@@ -128,11 +133,11 @@ export interface CCSPlayerController extends CBasePlayerController {
   competitiveRankingPredicted_Tie: number | null;
   endMatchNextMapVote: number | null;
   readonly activeQuestId: number | null;
-  readonly activeMissionPeriod: number | null;
+  readonly rtActiveMissionPeriod: number | null;
   readonly playerTvControlFlags: number | null;
   draftIndex: number | null;
-  readonly queuedModeDisconnectionTimestamp: number | null;
-  readonly abandonRecordedReason: number | null;
+  readonly msQueuedModeDisconnectionTimestamp: number | null;
+  readonly uiAbandonRecordedReason: number | null;
   readonly networkDisconnectionReason: number | null;
   cannotBeKicked: boolean | null;
   everFullyConnected: boolean | null;
@@ -177,6 +182,7 @@ export interface CCSPlayerController extends CBasePlayerController {
   punishForTeamKill: boolean | null;
   gaveTeamDamageWarning: boolean | null;
   gaveTeamDamageWarningThisRound: boolean | null;
+  readonly dblLastReceivedPacketPlatFloatTime: number | null;
   readonly suspiciousHitCount: number | null;
   readonly nonSuspiciousHitStreak: number | null;
   fireBulletsSeedSynchronized: boolean | null;
@@ -184,7 +190,7 @@ export interface CCSPlayerController extends CBasePlayerController {
 
 export interface CBaseCombatCharacter extends CBaseAnimGraph {
   forceServerRagdoll: boolean | null;
-  energyScale: number | null;
+  impactEnergyScale: number | null;
   applyStressDamage: boolean | null;
   deathEventsDispatched: boolean | null;
   readonly navHullIdx: number | null;
@@ -261,7 +267,7 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
   donated: boolean | null;
   wasOwnedByCT: boolean | null;
   wasOwnedByTerrorist: boolean | null;
-  removeUnownedWeaponThink: number | null;
+  numRemoveUnownedWeaponThink: number | null;
   ironSightMode: number | null;
   watTickOffset: number | null;
 }
@@ -269,6 +275,7 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
 export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   readonly characterDefIndex: number | null;
   hasFemaleVoice: boolean | null;
+  readonly lastPlaceName: string | null;
   inHostageResetZone: boolean | null;
   inBuyZone: boolean | null;
   wasInBuyZone: boolean | null;
@@ -286,6 +293,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   playerLocked: number | null;
   nextSprayDecalTimeExpedited: boolean | null;
   ragdollDamageBone: number | null;
+  readonly ragdollDamageWeaponName: string | null;
   ragdollDamageHeadshot: boolean | null;
   readonly econGlovesChanged: number | null;
   leftHanded: boolean | null;
@@ -313,7 +321,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   flinchStack: number | null;
   velocityModifier: number | null;
   waitForNoAttack: boolean | null;
-  ladderJumpTime: number | null;
+  ignoreLadderJumpTime: number | null;
   killedByHeadshot: boolean | null;
   lastHitBox: number | null;
   botAllowActive: boolean | null;
@@ -330,7 +338,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   deathInfoTime: number | null;
   grenadeParametersStashed: boolean | null;
   committingSuicideOnTeamChange: boolean | null;
-  notKilledNaturally: boolean | null;
+  wasNotKilledNaturally: boolean | null;
   gunGameImmunity: boolean | null;
   molotovDamageTime: number | null;
 }

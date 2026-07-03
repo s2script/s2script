@@ -20,7 +20,7 @@ test("classifyField maps in-scope kinds, skips the rest with a reason", () => {
   assert.ok("skip" in classifyField({ kind: "enum", name: "Team_t" }));
   assert.ok("skip" in classifyField({ kind: "atomic", name: "CUtlSymbolLarge" }));
   assert.ok("skip" in classifyField({ kind: "atomic", name: "Vector" }));
-  assert.ok("skip" in classifyField({ kind: "atomic", name: "uint64" }));
+  // uint64/int64/float64 are now supported (not skipped) — see the new test below
   assert.ok("skip" in classifyField({ kind: "class", name: "CTransform" }));
   assert.ok("skip" in classifyField({ kind: "ptr" }));
   assert.ok("skip" in classifyField({ kind: "unknown" }));
@@ -68,4 +68,38 @@ test("buildModel: idiomatic-name collision across distinct fields → both fall 
 
 test("buildModel: a requested class absent from the catalog is a hard error", () => {
   assert.throws(() => buildModel({ Base: { parent: null, fields: [] } }, ["Nope"]), /Nope/);
+});
+
+test("idiomaticName strips only KNOWN Hungarian tags (steamID/bombSite fixed)", () => {
+  assert.equal(idiomaticName("m_iHealth"), "health");         // i ∈ tags
+  assert.equal(idiomaticName("m_flFriction"), "friction");    // fl ∈ tags
+  assert.equal(idiomaticName("m_hController"), "controller");  // h ∈ tags
+  assert.equal(idiomaticName("m_iszPlayerName"), "playerName");// isz ∈ tags
+  assert.equal(idiomaticName("m_steamID"), "steamID");        // "steam" ∉ tags → kept (was "iD")
+  assert.equal(idiomaticName("m_bombSite"), "bombSite");      // "bomb" ∉ tags → kept (was "site")
+  assert.equal(idiomaticName("m_flags"), "flags");            // no uppercase core → unchanged
+});
+
+test("classifyField maps 64-bit + char[N], skips other unknowns", () => {
+  assert.deepEqual(classifyField({ kind: "atomic", name: "uint64" }), { accessorKind: "u64", writable: false });
+  assert.deepEqual(classifyField({ kind: "atomic", name: "int64" }), { accessorKind: "i64", writable: false });
+  assert.deepEqual(classifyField({ kind: "atomic", name: "float64" }), { accessorKind: "f64", writable: false });
+  assert.deepEqual(classifyField({ kind: "unknown", name: "char[128]" }), { accessorKind: "str", writable: false, strLen: 128 });
+  assert.ok("skip" in classifyField({ kind: "unknown", name: "CUtlSomething" }));
+  assert.ok("skip" in classifyField({ kind: "atomic", name: "CUtlSymbolLarge" }));
+});
+
+test("buildModel threads strLen onto a char[N] field descriptor", () => {
+  const catalog = { Base: { parent: null, fields: [
+    { name: "m_iszName", offset: 8, type: { kind: "unknown", name: "char[64]" } },
+    { name: "m_steamID", offset: 16, type: { kind: "atomic", name: "uint64" } },
+  ] } };
+  const m = buildModel(catalog, ["Base"]);
+  const f = m.classes[0].ownFields.find(x => x.rawName === "m_iszName");
+  assert.equal(f.propName, "name");           // isz stripped
+  assert.equal(f.accessorKind, "str");
+  assert.equal(f.strLen, 64);
+  const sid = m.classes[0].ownFields.find(x => x.rawName === "m_steamID");
+  assert.equal(sid.propName, "steamID");
+  assert.equal(sid.accessorKind, "u64");
 });

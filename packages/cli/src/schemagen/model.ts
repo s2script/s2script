@@ -8,7 +8,7 @@ export interface CatalogField {
   type: { kind: string; name?: string; inner?: string };
 }
 
-export type AccessorKind = "f32" | "bool" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "handle";
+export type AccessorKind = "f32" | "bool" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "handle" | "u64" | "i64" | "f64" | "str";
 
 export interface FieldDescriptor {
   propName: string;
@@ -16,6 +16,7 @@ export interface FieldDescriptor {
   declaringClass: string;
   accessorKind: AccessorKind;
   writable: boolean;
+  strLen?: number;
 }
 export interface SkippedField { className: string; rawName: string; reason: string; }
 export interface ClassDescriptor { className: string; parent: string | null; ownFields: FieldDescriptor[]; skipped: SkippedField[]; }
@@ -25,11 +26,13 @@ export interface SchemaModel { classes: ClassDescriptor[]; collisions: string[];
 export const READ: Record<AccessorKind, string> = {
   f32: "readFloat32", bool: "readBool", i8: "readInt8", i16: "readInt16",
   i32: "readInt32", u8: "readUInt8", u16: "readUInt16", u32: "readUInt32", handle: "readHandle",
+  u64: "readUInt64", i64: "readInt64", f64: "readFloat64", str: "readString",
 };
 export const WRITE: Partial<Record<AccessorKind, string>> = { f32: "writeFloat32", bool: "writeBool", i32: "writeInt32" };
 export const TSTYPE: Record<AccessorKind, string> = {
   f32: "number | null", bool: "boolean | null", i8: "number | null", i16: "number | null",
   i32: "number | null", u8: "number | null", u16: "number | null", u32: "number | null", handle: "EntityRef | null",
+  u64: "string | null", i64: "string | null", f64: "number | null", str: "string | null",
 };
 
 // atomic subtype → (kind, writable). Only genuine scalars; everything else falls through to skip.
@@ -37,21 +40,28 @@ const ATOMIC: Record<string, { k: AccessorKind; w: boolean }> = {
   float32: { k: "f32", w: true }, bool: { k: "bool", w: true },
   int8: { k: "i8", w: false }, int16: { k: "i16", w: false }, int32: { k: "i32", w: true },
   uint8: { k: "u8", w: false }, uint16: { k: "u16", w: false }, uint32: { k: "u32", w: false },
+  uint64: { k: "u64", w: false }, int64: { k: "i64", w: false }, float64: { k: "f64", w: false },
 };
 
+const KNOWN_TAGS = new Set(["i","n","b","h","fl","f","u","e","p","a","v","vec","ang","q","sz","isz","ch","clr","un"]);
 export function idiomaticName(raw: string): string {
   const s = raw.replace(/^m_/, "");
-  const m = s.match(/^[a-z]+([A-Z].*)$/);   // leading lowercase Hungarian tag, then an Uppercase-led core
-  const core = m ? m[1] : s;
+  const m = s.match(/^([a-z]+)([A-Z].*)$/);         // leading lowercase run, then an Uppercase-led core
+  const core = (m && KNOWN_TAGS.has(m[1])) ? m[2] : s;
   return core.charAt(0).toLowerCase() + core.slice(1);
 }
 
-export function classifyField(type: CatalogField["type"]): { accessorKind: AccessorKind; writable: boolean } | { skip: string } {
+export function classifyField(type: CatalogField["type"]): { accessorKind: AccessorKind; writable: boolean; strLen?: number } | { skip: string } {
   if (type.kind === "handle") return { accessorKind: "handle", writable: false };
   if (type.kind === "atomic") {
     const m = ATOMIC[type.name ?? ""];
     if (m) return { accessorKind: m.k, writable: m.w };
-    return { skip: `atomic '${type.name}' is not a scalar (string/vector/compound/64-bit)` };
+    return { skip: `atomic '${type.name}' is not a scalar (string/vector/compound)` };
+  }
+  if (type.kind === "unknown") {
+    const cm = (type.name ?? "").match(/^char\[(\d+)\]$/);
+    if (cm) return { accessorKind: "str", writable: false, strLen: parseInt(cm[1], 10) };
+    return { skip: `unmapped 'unknown' type '${type.name ?? ""}'` };
   }
   if (type.kind === "enum") return { skip: "enum byte-width absent from catalog (deferred)" };
   if (type.kind === "class") return { skip: `embedded class '${type.name ?? ""}' deferred` };
@@ -86,7 +96,7 @@ export function buildModel(catalog: Catalog, requested: string[]): SchemaModel {
     for (const f of catalog[className].fields) {
       const c = classifyField(f.type);
       if ("skip" in c) { skipped.push({ className, rawName: f.name, reason: c.skip }); continue; }
-      ownFields.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: className, accessorKind: c.accessorKind, writable: c.writable });
+      ownFields.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: className, accessorKind: c.accessorKind, writable: c.writable, strLen: c.strLen });
     }
     return { className, parent: parent && inClosure.has(parent) ? parent : null, ownFields, skipped };
   });
