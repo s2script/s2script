@@ -374,7 +374,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readUInt64Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U64); },
     readInt64Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I64); },
     readHandleVia: function (c, o) { var h = __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U32);
-      if (h === null) return null; var d = __s2_handle_decode(h >>> 0); return new EntityRef(d[0], d[1]); },
+      if (h === null) return null; var d = __s2_handle_decode(h >>> 0); var ref = new EntityRef(d[0], d[1]);
+      return ref.isValid() ? ref : null; },   // mirror readHandle: an empty/stale handle -> null (not a dead ref)
     readHandle: function (o) {
       var h = __s2_ent_ref_read(this.index, this.serial, o, K.U32);
       if (h === null) return null;
