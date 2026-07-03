@@ -223,6 +223,8 @@ public:
     void FireGameEvent(IGameEvent* ev) override {
         if (!ev) return;
         // Shim-side diagnostic: confirm the listener fires before core dispatch.
+        // TODO(5D.1b): gate behind a debug flag (or remove) before the manager is wired — once
+        // AddListener works this logs EVERY game event (player_hurt/weapon_fire/…) = console spam.
         Msg("[s2script] event fired: %s\n", ev->GetName());
         // Save previous (re-entrancy: if dispatch triggers another FireGameEvent, the inner
         // call will see its own event in s_currentEvent; we restore ours on return).

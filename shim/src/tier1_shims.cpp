@@ -10,7 +10,10 @@
 // one function, we provide it here, self-contained: the EXACT MurmurHash2 algorithm from Valve's
 // generichash.cpp, with a plain ASCII lowercase in place of CUtlString::ToLowerFast (identical result:
 // ToLowerFast is an ASCII-only A–Z → a–z pass). The hash MUST match Valve's byte-for-byte or event field
-// lookups silently return defaults — this is verified live (real field values ⇒ the hash matches).
+// lookups silently return defaults — verified by inspection against hl2sdk/tier1/generichash.cpp (the
+// MurmurHash2 core is line-for-line identical). Live field-read verification is pending 5D.1b: the event
+// manager isn't acquired yet (CS2 doesn't export it), so this function isn't exercised at runtime yet —
+// re-check it against Valve on any hl2sdk bump.
 
 #include <cstdint>
 #include <cstring>
@@ -58,18 +61,7 @@ unsigned int MurmurHash2LowerCase(char const* pString, unsigned int nSeed) {
     return h;
 }
 
-// The length-taking overload — provided for completeness (same lowercase + core, honoring nLength):
-//   uint32 MurmurHash2LowerCase(char const *pString, int nLength, uint32 nSeed) -> _Z20MurmurHash2LowerCasePKcij
-unsigned int MurmurHash2LowerCase(char const* pString, int nLength, unsigned int nSeed) {
-    if (!pString || nLength <= 0) return s2_MurmurHash2("", 0, nSeed);
-    char stackbuf[256];
-    char* buf = ((size_t)nLength < sizeof(stackbuf)) ? stackbuf : (char*)std::malloc((size_t)nLength + 1);
-    if (!buf) return nSeed;
-    for (int i = 0; i < nLength; ++i) {
-        char c = pString[i];
-        buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
-    }
-    unsigned int h = s2_MurmurHash2(buf, nLength, nSeed);
-    if (buf != stackbuf) std::free(buf);
-    return h;
-}
+// Only the 2-arg overload above is what CKV3MemberName(const char*) needs (via MakeStringToken →
+// MurmurHash2LowerCase(str, 0x31415926)). The length-taking overload is intentionally NOT provided:
+// it's unused, and Valve's version lowercases the whole string then hashes nLength bytes (a subtle
+// parity trap if reimplemented). If a caller ever needs it, add it matching generichash.cpp exactly.
