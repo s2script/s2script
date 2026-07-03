@@ -41,6 +41,14 @@ typedef const char*  (*s2_event_get_string_fn)(const char* key);      /* valid d
 typedef uint64_t     (*s2_event_get_uint64_fn)(const char* key);
 typedef int          (*s2_event_get_player_slot_fn)(const char* key); /* -1 if absent */
 
+/* Engine-identity ops (Slice 5D.2) — read the connected-client list (INetworkServerService ->
+ * game server -> CServerSideClient[]) at gamedata offsets. All degrade to safe misses on any null. */
+typedef int          (*s2_client_valid_fn)(int slot);          /* 0/1: connected client at slot */
+typedef int          (*s2_client_userid_fn)(int slot);         /* engine user-id, or -1 */
+typedef int          (*s2_client_signon_fn)(int slot);         /* signon state, or -1 */
+typedef const char*  (*s2_client_name_fn)(int slot);           /* valid during call; core copies now */
+typedef int          (*s2_client_find_by_userid_fn)(int userid); /* slot, or -1 */
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -57,6 +65,12 @@ typedef struct {
     s2_event_get_string_fn    event_get_string;
     s2_event_get_uint64_fn    event_get_uint64;
     s2_event_get_player_slot_fn event_get_player_slot;
+    /* Engine-identity ops (Slice 5D.2) — APPENDED after the event ops; order is the ABI. */
+    s2_client_valid_fn          client_valid;
+    s2_client_userid_fn         client_userid;
+    s2_client_signon_fn         client_signon;
+    s2_client_name_fn           client_name;
+    s2_client_find_by_userid_fn client_find_by_userid;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

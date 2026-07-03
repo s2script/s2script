@@ -307,6 +307,55 @@ static int s2_event_get_player_slot(const char* k) {
 }
 
 // ---------------------------------------------------------------------------
+// Engine-identity: INetworkServerService -> INetworkGameServer -> CServerSideClient[]
+// (Slice 5D.2). s_pNetworkServerService acquired in Load() (was log-only); offsets
+// from gamedata (layout-is-data). Degrade-never-crash: any null/bad-offset returns safe miss.
+// ---------------------------------------------------------------------------
+static void* s_pNetworkServerService = nullptr;
+static int s_offGameServer  = -1, s_offClientCount = -1, s_offClientElems = -1;
+static int s_offSscName     = -1, s_offSscSignon   = -1, s_offSscUserId   = -1;
+static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connected (incl. pawnless). Pin on gate.
+
+static void* S2_ClientAt(int slot) {
+    if (!s_pNetworkServerService || s_offGameServer < 0) return nullptr;
+    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
+    if (!gs || s_offClientCount < 0 || s_offClientElems < 0) return nullptr;
+    int n = *reinterpret_cast<int*>(reinterpret_cast<char*>(gs) + s_offClientCount);
+    if (slot < 0 || slot >= n) return nullptr;
+    void** elems = *reinterpret_cast<void***>(reinterpret_cast<char*>(gs) + s_offClientElems);
+    return elems ? elems[slot] : nullptr;
+}
+static int s2_client_signon(int slot) {
+    void* c = S2_ClientAt(slot);
+    return (c && s_offSscSignon >= 0)
+        ? *reinterpret_cast<int*>(reinterpret_cast<char*>(c) + s_offSscSignon) : -1;
+}
+static int s2_client_userid(int slot) {
+    void* c = S2_ClientAt(slot);
+    if (!c || s_offSscUserId < 0) return -1;
+    return static_cast<int>(*reinterpret_cast<int16_t*>(reinterpret_cast<char*>(c) + s_offSscUserId));
+}
+static int s2_client_valid(int slot) {
+    int s = s2_client_signon(slot);
+    return (s >= kSignonConnected) ? 1 : 0;
+}
+static const char* s2_client_name(int slot) {
+    void* c = S2_ClientAt(slot);
+    if (!c || s_offSscName < 0) return nullptr;
+    return *reinterpret_cast<const char**>(reinterpret_cast<char*>(c) + s_offSscName);  // core copies now
+}
+static int s2_client_find_by_userid(int id) {
+    if (!s_pNetworkServerService || s_offGameServer < 0) return -1;
+    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
+    if (!gs || s_offClientCount < 0) return -1;
+    int n = *reinterpret_cast<int*>(reinterpret_cast<char*>(gs) + s_offClientCount);
+    for (int slot = 0; slot < n; slot++) {
+        if (s2_client_valid(slot) && s2_client_userid(slot) == id) return slot;
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
 // ConCommand support (recon Q7).
 //
 // s_concommands: persistent storage for heap-allocated ConCommand objects.  The
@@ -622,7 +671,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
         };
         tryGet("EngineCvar",           engineFactory);
-        tryGet("NetworkServerService", engineFactory);
+        // Acquire + STORE INetworkServerService* (Slice 5D.2 engine identity; was log-only).
+        {
+            auto it = versions.find("NetworkServerService");
+            const char* verStr = (it != versions.end()) ? it->second.c_str() : "NetworkServerService_001";
+            int ret = 0;
+            s_pNetworkServerService = engineFactory ? engineFactory(verStr, &ret) : nullptr;
+            if (s_pNetworkServerService && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: NetworkServerService (%s)\n", verStr);
+            } else {
+                s_pNetworkServerService = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkServerService (%s) — identity natives degrade\n", verStr);
+            }
+        }
 
         // Acquire and store ISchemaSystem* — backs the schema-offset engine-op (recon Q2).
         // Reuse the engine-factory path (as for EngineCvar/NetworkServerService); the community
@@ -727,6 +788,21 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 }
             }
         }
+        // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
+        {
+            std::string offErr;
+            auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
+            auto pick = [&](const char* k) { auto i = offs.find(k); return i != offs.end() ? i->second : -1; };
+            s_offGameServer  = pick("NetworkServerService.gameServer");
+            s_offClientCount = pick("NetworkGameServer.clientCount");
+            s_offClientElems = pick("NetworkGameServer.clientElems");
+            s_offSscName     = pick("ServerSideClient.name");
+            s_offSscSignon   = pick("ServerSideClient.signon");
+            s_offSscUserId   = pick("ServerSideClient.userId");
+            META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d\n",
+                           s_offGameServer, s_offClientCount, s_offClientElems,
+                           s_offSscName, s_offSscSignon, s_offSscUserId);
+        }
     }
     // --- end interface acquisition ---
 
@@ -753,6 +829,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.event_get_string     = &s2_event_get_string;
     ops.event_get_uint64     = &s2_event_get_uint64;
     ops.event_get_player_slot = &s2_event_get_player_slot;
+    // Engine-identity ops (Slice 5D.2): order MUST match S2EngineOps in s2script_core.h + Rust v8host.rs.
+    ops.client_valid          = &s2_client_valid;
+    ops.client_userid         = &s2_client_userid;
+    ops.client_signon         = &s2_client_signon;
+    ops.client_name           = &s2_client_name;
+    ops.client_find_by_userid = &s2_client_find_by_userid;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
