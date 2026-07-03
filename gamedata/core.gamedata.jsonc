@@ -8,7 +8,10 @@
     "NetworkServerService": "NetworkServerService_001",
     // IGameResourceService acquired via the engine factory; backs the entity-system pointer
     // (recon Q3). Interface string [HC]; confirmed community name for CS2 server-side service.
-    "GameResourceService": "GameResourceServiceServerV001"
+    "GameResourceService": "GameResourceServiceServerV001",
+    // IGameEventManager2 acquired via the engine factory (Slice 5D.1). Community-confirmed
+    // interface string for CS2; validated at the T5 live gate.
+    "GameEventManager": "GAMEEVENTSMANAGER002"
   },
   // Byte offsets into engine interface objects — keyed by platform string.
   // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked
