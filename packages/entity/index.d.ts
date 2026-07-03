@@ -36,6 +36,14 @@ export declare class EntityRef {
   readUInt16(offset: number): number | null;
   /** Read a u32 at `offset`, or null if the ref is stale. */
   readUInt32(offset: number): number | null;
+  /** Read a u64 at `offset` as a BigInt, or null if the ref is stale. */
+  readUInt64(offset: number): bigint | null;
+  /** Read an i64 at `offset` as a BigInt, or null if the ref is stale. */
+  readInt64(offset: number): bigint | null;
+  /** Read an f64 at `offset`, or null if the ref is stale. */
+  readFloat64(offset: number): number | null;
+  /** Read a NUL-terminated string (up to `maxLen` bytes) at `offset`, or null if the ref is stale. */
+  readString(offset: number, maxLen: number): string | null;
   /** Read a `CEntityHandle` at `offset`, decode it, and return a live `EntityRef` — or null if stale/invalid. */
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */

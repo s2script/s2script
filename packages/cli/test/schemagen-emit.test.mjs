@@ -70,3 +70,19 @@ test("emitDts: extends chain, own fields only, writable vs readonly, skipped abs
   assert.doesNotMatch(dts, /origin/);                  // Vector skipped
   assert.doesNotMatch(dts, /m_vecOrigin/);
 });
+
+test("emitJs: char[N] emits readString(len); 64-bit int emits a null-safe readUInt64().toString()", () => {
+  const CATALOG = { Base: { parent: null, fields: [
+    { name: "m_iszName", offset: 8, type: { kind: "unknown", name: "char[64]" } },
+    { name: "m_steamID", offset: 16, type: { kind: "atomic", name: "uint64" } },
+  ] } };
+  const model = buildModel(CATALOG, ["Base"]);
+  const js = emitJs(model);
+  assert.match(js, /readString\(off\("Base","m_iszName"\), 64\)/);
+  // 64-bit int -> decimal string: reads the bigint primitive, null-guards, stringifies.
+  assert.match(js, /var v = this\.ref\.readUInt64\(off\("Base","m_steamID"\)\); return v === null \? null : v\.toString\(\);/);
+  // and the .d.ts types the 64-bit int as string (SM-parity), NOT bigint:
+  const dts = emitDts(model);
+  assert.match(dts, /steamID[^;\n]*: string \| null/);
+  assert.doesNotMatch(dts, /steamID[^;\n]*: bigint/);
+});

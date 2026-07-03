@@ -1131,9 +1131,10 @@ from serial-gating). It's entirely in the `@s2script/cs2` JS + types layer — *
 **Occupancy** was a live-gate finding: CS2 pre-allocates all 64 controller entities, so `isValid()` alone
 returns every slot, and `m_iConnected` reads `0` for occupied *and* empty slots (verified via a diagnostic).
 The clean signal is that an occupied controller has a **live player pawn** — so `Player.all()`/`fromSlot`
-keep the in-game (spawned) players. Connected-but-pawnless (dead/spectating) plus `player.userId`/`name`/
-`steamId` are the **engine-identity follow** (they need engine natives; userId/name/steamId aren't
-schema-readable).
+keep the in-game (spawned) players. Connected-but-pawnless (dead/spectating) enumeration plus
+`player.userId`/`Player.fromUserId` are the **engine-identity follow** (they need engine natives; the
+engine `userId` isn't schema-readable). *(Update: `player.playerName` and `player.steamID` **are**
+schema-readable — `m_iszPlayerName`/`m_steamID` — and landed as generated accessors in **Slice 5B.4** below.)*
 
 **Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`; **no sniper rebuild** — JS-only):
 
@@ -1148,6 +1149,59 @@ bot_kick
 `Player.all()` returns exactly the two bots (filtered from 64 controllers); `player.teamNum` reads, `player.pawn`
 → `health`, and `pawn.controller` round-trips back to the same slot; all drop to `players=0` on disconnect,
 server ticking, no crash.
+
+---
+
+## String + 64-bit fields (Slice 5B.4)
+
+Slice 5B.4 extends the typed reads + codegen to the last two common scalar kinds: **`char[N]` inline strings**
+and **64-bit numbers** (`uint64`/`int64`/`float64`). This gives the player model its identity —
+`player.playerName` (`m_iszPlayerName`, a `char[128]`) and `player.steamID` (`m_steamID`, `uint64`) — as
+generated accessors, with **no engine natives**:
+
+```ts
+import { Player } from "@s2script/cs2";
+
+for (const p of Player.all()) {
+  const name = p.playerName;   // m_iszPlayerName (char[128]) -> string
+  const sid  = p.steamID;      // m_steamID (uint64)          -> DECIMAL STRING (e.g. "76561198…")
+}
+```
+
+**64-bit ⇒ decimal *string* (the load-bearing decision).** The low-level `EntityRef.readUInt64`/`readInt64`
+primitives return the exact `bigint` (with `readFloat64` → `number`, `readString(off, maxLen)` → `string`), but
+the **generated** accessors for `uint64`/`int64` fields return a **decimal string**. This is deliberate:
+
+- **SourceMod-parity** — SourcePawn has no 64-bit integer type, so `GetClientAuthId(client, AuthId_SteamID64, …)`
+  hands back a string. Steam IDs are used as strings everywhere (bans, stats, keys, logging, comparison).
+- **Wire-safe** — a string crosses the inter-plugin structured-copy wire unchanged, so this **dissolves the
+  `BigInt`-on-the-wire concern** for field reads entirely (no `devalue`, no serialization edge). An author who
+  wants numeric/bitmask math uses the `readUInt64` primitive directly, or `BigInt(str)`.
+- **Exact** — no `2^53` precision loss (a steamid64 ≈ `7.6e16` overflows a JS `number`).
+
+Under the hood the `str`/`u64`/`i64` getters are generated: a `str` field emits `readString(off, N)`; a
+`u64`/`i64` field reads the `bigint` primitive, null-guards, and `.toString()`s it. Offsets stay live-resolved
+(layout-is-data); reads only (string + 64-bit writes, and `CUtlString`/`CUtlSymbolLarge` pointer-backed strings,
+are deferred). A **name-transform fix** shipped alongside: `idiomaticName` now strips only a *known* Hungarian-tag
+set, so `m_steamID` → `steamID` (was the over-stripped `iD`) and `m_bombSite` → `bombSite` (was `site`), while
+the existing gameplay names (`health`/`teamNum`/`friction`/`pawn`/`controller`) are unchanged.
+
+**Live-gate log** (Docker CS2, `de_inferno`, `bot_quota 2`; sniper-rebuilt for the new natives). This log is from
+an *instrumented* form of the demo that reads each player twice — the generated accessors (`GEN`) and the raw
+primitives (`RAW`) — to prove they agree; the committed `examples/demo-plugin` emits just the generated form. See
+[the spike-findings doc](docs/superpowers/specs/2026-07-02-slice-5b4-spike-findings.md) for the full comparison:
+
+```
+[demo] tick 257 players=2
+  slot=0 | GEN name="Specialist" steamID=0 (typeof string) | RAW name="Specialist" sid=0 (nameOff=2036 sidOff=2528) health=100
+  slot=1 | GEN name="Rex"        steamID=0 (typeof string) | RAW name="Rex"        sid=0 (nameOff=2036 sidOff=2528) health=100
+bot_kick
+[demo] tick 3841 players=0        (server ticking, no crash)
+```
+
+`player.playerName` reads the bot names (`char[128]` → string); `player.steamID` is a **string** `"0"` (bots read
+`0`; a real player reads `"7656…"`), matching the raw `readString(2036, 128)` / `readUInt64(2528)`. Both drop to
+`null`/empty on disconnect (`Player.all()` → `players=0`), server stable.
 
 ---
 

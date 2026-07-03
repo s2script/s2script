@@ -10,7 +10,15 @@ export function emitJs(model: SchemaModel): string {
     out.push(`  A[${S(c.className)}] = {`);
     for (const f of flattenedFields(model, c.className)) {
       const resolve = `off(${S(f.declaringClass)},${S(f.rawName)})`;
-      let entry = `get: function () { return this.ref.${READ[f.accessorKind]}(${resolve}); }`;
+      let entry;
+      if (f.accessorKind === "str") {
+        entry = `get: function () { return this.ref.readString(${resolve}, ${f.strLen}); }`;
+      } else if (f.accessorKind === "u64" || f.accessorKind === "i64") {
+        // 64-bit ints -> decimal string (SM-parity, wire-safe); readUInt64/readInt64 are the bigint primitives.
+        entry = `get: function () { var v = this.ref.${READ[f.accessorKind]}(${resolve}); return v === null ? null : v.toString(); }`;
+      } else {
+        entry = `get: function () { return this.ref.${READ[f.accessorKind]}(${resolve}); }`;
+      }
       if (f.writable) {
         const wm = WRITE[f.accessorKind]!;
         entry += `, set: function (v) { var o = ${resolve}; if (this.ref.${wm}(o, v)) this.ref.notifyStateChanged(o); }`;

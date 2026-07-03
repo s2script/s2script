@@ -43,6 +43,35 @@ pub fn read_ptr(base: *const u8, offset: i32) -> *const u8 {
     unsafe { *(base.add(offset as usize) as *const *const u8) }
 }
 
+/// Read a u64 at `base + offset`. 0 on null base / negative offset.
+pub fn read_u64(base: *const u8, offset: i32) -> u64 {
+    if base.is_null() || offset < 0 { return 0; }
+    unsafe { *(base.add(offset as usize) as *const u64) }
+}
+/// Read an i64 at `base + offset`. 0 on null base / negative offset.
+pub fn read_i64(base: *const u8, offset: i32) -> i64 {
+    if base.is_null() || offset < 0 { return 0; }
+    unsafe { *(base.add(offset as usize) as *const i64) }
+}
+/// Read an f64 at `base + offset`. 0.0 on null base / negative offset.
+pub fn read_f64(base: *const u8, offset: i32) -> f64 {
+    if base.is_null() || offset < 0 { return 0.0; }
+    unsafe { *(base.add(offset as usize) as *const f64) }
+}
+/// Read a NUL-terminated string of at most `max_len` bytes at `base + offset` (an inline `char[N]`
+/// buffer), UTF-8-lossy → an owned `String` (a COPY; the pointer never leaves core). Empty on null
+/// base / negative offset / non-positive `max_len`.
+pub fn read_string(base: *const u8, offset: i32, max_len: i32) -> String {
+    if base.is_null() || offset < 0 || max_len <= 0 { return String::new(); }
+    let start = unsafe { base.add(offset as usize) };
+    let max = max_len as usize;
+    let mut len = 0usize;
+    unsafe {
+        while len < max && *start.add(len) != 0 { len += 1; }
+        String::from_utf8_lossy(core::slice::from_raw_parts(start, len)).into_owned()
+    }
+}
+
 /// Read an f32 at `base + offset`. 0.0 on null base / negative offset (degrade-safe).
 pub fn read_f32(base: *const u8, offset: i32) -> f32 {
     if base.is_null() || offset < 0 { return 0.0; }
@@ -235,5 +264,40 @@ mod tests {
         let mut v: f32 = 5.0;
         write_f32(&mut v as *mut f32 as *mut u8, -4, 9.0);
         assert_eq!(v, 5.0);
+    }
+
+    #[test]
+    fn read_u64_i64_f64_roundtrip() {
+        #[repr(C)]
+        struct Fake { pad: [u8; 8], u: u64, i: i64, f: f64 }
+        let x = Fake { pad: [0; 8], u: 76561198000000000, i: -9000000000, f: 6.5 }; // u > 2^53
+        let base = &x as *const Fake as *const u8;
+        assert_eq!(read_u64(base, 8), 76561198000000000);
+        assert_eq!(read_i64(base, 16), -9000000000);
+        assert_eq!(read_f64(base, 24), 6.5);
+    }
+
+    #[test]
+    fn read_string_nul_terminated_and_bounded() {
+        // "hi\0" then junk within a char[8] buffer.
+        let buf: [u8; 8] = [b'h', b'i', 0, b'X', b'Y', 0, 0, 0];
+        let base = buf.as_ptr();
+        assert_eq!(read_string(base, 0, 8), "hi");            // stops at the first NUL
+        assert_eq!(read_string(base, 3, 8), "XY");            // reads from an offset, stops at NUL
+        // max_len bounds the scan even without a NUL:
+        let full: [u8; 4] = [b'a', b'b', b'c', b'd'];         // no NUL
+        assert_eq!(read_string(full.as_ptr(), 0, 4), "abcd");
+        assert_eq!(read_string(full.as_ptr(), 0, 2), "ab");   // bounded by max_len
+    }
+
+    #[test]
+    fn sixtyfour_bit_and_string_guard_null_and_negative_offset() {
+        assert_eq!(read_u64(std::ptr::null(), 8), 0);
+        assert_eq!(read_i64(std::ptr::null(), -8), 0);
+        assert_eq!(read_f64(std::ptr::null(), 8), 0.0);
+        assert_eq!(read_string(std::ptr::null(), 0, 8), "");
+        let b: [u8; 2] = [b'x', 0];
+        assert_eq!(read_string(b.as_ptr(), -1, 8), "");       // negative offset
+        assert_eq!(read_string(b.as_ptr(), 0, 0), "");        // non-positive max_len
     }
 }
