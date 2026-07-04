@@ -28,6 +28,14 @@
 // (Slice 5D.1). CKV3MemberName is in tier1/keyvalues3.h (pulled by igameevents.h).
 #include <igameevents.h>
 
+// ICvar (VEngineCvar007) — ConCommand registration via RegisterConCommand vtable call (Slice 6.1).
+// icvar.h already pulls convar.h, so the explicit <convar.h> above remains for clarity.
+#include <icvar.h>
+
+// IGameEventSystem + INetworkMessages — needed for client_print chat plumbing (Slice 6.1).
+#include <engine/igameeventsystem.h>
+#include <networksystem/inetworkmessages.h>
+
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <link.h>       // dl_iterate_phdr, ElfW
@@ -37,6 +45,7 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -356,6 +365,27 @@ static int s_offGameServer  = -1, s_offClientCount = -1, s_offClientElems = -1;
 static int s_offSscName     = -1, s_offSscSignon   = -1, s_offSscUserId   = -1;
 static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connected (incl. pawnless). Pin on gate.
 
+// ---------------------------------------------------------------------------
+// EngineCvar (ICvar*) — stored at Load() for ConCommand registration (Slice 6.1).
+// s_concommandRefs: name → ConCommandRef, serves as both the name-lifetime store
+// (map key = persistent std::string; m_pszName points into it) and the idempotency
+// guard (reload: JS handler updated in-place; existing ConCommand still trampolines).
+// TODO(teardown): iterate s_concommandRefs in Unload() and call
+//   s_pCvar->UnregisterConCommandCallbacks(ref) per entry.
+// ---------------------------------------------------------------------------
+static ICvar* s_pCvar = nullptr;
+static std::map<std::string, ConCommandRef> s_concommandRefs;
+
+// ---------------------------------------------------------------------------
+// IGameEventSystem + INetworkMessages — stored at Load() for client_print (Slice 6.1).
+// The CS2 chat path: FindNetworkMessage("CUserMessageSayText2") → AllocateMessage()
+// → ToPB<CUserMessageSayText2>() → field setters → PostEventAbstract.
+// NOTE: the CUserMessageSayText2 protobuf type is NOT in the vendored hl2sdk headers;
+//       s2_client_print is a degrade-safe stub until the type is available.
+// ---------------------------------------------------------------------------
+static IGameEventSystem* s_pGameEventSystem = nullptr;
+static INetworkMessages*  s_pNetworkMessages  = nullptr;
+
 static void* S2_ClientAt(int slot) {
     if (!s_pNetworkServerService || s_offGameServer < 0) return nullptr;
     void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
@@ -396,14 +426,20 @@ static int s2_client_find_by_userid(int id) {
 }
 
 // ---------------------------------------------------------------------------
-// ConCommand support (recon Q7).
+// ConCommand support (Slice 6.1).
 //
-// s_concommands: persistent storage for heap-allocated ConCommand objects.  The
-// ConCommand constructor self-registers into the cvar system; the destructor calls
-// Destroy() to unregister.  Objects live for the plugin lifetime.
-// TODO(teardown): iterate s_concommands in Unload() and delete each one (ledger item).
+// Registration uses ICvar::RegisterConCommand (vtable call on s_pCvar acquired at Load).
+// ConCommand::Create was NOT exported by CS2 modules (dlopen blocker, confirmed earlier);
+// the ICvar interface vtable path is the correct CS2 approach.
+//
+// s_concommandRefs (declared above): maps command name → ConCommandRef.  The map key
+// (a persistent std::string) is the name-lifetime anchor — m_pszName points into it.
+// It also provides idempotency (reload-safe: the existing trampoline still routes to
+// the core whose JS handler is updated in-place after a hot-reload).
+//
+// TODO(teardown): in Unload(), iterate s_concommandRefs and call
+//   s_pCvar->UnregisterConCommandCallbacks(ref) for each entry.
 // ---------------------------------------------------------------------------
-[[maybe_unused]] static std::vector<ConCommand*> s_concommands;
 
 // ONE shared trampoline for every registered ConCommand.  Source 2 puts the command
 // name at Arg(0); ArgS() is everything after it.  Reads the name, slot, and args, then
@@ -415,22 +451,96 @@ static void s2_concommand_trampoline(const CCommandContext& ctx, const CCommand&
     s2script_core_dispatch_concommand(name, slot, args ? args : "");
 }
 
-// Engine-op: register a ConCommand with the shared trampoline.
+// Engine-op: register a ConCommand with the shared trampoline via ICvar::RegisterConCommand.
 // Called by the Rust core's __s2_concommand native (through the S2EngineOps table).
-// C-ABI; degrade-never-crash if name is null.
-//
-// NEUTRALIZED: ConCommand::Create is NOT exported by any CS2 module (confirmed via nm;
-// it was a dlopen blocker).  This function logs a WARN and returns without registering.
-// The trampoline, the s_concommands vector, and this wiring in S2EngineOps are kept
-// intact so the full ConCommand machinery assembles cleanly for the Slice-5 command
-// framework, which will route through an exported/vtable path.
-// TODO(slice-5): replace this body with the Slice-5 command-registration path once the
-//               correct exported or vtable-routed ConCommand::Create equivalent is identified.
+// C-ABI; degrade-never-crash: null name or null s_pCvar logs + returns.
 static void s2_concommand_register(const char* name) {
-    if (!name) return;
-    META_CONPRINTF("[s2script] WARN: ConCommand registration unavailable on this build "
-                   "(ConCommand::Create not exported by CS2); command '%s' not registered "
-                   "— console-command support arrives with the Slice-5 command framework\n", name);
+    if (!name) {
+        META_CONPRINTF("[s2script] WARN: ConCommand registration called with null name — skipped\n");
+        return;
+    }
+    if (!s_pCvar) {
+        META_CONPRINTF("[s2script] WARN: ConCommand '%s' not registered — ICvar not acquired "
+                       "(EngineCvar interface missing at Load)\n", name);
+        return;
+    }
+    // Idempotency: if name is already in the ref map, skip registration.
+    // On plugin hot-reload the core replaces the JS handler; the existing ConCommand
+    // still trampolines through s2_concommand_trampoline to the updated core handler.
+    if (s_concommandRefs.count(name)) {
+        META_CONPRINTF("[s2script] ConCommand '%s' already registered — skipping (reload-safe)\n", name);
+        return;
+    }
+    // Insert into the map first so the std::string key owns the name's storage.
+    // m_pszName will point into this persistent key for the lifetime of the plugin.
+    auto result = s_concommandRefs.emplace(name, ConCommandRef{});
+    const std::string& persistedName = result.first->first;
+
+    ConCommandCreation_t setup;
+    setup.m_pszName       = persistedName.c_str();  // points into persistent map key
+    setup.m_pszHelpString = "s2script command";
+    setup.m_nFlags        = 0;
+    setup.m_CBInfo        = ConCommandCallbackInfo_t(&s2_concommand_trampoline);
+    // setup.m_CompletionCBInfo left default-constructed (no completion callback)
+
+    ConCommandRef ref = s_pCvar->RegisterConCommand(setup);
+    result.first->second = ref;
+
+    if (ref.IsValidRef()) {
+        META_CONPRINTF("[s2script] ConCommand '%s' registered (accessIdx=%u)\n",
+                       name, (unsigned)ref.GetAccessIndex());
+    } else {
+        META_CONPRINTF("[s2script] WARN: ConCommand '%s' — RegisterConCommand returned invalid ref "
+                       "(name conflict or ICvar internal error)\n", name);
+        // Entry stays in the map with an invalid ref to prevent retry loops on re-register.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chat user-message: client_print (Slice 6.1).
+//
+// The CS2 chat path (CSSharp/Swiftly pattern):
+//   pMsg  = s_pNetworkMessages->FindNetworkMessage("CUserMessageSayText2")
+//   data  = pMsg->AllocateMessage()->ToPB<CUserMessageSayText2>()
+//   data->set_param1(msg)   // visible chat string
+//   uint64 mask = 1ull << slot
+//   s_pGameEventSystem->PostEventAbstract(CSplitScreenSlot(-1), false, 1, &mask,
+//       pMsg, data, 0, BUF_RELIABLE)
+//   s_pNetworkMessages->DeallocateNetMessageAbstract(pMsg, data)
+//
+// STUB: IGameEventSystem and INetworkMessages are resolved and stored below,
+// AllocateMessage() and PostEventAbstract() are available in the headers, but
+// the CUserMessageSayText2 (or CCSUsrMsg_SayText2) protobuf type is NOT present
+// in the vendored hl2sdk (no usermessages.pb.h / cs_usermessages.pb.h found).
+// Without it, ToPB<T>() has no T, and the field setters (set_param1 etc.) are
+// unavailable. The controller completes the send once the protobuf header is added.
+// Degrade-never-crash: every null-path is a logged no-op.
+// ---------------------------------------------------------------------------
+static void s2_client_print(int slot, const char* msg) {
+    if (slot < 0 || slot >= 64) {
+        META_CONPRINTF("[s2script] client_print(slot=%d): slot out of range — no-op\n", slot);
+        return;
+    }
+    if (!msg) {
+        META_CONPRINTF("[s2script] client_print(slot=%d): null msg — no-op\n", slot);
+        return;
+    }
+    if (!s_pGameEventSystem || !s_pNetworkMessages) {
+        META_CONPRINTF("[s2script] client_print(slot=%d): chat send TODO — "
+                       "IGameEventSystem=%s INetworkMessages=%s not acquired\n",
+                       slot,
+                       s_pGameEventSystem ? "ok" : "MISSING",
+                       s_pNetworkMessages ? "ok" : "MISSING");
+        return;
+    }
+    // STUB: CUserMessageSayText2 protobuf header absent from vendored hl2sdk.
+    // To complete: include usermessages.pb.h (or cs_usermessages.pb.h), then replace
+    // this log with the AllocateMessage/ToPB/set_param1/PostEventAbstract/Deallocate
+    // sequence documented in the comment above.  All infrastructure (both stored
+    // interfaces, the mask, the PostEventAbstract overload) is confirmed in the headers.
+    META_CONPRINTF("[s2script] client_print(slot=%d): chat send TODO — "
+                   "CUserMessageSayText2 protobuf type not in vendored hl2sdk headers; "
+                   "msg='%.120s'\n", slot, msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -764,22 +874,55 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
         }
 
-        // Log other interfaces (not stored — acquired as needed in later slices).
-        auto tryGet = [&](const char* key, CreateInterfaceFn factory) {
-            auto it = versions.find(key);
-            if (it == versions.end()) {
-                META_CONPRINTF("[s2script] WARN: no version string for %s in gamedata\n", key);
-                return;
-            }
+        // Acquire and STORE ICvar* (Slice 6.1 ConCommand registration via vtable).
+        // ConCommand::Create was NOT exported by CS2; ICvar::RegisterConCommand is.
+        // Degrade-never-crash: null s_pCvar → s2_concommand_register logs + skips.
+        {
+            auto it = versions.find("EngineCvar");
+            const char* verStr = (it != versions.end()) ? it->second.c_str() : "VEngineCvar007";
             int ret = 0;
-            void* iface = factory ? factory(it->second.c_str(), &ret) : nullptr;
-            if (iface && ret == 0) {
-                META_CONPRINTF("[s2script] interface OK: %s (%s)\n", key, it->second.c_str());
+            s_pCvar = engineFactory
+                ? reinterpret_cast<ICvar*>(engineFactory(verStr, &ret))
+                : nullptr;
+            if (s_pCvar && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: EngineCvar (%s)\n", verStr);
             } else {
-                META_CONPRINTF("[s2script] WARN: interface MISSING: %s (%s)\n", key, it->second.c_str());
+                s_pCvar = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: EngineCvar (%s) — ConCommand registration degrades\n", verStr);
             }
-        };
-        tryGet("EngineCvar",           engineFactory);
+        }
+        // Acquire and STORE IGameEventSystem* (Slice 6.1 client_print chat plumbing).
+        {
+            auto it = versions.find("GameEventSystem");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : GAMEEVENTSYSTEM_INTERFACE_VERSION;
+            int ret = 0;
+            s_pGameEventSystem = engineFactory
+                ? reinterpret_cast<IGameEventSystem*>(engineFactory(verStr, &ret))
+                : nullptr;
+            if (s_pGameEventSystem && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: GameEventSystem (%s)\n", verStr);
+            } else {
+                s_pGameEventSystem = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: GameEventSystem (%s) — client_print chat degrades\n", verStr);
+            }
+        }
+        // Acquire and STORE INetworkMessages* (Slice 6.1 client_print chat plumbing).
+        {
+            auto it = versions.find("NetworkMessages");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : NETWORKMESSAGES_INTERFACE_VERSION;
+            int ret = 0;
+            s_pNetworkMessages = engineFactory
+                ? reinterpret_cast<INetworkMessages*>(engineFactory(verStr, &ret))
+                : nullptr;
+            if (s_pNetworkMessages && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: NetworkMessages (%s)\n", verStr);
+            } else {
+                s_pNetworkMessages = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkMessages (%s) — client_print chat degrades\n", verStr);
+            }
+        }
         // Acquire + STORE INetworkServerService* (Slice 5D.2 engine identity; was log-only).
         {
             auto it = versions.find("NetworkServerService");
@@ -955,6 +1098,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Config ops (Slice 5E.2): order MUST match S2EngineOps in s2script_core.h + Rust v8host.rs.
     ops.config_read  = &s2_config_read;
     ops.config_write = &s2_config_write;
+    // Chat messaging (Slice 6.1): APPENDED after config ops; order MUST match S2EngineOps.
+    ops.client_print = &s2_client_print;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

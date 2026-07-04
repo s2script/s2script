@@ -8,7 +8,13 @@
     "NetworkServerService": "NetworkServerService_001",
     // IGameResourceService acquired via the engine factory; backs the entity-system pointer
     // (recon Q3). Interface string [HC]; confirmed community name for CS2 server-side service.
-    "GameResourceService": "GameResourceServiceServerV001"
+    "GameResourceService": "GameResourceServiceServerV001",
+    // IGameEventSystem — used by client_print to PostEventAbstract chat messages (Slice 6.1).
+    // Interface string from igameeventsystem.h GAMEEVENTSYSTEM_INTERFACE_VERSION macro.
+    "GameEventSystem": "GameEventSystemServerV001",
+    // INetworkMessages — used by client_print to FindNetworkMessage + AllocateMessage (Slice 6.1).
+    // Interface string from inetworkmessages.h NETWORKMESSAGES_INTERFACE_VERSION macro.
+    "NetworkMessages": "NetworkMessagesVersion001"
   },
   // Byte offsets into engine interface objects — keyed by platform string.
   // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked
