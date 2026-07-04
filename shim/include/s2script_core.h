@@ -63,6 +63,10 @@ typedef int  (*s2_event_fire_fn)(int dontBroadcast);                    /* retur
 typedef const char* (*s2_config_read_fn)(const char* id);            /* file content, or null if absent; valid until the next config_read */
 typedef int         (*s2_config_write_fn)(const char* id, const char* content); /* 1 ok / 0 fail */
 
+/* Chat messaging (Slice 6.1). Print a message to one client's chat; slot is 0-based (server console
+   has no chat, so slot < 0 is a no-op). The shim implements this via the CS2 chat user message. */
+typedef void (*s2_client_print_fn)(int slot, const char* msg);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -96,6 +100,8 @@ typedef struct {
     /* Config ops (Slice 5E.2) — APPENDED after the event ops; order is the ABI. */
     s2_config_read_fn  config_read;
     s2_config_write_fn config_write;
+    /* Chat messaging (Slice 6.1) — APPENDED after config ops; order is the ABI. */
+    s2_client_print_fn client_print;   /* Slice 6.1 — APPENDED after config ops; order is the ABI. */
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

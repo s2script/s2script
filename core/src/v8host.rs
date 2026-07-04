@@ -93,6 +93,9 @@ pub type EventFireFn      = extern "C" fn(dont_broadcast: c_int) -> c_int;
 pub type ConfigReadFn  = extern "C" fn(id: *const c_char) -> *const c_char;
 pub type ConfigWriteFn = extern "C" fn(id: *const c_char, content: *const c_char) -> c_int;
 
+// --- Slice 6.1: chat messaging op (C-ABI; the C header must match exactly) ---
+pub type ClientPrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -130,6 +133,8 @@ pub struct S2EngineOps {
     // --- Slice 5E.2: config ops (APPENDED after the event ops; order is the ABI; do not reorder above) ---
     pub config_read:  Option<ConfigReadFn>,
     pub config_write: Option<ConfigWriteFn>,
+    // --- Slice 6.1: chat messaging op (APPENDED after config ops; order is the ABI; do not reorder above) ---
+    pub client_print: Option<ClientPrintFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -515,6 +520,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_interfaces = interfaces;
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
   globalThis.__s2pkg_config     = { config: __s2_config };   // named export `config` (matches the .d.ts: import { config } from "@s2script/config")
+  // --- Slice 6.1: chat module (toSlot/toAll; toAll loops __s2_client_valid, engine-generic) ---
+  var __s2_chat = {
+    toSlot: function (slot, msg) { __s2_client_print(slot | 0, String(msg)); },
+    toAll:  function (msg) {
+      var s = String(msg);
+      for (var i = 0; i < 64; i++) { if (__s2_client_valid(i)) { __s2_client_print(i, s); } }
+    },
+  };
+  globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
 })();
 "#;
 
@@ -2305,6 +2319,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_event_fire", s2_event_fire);
     // Config live-reload (Slice 5E.2): register an onChange handler for this plugin's config file.
     set_native(scope, global_obj, "__s2_config_on_change", s2_config_on_change);
+    // Chat messaging (Slice 6.1): print a message to one client's chat.
+    set_native(scope, global_obj, "__s2_client_print", s2_client_print);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -2636,6 +2652,19 @@ fn s2_config_on_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         CONFIG_SUBS.with(|m| { m.borrow_mut().subscribe("config", owner.clone(), generation, handler_g); });
         crate::loader::watch_config_for(&owner);  // idempotent; seeds baseline if not yet watched
+    }));
+}
+
+/// Native `__s2_client_print(slot, msg)` — print `msg` to the chat of the client in `slot`.
+/// Degrade: no ops / no op fn → no-op (server console has no chat).
+fn s2_client_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let msg = args.get(1).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.client_print else { return };
+        if let Ok(cmsg) = CString::new(msg) { f(slot, cmsg.as_ptr()); }
     }));
 }
 
@@ -4524,6 +4553,7 @@ mod frame_tests {
             event_set_int: None, event_set_float: None, event_set_bool: None,
             event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
             config_read: None, config_write: None,
+            client_print: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -4639,6 +4669,7 @@ mod frame_tests {
             event_set_int: None, event_set_float: None, event_set_bool: None,
             event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
             config_read: None, config_write: None,
+            client_print: None,
         }
     }
 
@@ -5094,6 +5125,23 @@ mod frame_tests {
         re_materialize_config("p");
         // Values still re-injected (even with no handlers).
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('x'))"), "42");
+        shutdown();
+    }
+
+    /// Slice 6.1: `@s2script/chat` prelude module + `__s2_client_print` native degrade gracefully
+    /// when no `client_print` op is wired (no ops table / op is None → no-op, never throw).
+    #[test]
+    fn client_print_and_chat_degrade_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // No client_print op in the test host → the native + Chat.* are no-ops that never throw.
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_chat.Chat.toSlot"), "function");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_chat.Chat.toAll"),  "function");
+        // Calling them with no op must not throw (returns undefined).
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toSlot(0, 'hi'))"), "undefined");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toAll('hi'))"),      "undefined");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_print(0, 'hi'))"),          "undefined");
         shutdown();
     }
 }
