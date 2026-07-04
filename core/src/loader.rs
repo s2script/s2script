@@ -209,7 +209,8 @@ pub(crate) fn poll_plugins() {
                         continue;
                     }
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
-                    crate::v8host::load_plugin_js(&manifest.id, &js);
+                    let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
+                    crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
                 Err(e) => {
@@ -234,7 +235,8 @@ pub(crate) fn poll_plugins() {
                     // explicitly so the intent is clear and the ledger is the authority.
                     crate::v8host::unload_plugin(&old_id);
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
-                    crate::v8host::load_plugin_js(&manifest.id, &js);
+                    let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
+                    crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
                 Err(e) => {

@@ -59,6 +59,10 @@ typedef void (*s2_event_set_uint64_fn)(const char* key, uint64_t value);
 typedef int  (*s2_event_create_fn)(const char* name);                   /* 1 = created (retargets writes); 0 = null mgr / unknown name */
 typedef int  (*s2_event_fire_fn)(int dontBroadcast);                    /* returns FireEvent result; 0 if no created event */
 
+/* Config ops (Slice 5E.2). Read/auto-generate the admin override file addons/s2script/configs/<id>.json. */
+typedef const char* (*s2_config_read_fn)(const char* id);            /* file content, or null if absent; valid until the next config_read */
+typedef int         (*s2_config_write_fn)(const char* id, const char* content); /* 1 ok / 0 fail */
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -89,6 +93,9 @@ typedef struct {
     s2_event_set_uint64_fn event_set_uint64;
     s2_event_create_fn     event_create;
     s2_event_fire_fn       event_fire;
+    /* Config ops (Slice 5E.2) — APPENDED after the event ops; order is the ABI. */
+    s2_config_read_fn  config_read;
+    s2_config_write_fn config_write;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

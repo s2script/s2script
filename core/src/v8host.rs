@@ -89,6 +89,10 @@ pub type EventSetUint64Fn = extern "C" fn(key: *const c_char, value: u64);
 pub type EventCreateFn    = extern "C" fn(name: *const c_char) -> c_int;
 pub type EventFireFn      = extern "C" fn(dont_broadcast: c_int) -> c_int;
 
+// --- Slice 5E.2: config ops (C-ABI; the C header must match exactly) ---
+pub type ConfigReadFn  = extern "C" fn(id: *const c_char) -> *const c_char;
+pub type ConfigWriteFn = extern "C" fn(id: *const c_char, content: *const c_char) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -123,6 +127,9 @@ pub struct S2EngineOps {
     pub event_set_uint64: Option<EventSetUint64Fn>,
     pub event_create:     Option<EventCreateFn>,
     pub event_fire:       Option<EventFireFn>,
+    // --- Slice 5E.2: config ops (APPENDED after the event ops; order is the ABI; do not reorder above) ---
+    pub config_read:  Option<ConfigReadFn>,
+    pub config_write: Option<ConfigWriteFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -2464,6 +2471,34 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
     })
 }
 
+/// Materialize a plugin's config (defaults ⊕ the override file read via the `config_read` op;
+/// auto-generate the file via `config_write` if absent) and return the values JSON to inject.
+/// Degrade: no ops → defaults only, no auto-write, still returns the defaults JSON.
+pub(crate) fn materialize_for_load(id: &str, decls: &std::collections::HashMap<String, crate::config::ConfigDecl>) -> String {
+    if decls.is_empty() { return "{}".to_string(); }
+    let ops = ENGINE_OPS.with(|o| o.get());
+    let cid = std::ffi::CString::new(id).ok();
+    // read the override file
+    let override_json: Option<String> = (|| {
+        let ops = ops?; let f = ops.config_read?; let cid = cid.as_ref()?;
+        let ptr = f(cid.as_ptr()); if ptr.is_null() { return None; }
+        Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+    })();
+    let was_absent = override_json.is_none();
+    let mat = crate::config::materialize_config(decls, override_json.as_deref());
+    for w in &mat.warnings { log_warn(&format!("config('{}'): {}", id, w)); }
+    if was_absent {  // auto-generate the default file
+        if let (Some(ops), Some(cid)) = (ops, cid.as_ref()) {
+            if let Some(wf) = ops.config_write {
+                if let Ok(content) = std::ffi::CString::new(crate::config::generate_default_jsonc(decls)) {
+                    wf(cid.as_ptr(), content.as_ptr());
+                }
+            }
+        }
+    }
+    serde_json::to_string(&serde_json::Value::Object(mat.values)).unwrap_or_else(|_| "{}".to_string())
+}
+
 /// Load a built plugin bundle `plugin_js` under plugin id `id` (the spike-PROVEN CJS wrapper).
 ///
 /// Steps: (1) `create_plugin_context(id)` — a fresh per-plugin context with the full injected API
@@ -2476,7 +2511,7 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
 ///
 /// Degrade-never-crash: a compile/run/onLoad error logs a named WARN and returns; no exception
 /// propagates (the whole JS run is under a `TryCatch`).
-pub(crate) fn load_plugin_js(id: &str, plugin_js: &str) {
+pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str) {
     // Defensive guard: if the plugin is already loaded (e.g. the caller is performing a
     // reload but did not call unload_plugin first), tear it down now so the old handler
     // Global/context can never leak into the new instance.  The loader's explicit
@@ -2492,6 +2527,10 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str) {
 
     // (1) Fresh context with the full injected API installed.
     create_plugin_context(id);
+
+    // Inject the materialized config as a per-context global BEFORE the plugin evals (so config reads
+    // in onLoad see it). @s2script/config's getters read globalThis.__s2pkg_config_values.
+    let _ = eval_in_context(id, &format!("globalThis.__s2pkg_config_values = {};", config_values_json));
 
     // The spike's PROVEN wrapper — the outer arrow-IIFE returns `module.exports` so `script.run`
     // hands it straight back to Rust.  `{PLUGIN_JS}` is spliced verbatim.
@@ -3483,7 +3522,7 @@ mod frame_tests {
     #[test]
     fn load_plugin_js_runs_module_body() {
         init(dummy_logger()).unwrap();
-        load_plugin_js("probe", "globalThis.__loaded = 41 + 1;");
+        load_plugin_js("probe", "globalThis.__loaded = 41 + 1;", "{}");
         assert_eq!(read_i32_global_in("probe", "__loaded"), 42);
         shutdown();
     }
@@ -3502,7 +3541,7 @@ mod frame_tests {
                 OnGameFrame.subscribe(function () { globalThis.__ticks = (globalThis.__ticks||0)+1; });
             };
         "#;
-        load_plugin_js("demo", plugin_js);
+        load_plugin_js("demo", plugin_js, "{}");
         // One frame → the demo's handler ran, tagged to "demo".
         dispatch_game_frame_pre_post();  // helper: Pre then Post dispatch (drives the multiplexer)
         assert_eq!(read_i32_global_in("demo", "__ticks"), 1);
@@ -3563,7 +3602,7 @@ mod frame_tests {
         set_hook_request(Some(record_hook));
         init(dummy_logger()).unwrap();
         load_plugin_js("demo", r#"const {OnGameFrame}=require("@s2script/frame");
-            module.exports.onLoad=()=>OnGameFrame.subscribe(()=>{globalThis.__n=(globalThis.__n||0)+1;});"#);
+            module.exports.onLoad=()=>OnGameFrame.subscribe(()=>{globalThis.__n=(globalThis.__n||0)+1;});"#, "{}");
         dispatch_game_frame_pre_post();
         // The subscribe (the only subscriber) requested the detour INSTALL.
         assert!(
@@ -3592,7 +3631,7 @@ mod frame_tests {
     fn delay_continuation_for_unloaded_plugin_is_dropped() {
         init(dummy_logger()).unwrap();
         load_plugin_js("demo", r#"const {delay}=require("@s2script/timers");
-            module.exports.onLoad=()=>{ (async()=>{ await delay(30); globalThis.__resumed=true; })(); };"#);
+            module.exports.onLoad=()=>{ (async()=>{ await delay(30); globalThis.__resumed=true; })(); };"#, "{}");
         unload_plugin("demo");                     // unload BEFORE the deadline
         std::thread::sleep(std::time::Duration::from_millis(40));
         frame_async_drain();                       // must NOT run the continuation into a disposed context
@@ -3624,7 +3663,7 @@ mod frame_tests {
                 OnGameFrame.subscribe(function () { globalThis.__v = "v1"; });
             };
         "#;
-        load_plugin_js("demo", v1_js);
+        load_plugin_js("demo", v1_js, "{}");
         dispatch_game_frame_pre_post();
         assert_eq!(read_string_global_in("demo", "__v"), "v1", "v1 handler ran before reload");
 
@@ -3640,7 +3679,7 @@ mod frame_tests {
                 OnGameFrame.subscribe(function () { globalThis.__v = "v2"; });
             };
         "#;
-        load_plugin_js("demo", v2_js);
+        load_plugin_js("demo", v2_js, "{}");
 
         // Old generation is now stale (unload bumped or removed it).
         assert!(
@@ -3775,12 +3814,12 @@ mod frame_tests {
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/greeter","1.0.0",{ greet:function(n){ return "hi "+n.who; } });
-        "#);
+        "#, "{}");
         // Consumer resolves a hard proxy and calls across (arg + return structured-copied).
         load_plugin_js("cons", r#"
             const g = require("@x/greeter");
             globalThis.__test_out = g.greet({ who: "world" });
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("cons", "__test_out"), "hi world");
 
         // Producer-absent hard dep → InterfaceUnavailable (caught by the wrapper TryCatch → WARN).
@@ -3788,12 +3827,12 @@ mod frame_tests {
         load_plugin_js("lonely", r#"
             try { require("@missing").foo(); globalThis.__err = "no throw"; }
             catch (e) { globalThis.__err = String(e); }
-        "#);
+        "#, "{}");
         assert!(read_global_string("lonely", "__err").contains("InterfaceUnavailable"));
 
         // Optional dep, not published → require returns null.
         set_plugin_imports("optc", vec![("@absent".into(), "^1.0.0".into(), crate::interfaces::Kind::Optional)]);
-        load_plugin_js("optc", r#"globalThis.__opt = (require("@absent") === null) ? "null" : "proxy";"#);
+        load_plugin_js("optc", r#"globalThis.__opt = (require("@absent") === null) ? "null" : "proxy";"#, "{}");
         assert_eq!(read_global_string("optc", "__opt"), "null");
 
         // Non-serializable (cyclic) arg → InterfaceValueNotSerializable (JSON.stringify throws → None → throw).
@@ -3803,7 +3842,7 @@ mod frame_tests {
             const a = {}; a.self = a;
             try { g.greet(a); globalThis.__e2 = "no throw"; }
             catch (e) { globalThis.__e2 = String(e); }
-        "#);
+        "#, "{}");
         assert!(read_global_string("cyc", "__e2").contains("InterfaceValueNotSerializable"));
 
         // Producer method THROWS → consumer sees InterfaceCallError carrying the producer message
@@ -3811,12 +3850,12 @@ mod frame_tests {
         load_plugin_js("prodBoom", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/boom", "1.0.0", { boom: function(){ throw new Error("kaboom"); } });
-        "#);
+        "#, "{}");
         set_plugin_imports("consBoom", vec![("@x/boom".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("consBoom", r#"
             const g = require("@x/boom");
             try { g.boom(); globalThis.__boom = "no throw"; } catch (e) { globalThis.__boom = String(e); }
-        "#);
+        "#, "{}");
         let boom = read_global_string("consBoom", "__boom");
         assert!(boom.contains("InterfaceCallError"), "producer throw → InterfaceCallError, got: {}", boom);
         assert!(boom.contains("kaboom"), "producer message surfaced, got: {}", boom);
@@ -3825,13 +3864,13 @@ mod frame_tests {
         load_plugin_js("prodVoid", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/void", "1.0.0", { poke: function(){ /* returns undefined */ } });
-        "#);
+        "#, "{}");
         set_plugin_imports("consVoid", vec![("@x/void".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("consVoid", r#"
             const g = require("@x/void");
             try { globalThis.__void = (g.poke() === undefined) ? "undefined" : "value"; }
             catch (e) { globalThis.__void = "threw:" + String(e); }
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("consVoid", "__void"), "undefined");
         shutdown();
     }
@@ -3845,12 +3884,12 @@ mod frame_tests {
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             globalThis.__h = publishInterface("@x/greeter","1.0.0",{ greet:function(){return "";} });
-        "#);
+        "#, "{}");
         load_plugin_js("cons", r#"
             const g = require("@x/greeter");
             globalThis.__seen = [];
             g.on("greeted", function (p) { globalThis.__seen.push(p.slot); });
-        "#);
+        "#, "{}");
         // Producer emits (payload structured-copied to the consumer).
         eval_in_context("prod", r#"__h.emit("greeted", { slot: 7 });"#).unwrap();
         assert_eq!(eval_in_context_string("cons", "JSON.stringify(globalThis.__seen)"), "[7]");
@@ -3864,10 +3903,10 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
-            publishInterface("@x/greeter","1.0.0",{greet:function(){return "ok";}});"#);
+            publishInterface("@x/greeter","1.0.0",{greet:function(){return "ok";}});"#, "{}");
         load_plugin_js("cons", r#"const g=require("@x/greeter");
             globalThis.call=function(){ try { return g.greet(); } catch(e){ return String(e); } };
-            globalThis.__before=call();"#);
+            globalThis.__before=call();"#, "{}");
         assert_eq!(read_global_string("cons", "__before"), "ok");
         unload_plugin("prod");
         // registry entry + method Global gone:
@@ -3885,8 +3924,8 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
         load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
-            globalThis.__h=publishInterface("@x/greeter","1.0.0",{greet:function(){return "";}});"#);
-        load_plugin_js("cons", r#"const g=require("@x/greeter"); g.on("greeted",function(){});"#);
+            globalThis.__h=publishInterface("@x/greeter","1.0.0",{greet:function(){return "";}});"#, "{}");
+        load_plugin_js("cons", r#"const g=require("@x/greeter"); g.on("greeted",function(){});"#, "{}");
         assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/greeter").unwrap().subscribers.len()), 1);
         unload_plugin("cons");
         assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/greeter").unwrap().subscribers.len()), 0);
@@ -3901,10 +3940,10 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
         load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
-            publishInterface("@x/greeter","1.0.0",{greet:function(){return "still-here";}});"#);
+            publishInterface("@x/greeter","1.0.0",{greet:function(){return "still-here";}});"#, "{}");
         // consumer's onUnload calls the producer — must still work because producer outlives it.
         load_plugin_js("cons", r#"const g=require("@x/greeter");
-            module.exports.onUnload=function(){ globalThis.__unload_result = g.greet(); };"#);
+            module.exports.onUnload=function(){ globalThis.__unload_result = g.greet(); };"#, "{}");
         unload_all();
         // If the producer had been torn down first, greet() would have thrown; the consumer's
         // onUnload observed a live producer.
@@ -3961,7 +4000,7 @@ mod frame_tests {
             globalThis.__valid = String(ref.isValid());       // "false"
             globalThis.__read  = String(ref.readInt32(8));    // "null"
             globalThis.__write = String(ref.writeInt32(8, 5));// "false"
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("er", "__valid"), "false");
         assert_eq!(read_global_string("er", "__read"), "null");
         assert_eq!(read_global_string("er", "__write"), "false");
@@ -3992,7 +4031,7 @@ mod frame_tests {
             globalThis.__f = String(ref.readFloat32(8));
             globalThis.__b = String(ref.readBool(8));
             globalThis.__h = String(ref.readHandle(8));
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("er2", "__f"), "null");
         assert_eq!(read_global_string("er2", "__b"), "null");
         assert_eq!(read_global_string("er2", "__h"), "null");
@@ -4095,7 +4134,7 @@ mod frame_tests {
         load_plugin_js("p", r#"
             const cs2 = require("@s2script/cs2");
             globalThis.__ok = String(cs2 !== null && cs2.hasEntityRef === true && cs2.noRequire === true);
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("p", "__ok"), "true");
         shutdown();
     }
@@ -4112,7 +4151,7 @@ mod frame_tests {
             const { publishInterface } = require("@s2script/interfaces");
             const { EntityRef } = require("@s2script/entity");
             publishInterface("@x/ent", "1.0.0", { getRef: function(){ return new EntityRef(1, 7); } });
-        "#);
+        "#, "{}");
         // Consumer receives it: must be a LIVE EntityRef (methods present), not plain data.
         load_plugin_js("cons", r#"
             const { EntityRef } = require("@s2script/entity");
@@ -4121,7 +4160,7 @@ mod frame_tests {
             globalThis.__idx    = String(r.index) + "," + String(r.serial); // "1,7" — data crossed
             globalThis.__valid  = String(r.isValid());                   // "false" (no ops) — it's callable
             globalThis.__read   = String(r.readInt32(8));                // "null"  (no ops)
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("cons", "__isRef"), "true");
         assert_eq!(read_global_string("cons", "__idx"), "1,7");
         assert_eq!(read_global_string("cons", "__valid"), "false");
@@ -4138,7 +4177,7 @@ mod frame_tests {
             const { publishInterface } = require("@s2script/interfaces");
             const { EntityRef } = require("@s2script/entity");
             globalThis.__h = publishInterface("@x/ent", "1.0.0", { noop: function(){} });
-        "#);
+        "#, "{}");
         load_plugin_js("cons", r#"
             const { EntityRef } = require("@s2script/entity");
             const g = require("@x/ent");
@@ -4146,7 +4185,7 @@ mod frame_tests {
             g.on("spawned", function (r) {
                 globalThis.__seen = (r instanceof EntityRef) ? (r.index + "," + r.serial) : "plain";
             });
-        "#);
+        "#, "{}");
         // EntityRef is a closure var inside the CJS wrapper; use the globalThis prelude reference.
         eval_in_context("prod", r#"__h.emit("spawned", new __s2pkg_entity.EntityRef(2, 9));"#).unwrap();
         assert_eq!(read_global_string("cons", "__seen"), "2,9"); // live EntityRef, not "plain"
@@ -4160,11 +4199,11 @@ mod frame_tests {
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/data", "1.0.0", { echo: function(){ return { a: 1, b: "hi", c: [1,2,3] }; } });
-        "#);
+        "#, "{}");
         load_plugin_js("cons", r#"
             const d = require("@x/data").echo();
             globalThis.__out = d.a + "," + d.b + "," + d.c.join("-");
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("cons", "__out"), "1,hi,1-2-3"); // ordinary data intact
         shutdown();
     }
@@ -4200,6 +4239,7 @@ mod frame_tests {
             client_name: None, client_find_by_userid: None,
             event_set_int: None, event_set_float: None, event_set_bool: None,
             event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
+            config_read: None, config_write: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -4241,7 +4281,7 @@ mod frame_tests {
             globalThis.__t_iface   = typeof require("@s2script/interfaces").publishInterface;  // "function"
             globalThis.__t_std     = String(require("@s2script/std"));                         // "null" (retired)
             globalThis.__t_nope    = String(require("@s2script/nope"));                        // "null"
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("mods", "__t_entity"), "function");
         assert_eq!(read_global_string("mods", "__t_frame"), "object");
         assert_eq!(read_global_string("mods", "__t_timers"), "function");
@@ -4314,6 +4354,7 @@ mod frame_tests {
             client_name: None, client_find_by_userid: None,
             event_set_int: None, event_set_float: None, event_set_bool: None,
             event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
+            config_read: None, config_write: None,
         }
     }
 
@@ -4345,7 +4386,7 @@ mod frame_tests {
                 globalThis.__ev_uint64 = ev.getUint64("steamid");
                 globalThis.__ev_bool   = ev.getBool("headshot");
             });
-        "#);
+        "#, "{}");
 
         // First subscribe must trigger the engine-op.
         assert!(
@@ -4398,7 +4439,7 @@ mod frame_tests {
             __s2_event_subscribe("player_hurt", function(ev) {
                 globalThis.__p1_ran = (globalThis.__p1_ran || 0) + 1;
             });
-        "#);
+        "#, "{}");
         // First subscriber → engine-op called once.
         assert_eq!(EV_SUBSCRIBED.lock().unwrap().iter().filter(|n| *n == "player_hurt").count(), 1);
 
@@ -4406,7 +4447,7 @@ mod frame_tests {
             __s2_event_subscribe("player_hurt", function(ev) {
                 globalThis.__p2_ran = (globalThis.__p2_ran || 0) + 1;
             });
-        "#);
+        "#, "{}");
         // Second subscriber → engine-op NOT called again (not first).
         assert_eq!(EV_SUBSCRIBED.lock().unwrap().iter().filter(|n| *n == "player_hurt").count(), 1,
                    "event_subscribe must only fire on the FIRST subscriber");
@@ -4457,7 +4498,7 @@ mod frame_tests {
             const ev = new GameEvent("round_start");
             globalThis.__ev_name = ev.name;
             globalThis.__ev_type = typeof GameEvent;
-        "#);
+        "#, "{}");
         assert_eq!(read_global_string("gec", "__ev_name"), "round_start");
         assert_eq!(read_global_string("gec", "__ev_type"), "function");
         shutdown();
@@ -4483,7 +4524,7 @@ mod frame_tests {
                 globalThis.__ev_ran = (globalThis.__ev_ran || 0) + 1;
             });
             __s2_event_unsubscribe("test_event");
-        "#);
+        "#, "{}");
 
         // event_subscribe engine-op must have fired (on the first/only subscribe).
         assert!(
@@ -4525,13 +4566,13 @@ mod frame_tests {
             __s2_event_subscribe("test_event", function(ev) {
                 globalThis.__p1_ran = (globalThis.__p1_ran || 0) + 1;
             });
-        "#);
+        "#, "{}");
         load_plugin_js("p2", r#"
             globalThis.__p2_ran = 0;
             __s2_event_subscribe("test_event", function(ev) {
                 globalThis.__p2_ran = (globalThis.__p2_ran || 0) + 1;
             });
-        "#);
+        "#, "{}");
 
         // Confirm both handlers run on dispatch before any explicit unsubscribe.
         dispatch_game_event("test_event");
@@ -4585,7 +4626,7 @@ mod frame_tests {
                 globalThis.__saw = ev.name + ":" + ev.getInt("attacker");
             };
             evMod.Events.on("player_death", handler);
-        "#);
+        "#, "{}");
 
         // Events.on must delegate to __s2_event_subscribe → engine-op must have fired.
         assert!(

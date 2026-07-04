@@ -34,6 +34,9 @@
 #include "sigscan.h"
 #include <cstring>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -616,6 +619,56 @@ static std::string PluginsDir() {
 }
 
 // ---------------------------------------------------------------------------
+// ConfigPath: resolve addons/s2script/configs/<sanitized id>.json via dladdr
+// (mirrors PluginsDir).  Non-[A-Za-z0-9._-] chars in `id` are replaced with '_'.
+// ---------------------------------------------------------------------------
+static std::string ConfigPath(const char* id) {
+    // Sanitize id: non-[A-Za-z0-9._-] → '_' (matches the CLI's .s2sp id sanitization).
+    std::string safe_id;
+    for (const char* p = id; *p; ++p) {
+        char c = *p;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+            || c == '.' || c == '_' || c == '-') {
+            safe_id += c;
+        } else {
+            safe_id += '_';
+        }
+    }
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(&ConfigPath), &info) && info.dli_fname) {
+        char buf[4096];
+        snprintf(buf, sizeof buf, "%s", info.dli_fname);
+        std::string dir = dirname(buf);             // linuxsteamrt64
+        snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);                         // bin
+        snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);                         // s2script addon root
+        return dir + "/configs/" + safe_id + ".json";
+    }
+    // Fallback: relative to the server's cwd.
+    return "addons/s2script/configs/" + safe_id + ".json";
+}
+
+// ---------------------------------------------------------------------------
+// Config ops (Slice 5E.2): read/auto-write the admin override file.
+// ---------------------------------------------------------------------------
+static std::string s_configReadBuf;
+static const char* s2_config_read(const char* id) {
+    if (!id) return nullptr;
+    std::ifstream f(ConfigPath(id));
+    if (!f) return nullptr;
+    std::stringstream ss; ss << f.rdbuf();
+    s_configReadBuf = ss.str();
+    return s_configReadBuf.c_str();
+}
+static int s2_config_write(const char* id, const char* content) {
+    if (!id || !content) return 0;
+    std::string path = ConfigPath(id);
+    std::error_code ec; std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::ofstream f(path); if (!f) return 0; f << content; return f.good() ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Hook-request callback: invoked by the Rust core to install/remove the
 // SourceHook detour.  Called while the core holds an internal borrow —
 // MUST NOT call back into the core (no eval/dispatch/shutdown).
@@ -899,6 +952,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.event_set_uint64 = &s2_event_set_uint64;
     ops.event_create     = &s2_event_create;
     ops.event_fire       = &s2_event_fire;
+    // Config ops (Slice 5E.2): order MUST match S2EngineOps in s2script_core.h + Rust v8host.rs.
+    ops.config_read  = &s2_config_read;
+    ops.config_write = &s2_config_write;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
