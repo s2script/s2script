@@ -1431,6 +1431,45 @@ auto-regenerated signatures/offsets.
 
 ---
 
+## Event actionability — block / modify / fire (Slice 5D.3)
+
+Slice 5D.3 adds the **write** direction to game events (5D.1/5D.2 were read + delivery), bringing the
+event system to parity with the `OnGameFrame` multiplexer. `Events.on` (notify/post) is unchanged.
+
+```ts
+import { Events, HookResult } from "@s2script/cs2";
+
+// BLOCK + MODIFY: a pre-hook runs before the event broadcasts. Read/modify it, and return a HookResult:
+//   Handled/Stop → suppress the client broadcast (the server still processes it; `on` post-subs still fire).
+Events.onPre("player_hurt", (ev) => {
+  ev.setInt("dmg_health", (ev.getInt("dmg_health") / 2) | 0);   // modify the live event
+  return HookResult.Handled;                                     // suppress the broadcast (SM parity)
+});
+
+// FIRE: synthesize + fire an event (runtime types are inferred from the JS values).
+Events.fire("player_death", { userid: 0, attacker: 1, weapon: "ak47" });
+```
+
+**Mechanism.** The shim `SH_ADD_HOOK`s the sig-scanned `IGameEventManager2::FireEvent` (from 5D.2); a Pre
+hook runs the JS pre-subscribers, collapses their `HookResult`s through the same `run_chain` the frame
+multiplexer uses, and on suppress re-calls the original with `bDontBroadcast=true` + `MRES_SUPERCEDE`.
+The mechanism is engine-generic (core/shim); only the typed `Events.onPre<K>`/`fire<K>` overlay is CS2.
+
+**Live gate (de_inferno):**
+```
+[demo] fired player_hurt (from onLoad) ok=true
+[demo] PRE round_start timelimit 0->4242 (Handled)
+[demo] POST round_start timelimit=4242        (modify + block-as-broadcast-suppress confirmed)
+```
+
+**Limitation (by design).** A JS-triggered `Events.fire` cannot re-dispatch to this framework's own
+`on`/`onPre` JS subscribers — all JS runs while the V8 isolate is borrowed, so the fired event reaches
+the engine (clients + C++ listeners / other plugins) but not our JS subs on that pass. A re-entrancy
+guard skips the nested dispatch gracefully (no panic). Firing an event your own plugin also subscribes to
+and expects to re-handle synchronously is the case this doesn't cover.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec

@@ -1003,7 +1003,7 @@ void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) 
 
 // FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
 // to "suppress broadcast", re-call the original with bDontBroadcast=true and SUPERCEDE.
-bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, bool bDontBroadcast) {
+bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast) {
     if (!ev) RETURN_META_VALUE(MRES_IGNORED, true);
     IGameEvent* prev = s_currentEvent;
     s_currentEvent = ev;                                       // mutable during the pre-dispatch

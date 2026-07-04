@@ -19,7 +19,7 @@ public:
     void Hook_GameFramePost(bool simulating, bool first, bool last);
 
     // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
-    bool Hook_FireEventPre(IGameEvent* ev, bool bDontBroadcast);
+    bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);
 
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;

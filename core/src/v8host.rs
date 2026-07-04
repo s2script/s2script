@@ -2069,7 +2069,10 @@ pub(crate) fn dispatch_game_event(name: &str) {
 
     // Phase 2: enter each subscriber's context and invoke the handler with new GameEvent(name).
     HOST.with(|h| {
-        let mut borrow = h.borrow_mut();
+        // Re-entrancy guard (Slice 5D.3): Events.fire() from inside a handler re-enters the dispatch
+        // while the isolate is already borrowed by the outer dispatch. The engine-side fire has
+        // already happened; skip the nested JS re-dispatch rather than double-borrow (would panic).
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
         let Some(host) = borrow.as_mut() else { return };
 
         for (owner, gen, handler_g) in &snap {
@@ -2138,8 +2141,15 @@ pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
         .collect();
 
     let outcome = HOST.with(|h| {
-        let mut borrow = h.borrow_mut();
-        let host = borrow.as_mut().expect("dispatch_game_event_pre before init");
+        // Re-entrancy guard (Slice 5D.3): Events.fire() from inside a handler re-enters the pre-dispatch
+        // while the isolate is already borrowed. Can't run JS pre-hooks on the fired event this pass;
+        // ALLOW it (Continue) rather than double-borrow (would panic). The engine-side fire proceeds.
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        let Some(host) = borrow.as_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
         run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
             if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
             let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
@@ -4634,6 +4644,30 @@ mod frame_tests {
         // set*/create/fire degrade with no ops (no crash).
         assert_eq!(eval_in_context_string("p", r#"var {Events}=__s2pkg_events; String(Events.fire("x",{a:1}))"#), "false");
         eval_in_context("p", r#"var e = new (__s2pkg_events.GameEvent)("t"); e.setInt("k", 5);"#).unwrap();  // no-op, no throw
+        shutdown();
+    }
+
+    /// Slice 5D.3: Events.fire() from inside a handler re-enters the dispatch while the isolate is
+    /// already borrowed. The re-entrancy guard must SKIP the nested JS dispatch gracefully (no
+    /// "RefCell already borrowed" panic), allowing the event through (pre → 0/allow; notify → no-op).
+    #[test]
+    fn reentrant_dispatch_skips_gracefully_no_panic() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // A pre-hook that WOULD suppress, and a notify sub — both must be skipped under re-entrancy.
+        eval_in_context("p", r#"__s2_event_subscribe_pre("player_hurt", function(ev){ return HookResult.Handled; });"#).unwrap();
+        eval_in_context("p", r#"__s2_event_subscribe("player_hurt", function(ev){ globalThis.__notified = true; });"#).unwrap();
+        // Hold the HOST borrow (simulating an outer dispatch), then re-enter:
+        let pre = HOST.with(|h| {
+            let _b = h.borrow_mut();
+            dispatch_game_event_pre("player_hurt")   // must return 0 (allow), not panic
+        });
+        assert_eq!(pre, 0, "re-entrant pre-dispatch allows instead of double-borrow panic");
+        HOST.with(|h| {
+            let _b = h.borrow_mut();
+            dispatch_game_event("player_hurt");       // must not panic (nested notify skipped)
+        });
         shutdown();
     }
 }
