@@ -38,8 +38,9 @@ if (command === "gen-schema") {
     console.log(`gen-nav: wrote ${r.wrappers} wrappers, ${r.fields} fields`);
   }
 } else if (command === "build" && arg) {
-  try { console.log(await buildPlugin(arg)); }
-  catch (err) { console.error(String(err)); process.exit(1); }
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");   // dist/ → packages/cli → packages → repo
+  try { console.log(await buildPlugin(arg, join(repoRoot, "packages"))); }
+  catch (e) { console.error(String(e instanceof Error ? e.message : e)); process.exit(1); }
 } else {
   console.error("Usage: s2script build <dir> | s2script gen-schema [--check] | s2script gen-events [--check] | s2script gen-nav [--check]");
   process.exit(1);
