@@ -1574,6 +1574,57 @@ and runs the `@s2script/config` prelude + the `onChange` mux + re-materialize; t
 
 ---
 
+## Reload state-handoff (Slice 5E.3)
+
+A hot-reloaded plugin can carry runtime state from its old instance to its new one. On a same-id
+file-watch **Reload**, the old instance's `onUnload()` may return a `State` object; the host holds it
+across the teardown→load gap and passes it to the new instance's `onLoad(prev)`. A file edit no longer
+wipes in-memory state.
+
+```typescript
+interface State { reloads: number; pawn: EntityRef | null; }
+let reloads = 0; let pawn: EntityRef | null = null;
+export function onLoad(prev?: State): void {
+  if (prev) { reloads = prev.reloads; pawn = prev.pawn; }   // prev === undefined on a first load
+  // ... use reloads / pawn ...
+}
+export function onUnload(): State { return { reloads: reloads + 1, pawn }; }
+```
+
+- **Mechanism (reuses the inter-plugin marshalling):** `onUnload()`'s return is serialized in the old
+  context via `JSON.stringify` + the EntityRef replacer into a host-held `String` (survives the
+  context's disposal), then revived in the new context via `JSON.parse` + the EntityRef reviver. So a
+  `State` may contain primitives, `bigint`, nested objects, and **live `EntityRef`s** — a carried
+  `EntityRef` revives serial-gated (reads `null`/`isValid()===false` if its entity died during the gap,
+  never a crash).
+- **Trigger:** any same-id **Reload** hands off (the author owns state-shape migration across versions,
+  like config). A first **Load** → `onLoad(undefined)`. A final removal (**Vanished**) discards the
+  captured state — a re-add starts fresh. `shutdown` clears everything.
+- **Degrade-never-crash:** `onUnload` throws / returns a non-serializable value → no handoff + a WARN;
+  a throwing `onLoad(prev)` → the existing WARN. Consume-once: the blob is dropped on load regardless.
+- **Boundary:** entirely engine-generic core (`v8host.rs` capture/revive + a `PENDING_HANDOFF` map;
+  `loader.rs` Reload-consume vs Vanished-clear). No shim/native/op change — one sniper rebuild (core).
+
+### Captured live log (de_inferno)
+
+```
+# first load — no prior state
+[demo] onLoad — reloads=0 hadPrev=false pawnAlive=null
+# touch the .s2sp (Reload): onUnload hands off, onLoad restores — the counter CLIMBS (state survived)
+[demo] onUnload — handing off reloads=1
+[demo] onLoad — reloads=1 hadPrev=true pawnAlive=true pawnRef=732/69664   # a tracked pawn EntityRef survives the gap, LIVE + serial-gated
+[demo] onUnload — handing off reloads=2
+[demo] onLoad — reloads=2 hadPrev=true pawnAlive=true pawnRef=732/69664
+# delete the .s2sp (Vanished) then re-add it (Load): the pending state was cleared → fresh identity
+[demo] onUnload — handing off reloads=3
+[demo] onLoad — reloads=0 hadPrev=false pawnAlive=null
+```
+
+`RestartCount=0`, server ticking throughout — a broken/absent handoff degrades to `onLoad(undefined)`,
+never a crash.
+
+---
+
 ## Known findings / constraints
 
 **Config auto-generate needs a container-writable configs dir (Slice 5E.2 live-gate finding).** The
