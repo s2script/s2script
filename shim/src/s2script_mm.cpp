@@ -533,14 +533,17 @@ static void s2_client_print(int slot, const char* msg) {
                        s_pNetworkMessages ? "ok" : "MISSING");
         return;
     }
-    // STUB: CUserMessageSayText2 protobuf header absent from vendored hl2sdk.
-    // To complete: include usermessages.pb.h (or cs_usermessages.pb.h), then replace
-    // this log with the AllocateMessage/ToPB/set_param1/PostEventAbstract/Deallocate
-    // sequence documented in the comment above.  All infrastructure (both stored
-    // interfaces, the mask, the PostEventAbstract overload) is confirmed in the headers.
-    META_CONPRINTF("[s2script] client_print(slot=%d): chat send TODO — "
-                   "CUserMessageSayText2 protobuf type not in vendored hl2sdk headers; "
-                   "msg='%.120s'\n", slot, msg);
+    // STUB (Slice 6.1 → 6.1b): the concrete CUserMessageSayText2 protobuf is absent from vendored
+    // hl2sdk.  To complete: AllocateMessage() → AsProto() → protobuf reflection (set the SayText2
+    // fields) or a hand-serialized wire encoding → PostEventAbstract.  All infrastructure (both stored
+    // interfaces, the slot mask, the PostEventAbstract overload) is confirmed in the headers.
+    // Log ONCE (Chat.toAll fans out per live slot — avoid flooding the console until 6.1b).
+    static bool s_warnedClientPrintStub = false;
+    if (!s_warnedClientPrintStub) {
+        s_warnedClientPrintStub = true;
+        META_CONPRINTF("[s2script] client_print: chat send is a STUB until Slice 6.1b "
+                       "(CUserMessageSayText2 protobuf not in vendored hl2sdk) — messages not delivered\n");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1182,6 +1185,17 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         s_pGameEventManager = nullptr;
     }
     s_subscribedNames.clear();
+
+    // Unregister our ConCommands before core shutdown (Slice 6.1). Metamod dlclose's s2script.so,
+    // unmapping s2_concommand_trampoline — but the engine's ICvar still holds m_CBInfo pointing at it,
+    // so invoking a ghost command post-unload would call into freed .text (UAF/crash). Parity with the
+    // event-listener RemoveListener above. Degrade-never-crash: null ICvar → skip.
+    if (s_pCvar) {
+        for (auto& kv : s_concommandRefs) {
+            if (kv.second.IsValidRef()) s_pCvar->UnregisterConCommandCallbacks(kv.second);
+        }
+    }
+    s_concommandRefs.clear();
 
     s2script_core_shutdown();
     return true;

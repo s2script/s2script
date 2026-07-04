@@ -1657,8 +1657,8 @@ Commands.register("sm_say", (ctx) => {
   — a vtable call on the already-resolved `VEngineCvar007`; the shim fills a `ConCommandCreation_t` whose
   callback is the shared trampoline and stores the returned `ConCommandRef` (name-lifetime anchor +
   idempotent, reload-safe).
-- **`scripts/rcon`** — a dependency-free Source RCON client for command delivery (`scripts/rcon "sm_say
-  hi"`); it also unblocks the `bot_quota`/`bot_kick` gates that earlier slices worked around.
+- **Command delivery** uses the existing `scripts/rcon.py` (the Source RCON client from Slice 0):
+  `python3 scripts/rcon.py "sm_say hello world"`.
 
 ### Captured live log (de_inferno)
 
@@ -1666,7 +1666,7 @@ Commands.register("sm_say", (ctx) => {
 [s2script] interface OK: EngineCvar (VEngineCvar007)
 [s2script] ConCommand 'sm_say' registered (accessIdx=823)     # registration works (ICvar::RegisterConCommand)
 [s2script] [basecommands] onLoad — sm_say registered
-# scripts/rcon "sm_say hello world":
+# python3 scripts/rcon.py "sm_say hello world":
 [s2script] [basecommands] sm_say by slot=-1 msg=hello world    # register → trampoline → owner-context dispatch → ctx → handler
 ```
 

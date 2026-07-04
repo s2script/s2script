@@ -3252,8 +3252,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
-    // (a2d) Drop the plugin's registered ConCommands so a post-unload dispatch no-ops.
-    // The shim ConCommand deregistration is Task 3; here we just remove from the JS dispatch map.
+    // (a2d) Drop the plugin's registered ConCommands so a post-unload dispatch no-ops. This is the
+    // per-plugin (.s2sp) unload: we remove from the JS dispatch map only — the shim's ICvar ConCommand
+    // stays registered (idempotent, reload-safe) and re-routes to the new handler on reload. The engine-
+    // side ICvar unregister happens on full shim teardown (Metamod Unload → s2script_mm.cpp, UAF-safe).
     CONCOMMANDS.with(|m| m.borrow_mut().retain(|_, (owner, _, _)| owner != id));
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
