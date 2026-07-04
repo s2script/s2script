@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(s2script_shim CXX)
+project(s2script_shim C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,10 @@ add_library(s2script SHARED
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
     # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
     src/tier1_shims.cpp
+    # Slice 6.6: a minimal self-contained x86-64 inline detour (the damage hook) + the vendored HDE
+    # length disassembler (pure, no OS deps). No third-party detour library / no dlopen cascade.
+    src/detour.cpp
+    ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
 )
 
 target_include_directories(s2script PRIVATE
@@ -35,6 +39,8 @@ target_include_directories(s2script PRIVATE
     # protobuf 3.21.8 runtime headers (Slice 6.1c) — reflection over the game's usermessage
     # protobuf objects (CUserMessageSayText2). Matches the vendored libprotobuf.a below.
     ${HL2SDK}/thirdparty/protobuf-3.21.8/src
+    # Slice 6.6: the vendored HDE length disassembler (used by src/detour.cpp).
+    ${CMAKE_SOURCE_DIR}/../third_party/hde
 )
 
 # Source 2 / CS2 build defines.

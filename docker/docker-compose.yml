@@ -10,7 +10,7 @@ services:
       CS2_LAN: "1"           # LAN mode — no SRCDS_TOKEN required
       CS2_RCONPW: "s2script"
       CS2_PORT: "27015"
-      CS2_MAXPLAYERS: "2"
+      CS2_MAXPLAYERS: "12"  # Slice 6.6: bumped 2->12 so combat-dependent gates (damage hooks) can field a real firefight
       CS2_GAMETYPE: "0"
       CS2_GAMEMODE: "1"
       CS2_STARTMAP: "de_inferno"

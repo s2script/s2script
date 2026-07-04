@@ -45,6 +45,7 @@
 #include <libgen.h>   // dirname
 #include <link.h>       // dl_iterate_phdr, ElfW
 #include "sigscan.h"
+#include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include <cstring>
 #include <cstdio>
 #include <fstream>
@@ -240,6 +241,22 @@ static void s2_ent_state_changed(void* ent, int offset) {
 static IGameEventManager2* s_pGameEventManager = nullptr;
 static IGameEvent*         s_currentEvent      = nullptr;
 static std::set<std::string> s_subscribedNames;
+
+// Slice 6.6 (Stage 1): the CBaseEntity::DispatchTraceAttack detour. g_origDTA is the trampoline to the
+// original (relocated prologue + jump back). The handler is READ-ONLY here — it logs candidate m_flDamage
+// reads to prove the hook fires + identify the CTakeDamageInfo arg, then always calls the original.
+typedef int64_t (*DispatchTraceAttack_t)(void* thisptr, void* a2, void* a3, void* a4);
+static DispatchTraceAttack_t g_origDTA = nullptr;
+
+static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, void* a4) {
+    // m_flDamage is at offset 68 on CTakeDamageInfo (schema catalog). STAGE-2: resolve via schema + dispatch
+    // to the core damage mux. Read candidate arg ptrs to reveal which one is the info struct at the live gate.
+    auto rd = [](void* p) -> float {
+        return (p && reinterpret_cast<uintptr_t>(p) > 0x10000) ? *reinterpret_cast<float*>(reinterpret_cast<char*>(p) + 68) : -1.0f;
+    };
+    META_CONPRINTF("[s2script] DTA fired: this=%p a2.dmg=%.1f a3.dmg=%.1f\n", thisptr, rd(a2), rd(a3));
+    return g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;  // read-only: always run the original
+}
 
 // Slice 5D.3: Events.fire creates an event and retargets s_currentEvent to it (save/restore on
 // create/fire) so the same set* ops serve both pre-hook modify and fire-building. Nests correctly.
@@ -1128,6 +1145,29 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     }
                 }
             }
+            // Slice 6.6 (Stage 1): resolve CBaseEntity::DispatchTraceAttack (the damage entry) by direct
+            // prologue signature and install the read-only detour. Degrade-never-crash: any failure leaves
+            // the game unhooked (no damage callback), never a crash.
+            auto dit = sigs.find("DispatchTraceAttack");
+            if (dit == sigs.end()) {
+                META_CONPRINTF("[s2script] WARN: no DispatchTraceAttack signature in gamedata — damage hook off\n");
+            } else {
+                const SigSpec& dsig = dit->second;
+                ModText dmt = FindModuleText(dsig.module.c_str());
+                std::vector<int> dpat = s2sig::ParsePattern(dsig.pattern);
+                int64_t dOff = (dmt.text && !dpat.empty()) ? s2sig::FindPattern(dmt.text, dmt.size, dpat) : s2sig::kFail;
+                if (dOff >= 0) {  // resolve=="direct": the match offset IS the function start
+                    void* dtaAddr = const_cast<uint8_t*>(dmt.text) + dOff;
+                    if (s2detour::Install(dtaAddr, reinterpret_cast<void*>(&Detour_DispatchTraceAttack),
+                                          reinterpret_cast<void**>(&g_origDTA))) {
+                        META_CONPRINTF("[s2script] DispatchTraceAttack hooked @%p (read-only)\n", dtaAddr);
+                    } else {
+                        META_CONPRINTF("[s2script] WARN: DispatchTraceAttack detour install failed — damage hook off\n");
+                    }
+                } else {
+                    META_CONPRINTF("[s2script] WARN: DispatchTraceAttack sig no match (off=%lld) — damage hook off\n", (long long)dOff);
+                }
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
@@ -1269,6 +1309,9 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_FireEventPre), false);
         m_eventHookInstalled = false;
     }
+
+    // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
+    s2detour::RemoveAll();
 
     // Unregister the game-event listener before core shutdown (Slice 5D.1).
     // RemoveListener is an all-names call per the SDK — one call removes the listener
