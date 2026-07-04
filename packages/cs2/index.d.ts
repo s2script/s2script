@@ -54,7 +54,12 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   readonly pawn: Pawn | null;
   /** The engine user-id (session-stable; NOT a schema field). `-1` if unassigned/absent. */
   readonly userId: number;
-  /** The client's SteamID64 as a decimal string. `"0"` for bots / unauthenticated. */
+  /**
+   * The client's SteamID64 as a decimal string (engine `GetClientXUID`). `"0"` for bots / unauthenticated.
+   * This is the AUTHORITATIVE id for admin lookups (`Admin.get`/`forSlot` use it). Do NOT confuse it with
+   * the schema-generated `steamID` (capital ID, from `m_steamID`) — that controller field is `string | null`
+   * and can be `"0"`/`null`, so using it for authorization decisions is unreliable.
+   */
   readonly steamId: string;
 }
 export declare const Player: {

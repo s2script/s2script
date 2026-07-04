@@ -308,7 +308,8 @@ thread_local! {
         = std::cell::RefCell::new(std::collections::HashMap::new());
     static ADMIN_RUNTIME: std::cell::RefCell<std::collections::HashMap<String, u64>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// One-shot guard so admins.json loads once (the first @s2script/admin import), not per plugin.
+    /// One-shot guard so admins.json loads once (the first plugin CONTEXT created — the admin prelude is
+    /// always injected, like every @s2script/* module — not per plugin).
     static ADMIN_FILE_LOADED: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
@@ -622,7 +623,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     add: function (steamId, flags) { __s2_admin_set(String(steamId), flags | 0, true); },
     remove: function (steamId) { __s2_admin_remove(String(steamId), true); },
     get: function (steamId) { return __s2_adminInfo(steamId, __s2_admin_get(String(steamId))); },
-    forSlot: function (slot) { var sid = __s2_client_steamid(slot | 0); return __s2_adminInfo(sid, __s2_admin_get(sid)); },
+    forSlot: function (slot) {
+      var sid = __s2_client_steamid(slot | 0);
+      // Hardening: a bot / mid-auth / unauthenticated client reads SteamID "0" (GetClientXUID=0). Never
+      // resolve "0"/empty to an admin, even if a misconfigured admins.json has a "0" key — else every bot
+      // and unauthenticated player would be granted those flags at once (a whole-branch review finding).
+      if (sid === "0" || !sid) return null;
+      return __s2_adminInfo(sid, __s2_admin_get(sid));
+    },
     reload: function () { __s2_admin_clear_file(); __s2_admin_load(); },
   };
   // Expose parseFile on globalThis so plugins (and tests) can call it directly.
@@ -5449,6 +5457,10 @@ mod frame_tests {
         // The check hook is installed + honours the cache (bot slot → steamid "0" → not admin → false).
         assert_eq!(eval_in_context_string("p", "String(typeof globalThis.__s2_admin_check)"), "function");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false");
+        // Hardening: even a misconfigured "0" admin entry must NOT grant a bot/unauth (steamid "0") — forSlot guards it.
+        eval_in_context("p", "__s2_admin_set('0', __s2pkg_admin.ADMFLAG.ROOT, true);").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false"); // "0" never an admin
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.forSlot(0))"), "null");
         // parseFile: name→bit mapping (file-tier path).
         eval_in_context("p", r#"__s2_admin_parseFile('{"888":["kick"]}');"#).unwrap();
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('888').hasFlags(__s2pkg_admin.ADMFLAG.KICK))"), "true");
