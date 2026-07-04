@@ -279,6 +279,7 @@ pub(crate) fn poll_plugins() {
 
             Action::Unload { path, id } => {
                 crate::v8host::unload_plugin(&id);
+                crate::v8host::clear_pending_handoff(&id);   // Slice 5E.3: a final removal discards any captured handoff
                 removes.push(path);
             }
         }

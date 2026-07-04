@@ -281,6 +281,13 @@ thread_local! {
     /// `remove_by_owner` called on unload; reset on shutdown so a re-init starts empty.
     static CONFIG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
+    /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
+    /// Reload) and revived via `iface_from_json`; cleared by the loader on a final removal (Vanished);
+    /// reset on `shutdown`. It holds a plain `String`, so it survives the old context's disposal.
+    static PENDING_HANDOFF: std::cell::RefCell<std::collections::HashMap<String, String>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -3014,6 +3021,8 @@ pub fn shutdown() {
     EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the config-change subscriber mux (Slice 5E.2) so a re-init starts clean.
     CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
+    PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
     // loaded must not persist across an init cycle).
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
@@ -3191,12 +3200,32 @@ pub(crate) fn unload_plugin(id: &str) {
             if let Some(v) = exports_local.get(tc, k.into()) {
                 if let Ok(f) = v8::Local::<v8::Function>::try_from(v) {
                     let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                    if f.call(tc, recv, &[]).is_none() {
-                        let msg = tc
-                            .exception()
-                            .map(|e| e.to_rust_string_lossy(&*tc))
-                            .unwrap_or_else(|| "onUnload threw".into());
-                        log_warn(&format!("WARN: unload_plugin('{}'): onUnload error: {}", id, msg));
+                    match f.call(tc, recv, &[]) {
+                        Some(ret) => {
+                            // Slice 5E.3: capture the onUnload return as the reload-handoff blob.
+                            // Serialize in THIS (old) context via iface_to_json (JSON.stringify + the
+                            // EntityRef replacer) so the string survives the context's disposal. A
+                            // null/undefined return means "no state to carry"; a non-serializable one
+                            // (function, cycle) → iface_to_json None → WARN + no handoff.
+                            if !ret.is_undefined() && !ret.is_null() {
+                                match iface_to_json(tc, ret) {
+                                    Some(blob) => PENDING_HANDOFF.with(|h| {
+                                        h.borrow_mut().insert(id.to_string(), blob);
+                                    }),
+                                    None => log_warn(&format!(
+                                        "WARN: unload_plugin('{}'): onUnload return not serializable — no state handoff",
+                                        id
+                                    )),
+                                }
+                            }
+                        }
+                        None => {
+                            let msg = tc
+                                .exception()
+                                .map(|e| e.to_rust_string_lossy(&*tc))
+                                .unwrap_or_else(|| "onUnload threw".into());
+                            log_warn(&format!("WARN: unload_plugin('{}'): onUnload error: {}", id, msg));
+                        }
                     }
                 }
             }
@@ -3267,6 +3296,13 @@ pub(crate) fn unload_plugin(id: &str) {
     // (e) NOW drop the Global<Context> (all inner Globals were released in a–d).  dispose_plugin_context
     // removes the PLUGINS entry (dropping the context Global) and the REGISTRY entry (already gone → no-op).
     dispose_plugin_context(id);
+}
+
+/// Slice 5E.3: drop any pending reload-handoff blob for `id` WITHOUT consuming it — called by the
+/// loader on a FINAL removal (Vanished) so a deleted plugin's captured state is discarded rather than
+/// handed to a future re-add of the same id.
+pub(crate) fn clear_pending_handoff(id: &str) {
+    PENDING_HANDOFF.with(|h| { h.borrow_mut().remove(id); });
 }
 
 #[cfg(test)]
@@ -3760,6 +3796,37 @@ mod frame_tests {
         );
         shutdown();
         set_hook_request(None);
+    }
+
+    /// Slice 5E.3: unload_plugin captures a serializable onUnload() return into PENDING_HANDOFF; a
+    /// non-serializable return is dropped with a WARN (no entry); a throwing onUnload leaves no entry.
+    #[test]
+    fn unload_captures_onunload_return_as_handoff_blob() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        // (a) serializable return → captured
+        load_plugin_js("cap", r#"
+            module.exports.onUnload = function(){ return { count: 7, name: "hi" }; };
+        "#, "{}");
+        unload_plugin("cap");
+        let blob = PENDING_HANDOFF.with(|h| h.borrow().get("cap").cloned());
+        let blob = blob.expect("handoff blob captured");
+        assert!(blob.contains("\"count\":7"), "blob has the state: {blob}");
+
+        // (b) non-serializable return (a function) → no entry
+        load_plugin_js("nos", r#"
+            module.exports.onUnload = function(){ return function(){}; };
+        "#, "{}");
+        unload_plugin("nos");
+        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("nos").is_none()), "non-serializable → no blob");
+
+        // (c) throwing onUnload → no entry
+        load_plugin_js("thr", r#"
+            module.exports.onUnload = function(){ throw new Error("boom"); };
+        "#, "{}");
+        unload_plugin("thr");
+        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("thr").is_none()), "throwing onUnload → no blob");
+        shutdown();
     }
 
     /// Brief test: a `delay` continuation whose plugin is UNLOADED before the deadline must be
