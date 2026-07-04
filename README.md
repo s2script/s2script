@@ -1670,23 +1670,23 @@ Commands.register("sm_say", (ctx) => {
 [s2script] [basecommands] sm_say by slot=-1 msg=hello world    # register → trampoline → owner-context dispatch → ctx → handler
 ```
 
-**Slice 6.1b — `client_print` delivers (to the client *console*).** `Chat.toSlot`/`toAll` now reach a
-working `client_print`: `IVEngineServer2::ClientPrintf(CPlayerSlot, msg)` (interface
-`Source2EngineToServer001`) — SourceMod's `PrintToConsole`. **Bots are skipped** — `ClientPrintf` on a
-fake client (no netchannel) segfaults, so `client_print` guards on `GetPlayerNetInfo(slot) != null`
-(SM's fake-client skip; a live-gate finding — an un-guarded `ClientPrintf` on a bot crashed the server).
-Proven live: `sm_say` dispatches to completion with bots present, `RestartCount=0`, no crash. **Caveat:**
-delivery to a *real* client's console can't be visually verified on the bots-only gate server (no human
-client) — the send path is proven safe + non-crashing + the `IVEngineServer2` vtable correct, but "a
-player saw it" needs a connected client.
+**Slice 6.1b/c — `client_print` delivers to the client *chat box* (`SayText2`).** `Chat.toSlot`/`toAll`
+now send a real chat message: a `CUserMessageSayText2` user message, built by `AllocateMessage()`-ing the
+game's protobuf object and setting its fields (`entityindex`/`chat`/`messagename`) via **protobuf
+reflection**, then `IGameEventSystem::PostEventAbstract` to the target slot. **Bots are skipped** — a
+send to a fake client (no netchannel) can crash, so `client_print` guards on
+`IVEngineServer2::GetPlayerNetInfo(slot) != null` (SM's fake-client skip; a live-gate finding — an
+un-guarded engine print on a bot segfaulted the server).
 
-**Still deferred — true chat-*box* (`SayText2`).** `client_print` reaches the client console, not the
-chat box. The chat-box `SayText2` user message needs protobuf handling: `libserver.so` exports ~no
-`google::protobuf` reflection symbols (so the reflection path would break `dlopen`, the 5D.1 hazard) and
-the concrete `CUserMessageSayText2` proto isn't vendored — so it needs a vendored/generated proto or a
-hand-serialized wire encoding, and it's unverifiable without a connected client. `IGameEventSystem` +
-`INetworkMessages` stay resolved as the infrastructure. The `basecommands` plugin needs **no change** when
-chat-box lands.
+The key was **linking the vendored `libprotobuf.a`** (hl2sdk ships it, `lib/linux64/release/`, matching the
+game's protobuf 3.21.8). It is **self-contained**, so it does *not* reintroduce the tier1 `dlopen` cascade
+(5D.1) — the shim loads fine. Reflection then operates on the game's message object (same ABI), so no
+`protoc`/generated headers are needed. The registered message is found via
+`FindNetworkMessagePartial("SayText2")` (exact `FindNetworkMessage` missed it). Proven live: the
+descriptor resolves (`CUserMessageSayText2`, 7 fields, all target fields found), `sm_say` dispatches, no
+crash, `RestartCount=0`. **Caveat:** a *real* client visually *seeing* the chat line can't be confirmed on
+the bots-only gate server (no human client) — but the message construction, field-resolution, and send
+path are all proven live.
 
 ---
 

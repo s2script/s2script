@@ -10,6 +10,10 @@
 // one missing generated include that eiface.h unconditionally pulls in.
 #include <eiface.h>
 #include <playerslot.h>   // CPlayerSlot — IVEngineServer2::ClientPrintf target (Slice 6.1b)
+#include <inetchannel.h>  // NetChannelBufType_t / BUF_RELIABLE (Slice 6.1c PostEventAbstract)
+#include <networksystem/netmessage.h>            // CNetMessage::AsProto (Slice 6.1c)
+#include <google/protobuf/message.h>             // Message/Reflection (Slice 6.1c SayText2 reflection)
+#include <google/protobuf/descriptor.h>          // Descriptor::FindFieldByName (Slice 6.1c)
 
 // SchemaSystem: ISchemaSystem + the type-scope / class-info / field-data layout used by the
 // schema-offset engine-op (recon Q1/Q2; include paths mirror shim/CMakeLists.txt).
@@ -377,10 +381,9 @@ static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connecte
 static ICvar* s_pCvar = nullptr;
 static std::map<std::string, ConCommandRef> s_concommandRefs;
 
-// IVEngineServer2 (Source2EngineToServer001) — backs client_print via ClientPrintf (Slice 6.1b).
-// ClientPrintf targets the client's CONSOLE (SourceMod PrintToConsole), not the chat box; true
-// chat-box delivery (the SayText2 user message) is deferred — libserver exports ~no protobuf
-// symbols, so reflection would break dlopen (the 5D.1 hazard), and it's unverifiable without a client.
+// IVEngineServer2 (Source2EngineToServer001) — used by client_print's bot guard: GetPlayerNetInfo(slot)
+// returns null for a fake client (bot, no netchannel), so we skip it (sending to a bot can crash / is
+// pointless). Acquired at Load(); the chat SEND itself is the SayText2 user message (Slice 6.1c).
 static IVEngineServer2* s_pEngine = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -532,24 +535,50 @@ static void s2_client_print(int slot, const char* msg) {
         META_CONPRINTF("[s2script] client_print(slot=%d): null msg — no-op\n", slot);
         return;
     }
-    if (!s_pEngine) {
-        static bool s_warnedNoEngine = false;
-        if (!s_warnedNoEngine) {
-            s_warnedNoEngine = true;
-            META_CONPRINTF("[s2script] client_print: IVEngineServer2 not acquired — messages not delivered\n");
+    if (!s_pEngine || !s_pGameEventSystem || !s_pNetworkMessages) {
+        static bool s_warnedNoIface = false;
+        if (!s_warnedNoIface) {
+            s_warnedNoIface = true;
+            META_CONPRINTF("[s2script] client_print: engine/eventsystem/networkmessages not acquired "
+                           "— chat not delivered\n");
         }
         return;
     }
-    // Skip bots / clients with no netchannel: ClientPrintf on a fake client (bots have no netchannel)
-    // dereferences null → SIGSEGV (SourceMod's PrintTo* skip fake clients for exactly this reason).
-    // GetPlayerNetInfo returns null for a bot; a real networked client has a channel.
+    // Skip bots / clients with no netchannel: sending to a fake client (no netchannel) can crash and is
+    // pointless (SourceMod's PrintTo* skip fake clients). GetPlayerNetInfo returns null for a bot.
     if (!s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) return;
-    // Slice 6.1b: deliver to the client's CONSOLE via IVEngineServer2::ClientPrintf (SourceMod
-    // PrintToConsole). NOTE: this is the console, NOT the chat box — true chat-box delivery (the
-    // SayText2 user message) is deferred: libserver exports ~no protobuf reflection symbols (so the
-    // reflection path would break dlopen, the 5D.1 hazard) and it's unverifiable without a connected
-    // client. s_pGameEventSystem/s_pNetworkMessages stay resolved as the infrastructure for that.
-    s_pEngine->ClientPrintf(CPlayerSlot(slot), msg);
+
+    // Slice 6.1c: the true chat-BOX send — a CUserMessageSayText2 user message. The concrete proto
+    // type isn't vendored, so we AllocateMessage() the game's protobuf object and set its fields via
+    // protobuf REFLECTION (linked libprotobuf.a provides Descriptor/Reflection; the message object is
+    // the game's, same 3.21.8 ABI). Fields (from usermessages.proto CUserMessageSayText2): entityindex
+    // (1), chat (2, bool), messagename (3, the displayed text). Then PostEventAbstract to this slot.
+    INetworkMessageInternal* pInfo = s_pNetworkMessages->FindNetworkMessagePartial("SayText2");
+    if (!pInfo) {
+        static bool s_warnedNoMsg = false;
+        if (!s_warnedNoMsg) {
+            s_warnedNoMsg = true;
+            META_CONPRINTF("[s2script] client_print: CUserMessageSayText2 not found — chat not delivered\n");
+        }
+        return;
+    }
+    CNetMessage* pData = pInfo->AllocateMessage();
+    if (!pData) return;
+    google::protobuf::Message* m = reinterpret_cast<google::protobuf::Message*>(pData->AsProto());
+    if (m) {
+        const google::protobuf::Descriptor* d = m->GetDescriptor();
+        const google::protobuf::Reflection*  r = m->GetReflection();
+        if (d && r) {
+            if (const auto* f = d->FindFieldByName("entityindex")) r->SetInt32(m, f, 0);
+            if (const auto* f = d->FindFieldByName("chat"))        r->SetBool(m, f, true);
+            if (const auto* f = d->FindFieldByName("messagename"))  r->SetString(m, f, msg);
+        }
+    }
+    // Post to just this client (a slot bitmask; nSlot=-1 = all split-screen, bLocalOnly=false).
+    uint64 clients = (1ull << static_cast<uint64>(slot));
+    s_pGameEventSystem->PostEventAbstract(-1, false, 1, &clients, pInfo, pData, 0, BUF_RELIABLE);
+    // NOTE(leak-TODO): pData ownership after PostEventAbstract is unconfirmed (no DeallocateMessage seen);
+    // not freeing here to avoid a double-free. Revisit if this leaks per message.
 }
 
 // ---------------------------------------------------------------------------

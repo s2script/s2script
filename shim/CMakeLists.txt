@@ -32,6 +32,9 @@ target_include_directories(s2script PRIVATE
     ${HL2SDK}/public/tier1
     ${HL2SDK}/public/mathlib
     ${HL2SDK}/public/appframework
+    # protobuf 3.21.8 runtime headers (Slice 6.1c) — reflection over the game's usermessage
+    # protobuf objects (CUserMessageSayText2). Matches the vendored libprotobuf.a below.
+    ${HL2SDK}/thirdparty/protobuf-3.21.8/src
 )
 
 # Source 2 / CS2 build defines.
@@ -59,8 +62,13 @@ target_compile_options(s2script PRIVATE
 )
 
 # Link the resident Rust core (built by `cargo build --release`).
+# libprotobuf.a (Slice 6.1c): the vendored, self-contained protobuf 3.21.8 static lib — provides the
+# reflection symbols (Descriptor::FindFieldByName / Reflection::Set*) for client_print's SayText2 send.
+# Self-contained (no undefined deps), so it does NOT reintroduce the tier1 dlopen cascade (5D.1). Built
+# with Valve's ABI (_GLIBCXX_USE_CXX11_ABI=0, set above), matching the game's in-process runtime.
 target_link_libraries(s2script PRIVATE
     ${CMAKE_SOURCE_DIR}/../target/release/libs2script_core.so
+    ${HL2SDK}/lib/linux64/release/libprotobuf.a
 )
 target_include_directories(s2script PRIVATE include)
 # Ensure the runtime can find libs2script_core.so next to the plugin.
