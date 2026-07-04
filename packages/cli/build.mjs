@@ -14,7 +14,7 @@ await esbuild.build({
   platform: "node",
   format: "esm",
   outfile: "dist/cli.js",
-  external: ["esbuild", "adm-zip"],
+  external: ["esbuild", "adm-zip", "typescript"],
   target: "node24",
   banner: { js: "#!/usr/bin/env node" },
 });

@@ -1,0 +1,5 @@
+{
+  "name": "@s2script/globals",
+  "version": "0.1.0",
+  "types": "globals.d.ts"
+}
