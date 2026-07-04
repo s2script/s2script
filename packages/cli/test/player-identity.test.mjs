@@ -9,7 +9,8 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const genJs = readFileSync(join(repo, "games/cs2/js/schema.generated.js"), "utf8");
 const pawnJs = readFileSync(join(repo, "games/cs2/js/pawn.js"), "utf8");
 
-function runWith(clientMock) {
+function runWith(clientMock, names) {
+  const nameMap = names || {};                                    // controller entity index -> playerName
   function EntityRef(i, s) { this.index = i; this.serial = s; }
   EntityRef.prototype.isValid = function () { return true; };
   EntityRef.prototype.readInt32 = function () { return 2; };
@@ -17,7 +18,7 @@ function runWith(clientMock) {
   EntityRef.prototype.readFloat32 = function () { return 0.25; };
   EntityRef.prototype.readBool = function () { return false; };
   EntityRef.prototype.readHandle = function () { return new EntityRef(this.index + 100, 7); };
-  EntityRef.prototype.readString = function () { return this._name || ""; };
+  EntityRef.prototype.readString = function () { return nameMap[this.index] || this._name || ""; };
   EntityRef.prototype.writeFloat32 = function (off, v) { (this.writes = this.writes || []).push([off, v]); return true; };
   EntityRef.prototype.notifyStateChanged = function (off) { (this.notified = this.notified || []).push(off); };
   const math = { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
@@ -91,6 +92,24 @@ test("Player.target (offline vm): #userid / @all / @me / name / no-match", () =>
   assert.equal(Player.target("@me", 0)[0].slot, 0);
   assert.equal(Player.target("@me", -1).length, 0, "@me from console -> empty");
   assert.equal(Player.target("", 0).length, 0, "empty pattern -> empty");
+});
+
+test("Player.target name match (offline vm): exact wins over partial, partial returns all, no-match empty", () => {
+  const { Player } = runWith({
+    __s2_client_valid: (slot) => slot < 3,                       // slots 0,1,2 connected
+    __s2_client_userid: (slot) => slot,
+    __s2_client_find_by_userid: () => -1,
+    __s2_client_kick: () => {},
+  }, { 1: "Specialist", 2: "Rex", 3: "Specialist_2" });          // controller idx = slot+1
+  // exact (case-insensitive) match wins even though "specialist" is also a substring of "Specialist_2"
+  const exact = Player.target("specialist", -1);
+  assert.equal(exact.length, 1, "exact name -> just that one");
+  assert.equal(exact[0].slot, 0, "the exact-match slot");
+  // partial: "spec" matches "Specialist" and "Specialist_2" (no exact) -> both
+  const partial = Player.target("spec", -1).map((p) => p.slot).sort();
+  assert.deepEqual(partial, [0, 2], "partial -> all matches");
+  // no name match -> empty
+  assert.equal(Player.target("nobody", -1).length, 0, "no name match -> empty");
 });
 
 test("Pawn.setVelocity (offline vm): writes 3 floats + notifyStateChanged", () => {
