@@ -54,6 +54,8 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   readonly pawn: Pawn | null;
   /** The engine user-id (session-stable; NOT a schema field). `-1` if unassigned/absent. */
   readonly userId: number;
+  /** The client's SteamID64 as a decimal string. `"0"` for bots / unauthenticated. */
+  readonly steamId: string;
 }
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */

@@ -59,6 +59,12 @@
     get: function () { return __s2_client_userid(this.slot); },
     enumerable: true, configurable: true,
   });
+  // player.steamId — the client's SteamID64 as a decimal string (engine identity, NOT a schema field);
+  // "0" for bots / unauthenticated.
+  Object.defineProperty(Player.prototype, "steamId", {
+    get: function () { return __s2_client_steamid(this.slot); },
+    enumerable: true, configurable: true,
+  });
   // Construct a Player from a slot when the CONTROLLER entity is valid — pawn NOT required
   // (unlike Player.fromSlot, which pawn-gates for the in-game-only Player.all()).
   Player._fromSlotUnchecked = function (slot) {

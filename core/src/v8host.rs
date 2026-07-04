@@ -566,6 +566,52 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   globalThis.__s2pkg_commands = { Commands: __s2_commands };   // named export `Commands`
+  // --- Slice 6.2 Task 2: admin module (engine-generic; no CS2/game symbol; ADMFLAG + Admin API + file load) ---
+  var __s2_ADMFLAG = {
+    RESERVATION: 1<<0, GENERIC: 1<<1, KICK: 1<<2, BAN: 1<<3, UNBAN: 1<<4, SLAY: 1<<5, CHANGEMAP: 1<<6,
+    CONVARS: 1<<7, CONFIG: 1<<8, CHAT: 1<<9, VOTE: 1<<10, PASSWORD: 1<<11, RCON: 1<<12, CHEATS: 1<<13, ROOT: 1<<14,
+  };
+  function __s2_hasFlags(flags, req) { return ((flags & __s2_ADMFLAG.ROOT) !== 0) || ((flags & req) === req); }
+  function __s2_adminInfo(steamId, flags) {
+    if (!flags) return null;
+    return { steamId: String(steamId), flags: flags | 0, hasFlags: function (req) { return __s2_hasFlags(flags | 0, req | 0); } };
+  }
+  // Parse admins.json ({ "<steamid64>": ["kick","ban"] }) into the file tier. Unknown flag name → skip+WARN.
+  function __s2_admin_parseFile(text) {
+    var obj; try { obj = JSON.parse(text); } catch (e) { console.log("[s2script] WARN: admins.json malformed — ignored"); return; }
+    if (!obj || typeof obj !== "object") return;
+    for (var sid in obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, sid)) continue;
+      var names = obj[sid]; if (!Array.isArray(names)) continue;
+      var mask = 0;
+      for (var i = 0; i < names.length; i++) {
+        var key = String(names[i]).toUpperCase();
+        if (__s2_ADMFLAG[key] != null) mask |= __s2_ADMFLAG[key];
+        else console.log("[s2script] WARN: admins.json '" + sid + "': unknown flag '" + names[i] + "' — skipped");
+      }
+      __s2_admin_set(String(sid), mask, false);
+    }
+  }
+  function __s2_admin_load() {
+    var text = __s2_config_read_raw("admins");
+    if (text == null) { __s2_config_write_raw("admins", '{\n  // "76561199000000001": ["root"],\n  // "76561199000000002": ["kick", "ban", "slay", "chat"]\n}\n'); text = "{}"; }
+    __s2_admin_parseFile(text);
+  }
+  var __s2_admin = {
+    add: function (steamId, flags) { __s2_admin_set(String(steamId), flags | 0, true); },
+    remove: function (steamId) { __s2_admin_remove(String(steamId), true); },
+    get: function (steamId) { return __s2_adminInfo(steamId, __s2_admin_get(String(steamId))); },
+    forSlot: function (slot) { var sid = __s2_client_steamid(slot | 0); return __s2_adminInfo(sid, __s2_admin_get(sid)); },
+    reload: function () { __s2_admin_clear_file(); __s2_admin_load(); },
+  };
+  // Expose parseFile on globalThis so plugins (and tests) can call it directly.
+  globalThis.__s2_admin_parseFile = __s2_admin_parseFile;
+  // One-shot file load (first plugin to import @s2script/admin triggers this), then install the check hook.
+  if (!__s2_admin_mark_loaded()) { __s2_admin_load(); }
+  globalThis.__s2_admin_check = function (slot, requiredMask) {
+    var a = __s2_admin.forSlot(slot | 0); return a ? a.hasFlags(requiredMask | 0) : false;
+  };
+  globalThis.__s2pkg_admin = { ADMFLAG: __s2_ADMFLAG, Admin: __s2_admin };   // named exports ADMFLAG + Admin
 })();
 "#;
 
@@ -2382,6 +2428,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_admin_clear_file", s2_admin_clear_file);
     set_native(scope, global_obj, "__s2_admin_mark_loaded", s2_admin_mark_loaded);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
+    // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
+    set_native(scope, global_obj, "__s2_config_read_raw", s2_config_read_raw);
+    set_native(scope, global_obj, "__s2_config_write_raw", s2_config_write_raw);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -2798,6 +2847,46 @@ fn s2_client_steamid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
             Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
         })().unwrap_or_else(|| "0".to_string());
         if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// `__s2_config_read_raw(id) -> string | null` — read a config file by id; null if no op / file absent.
+/// Bridge for the @s2script/admin JS module so it can read admins.json via the config_read op.
+fn s2_config_read_raw(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let id = args.get(0).to_rust_string_lossy(scope);
+        let result: Option<String> = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.config_read?;
+            let cid = std::ffi::CString::new(id).ok()?;
+            let ptr = f(cid.as_ptr());
+            if ptr.is_null() { return None; }
+            Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        })();
+        match result {
+            Some(s) => { if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); } }
+            None => { rv.set(v8::null(scope).into()); }
+        }
+    }));
+}
+
+/// `__s2_config_write_raw(id, content) -> number` — write a config file; 0 on success or no op.
+/// Bridge for the @s2script/admin JS module so it can auto-generate admins.json via config_write.
+fn s2_config_write_raw(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        if args.length() < 2 { return; }
+        let id = args.get(0).to_rust_string_lossy(scope);
+        let content = args.get(1).to_rust_string_lossy(scope);
+        let result: Option<i32> = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.config_write?;
+            let cid = std::ffi::CString::new(id).ok()?;
+            let ccontent = std::ffi::CString::new(content).ok()?;
+            Some(f(cid.as_ptr(), ccontent.as_ptr()))
+        })();
+        rv.set_int32(result.unwrap_or(0));
     }));
 }
 
@@ -5309,11 +5398,39 @@ mod frame_tests {
         // clear_file wipes file tier.
         eval_in_context("p", "__s2_admin_clear_file();").unwrap();
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "0");
-        // load guard: first call false, then true.
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "false");
+        // load guard: the prelude already called __s2_admin_mark_loaded() in create_plugin_context,
+        // so subsequent calls return true (already-loaded state).
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "true");
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "true");
         // client_steamid degrades to "0" without the op.
         assert_eq!(eval_in_context_string("p", "__s2_client_steamid(0)"), "0");
+        shutdown();
+    }
+
+    /// Slice 6.2 Task 2: `@s2script/admin` prelude module — ADMFLAG constants, Admin.add/get/hasFlags,
+    /// root-implies-all, non-admin→null, __s2_admin_check hook, parseFile name→bit mapping.
+    #[test]
+    fn admin_module_flags_api_and_hook() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // ADMFLAG bit values (SM-exact).
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.ADMFLAG.KICK)"), "4");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.ADMFLAG.ROOT)"), String::from("16384"));
+        // Admin.add (runtime) + get + hasFlags (exact-subset + root=all).
+        eval_in_context("p", "__s2pkg_admin.Admin.add('555', __s2pkg_admin.ADMFLAG.KICK | __s2pkg_admin.ADMFLAG.CHAT);").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('555').hasFlags(__s2pkg_admin.ADMFLAG.CHAT))"), "true");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('555').hasFlags(__s2pkg_admin.ADMFLAG.BAN))"), "false");
+        eval_in_context("p", "__s2pkg_admin.Admin.add('777', __s2pkg_admin.ADMFLAG.ROOT);").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('777').hasFlags(__s2pkg_admin.ADMFLAG.BAN))"), "true"); // root ⇒ all
+        // Non-admin → null.
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('000'))"), "null");
+        // The check hook is installed + honours the cache (bot slot → steamid "0" → not admin → false).
+        assert_eq!(eval_in_context_string("p", "String(typeof globalThis.__s2_admin_check)"), "function");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false");
+        // parseFile: name→bit mapping (file-tier path).
+        eval_in_context("p", r#"__s2_admin_parseFile('{"888":["kick"]}');"#).unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('888').hasFlags(__s2pkg_admin.ADMFLAG.KICK))"), "true");
         shutdown();
     }
 
