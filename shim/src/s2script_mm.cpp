@@ -597,6 +597,15 @@ static const char* s2_client_steamid(int slot) {
 }
 
 // ---------------------------------------------------------------------------
+// client_kick (Slice 6.3) — disconnect a client via IVEngineServer2::KickClient.
+// No-op for a null engine or an out-of-range slot (degrade-never-crash).
+// ---------------------------------------------------------------------------
+static void s2_client_kick(int slot, const char* reason) {
+    if (!s_pEngine || slot < 0 || slot >= 64) return;
+    s_pEngine->KickClient(CPlayerSlot(slot), reason ? reason : "Kicked by admin", NETWORK_DISCONNECT_KICKED);
+}
+
+// ---------------------------------------------------------------------------
 // Schema enumeration engine-op (5B.1).
 //
 // Spike-confirmed recipe (2026-07-01-slice-5b1-spike-findings.md):
@@ -1170,6 +1179,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.client_print = &s2_client_print;
     // Client SteamID (Slice 6.2): APPENDED after client_print; order MUST match S2EngineOps.
     ops.client_steamid = &s2_client_steamid;
+    // Client kick (Slice 6.3): APPENDED after client_steamid; order MUST match S2EngineOps.
+    ops.client_kick = &s2_client_kick;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

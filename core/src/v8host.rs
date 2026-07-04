@@ -99,6 +99,9 @@ pub type ClientPrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
 // --- Slice 6.2: client SteamID op (C-ABI; the C header must match exactly) ---
 pub type ClientSteamidFn = extern "C" fn(slot: c_int) -> *const c_char;
 
+// --- Slice 6.3: client kick op (C-ABI; the C header must match exactly) ---
+pub type ClientKickFn = extern "C" fn(slot: c_int, reason: *const c_char);
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -140,6 +143,8 @@ pub struct S2EngineOps {
     pub client_print: Option<ClientPrintFn>,
     // --- Slice 6.2: client SteamID op (APPENDED after client_print; order is the ABI; do not reorder above) ---
     pub client_steamid: Option<ClientSteamidFn>,
+    // --- Slice 6.3: client kick op (APPENDED after client_steamid; order is the ABI; do not reorder above) ---
+    pub client_kick: Option<ClientKickFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -2457,6 +2462,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_admin_clear_file", s2_admin_clear_file);
     set_native(scope, global_obj, "__s2_admin_mark_loaded", s2_admin_mark_loaded);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
+    set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
     set_native(scope, global_obj, "__s2_config_read_raw", s2_config_read_raw);
     set_native(scope, global_obj, "__s2_config_write_raw", s2_config_write_raw);
@@ -2876,6 +2882,18 @@ fn s2_client_steamid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
             Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
         })().unwrap_or_else(|| "0".to_string());
         if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// `__s2_client_kick(slot, reason)` — disconnect the client in `slot`. No-op without the op / for a bad slot.
+fn s2_client_kick(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let reason = if args.length() >= 2 { args.get(1).to_rust_string_lossy(scope) } else { "Kicked by admin".to_string() };
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.client_kick else { return };
+        if let Ok(creason) = CString::new(reason) { f(slot, creason.as_ptr()); }
     }));
 }
 
@@ -4818,6 +4836,7 @@ mod frame_tests {
             config_read: None, config_write: None,
             client_print: None,
             client_steamid: None,
+            client_kick: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -4935,6 +4954,7 @@ mod frame_tests {
             config_read: None, config_write: None,
             client_print: None,
             client_steamid: None,
+            client_kick: None,
         }
     }
 
@@ -5433,6 +5453,8 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "true");
         // client_steamid degrades to "0" without the op.
         assert_eq!(eval_in_context_string("p", "__s2_client_steamid(0)"), "0");
+        // client_kick degrades to a no-op (undefined) without the op.
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_kick(0, 'x'))"), "undefined");
         shutdown();
     }
 

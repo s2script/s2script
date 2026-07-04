@@ -71,6 +71,9 @@ typedef void (*s2_client_print_fn)(int slot, const char* msg);
    Valid until the next client_steamid call. Via IVEngineServer2::GetClientXUID. */
 typedef const char* (*s2_client_steamid_fn)(int slot);
 
+/* Kick a connected client (Slice 6.3). No-op for null engine or out-of-range slot. */
+typedef void (*s2_client_kick_fn)(int slot, const char* reason);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -108,6 +111,8 @@ typedef struct {
     s2_client_print_fn client_print;   /* Slice 6.1 — APPENDED after config ops; order is the ABI. */
     /* Client SteamID (Slice 6.2) — APPENDED after client_print; order is the ABI. */
     s2_client_steamid_fn client_steamid;
+    /* Client kick (Slice 6.3) — APPENDED after client_steamid; order is the ABI. */
+    s2_client_kick_fn client_kick;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
