@@ -19,7 +19,7 @@ export function typecheckPlugin(pluginDir: string, opts: { packagesDir: string }
   const deps = [
     ...Object.keys(s2.pluginDependencies ?? {}),
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
-  ];
+  ].filter((d) => !d.startsWith("@s2script/"));
 
   const options: ts.CompilerOptions = {
     strict: true,
