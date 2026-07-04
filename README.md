@@ -1690,6 +1690,60 @@ path are all proven live.
 
 ---
 
+## Admin cache + flags (Slice 6.2)
+
+SourceMod's admin authorization — the real "permissions" for parity (SM plugins run with full API access;
+SM's "permissions" are admin *command flags*, not plugin capabilities). A **host-global** admin cache maps
+`SteamID64 → flag bitmask`, loaded from `admins.json` *and* mutable at runtime; commands gate on
+`ADMFLAG_*`.
+
+```typescript
+import { Commands } from "@s2script/commands";
+import { Admin, ADMFLAG } from "@s2script/admin";
+
+Commands.registerAdmin("sm_say", ADMFLAG.CHAT, (ctx) => { /* … */ });   // requires the CHAT flag
+Admin.add("76561199…", ADMFLAG.KICK | ADMFLAG.CHAT);                    // runtime admin (not persisted)
+const a = Admin.forSlot(ctx.callerSlot);                                // resolve slot → SteamID → cache
+if (a && a.hasFlags(ADMFLAG.BAN)) { /* … */ }                          // root ⇒ all flags
+```
+
+- **The command trio** (SM `RegConsoleCmd`/`RegServerCmd`/`RegAdminCmd`): `Commands.register` (anyone),
+  `Commands.registerServer` (server console only), `Commands.registerAdmin(name, flags, handler)`
+  (admin-gated). **The server console / rcon is root** (`callerSlot < 0` → always allowed); an in-game
+  player needs the flag, else the command replies "You do not have access." `@s2script/commands` stays
+  admin-agnostic — `registerAdmin` consults a global `__s2_admin_check` hook that `@s2script/admin`
+  installs (absent hook → **deny** non-server callers, never accidentally grant).
+- **The cache is host-global** (in core, not per-plugin) — V8 plugin contexts are isolated, so a runtime
+  `Admin.add` in one plugin must be visible to another's gating. Two tiers (a file source `admins.json` ⊕
+  the runtime source); lookups union both.
+- **`admins.json`** (`addons/s2script/configs/`) — `{ "<steamid64>": ["kick", "ban"], … }` (string flag
+  names → SM bit values). Auto-generated (a valid-JSON `_help` template) on first run; `Admin.reload()`
+  re-reads it. **The `ADMFLAG` bit values match SourceMod** (`KICK`=1<<2, `CHAT`=1<<9, `ROOT`=1<<14=all).
+- **SteamID** — `IVEngineServer2::GetClientXUID` (a `client_steamid` op); also `player.steamId`.
+- **Deploy note:** the auto-generated `admins.json` is a **container write** into `addons/s2script/configs/`
+  — that dir must be a writable mount (the nested rw mount from Slice 5E.2). After a sniper build (which
+  wipes `dist/addons/s2script`), recreate `dist/addons/s2script/configs` as a host-writable dir before
+  restart, else the container (running as `steam`) can't create the file.
+
+### Captured live log (de_inferno, rcon)
+
+```
+# first boot: admins.json auto-generated (valid JSON), the admin module loads
+[basecommands] admin diag: runtime-add hasKick=true hasBan=false     # Admin.add + get + hasFlags (runtime tier)
+[basecommands] admin diag: slot0=not-admin (bot/steamid=0)           # Admin.forSlot → SteamID read + cache lookup
+[basecommands] onLoad — sm_say registered (registerAdmin ADMFLAG.CHAT)
+# python3 scripts/rcon.py "sm_say admin gate works"  (server console = root)
+[basecommands] sm_say by slot=-1 msg=admin gate works               # root bypasses the gate → runs
+# admins.json (auto-generated): { "_help": "SteamID64 -> flag names. …" }  — VALID JSON; a 2nd restart re-reads it with NO "malformed" warn
+```
+
+`RestartCount=0`, no crash. **Caveat:** a *real non-admin player* visually seeing the denial can't be
+triggered on the bots-only gate (bots can't run commands, no human client) — but the gating logic is fully
+in-isolate tested (the trio + the default-deny fail-safe), and server-console=root + the SteamID read + the
+runtime cache + the file auto-gen/load are all live-verified.
+
+---
+
 ## Known findings / constraints
 
 **Config auto-generate needs a container-writable configs dir (Slice 5E.2 live-gate finding).** The

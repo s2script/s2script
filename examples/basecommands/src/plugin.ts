@@ -1,21 +1,26 @@
 import { Commands } from "@s2script/commands";
 import { Chat } from "@s2script/chat";
+import { Admin, ADMFLAG } from "@s2script/admin";
 
-// Slice 6.1 live gate — the command spine. sm_say registers a server command, dispatches to this
-// handler with a typed ctx (callerSlot/args/argString/reply), and calls Chat.toAll to broadcast.
-// Ungated (admin gating is Slice 6.2). Invoked from the server console / rcon this slice (in-chat
-// `!say` triggers come later). Slice 6.1c: Chat.toAll now DELIVERS to each real client's CHAT BOX —
-// a CUserMessageSayText2 user message built via protobuf reflection over the game's message object
-// (bots are skipped; they have no netchannel). Real-client visual delivery is unverifiable on the
-// bots-only gate server, but the message + fields resolve live and the send path is proven.
+// Slice 6.2 live gate — admin-gated commands. sm_say is now registered via Commands.registerAdmin with
+// ADMFLAG.CHAT: the server console / rcon is root (always allowed); an in-game player needs the CHAT flag
+// (from admins.json or a runtime Admin.add), else it replies "You do not have access." Chat.toAll delivers
+// the SayText2 chat message (6.1c). Admin cache = host-global (file admins.json ⊕ runtime), from @s2script/admin.
 export function onLoad(): void {
-  Commands.register("sm_say", (ctx) => {
+  Commands.registerAdmin("sm_say", ADMFLAG.CHAT, (ctx) => {
     const msg = ctx.argString.trim();
     if (!msg) { ctx.reply("Usage: sm_say <message>"); return; }
     Chat.toAll("[SM] " + msg);
     console.log("[basecommands] sm_say by slot=" + ctx.callerSlot + " msg=" + msg);
   });
-  console.log("[basecommands] onLoad — sm_say registered");
+
+  // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
+  Admin.add("76561199000000009", ADMFLAG.KICK | ADMFLAG.CHAT);   // runtime tier
+  const t = Admin.get("76561199000000009");
+  console.log("[basecommands] admin diag: runtime-add hasKick=" + (t ? String(t.hasFlags(ADMFLAG.KICK)) : "null")
+    + " hasBan=" + (t ? String(t.hasFlags(ADMFLAG.BAN)) : "null"));
+  console.log("[basecommands] admin diag: slot0=" + (Admin.forSlot(0) ? "admin" : "not-admin (bot/steamid=0)"));
+  console.log("[basecommands] onLoad — sm_say registered (registerAdmin ADMFLAG.CHAT)");
 }
 
 export function onUnload(): void { console.log("[basecommands] onUnload"); }
