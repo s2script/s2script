@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+# Minimal Source RCON client (dependency-free) for the s2script live gate.
+# Usage:  scripts/rcon "sm_say hello world"
+#   env:  RCON_HOST (default 127.0.0.1), RCON_PORT (default 27015), RCON_PW (default s2script)
+# Sends one command over the Source RCON protocol and prints the server's response body.
+import os, socket, struct, sys
+
+HOST = os.environ.get("RCON_HOST", "127.0.0.1")
+PORT = int(os.environ.get("RCON_PORT", "27015"))
+PW   = os.environ.get("RCON_PW", "s2script")
+
+SERVERDATA_AUTH = 3
+SERVERDATA_EXECCOMMAND = 2
+
+
+def pack(pid, ptype, body):
+    payload = struct.pack("<ii", pid, ptype) + body.encode("utf-8") + b"\x00\x00"
+    return struct.pack("<i", len(payload)) + payload
+
+
+def read_packet(sock):
+    raw_len = recv_n(sock, 4)
+    (length,) = struct.unpack("<i", raw_len)
+    data = recv_n(sock, length)
+    pid, ptype = struct.unpack("<ii", data[:8])
+    body = data[8:-2]  # strip the two trailing null bytes
+    return pid, ptype, body.decode("utf-8", "replace")
+
+
+def recv_n(sock, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("RCON socket closed")
+        buf += chunk
+    return buf
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("usage: rcon <command>", file=sys.stderr)
+        return 2
+    cmd = " ".join(sys.argv[1:])
+    with socket.create_connection((HOST, PORT), timeout=10) as s:
+        s.sendall(pack(1, SERVERDATA_AUTH, PW))
+        # The server replies with an (optional) empty RESPONSE_VALUE then the AUTH response.
+        # The auth response echoes id=1 on success, id=-1 on failure.
+        auth_id = None
+        while auth_id is None:
+            pid, ptype, _ = read_packet(s)
+            if ptype == 2:  # SERVERDATA_AUTH_RESPONSE
+                auth_id = pid
+        if auth_id == -1:
+            print("RCON auth failed (bad password)", file=sys.stderr)
+            return 1
+        s.sendall(pack(2, SERVERDATA_EXECCOMMAND, cmd))
+        pid, ptype, body = read_packet(s)
+        if body:
+            sys.stdout.write(body)
+            if not body.endswith("\n"):
+                sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

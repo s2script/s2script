@@ -1627,6 +1627,59 @@ never a crash.
 
 ---
 
+## Commands + chat — the command spine (Slice 6.1)
+
+The first rung of the base-plugin suite (Slice 6). A plugin registers a **server command** and receives a
+typed dispatch context; a new `@s2script/chat` module carries messages to player chat. Proven by
+`@s2script/basecommands` exposing `sm_say`.
+
+```typescript
+import { Commands } from "@s2script/commands";
+import { Chat } from "@s2script/chat";
+
+Commands.register("sm_say", (ctx) => {
+  // ctx.callerSlot (-1 = server console), ctx.args, ctx.argString, ctx.reply(msg)
+  if (!ctx.argString.trim()) { ctx.reply("Usage: sm_say <message>"); return; }
+  Chat.toAll("[SM] " + ctx.argString.trim());
+});
+```
+
+- **`@s2script/commands`** (engine-generic): `Commands.register(name, handler)`; the handler's `ctx` is
+  `{ callerSlot, args, argString, reply }`. `callerSlot` is a raw slot (`-1` = server console) so the
+  module never depends on `@s2script/cs2`; `reply` routes to the caller (console → server print; a
+  player → their chat). Dispatch is owner-tracked and runs the handler in the **registering plugin's
+  context** (liveness-gated, re-entrancy-safe — mirrors the game-event dispatch); a plugin's commands
+  are dropped on unload.
+- **`@s2script/chat`** (engine-generic): `Chat.toSlot(slot, msg)` / `Chat.toAll(msg)` (loops live slots
+  via `__s2_client_valid`, not `Player.all()`).
+- **Command registration RE (the cracked blocker):** CS2 does **not** export `ConCommand::Create` (the
+  seed was neutralized on that). The working path is `ICvar::RegisterConCommand(ConCommandCreation_t&)`
+  — a vtable call on the already-resolved `VEngineCvar007`; the shim fills a `ConCommandCreation_t` whose
+  callback is the shared trampoline and stores the returned `ConCommandRef` (name-lifetime anchor +
+  idempotent, reload-safe).
+- **`scripts/rcon`** — a dependency-free Source RCON client for command delivery (`scripts/rcon "sm_say
+  hi"`); it also unblocks the `bot_quota`/`bot_kick` gates that earlier slices worked around.
+
+### Captured live log (de_inferno)
+
+```
+[s2script] interface OK: EngineCvar (VEngineCvar007)
+[s2script] ConCommand 'sm_say' registered (accessIdx=823)     # registration works (ICvar::RegisterConCommand)
+[s2script] [basecommands] onLoad — sm_say registered
+# scripts/rcon "sm_say hello world":
+[s2script] [basecommands] sm_say by slot=-1 msg=hello world    # register → trampoline → owner-context dispatch → ctx → handler
+```
+
+**Deferred to 6.1b — the actual chat *send*.** `Chat.toSlot`/`toAll` reach the shim's `client_print`,
+which resolves + holds `IGameEventSystem` + `INetworkMessages` but is currently a degrade-safe **stub**:
+the concrete `CUserMessageSayText2` protobuf type is not in the vendored hl2sdk, so the `SayText2`
+user-message send needs protobuf **reflection** (the generic runtime *is* vendored, but linking it risks
+the same undefined-symbol `dlopen` breakage 5D.1 hit with tier1) or a hand-serialized wire encoding —
+a focused follow-up. Until then `sm_say` registers + dispatches + logs; `Chat.toAll` loops the live slots
+and no-ops the send. The `basecommands` plugin needs **no change** once 6.1b lands the send.
+
+---
+
 ## Known findings / constraints
 
 **Config auto-generate needs a container-writable configs dir (Slice 5E.2 live-gate finding).** The
