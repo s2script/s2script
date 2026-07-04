@@ -66,15 +66,23 @@ export declare const Player: {
   allConnected(): Player[];
 };
 
-import type { GameEvent } from "@s2script/events";
+import type { GameEvent, HookResultValue } from "@s2script/events";
+export { HookResult } from "@s2script/events";
+export type { HookResultValue } from "@s2script/events";
 import type { GameEvents } from "./events.generated";
 /**
- * Game-event subscription (typed overlay). Importing from `@s2script/cs2` gives the typed overload:
+ * Game-event subscription (typed overlay). Importing from `@s2script/cs2` gives the typed overloads:
  * `Events.on("player_death", ev => ev.getPlayerSlot("attacker"))` typechecks via the GameEvents map.
+ * `Events.onPre` runs before broadcast and may return a HookResult to block.
+ * `Events.fire` fires an event with typed field constraints.
  * The `off` signature matches `@s2script/events` semantics: removes ALL of this plugin's handlers for `name`.
  */
 export declare const Events: {
   on<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => void): void;
   on(name: string, handler: (ev: GameEvent) => void): void;
   off(name: string, handler: (ev: GameEvent) => void): void;
+  onPre<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => HookResultValue | void): void;
+  onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
+  fire<K extends keyof GameEvents>(name: K, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
+  fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
 };
