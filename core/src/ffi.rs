@@ -83,6 +83,19 @@ pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) {
     });
 }
 
+/// Shim → core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
+/// (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
+/// (a pre-hook returned Handled/Stop), else 0.
+///
+/// `catch_unwind`-wrapped; null pointer and invalid UTF-8 degrade to 0 (never panic across the
+/// FFI boundary per spec §6).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_game_event_pre(name: *const c_char) -> c_int {
+    if name.is_null() { return 0; }
+    let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0; };
+    std::panic::catch_unwind(|| v8host::dispatch_game_event_pre(name_str)).unwrap_or(0)
+}
+
 /// C-ABI entry point the shim's ConCommand trampoline calls when a registered command fires.
 /// `name` = command name (Arg(0)), `slot` = CPlayerSlot::Get() (-1 for server console),
 /// `args` = CCommand::ArgS() (everything after the name).

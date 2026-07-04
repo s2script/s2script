@@ -80,6 +80,15 @@ pub type ClientSignonFn       = extern "C" fn(slot: c_int) -> i32;
 pub type ClientNameFn         = extern "C" fn(slot: c_int) -> *const c_char;
 pub type ClientFindByUseridFn = extern "C" fn(userid: c_int) -> i32;
 
+// --- Slice 5D.3: event write/fire ops (C-ABI; the C header must match exactly) ---
+pub type EventSetIntFn    = extern "C" fn(key: *const c_char, value: i32);
+pub type EventSetFloatFn  = extern "C" fn(key: *const c_char, value: f32);
+pub type EventSetBoolFn   = extern "C" fn(key: *const c_char, value: c_int);
+pub type EventSetStringFn = extern "C" fn(key: *const c_char, value: *const c_char);
+pub type EventSetUint64Fn = extern "C" fn(key: *const c_char, value: u64);
+pub type EventCreateFn    = extern "C" fn(name: *const c_char) -> c_int;
+pub type EventFireFn      = extern "C" fn(dont_broadcast: c_int) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -106,6 +115,14 @@ pub struct S2EngineOps {
     pub client_signon:         Option<ClientSignonFn>,
     pub client_name:           Option<ClientNameFn>,
     pub client_find_by_userid: Option<ClientFindByUseridFn>,
+    // --- Slice 5D.3: event write/fire ops (APPENDED — order is the ABI; do not reorder above) ---
+    pub event_set_int:    Option<EventSetIntFn>,
+    pub event_set_float:  Option<EventSetFloatFn>,
+    pub event_set_bool:   Option<EventSetBoolFn>,
+    pub event_set_string: Option<EventSetStringFn>,
+    pub event_set_uint64: Option<EventSetUint64Fn>,
+    pub event_create:     Option<EventCreateFn>,
+    pub event_fire:       Option<EventFireFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -240,6 +257,11 @@ thread_local! {
     /// `remove_by_owner` is called from `unload_plugin` (the teardown authority).
     /// Reset on shutdown so a re-init starts empty.
     static EVENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Pre-hook game-event multiplexer: name → per-plugin PRE subscribers (Slice 5D.3).
+    /// Same shape as EVENT_MUX; handlers return a HookResult that is collapsed via run_chain.
+    /// Reset on shutdown so a re-init starts empty.
+    static EVENT_MUX_PRE: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 }
 
@@ -424,10 +446,33 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   GameEvent.prototype.getString     = function (k) { return __s2_event_get_string(k); };
   GameEvent.prototype.getUint64     = function (k) { return __s2_event_get_uint64(k); };   // decimal string
   GameEvent.prototype.getPlayerSlot = function (k) { return __s2_event_get_player_slot(k); };
-  // --- Slice 5D.1 Task 2: Events.on/off — prelude module object for @s2script/events. ---
+  GameEvent.prototype.setInt    = function (k, v) { __s2_event_set_int(k, v | 0); };
+  GameEvent.prototype.setFloat  = function (k, v) { __s2_event_set_float(k, v); };
+  GameEvent.prototype.setBool   = function (k, v) { __s2_event_set_bool(k, !!v); };
+  GameEvent.prototype.setString = function (k, v) { __s2_event_set_string(k, String(v)); };
+  GameEvent.prototype.setUint64 = function (k, v) { __s2_event_set_uint64(k, String(v)); };   // decimal string
+  // --- Slice 5D.1 Task 2 / 5D.3: Events.on/off/onPre/fire — prelude module object for @s2script/events. ---
   var Events = {
-    on:  function (name, handler) { __s2_event_subscribe(name, handler); },
-    off: function (name, handler) { __s2_event_unsubscribe(name, handler); },
+    on:    function (name, handler) { __s2_event_subscribe(name, handler); },
+    off:   function (name, handler) { __s2_event_unsubscribe(name, handler); },
+    onPre: function (name, handler) { __s2_event_subscribe_pre(name, handler); },
+    // Fire a game event. fields: { key: value }. Runtime type-infer: bool→setBool, string→setString,
+    // bigint→setUint64, integer number→setInt, other number→setFloat. Returns the FireEvent result.
+    fire:  function (name, fields, dontBroadcast) {
+      if (!__s2_event_create(name)) return false;
+      if (fields) {
+        for (var k in fields) {
+          if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
+          var v = fields[k];
+          var t = typeof v;
+          if (t === "boolean") __s2_event_set_bool(k, v);
+          else if (t === "string") __s2_event_set_string(k, v);
+          else if (t === "bigint") __s2_event_set_uint64(k, v.toString());
+          else if (t === "number") { if (Number.isInteger(v)) __s2_event_set_int(k, v); else __s2_event_set_float(k, v); }
+        }
+      }
+      return __s2_event_fire(!!dontBroadcast);
+    },
   };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
@@ -435,7 +480,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_timers     = timers;
   globalThis.__s2pkg_console    = { console: console };
   globalThis.__s2pkg_interfaces = interfaces;
-  globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events };
+  globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
 })();
 "#;
 
@@ -1878,6 +1923,136 @@ fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+// ---------------------------------------------------------------------------
+// Slice 5D.3: event write/fire natives (pre-subscribe/unsubscribe + setters + create/fire).
+// ---------------------------------------------------------------------------
+
+/// Native `__s2_event_subscribe_pre(name, handler)` — register a pre-hook (can block/modify).
+fn s2_event_subscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let was_empty = EVENT_MUX_PRE.with(|m| m.borrow().is_empty());
+        EVENT_MUX_PRE.with(|m| { m.borrow_mut().subscribe(&name, owner, generation, handler_g); });
+        if was_empty {   // first pre-sub across ALL names → install the global FireEvent hook
+            if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
+                if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 1); }
+            }
+        }
+    }));
+}
+
+/// Native `__s2_event_unsubscribe_pre(name, handler)` — remove this plugin's pre-hooks for `name`.
+fn s2_event_unsubscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        EVENT_MUX_PRE.with(|m| { m.borrow_mut().remove_by_owner_on(&name, &owner); });
+        if EVENT_MUX_PRE.with(|m| m.borrow().is_empty()) {   // last pre-sub gone → remove the hook
+            if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
+                if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 0); }
+            }
+        }
+    }));
+}
+
+/// Native `__s2_event_set_int(key, value)` — write the current event's int field (pre-hook / fire builder).
+fn s2_event_set_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).int32_value(scope).unwrap_or(0);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_set_int else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        func(ck.as_ptr(), value);
+    }));
+}
+
+/// Native `__s2_event_set_float(key, value)` — write the current event's float field.
+fn s2_event_set_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).number_value(scope).unwrap_or(0.0) as f32;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_set_float else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        func(ck.as_ptr(), value);
+    }));
+}
+
+/// Native `__s2_event_set_bool(key, value)` — write the current event's bool field (0/1).
+fn s2_event_set_bool(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).boolean_value(scope) as c_int;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_set_bool else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        func(ck.as_ptr(), value);
+    }));
+}
+
+/// Native `__s2_event_set_string(key, value)` — write the current event's string field.
+fn s2_event_set_string(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let val_str = args.get(1).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_set_string else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        let Ok(cv) = CString::new(val_str.as_str()) else { return };
+        func(ck.as_ptr(), cv.as_ptr());
+    }));
+}
+
+/// Native `__s2_event_set_uint64(key, value)` — write the current event's uint64 field.
+/// `value` is a DECIMAL STRING at the JS boundary (consistent with getUint64/readUInt64).
+fn s2_event_set_uint64(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let key = args.get(0).to_rust_string_lossy(scope);
+        let val_str = args.get(1).to_rust_string_lossy(scope);
+        let value = val_str.parse::<u64>().unwrap_or(0);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_set_uint64 else { return };
+        let Ok(ck) = CString::new(key.as_str()) else { return };
+        func(ck.as_ptr(), value);
+    }));
+}
+
+/// Native `__s2_event_create(name) -> boolean` — create a to-be-fired event; retargets set* writes to it.
+fn s2_event_create(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_create else { return };
+        let Ok(cn) = CString::new(name.as_str()) else { return };
+        rv.set_bool(func(cn.as_ptr()) != 0);
+    }));
+}
+
+/// Native `__s2_event_fire(dontBroadcast) -> boolean` — fire the created event; restores the write target.
+fn s2_event_fire(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let dont = if args.length() >= 1 { args.get(0).boolean_value(scope) } else { false };
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_fire else { return };
+        rv.set_bool(func(dont as c_int) != 0);
+    }));
+}
+
 /// Dispatch a game event by name to all LIVE JS subscribers.
 ///
 /// Called from `ffi.rs`'s `s2script_core_dispatch_game_event` (C-ABI export), which the shim's
@@ -1894,7 +2069,10 @@ pub(crate) fn dispatch_game_event(name: &str) {
 
     // Phase 2: enter each subscriber's context and invoke the handler with new GameEvent(name).
     HOST.with(|h| {
-        let mut borrow = h.borrow_mut();
+        // Re-entrancy guard (Slice 5D.3): Events.fire() from inside a handler re-enters the dispatch
+        // while the isolate is already borrowed by the outer dispatch. The engine-side fire has
+        // already happened; skip the nested JS re-dispatch rather than double-borrow (would panic).
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
         let Some(host) = borrow.as_mut() else { return };
 
         for (owner, gen, handler_g) in &snap {
@@ -1944,6 +2122,72 @@ pub(crate) fn dispatch_game_event(name: &str) {
             // tc, tc_storage, scope drop here — TryCatch absorbs any pending exception.
         }
     });
+}
+
+/// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
+/// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
+/// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
+pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
+    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
+    // Phase 1: snapshot — release EVENT_MUX_PRE borrow before entering any context.
+    let snap0 = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));   // Vec<(owner, gen, Global<Function>)>
+    if snap0.is_empty() { return 0; }
+    // run_chain wants (SubId, Priority, H); all pre-hooks are Priority::Normal this slice (order =
+    // subscription order; a priority param is deferred). SubId = enumerate index (only used for the
+    // errored list). Carry (owner, gen, handler) so the invoke closure can route + liveness-check.
+    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
+        .into_iter().enumerate()
+        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
+        .collect();
+
+    let outcome = HOST.with(|h| {
+        // Re-entrancy guard (Slice 5D.3): Events.fire() from inside a handler re-enters the pre-dispatch
+        // while the isolate is already borrowed. Can't run JS pre-hooks on the fired event this pass;
+        // ALLOW it (Continue) rather than double-borrow (would panic). The engine-side fire proceeds.
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        let Some(host) = borrow.as_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else { return Ok(HookResult::Continue); };
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent (as in dispatch_game_event).
+            let event_arg: Option<v8::Local<v8::Value>> = (|| {
+                let global = ctx_local.global(tc);
+                let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
+                let pkg = global.get(tc, pkg_key.into())?;
+                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+                let ctor_key = v8::String::new(tc, "GameEvent")?;
+                let ctor = v8::Local::<v8::Function>::try_from(pkg.get(tc, ctor_key.into())?).ok()?;
+                let name_str = v8::String::new(tc, name)?;
+                ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+            })();
+            let event_val: v8::Local<v8::Value> = event_arg.unwrap_or_else(|| v8::undefined(tc).into());
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            match func.call(tc, recv, &[event_val]) {
+                None => Err(()),                                   // threw → drop this sub
+                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
+                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                    0 => HookResult::Continue, 1 => HookResult::Changed,
+                    2 => HookResult::Handled, 3 => HookResult::Stop,
+                    _ => HookResult::Continue,                     // out-of-range → Continue
+                }),
+            }
+        })
+    });
+    if outcome.result >= HookResult::Handled { 1 } else { 0 }
 }
 
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
@@ -2015,6 +2259,16 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_client_signon", s2_client_signon);
     set_native(scope, global_obj, "__s2_client_name", s2_client_name);
     set_native(scope, global_obj, "__s2_client_find_by_userid", s2_client_find_by_userid);
+    // Event write/fire (Slice 5D.3): pre-subscribe/unsubscribe + setters + create/fire.
+    set_native(scope, global_obj, "__s2_event_subscribe_pre", s2_event_subscribe_pre);
+    set_native(scope, global_obj, "__s2_event_unsubscribe_pre", s2_event_unsubscribe_pre);
+    set_native(scope, global_obj, "__s2_event_set_int", s2_event_set_int);
+    set_native(scope, global_obj, "__s2_event_set_float", s2_event_set_float);
+    set_native(scope, global_obj, "__s2_event_set_bool", s2_event_set_bool);
+    set_native(scope, global_obj, "__s2_event_set_string", s2_event_set_string);
+    set_native(scope, global_obj, "__s2_event_set_uint64", s2_event_set_uint64);
+    set_native(scope, global_obj, "__s2_event_create", s2_event_create);
+    set_native(scope, global_obj, "__s2_event_fire", s2_event_fire);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -2584,6 +2838,8 @@ pub fn shutdown() {
     FRAME_COUNTER.with(|c| c.set(0));
     // Reset the game-event mux so a re-init starts with a clean subscriber table.
     EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the pre-hook event mux (Slice 5D.3) so a re-init starts clean.
+    EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
     // loaded must not persist across an init cycle).
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
@@ -2721,6 +2977,14 @@ pub(crate) fn unload_plugin(id: &str) {
             if let Some(func) = ops.event_unsubscribe {
                 if let Ok(cn) = CString::new(evname.as_str()) { func(cn.as_ptr()); }
             }
+        }
+    }
+    // (a2b) Drop the plugin's PRE-hook game-event subscriptions (Slice 5D.3). If the whole
+    // PRE mux is now empty (no more pre-hooks), request removal of the global FireEvent hook.
+    EVENT_MUX_PRE.with(|m| m.borrow_mut().remove_by_owner(id));
+    if EVENT_MUX_PRE.with(|m| m.borrow().is_empty()) {
+        if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
+            if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 0); }
         }
     }
 
@@ -3934,6 +4198,8 @@ mod frame_tests {
             event_get_string: None, event_get_uint64: None, event_get_player_slot: None,
             client_valid: None, client_userid: None, client_signon: None,
             client_name: None, client_find_by_userid: None,
+            event_set_int: None, event_set_float: None, event_set_bool: None,
+            event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -4046,6 +4312,8 @@ mod frame_tests {
             event_get_player_slot: Some(mock_ev_get_player_slot),
             client_valid: None, client_userid: None, client_signon: None,
             client_name: None, client_find_by_userid: None,
+            event_set_int: None, event_set_float: None, event_set_bool: None,
+            event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
         }
     }
 
@@ -4348,6 +4616,58 @@ mod frame_tests {
             "After Events.off, dispatch must not invoke the handler"
         );
 
+        shutdown();
+    }
+
+    /// Slice 5D.3 Task 1: `dispatch_game_event_pre` with no subscribers returns 0 (allow).
+    #[test]
+    fn dispatch_game_event_pre_no_subs_allows() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        assert_eq!(dispatch_game_event_pre("player_hurt"), 0);   // no pre-subs → allow
+        shutdown();
+    }
+
+    /// Slice 5D.3 Task 2: pre-hook collapse + setter/create/fire degrade with no engine ops.
+    #[test]
+    fn pre_hooks_collapse_and_degrade() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // Handled → suppress (1).
+        eval_in_context("p", r#"__s2_event_subscribe_pre("player_hurt", function(ev){ return HookResult.Handled; });"#).unwrap();
+        assert_eq!(dispatch_game_event_pre("player_hurt"), 1);
+        // Continue on another name → allow (0).
+        eval_in_context("p", r#"__s2_event_subscribe_pre("round_start", function(ev){ return HookResult.Continue; });"#).unwrap();
+        assert_eq!(dispatch_game_event_pre("round_start"), 0);
+        // set*/create/fire degrade with no ops (no crash).
+        assert_eq!(eval_in_context_string("p", r#"var {Events}=__s2pkg_events; String(Events.fire("x",{a:1}))"#), "false");
+        eval_in_context("p", r#"var e = new (__s2pkg_events.GameEvent)("t"); e.setInt("k", 5);"#).unwrap();  // no-op, no throw
+        shutdown();
+    }
+
+    /// Slice 5D.3: Events.fire() from inside a handler re-enters the dispatch while the isolate is
+    /// already borrowed. The re-entrancy guard must SKIP the nested JS dispatch gracefully (no
+    /// "RefCell already borrowed" panic), allowing the event through (pre → 0/allow; notify → no-op).
+    #[test]
+    fn reentrant_dispatch_skips_gracefully_no_panic() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // A pre-hook that WOULD suppress, and a notify sub — both must be skipped under re-entrancy.
+        eval_in_context("p", r#"__s2_event_subscribe_pre("player_hurt", function(ev){ return HookResult.Handled; });"#).unwrap();
+        eval_in_context("p", r#"__s2_event_subscribe("player_hurt", function(ev){ globalThis.__notified = true; });"#).unwrap();
+        // Hold the HOST borrow (simulating an outer dispatch), then re-enter:
+        let pre = HOST.with(|h| {
+            let _b = h.borrow_mut();
+            dispatch_game_event_pre("player_hurt")   // must return 0 (allow), not panic
+        });
+        assert_eq!(pre, 0, "re-entrant pre-dispatch allows instead of double-borrow panic");
+        HOST.with(|h| {
+            let _b = h.borrow_mut();
+            dispatch_game_event("player_hurt");       // must not panic (nested notify skipped)
+        });
         shutdown();
     }
 }

@@ -49,6 +49,16 @@ typedef int          (*s2_client_signon_fn)(int slot);         /* signon state, 
 typedef const char*  (*s2_client_name_fn)(int slot);           /* valid during call; core copies now */
 typedef int          (*s2_client_find_by_userid_fn)(int userid); /* slot, or -1 */
 
+/* Event write/fire ops (Slice 5D.3). Write the shim's current write target (the pre-hook's live
+ * IGameEvent, OR a just-created to-be-fired event). All no-op if the target/manager is null. */
+typedef void (*s2_event_set_int_fn)(const char* key, int value);
+typedef void (*s2_event_set_float_fn)(const char* key, float value);
+typedef void (*s2_event_set_bool_fn)(const char* key, int value);       /* 0/1 */
+typedef void (*s2_event_set_string_fn)(const char* key, const char* value);
+typedef void (*s2_event_set_uint64_fn)(const char* key, uint64_t value);
+typedef int  (*s2_event_create_fn)(const char* name);                   /* 1 = created (retargets writes); 0 = null mgr / unknown name */
+typedef int  (*s2_event_fire_fn)(int dontBroadcast);                    /* returns FireEvent result; 0 if no created event */
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -71,6 +81,14 @@ typedef struct {
     s2_client_signon_fn         client_signon;
     s2_client_name_fn           client_name;
     s2_client_find_by_userid_fn client_find_by_userid;
+    /* Event write/fire ops (Slice 5D.3) — APPENDED after the client ops; order is the ABI. */
+    s2_event_set_int_fn    event_set_int;
+    s2_event_set_float_fn  event_set_float;
+    s2_event_set_bool_fn   event_set_bool;
+    s2_event_set_string_fn event_set_string;
+    s2_event_set_uint64_fn event_set_uint64;
+    s2_event_create_fn     event_create;
+    s2_event_fire_fn       event_fire;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -89,6 +107,10 @@ void s2script_core_dispatch_concommand(const char* name, int slot, const char* a
  * read live data from the current IGameEvent*.  After dispatch returns, s_currentEvent
  * is restored to its previous value (re-entrancy guard). */
 void s2script_core_dispatch_game_event(const char* name);
+/* Shim -> core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
+ * (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
+ * (a pre-hook returned Handled/Stop), else 0. */
+int s2script_core_dispatch_game_event_pre(const char* name);
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);

@@ -12,7 +12,18 @@ export declare class GameEvent {
   getUint64(key: string): string;
   /** A player field (e.g. "userid"/"attacker") as a 0-based slot, or -1 if absent. Resolve with Player.fromSlot. */
   getPlayerSlot(key: string): number;
+  setInt(key: string, value: number): void;
+  setFloat(key: string, value: number): void;
+  setBool(key: string, value: boolean): void;
+  setString(key: string, value: string): void;
+  /** Set a 64-bit field from a decimal string (SM-parity, wire-safe). */
+  setUint64(key: string, value: string): void;
 }
+
+/** Collapsed pre-hook result. Return from an `onPre` handler; `Handled`/`Stop` suppress the client
+ *  broadcast (server still processes). Returning nothing = `Continue`. */
+export declare const HookResult: { readonly Continue: 0; readonly Changed: 1; readonly Handled: 2; readonly Stop: 3 };
+export type HookResultValue = 0 | 1 | 2 | 3;
 
 export declare const Events: {
   /** Subscribe to a game event by name. The handler runs synchronously when the event fires. */
@@ -26,4 +37,8 @@ export declare const Events: {
    * the same name with different handlers if you need selective removal.
    */
   off(name: string, handler: (ev: GameEvent) => void): void;
+  /** Pre-hook: runs before the event broadcasts; may read+modify `ev` and return a HookResult to block. */
+  onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
+  /** Fire a game event. Returns the engine FireEvent result. */
+  fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
 };

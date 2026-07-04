@@ -18,7 +18,7 @@ const GETTER_RET: Record<GetterKey, string> = {
 export function emitEventDts(model: EventDescriptor[]): string {
   const out: string[] = [
     HEADER,
-    'import type { GameEvent } from "@s2script/events";',
+    'import type { GameEvent, HookResultValue } from "@s2script/events";',
     "",
   ];
 
@@ -43,6 +43,10 @@ export function emitEventDts(model: EventDescriptor[]): string {
   out.push(
     "export function on<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => void): void;",
     "export function on(name: string, handler: (ev: GameEvent) => void): void;",
+    "export function onPre<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => HookResultValue | void): void;",
+    "export function onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;",
+    "export function fire<K extends keyof GameEvents>(name: K, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;",
+    "export function fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;",
   );
 
   return out.join("\n") + "\n";

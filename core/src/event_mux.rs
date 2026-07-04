@@ -32,6 +32,12 @@ impl<H: Clone> EventMux<H> {
         }
         emptied
     }
+    /// True iff no name has any subscriber (the trigger to install/remove a GLOBAL hook,
+    /// as opposed to the per-name `subscribe` "first for this name" signal).
+    pub fn is_empty(&self) -> bool {
+        self.by_name.values().all(|v| v.is_empty())
+    }
+
     /// Remove a specific handler (by identity: owner + handler clone comparison) from a name.
     /// Returns true if the name is now empty (caller calls engine-op event_unsubscribe).
     /// Since V8 Globals can't be compared by identity, this removes ALL of owner's subs for `name`
@@ -61,6 +67,16 @@ mod tests {
         assert_eq!(m.snapshot("player_death").len(), 1);
         let emptied = m.remove_by_owner("q");
         assert_eq!(emptied, vec!["player_death".to_string()]);       // now empty → event_unsubscribe
+    }
+
+    #[test]
+    fn is_empty_tracks_any_subscriber() {
+        let mut m: EventMux<&str> = EventMux::new();
+        assert!(m.is_empty());
+        m.subscribe("player_hurt", "p".into(), 1, "h");
+        assert!(!m.is_empty());
+        m.remove_by_owner("p");
+        assert!(m.is_empty());
     }
 
     /// Slice 5D.1: `remove_by_owner_on` returns false while another owner remains,
