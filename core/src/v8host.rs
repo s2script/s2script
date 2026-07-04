@@ -594,7 +594,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   }
   function __s2_admin_load() {
     var text = __s2_config_read_raw("admins");
-    if (text == null) { __s2_config_write_raw("admins", '{\n  // "76561199000000001": ["root"],\n  // "76561199000000002": ["kick", "ban", "slay", "chat"]\n}\n'); text = "{}"; }
+    if (text == null) {
+      // A VALID-JSON self-documenting template — the "_help" key is not a SteamID (its value is a string,
+      // not an array), so parseFile skips it; and it round-trips through JSON.parse cleanly on the next
+      // restart (a //-commented template would fail JSON.parse and log a spurious "malformed" WARN).
+      __s2_config_write_raw("admins", '{\n  "_help": "SteamID64 -> flag names. e.g. \\"76561199000000001\\": [\\"kick\\", \\"ban\\"]. Flags: reservation generic kick ban unban slay changemap convars config chat vote password rcon cheats root"\n}\n');
+      text = "{}";
+    }
     __s2_admin_parseFile(text);
   }
   var __s2_admin = {
