@@ -6,6 +6,11 @@
     "apiVersion": "1.x",
     "pluginDependencies": {
       "@s2script/cs2": "^1.0.0"
+    },
+    "config": {
+      "greeting": { "type": "string", "default": "hello from s2script", "description": "Logged on load" },
+      "maxUses":  { "type": "int",    "default": 3, "description": "Demo counter" },
+      "enabled":  { "type": "bool",   "default": true, "description": "Feature toggle" }
     }
   }
 }

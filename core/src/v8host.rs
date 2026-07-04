@@ -507,7 +507,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_console    = { console: console };
   globalThis.__s2pkg_interfaces = interfaces;
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
-  globalThis.__s2pkg_config     = __s2_config;
+  globalThis.__s2pkg_config     = { config: __s2_config };   // named export `config` (matches the .d.ts: import { config } from "@s2script/config")
 })();
 "#;
 
@@ -4861,22 +4861,22 @@ mod frame_tests {
             globalThis.__s2pkg_config_values = { greeting: "hi", maxUses: 3, cooldown: 1.5, enabled: true };
         "#).unwrap();
         // getString: declared key → string value.
-        assert_eq!(eval_in_context_string("p", "__s2pkg_config.getString('greeting')"), "hi");
+        assert_eq!(eval_in_context_string("p", "__s2pkg_config.config.getString('greeting')"), "hi");
         // getInt: declared key → integer coercion.
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('maxUses'))"), "3");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('maxUses'))"), "3");
         // getFloat: declared key → number passthrough.
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getFloat('cooldown'))"), "1.5");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getFloat('cooldown'))"), "1.5");
         // getBool: declared key → boolean.
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getBool('enabled'))"), "true");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getBool('enabled'))"), "true");
         // Undeclared keys → zero-values (no crash, no throw).
-        assert_eq!(eval_in_context_string("p", "__s2pkg_config.getString('nope')"), "");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('nope'))"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getBool('nope'))"), "false");
+        assert_eq!(eval_in_context_string("p", "__s2pkg_config.config.getString('nope')"), "");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('nope'))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getBool('nope'))"), "false");
         // Non-number passed to getInt/getFloat → zero-value (coercion guard).
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('greeting'))"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getFloat('greeting'))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('greeting'))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getFloat('greeting'))"), "0");
         // getBool: a non-true value → false.
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getBool('maxUses'))"), "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getBool('maxUses'))"), "false");
         shutdown();
     }
 
@@ -4903,7 +4903,7 @@ mod frame_tests {
         // Register an onChange handler via the prelude (uses __s2_config_on_change internally).
         eval_in_context("p", r#"
             globalThis.__seen = null;
-            __s2pkg_config.onChange(function (cfg) { globalThis.__seen = cfg.greeting; });
+            __s2pkg_config.config.onChange(function (cfg) { globalThis.__seen = cfg.greeting; });
         "#).unwrap();
 
         // Re-materialize: with no ops, materializes defaults → { greeting: "hello" }.
@@ -4918,7 +4918,7 @@ mod frame_tests {
         );
         // Verify __s2pkg_config_values was also updated (not just the handler arg).
         assert_eq!(
-            eval_in_context_string("p", "__s2pkg_config.getString('greeting')"),
+            eval_in_context_string("p", "__s2pkg_config.config.getString('greeting')"),
             "hello",
             "getters must reflect the re-injected values after re_materialize"
         );
@@ -4942,7 +4942,7 @@ mod frame_tests {
         // No onChange subscribed → must not panic.
         re_materialize_config("p");
         // Values still re-injected (even with no handlers).
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('x'))"), "42");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('x'))"), "42");
         shutdown();
     }
 }

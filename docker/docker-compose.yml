@@ -27,6 +27,12 @@ services:
       # reflects host FS changes, and the shim only READS the plugins dir).
       - ../dist/addons/s2script:/home/steam/cs2-dedicated/game/csgo/addons/s2script:ro
 
+      # Config override files (Slice 5E.2). A nested RW mount layered over the :ro addon above:
+      # the shim AUTO-GENERATES addons/s2script/configs/<id>.json on first load and admins edit it
+      # for live-reload — both need CONTAINER writes, which the :ro parent forbids. Docker resolves
+      # nested mounts by longest target path, so this rw configs dir overlays the read-only addon.
+      - ../dist/addons/s2script/configs:/home/steam/cs2-dedicated/game/csgo/addons/s2script/configs
+
       # Metamod:Source itself — operator must pre-install into docker/metamod/.
       # scripts/package-addon.sh also places s2script.vdf here, so a single
       # dir mount is sufficient.

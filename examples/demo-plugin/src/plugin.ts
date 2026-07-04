@@ -1,34 +1,21 @@
-import { Events, HookResult } from "@s2script/cs2";
+import { config } from "@s2script/config";
 
-// Slice 5D.3 live gate — event actionability (block + modify + fire).
-//  BLOCK + MODIFY: a pre-hook on round_start (deterministic via mp_restartgame — the same FireEvent
-//   mechanism as any game event, without needing combat) sets timelimit to a sentinel (MODIFY) then
-//   returns Handled (BLOCK = suppress client broadcast). The POST handler still fires server-side and
-//   reads the modified value — proving the hook fires on real engine events, the modify took effect,
-//   and a Handled pre-hook suppresses broadcast without stopping server-side delivery (SM parity).
-//  FIRE: from onLoad we synthesize a player_hurt (a benign notification); ok=true proves the fire
-//   plumbing (CreateEvent + FireEvent). Note: a JS-triggered fire cannot re-dispatch to JS subscribers
-//   (the isolate is already borrowed while any JS runs) — the engine-side fire still happens; a nested
-//   re-dispatch is skipped by design (no panic — the try_borrow guard). See CLAUDE/README.
+// Slice 5E.2 live gate — plugin config materialization.
+//  DECLARE: package.json s2script.config declares greeting(string)/maxUses(int)/enabled(bool) + defaults.
+//  MATERIALIZE + AUTO-GENERATE: on first load the host writes addons/s2script/configs/_demo_hello.json
+//   with the declared defaults (JSONC, //-commented), then materializes defaults + that file.
+//  READ: config.getString/getInt/getBool return the materialized values (typed, degrade-safe).
+//  LIVE-RELOAD (opt-in): registering config.onChange makes the loader watch the file — editing it
+//   re-materializes and fires the handler WITHOUT a plugin reload (a plugin that never calls onChange
+//   is read-only, unwatched). See CLAUDE/README.
 export function onLoad(): void {
-  console.log("[demo] onLoad (5D.3 event actionability)");
+  console.log("[demo] onLoad — greeting=" + config.getString("greeting")
+    + " maxUses=" + config.getInt("maxUses") + " enabled=" + config.getBool("enabled"));
 
-  Events.onPre("round_start", (ev) => {
-    const tl = ev.getInt("timelimit");
-    ev.setInt("timelimit", 4242);                  // MODIFY
-    console.log("[demo] PRE round_start timelimit " + tl + "->" + ev.getInt("timelimit") + " (Handled)");
-    return HookResult.Handled;                      // BLOCK the client broadcast
+  config.onChange((cfg) => {
+    console.log("[demo] config changed — greeting=" + String(cfg.greeting)
+      + " maxUses=" + String(cfg.maxUses) + " enabled=" + String(cfg.enabled));
   });
-
-  Events.on("round_start", (ev) => {
-    // Expect timelimit=4242 — proves the pre-hook's modify reached the server-side POST, and that a
-    // Handled pre-hook did NOT stop server-side delivery (broadcast-suppress, not full block).
-    console.log("[demo] POST round_start timelimit=" + ev.getInt("timelimit"));
-  });
-
-  const ok = Events.fire("player_hurt",
-    { userid: 0, attacker: 0, dmg_health: 100, weapon: "s2script_fired" }, true);
-  console.log("[demo] fired player_hurt (from onLoad) ok=" + ok);
 }
 
 export function onUnload(): void { console.log("[demo] onUnload"); }

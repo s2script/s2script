@@ -1501,7 +1501,92 @@ in the host — a plugin whose `apiVersion` major differs from the host is skipp
 
 ---
 
+## Plugin config (Slice 5E.2)
+
+Plugins get settings: **declare** typed config in `package.json`, the host **materializes** it at load
+(declared defaults merged with an admin-editable JSON file, auto-generated on first run), and the plugin
+**reads** it through a typed `@s2script/config` API — with opt-in **live-reload** when the author registers
+`onChange`.
+
+**Declare** — the `s2script.config` block (types: `string`/`int`/`float`/`bool`; each a
+`{ type, default, description? }`). The CLI validates `default` matches `type` at build (a mismatch fails
+the build) and bakes the block into the `.s2sp` manifest:
+
+```json
+"s2script": {
+  "config": {
+    "greeting": { "type": "string", "default": "hello from s2script", "description": "Logged on load" },
+    "maxUses":  { "type": "int",    "default": 3, "description": "Demo counter" },
+    "enabled":  { "type": "bool",   "default": true, "description": "Feature toggle" }
+  }
+}
+```
+
+**Materialize** — at load the host reads `addons/s2script/configs/<plugin-id>.json` (the sanitized id),
+**auto-generating** it with the declared defaults + `//`-comments if absent, then merges defaults with the
+file per-key. A wrong-typed or malformed value degrades to that key's default + a `WARN` — a broken config
+file never crashes the plugin.
+
+**Read** — `import { config } from "@s2script/config"`; `config.getString/getInt/getFloat/getBool(key)`
+return the materialized value (an undeclared key yields the type zero-value, never throws).
+
+**Live-reload (opt-in)** — a plugin that never calls `config.onChange` is read-only and its file is not
+watched (zero overhead). The first `onChange(handler)` makes the loader's frame-drain poll watch that
+plugin's file; on a content change the host re-materializes and fires the handler with the new config —
+**no plugin reload**.
+
+```typescript
+import { config } from "@s2script/config";
+export function onLoad(): void {
+  console.log("[demo] onLoad — greeting=" + config.getString("greeting")
+    + " maxUses=" + config.getInt("maxUses") + " enabled=" + config.getBool("enabled"));
+  config.onChange((cfg) => {
+    console.log("[demo] config changed — greeting=" + String(cfg.greeting) + " maxUses=" + String(cfg.maxUses));
+  });
+}
+```
+
+### Captured live log (de_inferno)
+
+```
+# --- first load: the host AUTO-GENERATES addons/s2script/configs/_demo_hello.json (defaults + //-comments)
+[META] Loaded 1 plugin.
+[s2script] [demo] onLoad — greeting=hello from s2script maxUses=3 enabled=true
+# the generated file:
+#   { // bool — Feature toggle
+#     "enabled": true,
+#     // string — Logged on load
+#     "greeting": "hello from s2script",
+#     // int — Demo counter
+#     "maxUses": 3 }
+
+# --- edit the file (greeting/maxUses/enabled) → onChange fires WITHOUT a reload (no 2nd onLoad):
+[s2script] [demo] config changed — greeting=live-reloaded via onChange maxUses=7 enabled=false
+
+# --- corrupt the file → per-key degrade to defaults, server ticking, no crash:
+[s2script] [demo] config changed — greeting=hello from s2script maxUses=3 enabled=true
+```
+
+Config lives on the engine-generic side: the CLI bakes the block into the manifest; the core parses it,
+materializes (a pure `materialize_config`), injects `globalThis.__s2pkg_config_values` per plugin context,
+and runs the `@s2script/config` prelude + the `onChange` mux + re-materialize; the shim owns the disk
+(`config_read`/`config_write` ops read/auto-write the override file).
+
+---
+
 ## Known findings / constraints
+
+**Config auto-generate needs a container-writable configs dir (Slice 5E.2 live-gate finding).** The
+`.s2sp` addon is bind-mounted `:ro` so the host owns the plugins dir while the container only reads it.
+But config **auto-generate** (`config_write`) and admin edits require **container writes** to
+`addons/s2script/configs/`. The fix is a nested read-write mount layered over the `:ro` parent (Docker
+resolves nested mounts by longest target path):
+`../dist/addons/s2script/configs:…/addons/s2script/configs` (no `:ro`). Under a fully read-only addon the
+write silently fails (degrade-safe: defaults-only, no crash), but the file is never generated — so a
+production deploy must keep the `configs/` subtree writable. A related bug this gate surfaced: the
+`@s2script/config` module must expose its API under the **named `config` export** (`__s2pkg_config =
+{ config: … }`) to match the `.d.ts` (`import { config }`) — the in-isolate test missed it by reading the
+module object directly instead of through the named-export indirection the bundler emits.
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
 TLS (`R_X86_64_TPOFF32`), which the linker rejects when building a `-shared` object (`cannot be
