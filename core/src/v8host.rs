@@ -5507,6 +5507,9 @@ mod frame_tests {
         dispatch_concommand("sm_adm", 5, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "5");
         eval_in_context("t", "globalThis.__adm = 'none';").unwrap();
         dispatch_concommand("sm_adm", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // denied
+        // Fail-safe: with NO admin-check hook installed, a player is DENIED (never accidentally granted).
+        eval_in_context("t", "delete globalThis.__s2_admin_check; globalThis.__adm = 'none';").unwrap();
+        dispatch_concommand("sm_adm", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // no hook → denied
         shutdown();
     }
 }
