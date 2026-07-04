@@ -495,7 +495,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // --- Slice 5E.2: config module (typed getters over __s2pkg_config_values; zero-value fallback) ---
   var __s2_config = {
     getString: function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v == null ? "" : String(v); },
-    getInt:    function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : (v | 0); },
+    getInt:    function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : (v | 0); },   // int = 32-bit (SourceMod ConVar parity); `v | 0` truncates by design
     getFloat:  function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : v; },
     getBool:   function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v === true; },
     onChange:  function (h) { __s2_config_on_change(h); },
@@ -2550,6 +2550,11 @@ pub(crate) fn config_file_content(id: &str) -> Option<String> {
 ///
 /// Called from `crate::loader::poll_watched_configs` when the stored content differs from the
 /// current file content.  Uses the same per-plugin context entry discipline as `dispatch_game_event`.
+///
+/// PRECONDITION: call only with `HOST` UNBORROWED (the loader poll runs on the post-`frame_async_drain`
+/// path where HOST is free).  Step (2) re-injects via `eval_in_context` (which `borrow_mut`s HOST) and
+/// the fire loop then `try_borrow_mut`s — so a caller that invoked this mid-borrow would PANIC at step
+/// (2) rather than degrade.  Do not add a call-site that holds the HOST borrow.
 pub(crate) fn re_materialize_config(id: &str) {
     // (1) Get this plugin's stored config decls (empty → nothing to re-materialize, but still fire).
     let decls = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.config_decls.clone()));

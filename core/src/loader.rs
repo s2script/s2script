@@ -313,6 +313,8 @@ fn poll_watched_configs() {
         let map = wc.borrow();
         map.iter()
             .filter_map(|(id, last)| {
+                // SAFETY: config_file_content must NOT re-borrow WATCHED_CONFIGS — it is called under
+                // this immutable borrow.  It only touches ENGINE_OPS + the shim config_read op today.
                 let cur = crate::v8host::config_file_content(id);
                 if cur != *last { Some((id.clone(), cur)) } else { None }
             })
