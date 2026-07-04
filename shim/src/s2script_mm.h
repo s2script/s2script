@@ -4,6 +4,9 @@
 // ISource2Server is forward-declared here; full definition (eiface.h) is
 // included only in s2script_mm.cpp where the SourceHook machinery lives.
 class ISource2Server;
+// IGameEvent is forward-declared here; full definition (igameevents.h) is
+// included only in s2script_mm.cpp where the SourceHook machinery lives.
+class IGameEvent;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
@@ -15,9 +18,13 @@ public:
     void Hook_GameFramePre(bool simulating, bool first, bool last);
     void Hook_GameFramePost(bool simulating, bool first, bool last);
 
+    // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
+    bool Hook_FireEventPre(IGameEvent* ev, bool bDontBroadcast);
+
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
-    bool m_frameHookInstalled = false;
+    bool m_frameHookInstalled  = false;
+    bool m_eventHookInstalled  = false;
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }

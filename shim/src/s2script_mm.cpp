@@ -44,6 +44,9 @@
 // IServerGameDLL (used in the s2_sample_mm reference) is a typedef to the same class.
 SH_DECL_HOOK3_void(ISource2Server, GameFrame, SH_NOATTRIB, 0, bool, bool, bool);
 
+// FireEvent(IGameEvent*, bool bDontBroadcast) -> bool (Slice 5D.3). Pre hook only.
+SH_DECL_HOOK2(IGameEventManager2, FireEvent, SH_NOATTRIB, 0, bool, IGameEvent*, bool);
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -221,6 +224,11 @@ static IGameEventManager2* s_pGameEventManager = nullptr;
 static IGameEvent*         s_currentEvent      = nullptr;
 static std::set<std::string> s_subscribedNames;
 
+// Slice 5D.3: Events.fire creates an event and retargets s_currentEvent to it (save/restore on
+// create/fire) so the same set* ops serve both pre-hook modify and fire-building. Nests correctly.
+static IGameEvent* s_pendingFireEvent  = nullptr;
+static IGameEvent* s_savedCurrentEvent = nullptr;  // s_currentEvent saved by event_create, restored by event_fire
+
 class S2ScriptEventListener : public IGameEventListener2 {
 public:
     void FireGameEvent(IGameEvent* ev) override {
@@ -301,6 +309,38 @@ static int s2_event_get_player_slot(const char* k) {
     return (s_currentEvent && k)
         ? s_currentEvent->GetPlayerSlot(CKV3MemberName(k)).Get()
         : -1;
+}
+
+// ---------------------------------------------------------------------------
+// Event write + fire ops (Slice 5D.3).  C-ABI, called by the Rust core through the
+// S2EngineOps table.  All degrade-never-crash: null event / null key → no-op.
+// The setters write s_currentEvent; event_create saves + retargets it to the created
+// event; event_fire restores (nests: a fire inside a pre-hook is safe).
+// ---------------------------------------------------------------------------
+
+static void s2_event_set_int(const char* k, int v)           { if (s_currentEvent && k) s_currentEvent->SetInt(CKV3MemberName(k), v); }
+static void s2_event_set_float(const char* k, float v)       { if (s_currentEvent && k) s_currentEvent->SetFloat(CKV3MemberName(k), v); }
+static void s2_event_set_bool(const char* k, int v)          { if (s_currentEvent && k) s_currentEvent->SetBool(CKV3MemberName(k), v != 0); }
+static void s2_event_set_string(const char* k, const char* v){ if (s_currentEvent && k) s_currentEvent->SetString(CKV3MemberName(k), v ? v : ""); }
+static void s2_event_set_uint64(const char* k, uint64_t v)   { if (s_currentEvent && k) s_currentEvent->SetUint64(CKV3MemberName(k), v); }
+
+static int s2_event_create(const char* name) {
+    if (!s_pGameEventManager || !name) return 0;
+    IGameEvent* e = s_pGameEventManager->CreateEvent(name, /*bForce=*/true);
+    if (!e) return 0;
+    s_savedCurrentEvent = s_currentEvent;  // save (nest: a fire inside a pre-hook)
+    s_pendingFireEvent  = e;
+    s_currentEvent      = e;               // retarget set* to the created event
+    return 1;
+}
+static int s2_event_fire(int dontBroadcast) {
+    if (!s_pGameEventManager || !s_pendingFireEvent) return 0;
+    IGameEvent* e = s_pendingFireEvent;
+    s_pendingFireEvent  = nullptr;
+    s_currentEvent      = s_savedCurrentEvent;  // restore the write target
+    s_savedCurrentEvent = nullptr;
+    // FireEvent flows through our own Hook_FireEventPre (SM parity: fired events are hookable).
+    return s_pGameEventManager->FireEvent(e, dontBroadcast != 0) ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -581,20 +621,33 @@ static std::string PluginsDir() {
 // MUST NOT call back into the core (no eval/dispatch/shutdown).
 // ---------------------------------------------------------------------------
 static void s2_request_hook(const char* descriptor, int enable) {
-    if (strcmp(descriptor, "OnGameFrame") != 0) return;
-
-    if (enable && !g_S2ScriptPlugin.m_frameHookInstalled && g_S2ScriptPlugin.m_server) {
-        SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                    SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePre),  false);
-        SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                    SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePost), true);
-        g_S2ScriptPlugin.m_frameHookInstalled = true;
-    } else if (!enable && g_S2ScriptPlugin.m_frameHookInstalled) {
-        SH_REMOVE_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                       SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePre),  false);
-        SH_REMOVE_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                       SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePost), true);
-        g_S2ScriptPlugin.m_frameHookInstalled = false;
+    if (strcmp(descriptor, "OnGameFrame") == 0) {
+        if (enable && !g_S2ScriptPlugin.m_frameHookInstalled && g_S2ScriptPlugin.m_server) {
+            SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
+                        SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePre),  false);
+            SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
+                        SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePost), true);
+            g_S2ScriptPlugin.m_frameHookInstalled = true;
+        } else if (!enable && g_S2ScriptPlugin.m_frameHookInstalled) {
+            SH_REMOVE_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
+                           SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePre),  false);
+            SH_REMOVE_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
+                           SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePost), true);
+            g_S2ScriptPlugin.m_frameHookInstalled = false;
+        }
+        return;
+    }
+    if (strcmp(descriptor, "GameEvent") == 0) {
+        if (enable && !g_S2ScriptPlugin.m_eventHookInstalled && s_pGameEventManager) {
+            SH_ADD_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
+                        SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_FireEventPre), false);
+            g_S2ScriptPlugin.m_eventHookInstalled = true;
+        } else if (!enable && g_S2ScriptPlugin.m_eventHookInstalled) {
+            SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
+                           SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_FireEventPre), false);
+            g_S2ScriptPlugin.m_eventHookInstalled = false;
+        }
+        return;
     }
 }
 
@@ -838,6 +891,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.client_signon         = &s2_client_signon;
     ops.client_name           = &s2_client_name;
     ops.client_find_by_userid = &s2_client_find_by_userid;
+    // Event write/fire ops (Slice 5D.3): order MUST match S2EngineOps in s2script_core.h + Rust v8host.rs.
+    ops.event_set_int    = &s2_event_set_int;
+    ops.event_set_float  = &s2_event_set_float;
+    ops.event_set_bool   = &s2_event_set_bool;
+    ops.event_set_string = &s2_event_set_string;
+    ops.event_set_uint64 = &s2_event_set_uint64;
+    ops.event_create     = &s2_event_create;
+    ops.event_fire       = &s2_event_fire;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -905,6 +966,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_frameHookInstalled = false;
     }
 
+    // Remove the FireEvent pre-hook (Slice 5D.3) before tearing down the event listener.
+    if (m_eventHookInstalled && s_pGameEventManager) {
+        SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_FireEventPre), false);
+        m_eventHookInstalled = false;
+    }
+
     // Unregister the game-event listener before core shutdown (Slice 5D.1).
     // RemoveListener is an all-names call per the SDK — one call removes the listener
     // from every subscribed event.  Degrade-never-crash: null manager → skip.
@@ -931,4 +999,19 @@ void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) 
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
     RETURN_META(MRES_IGNORED);
+}
+
+// FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
+// to "suppress broadcast", re-call the original with bDontBroadcast=true and SUPERCEDE.
+bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, bool bDontBroadcast) {
+    if (!ev) RETURN_META_VALUE(MRES_IGNORED, true);
+    IGameEvent* prev = s_currentEvent;
+    s_currentEvent = ev;                                       // mutable during the pre-dispatch
+    int suppress = s2script_core_dispatch_game_event_pre(ev->GetName());
+    s_currentEvent = prev;                                     // restore (re-entrancy)
+    if (suppress) {
+        bool ret = SH_CALL(s_pGameEventManager, &IGameEventManager2::FireEvent)(ev, true);
+        RETURN_META_VALUE(MRES_SUPERCEDE, ret);                // we fired it ourselves with broadcast off
+    }
+    RETURN_META_VALUE(MRES_IGNORED, true);                     // original runs; any set* mods already applied
 }
