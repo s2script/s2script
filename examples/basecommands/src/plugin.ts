@@ -75,6 +75,36 @@ export function onLoad(): void {
     Server.command("changelevel " + map);
   });
 
+  // 6.5 — sm_who (ADMFLAG.GENERIC): list connected players + their admin status (Player.allConnected + Admin.forSlot).
+  Commands.registerAdmin("sm_who", ADMFLAG.GENERIC, (ctx) => {
+    const players = Player.allConnected();
+    ctx.reply("[SM] Players (" + players.length + "):");
+    for (const p of players) {
+      const a = Admin.forSlot(p.slot);
+      const adminStr = a ? "yes(flags=0x" + a.flags.toString(16) + ")" : "no";
+      ctx.reply("  #" + p.userId + " " + p.playerName + " slot=" + p.slot + " steamid=" + p.steamId + " admin=" + adminStr);
+    }
+  });
+
+  // 6.5 — sm_rcon <command> (ADMFLAG.RCON): a deliberate full server-command passthrough (highest-trust flag).
+  Commands.registerAdmin("sm_rcon", ADMFLAG.RCON, (ctx) => {
+    const cmd = ctx.argString.trim();
+    if (!cmd) { ctx.reply("Usage: sm_rcon <command>"); return; }
+    console.log("[basecommands] sm_rcon by slot=" + ctx.callerSlot + " cmd=" + cmd);
+    Server.command(cmd);
+    ctx.reply("[SM] Command sent.");
+  });
+
+  // 6.5 — sm_exec <cfgfile> (ADMFLAG.CONFIG): exec a server config. Sanitize the filename (we build "exec <file>").
+  Commands.registerAdmin("sm_exec", ADMFLAG.CONFIG, (ctx) => {
+    const file = ctx.argString.trim().split(/\s+/)[0] || "";
+    if (!file) { ctx.reply("Usage: sm_exec <cfgfile>"); return; }
+    if (!/^[A-Za-z0-9_./-]+$/.test(file) || file.indexOf("..") !== -1) { ctx.reply("[SM] Invalid config name."); return; }
+    console.log("[basecommands] sm_exec by slot=" + ctx.callerSlot + " file=" + file);
+    Server.command("exec " + file);
+    ctx.reply("[SM] Executing " + file + ".");
+  });
+
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
   Admin.add("76561199000000009", ADMFLAG.KICK | ADMFLAG.CHAT);   // runtime tier
   const t = Admin.get("76561199000000009");
