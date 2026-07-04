@@ -233,10 +233,12 @@ thread_local! {
     /// `-1` miss cached before the schema was loaded).
     static SCHEMA_OFFSETS: std::cell::RefCell<crate::schema::OffsetCache> =
         std::cell::RefCell::new(crate::schema::OffsetCache::new());
-    /// `name → Global<Function>` map for registered ConCommands.  The shim calls back via
+    /// `name → (owner, generation, Global<Function>)` map for registered ConCommands.  Owner-tracked
+    /// so `dispatch_concommand` runs the handler in the REGISTERING plugin's context (liveness-gated)
+    /// and `unload_plugin` can drop commands owned by the departing plugin.  The shim calls back via
     /// `s2script_core_dispatch_concommand` (C-ABI) when a registered command fires.  Reset on
     /// `shutdown` (BEFORE the isolate is dropped — same discipline as `RESOLVERS`).
-    static CONCOMMANDS: std::cell::RefCell<std::collections::HashMap<String, v8::Global<v8::Function>>>
+    static CONCOMMANDS: std::cell::RefCell<std::collections::HashMap<String, (String, u64, v8::Global<v8::Function>)>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Per-plugin `v8::Context` registry, keyed by plugin id — the multi-context path that will
     /// eventually replace the single shared `HOST.context` (Task 5 migrates the natives/dispatch
@@ -529,6 +531,26 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
+  // --- Slice 6.1: commands module (Commands.register; builds ctx; routes reply via chat/console) ---
+  var __s2_commands = {
+    register: function (name, handler) {
+      __s2_concommand(name, function (slot, argString) {
+        var s = (slot | 0);
+        var raw = String(argString == null ? "" : argString);
+        var args = raw.length ? raw.split(/\s+/).filter(function (a) { return a.length; }) : [];
+        handler({
+          callerSlot: s,
+          args: args,
+          argString: raw,
+          reply: function (m) {
+            if (s < 0) { console.log(String(m)); }                        // server console
+            else { globalThis.__s2pkg_chat.Chat.toSlot(s, String(m)); }   // a player's chat
+          },
+        });
+      });
+    },
+  };
+  globalThis.__s2pkg_commands = { Commands: __s2_commands };   // named export `Commands`
 })();
 "#;
 
@@ -1186,8 +1208,11 @@ fn s2_concommand(
         };
         let global = v8::Global::new(scope.as_ref(), func_local);
 
-        // Store the Global<Function> — CONCOMMANDS borrow is released before the engine call.
-        CONCOMMANDS.with(|m| m.borrow_mut().insert(name.clone(), global));
+        // Store (owner, generation, Global<Function>) — owner-tracked so dispatch runs in the
+        // registering plugin's context and unload_plugin can retain-drop its commands.
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        CONCOMMANDS.with(|m| m.borrow_mut().insert(name.clone(), (owner, generation, global)));
 
         // Register the raw ConCommand engine-side via the shim's ops table.
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
@@ -1213,34 +1238,48 @@ fn s2_concommand(
 /// again (re-enters `CONCOMMANDS.borrow_mut()`); holding the borrow across the JS call would
 /// panic.  No `CONCOMMANDS` borrow is held across the JS invocation.
 pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
-    // Phase 1: clone the Global, release the borrow before JS.
-    let maybe_fn = CONCOMMANDS.with(|m| m.borrow().get(name).cloned());
-    let Some(global) = maybe_fn else { return };
+    // Phase 1: clone (owner, gen, Global) out of CONCOMMANDS — release the borrow before JS.
+    // Mirrors dispatch_game_event's snapshot discipline: no CONCOMMANDS borrow held across the call.
+    let entry = CONCOMMANDS.with(|m| m.borrow().get(name).map(|(o, g, f)| (o.clone(), *g, f.clone())));
+    let Some((owner, gen, global)) = entry else { return };
 
-    // Phase 2: open a V8 scope (borrows HOST) and invoke the JS fn.
+    // Liveness gate: skip if the registering plugin is no longer live at the captured generation.
+    if !REGISTRY.with(|r| r.borrow().is_live(&owner, gen)) { return; }
+
+    // Clone the owner's context out of PLUGINS (borrow released) so the handler may re-enter.
+    let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.context.clone())) else { return };
+
+    // Phase 2: enter the OWNER's context and invoke the JS fn.
     HOST.with(|h| {
-        let mut borrow = h.borrow_mut();
+        // Re-entrancy guard (mirrors dispatch_game_event / dispatch_game_event_pre):
+        // a command handler may call Events.fire or another native that re-enters dispatch while
+        // HOST is already borrowed. Use try_borrow_mut and graceful-skip rather than double-borrow.
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
         let Some(host) = borrow.as_mut() else { return };
 
         let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
         let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
         let hs = &mut hs;
-        let ctx_local = v8::Local::new(hs, &host.context);
+        let ctx_local = v8::Local::new(hs, &g_ctx);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-        // Build JS arguments: (slot: number, args: string).
+        // Build JS arguments: (slot: number, argString: string).
         let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
         let slot_val: v8::Local<v8::Value> = v8::Number::new(scope, slot as f64).into();
         let Some(args_str) = v8::String::new(scope, args) else { return };
-        let args_val: v8::Local<v8::Value> = args_str.into();
 
-        // Per-call TryCatch so a throwing handler doesn't propagate outside dispatch.
+        // Per-call TryCatch so a throwing handler is caught + WARN, never propagates.
         let mut tc_storage = v8::TryCatch::new(scope);
         let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
         let tc = &mut tc;
 
         let func = v8::Local::new(tc, &global);
-        let _ = func.call(tc, recv, &[slot_val, args_val]);
+        if func.call(tc, recv, &[slot_val, args_str.into()]).is_none() {
+            let msg = tc.exception()
+                .map(|e| e.to_rust_string_lossy(&*tc))
+                .unwrap_or_else(|| "handler threw".into());
+            log_warn(&format!("WARN: dispatch_concommand('{}'): {}", name, msg));
+        }
     });
 }
 
@@ -3213,6 +3252,9 @@ pub(crate) fn unload_plugin(id: &str) {
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
+    // (a2d) Drop the plugin's registered ConCommands so a post-unload dispatch no-ops.
+    // The shim ConCommand deregistration is Task 3; here we just remove from the JS dispatch map.
+    CONCOMMANDS.with(|m| m.borrow_mut().retain(|_, (owner, _, _)| owner != id));
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
     // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
@@ -3714,18 +3756,21 @@ mod frame_tests {
     }
 
     /// `__s2_concommand` stores the JS callback in CONCOMMANDS; `dispatch_concommand` invokes it
-    /// with (slot, argString).  This test exercises the store + dispatch path without the engine
+    /// with (slot, argString) in the REGISTERING PLUGIN'S context (owner-tracked, liveness-gated).
+    /// This test exercises the store + dispatch path without the engine
     /// (calls `dispatch_concommand` directly, bypassing ConCommand registration).
     #[test]
     fn concommand_callback_receives_slot_and_args() {
         init(dummy_logger()).unwrap();
-        eval(r#"
+        // Register the raw native from a PLUGIN context (dispatch is now owner-tracked; registering
+        // from the shared HOST context would produce owner="legacy" with no REGISTRY entry → skipped).
+        load_plugin_js("cc_test", r#"
             globalThis.__cc = null;
             __s2_concommand("s2_test", function (slot, args) { globalThis.__cc = slot + ":" + args; });
-        "#).unwrap();
+        "#, "{}");
         // Simulate the engine invoking the command (bypasses ConCommand registration):
         dispatch_concommand("s2_test", 3, "1234");
-        assert_eq!(read_string_global("__cc"), "3:1234");
+        assert_eq!(eval_in_context_string("cc_test", "String(globalThis.__cc)"), "3:1234");
         shutdown();
     }
 
@@ -5142,6 +5187,37 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toSlot(0, 'hi'))"), "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toAll('hi'))"),      "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_print(0, 'hi'))"),          "undefined");
+        shutdown();
+    }
+
+    /// `Commands.register` builds a typed ctx (callerSlot/args/argString/reply); reply routes to
+    /// console.log for slot<0, to Chat.toSlot for slot>=0.  Unload drops the command → later
+    /// dispatch is a no-op.  A throwing handler is caught (no panic).
+    ///
+    /// Slice 6.1 Task 2.  Calls `dispatch_concommand` directly (simulates the engine trampoline).
+    #[test]
+    fn command_dispatch_builds_ctx_and_routes_reply() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        // A plugin registers sm_test; capture the ctx it receives.
+        load_plugin_js("cmd", r#"
+            var C = __s2pkg_commands.Commands;
+            C.register("sm_test", function (ctx) {
+                globalThis.__seen = ctx.callerSlot + "|" + ctx.args.join(",") + "|" + ctx.argString;
+                if (ctx.callerSlot < 0) ctx.reply("console-reply");   // routes to console.log
+            });
+        "#, "{}");
+        // Simulate the engine firing the command from the server console (slot -1).
+        dispatch_concommand("sm_test", -1, "foo bar");
+        assert_eq!(eval_in_context_string("cmd", "String(globalThis.__seen)"), "-1|foo,bar|foo bar");
+        assert!(LOG.lock().unwrap().iter().any(|m| m.contains("console-reply")), "console reply routed to log");
+        // A throwing handler is caught (no panic).
+        load_plugin_js("cmd2", r#" __s2pkg_commands.Commands.register("sm_boom", function(){ throw new Error("x"); }); "#, "{}");
+        dispatch_concommand("sm_boom", -1, "");   // must not panic
+        // Unload drops the command → a later dispatch is a no-op.
+        unload_plugin("cmd");
+        eval_in_context("cmd2", "globalThis.__afterUnload = 'unchanged';").unwrap();
+        dispatch_concommand("sm_test", -1, "again");   // cmd is gone → no handler → no-op
         shutdown();
     }
 }
