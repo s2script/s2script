@@ -546,22 +546,37 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
-  // --- Slice 6.1: commands module (Commands.register; builds ctx; routes reply via chat/console) ---
+  // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
+  function __s2cmd_ctx(slot, argString) {
+    var s = (slot | 0);
+    var raw = String(argString == null ? "" : argString);
+    var args = raw.length ? raw.split(/\s+/).filter(function (a) { return a.length; }) : [];
+    return { callerSlot: s, args: args, argString: raw,
+      reply: function (m) { if (s < 0) { console.log(String(m)); } else { globalThis.__s2pkg_chat.Chat.toSlot(s, String(m)); } } };
+  }
   var __s2_commands = {
     register: function (name, handler) {
-      __s2_concommand(name, function (slot, argString) {
-        var s = (slot | 0);
-        var raw = String(argString == null ? "" : argString);
-        var args = raw.length ? raw.split(/\s+/).filter(function (a) { return a.length; }) : [];
-        handler({
-          callerSlot: s,
-          args: args,
-          argString: raw,
-          reply: function (m) {
-            if (s < 0) { console.log(String(m)); }                        // server console
-            else { globalThis.__s2pkg_chat.Chat.toSlot(s, String(m)); }   // a player's chat
-          },
-        });
+      __s2_concommand(name, function (slot, a) { handler(__s2cmd_ctx(slot, a)); });
+    },
+    registerServer: function (name, handler) {
+      __s2_concommand(name, function (slot, a) {
+        var ctx = __s2cmd_ctx(slot, a);
+        if (ctx.callerSlot < 0) { handler(ctx); }
+        else { ctx.reply("[SM] This command can only be run from the server console."); }
+      });
+    },
+    registerAdmin: function (name, flags, handler) {
+      __s2_concommand(name, function (slot, a) {
+        var ctx = __s2cmd_ctx(slot, a);
+        if (ctx.callerSlot < 0) { handler(ctx); return; }        // server / rcon = root
+        var check = globalThis.__s2_admin_check;
+        if (typeof check !== "function") {
+          if (!globalThis.__s2cmd_warnedNoAdmin) { globalThis.__s2cmd_warnedNoAdmin = true;
+            console.log("[s2script] WARN: registerAdmin('" + name + "') used without @s2script/admin — denying non-server callers"); }
+          ctx.reply("[SM] You do not have access to this command."); return;
+        }
+        if (check(ctx.callerSlot, flags | 0)) { handler(ctx); }
+        else { ctx.reply("[SM] You do not have access to this command."); }
       });
     },
   };
@@ -5468,6 +5483,30 @@ mod frame_tests {
         unload_plugin("cmd");
         eval_in_context("cmd2", "globalThis.__afterUnload = 'unchanged';").unwrap();
         dispatch_concommand("sm_test", -1, "again");   // cmd is gone → no handler → no-op
+        shutdown();
+    }
+
+    #[test]
+    fn command_trio_server_and_admin_gating() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_plugin_js("t", r#"
+            var C = __s2pkg_commands.Commands;
+            C.registerServer("sm_srv", function(ctx){ globalThis.__srv = ctx.callerSlot; });
+            C.registerAdmin("sm_adm", 512 /*CHAT=1<<9*/, function(ctx){ globalThis.__adm = ctx.callerSlot; });
+            // Install a fake admin-check: slot 5 allowed, others denied.
+            globalThis.__s2_admin_check = function(slot, mask){ return slot === 5; };
+        "#, "{}");
+        // registerServer: console (-1) runs; a player (3) denied.
+        dispatch_concommand("sm_srv", -1, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "-1");
+        eval_in_context("t", "globalThis.__srv = 'none';").unwrap();
+        dispatch_concommand("sm_srv", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "none"); // stayed
+        // registerAdmin: console (-1) = root runs; slot 5 (hook true) runs; slot 3 (hook false) denied.
+        dispatch_concommand("sm_adm", -1, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "-1");
+        eval_in_context("t", "globalThis.__adm = 'none';").unwrap();
+        dispatch_concommand("sm_adm", 5, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "5");
+        eval_in_context("t", "globalThis.__adm = 'none';").unwrap();
+        dispatch_concommand("sm_adm", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // denied
         shutdown();
     }
 }

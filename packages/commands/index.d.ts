@@ -11,4 +11,6 @@ export interface CommandContext {
 }
 export declare const Commands: {
   register(name: string, handler: (ctx: CommandContext) => void): void;
+  registerServer(name: string, handler: (ctx: CommandContext) => void): void;
+  registerAdmin(name: string, flags: number, handler: (ctx: CommandContext) => void): void;
 };
