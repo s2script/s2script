@@ -1670,13 +1670,23 @@ Commands.register("sm_say", (ctx) => {
 [s2script] [basecommands] sm_say by slot=-1 msg=hello world    # register → trampoline → owner-context dispatch → ctx → handler
 ```
 
-**Deferred to 6.1b — the actual chat *send*.** `Chat.toSlot`/`toAll` reach the shim's `client_print`,
-which resolves + holds `IGameEventSystem` + `INetworkMessages` but is currently a degrade-safe **stub**:
-the concrete `CUserMessageSayText2` protobuf type is not in the vendored hl2sdk, so the `SayText2`
-user-message send needs protobuf **reflection** (the generic runtime *is* vendored, but linking it risks
-the same undefined-symbol `dlopen` breakage 5D.1 hit with tier1) or a hand-serialized wire encoding —
-a focused follow-up. Until then `sm_say` registers + dispatches + logs; `Chat.toAll` loops the live slots
-and no-ops the send. The `basecommands` plugin needs **no change** once 6.1b lands the send.
+**Slice 6.1b — `client_print` delivers (to the client *console*).** `Chat.toSlot`/`toAll` now reach a
+working `client_print`: `IVEngineServer2::ClientPrintf(CPlayerSlot, msg)` (interface
+`Source2EngineToServer001`) — SourceMod's `PrintToConsole`. **Bots are skipped** — `ClientPrintf` on a
+fake client (no netchannel) segfaults, so `client_print` guards on `GetPlayerNetInfo(slot) != null`
+(SM's fake-client skip; a live-gate finding — an un-guarded `ClientPrintf` on a bot crashed the server).
+Proven live: `sm_say` dispatches to completion with bots present, `RestartCount=0`, no crash. **Caveat:**
+delivery to a *real* client's console can't be visually verified on the bots-only gate server (no human
+client) — the send path is proven safe + non-crashing + the `IVEngineServer2` vtable correct, but "a
+player saw it" needs a connected client.
+
+**Still deferred — true chat-*box* (`SayText2`).** `client_print` reaches the client console, not the
+chat box. The chat-box `SayText2` user message needs protobuf handling: `libserver.so` exports ~no
+`google::protobuf` reflection symbols (so the reflection path would break `dlopen`, the 5D.1 hazard) and
+the concrete `CUserMessageSayText2` proto isn't vendored — so it needs a vendored/generated proto or a
+hand-serialized wire encoding, and it's unverifiable without a connected client. `IGameEventSystem` +
+`INetworkMessages` stay resolved as the infrastructure. The `basecommands` plugin needs **no change** when
+chat-box lands.
 
 ---
 

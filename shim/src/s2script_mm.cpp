@@ -9,6 +9,7 @@
 // from the HL2SDK.  The stub sdk_stubs/network_connection.pb.h satisfies the
 // one missing generated include that eiface.h unconditionally pulls in.
 #include <eiface.h>
+#include <playerslot.h>   // CPlayerSlot — IVEngineServer2::ClientPrintf target (Slice 6.1b)
 
 // SchemaSystem: ISchemaSystem + the type-scope / class-info / field-data layout used by the
 // schema-offset engine-op (recon Q1/Q2; include paths mirror shim/CMakeLists.txt).
@@ -376,6 +377,12 @@ static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connecte
 static ICvar* s_pCvar = nullptr;
 static std::map<std::string, ConCommandRef> s_concommandRefs;
 
+// IVEngineServer2 (Source2EngineToServer001) — backs client_print via ClientPrintf (Slice 6.1b).
+// ClientPrintf targets the client's CONSOLE (SourceMod PrintToConsole), not the chat box; true
+// chat-box delivery (the SayText2 user message) is deferred — libserver exports ~no protobuf
+// symbols, so reflection would break dlopen (the 5D.1 hazard), and it's unverifiable without a client.
+static IVEngineServer2* s_pEngine = nullptr;
+
 // ---------------------------------------------------------------------------
 // IGameEventSystem + INetworkMessages — stored at Load() for client_print (Slice 6.1).
 // The CS2 chat path: FindNetworkMessage("CUserMessageSayText2") → AllocateMessage()
@@ -525,25 +532,24 @@ static void s2_client_print(int slot, const char* msg) {
         META_CONPRINTF("[s2script] client_print(slot=%d): null msg — no-op\n", slot);
         return;
     }
-    if (!s_pGameEventSystem || !s_pNetworkMessages) {
-        META_CONPRINTF("[s2script] client_print(slot=%d): chat send TODO — "
-                       "IGameEventSystem=%s INetworkMessages=%s not acquired\n",
-                       slot,
-                       s_pGameEventSystem ? "ok" : "MISSING",
-                       s_pNetworkMessages ? "ok" : "MISSING");
+    if (!s_pEngine) {
+        static bool s_warnedNoEngine = false;
+        if (!s_warnedNoEngine) {
+            s_warnedNoEngine = true;
+            META_CONPRINTF("[s2script] client_print: IVEngineServer2 not acquired — messages not delivered\n");
+        }
         return;
     }
-    // STUB (Slice 6.1 → 6.1b): the concrete CUserMessageSayText2 protobuf is absent from vendored
-    // hl2sdk.  To complete: AllocateMessage() → AsProto() → protobuf reflection (set the SayText2
-    // fields) or a hand-serialized wire encoding → PostEventAbstract.  All infrastructure (both stored
-    // interfaces, the slot mask, the PostEventAbstract overload) is confirmed in the headers.
-    // Log ONCE (Chat.toAll fans out per live slot — avoid flooding the console until 6.1b).
-    static bool s_warnedClientPrintStub = false;
-    if (!s_warnedClientPrintStub) {
-        s_warnedClientPrintStub = true;
-        META_CONPRINTF("[s2script] client_print: chat send is a STUB until Slice 6.1b "
-                       "(CUserMessageSayText2 protobuf not in vendored hl2sdk) — messages not delivered\n");
-    }
+    // Skip bots / clients with no netchannel: ClientPrintf on a fake client (bots have no netchannel)
+    // dereferences null → SIGSEGV (SourceMod's PrintTo* skip fake clients for exactly this reason).
+    // GetPlayerNetInfo returns null for a bot; a real networked client has a channel.
+    if (!s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) return;
+    // Slice 6.1b: deliver to the client's CONSOLE via IVEngineServer2::ClientPrintf (SourceMod
+    // PrintToConsole). NOTE: this is the console, NOT the chat box — true chat-box delivery (the
+    // SayText2 user message) is deferred: libserver exports ~no protobuf reflection symbols (so the
+    // reflection path would break dlopen, the 5D.1 hazard) and it's unverifiable without a connected
+    // client. s_pGameEventSystem/s_pNetworkMessages stay resolved as the infrastructure for that.
+    s_pEngine->ClientPrintf(CPlayerSlot(slot), msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -892,6 +898,21 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             } else {
                 s_pCvar = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: EngineCvar (%s) — ConCommand registration degrades\n", verStr);
+            }
+        }
+        // Acquire and STORE IVEngineServer2* (Slice 6.1b — client_print via ClientPrintf).
+        {
+            auto it = versions.find("EngineToServer");
+            const char* verStr = (it != versions.end()) ? it->second.c_str() : "Source2EngineToServer001";
+            int ret = 0;
+            s_pEngine = engineFactory
+                ? reinterpret_cast<IVEngineServer2*>(engineFactory(verStr, &ret))
+                : nullptr;
+            if (s_pEngine && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: EngineToServer (%s)\n", verStr);
+            } else {
+                s_pEngine = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: EngineToServer (%s) — client_print degrades\n", verStr);
             }
         }
         // Acquire and STORE IGameEventSystem* (Slice 6.1 client_print chat plumbing).

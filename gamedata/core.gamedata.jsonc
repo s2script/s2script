@@ -5,6 +5,8 @@
     "Source2Server": "Source2Server001",
     "SchemaSystem": "SchemaSystem_001",
     "EngineCvar": "VEngineCvar007",
+    // IVEngineServer2 — backs client_print via ClientPrintf (Slice 6.1b; console-level).
+    "EngineToServer": "Source2EngineToServer001",
     "NetworkServerService": "NetworkServerService_001",
     // IGameResourceService acquired via the engine factory; backs the entity-system pointer
     // (recon Q3). Interface string [HC]; confirmed community name for CS2 server-side service.
