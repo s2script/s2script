@@ -100,7 +100,7 @@
     if (pattern === "@all") return Player.allConnected();
     if (pattern === "@me") {
       if (typeof callerSlot !== "number" || callerSlot < 0) return [];
-      var me = Player.fromSlot(callerSlot);
+      var me = Player._fromSlotUnchecked(callerSlot);   // pawnless-safe, at parity with @all (target the caller alive or dead)
       return me ? [me] : [];
     }
     if (pattern.charAt(0) === "#") {

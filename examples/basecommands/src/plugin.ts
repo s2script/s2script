@@ -24,6 +24,11 @@ export function onLoad(): void {
     const reason = parts.slice(1).join(" ") || "Kicked by admin";
     const targets = Player.target(targetStr, ctx.callerSlot);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
+    // Destructive-command safety (SM COMMAND_FILTER_NO_MULTI): an ambiguous NAME matching >1 player kicks
+    // nobody — @all / #userid stay the explicit multi/precise selectors; an exact name still resolves to 1.
+    if (targets.length > 1 && targetStr[0] !== "@" && targetStr[0] !== "#") {
+      ctx.reply("[SM] Multiple players match '" + targetStr + "' — be more specific (or use @all)."); return;
+    }
     let n = 0;
     for (const p of targets) {
       console.log("[basecommands] sm_kick slot=" + p.slot + " name=" + p.playerName + " reason=" + reason);
