@@ -247,6 +247,7 @@ static std::set<std::string> s_subscribedNames;
 // reads to prove the hook fires + identify the CTakeDamageInfo arg, then always calls the original.
 typedef int64_t (*DispatchTraceAttack_t)(void* thisptr, void* a2, void* a3, void* a4);
 static DispatchTraceAttack_t g_origDTA = nullptr;
+static void* s_currentDamageInfo = nullptr;  // the CTakeDamageInfo* for the in-flight damage dispatch (block-scoped)
 
 static const uintptr_t kDtaSelfTest = 0xD2A7E57ULL;  // sentinel `this` for the install-time diversion self-test
 
@@ -258,13 +259,17 @@ static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, voi
         META_CONPRINTF("[s2script] DTA self-test fired — detour diverts execution on the live binary (mechanism proven)\n");
         return 0;
     }
-    // m_flDamage is at offset 68 on CTakeDamageInfo (schema catalog). STAGE-2: resolve via schema + dispatch
-    // to the core damage mux. Read candidate arg ptrs to reveal which one is the info struct at the live gate.
+    // Real damage: expose the CTakeDamageInfo to Damage.onPre subscribers, then call the original with any
+    // in-place modifications applied. a2 (rsi) is the most likely info arg (the prologue saves rdi/rsi/rdx);
+    // the candidate log reveals which arg holds a plausible m_flDamage@68 once real damage flows in.
     auto rd = [](void* p) -> float {
         return (p && reinterpret_cast<uintptr_t>(p) > 0x10000) ? *reinterpret_cast<float*>(reinterpret_cast<char*>(p) + 68) : -1.0f;
     };
     META_CONPRINTF("[s2script] DTA fired: this=%p a2.dmg=%.1f a3.dmg=%.1f\n", thisptr, rd(a2), rd(a3));
-    return g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;  // read-only: always run the original
+    s_currentDamageInfo = a2;                     // block-scoped: valid only across this dispatch
+    s2script_core_dispatch_damage();              // run Damage.onPre (read/modify the live info in place)
+    s_currentDamageInfo = nullptr;
+    return g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;  // original uses any modified damage
 }
 
 // Slice 5D.3: Events.fire creates an event and retargets s_currentEvent to it (save/restore on
@@ -641,6 +646,24 @@ static void s2_server_command(const char* cmd) {
 static int s2_server_map_valid(const char* map) {
     if (!s_pEngine || !map) return 0;
     return s_pEngine->IsMapValid(map) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
+// (s_currentDamageInfo, set by the DispatchTraceAttack detour) at a schema-resolved byte offset.
+// Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
+// ---------------------------------------------------------------------------
+static float s2_damage_read_float(int offset) {
+    if (!s_currentDamageInfo || offset < 0 || offset > 4096) return 0.0f;
+    return *reinterpret_cast<float*>(reinterpret_cast<char*>(s_currentDamageInfo) + offset);
+}
+static int s2_damage_read_int(int offset) {
+    if (!s_currentDamageInfo || offset < 0 || offset > 4096) return 0;
+    return *reinterpret_cast<int*>(reinterpret_cast<char*>(s_currentDamageInfo) + offset);
+}
+static void s2_damage_write_float(int offset, float value) {
+    if (!s_currentDamageInfo || offset < 0 || offset > 4096) return;
+    *reinterpret_cast<float*>(reinterpret_cast<char*>(s_currentDamageInfo) + offset) = value;
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,6 +1272,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Server command + map-validity (Slice 6.4): APPENDED after client_kick; order MUST match S2EngineOps.
     ops.server_command   = &s2_server_command;
     ops.server_map_valid = &s2_server_map_valid;
+    ops.damage_read_float  = &s2_damage_read_float;
+    ops.damage_read_int    = &s2_damage_read_int;
+    ops.damage_write_float = &s2_damage_write_float;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -1354,6 +1380,21 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
 // SourceHook hook handlers
 // ---------------------------------------------------------------------------
 void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
+    // Slice 6.6 Stage-2 self-test: fire a synthetic damage dispatch over a fake CTakeDamageInfo
+    // (m_flDamage@68 = 42) to prove detour->core mux->JS handler->schema read end-to-end (combat is
+    // un-generatable here). Fired at a few LATER frames (frame 1 caught the plugin mid boot-reload with no
+    // live subscriber) so at least one lands after the plugin has stably subscribed Damage.onPre.
+    static long s_frameNo = 0;
+    ++s_frameNo;
+    if ((s_frameNo == 300 || s_frameNo == 900 || s_frameNo == 1800) && g_origDTA) {
+        static char fakeInfo[256];
+        memset(fakeInfo, 0, sizeof(fakeInfo));
+        *reinterpret_cast<float*>(fakeInfo + 68) = 42.0f;   // CTakeDamageInfo::m_flDamage
+        s_currentDamageInfo = fakeInfo;
+        META_CONPRINTF("[s2script] damage self-test (frame %ld): dispatching synthetic damage (m_flDamage=42)\n", s_frameNo);
+        s2script_core_dispatch_damage();
+        s_currentDamageInfo = nullptr;
+    }
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
     RETURN_META(MRES_IGNORED);

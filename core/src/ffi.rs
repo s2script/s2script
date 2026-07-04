@@ -96,6 +96,13 @@ pub extern "C" fn s2script_core_dispatch_game_event_pre(name: *const c_char) -> 
     std::panic::catch_unwind(|| v8host::dispatch_game_event_pre(name_str)).unwrap_or(0)
 }
 
+/// Slice 6.6 Stage 2: run the Damage.onPre subscribers over the current damage info. The shim has already
+/// set the current CTakeDamageInfo pointer; handlers read/modify it in place via the damage_* ops.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_damage() {
+    let _ = catch_unwind(|| v8host::dispatch_damage());
+}
+
 /// C-ABI entry point the shim's ConCommand trampoline calls when a registered command fires.
 /// `name` = command name (Arg(0)), `slot` = CPlayerSlot::Get() (-1 for server console),
 /// `args` = CCommand::ArgS() (everything after the name).

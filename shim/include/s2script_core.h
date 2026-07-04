@@ -77,6 +77,12 @@ typedef void (*s2_client_kick_fn)(int slot, const char* reason);
 /* Server console command + map-validity query (Slice 6.4). Null/no-engine safe. */
 typedef void (*s2_server_command_fn)(const char* cmd);
 typedef int  (*s2_server_map_valid_fn)(const char* map);
+// Slice 6.6 Stage 2: read a field from the CURRENT CTakeDamageInfo (valid only during a damage dispatch)
+// at a schema-resolved byte offset. Block-scoped, mirrors the GameEvent accessor pattern.
+typedef float (*s2_damage_read_float_fn)(int offset);
+typedef int   (*s2_damage_read_int_fn)(int offset);
+// Stage 3 (modify): write m_flDamage etc. during a pre-hook.
+typedef void  (*s2_damage_write_float_fn)(int offset, float value);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -120,6 +126,9 @@ typedef struct {
     /* Server command + map-validity (Slice 6.4) — APPENDED after client_kick; order is the ABI. */
     s2_server_command_fn   server_command;
     s2_server_map_valid_fn server_map_valid;
+    s2_damage_read_float_fn  damage_read_float;
+    s2_damage_read_int_fn    damage_read_int;
+    s2_damage_write_float_fn damage_write_float;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -138,6 +147,9 @@ void s2script_core_dispatch_concommand(const char* name, int slot, const char* a
  * read live data from the current IGameEvent*.  After dispatch returns, s_currentEvent
  * is restored to its previous value (re-entrancy guard). */
 void s2script_core_dispatch_game_event(const char* name);
+// Slice 6.6 Stage 2: run the Damage.onPre subscribers over the current CTakeDamageInfo (set by the shim
+// detour). Handlers read/modify the live info in place (setting damage to 0 = block).
+void s2script_core_dispatch_damage(void);
 /* Shim -> core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
  * (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
  * (a pre-hook returned Handled/Stop), else 0. */

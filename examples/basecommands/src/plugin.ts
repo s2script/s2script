@@ -3,6 +3,7 @@ import { Chat } from "@s2script/chat";
 import { Admin, ADMFLAG } from "@s2script/admin";
 import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/server";
+import { Damage } from "@s2script/damage";
 
 // Slice 6.2 live gate — admin-gated commands. sm_say is now registered via Commands.registerAdmin with
 // ADMFLAG.CHAT: the server console / rcon is root (always allowed); an in-game player needs the CHAT flag
@@ -103,6 +104,15 @@ export function onLoad(): void {
     console.log("[basecommands] sm_exec by slot=" + ctx.callerSlot + " file=" + file);
     Server.command("exec " + file);
     ctx.reply("[SM] Executing " + file + ".");
+  });
+
+  // 6.6 — damage pre-hook (SDKHooks-equivalent). Logs the damage/attacker/type; halves damage as a demo of
+  // in-place modify. Fires on real bullet damage; also proven via the shim's first-frame synthetic self-test.
+  Damage.onPre((info) => {
+    const atk = info.attacker;
+    console.log("[basecommands] damage onPre: damage=" + info.damage + " type=" + info.damageType
+      + " attacker=" + (atk ? atk.index + "/" + atk.serial : "none"));
+    info.damage = info.damage / 2;   // modify: halve the damage (set to 0 would block)
   });
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).

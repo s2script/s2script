@@ -105,6 +105,10 @@ pub type ClientKickFn = extern "C" fn(slot: c_int, reason: *const c_char);
 // --- Slice 6.4: server command + map-validity ops (C-ABI; the C header must match exactly) ---
 pub type ServerCommandFn  = extern "C" fn(cmd: *const c_char);
 pub type ServerMapValidFn = extern "C" fn(map: *const c_char) -> c_int;
+// Slice 6.6 Stage 2: read/write a field of the current CTakeDamageInfo at a schema-resolved offset.
+pub type DamageReadFloatFn  = extern "C" fn(offset: c_int) -> f32;
+pub type DamageReadIntFn    = extern "C" fn(offset: c_int) -> c_int;
+pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -152,6 +156,9 @@ pub struct S2EngineOps {
     // --- Slice 6.4: server command + map-validity ops (APPENDED after client_kick; order is the ABI; do not reorder above) ---
     pub server_command:   Option<ServerCommandFn>,
     pub server_map_valid: Option<ServerMapValidFn>,
+    pub damage_read_float:  Option<DamageReadFloatFn>,
+    pub damage_read_int:    Option<DamageReadIntFn>,
+    pub damage_write_float: Option<DamageWriteFloatFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -297,6 +304,11 @@ thread_local! {
     /// Same shape as EVENT_MUX; handlers return a HookResult that is collapsed via run_chain.
     /// Reset on shutdown so a re-init starts empty.
     static EVENT_MUX_PRE: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Damage pre-hook multiplexer (Slice 6.6): `Damage.onPre(h)` subscribers, keyed by the constant
+    /// "onPre" (damage has no name dimension). Same EventMux shape/discipline; handlers read/modify the
+    /// current CTakeDamageInfo in place. remove_by_owner on unload; reset on shutdown.
+    static DAMAGE_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
     /// Config-change subscriber mux (Slice 5E.2): handlers subscribed via `config.onChange(h)`.
     /// Each handler is tagged `(owner, generation)` for liveness-gated dispatch.
@@ -565,6 +577,34 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
+  // --- Slice 6.6: damage module (Damage.onPre + block-scoped DamageInfo over the current CTakeDamageInfo).
+  //     CTakeDamageInfo is a Source 2 engine type (not CS2-specific) -> engine-generic, lives in core. ---
+  function DamageInfo() {}
+  function __s2_dmg_ref(field) {
+    var o = __s2_schema_offset("CTakeDamageInfo", field);
+    if (o < 0) return null;
+    var h = __s2_damage_read_int(o) >>> 0;
+    if (h === 0 || h === 0xFFFFFFFF) return null;            // empty/invalid handle
+    var d = __s2_handle_decode(h);
+    var ref = new EntityRef(d[0], d[1]);
+    return ref.isValid() ? ref : null;                       // stale -> null
+  }
+  Object.defineProperties(DamageInfo.prototype, {
+    // m_flDamage: read the damage; SETTING it modifies the live info (set to 0 to block).
+    damage: {
+      get: function () { var o = __s2_schema_offset("CTakeDamageInfo", "m_flDamage"); return o < 0 ? 0 : __s2_damage_read_float(o); },
+      set: function (v) { var o = __s2_schema_offset("CTakeDamageInfo", "m_flDamage"); if (o >= 0) __s2_damage_write_float(o, +v); },
+      enumerable: true, configurable: true,
+    },
+    damageType: {
+      get: function () { var o = __s2_schema_offset("CTakeDamageInfo", "m_bitsDamageType"); return o < 0 ? 0 : __s2_damage_read_int(o); },
+      enumerable: true, configurable: true,
+    },
+    attacker:  { get: function () { return __s2_dmg_ref("m_hAttacker"); },  enumerable: true, configurable: true },
+    inflictor: { get: function () { return __s2_dmg_ref("m_hInflictor"); }, enumerable: true, configurable: true },
+  });
+  var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
+  globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
   function __s2cmd_ctx(slot, argString) {
     var s = (slot | 0);
@@ -1979,6 +2019,58 @@ fn s2_event_get_float(
     }));
 }
 
+/// `__s2_damage_subscribe(handler)` — subscribe a JS fn to `Damage.onPre` (Slice 6.6). Owner-tracked;
+/// the shim detour is installed at Load, so no per-subscribe engine registration is needed.
+fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        DAMAGE_MUX.with(|m| { m.borrow_mut().subscribe("onPre", owner, generation, handler_g); });
+    }));
+}
+
+/// `__s2_damage_read_float(offset) -> f32` — read a float from the current CTakeDamageInfo. 0 if no op.
+fn s2_damage_read_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 1 { return; }
+        let off = args.get(0).int32_value(scope).unwrap_or(-1);
+        if off < 0 { return; }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.damage_read_float else { return };
+        rv.set_double(func(off) as f64);
+    }));
+}
+
+/// `__s2_damage_read_int(offset) -> i32` — read an int (e.g. a handle or m_bitsDamageType). 0 if no op.
+fn s2_damage_read_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 1 { return; }
+        let off = args.get(0).int32_value(scope).unwrap_or(-1);
+        if off < 0 { return; }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.damage_read_int else { return };
+        rv.set_double(func(off) as f64);
+    }));
+}
+
+/// `__s2_damage_write_float(offset, value)` — write m_flDamage etc. during a pre-hook (modify/block). No-op if no op.
+fn s2_damage_write_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let off = args.get(0).int32_value(scope).unwrap_or(-1);
+        if off < 0 { return; }
+        let val = args.get(1).number_value(scope).unwrap_or(0.0) as f32;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.damage_write_float else { return };
+        func(off, val);
+    }));
+}
+
 /// Native `__s2_event_get_bool(key) -> boolean`. Calls the `event_get_bool` engine-op; degrades to false.
 fn s2_event_get_bool(
     scope: &mut v8::PinScope,
@@ -2319,6 +2411,59 @@ pub(crate) fn dispatch_game_event(name: &str) {
     });
 }
 
+/// Slice 6.6 Stage 2: run the `Damage.onPre` subscribers over the current CTakeDamageInfo (set by the
+/// shim detour). Mirrors `dispatch_game_event`: snapshot (release the mux borrow), re-entrancy guard,
+/// per-subscriber liveness + context + TryCatch. Each handler gets `new DamageInfo()` (a block-scoped
+/// accessor over the current damage) and reads/modifies it in place; blocking = the handler setting
+/// damage to 0.
+pub(crate) fn dispatch_damage() {
+    let snap = DAMAGE_MUX.with(|m| m.borrow().snapshot("onPre"));
+    if snap.is_empty() { return; }
+
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, gen, handler_g) in &snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Construct new DamageInfo(): globalThis.__s2pkg_damage.DamageInfo.
+            let info_arg: Option<v8::Local<v8::Value>> = (|| {
+                let global = ctx_local.global(tc);
+                let pkg_key = v8::String::new(tc, "__s2pkg_damage")?;
+                let pkg = global.get(tc, pkg_key.into())?;
+                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+                let ctor_key = v8::String::new(tc, "DamageInfo")?;
+                let ctor_val = pkg.get(tc, ctor_key.into())?;
+                let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+                ctor.new_instance(tc, &[]).map(|o| -> v8::Local<v8::Value> { o.into() })
+            })();
+
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let info_val: v8::Local<v8::Value> = info_arg.unwrap_or_else(|| v8::undefined(tc).into());
+
+            if func.call(tc, recv, &[info_val]).is_none() {
+                let msg = tc.exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_damage: handler '{}': {}", owner, msg));
+            }
+        }
+    });
+}
+
 /// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
 /// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
@@ -2476,6 +2621,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_admin_mark_loaded", s2_admin_mark_loaded);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
+    set_native(scope, global_obj, "__s2_damage_subscribe", s2_damage_subscribe);
+    set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
+    set_native(scope, global_obj, "__s2_damage_read_int", s2_damage_read_int);
+    set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
     set_native(scope, global_obj, "__s2_server_command", s2_server_command);
     set_native(scope, global_obj, "__s2_server_map_valid", s2_server_map_valid);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
@@ -3371,6 +3520,8 @@ pub fn shutdown() {
     EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the config-change subscriber mux (Slice 5E.2) so a re-init starts clean.
     CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the damage pre-hook mux (Slice 6.6) so a re-init starts clean.
+    DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -3524,6 +3675,9 @@ pub(crate) fn unload_plugin(id: &str) {
             if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 0); }
         }
     }
+    // (a2c) Drop the plugin's Damage.onPre subscriptions (Slice 6.6). The detour stays installed for the
+    // process lifetime (removed in the shim's Unload), so no per-plugin hook-removal request is needed.
+    DAMAGE_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -4880,6 +5034,9 @@ mod frame_tests {
             client_kick: None,
             server_command: None,
             server_map_valid: None,
+            damage_read_float: None,
+            damage_read_int: None,
+            damage_write_float: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -5000,6 +5157,9 @@ mod frame_tests {
             client_kick: None,
             server_command: None,
             server_map_valid: None,
+            damage_read_float: None,
+            damage_read_int: None,
+            damage_write_float: None,
         }
     }
 
