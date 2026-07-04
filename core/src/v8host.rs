@@ -2732,7 +2732,18 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                 if let Some(v) = exports.get(tc, k.into()) {
                     if let Ok(f) = v8::Local::<v8::Function>::try_from(v) {
                         let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                        if f.call(tc, recv, &[]).is_none() {
+                        // Slice 5E.3: consume this id's reload-handoff blob (if a prior unload captured
+                        // one) and revive it in THIS (new) context via iface_from_json (JSON.parse + the
+                        // EntityRef reviver → live serial-gated refs). Pass it as onLoad's single arg;
+                        // consume-once (remove regardless of revival/throw). No blob → onLoad() (prev
+                        // is JS `undefined`).
+                        let prev = PENDING_HANDOFF.with(|h| h.borrow_mut().remove(id))
+                            .and_then(|blob| iface_from_json(tc, &blob));
+                        let call_args: Vec<v8::Local<v8::Value>> = match prev {
+                            Some(p) => vec![p],
+                            None => vec![],
+                        };
+                        if f.call(tc, recv, &call_args).is_none() {
                             let msg = tc
                                 .exception()
                                 .map(|e| e.to_rust_string_lossy(&*tc))
@@ -3826,6 +3837,74 @@ mod frame_tests {
         "#, "{}");
         unload_plugin("thr");
         assert!(PENDING_HANDOFF.with(|h| h.borrow().get("thr").is_none()), "throwing onUnload → no blob");
+        shutdown();
+    }
+
+    /// Slice 5E.3: a same-id reload carries state — onUnload's return revives into onLoad(prev). Covers
+    /// the primitive/nested round-trip, first-load undefined, a live EntityRef revival, and consume-once.
+    #[test]
+    fn reload_hands_off_state_to_onload_prev() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        // A plugin that seeds a counter from prev on load and bumps it on unload.
+        const JS: &str = r#"
+            var count = 0;
+            module.exports.onLoad   = function(prev){ if (prev) { count = prev.count; }
+                                                      globalThis.__count = count;
+                                                      globalThis.__hadPrev = (prev !== undefined); };
+            module.exports.onUnload = function(){ return { count: count + 1 }; };
+        "#;
+        // First load → onLoad(undefined)
+        load_plugin_js("rh", JS, "{}");
+        assert_eq!(eval_in_context_string("rh", "String(globalThis.__hadPrev)"), "false", "first load: no prev");
+        assert_eq!(eval_in_context_string("rh", "String(globalThis.__count)"), "0");
+        // Reload: unload (captures {count:1}) then load again (consumes → onLoad(prev))
+        unload_plugin("rh");
+        load_plugin_js("rh", JS, "{}");
+        assert_eq!(eval_in_context_string("rh", "String(globalThis.__hadPrev)"), "true", "reload: prev present");
+        assert_eq!(eval_in_context_string("rh", "String(globalThis.__count)"), "1", "count carried across the reload");
+        // Consume-once: the blob is gone, so a fresh load with no new unload sees undefined again.
+        unload_plugin("rh");                                   // captures {count:2}
+        load_plugin_js("rh", JS, "{}");                        // consumes → count=2
+        assert_eq!(eval_in_context_string("rh", "String(globalThis.__count)"), "2");
+        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("rh").is_none()), "blob consumed");
+        shutdown();
+    }
+
+    /// Slice 5E.3: an EntityRef in the handoff state revives into a live, serial-gated EntityRef bound
+    /// to the NEW context (reusing the inter-plugin reviver).
+    #[test]
+    fn reload_revives_entityref_in_state() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        const JS: &str = r#"
+            module.exports.onLoad   = function(prev){ globalThis.__revived = prev && prev.ref; };
+            module.exports.onUnload = function(){ return { ref: new (__s2pkg_entity.EntityRef)(1, 7) }; };
+        "#;
+        load_plugin_js("er", JS, "{}");
+        unload_plugin("er");                                   // captures { ref: <tagged EntityRef> }
+        load_plugin_js("er", JS, "{}");                        // revives → live EntityRef
+        assert_eq!(eval_in_context_string("er", "String(globalThis.__revived instanceof __s2pkg_entity.EntityRef)"), "true");
+        assert_eq!(eval_in_context_string("er", "globalThis.__revived.index + ',' + globalThis.__revived.serial"), "1,7");
+        shutdown();
+    }
+
+    /// Slice 5E.3: a throwing onLoad(prev) degrades (WARN) without crashing the reload.
+    #[test]
+    fn reload_onload_throw_degrades_no_crash() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_plugin_js("ot", r#"
+            module.exports.onLoad   = function(prev){ if (prev) throw new Error("boom"); };
+            module.exports.onUnload = function(){ return { x: 1 }; };
+        "#, "{}");
+        unload_plugin("ot");
+        load_plugin_js("ot", r#"
+            module.exports.onLoad   = function(prev){ if (prev) throw new Error("boom"); };
+            module.exports.onUnload = function(){ return { x: 1 }; };
+        "#, "{}");
+        // No panic; the blob was consumed despite the throw.
+        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("ot").is_none()), "blob consumed even though onLoad threw");
         shutdown();
     }
 
