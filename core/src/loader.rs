@@ -31,6 +31,8 @@ pub struct Manifest {
     pub plugin_dependencies: std::collections::HashMap<String, String>,
     #[serde(rename = "optionalPluginDependencies", default)]
     pub optional_plugin_dependencies: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub config: std::collections::HashMap<String, crate::config::ConfigDecl>,
 }
 
 /// The major apiVersion this host speaks.  A plugin whose declared apiVersion major differs is
