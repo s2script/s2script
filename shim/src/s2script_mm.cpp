@@ -606,6 +606,18 @@ static void s2_client_kick(int slot, const char* reason) {
 }
 
 // ---------------------------------------------------------------------------
+// server_command / server_map_valid (Slice 6.4) — IVEngineServer2 passthroughs. Null/no-engine safe.
+// ---------------------------------------------------------------------------
+static void s2_server_command(const char* cmd) {
+    if (!s_pEngine || !cmd) return;
+    s_pEngine->ServerCommand(cmd);
+}
+static int s2_server_map_valid(const char* map) {
+    if (!s_pEngine || !map) return 0;
+    return s_pEngine->IsMapValid(map) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Schema enumeration engine-op (5B.1).
 //
 // Spike-confirmed recipe (2026-07-01-slice-5b1-spike-findings.md):
@@ -1181,6 +1193,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.client_steamid = &s2_client_steamid;
     // Client kick (Slice 6.3): APPENDED after client_steamid; order MUST match S2EngineOps.
     ops.client_kick = &s2_client_kick;
+    // Server command + map-validity (Slice 6.4): APPENDED after client_kick; order MUST match S2EngineOps.
+    ops.server_command   = &s2_server_command;
+    ops.server_map_valid = &s2_server_map_valid;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

@@ -102,6 +102,10 @@ pub type ClientSteamidFn = extern "C" fn(slot: c_int) -> *const c_char;
 // --- Slice 6.3: client kick op (C-ABI; the C header must match exactly) ---
 pub type ClientKickFn = extern "C" fn(slot: c_int, reason: *const c_char);
 
+// --- Slice 6.4: server command + map-validity ops (C-ABI; the C header must match exactly) ---
+pub type ServerCommandFn  = extern "C" fn(cmd: *const c_char);
+pub type ServerMapValidFn = extern "C" fn(map: *const c_char) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -145,6 +149,9 @@ pub struct S2EngineOps {
     pub client_steamid: Option<ClientSteamidFn>,
     // --- Slice 6.3: client kick op (APPENDED after client_steamid; order is the ABI; do not reorder above) ---
     pub client_kick: Option<ClientKickFn>,
+    // --- Slice 6.4: server command + map-validity ops (APPENDED after client_kick; order is the ABI; do not reorder above) ---
+    pub server_command:   Option<ServerCommandFn>,
+    pub server_map_valid: Option<ServerMapValidFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -552,6 +559,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
+  // --- Slice 6.4: server module (command / isMapValid; engine-generic server control) ---
+  var __s2_server = {
+    command: function (cmd) { __s2_server_command(String(cmd)); },
+    isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
+  };
+  globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
   function __s2cmd_ctx(slot, argString) {
     var s = (slot | 0);
@@ -2463,6 +2476,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_admin_mark_loaded", s2_admin_mark_loaded);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
+    set_native(scope, global_obj, "__s2_server_command", s2_server_command);
+    set_native(scope, global_obj, "__s2_server_map_valid", s2_server_map_valid);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
     set_native(scope, global_obj, "__s2_config_read_raw", s2_config_read_raw);
     set_native(scope, global_obj, "__s2_config_write_raw", s2_config_write_raw);
@@ -2894,6 +2909,32 @@ fn s2_client_kick(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.client_kick else { return };
         if let Ok(creason) = CString::new(reason) { f(slot, creason.as_ptr()); }
+    }));
+}
+
+/// `__s2_server_command(cmd)` — run `cmd` at the server console. No-op without the op / null.
+fn s2_server_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let cmd = args.get(0).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.server_command else { return };
+        if let Ok(ccmd) = CString::new(cmd) { f(ccmd.as_ptr()); }
+    }));
+}
+
+/// `__s2_server_map_valid(map) -> 1|0` — 1 if `map` is an installed valid map. 0 without the op / null.
+fn s2_server_map_valid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let valid: i32 = (|| {
+            if args.length() < 1 { return None; }
+            let map = args.get(0).to_rust_string_lossy(scope);
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.server_map_valid?;
+            let cmap = CString::new(map).ok()?;
+            Some(if f(cmap.as_ptr()) != 0 { 1 } else { 0 })
+        })().unwrap_or(0);
+        rv.set_double(valid as f64);
     }));
 }
 
@@ -4837,6 +4878,8 @@ mod frame_tests {
             client_print: None,
             client_steamid: None,
             client_kick: None,
+            server_command: None,
+            server_map_valid: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -4955,6 +4998,8 @@ mod frame_tests {
             client_print: None,
             client_steamid: None,
             client_kick: None,
+            server_command: None,
+            server_map_valid: None,
         }
     }
 
@@ -5455,6 +5500,11 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "__s2_client_steamid(0)"), "0");
         // client_kick degrades to a no-op (undefined) without the op.
         assert_eq!(eval_in_context_string("p", "String(__s2_client_kick(0, 'x'))"), "undefined");
+        // server_command degrades to a no-op (undefined); server_map_valid to 0; the module wires them.
+        assert_eq!(eval_in_context_string("p", "String(__s2_server_command('x'))"), "undefined");
+        assert_eq!(eval_in_context_string("p", "String(__s2_server_map_valid('x'))"), "0");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.command"), "function");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.isMapValid('x'))"), "false");
         shutdown();
     }
 

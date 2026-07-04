@@ -74,6 +74,10 @@ typedef const char* (*s2_client_steamid_fn)(int slot);
 /* Kick a connected client (Slice 6.3). No-op for null engine or out-of-range slot. */
 typedef void (*s2_client_kick_fn)(int slot, const char* reason);
 
+/* Server console command + map-validity query (Slice 6.4). Null/no-engine safe. */
+typedef void (*s2_server_command_fn)(const char* cmd);
+typedef int  (*s2_server_map_valid_fn)(const char* map);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -113,6 +117,9 @@ typedef struct {
     s2_client_steamid_fn client_steamid;
     /* Client kick (Slice 6.3) — APPENDED after client_steamid; order is the ABI. */
     s2_client_kick_fn client_kick;
+    /* Server command + map-validity (Slice 6.4) — APPENDED after client_kick; order is the ABI. */
+    s2_server_command_fn   server_command;
+    s2_server_map_valid_fn server_map_valid;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
