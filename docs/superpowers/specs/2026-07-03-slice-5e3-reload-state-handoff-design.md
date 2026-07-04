@@ -69,8 +69,12 @@ inter-plugin marshalling verbatim:
 
 ## 3. State contents
 
-Whatever the inter-plugin wire already round-trips: primitives, `string`, **`bigint`**, arrays, nested
-plain objects, and **`EntityRef`** (revives live + serial-gated). A `Player`/`Pawn` is `EntityRef`-backed
+Whatever the inter-plugin wire already round-trips: any JSON value — primitives, `string`, arrays, nested
+plain objects — and **`EntityRef`** (revives live + serial-gated). **NOT `bigint`:** `iface_to_json` is
+`JSON.stringify`, which throws on a `BigInt`, so a `bigint` anywhere in `State` makes `iface_to_json`
+return `None` → the WHOLE handoff is silently discarded (degrade-safe, but total). Carry a 64-bit value
+as a decimal `string` (the framework convention — the reason 5B.4's `uint64`/`int64` accessors return
+strings). A `Player`/`Pawn` is `EntityRef`-backed
 but is a *prototype-wrapped* object — an author carrying one should store the `.ref` (an `EntityRef`) or a
 plain `{slot}` and re-wrap in `onLoad`; carrying the wrapper object directly serializes only its own-enumerable
 fields (documented). Non-serializable values (functions, cycles) → the whole capture is `None` →
@@ -80,7 +84,7 @@ fields (documented). Non-serializable values (functions, cycles) → the whole c
 
 - `onUnload()` throws → no capture (the existing onUnload-error WARN), new `onLoad(undefined)`.
 - `onUnload()` returns a non-serializable value → `iface_to_json` → `None` → no pending → `onLoad(undefined)` + a named WARN.
-- Revival fails (should not — the host produced the string; defends against corruption) → `onLoad(undefined)` + WARN.
+- Revival fails (should not — the host produced the string; defends against corruption) → `onLoad(undefined)` (the reviver's TryCatch absorbs it silently; benign).
 - `onLoad(prev)` throws → the existing load-time onLoad-error WARN; the instance is loaded, handoff consumed, no crash.
 - An `EntityRef` in `State` whose entity was destroyed during the gap → a serial-gated `null` read (never garbage, never a crash).
 - No path throws into the engine; a broken handoff degrades to `onLoad(undefined)`.
@@ -99,7 +103,7 @@ untouched). Both boundary gates stay green (no game symbol enters core).
 
 ## 6. Testing & live gate
 
-- **In-isolate (core):** round-trip through unload→hold→load — primitives, `bigint`, nested objects,
+- **In-isolate (core):** round-trip through unload→hold→load — primitives, nested objects,
   and an `EntityRef` (revives to a live serial-gated ref); first-load → `onLoad(undefined)`; degrade
   (onUnload throws → undefined; non-serializable return → undefined + WARN; onLoad(prev) throws → WARN,
   no crash); **Vanished clears pending** (a removal-then-fresh-load sees `undefined`, not the stale blob).
@@ -117,7 +121,7 @@ untouched). Both boundary gates stay green (no game symbol enters core).
    tests (capture a serializable return; non-serializable → None; onUnload-throws → no entry).
 2. **Core revive + inject:** `load_plugin_js` consumes `PENDING_HANDOFF[id]` via `iface_from_json` and
    passes it as `onLoad`'s arg (else `onLoad()`); consume-once. In-isolate tests (round-trip primitives/
-   bigint/nested; EntityRef revives live; first-load undefined; onLoad(prev) throws → WARN degrade).
+   nested; EntityRef revives live; first-load undefined; onLoad(prev) throws → WARN degrade).
 3. **Loader orchestration:** the Reload path already does `unload_plugin`→`load_plugin_js` (consume falls
    out); the **Vanished** path calls `clear_pending_handoff(id)`. In-isolate/loader tests (Reload hands
    off; Vanished discards).

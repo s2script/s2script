@@ -1594,9 +1594,11 @@ export function onUnload(): State { return { reloads: reloads + 1, pawn }; }
 - **Mechanism (reuses the inter-plugin marshalling):** `onUnload()`'s return is serialized in the old
   context via `JSON.stringify` + the EntityRef replacer into a host-held `String` (survives the
   context's disposal), then revived in the new context via `JSON.parse` + the EntityRef reviver. So a
-  `State` may contain primitives, `bigint`, nested objects, and **live `EntityRef`s** — a carried
-  `EntityRef` revives serial-gated (reads `null`/`isValid()===false` if its entity died during the gap,
-  never a crash).
+  `State` may contain any JSON value — primitives, strings, arrays, nested objects — and **live
+  `EntityRef`s** (a carried `EntityRef` revives serial-gated: reads `null`/`isValid()===false` if its
+  entity died during the gap, never a crash). Carry a 64-bit value as a decimal `string` (the framework
+  convention — `JSON.stringify` cannot serialize a `BigInt`, so a `bigint` in `State` silently discards
+  the whole handoff).
 - **Trigger:** any same-id **Reload** hands off (the author owns state-shape migration across versions,
   like config). A first **Load** → `onLoad(undefined)`. A final removal (**Vanished**) discards the
   captured state — a re-add starts fresh. `shutdown` clears everything.
