@@ -2,6 +2,7 @@ import { Commands } from "@s2script/commands";
 import { Chat } from "@s2script/chat";
 import { Admin, ADMFLAG } from "@s2script/admin";
 import { Player } from "@s2script/cs2";
+import { Server } from "@s2script/server";
 
 // Slice 6.2 live gate — admin-gated commands. sm_say is now registered via Commands.registerAdmin with
 // ADMFLAG.CHAT: the server console / rcon is root (always allowed); an in-game player needs the CHAT flag
@@ -60,6 +61,18 @@ export function onLoad(): void {
       n++;
     }
     ctx.reply("[SM] Slapped " + n + " player" + (n === 1 ? "" : "s") + " for " + damage + " damage.");
+  });
+
+  // 6.4 — sm_map <mapname> (ADMFLAG.CHANGEMAP). Sanitizes the name (injection guard, we build a
+  // "changelevel <map>" string), rejects an invalid map cleanly, then changes level via @s2script/server.
+  Commands.registerAdmin("sm_map", ADMFLAG.CHANGEMAP, (ctx) => {
+    const map = ctx.argString.trim().split(/\s+/)[0] || "";
+    if (!map) { ctx.reply("Usage: sm_map <mapname>"); return; }
+    if (!/^[A-Za-z0-9_]+$/.test(map)) { ctx.reply("[SM] Invalid map name."); return; }
+    if (!Server.isMapValid(map)) { ctx.reply("[SM] '" + map + "' is not a valid map."); return; }
+    console.log("[basecommands] sm_map -> changelevel " + map + " by slot=" + ctx.callerSlot);
+    ctx.reply("[SM] Changing map to " + map + "…");
+    Server.command("changelevel " + map);
   });
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
