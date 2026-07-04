@@ -170,6 +170,10 @@ struct PluginInstance {
     /// tagged with `(id, generation)`; `frame_async_drain` later checks `REGISTRY.is_live` against
     /// this to DROP a continuation whose plugin unloaded or reloaded.
     generation: u64,
+    /// The plugin's declared config fields (from its manifest).  Stored at load so
+    /// `re_materialize_config` can re-run materialization without the manifest.
+    /// Starts empty; populated by `store_config_decls` right after `load_plugin_js`.
+    config_decls: std::collections::HashMap<String, crate::config::ConfigDecl>,
 }
 
 /// A pending async resolver (`Delay`/`NextTick`/`NextFrame`/`threadSleep`) plus the OWNING plugin's
@@ -269,6 +273,13 @@ thread_local! {
     /// Same shape as EVENT_MUX; handlers return a HookResult that is collapsed via run_chain.
     /// Reset on shutdown so a re-init starts empty.
     static EVENT_MUX_PRE: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Config-change subscriber mux (Slice 5E.2): handlers subscribed via `config.onChange(h)`.
+    /// Each handler is tagged `(owner, generation)` for liveness-gated dispatch.
+    /// The loader polls opted-in plugins' config files each frame cycle and calls
+    /// `re_materialize_config(id)` on change, which snapshots this mux and fires handlers.
+    /// `remove_by_owner` called on unload; reset on shutdown so a re-init starts empty.
+    static CONFIG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 }
 
@@ -481,6 +492,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return __s2_event_fire(!!dontBroadcast);
     },
   };
+  // --- Slice 5E.2: config module (typed getters over __s2pkg_config_values; zero-value fallback) ---
+  var __s2_config = {
+    getString: function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v == null ? "" : String(v); },
+    getInt:    function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : (v | 0); },
+    getFloat:  function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : v; },
+    getBool:   function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v === true; },
+    onChange:  function (h) { __s2_config_on_change(h); },
+  };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
@@ -488,6 +507,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_console    = { console: console };
   globalThis.__s2pkg_interfaces = interfaces;
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
+  globalThis.__s2pkg_config     = __s2_config;
 })();
 "#;
 
@@ -2276,6 +2296,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_event_set_uint64", s2_event_set_uint64);
     set_native(scope, global_obj, "__s2_event_create", s2_event_create);
     set_native(scope, global_obj, "__s2_event_fire", s2_event_fire);
+    // Config live-reload (Slice 5E.2): register an onChange handler for this plugin's config file.
+    set_native(scope, global_obj, "__s2_config_on_change", s2_config_on_change);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -2397,6 +2419,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
                     exports: None,
                     context: g_ctx,
                     generation,
+                    config_decls: std::collections::HashMap::new(),
                 },
             )
         });
@@ -2497,6 +2520,111 @@ pub(crate) fn materialize_for_load(id: &str, decls: &std::collections::HashMap<S
         }
     }
     serde_json::to_string(&serde_json::Value::Object(mat.values)).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Store config decls on a plugin's `PluginInstance` (called from the loader right after
+/// `load_plugin_js` so `re_materialize_config` can re-run without needing the manifest).
+pub(crate) fn store_config_decls(id: &str, decls: std::collections::HashMap<String, crate::config::ConfigDecl>) {
+    PLUGINS.with(|p| {
+        if let Some(pi) = p.borrow_mut().get_mut(id) {
+            pi.config_decls = decls;
+        }
+    });
+}
+
+/// Read the current content of the plugin's config override file via the `config_read` op.
+/// Returns `None` if no ops table is wired, the op is absent, or the file doesn't exist yet.
+/// Used by the loader's change-detection loop (content compare, no mtime op needed).
+pub(crate) fn config_file_content(id: &str) -> Option<String> {
+    let ops = ENGINE_OPS.with(|o| o.get())?;
+    let f = ops.config_read?;
+    let cid = std::ffi::CString::new(id).ok()?;
+    let ptr = f(cid.as_ptr());
+    if ptr.is_null() { return None; }
+    Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+}
+
+/// Re-materialize a plugin's config after its override file changed: re-read the file, merge with
+/// declared defaults, re-inject `globalThis.__s2pkg_config_values`, and fire every `onChange`
+/// handler registered by that plugin (via CONFIG_SUBS) with the updated config object as the arg.
+///
+/// Called from `crate::loader::poll_watched_configs` when the stored content differs from the
+/// current file content.  Uses the same per-plugin context entry discipline as `dispatch_game_event`.
+pub(crate) fn re_materialize_config(id: &str) {
+    // (1) Get this plugin's stored config decls (empty → nothing to re-materialize, but still fire).
+    let decls = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.config_decls.clone()));
+    let Some(decls) = decls else { return };
+
+    // (2) Re-materialize (no ops → defaults only; file exists → override merged) → inject.
+    let values_json = materialize_for_load(id, &decls);
+    let _ = eval_in_context(id, &format!("globalThis.__s2pkg_config_values = {};", values_json));
+
+    // (3) Snapshot CONFIG_SUBS for the "config" name, filtered to this plugin's handlers.
+    //     Release the borrow before entering any context.
+    let snap: Vec<(String, u64, v8::Global<v8::Function>)> = CONFIG_SUBS.with(|m| {
+        m.borrow().snapshot("config")
+            .into_iter()
+            .filter(|(owner, _, _)| owner == id)
+            .collect()
+    });
+    if snap.is_empty() { return; }
+
+    // (4) Fire loop — mirrors dispatch_game_event (snapshot released; try_borrow_mut guard).
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, gen, handler_g) in &snap {
+            // Liveness check (borrow released before entering the context).
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Read globalThis.__s2pkg_config_values in this context as the handler arg.
+            let config_arg: v8::Local<v8::Value> = (|| -> Option<v8::Local<v8::Value>> {
+                let global = ctx_local.global(tc);
+                let key = v8::String::new(tc, "__s2pkg_config_values")?;
+                let val = global.get(tc, key.into())?;
+                if val.is_undefined() { None } else { Some(val) }
+            })().unwrap_or_else(|| v8::undefined(tc).into());
+
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+
+            if func.call(tc, recv, &[config_arg]).is_none() {
+                let msg = tc.exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: re_materialize_config('{}'): onChange '{}': {}", id, owner, msg));
+            }
+            // tc, tc_storage, scope drop here — TryCatch absorbs any pending exception.
+        }
+    });
+}
+
+/// Native `__s2_config_on_change(handler)` — register an onChange handler for this plugin's
+/// config.  The loader detects file changes and calls `re_materialize_config(id)`, which fires
+/// all registered handlers with the updated `__s2pkg_config_values` object.
+/// Idempotent watch: calling this multiple times seeds the baseline only once per plugin.
+fn s2_config_on_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        CONFIG_SUBS.with(|m| { m.borrow_mut().subscribe("config", owner.clone(), generation, handler_g); });
+        crate::loader::watch_config_for(&owner);  // idempotent; seeds baseline if not yet watched
+    }));
 }
 
 /// Load a built plugin bundle `plugin_js` under plugin id `id` (the spike-PROVEN CJS wrapper).
@@ -2879,6 +3007,8 @@ pub fn shutdown() {
     EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the pre-hook event mux (Slice 5D.3) so a re-init starts clean.
     EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the config-change subscriber mux (Slice 5E.2) so a re-init starts clean.
+    CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
     // loaded must not persist across an init cycle).
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
@@ -3026,6 +3156,9 @@ pub(crate) fn unload_plugin(id: &str) {
             if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 0); }
         }
     }
+    // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
+    CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
+    crate::loader::unwatch_config_for(id);
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
     // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
@@ -4709,6 +4842,107 @@ mod frame_tests {
             let _b = h.borrow_mut();
             dispatch_game_event("player_hurt");       // must not panic (nested notify skipped)
         });
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice 5E.2 Task 4: @s2script/config prelude module + re_materialize_config
+    // ---------------------------------------------------------------------------
+
+    /// The `@s2script/config` prelude module getters read from `__s2pkg_config_values` and coerce
+    /// correctly; an undeclared key yields the appropriate zero-value (no throw, no undefined).
+    #[test]
+    fn config_getters_read_and_coerce() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // Inject a config values object directly (simulates what load_plugin_js does via T3).
+        eval_in_context("p", r#"
+            globalThis.__s2pkg_config_values = { greeting: "hi", maxUses: 3, cooldown: 1.5, enabled: true };
+        "#).unwrap();
+        // getString: declared key → string value.
+        assert_eq!(eval_in_context_string("p", "__s2pkg_config.getString('greeting')"), "hi");
+        // getInt: declared key → integer coercion.
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('maxUses'))"), "3");
+        // getFloat: declared key → number passthrough.
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getFloat('cooldown'))"), "1.5");
+        // getBool: declared key → boolean.
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getBool('enabled'))"), "true");
+        // Undeclared keys → zero-values (no crash, no throw).
+        assert_eq!(eval_in_context_string("p", "__s2pkg_config.getString('nope')"), "");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('nope'))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getBool('nope'))"), "false");
+        // Non-number passed to getInt/getFloat → zero-value (coercion guard).
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('greeting'))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getFloat('greeting'))"), "0");
+        // getBool: a non-true value → false.
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getBool('maxUses'))"), "false");
+        shutdown();
+    }
+
+    /// `re_materialize_config` re-injects `__s2pkg_config_values` (from materialized defaults
+    /// when no ops are wired) and fires every `onChange` handler with the updated config object.
+    #[test]
+    fn config_on_change_fires_handler() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+
+        // Store config decls: one string key with default "hello".
+        let mut decls = std::collections::HashMap::new();
+        decls.insert("greeting".to_string(), crate::config::ConfigDecl {
+            r#type: "string".to_string(),
+            default: serde_json::json!("hello"),
+            description: None,
+        });
+        store_config_decls("p", decls);
+
+        // Inject a pre-existing value that differs from the default (to show re_materialize replaces it).
+        eval_in_context("p", "globalThis.__s2pkg_config_values = { greeting: 'world' };").unwrap();
+
+        // Register an onChange handler via the prelude (uses __s2_config_on_change internally).
+        eval_in_context("p", r#"
+            globalThis.__seen = null;
+            __s2pkg_config.onChange(function (cfg) { globalThis.__seen = cfg.greeting; });
+        "#).unwrap();
+
+        // Re-materialize: with no ops, materializes defaults → { greeting: "hello" }.
+        // The handler must fire with that updated config object.
+        re_materialize_config("p");
+
+        // Handler should have set __seen to the re-materialized default "hello".
+        assert_eq!(
+            read_string_global_in("p", "__seen"),
+            "hello",
+            "onChange handler must receive the re-materialized config values"
+        );
+        // Verify __s2pkg_config_values was also updated (not just the handler arg).
+        assert_eq!(
+            eval_in_context_string("p", "__s2pkg_config.getString('greeting')"),
+            "hello",
+            "getters must reflect the re-injected values after re_materialize"
+        );
+        shutdown();
+    }
+
+    /// `re_materialize_config` for a plugin with no `onChange` subscribers degrades cleanly (no
+    /// panic, no error) — the snapshot is empty, so the fire loop exits immediately.
+    #[test]
+    fn config_re_materialize_no_subs_degrades_cleanly() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let mut decls = std::collections::HashMap::new();
+        decls.insert("x".to_string(), crate::config::ConfigDecl {
+            r#type: "int".to_string(),
+            default: serde_json::json!(42),
+            description: None,
+        });
+        store_config_decls("p", decls);
+        // No onChange subscribed → must not panic.
+        re_materialize_config("p");
+        // Values still re-injected (even with no handlers).
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.getInt('x'))"), "42");
         shutdown();
     }
 }

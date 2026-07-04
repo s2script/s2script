@@ -137,6 +137,12 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
     /// Counts how many times `poll_plugins` has been called (throttle counter).
     static DRAIN_COUNT: Cell<u64> = Cell::new(0);
+    /// Config-file watcher (Slice 5E.2): maps plugin id → last-seen file content (None = absent).
+    /// Populated via `watch_config_for` (idempotent; seeds baseline on first call so the initial
+    /// auto-generated file does not cause a spurious onChange fire).  Polled each `poll_plugins`
+    /// cycle: when content changes, `re_materialize_config` fires the plugin's onChange handlers.
+    static WATCHED_CONFIGS: std::cell::RefCell<HashMap<String, Option<String>>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 /// Number of Post-drain calls between each real directory scan.
@@ -157,6 +163,26 @@ pub(crate) fn set_plugins_dir(path: &str) {
 /// (and thus `poll_plugins`) runs every frame even before the first plugin subscribes anything.
 pub(crate) fn is_watching() -> bool {
     PLUGINS_DIR.with(|d| d.borrow().is_some())
+}
+
+/// Opt a plugin into config-file change detection (Slice 5E.2).  Idempotent: if the id is already
+/// watched, this is a no-op (the baseline was seeded on the first call, so repeated calls from
+/// multiple `config.onChange` registrations don't reset the baseline and cause spurious fires).
+/// On the first call, seeds the last-seen content with the CURRENT file content so the initial
+/// auto-generated file does NOT trigger a spurious onChange on the very next poll.
+pub(crate) fn watch_config_for(id: &str) {
+    WATCHED_CONFIGS.with(|wc| {
+        let mut map = wc.borrow_mut();
+        if map.contains_key(id) { return; }  // already watched — idempotent
+        // Seed the baseline with the current file content (None if file absent / no ops).
+        let content = crate::v8host::config_file_content(id);
+        map.insert(id.to_string(), content);
+    });
+}
+
+/// Stop watching a plugin's config file (called from `unload_plugin` teardown).
+pub(crate) fn unwatch_config_for(id: &str) {
+    WATCHED_CONFIGS.with(|wc| { wc.borrow_mut().remove(id); });
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +237,7 @@ pub(crate) fn poll_plugins() {
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
                     crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
+                    crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
                 Err(e) => {
@@ -237,6 +264,7 @@ pub(crate) fn poll_plugins() {
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
                     crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
+                    crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
                 Err(e) => {
@@ -266,6 +294,39 @@ pub(crate) fn poll_plugins() {
             state.remove(&path);
         }
     });
+
+    // Poll config file changes for opted-in plugins (Slice 5E.2).
+    poll_watched_configs();
+}
+
+/// Check each watched plugin's config file for content changes.  When a change is detected,
+/// update the stored baseline and call `re_materialize_config` to re-inject the updated values
+/// and fire the plugin's `onChange` handlers.
+///
+/// Borrow discipline: WATCHED_CONFIGS is never held across `re_materialize_config` (which enters
+/// V8 and may itself trigger `watch_config_for` → borrow WATCHED_CONFIGS again).  We collect the
+/// changed ids into a Vec, release the borrow, then update + fire each one individually.
+fn poll_watched_configs() {
+    // Phase 1: collect (id, new_content) for every plugin whose content changed.
+    // WATCHED_CONFIGS borrow is held only for this snapshot; released before any V8 call.
+    let changes: Vec<(String, Option<String>)> = WATCHED_CONFIGS.with(|wc| {
+        let map = wc.borrow();
+        map.iter()
+            .filter_map(|(id, last)| {
+                let cur = crate::v8host::config_file_content(id);
+                if cur != *last { Some((id.clone(), cur)) } else { None }
+            })
+            .collect()
+    });
+
+    if changes.is_empty() { return; }
+
+    // Phase 2: update the stored baseline and fire re_materialize for each changed plugin.
+    // Each WATCHED_CONFIGS borrow is scoped to just the update; released before re_materialize.
+    for (id, new_content) in &changes {
+        WATCHED_CONFIGS.with(|wc| { wc.borrow_mut().insert(id.clone(), new_content.clone()); });
+        crate::v8host::re_materialize_config(id);
+    }
 }
 
 // ---------------------------------------------------------------------------
