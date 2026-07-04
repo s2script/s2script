@@ -87,6 +87,41 @@
     return out;
   };
 
+  // player.kick(reason?) — disconnect this player (engine KickClient via the client_kick op).
+  Player.prototype.kick = function (reason) {
+    __s2_client_kick(this.slot, String(reason == null ? "Kicked by admin" : reason));
+  };
+
+  // Player.target(pattern, callerSlot) -> Player[] — SourceMod target-string resolution (core set).
+  //   "#<userid>" -> that player; "@all" -> allConnected; "@me" -> the caller (empty from console);
+  //   otherwise a case-insensitive name match (exact wins, else all partials). Empty on no match.
+  Player.target = function (pattern, callerSlot) {
+    if (typeof pattern !== "string" || pattern.length === 0) return [];
+    if (pattern === "@all") return Player.allConnected();
+    if (pattern === "@me") {
+      if (typeof callerSlot !== "number" || callerSlot < 0) return [];
+      var me = Player.fromSlot(callerSlot);
+      return me ? [me] : [];
+    }
+    if (pattern.charAt(0) === "#") {
+      var uid = parseInt(pattern.slice(1), 10);
+      if (isNaN(uid)) return [];
+      var p = Player.fromUserId(uid);
+      return p ? [p] : [];
+    }
+    var needle = pattern.toLowerCase();
+    var conn = Player.allConnected();
+    var exact = [], partial = [];
+    for (var i = 0; i < conn.length; i++) {
+      var nm = conn[i].playerName;
+      if (typeof nm !== "string") continue;
+      var low = nm.toLowerCase();
+      if (low === needle) exact.push(conn[i]);
+      else if (low.indexOf(needle) !== -1) partial.push(conn[i]);
+    }
+    return exact.length ? exact : partial;
+  };
+
   // pawn.origin / pawn.angles -> compat aliases delegating to the generated sceneNode wrapper.
   // (The hand-written pointer-chain reads are superseded by the navgen SceneNode; these aliases
   //  keep backwards-compat for any code that already uses pawn.origin or pawn.angles.)
@@ -108,6 +143,16 @@
       return h ? new Player(h) : null;
     }, enumerable: true, configurable: true,
   });
+
+  // pawn.setVelocity(x,y,z) — best-effort velocity write (serial-gated). Writes m_vecAbsVelocity's
+  // 3 floats + one notifyStateChanged; returns false if the field is unresolved or the ref is stale.
+  Pawn.prototype.setVelocity = function (x, y, z) {
+    var off = __s2_schema_offset("CBaseEntity", "m_vecAbsVelocity");
+    if (off < 0) return false;
+    var ok = this.ref.writeFloat32(off, +x) && this.ref.writeFloat32(off + 4, +y) && this.ref.writeFloat32(off + 8, +z);
+    if (ok) this.ref.notifyStateChanged(off);
+    return !!ok;
+  };
 
   // slot -> controller entity (index slot+1) -> m_hPlayerPawn handle -> pawn EntityRef.
   Pawn.forSlot = function (slot) {

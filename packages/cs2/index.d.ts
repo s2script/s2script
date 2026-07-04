@@ -35,6 +35,8 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly movementServices: MovementServices | null;
   /** The pawn's aim-punch services (recoil angles). */
   readonly aimPunchServices: AimPunchServices | null;
+  /** Best-effort velocity write (m_vecAbsVelocity); returns false if stale/unresolved. */
+  setVelocity(x: number, y: number, z: number): boolean;
 }
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */
@@ -61,6 +63,8 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
    * and can be `"0"`/`null`, so using it for authorization decisions is unreliable.
    */
   readonly steamId: string;
+  /** Disconnect this player (engine KickClient). */
+  kick(reason?: string): void;
 }
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */
@@ -71,6 +75,8 @@ export declare const Player: {
   fromUserId(userId: number): Player | null;
   /** Every connected player regardless of pawn (the pawnless enumeration). Complements `all()`. */
   allConnected(): Player[];
+  /** Resolve a SourceMod target string to matching connected players. `#userid`/name/`@all`/`@me`; empty on no match. `callerSlot < 0` = server console (no `@me`). */
+  target(pattern: string, callerSlot: number): Player[];
 };
 
 import type { GameEvent, HookResultValue } from "@s2script/events";
