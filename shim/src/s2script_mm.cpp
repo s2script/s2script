@@ -248,7 +248,16 @@ static std::set<std::string> s_subscribedNames;
 typedef int64_t (*DispatchTraceAttack_t)(void* thisptr, void* a2, void* a3, void* a4);
 static DispatchTraceAttack_t g_origDTA = nullptr;
 
+static const uintptr_t kDtaSelfTest = 0xD2A7E57ULL;  // sentinel `this` for the install-time diversion self-test
+
 static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, void* a4) {
+    // Stage-1 self-test: prove the detour DIVERTS execution to our handler on the live binary (combat is
+    // un-generatable on the maxplayers gate). Short-circuit BEFORE touching the dummy args + never run the
+    // original (its dummy pointers would fault). Reaching this line == the patch physically diverts.
+    if (reinterpret_cast<uintptr_t>(thisptr) == kDtaSelfTest) {
+        META_CONPRINTF("[s2script] DTA self-test fired — detour diverts execution on the live binary (mechanism proven)\n");
+        return 0;
+    }
     // m_flDamage is at offset 68 on CTakeDamageInfo (schema catalog). STAGE-2: resolve via schema + dispatch
     // to the core damage mux. Read candidate arg ptrs to reveal which one is the info struct at the live gate.
     auto rd = [](void* p) -> float {
@@ -1161,6 +1170,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     if (s2detour::Install(dtaAddr, reinterpret_cast<void*>(&Detour_DispatchTraceAttack),
                                           reinterpret_cast<void**>(&g_origDTA))) {
                         META_CONPRINTF("[s2script] DispatchTraceAttack hooked @%p (read-only)\n", dtaAddr);
+                        // Self-test: call the now-patched function with the sentinel `this` — the handler
+                        // short-circuits (never runs the original), proving the detour diverts on the live binary.
+                        reinterpret_cast<DispatchTraceAttack_t>(dtaAddr)(
+                            reinterpret_cast<void*>(kDtaSelfTest), nullptr, nullptr, nullptr);
                     } else {
                         META_CONPRINTF("[s2script] WARN: DispatchTraceAttack detour install failed — damage hook off\n");
                     }
