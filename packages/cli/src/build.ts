@@ -13,6 +13,7 @@ import * as esbuild from "esbuild";
 import AdmZip from "adm-zip";
 import { readFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -30,12 +31,19 @@ interface PluginPackageJson {
 
 /**
  * Bundle the plugin at `dir`, produce a .s2sp archive, return the output path.
- * @param dir  Path to the plugin directory (absolute or relative to cwd).
+ * @param dir         Path to the plugin directory (absolute or relative to cwd).
+ * @param packagesDir Path to the monorepo packages/ directory (for @s2script/* .d.ts resolution).
  */
-export async function buildPlugin(dir: string): Promise<string> {
+export async function buildPlugin(dir: string, packagesDir: string): Promise<string> {
   const absDir = resolve(dir);
 
-  // --- Read package.json ---
+  // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on error. ---
+  const tc = typecheckPlugin(absDir, { packagesDir });
+  if (!tc.ok) {
+    throw new Error(`typecheck failed (${tc.diagnostics.length} error(s)):\n${formatDiagnostics(tc.diagnostics)}`);
+  }
+
+  // --- Read package.json ---   (existing code continues unchanged) ---
   const pkgPath = join(absDir, "package.json");
   const pkg: PluginPackageJson = JSON.parse(readFileSync(pkgPath, "utf8"));
 

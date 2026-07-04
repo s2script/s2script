@@ -1,5 +1,5 @@
 import { OnGameFrame } from "@s2script/frame";
-import greeter = require("@demo/greeter"); // hard dep → producer-backed proxy
+import { on, greet } from "@demo/greeter"; // hard dep → producer-backed proxy
 
 // Consumer: hard-deps @demo/greeter (a proxy that throws InterfaceUnavailable while the
 // producer is unloaded), subscribes to the producer's forwarded `greeted` event, and
@@ -9,11 +9,12 @@ let ticks = 0;
 
 export function onLoad(): void {
   console.log("[consumer] onLoad");
-  greeter.on("greeted", (p) => console.log(`[consumer] event greeted: slot=${p.slot} tick=${p.tick}`));
+  on("greeted", (p: { slot: number; tick: number }) =>
+    console.log(`[consumer] event greeted: slot=${p.slot} tick=${p.tick}`));
   OnGameFrame.subscribe(() => {
     if (ticks++ % 256 === 0) {
       try {
-        console.log(`[consumer] greet -> ${greeter.greet(0)}`);
+        console.log(`[consumer] greet -> ${greet(0)}`);
       } catch (e) {
         console.log(`[consumer] greet failed (degraded): ${String(e)}`);
       }

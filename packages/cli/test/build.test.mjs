@@ -13,9 +13,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, "..", "..", "..");   // test/ → cli/ → packages/ → repo
+const packagesDir = join(repoRoot, "packages");
 
 test("build produces a .s2sp with derived manifest + cjs plugin.js", async () => {
-  const out = await buildPlugin("test/fixtures/hello");
+  const out = await buildPlugin("test/fixtures/hello", packagesDir);
 
   const zip = new AdmZip(out);
 
@@ -35,7 +37,7 @@ test("build produces a .s2sp with derived manifest + cjs plugin.js", async () =>
 });
 
 test("consumer manifest carries both dep maps and externalizes the inter-plugin dep", async () => {
-  const out = await buildPlugin(join(here, "fixtures", "consumer"));
+  const out = await buildPlugin(join(here, "fixtures", "consumer"), packagesDir);
   const zip = new AdmZip(out);
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
   assert.equal(manifest.pluginDependencies["@demo/greeter"], "^1.0.0");

@@ -1,3 +1,3 @@
-// @ts-ignore — inter-plugin import resolved by the runtime (no .d.ts codegen yet)
-const greeter = require("@demo/greeter");
-export function onLoad(): void { console.log(greeter.greet(1)); }
+// Inter-plugin dep resolved by the runtime; typed `any` via the gate's ambient stub (no .d.ts codegen yet).
+import { greet } from "@demo/greeter";
+export function onLoad(): void { console.log(greet(1)); }

@@ -1470,6 +1470,37 @@ and expects to re-handle synchronously is the case this doesn't cover.
 
 ---
 
+## The typecheck gate (Slice 5E.1)
+
+`s2script build` **typechecks** each plugin (full `strict`) against the shipped engine `.d.ts` before it
+bundles, and **fails the build (emits no `.s2sp`) on any type error**:
+
+```
+$ npx s2script build ./my-plugin
+typecheck failed (1 error(s)):
+  src/plugin.ts:12:9 — TS18047: 'p' is possibly 'null'.
+$ echo $?
+1
+```
+
+Because the dev file-watch reload *rebuilds*, a failing typecheck produces no new `.s2sp`, so the
+running plugin is left untouched — the charter's "a failing reload leaves the running version
+untouched," for free. (The other half of the charter, the load-time `apiVersion` refuse, already lives
+in the host — a plugin whose `apiVersion` major differs from the host is skipped at load.)
+
+- **Full `strict`** is the fixed baseline — the API is `T | null` everywhere by design, so null-checking
+  is the point.
+- **`@s2script/*`** resolves to the shipped `packages/*/index.d.ts`; the injected `console` global comes
+  from a shipped `globals.d.ts` (the sandbox — never `lib: dom`, so `window`/`document` stay undefined).
+- **Plugins are pure ESM.** `import x = require(...)` is rejected; author inter-plugin imports as ESM
+  named imports (`import { greet } from "@demo/greeter"`) — esbuild bundles them to the same runtime
+  access, so this is authoring hygiene, not a behaviour change.
+- **Inter-plugin deps** are `any` for now (a typed producer→consumer `.d.ts` is deferred).
+- Every `examples/*` plugin passes the gate (`scripts/check-examples-typecheck.sh`), which keeps the
+  shipped `.d.ts` surface honest.
+
+---
+
 ## Known findings / constraints
 
 **V8 local-exec TLS and the `v8 = 149.4.0` pin.** The stock V8 prebuilt for v150+ uses local-exec
