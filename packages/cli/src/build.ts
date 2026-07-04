@@ -14,6 +14,7 @@ import AdmZip from "adm-zip";
 import { readFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
+import { validateConfigBlock } from "./config-validate.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -26,6 +27,7 @@ interface PluginPackageJson {
     pluginDependencies?: Record<string, string>;
     optionalPluginDependencies?: Record<string, string>;
     publishes?: Record<string, unknown>;
+    config?: Record<string, unknown>;
   };
 }
 
@@ -53,6 +55,11 @@ export async function buildPlugin(dir: string, packagesDir: string): Promise<str
   const pluginDependencies = s2.pluginDependencies ?? {};
   const optionalPluginDependencies = s2.optionalPluginDependencies ?? {};
   const publishes = s2.publishes;
+  const config = s2.config ?? undefined;
+  if (config !== undefined) {
+    const cfgErrs = validateConfigBlock(config);
+    if (cfgErrs.length) throw new Error(`invalid s2script.config:\n  ${cfgErrs.join("\n  ")}`);
+  }
 
   // Every builtin package + every inter-plugin dependency name is esbuild-external (resolved at
   // runtime by core, never bundled).
@@ -96,6 +103,7 @@ export async function buildPlugin(dir: string, packagesDir: string): Promise<str
   if (publishes !== undefined) {
     manifest.publishes = publishes;
   }
+  if (config !== undefined) manifest.config = config;
 
   // --- Zip manifest.json + plugin.js ---
   const zip = new AdmZip();
