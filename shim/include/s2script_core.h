@@ -67,6 +67,10 @@ typedef int         (*s2_config_write_fn)(const char* id, const char* content); 
    has no chat, so slot < 0 is a no-op). The shim implements this via the CS2 chat user message. */
 typedef void (*s2_client_print_fn)(int slot, const char* msg);
 
+/* Client SteamID64 as a decimal string (Slice 6.2). "0" for bots / unauthenticated / invalid slot.
+   Valid until the next client_steamid call. Via IVEngineServer2::GetClientXUID. */
+typedef const char* (*s2_client_steamid_fn)(int slot);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -102,6 +106,8 @@ typedef struct {
     s2_config_write_fn config_write;
     /* Chat messaging (Slice 6.1) — APPENDED after config ops; order is the ABI. */
     s2_client_print_fn client_print;   /* Slice 6.1 — APPENDED after config ops; order is the ABI. */
+    /* Client SteamID (Slice 6.2) — APPENDED after client_print; order is the ABI. */
+    s2_client_steamid_fn client_steamid;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

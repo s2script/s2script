@@ -582,6 +582,21 @@ static void s2_client_print(int slot, const char* msg) {
 }
 
 // ---------------------------------------------------------------------------
+// Client SteamID64 engine-op (Slice 6.2).
+//
+// Returns the SteamID64 of the client in `slot` as a decimal string in a static buffer.
+// Returns "0" for bots, unauthenticated clients, or out-of-range slots.
+// Via IVEngineServer2::GetClientXUID (already acquired in Load for client_print).
+// ---------------------------------------------------------------------------
+static std::string s_steamidBuf;
+static const char* s2_client_steamid(int slot) {
+    if (!s_pEngine || slot < 0 || slot >= 64) { s_steamidBuf = "0"; return s_steamidBuf.c_str(); }
+    uint64 xuid = s_pEngine->GetClientXUID(CPlayerSlot(slot));   // 0 for bots / unauthenticated
+    s_steamidBuf = std::to_string(xuid);
+    return s_steamidBuf.c_str();
+}
+
+// ---------------------------------------------------------------------------
 // Schema enumeration engine-op (5B.1).
 //
 // Spike-confirmed recipe (2026-07-01-slice-5b1-spike-findings.md):
@@ -1153,6 +1168,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.config_write = &s2_config_write;
     // Chat messaging (Slice 6.1): APPENDED after config ops; order MUST match S2EngineOps.
     ops.client_print = &s2_client_print;
+    // Client SteamID (Slice 6.2): APPENDED after client_print; order MUST match S2EngineOps.
+    ops.client_steamid = &s2_client_steamid;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

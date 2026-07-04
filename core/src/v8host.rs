@@ -96,6 +96,9 @@ pub type ConfigWriteFn = extern "C" fn(id: *const c_char, content: *const c_char
 // --- Slice 6.1: chat messaging op (C-ABI; the C header must match exactly) ---
 pub type ClientPrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
 
+// --- Slice 6.2: client SteamID op (C-ABI; the C header must match exactly) ---
+pub type ClientSteamidFn = extern "C" fn(slot: c_int) -> *const c_char;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -135,6 +138,8 @@ pub struct S2EngineOps {
     pub config_write: Option<ConfigWriteFn>,
     // --- Slice 6.1: chat messaging op (APPENDED after config ops; order is the ABI; do not reorder above) ---
     pub client_print: Option<ClientPrintFn>,
+    // --- Slice 6.2: client SteamID op (APPENDED after client_print; order is the ABI; do not reorder above) ---
+    pub client_steamid: Option<ClientSteamidFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -295,6 +300,16 @@ thread_local! {
     /// reset on `shutdown`. It holds a plain `String`, so it survives the old context's disposal.
     static PENDING_HANDOFF: std::cell::RefCell<std::collections::HashMap<String, String>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// Slice 6.2: the host-global admin cache — two tiers (file admins.json ⊕ runtime Admin.add), each
+    /// SteamID64 → a u64 flag bitmask. Shared across all plugin contexts (V8 contexts are isolated, so a
+    /// runtime add in one plugin must be visible to another's gating — hence host-global, not per-context).
+    static ADMIN_FILE:    std::cell::RefCell<std::collections::HashMap<String, u64>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    static ADMIN_RUNTIME: std::cell::RefCell<std::collections::HashMap<String, u64>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// One-shot guard so admins.json loads once (the first @s2script/admin import), not per plugin.
+    static ADMIN_FILE_LOADED: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -2360,6 +2375,13 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_config_on_change", s2_config_on_change);
     // Chat messaging (Slice 6.1): print a message to one client's chat.
     set_native(scope, global_obj, "__s2_client_print", s2_client_print);
+
+    set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
+    set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
+    set_native(scope, global_obj, "__s2_admin_remove", s2_admin_remove);
+    set_native(scope, global_obj, "__s2_admin_clear_file", s2_admin_clear_file);
+    set_native(scope, global_obj, "__s2_admin_mark_loaded", s2_admin_mark_loaded);
+    set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -2704,6 +2726,78 @@ fn s2_client_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.client_print else { return };
         if let Ok(cmsg) = CString::new(msg) { f(slot, cmsg.as_ptr()); }
+    }));
+}
+
+// --- Slice 6.2: admin cache natives + client_steamid ---
+
+/// `__s2_admin_set(steamid, flags, runtime)` — set/overwrite a SteamID's flags in the file(false)/runtime(true) tier.
+fn s2_admin_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let flags = args.get(1).number_value(scope).unwrap_or(0.0) as u64;
+        let runtime = args.get(2).boolean_value(scope);
+        if runtime {
+            ADMIN_RUNTIME.with(|m| { m.borrow_mut().insert(sid, flags); });
+        } else {
+            ADMIN_FILE.with(|m| { m.borrow_mut().insert(sid, flags); });
+        }
+    }));
+}
+
+/// `__s2_admin_get(steamid) -> number` — the UNION of both tiers (0 = not an admin).
+fn s2_admin_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { rv.set_double(0.0); return; }
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let f = ADMIN_FILE.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
+        let r = ADMIN_RUNTIME.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
+        rv.set_double((f | r) as f64);
+    }));
+}
+
+/// `__s2_admin_remove(steamid, runtime)` — remove from a tier.
+fn s2_admin_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let runtime = args.get(1).boolean_value(scope);
+        if runtime {
+            ADMIN_RUNTIME.with(|m| { m.borrow_mut().remove(&sid); });
+        } else {
+            ADMIN_FILE.with(|m| { m.borrow_mut().remove(&sid); });
+        }
+    }));
+}
+
+/// `__s2_admin_clear_file()` — wipe the file tier (Admin.reload re-reads into it).
+fn s2_admin_clear_file(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ADMIN_FILE.with(|m| m.borrow_mut().clear());
+    }));
+}
+
+/// `__s2_admin_mark_loaded() -> boolean` — returns the PRIOR loaded state, then sets it true (one-shot load guard).
+fn s2_admin_mark_loaded(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let prev = ADMIN_FILE_LOADED.with(|c| { let p = c.get(); c.set(true); p });
+        rv.set_bool(prev);
+    }));
+}
+
+/// `__s2_client_steamid(slot) -> string` — the client's SteamID64 as a decimal string; "0" if no op / bot / invalid.
+fn s2_client_steamid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let s: String = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.client_steamid?;
+            let ptr = f(slot);
+            if ptr.is_null() { return None; }
+            Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        })().unwrap_or_else(|| "0".to_string());
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
     }));
 }
 
@@ -3105,6 +3199,10 @@ pub fn shutdown() {
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
     // loaded must not persist across an init cycle).
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
+    // Reset the admin cache tiers (Slice 6.2) so a re-init starts with no admins.
+    ADMIN_FILE.with(|m| m.borrow_mut().clear());
+    ADMIN_RUNTIME.with(|m| m.borrow_mut().clear());
+    ADMIN_FILE_LOADED.with(|c| c.set(false));
 }
 
 /// Resolve one pending async `entry` in its OWNING plugin's context, or DROP it (the async-liveness
@@ -4601,6 +4699,7 @@ mod frame_tests {
             event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
             config_read: None, config_write: None,
             client_print: None,
+            client_steamid: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -4717,6 +4816,7 @@ mod frame_tests {
             event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
             config_read: None, config_write: None,
             client_print: None,
+            client_steamid: None,
         }
     }
 
@@ -5189,6 +5289,31 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toSlot(0, 'hi'))"), "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toAll('hi'))"),      "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_print(0, 'hi'))"),          "undefined");
+        shutdown();
+    }
+
+    /// Slice 6.2 Task 1: two-tier admin cache (file + runtime) UNION, per-tier remove, clear_file,
+    /// one-shot load guard, and `client_steamid` degrades to "0" without the op.
+    #[test]
+    fn admin_cache_two_tier_union_and_guard() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // set file + runtime tiers; get unions them.
+        eval_in_context("p", "__s2_admin_set('111', 4, false); __s2_admin_set('111', 1, true);").unwrap(); // file KICK(4) + runtime RESERVATION(1)
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "5"); // 4|1
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('999'))"), "0"); // absent
+        // remove runtime tier only → file remains.
+        eval_in_context("p", "__s2_admin_remove('111', true);").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "4");
+        // clear_file wipes file tier.
+        eval_in_context("p", "__s2_admin_clear_file();").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "0");
+        // load guard: first call false, then true.
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "true");
+        // client_steamid degrades to "0" without the op.
+        assert_eq!(eval_in_context_string("p", "__s2_client_steamid(0)"), "0");
         shutdown();
     }
 
