@@ -125,8 +125,12 @@ export function onLoad(): void {
     if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { ctx.reply("Usage: sm_cvar <name> [value]"); return; }
     if (parts.length < 2) { ctx.reply("[SM] " + name + " = " + Server.getCvar(name)); return; }  // GET
     const value = parts.slice(1).join(" ");
+    // SECURITY: setCvar concatenates into a server console command, which splits on ';'. Reject the
+    // console-injection chars so an ADMFLAG.CONVARS admin can't escalate to arbitrary server commands
+    // (e.g. `sm_cvar x "0; sv_cheats 1"`); quote the value so a legit multi-word string cvar is one token.
+    if (/[;"\r\n]/.test(value)) { ctx.reply("[SM] Invalid cvar value (no ; or quotes)."); return; }
     console.log("[basecommands] sm_cvar SET " + name + " = " + value + " by slot=" + ctx.callerSlot);
-    Server.setCvar(name, value);
+    Server.setCvar(name, '"' + value + '"');
     // NOTE: Server.command queues the set for next frame, so an immediate getCvar reads the OLD value —
     // echo the requested value instead of a stale read-back.
     ctx.reply("[SM] " + name + " set to " + value);
