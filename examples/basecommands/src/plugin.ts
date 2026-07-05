@@ -148,9 +148,11 @@ export function onLoad(): void {
     // ordinary chat → let it through (return nothing / Continue)
   });
 
-  // 6.12 — the `sm` command family (SM parity): `sm` shows credits; `sm plugins list|load|unload|reload`
-  // manages plugins at runtime; `sm version`/`sm credits`. Admin-gated (ROOT — plugin management is powerful).
-  Commands.registerAdmin("sm", ADMFLAG.ROOT, (ctx) => {
+  // 6.12 — the `sm` command family (SM parity). PUBLIC command (Commands.register, not registerAdmin):
+  // `sm`/`version`/`credits`/`plugins list` are available to everyone (informational, exactly like SM).
+  // Only the MUTATING subcommands `plugins load|unload|reload` require ROOT — gated inline below (SM
+  // gates plugin management per-subcommand, not the whole `sm` command). Console (callerSlot < 0) is root.
+  Commands.register("sm", (ctx) => {
     const sub = ctx.arg(0).toLowerCase();
     if (!sub || sub === "version" || sub === "credits") {
       ctx.reply("[SM] s2script 0.1.0 — a TypeScript plugin framework for Source 2 / CS2, by Gabriel Hirakawa.");
@@ -165,6 +167,9 @@ export function onLoad(): void {
         list.forEach((p, i) => ctx.reply("  " + (i + 1) + ' "' + p.id + '" ' + (p.loaded ? "(running)" : "(unloaded)")));
         return;
       }
+      // Mutating plugin ops require ROOT. Server console is always root; a player needs the ROOT flag.
+      const isRoot = ctx.callerSlot < 0 || (() => { const a = Admin.forSlot(ctx.callerSlot); return !!a && a.hasFlags(ADMFLAG.ROOT); })();
+      if (!isRoot) { ctx.reply("[SM] You do not have access to this command."); return; }
       const id = ctx.arg(2);
       if (!id) { ctx.reply("Usage: sm plugins <list|load|unload|reload> [id]"); return; }
       if (action === "unload") { ctx.reply(Plugins.unload(id) ? "[SM] Unloading '" + id + "'…" : "[SM] Not a loaded plugin: " + id); return; }

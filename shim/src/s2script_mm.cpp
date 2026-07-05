@@ -524,7 +524,12 @@ static void s2_concommand_register(const char* name) {
     ConCommandCreation_t setup;
     setup.m_pszName       = persistedName.c_str();  // points into persistent map key
     setup.m_pszHelpString = "s2script command";
-    setup.m_nFlags        = 0;
+    // FCVAR_CLIENT_CAN_EXECUTE (1<<25): the CS2 engine REJECTS a client-typed command that lacks this
+    // flag ("Client %s(%d) tried to execute command ... but it is not marked FCVAR_CLIENT_CAN_EXECUTE").
+    // Every s2script command is registered client-executable (SourceMod parity — players run sm_* from
+    // their console/chat); authorization is enforced by the registerAdmin flag gate at dispatch, NOT by
+    // hiding the command from clients. Value is self-resolving from our pinned third_party/hl2sdk convar.h.
+    setup.m_nFlags        = FCVAR_CLIENT_CAN_EXECUTE;
     setup.m_CBInfo        = ConCommandCallbackInfo_t(&s2_concommand_trampoline);
     // setup.m_CompletionCBInfo left default-constructed (no completion callback)
 
