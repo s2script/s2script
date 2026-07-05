@@ -4,7 +4,6 @@ import { Admin, ADMFLAG } from "@s2script/admin";
 import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/server";
 import { Damage } from "@s2script/damage";
-import { Events, HookResult } from "@s2script/cs2";
 import { Plugins } from "@s2script/plugins";
 
 // Slice 6.2 live gate — admin-gated commands. sm_say is now registered via Commands.registerAdmin with
@@ -135,18 +134,10 @@ export function onLoad(): void {
     ctx.reply("[SM] " + name + " set to " + value);
   });
 
-  // 6.11 — chat triggers: a player typing "!kick Bob" or "/who" in chat runs the admin command with them
-  // as the caller. player_chat is a CS2 game event; onPre lets us dispatch + BLOCK (suppress the message).
-  Events.onPre("player_chat", (ev) => {
-    const slot = ev.getPlayerSlot("userid");
-    const text = ev.getString("text");
-    const r = Commands.handleChatTrigger(slot, text);
-    if (r) {
-      console.log("[basecommands] chat trigger by slot=" + slot + " silent=" + r.silent + " ran=" + r.ran + " text=" + text);
-      return HookResult.Handled;   // it was a trigger → suppress the chat broadcast (both ! and /)
-    }
-    // ordinary chat → let it through (return nothing / Continue)
-  });
+  // 6.11b — chat triggers (!cmd / /cmd) are now handled ENTIRELY in the core Host_Say detour: every
+  // registered command (sm_say, sm_kick, sm, …) is reachable in chat with the speaker as the caller,
+  // with NO per-plugin wiring. (The 6.11 player_chat-event approach was removed — CS2 fires no such
+  // event; chat reaches the server only via Host_Say, which core now detours. See dispatch_chat.)
 
   // 6.12 — the `sm` command family (SM parity). PUBLIC command (Commands.register, not registerAdmin):
   // `sm`/`version`/`credits`/`plugins list` are available to everyone (informational, exactly like SM).

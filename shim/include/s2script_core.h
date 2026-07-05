@@ -147,6 +147,12 @@ void s2script_core_shutdown(void);
  * name = Arg(0) (command name), slot = CPlayerSlot::Get() (-1 for server console),
  * args = ArgS() (everything after the command name). */
 void s2script_core_dispatch_concommand(const char* name, int slot, const char* args);
+/* Shim -> core: called by the Host_Say detour for every player chat line (Slice 6.11b).
+ * slot = the speaker's player slot (controller entity index - 1), text = CCommand::Arg(1)
+ * (the raw message). Parses a `!cmd` / `/cmd` trigger and dispatches the matching command.
+ * Returns 1 if the caller should SUPPRESS the chat broadcast (a matched silent `/` trigger),
+ * else 0 (the public `!` trigger and ordinary chat always show). */
+int s2script_core_dispatch_chat(int slot, const char* text);
 /* Shim -> core: called by the IGameEventListener2 trampoline when a game event fires.
  * name = ev->GetName().  During this call the shim's s_currentEvent is set so the
  * event accessor ops (event_get_int / float / bool / string / uint64 / player_slot)

@@ -609,14 +609,27 @@ static void s2_client_print(int slot, const char* msg) {
         const google::protobuf::Descriptor* d = m->GetDescriptor();
         const google::protobuf::Reflection*  r = m->GetReflection();
         if (d && r) {
-            if (const auto* f = d->FindFieldByName("entityindex")) r->SetInt32(m, f, 0);
+            // Field config PROVEN LIVE (Slice 6.11b, via a multi-variant probe against a real client):
+            //  - entityindex = the recipient's controller (slot+1), a VALID player entity. 0/worldspawn
+            //    makes the CS2 client silently DROP the message.
+            //  - chat = true routes it to the chat box.
+            //  - messagename needs a leading COLOR CONTROL BYTE (\x01 = default) or the client drops it;
+            //    prefix unless the caller already supplied one (a control char < 0x10).
+            if (const auto* f = d->FindFieldByName("entityindex")) r->SetInt32(m, f, slot + 1);
             if (const auto* f = d->FindFieldByName("chat"))        r->SetBool(m, f, true);
-            if (const auto* f = d->FindFieldByName("messagename"))  r->SetString(m, f, msg);
+            if (const auto* f = d->FindFieldByName("messagename")) {
+                std::string out = (msg[0] && (unsigned char)msg[0] < 0x10) ? std::string(msg)
+                                                                          : (std::string("\x01") + msg);
+                r->SetString(m, f, out);
+            }
         }
     }
-    // Post to just this client (a slot bitmask; nSlot=-1 = all split-screen, bLocalOnly=false).
+    // Target just this client: a uint64 bitmask (bit N == slot N). nClientCount is an ITERATION COUNT over
+    // slots (NOT a mask-word count) — it must exceed the highest targeted slot, so 64 covers all. The
+    // original nClientCount=1 only checked slot 0, so nothing rendered for any slot>0 (the render bug).
+    // nSlot=-1 = all split-screen, bLocalOnly=false.
     uint64 clients = (1ull << static_cast<uint64>(slot));
-    s_pGameEventSystem->PostEventAbstract(-1, false, 1, &clients, pInfo, pData, 0, BUF_RELIABLE);
+    s_pGameEventSystem->PostEventAbstract(-1, false, 64, &clients, pInfo, pData, 0, BUF_RELIABLE);
     // NOTE(leak-TODO): pData ownership after PostEventAbstract is unconfirmed (no DeallocateMessage seen);
     // not freeing here to avoid a double-free. Revisit if this leaks per message.
 }
@@ -713,6 +726,39 @@ static void s2_damage_write_float(int offset, float value) {
 static int s2_damage_victim() {
     if (!s_currentDamageVictim) return -1;
     return static_cast<CEntityInstance*>(s_currentDamageVictim)->GetRefEHandle().ToInt();
+}
+
+// ---------------------------------------------------------------------------
+// Host_Say detour (Slice 6.11b): player chat triggers (!cmd / /cmd).
+//
+// CS2 fires no usable player_chat game event, so chat is intercepted by detouring Host_Say (the chat
+// broadcast fn — the CSSharp/ModSharp approach). SysV arg layout (prologue saves rsi->r15, r8->r12):
+//   rdi = CBaseEntity* pController (the speaker's controller)   rsi = CCommand& args (the chat text)
+//   rdx = bool teamonly                                          r8  = const char* (unused by us)
+// The speaker's slot = controller entity index - 1 (CS2 pre-allocates all 64 player controllers at
+// entity indices 1..64; confirmed live: slot 2 <-> controller index 3). The message is CCommand::Arg(1)
+// (clean, unquoted — ArgS() wraps it in quotes). core dispatch_chat parses the !cmd / /cmd trigger and
+// returns 1 to SUPPRESS the broadcast (a matched silent `/`); we then skip the original. Every deref is
+// pointer-guarded; degrade-never-crash (a resolve failure just falls through to the original broadcast).
+typedef void (*HostSay_t)(void* pController, void* pCmd, bool teamonly, int a4, const char* a5);
+static HostSay_t g_origHostSay = nullptr;
+
+static void Detour_HostSay(void* pController, void* pCmd, bool teamonly, int a4, const char* a5) {
+    int slot = -1;
+    if (pController && reinterpret_cast<uintptr_t>(pController) > 0x10000) {
+        int idx = static_cast<CEntityInstance*>(pController)->GetRefEHandle().GetEntryIndex();
+        if (idx >= 1) slot = idx - 1;
+    }
+    const char* msg = nullptr;
+    if (pCmd && reinterpret_cast<uintptr_t>(pCmd) > 0x10000) {
+        msg = reinterpret_cast<const CCommand*>(pCmd)->Arg(1);   // the raw chat message, unquoted
+    }
+    int suppress = 0;
+    if (slot >= 0 && msg && msg[0]) {
+        suppress = s2script_core_dispatch_chat(slot, msg);       // parse trigger + dispatch + suppress?
+    }
+    // suppress (a matched silent `/` trigger) -> skip the original so the message is NOT broadcast.
+    if (!suppress && g_origHostSay) g_origHostSay(pController, pCmd, teamonly, a4, a5);
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,6 +1311,25 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                         META_CONPRINTF("[s2script] WARN: DispatchTraceAttack detour install failed — damage hook off\n");
                     }
                 }   // dOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Slice 6.11b (Stage 1): resolve + detour Host_Say (the chat entry) for player chat triggers.
+            // Same direct-prologue + inline-detour pattern as DispatchTraceAttack. Degrade-never-crash:
+            // any failure leaves chat unhooked (no triggers), never a crash.
+            auto hsit = sigs.find("HostSay");
+            if (hsit == sigs.end()) {
+                GamedataResult("HostSay", false, "signature absent from gamedata");
+            } else {
+                int64_t hOff = ResolveSigValidated("HostSay", hsit->second);
+                ModText hmt = FindModuleText(hsit->second.module.c_str());
+                if (hOff != s2sig::kFail && hmt.text) {  // resolve=="direct": the unique match IS the function start
+                    void* hsAddr = const_cast<uint8_t*>(hmt.text) + hOff;
+                    if (s2detour::Install(hsAddr, reinterpret_cast<void*>(&Detour_HostSay),
+                                          reinterpret_cast<void**>(&g_origHostSay))) {
+                        META_CONPRINTF("[s2script] HostSay hooked @%p (chat triggers !cmd / /cmd)\n", hsAddr);
+                    } else {
+                        META_CONPRINTF("[s2script] WARN: HostSay detour install failed — chat triggers off\n");
+                    }
+                }   // hOff == kFail: ResolveSigValidated already recorded the reason
             }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.

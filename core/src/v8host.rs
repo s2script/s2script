@@ -1504,6 +1504,46 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
     });
 }
 
+/// Slice 6.11b: parse a chat line for a command trigger (`!cmd` / `/cmd`) and dispatch it.
+///
+/// Called from `ffi.rs`'s `s2script_core_dispatch_chat` (C-ABI export), which the shim's Host_Say
+/// detour invokes for every player chat message (CS2 fires no usable player_chat game event, so chat
+/// is intercepted at the Host_Say function). Reuses the ConCommand registry + `dispatch_concommand`
+/// so a chat trigger runs the SAME registered handler as the console command, in its owner context,
+/// with the speaker's slot as the caller. SM convention: `!kick` tries `kick`, then falls back to
+/// `sm_kick`. Engine-generic: it only knows names + slots, never a game type.
+///
+/// Returns `true` iff the caller should SUPPRESS the chat broadcast — only for the SILENT trigger
+/// (`/`) AND only when a command actually matched (never swallow ordinary chat or an unknown `/foo`).
+/// The public trigger (`!`) always shows. No CONCOMMANDS borrow is held across `dispatch_concommand`.
+pub(crate) fn dispatch_chat(slot: i32, text: &str) -> bool {
+    let (silent, is_trigger) = match text.as_bytes().first() {
+        Some(b'!') => (false, true),
+        Some(b'/') => (true, true),
+        _ => (false, false),
+    };
+    if !is_trigger { return false; }
+    let rest = text[1..].trim();
+    if rest.is_empty() { return false; }
+    // Split into command name + argument string (SM: the name is the first whitespace-delimited token).
+    let (name, args) = match rest.find(char::is_whitespace) {
+        Some(i) => (rest[..i].to_string(), rest[i..].trim_start().to_string()),
+        None => (rest.to_string(), String::new()),
+    };
+    // Resolve `name`, else the SM-prefixed `sm_<name>`. Brief immutable borrow, released before dispatch.
+    let sm_name = format!("sm_{}", name);
+    let matched = CONCOMMANDS.with(|m| {
+        let map = m.borrow();
+        if map.contains_key(&name) { Some(name.clone()) }
+        else if map.contains_key(&sm_name) { Some(sm_name) }
+        else { None }
+    });
+    match matched {
+        Some(cmd) => { dispatch_concommand(&cmd, slot, &args); silent }
+        None => false,
+    }
+}
+
 /// Shared logging helper for named WARNs in the engine-op natives and the loader.
 pub(crate) fn log_warn(msg: &str) {
     if let Some(l) = LOGGER.with(|l| l.get()) {
@@ -5943,6 +5983,35 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("ct", "globalThis.__ran"), "5:foo bar", "sm_test dispatched via !test");
         assert_eq!(eval_in_context_string("ct", "globalThis.__h"), r#"{"silent":false,"ran":true}"#);
         assert_eq!(eval_in_context_string("ct", "globalThis.__hMiss"), r#"{"silent":false,"ran":false}"#, "trigger consumed even if the command is unknown");
+        shutdown();
+    }
+
+    /// Slice 6.11b: the core Host_Say chat dispatch. `dispatch_chat(slot, text)` parses a !cmd / /cmd
+    /// trigger, dispatches the matching (or `sm_`-prefixed) command in its owner context with the
+    /// speaker's slot, and returns whether to SUPPRESS the broadcast — a matched silent `/` only.
+    /// This is exactly the fn the shim's Host_Say detour calls.
+    #[test]
+    fn chat_dispatch_host_say_parses_and_suppresses() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_plugin_js("hs", r#"
+            var C = __s2pkg_commands.Commands;
+            globalThis.__ran = "";
+            C.register("sm_test", function (ctx) { globalThis.__ran = ctx.callerSlot + ":" + ctx.argString; });
+        "#, "{}");
+        // Public `!test` → dispatches sm_test (sm_ fallback) with slot 5 + args, and NEVER suppresses.
+        assert_eq!(dispatch_chat(5, "!test foo bar"), false, "! trigger never suppresses");
+        assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "5:foo bar", "!test dispatched sm_test");
+        // Silent `/test` → dispatches AND suppresses (matched silent trigger).
+        eval_in_context("hs", "globalThis.__ran = '';").unwrap();
+        assert_eq!(dispatch_chat(7, "/test"), true, "matched / trigger suppresses");
+        assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "7:", "/test dispatched with empty args");
+        // Ordinary chat (no trigger char) → no dispatch, no suppress.
+        eval_in_context("hs", "globalThis.__ran = 'untouched';").unwrap();
+        assert_eq!(dispatch_chat(5, "hello world"), false, "ordinary chat is not a trigger");
+        assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "untouched", "ordinary chat did not dispatch");
+        // Unknown `/nope` → no command match → NOT suppressed (never swallow a non-command message).
+        assert_eq!(dispatch_chat(5, "/nope"), false, "unmatched silent trigger is not suppressed");
         shutdown();
     }
 
