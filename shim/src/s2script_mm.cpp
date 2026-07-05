@@ -66,6 +66,11 @@ SH_DECL_HOOK3_void(ISource2Server, GameFrame, SH_NOATTRIB, 0, bool, bool, bool);
 // FireEvent(IGameEvent*, bool bDontBroadcast) -> bool (Slice 5D.3). Pre hook only.
 SH_DECL_HOOK2(IGameEventManager2, FireEvent, SH_NOATTRIB, 0, bool, IGameEvent*, bool);
 
+// ISource2GameClients::ClientCommand(CPlayerSlot, const CCommand&) -> void (Slice 6.11c). Pre hook: the
+// engine's "client typed a command at the console" callback (eiface.h:594). The CSSharp/ModSharp mechanism
+// for player CONSOLE commands — a clean (slot, CCommand), no low-level detour.
+SH_DECL_HOOK2_void(ISource2GameClients, ClientCommand, SH_NOATTRIB, 0, CPlayerSlot, const CCommand&);
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -613,13 +618,14 @@ static void s2_client_print(int slot, const char* msg) {
             //  - entityindex = the recipient's controller (slot+1), a VALID player entity. 0/worldspawn
             //    makes the CS2 client silently DROP the message.
             //  - chat = true routes it to the chat box.
-            //  - messagename needs a leading COLOR CONTROL BYTE (\x01 = default) or the client drops it;
-            //    prefix unless the caller already supplied one (a control char < 0x10).
+            //  - messagename needs a leading COLOR CONTROL BYTE or the client drops it; \x04 = lime green
+            //    (the SourceMod-style reply color). Prefix unless the caller already supplied a control
+            //    char (< 0x10), so a plugin can embed its own colors.
             if (const auto* f = d->FindFieldByName("entityindex")) r->SetInt32(m, f, slot + 1);
             if (const auto* f = d->FindFieldByName("chat"))        r->SetBool(m, f, true);
             if (const auto* f = d->FindFieldByName("messagename")) {
                 std::string out = (msg[0] && (unsigned char)msg[0] < 0x10) ? std::string(msg)
-                                                                          : (std::string("\x01") + msg);
+                                                                          : (std::string("\x04") + msg);
                 r->SetString(m, f, out);
             }
         }
@@ -761,6 +767,11 @@ static void Detour_HostSay(void* pController, void* pCmd, bool teamonly, int a4,
     if (!suppress && g_origHostSay) g_origHostSay(pController, pCmd, teamonly, a4, a5);
 }
 
+// ---------------------------------------------------------------------------
+// (Player console commands are handled by the ISource2GameClients::ClientCommand SourceHook — see
+// Hook_ClientCommand. An earlier attempt to detour the low-level CServerSideClient::ExecuteStringCommand
+// was the wrong layer and was removed: ClientCommand gives a clean (slot, CCommand), which is exactly how
+// CSSharp/ModSharp implement console commands.)
 // ---------------------------------------------------------------------------
 // Schema enumeration engine-op (5B.1).
 //
@@ -1122,6 +1133,27 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 META_CONPRINTF("[s2script] interface OK: Source2Server (%s)\n", verStr);
             } else {
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2Server (%s)\n", verStr);
+            }
+        }
+
+        // Acquire ISource2GameClients + install the ClientCommand hook (Slice 6.11c): PLAYER CONSOLE
+        // commands. The CSSharp/ModSharp mechanism — the engine's "client typed a command at the console"
+        // callback, a clean (slot, CCommand). Version Source2GameClients001. Degrade-never-crash.
+        {
+            auto it = versions.find("Source2GameClients");
+            const char* verStr = (it != versions.end()) ? it->second.c_str() : INTERFACEVERSION_SERVERGAMECLIENTS;
+            int ret = 0;
+            m_gameClients = serverFactory
+                ? reinterpret_cast<ISource2GameClients*>(serverFactory(verStr, &ret)) : nullptr;
+            if (m_gameClients && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: Source2GameClients (%s)\n", verStr);
+                SH_ADD_HOOK(ISource2GameClients, ClientCommand, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientCommand), false);
+                m_clientCmdHookInstalled = true;
+                META_CONPRINTF("[s2script] ClientCommand hook installed (player console commands)\n");
+            } else {
+                m_gameClients = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameClients (%s) — console commands off\n", verStr);
             }
         }
 
@@ -1488,6 +1520,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_eventHookInstalled = false;
     }
 
+    // Remove the ClientCommand hook (Slice 6.11c).
+    if (m_clientCmdHookInstalled && m_gameClients) {
+        SH_REMOVE_HOOK(ISource2GameClients, ClientCommand, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientCommand), false);
+        m_clientCmdHookInstalled = false;
+    }
+
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
     s2detour::RemoveAll();
 
@@ -1565,4 +1604,18 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
         RETURN_META_VALUE(MRES_SUPERCEDE, ret);                // we fired it ourselves with broadcast off
     }
     RETURN_META_VALUE(MRES_IGNORED, true);                     // original runs; any set* mods already applied
+}
+
+// Slice 6.11c: a player typed a command at the console. Dispatch the matching registered s2script command
+// (console runs the SAME command as chat/rcon). If handled, SUPERCEDE so the engine doesn't also process
+// it. Not one of ours -> IGNORE (the engine handles it normally). Clean (slot, CCommand) — no detour.
+void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) {
+    const char* name = args.Arg(0);
+    if (!name || !name[0]) RETURN_META(MRES_IGNORED);
+    const char* argStr = args.ArgS();
+    if (s2script_core_dispatch_client_command(slot.Get(), name, argStr ? argStr : "")) {
+        META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, slot.Get());
+        RETURN_META(MRES_SUPERCEDE);   // ours → engine won't also handle it (no "Unknown command" server-side)
+    }
+    RETURN_META(MRES_IGNORED);         // not ours → the engine handles it normally
 }

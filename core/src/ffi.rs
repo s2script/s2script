@@ -148,6 +148,22 @@ pub extern "C" fn s2script_core_dispatch_chat(slot: c_int, text: *const c_char) 
     .unwrap_or(0)
 }
 
+/// C-ABI entry point: dispatch a player's CONSOLE command (Slice 6.11c). The shim's ClientCommand hook
+/// calls this with the speaker's `slot`, the command `name` (CCommand::Arg(0)) + `args` (ArgS()).
+///
+/// Returns 1 iff a registered s2script command matched + was dispatched (the caller then SUPERCEDEs the
+/// engine's own handling). `catch_unwind`-wrapped; null / invalid UTF-8 degrades to 0 (not handled).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_client_command(slot: c_int, name: *const c_char, args: *const c_char) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() || args.is_null() { return 0; }
+        let name_str = match unsafe { CStr::from_ptr(name) }.to_str() { Ok(s) => s, Err(_) => return 0 };
+        let args_str = match unsafe { CStr::from_ptr(args) }.to_str() { Ok(s) => s, Err(_) => return 0 };
+        if v8host::dispatch_client_command(slot as i32, name_str, args_str) { 1 } else { 0 }
+    })
+    .unwrap_or(0)
+}
+
 /// C-ABI entry point retained for shim link-compatibility.  Now a degrade-safe no-op: game JS
 /// is provided to core via `s2script_core_register_package` instead (see below).
 /// `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).

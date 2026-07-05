@@ -16,7 +16,10 @@
     "GameEventSystem": "GameEventSystemServerV001",
     // INetworkMessages — used by client_print to FindNetworkMessage + AllocateMessage (Slice 6.1).
     // Interface string from inetworkmessages.h NETWORKMESSAGES_INTERFACE_VERSION macro.
-    "NetworkMessages": "NetworkMessagesVersion001"
+    "NetworkMessages": "NetworkMessagesVersion001",
+    // ISource2GameClients — backs the ClientCommand hook for player console commands (Slice 6.11c).
+    // Interface string from eiface.h INTERFACEVERSION_SERVERGAMECLIENTS.
+    "Source2GameClients": "Source2GameClients001"
   },
   // Byte offsets into engine interface objects — keyed by platform string.
   // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked

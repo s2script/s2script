@@ -1544,6 +1544,20 @@ pub(crate) fn dispatch_chat(slot: i32, text: &str) -> bool {
     }
 }
 
+/// Slice 6.11c: dispatch a player's CONSOLE command (from the ClientCommand hook). Unlike chat, the
+/// command name is raw (`sm_say`, not `!sm_say`), so match the EXACT registered name only — never an
+/// `sm_` fallback (that would hijack a real engine command like `say`). Returns true iff a registered
+/// command matched + was dispatched (the caller then SUPERCEDEs so the engine won't also handle it).
+pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool {
+    let matched = CONCOMMANDS.with(|m| m.borrow().contains_key(name));
+    if matched {
+        dispatch_concommand(name, slot, args);
+        true
+    } else {
+        false
+    }
+}
+
 /// Shared logging helper for named WARNs in the engine-op natives and the loader.
 pub(crate) fn log_warn(msg: &str) {
     if let Some(l) = LOGGER.with(|l| l.get()) {

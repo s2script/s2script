@@ -7,6 +7,11 @@ class ISource2Server;
 // IGameEvent is forward-declared here; full definition (igameevents.h) is
 // included only in s2script_mm.cpp where the SourceHook machinery lives.
 class IGameEvent;
+// Forward-declared for the ClientCommand hook (Slice 6.11c); full definitions
+// (eiface.h / convar.h / playerslot.h) live in s2script_mm.cpp.
+class ISource2GameClients;
+class CCommand;
+class CPlayerSlot;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
@@ -21,10 +26,17 @@ public:
     // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
     bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);
 
+    // ClientCommand hook (Slice 6.11c) — the engine callback when a client types a command at the console.
+    // This is how CS2 frameworks (CSSharp/ModSharp) implement player CONSOLE commands: a clean
+    // (slot, CCommand) — no low-level detour. Installed in Load() once ISource2GameClients is acquired.
+    void Hook_ClientCommand(CPlayerSlot slot, const CCommand& args);
+
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
+    ISource2GameClients* m_gameClients = nullptr;
     bool m_frameHookInstalled  = false;
     bool m_eventHookInstalled  = false;
+    bool m_clientCmdHookInstalled = false;
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }

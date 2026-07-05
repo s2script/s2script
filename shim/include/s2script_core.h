@@ -153,6 +153,10 @@ void s2script_core_dispatch_concommand(const char* name, int slot, const char* a
  * Returns 1 if the caller should SUPPRESS the chat broadcast (a matched silent `/` trigger),
  * else 0 (the public `!` trigger and ordinary chat always show). */
 int s2script_core_dispatch_chat(int slot, const char* text);
+/* Shim -> core: called by the ClientCommand hook when a player types a command at the console
+ * (Slice 6.11c). slot = the player's slot, name = CCommand::Arg(0), args = ArgS(). Dispatches the
+ * matching registered command. Returns 1 if handled (the caller SUPERCEDEs the engine's handling). */
+int s2script_core_dispatch_client_command(int slot, const char* name, const char* args);
 /* Shim -> core: called by the IGameEventListener2 trampoline when a game event fires.
  * name = ev->GetName().  During this call the shim's s_currentEvent is set so the
  * event accessor ops (event_get_int / float / bool / string / uint64 / player_slot)
