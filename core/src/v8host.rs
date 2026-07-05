@@ -621,6 +621,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   });
   var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
   globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
+  // --- Slice 6.12: plugin management (list / load / unload / reload — the SM `sm plugins` backend).
+  //     Mutations are DEFERRED to the frame drain (the natives only enqueue), so this is safe from a command. ---
+  var __s2_plugins = {
+    list: function () { try { return JSON.parse(__s2_plugins_list()); } catch (e) { return []; } },
+    unload: function (id) { return __s2_plugin_unload(String(id)); },   // false if not loaded
+    reload: function (id) { return __s2_plugin_reload(String(id)); },   // false if id unknown
+    load: function (id) { return __s2_plugin_load(String(id)); },       // false if not currently unloaded
+  };
+  globalThis.__s2pkg_plugins = { Plugins: __s2_plugins };
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
   function __s2cmd_ctx(slot, argString) {
     var s = (slot | 0);
@@ -2163,6 +2172,45 @@ fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mu
     }));
 }
 
+/// `__s2_plugins_list() -> string` — JSON array of `{id, loaded}` for `sm plugins list` / `Plugins.list()`.
+fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let items: Vec<serde_json::Value> = crate::loader::plugin_list().into_iter()
+            .map(|(id, suppressed)| serde_json::json!({ "id": id, "loaded": !suppressed }))
+            .collect();
+        let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
+        if let Some(js) = v8::String::new(scope, &json) { rv.set(js.into()); }
+    }));
+}
+
+/// `__s2_plugin_unload(id) -> bool` — enqueue an unload (runs on the next frame drain). False if not loaded.
+fn s2_plugin_unload(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let id = args.get(0).to_rust_string_lossy(scope);
+        rv.set_bool(crate::loader::request_unload(&id));
+    }));
+}
+/// `__s2_plugin_reload(id) -> bool` — enqueue a reload. False if the id is unknown.
+fn s2_plugin_reload(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let id = args.get(0).to_rust_string_lossy(scope);
+        rv.set_bool(crate::loader::request_reload(&id));
+    }));
+}
+/// `__s2_plugin_load(id) -> bool` — enqueue a load of a previously-unloaded (suppressed) plugin. False if not suppressed.
+fn s2_plugin_load(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let id = args.get(0).to_rust_string_lossy(scope);
+        rv.set_bool(crate::loader::request_load(&id));
+    }));
+}
+
 /// Native `__s2_event_get_bool(key) -> boolean`. Calls the `event_get_bool` engine-op; degrades to false.
 fn s2_event_get_bool(
     scope: &mut v8::PinScope,
@@ -2719,6 +2767,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
     set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
+    set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
+    set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
+    set_native(scope, global_obj, "__s2_plugin_reload", s2_plugin_reload);
+    set_native(scope, global_obj, "__s2_plugin_load", s2_plugin_load);
     set_native(scope, global_obj, "__s2_server_command", s2_server_command);
     set_native(scope, global_obj, "__s2_server_map_valid", s2_server_map_valid);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
@@ -5776,6 +5828,13 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_cvar_get('sv_gravity'))"), "");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.getCvar"), "function");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.setCvar"), "function");
+        // Slice 6.12: plugin natives degrade (no file-watch in-isolate → empty list, ops false) + module wires.
+        assert_eq!(eval_in_context_string("p", "__s2_plugins_list()"), "[]");
+        assert_eq!(eval_in_context_string("p", "String(__s2_plugin_unload('x'))"), "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2_plugin_reload('x'))"), "false");
+        assert_eq!(eval_in_context_string("p", "String(__s2_plugin_load('x'))"), "false");
+        assert_eq!(eval_in_context_string("p", "JSON.stringify(__s2pkg_plugins.Plugins.list())"), "[]");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_plugins.Plugins.reload"), "function");
         shutdown();
     }
 

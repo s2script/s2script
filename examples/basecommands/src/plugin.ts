@@ -5,6 +5,7 @@ import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/server";
 import { Damage } from "@s2script/damage";
 import { Events, HookResult } from "@s2script/cs2";
+import { Plugins } from "@s2script/plugins";
 
 // Slice 6.2 live gate — admin-gated commands. sm_say is now registered via Commands.registerAdmin with
 // ADMFLAG.CHAT: the server console / rcon is root (always allowed); an in-game player needs the CHAT flag
@@ -145,6 +146,34 @@ export function onLoad(): void {
       return HookResult.Handled;   // it was a trigger → suppress the chat broadcast (both ! and /)
     }
     // ordinary chat → let it through (return nothing / Continue)
+  });
+
+  // 6.12 — the `sm` command family (SM parity): `sm` shows credits; `sm plugins list|load|unload|reload`
+  // manages plugins at runtime; `sm version`/`sm credits`. Admin-gated (ROOT — plugin management is powerful).
+  Commands.registerAdmin("sm", ADMFLAG.ROOT, (ctx) => {
+    const sub = ctx.arg(0).toLowerCase();
+    if (!sub || sub === "version" || sub === "credits") {
+      ctx.reply("[SM] s2script 0.1.0 — a TypeScript plugin framework for Source 2 / CS2, by Gabriel Hirakawa.");
+      ctx.reply("[SM] github.com/GabeHirakawa/s2script");
+      return;
+    }
+    if (sub === "plugins") {
+      const action = ctx.arg(1).toLowerCase();
+      if (!action || action === "list") {
+        const list = Plugins.list();
+        ctx.reply("[SM] Plugins (" + list.length + "):");
+        list.forEach((p, i) => ctx.reply("  " + (i + 1) + ' "' + p.id + '" ' + (p.loaded ? "(running)" : "(unloaded)")));
+        return;
+      }
+      const id = ctx.arg(2);
+      if (!id) { ctx.reply("Usage: sm plugins <list|load|unload|reload> [id]"); return; }
+      if (action === "unload") { ctx.reply(Plugins.unload(id) ? "[SM] Unloading '" + id + "'…" : "[SM] Not a loaded plugin: " + id); return; }
+      if (action === "reload") { ctx.reply(Plugins.reload(id) ? "[SM] Reloading '" + id + "'…" : "[SM] No such plugin: " + id); return; }
+      if (action === "load")   { ctx.reply(Plugins.load(id)   ? "[SM] Loading '" + id + "'…"   : "[SM] Plugin is not unloaded: " + id); return; }
+      ctx.reply("Usage: sm plugins <list|load|unload|reload> [id]");
+      return;
+    }
+    ctx.reply("[SM] Unknown sub-command '" + sub + "'. Try: sm plugins list");
   });
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).

@@ -143,6 +143,94 @@ thread_local! {
     /// cycle: when content changes, `re_materialize_config` fires the plugin's onChange handlers.
     static WATCHED_CONFIGS: std::cell::RefCell<HashMap<String, Option<String>>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Slice 6.12 (`sm plugins`): pending load/unload/reload requested from a command. Drained at the
+    /// start of `poll_plugins` (the frame drain, OUTSIDE any command's isolate borrow) so the loader
+    /// never runs re-entrantly. The natives only enqueue.
+    static PENDING_OPS: std::cell::RefCell<Vec<PendingOp>> = std::cell::RefCell::new(Vec::new());
+    /// Paths manually unloaded via `sm plugins unload` (path → id). `poll_plugins` must NOT auto-reload
+    /// a suppressed file; `sm plugins load` un-suppresses it so the next scan loads it fresh.
+    static SUPPRESSED: std::cell::RefCell<HashMap<PathBuf, String>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// A command-requested plugin lifecycle op (Slice 6.12), keyed by plugin id.
+enum PendingOp { Unload(String), Reload(String), Load(String) }
+
+/// Every loaded/suppressed plugin: (id, suppressed?). Backs `Plugins.list()` / `sm plugins list`.
+pub(crate) fn plugin_list() -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> =
+        WATCH_STATE.with(|ws| ws.borrow().values().map(|wp| (wp.id.clone(), false)).collect());
+    SUPPRESSED.with(|s| out.extend(s.borrow().values().map(|id| (id.clone(), true))));
+    out.sort();
+    out
+}
+
+/// Find the path of a currently-loaded plugin by id.
+fn path_of_loaded(id: &str) -> Option<PathBuf> {
+    WATCH_STATE.with(|ws| ws.borrow().iter().find(|(_, wp)| wp.id == id).map(|(p, _)| p.clone()))
+}
+
+/// Enqueue an unload of a currently-loaded plugin. Returns false if no such plugin is loaded.
+pub(crate) fn request_unload(id: &str) -> bool {
+    if path_of_loaded(id).is_none() { return false; }
+    PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Unload(id.to_string())));
+    true
+}
+/// Enqueue a reload of a loaded plugin (or a re-load of a suppressed one). False if the id is unknown.
+pub(crate) fn request_reload(id: &str) -> bool {
+    let known = path_of_loaded(id).is_some()
+        || SUPPRESSED.with(|s| s.borrow().values().any(|v| v == id));
+    if known { PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Reload(id.to_string()))); }
+    known
+}
+/// Enqueue a load of a suppressed (previously `sm plugins unload`ed) plugin. False if not suppressed.
+pub(crate) fn request_load(id: &str) -> bool {
+    let suppressed = SUPPRESSED.with(|s| s.borrow().values().any(|v| v == id));
+    if suppressed { PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Load(id.to_string()))); }
+    suppressed
+}
+
+/// Drain the command-requested plugin ops (called at the top of `poll_plugins`, borrow-free).
+fn drain_pending_ops() {
+    let ops: Vec<PendingOp> = PENDING_OPS.with(|q| q.borrow_mut().drain(..).collect());
+    for op in ops {
+        match op {
+            PendingOp::Unload(id) => {
+                if let Some(path) = path_of_loaded(&id) {
+                    crate::v8host::unload_plugin(&id);
+                    crate::v8host::clear_pending_handoff(&id);
+                    WATCH_STATE.with(|ws| { ws.borrow_mut().remove(&path); });
+                    SUPPRESSED.with(|s| { s.borrow_mut().insert(path, id.clone()); });  // don't auto-reload
+                    crate::v8host::log_warn(&format!("[plugins] unloaded '{}' (sm plugins unload)", id));
+                }
+            }
+            PendingOp::Reload(id) => {
+                // Un-suppress if needed, then let the next file scan re-load it fresh (mtime bump not
+                // required — for a loaded plugin we do the reload inline; for a suppressed one, unsuppress).
+                let path = path_of_loaded(&id).or_else(||
+                    SUPPRESSED.with(|s| s.borrow().iter().find(|(_, v)| **v == id).map(|(p, _)| p.clone())));
+                let Some(path) = path else { continue };
+                SUPPRESSED.with(|s| { s.borrow_mut().remove(&path); });
+                match read_file_and_parse(&path) {
+                    Ok((manifest, js)) => {
+                        crate::v8host::unload_plugin(&id);   // no-op if not currently loaded
+                        crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
+                        let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
+                        crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
+                        crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
+                        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+                        WATCH_STATE.with(|ws| { ws.borrow_mut().insert(path.clone(), WatchedPlugin { mtime, id: manifest.id }); });
+                        crate::v8host::log_warn(&format!("[plugins] reloaded '{}' (sm plugins reload)", id));
+                    }
+                    Err(e) => crate::v8host::log_warn(&format!("[plugins] reload '{}' failed: {}", id, e)),
+                }
+            }
+            PendingOp::Load(id) => {
+                // Un-suppress; the next `poll_plugins` file scan sees it as new and Loads it.
+                SUPPRESSED.with(|s| { s.borrow_mut().retain(|_, v| *v != id); });
+                crate::v8host::log_warn(&format!("[plugins] load '{}' (sm plugins load) — will load next scan", id));
+            }
+        }
+    }
 }
 
 /// Number of Post-drain calls between each real directory scan.
@@ -208,6 +296,10 @@ pub(crate) fn poll_plugins() {
     if count % POLL_THROTTLE != 0 {
         return;
     }
+
+    // Slice 6.12: drain command-requested plugin ops (unload/reload/load) BEFORE the file scan, so the
+    // loader runs them here (borrow-free) rather than re-entrantly inside a command handler.
+    drain_pending_ops();
 
     // Get the configured directory (cheap clone of Option<PathBuf>).
     let dir = PLUGINS_DIR.with(|d| d.borrow().clone());
@@ -377,6 +469,9 @@ fn compute_actions(current: &HashMap<PathBuf, SystemTime>) -> Vec<Action> {
 
         // New or changed files.
         for (path, &mtime) in current {
+            // Slice 6.12: a path manually unloaded via `sm plugins unload` is suppressed — do NOT
+            // auto-reload it (until `sm plugins load`/`reload` un-suppresses it).
+            if SUPPRESSED.with(|s| s.borrow().contains_key(path)) { continue; }
             match state.get(path) {
                 None => actions.push(Action::Load { path: path.clone(), mtime }),
                 Some(wp) if wp.mtime != mtime => actions.push(Action::Reload {
