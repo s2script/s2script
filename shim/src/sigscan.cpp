@@ -47,6 +47,20 @@ int64_t FindPattern(const uint8_t* text, size_t len, const std::vector<int>& pat
     return -1;
 }
 
+int CountPattern(const uint8_t* text, size_t len, const std::vector<int>& pat, int cap) {
+    if (!text || pat.empty() || pat.size() > len) return 0;
+    const size_t last = len - pat.size();
+    int count = 0;
+    for (size_t off = 0; off <= last; off++) {
+        bool ok = true;
+        for (size_t j = 0; j < pat.size(); j++) {
+            if (pat[j] >= 0 && text[off + j] != (uint8_t)pat[j]) { ok = false; break; }
+        }
+        if (ok && ++count >= cap) break;   // a stale-signature gate only needs to know 0 / 1 / >1
+    }
+    return count;
+}
+
 static bool readI32(const uint8_t* text, size_t len, int64_t at, int32_t& out) {
     if (at < 0 || (size_t)at + 4 > len) return false;
     out = (int32_t)((uint32_t)text[at] | ((uint32_t)text[at + 1] << 8) |

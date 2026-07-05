@@ -1011,10 +1011,43 @@ static ModText FindModuleText(const char* soname) {
 }
 
 // ---------------------------------------------------------------------------
+// Gamedata validation report (Slice 6.9). Every engine fact resolved against the LIVE binary records a
+// pass/fail here so a version mismatch / stale signature is LOUD at boot, not a silent no-op (the sm_slay
+// class of bug). See docs/re-strategy.md. Reset at each Load; a banner is emitted after resolution.
+// ---------------------------------------------------------------------------
+static int s_gdOk = 0, s_gdFail = 0;
+static void GamedataResult(const char* name, bool ok, const char* reason) {
+    if (ok) { s_gdOk++;  META_CONPRINTF("[s2script]   gamedata OK    %s\n", name); }
+    else    { s_gdFail++; META_CONPRINTF("[s2script]   gamedata FAIL  %s — %s\n", name, reason ? reason : "?"); }
+}
+// Resolve a "direct"/"ctor-body-xref"/"lea-disp" signature AND verify it matches UNIQUELY (Rule 2): 0 = the
+// pattern moved (stale), >1 = ambiguous. Records the result and returns the resolved module offset, or kFail.
+static int64_t ResolveSigValidated(const char* name, const SigSpec& sig) {
+    ModText mt = FindModuleText(sig.module.c_str());
+    std::vector<int> pat = s2sig::ParsePattern(sig.pattern);
+    if (!mt.text || pat.empty()) { GamedataResult(name, false, "module/pattern unavailable"); return s2sig::kFail; }
+    int matches = s2sig::CountPattern(mt.text, mt.size, pat, 2);
+    if (matches == 0) { GamedataResult(name, false, "signature NOT FOUND (moved — regenerate)"); return s2sig::kFail; }
+    if (matches > 1)  { GamedataResult(name, false, "signature AMBIGUOUS (>1 match — tighten it)"); return s2sig::kFail; }
+    int64_t matchOff = s2sig::FindPattern(mt.text, mt.size, pat);
+    int64_t targetOff = matchOff;   // "direct": the match IS the target
+    if (sig.resolve == "ctor-body-xref") targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
+    else if (sig.resolve == "lea-disp")  targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, 3, 7);
+    if (targetOff == s2sig::kFail) { GamedataResult(name, false, "resolve step failed (xref/lea)"); return s2sig::kFail; }
+    GamedataResult(name, true, nullptr);
+    return targetOff;
+}
+static void GamedataBanner() {
+    META_CONPRINTF("[s2script] === GAMEDATA VALIDATION: %d ok, %d FAILED%s ===\n", s_gdOk, s_gdFail,
+                   s_gdFail ? "  (STALE for this CS2 build — regenerate; see docs/re-strategy.md)" : "");
+}
+
+// ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
     PLUGIN_SAVEVARS();  // sets g_SHPtr = ismm->GetSHPtr() — required by SH_ADD_HOOK
+    s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
 
     // --- Interface acquisition (data-driven, degrade-never-crash) ---
     std::string gdError;
@@ -1190,35 +1223,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             if (!sigErr.empty()) {
                 META_CONPRINTF("[s2script] WARN: %s — GameEventManager sig unavailable\n", sigErr.c_str());
             }
+            // Slice 6.9: resolve + VALIDATE (unique match) via the gamedata gate, so a stale/moved sig is loud.
             auto it = sigs.find("GameEventManager");
             if (it == sigs.end()) {
-                META_CONPRINTF("[s2script] WARN: no GameEventManager signature in gamedata — events degrade\n");
+                GamedataResult("GameEventManager", false, "signature absent from gamedata");
             } else {
-                const SigSpec& sig = it->second;
-                ModText mt = FindModuleText(sig.module.c_str());
-                std::vector<int> pat = s2sig::ParsePattern(sig.pattern);
-                if (!mt.text || pat.empty()) {
-                    META_CONPRINTF("[s2script] WARN: GameEventManager sig-scan setup failed (module=%s, patTokens=%zu) — events degrade\n",
-                                   sig.module.c_str(), pat.size());
+                int64_t targetOff = ResolveSigValidated("GameEventManager", it->second);
+                ModText mt = FindModuleText(it->second.module.c_str());
+                if (targetOff != s2sig::kFail && mt.text) {
+                    s_pGameEventManager = reinterpret_cast<IGameEventManager2*>(
+                        const_cast<uint8_t*>(mt.text) + targetOff);
+                    META_CONPRINTF("[s2script] interface OK: GameEventManager (%p)\n", (void*)s_pGameEventManager);
                 } else {
-                    int64_t matchOff = s2sig::FindPattern(mt.text, mt.size, pat);
-                    int64_t targetOff = s2sig::kFail;
-                    if (matchOff >= 0) {
-                        if (sig.resolve == "ctor-body-xref")
-                            targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
-                        else if (sig.resolve == "lea-disp")
-                            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, 3, 7);
-                    }
-                    if (targetOff != s2sig::kFail) {
-                        s_pGameEventManager = reinterpret_cast<IGameEventManager2*>(
-                            const_cast<uint8_t*>(mt.text) + targetOff);
-                        META_CONPRINTF("[s2script] interface OK: GameEventManager (sig-scan %s, %p)\n",
-                                       sig.resolve.c_str(), (void*)s_pGameEventManager);
-                    } else {
-                        s_pGameEventManager = nullptr;
-                        META_CONPRINTF("[s2script] WARN: GameEventManager sig-scan no match (matchOff=%lld) — events degrade\n",
-                                       (long long)matchOff);
-                    }
+                    s_pGameEventManager = nullptr;   // ResolveSigValidated already recorded the failure reason
                 }
             }
             // Slice 6.6 (Stage 1): resolve CBaseEntity::DispatchTraceAttack (the damage entry) by direct
@@ -1226,13 +1243,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             // the game unhooked (no damage callback), never a crash.
             auto dit = sigs.find("DispatchTraceAttack");
             if (dit == sigs.end()) {
-                META_CONPRINTF("[s2script] WARN: no DispatchTraceAttack signature in gamedata — damage hook off\n");
+                GamedataResult("DispatchTraceAttack", false, "signature absent from gamedata");
             } else {
-                const SigSpec& dsig = dit->second;
-                ModText dmt = FindModuleText(dsig.module.c_str());
-                std::vector<int> dpat = s2sig::ParsePattern(dsig.pattern);
-                int64_t dOff = (dmt.text && !dpat.empty()) ? s2sig::FindPattern(dmt.text, dmt.size, dpat) : s2sig::kFail;
-                if (dOff >= 0) {  // resolve=="direct": the match offset IS the function start
+                int64_t dOff = ResolveSigValidated("DispatchTraceAttack", dit->second);
+                ModText dmt = FindModuleText(dit->second.module.c_str());
+                if (dOff != s2sig::kFail && dmt.text) {  // resolve=="direct": the (unique) match IS the function start
                     void* dtaAddr = const_cast<uint8_t*>(dmt.text) + dOff;
                     if (s2detour::Install(dtaAddr, reinterpret_cast<void*>(&Detour_DispatchTraceAttack),
                                           reinterpret_cast<void**>(&g_origDTA))) {
@@ -1244,9 +1259,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     } else {
                         META_CONPRINTF("[s2script] WARN: DispatchTraceAttack detour install failed — damage hook off\n");
                     }
-                } else {
-                    META_CONPRINTF("[s2script] WARN: DispatchTraceAttack sig no match (off=%lld) — damage hook off\n", (long long)dOff);
-                }
+                }   // dOff == kFail: ResolveSigValidated already recorded the reason
             }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
@@ -1263,7 +1276,17 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d\n",
                            s_offGameServer, s_offClientCount, s_offClientElems,
                            s_offSscName, s_offSscSignon, s_offSscUserId);
+            // Slice 6.9: record offset presence in the gamedata report (a -1 = a missing/typo'd key). A
+            // deeper deref-sanity check (does the offset point to a sane value) is a follow-up per re-strategy.
+            for (auto kv : { std::make_pair("NetworkServerService.gameServer", s_offGameServer),
+                             std::make_pair("NetworkGameServer.clientCount",   s_offClientCount),
+                             std::make_pair("NetworkGameServer.clientElems",   s_offClientElems),
+                             std::make_pair("ServerSideClient.name",           s_offSscName),
+                             std::make_pair("ServerSideClient.signon",         s_offSscSignon),
+                             std::make_pair("ServerSideClient.userId",         s_offSscUserId) })
+                GamedataResult(kv.first, kv.second >= 0, "offset key absent from gamedata");
         }
+        GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
     }
     // --- end interface acquisition ---
 
