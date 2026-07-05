@@ -168,5 +168,14 @@
     return pawn.isValid() ? new Pawn(pawn) : null;
   };
 
-  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events };
+  // CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). A message sent to
+  // the chat box needs a leading control byte to render; the PLUGIN composes colored messages with these
+  // (SourceMod-parity — color is content, not a native-layer default). Frozen so consumers can't mutate.
+  var ChatColors = Object.freeze({
+    Default: "\x01", White: "\x01", DarkRed: "\x02", LightPurple: "\x03", Green: "\x04", Olive: "\x05",
+    Lime: "\x06", Red: "\x07", Grey: "\x08", Yellow: "\x09", Silver: "\x0A", Blue: "\x0B", DarkBlue: "\x0C",
+    BlueGrey: "\x0D", Purple: "\x0E", LightRed: "\x0F", Orange: "\x10"
+  });
+
+  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors };
 })();

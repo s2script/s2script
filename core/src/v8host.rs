@@ -567,10 +567,16 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
   globalThis.__s2pkg_config     = { config: __s2_config };   // named export `config` (matches the .d.ts: import { config } from "@s2script/config")
   // --- Slice 6.1: chat module (toSlot/toAll; toAll loops __s2_client_valid, engine-generic) ---
+  // `color` is an OPAQUE leading prefix prepended to every chat message (NOT the console.log reply path,
+  // so rcon/server-console output stays clean). Core doesn't know what it means — a game package or plugin
+  // sets it to a color control byte (CS2: a ChatColors byte); "" = send raw. This keeps color as CONTENT
+  // owned by the caller (SourceMod-parity), never a native-layer default. A message may still embed its own
+  // color codes mid-string.
   var __s2_chat = {
-    toSlot: function (slot, msg) { __s2_client_print(slot | 0, String(msg)); },
+    color: "",
+    toSlot: function (slot, msg) { __s2_client_print(slot | 0, __s2_chat.color + String(msg)); },
     toAll:  function (msg) {
-      var s = String(msg);
+      var s = __s2_chat.color + String(msg);
       for (var i = 0; i < 64; i++) { if (__s2_client_valid(i)) { __s2_client_print(i, s); } }
     },
   };

@@ -99,3 +99,16 @@ export declare const Events: {
   fire<K extends keyof GameEvents>(name: K, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
   fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
 };
+
+/**
+ * CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). Prepend one to a chat
+ * message to color it — CS2 requires a leading control byte for the message to render at all. The plugin
+ * owns color (SourceMod-parity): e.g. `Chat.toAll(ChatColors.Green + "[SM] hello")`.
+ */
+export declare const ChatColors: {
+  readonly Default: string; readonly White: string; readonly DarkRed: string; readonly LightPurple: string;
+  readonly Green: string; readonly Olive: string; readonly Lime: string; readonly Red: string;
+  readonly Grey: string; readonly Yellow: string; readonly Silver: string; readonly Blue: string;
+  readonly DarkBlue: string; readonly BlueGrey: string; readonly Purple: string; readonly LightRed: string;
+  readonly Orange: string;
+};

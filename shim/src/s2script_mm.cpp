@@ -552,59 +552,31 @@ static void s2_concommand_register(const char* name) {
 }
 
 // ---------------------------------------------------------------------------
-// Chat user-message: client_print (Slice 6.1).
+// Chat print: client_print (Slice 6.1) — a CUserMessageSayText2 user message via protobuf reflection.
 //
-// The CS2 chat path (CSSharp/Swiftly pattern):
-//   pMsg  = s_pNetworkMessages->FindNetworkMessage("CUserMessageSayText2")
-//   data  = pMsg->AllocateMessage()->ToPB<CUserMessageSayText2>()
-//   data->set_param1(msg)   // visible chat string
-//   uint64 mask = 1ull << slot
-//   s_pGameEventSystem->PostEventAbstract(CSplitScreenSlot(-1), false, 1, &mask,
-//       pMsg, data, 0, BUF_RELIABLE)
-//   s_pNetworkMessages->DeallocateNetMessageAbstract(pMsg, data)
-//
-// STUB: IGameEventSystem and INetworkMessages are resolved and stored below,
-// AllocateMessage() and PostEventAbstract() are available in the headers, but
-// the CUserMessageSayText2 (or CCSUsrMsg_SayText2) protobuf type is NOT present
-// in the vendored hl2sdk (no usermessages.pb.h / cs_usermessages.pb.h found).
-// Without it, ToPB<T>() has no T, and the field setters (set_param1 etc.) are
-// unavailable. The controller completes the send once the protobuf header is added.
-// Degrade-never-crash: every null-path is a logged no-op.
+// Sends messagename VERBATIM (dumb pipe; color is caller content via the @s2script/chat `color` prefix).
+// entityindex = the recipient's controller (slot+1) — a valid player entity; 0/worldspawn is DROPPED.
+// nClientCount=64 (an iteration-count over slots; the mask bit selects). Renders reliably.
+// KNOWN LIMITATION: entityindex=player makes CS2 render this as PLAYER chat, so it is TEAM-colored and
+// leading color codes are muted. The game's own ClientPrint fn would render true custom colors, but calling
+// it faulted on the controller/send path — deferred (the signature is confirmed; the controller resolution
+// needs careful offline RE). Degrade-never-crash: every null-path is a no-op.
 // ---------------------------------------------------------------------------
 static void s2_client_print(int slot, const char* msg) {
-    if (slot < 0 || slot >= 64) {
-        META_CONPRINTF("[s2script] client_print(slot=%d): slot out of range — no-op\n", slot);
-        return;
-    }
-    if (!msg) {
-        META_CONPRINTF("[s2script] client_print(slot=%d): null msg — no-op\n", slot);
-        return;
-    }
+    if (slot < 0 || slot >= 64 || !msg) return;
     if (!s_pEngine || !s_pGameEventSystem || !s_pNetworkMessages) {
-        static bool s_warnedNoIface = false;
-        if (!s_warnedNoIface) {
-            s_warnedNoIface = true;
-            META_CONPRINTF("[s2script] client_print: engine/eventsystem/networkmessages not acquired "
-                           "— chat not delivered\n");
-        }
+        static bool s_warned = false;
+        if (!s_warned) { s_warned = true;
+            META_CONPRINTF("[s2script] client_print: interfaces not acquired — chat not delivered\n"); }
         return;
     }
-    // Skip bots / clients with no netchannel: sending to a fake client (no netchannel) can crash and is
-    // pointless (SourceMod's PrintTo* skip fake clients). GetPlayerNetInfo returns null for a bot.
+    // Skip bots / clients with no netchannel — a print to a fake client can crash (SM's fake-client skip).
     if (!s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) return;
-
-    // Slice 6.1c: the true chat-BOX send — a CUserMessageSayText2 user message. The concrete proto
-    // type isn't vendored, so we AllocateMessage() the game's protobuf object and set its fields via
-    // protobuf REFLECTION (linked libprotobuf.a provides Descriptor/Reflection; the message object is
-    // the game's, same 3.21.8 ABI). Fields (from usermessages.proto CUserMessageSayText2): entityindex
-    // (1), chat (2, bool), messagename (3, the displayed text). Then PostEventAbstract to this slot.
     INetworkMessageInternal* pInfo = s_pNetworkMessages->FindNetworkMessagePartial("SayText2");
     if (!pInfo) {
         static bool s_warnedNoMsg = false;
-        if (!s_warnedNoMsg) {
-            s_warnedNoMsg = true;
-            META_CONPRINTF("[s2script] client_print: CUserMessageSayText2 not found — chat not delivered\n");
-        }
+        if (!s_warnedNoMsg) { s_warnedNoMsg = true;
+            META_CONPRINTF("[s2script] client_print: SayText2 not found — chat not delivered\n"); }
         return;
     }
     CNetMessage* pData = pInfo->AllocateMessage();
@@ -614,30 +586,13 @@ static void s2_client_print(int slot, const char* msg) {
         const google::protobuf::Descriptor* d = m->GetDescriptor();
         const google::protobuf::Reflection*  r = m->GetReflection();
         if (d && r) {
-            // Field config PROVEN LIVE (Slice 6.11b, via a multi-variant probe against a real client):
-            //  - entityindex = the recipient's controller (slot+1), a VALID player entity. 0/worldspawn
-            //    makes the CS2 client silently DROP the message.
-            //  - chat = true routes it to the chat box.
-            //  - messagename needs a leading COLOR CONTROL BYTE or the client drops it; \x04 = lime green
-            //    (the SourceMod-style reply color). Prefix unless the caller already supplied a control
-            //    char (< 0x10), so a plugin can embed its own colors.
             if (const auto* f = d->FindFieldByName("entityindex")) r->SetInt32(m, f, slot + 1);
             if (const auto* f = d->FindFieldByName("chat"))        r->SetBool(m, f, true);
-            if (const auto* f = d->FindFieldByName("messagename")) {
-                std::string out = (msg[0] && (unsigned char)msg[0] < 0x10) ? std::string(msg)
-                                                                          : (std::string("\x04") + msg);
-                r->SetString(m, f, out);
-            }
+            if (const auto* f = d->FindFieldByName("messagename")) r->SetString(m, f, msg);
         }
     }
-    // Target just this client: a uint64 bitmask (bit N == slot N). nClientCount is an ITERATION COUNT over
-    // slots (NOT a mask-word count) — it must exceed the highest targeted slot, so 64 covers all. The
-    // original nClientCount=1 only checked slot 0, so nothing rendered for any slot>0 (the render bug).
-    // nSlot=-1 = all split-screen, bLocalOnly=false.
     uint64 clients = (1ull << static_cast<uint64>(slot));
     s_pGameEventSystem->PostEventAbstract(-1, false, 64, &clients, pInfo, pData, 0, BUF_RELIABLE);
-    // NOTE(leak-TODO): pData ownership after PostEventAbstract is unconfirmed (no DeallocateMessage seen);
-    // not freeing here to avoid a double-free. Revisit if this leaks per message.
 }
 
 // ---------------------------------------------------------------------------

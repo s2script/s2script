@@ -1,7 +1,7 @@
 import { Commands } from "@s2script/commands";
 import { Chat } from "@s2script/chat";
 import { Admin, ADMFLAG } from "@s2script/admin";
-import { Player } from "@s2script/cs2";
+import { Player, ChatColors } from "@s2script/cs2";
 import { Server } from "@s2script/server";
 import { Damage } from "@s2script/damage";
 import { Plugins } from "@s2script/plugins";
@@ -11,6 +11,12 @@ import { Plugins } from "@s2script/plugins";
 // (from admins.json or a runtime Admin.add), else it replies "You do not have access." Chat.toAll delivers
 // the SayText2 chat message (6.1c). Admin cache = host-global (file admins.json ⊕ runtime), from @s2script/admin.
 export function onLoad(): void {
+  // Color is CONTENT, not a native-layer default (the shim is a dumb pipe; SourceMod-parity). The plugin
+  // picks its chat color once via @s2script/cs2's ChatColors control bytes; @s2script/chat prepends it to
+  // chat messages only (NOT rcon/console replies). A message may still embed its own colors mid-string, and
+  // any plugin can change Chat.color at runtime. CS2 needs a leading control byte for chat to render at all.
+  Chat.color = ChatColors.Green;
+
   Commands.registerAdmin("sm_say", ADMFLAG.CHAT, (ctx) => {
     const msg = ctx.argString.trim();
     if (!msg) { ctx.reply("Usage: sm_say <message>"); return; }
@@ -134,10 +140,9 @@ export function onLoad(): void {
     ctx.reply("[SM] " + name + " set to " + value);
   });
 
-  // 6.11b — chat triggers (!cmd / /cmd) are now handled ENTIRELY in the core Host_Say detour: every
-  // registered command (sm_say, sm_kick, sm, …) is reachable in chat with the speaker as the caller,
-  // with NO per-plugin wiring. (The 6.11 player_chat-event approach was removed — CS2 fires no such
-  // event; chat reaches the server only via Host_Say, which core now detours. See dispatch_chat.)
+  // 6.11b — chat triggers (!cmd / /cmd) are handled in the core Host_Say detour; 6.11c — CONSOLE commands
+  // via the ISource2GameClients::ClientCommand hook. Every registered command (sm_say, sm_kick, sm, …) is
+  // reachable from chat AND the client console with the speaker as the caller, with NO per-plugin wiring.
 
   // 6.12 — the `sm` command family (SM parity). PUBLIC command (Commands.register, not registerAdmin):
   // `sm`/`version`/`credits`/`plugins list` are available to everyone (informational, exactly like SM).
