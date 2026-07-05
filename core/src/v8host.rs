@@ -639,19 +639,25 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       reply: function (m) { if (s < 0) { console.log(String(m)); } else { globalThis.__s2pkg_chat.Chat.toSlot(s, String(m)); } }
     };
   }
+  // Slice 6.11: a per-context registry of wrapped dispatch fns (name -> function(slot, argString)), so a
+  // command can be invoked BY NAME (chat triggers) reusing the SAME wrapper as the ConCommand path (admin
+  // gating included). __s2cmd_add both registers the engine ConCommand and records the wrapper here.
+  var __s2cmd_reg = {};
+  function __s2cmd_add(name, wrapped) { __s2cmd_reg[name] = wrapped; __s2_concommand(name, wrapped); }
+  var __s2cmd_triggers = { public: "!", silent: "/" };   // SM PublicChatTrigger / SilentChatTrigger; mutable
   var __s2_commands = {
     register: function (name, handler) {
-      __s2_concommand(name, function (slot, a) { handler(__s2cmd_ctx(slot, a)); });
+      __s2cmd_add(name, function (slot, a) { handler(__s2cmd_ctx(slot, a)); });
     },
     registerServer: function (name, handler) {
-      __s2_concommand(name, function (slot, a) {
+      __s2cmd_add(name, function (slot, a) {
         var ctx = __s2cmd_ctx(slot, a);
         if (ctx.callerSlot < 0) { handler(ctx); }
         else { ctx.reply("[SM] This command can only be run from the server console."); }
       });
     },
     registerAdmin: function (name, flags, handler) {
-      __s2_concommand(name, function (slot, a) {
+      __s2cmd_add(name, function (slot, a) {
         var ctx = __s2cmd_ctx(slot, a);
         if (ctx.callerSlot < 0) { handler(ctx); return; }        // server / rcon = root
         var check = globalThis.__s2_admin_check;
@@ -664,6 +670,38 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         else { ctx.reply("[SM] You do not have access to this command."); }
       });
     },
+    // Slice 6.11: invoke a registered command by name (same context, synchronous — the wrapper applies
+    // gating). Returns true if the command exists in this plugin. Used by chat triggers.
+    dispatch: function (name, slot, argString) {
+      var w = __s2cmd_reg[name];
+      if (!w) return false;
+      w(slot | 0, String(argString == null ? "" : argString));
+      return true;
+    },
+    // Parse a chat message for a trigger. Returns { silent, name, argString } or null (not a trigger).
+    parseChatTrigger: function (message) {
+      var m = String(message == null ? "" : message);
+      var silent;
+      if (__s2cmd_triggers.silent && m.charAt(0) === __s2cmd_triggers.silent) silent = true;
+      else if (__s2cmd_triggers.public && m.charAt(0) === __s2cmd_triggers.public) silent = false;
+      else return null;
+      var body = m.slice(1).replace(/^\s+/, "");
+      if (!body.length) return null;
+      var sp = body.search(/\s/);
+      return { silent: silent, name: sp < 0 ? body : body.slice(0, sp),
+               argString: sp < 0 ? "" : body.slice(sp + 1).replace(/^\s+/, "") };
+    },
+    // Handle a chat message end-to-end: if it's a trigger, dispatch the command (trying `name` then
+    // `sm_<name>`, the SM convention) with `slot` as the caller. Returns { silent, ran } if it WAS a
+    // trigger (the caller should suppress the chat), or null if it was ordinary chat.
+    handleChatTrigger: function (slot, message) {
+      var t = this.parseChatTrigger(message);
+      if (!t) return null;
+      var ran = this.dispatch(t.name, slot, t.argString);
+      if (!ran && t.name.indexOf("sm_") !== 0) ran = this.dispatch("sm_" + t.name, slot, t.argString);
+      return { silent: t.silent, ran: ran };
+    },
+    triggers: __s2cmd_triggers,   // { public: "!", silent: "/" } — reconfigure the trigger chars here
   };
   globalThis.__s2pkg_commands = { Commands: __s2_commands };   // named export `Commands`
   // --- Slice 6.2 Task 2: admin module (engine-generic; no CS2/game symbol; ADMFLAG + Admin API + file load) ---
@@ -5822,6 +5860,30 @@ mod frame_tests {
         unload_plugin("cmd");
         eval_in_context("cmd2", "globalThis.__afterUnload = 'unchanged';").unwrap();
         dispatch_concommand("sm_test", -1, "again");   // cmd is gone → no handler → no-op
+        shutdown();
+    }
+
+    /// Slice 6.11: chat-trigger parsing + same-context dispatch (a player's "!cmd" runs the command).
+    #[test]
+    fn chat_triggers_parse_and_dispatch() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_plugin_js("ct", r#"
+            var C = __s2pkg_commands.Commands;
+            globalThis.__ran = "";
+            C.register("sm_test", function (ctx) { globalThis.__ran = ctx.callerSlot + ":" + ctx.argString; });
+            globalThis.__p1 = JSON.stringify(C.parseChatTrigger("!kick Bob Smith"));
+            globalThis.__p2 = JSON.stringify(C.parseChatTrigger("/who"));
+            globalThis.__p3 = String(C.parseChatTrigger("hello world"));            // null -> "null"
+            globalThis.__h  = JSON.stringify(C.handleChatTrigger(5, "!test foo bar")); // sm_ prepend -> sm_test
+            globalThis.__hMiss = JSON.stringify(C.handleChatTrigger(5, "!nope x"));   // no such command -> ran:false
+        "#, "{}");
+        assert_eq!(eval_in_context_string("ct", "globalThis.__p1"), r#"{"silent":false,"name":"kick","argString":"Bob Smith"}"#);
+        assert_eq!(eval_in_context_string("ct", "globalThis.__p2"), r#"{"silent":true,"name":"who","argString":""}"#);
+        assert_eq!(eval_in_context_string("ct", "globalThis.__p3"), "null");
+        assert_eq!(eval_in_context_string("ct", "globalThis.__ran"), "5:foo bar", "sm_test dispatched via !test");
+        assert_eq!(eval_in_context_string("ct", "globalThis.__h"), r#"{"silent":false,"ran":true}"#);
+        assert_eq!(eval_in_context_string("ct", "globalThis.__hMiss"), r#"{"silent":false,"ran":false}"#, "trigger consumed even if the command is unknown");
         shutdown();
     }
 
