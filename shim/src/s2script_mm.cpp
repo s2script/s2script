@@ -48,6 +48,7 @@
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -1392,11 +1393,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
 void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
     // Slice 6.6 Stage-2 self-test: fire a synthetic damage dispatch over a fake CTakeDamageInfo
     // (m_flDamage@68 = 42) to prove detour->core mux->JS handler->schema read end-to-end (combat is
-    // un-generatable here). Fired at a few LATER frames (frame 1 caught the plugin mid boot-reload with no
-    // live subscriber) so at least one lands after the plugin has stably subscribed Damage.onPre.
+    // un-generatable on the bots-only gate). GATED OFF by default: it fires plugins' Damage.onPre handlers
+    // with FAKE data, so it must NOT run in production — set S2_DAMAGE_SELFTEST=1 to opt in for verification.
+    // Fired at a few LATER frames (frame 1 caught the plugin mid boot-reload with no live subscriber).
+    static bool s_dmgSelfTestOn = (getenv("S2_DAMAGE_SELFTEST") != nullptr);
     static long s_frameNo = 0;
     ++s_frameNo;
-    if ((s_frameNo == 300 || s_frameNo == 900 || s_frameNo == 1800) && g_origDTA) {
+    if (s_dmgSelfTestOn && (s_frameNo == 300 || s_frameNo == 900 || s_frameNo == 1800) && g_origDTA) {
         static char fakeInfo[256];
         memset(fakeInfo, 0, sizeof(fakeInfo));
         *reinterpret_cast<float*>(fakeInfo + 68) = 42.0f;   // CTakeDamageInfo::m_flDamage
