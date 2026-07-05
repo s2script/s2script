@@ -41,6 +41,15 @@ int main() {
     CHECK(ResolveCtorXref(b3.data(), b3.size(), 0x40) == 0x123, "ResolveCtorXref");
     CHECK(ResolveCtorXref(b3.data(), b3.size(), 0x41) == kFail, "ResolveCtorXref no-caller");
 
+    // --- CountPattern (Slice 6.9 gamedata gate: 0 = moved/stale, 1 = unique, >1 = ambiguous) ---
+    std::vector<uint8_t> b4(64, 0x90);
+    b4[0x10] = 0xAB; b4[0x11] = 0xCD;                                                    // "AB CD" once
+    CHECK(CountPattern(b4.data(), b4.size(), ParsePattern("AB CD"), 2) == 1, "CountPattern unique");
+    b4[0x20] = 0xAB; b4[0x21] = 0xCD;                                                    // now twice
+    CHECK(CountPattern(b4.data(), b4.size(), ParsePattern("AB CD"), 2) == 2, "CountPattern ambiguous (capped)");
+    CHECK(CountPattern(b4.data(), b4.size(), ParsePattern("DE AD"), 2) == 0, "CountPattern not-found");
+    CHECK(CountPattern(b4.data(), b4.size(), ParsePattern("AB ?"),  2) == 2, "CountPattern wildcard");
+
     if (g_fail) { std::printf("sigscan_test: FAILURES\n"); return 1; }
     std::printf("sigscan_test: all passed\n");
     return 0;
