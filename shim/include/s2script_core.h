@@ -85,6 +85,8 @@ typedef int   (*s2_damage_read_int_fn)(int offset);
 typedef void  (*s2_damage_write_float_fn)(int offset, float value);
 // The victim's raw CEntityHandle (from the detour `this`); -1/0xFFFFFFFF = none. JS decodes -> EntityRef.
 typedef int   (*s2_damage_victim_fn)(void);
+// Slice 6.7: read a cvar's current value as a string ("" if absent). Valid until the next cvar_get call.
+typedef const char* (*s2_cvar_get_fn)(const char* name);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -132,6 +134,7 @@ typedef struct {
     s2_damage_read_int_fn    damage_read_int;
     s2_damage_write_float_fn damage_write_float;
     s2_damage_victim_fn      damage_victim;
+    s2_cvar_get_fn           cvar_get;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

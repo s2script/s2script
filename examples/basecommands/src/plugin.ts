@@ -117,6 +117,19 @@ export function onLoad(): void {
     info.damage = info.damage / 2;   // modify: halve the damage (set to 0 would block)
   });
 
+  // 6.7 — sm_cvar <name> [value] (ADMFLAG.CVARS). No value → GET (reply the value); with a value → SET
+  // (via the console) then read back. Name sanitized (we build a console command for SET).
+  Commands.registerAdmin("sm_cvar", ADMFLAG.CONVARS, (ctx) => {
+    const parts = ctx.argString.trim().split(/\s+/).filter(Boolean);
+    const name = parts[0] || "";
+    if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { ctx.reply("Usage: sm_cvar <name> [value]"); return; }
+    if (parts.length < 2) { ctx.reply("[SM] " + name + " = " + Server.getCvar(name)); return; }  // GET
+    const value = parts.slice(1).join(" ");
+    console.log("[basecommands] sm_cvar SET " + name + " = " + value + " by slot=" + ctx.callerSlot);
+    Server.setCvar(name, value);
+    ctx.reply("[SM] " + name + " = " + Server.getCvar(name));   // read back to confirm
+  });
+
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
   Admin.add("76561199000000009", ADMFLAG.KICK | ADMFLAG.CHAT);   // runtime tier
   const t = Admin.get("76561199000000009");

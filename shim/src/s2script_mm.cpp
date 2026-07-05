@@ -653,6 +653,40 @@ static int s2_server_map_valid(const char* map) {
 }
 
 // ---------------------------------------------------------------------------
+// cvar_get (Slice 6.7) — a cvar's current value as a string, TIER1-FREE. The clean SDK accessors
+// (ConVarData::ValueOrDefault, ConVarRefAbstract::GetString→CUtlString) are NON-inline → they'd
+// reintroduce the tier1/dlopen cascade (5D.1). Instead: FindConVar+GetConVarData (vtable on s_pCvar) +
+// GetType (inline) + a direct read of m_Values (ConVarData's LAST field → offset = sizeof(ConVarData) -
+// sizeof(CVValue_t)*MAX_SPLITSCREEN_CLIENTS). The pinned-SDK layout is live-verified against a known cvar.
+// ---------------------------------------------------------------------------
+static char s_cvarBuf[512];
+static const char* s2_cvar_get(const char* name) {
+    s_cvarBuf[0] = '\0';
+    if (!s_pCvar || !name) return s_cvarBuf;
+    ConVarRef ref = s_pCvar->FindConVar(name, false);
+    if (!ref.IsValidRef()) return s_cvarBuf;
+    ConVarData* data = s_pCvar->GetConVarData(ref);
+    if (!data) return s_cvarBuf;
+    const size_t VOFF = sizeof(ConVarData) - sizeof(CVValue_t) * MAX_SPLITSCREEN_CLIENTS;
+    CVValue_t* v = reinterpret_cast<CVValue_t*>(reinterpret_cast<char*>(data) + VOFF);
+    switch (data->GetType()) {
+        case EConVarType_Bool:    snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%d", v->m_bValue ? 1 : 0); break;
+        case EConVarType_Int16:   snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%d", (int)v->m_i16Value); break;
+        case EConVarType_UInt16:  snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%u", (unsigned)v->m_u16Value); break;
+        case EConVarType_Int32:   snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%d", v->m_i32Value); break;
+        case EConVarType_UInt32:  snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%u", v->m_u32Value); break;
+        case EConVarType_Int64:   snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%lld", (long long)v->m_i64Value); break;
+        case EConVarType_UInt64:  snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%llu", (unsigned long long)v->m_u64Value); break;
+        case EConVarType_Float32: snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%g", v->m_fl32Value); break;
+        case EConVarType_Float64: snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%g", v->m_fl64Value); break;
+        case EConVarType_String: { const char* sv = v->m_StringValue.Get();
+                                   snprintf(s_cvarBuf, sizeof(s_cvarBuf), "%s", sv ? sv : ""); break; }
+        default: snprintf(s_cvarBuf, sizeof(s_cvarBuf), "<type%d>", (int)data->GetType()); break;
+    }
+    return s_cvarBuf;
+}
+
+// ---------------------------------------------------------------------------
 // Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
 // (s_currentDamageInfo, set by the DispatchTraceAttack detour) at a schema-resolved byte offset.
 // Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
@@ -1286,6 +1320,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.damage_read_int    = &s2_damage_read_int;
     ops.damage_write_float = &s2_damage_write_float;
     ops.damage_victim      = &s2_damage_victim;
+    ops.cvar_get           = &s2_cvar_get;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

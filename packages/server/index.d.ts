@@ -4,4 +4,8 @@ export declare const Server: {
   command(cmd: string): void;
   /** Whether `map` is an installed, valid map file. */
   isMapValid(map: string): boolean;
+  /** A cvar's current value as a string. `""` if the cvar doesn't exist (or an unsupported type → `"<type>"`). */
+  getCvar(name: string): string;
+  /** Set a cvar (via the console, so any type is accepted). */
+  setCvar(name: string, value: string): void;
 };

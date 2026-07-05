@@ -110,6 +110,7 @@ pub type DamageReadFloatFn  = extern "C" fn(offset: c_int) -> f32;
 pub type DamageReadIntFn    = extern "C" fn(offset: c_int) -> c_int;
 pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
 pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityHandle; -1 = none
+pub type CvarGetFn          = extern "C" fn(name: *const c_char) -> *const c_char;   // Slice 6.7: cvar value string
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -161,6 +162,7 @@ pub struct S2EngineOps {
     pub damage_read_int:    Option<DamageReadIntFn>,
     pub damage_write_float: Option<DamageWriteFloatFn>,
     pub damage_victim:      Option<DamageVictimFn>,
+    pub cvar_get:           Option<CvarGetFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -577,6 +579,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_server = {
     command: function (cmd) { __s2_server_command(String(cmd)); },
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
+    getCvar: function (name) { return __s2_cvar_get(String(name)); },                 // "" if absent
+    setCvar: function (name, value) { __s2_server_command(String(name) + " " + String(value)); },
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
   // --- Slice 6.6: damage module (Damage.onPre + block-scoped DamageInfo over the current CTakeDamageInfo).
@@ -2094,6 +2098,23 @@ fn s2_damage_victim(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgume
     }));
 }
 
+/// `__s2_cvar_get(name) -> string` — a cvar's current value as a string. "" if no op / absent / null.
+fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let s: String = (|| {
+            if args.length() < 1 { return None; }
+            let name = args.get(0).to_rust_string_lossy(scope);
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.cvar_get?;
+            let cn = CString::new(name).ok()?;
+            let ptr = f(cn.as_ptr());
+            if ptr.is_null() { return None; }
+            Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        })().unwrap_or_default();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
 /// Native `__s2_event_get_bool(key) -> boolean`. Calls the `event_get_bool` engine-op; degrades to false.
 fn s2_event_get_bool(
     scope: &mut v8::PinScope,
@@ -2649,6 +2670,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_damage_read_int", s2_damage_read_int);
     set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
     set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
+    set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
     set_native(scope, global_obj, "__s2_server_command", s2_server_command);
     set_native(scope, global_obj, "__s2_server_map_valid", s2_server_map_valid);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
@@ -5062,6 +5084,7 @@ mod frame_tests {
             damage_read_int: None,
             damage_write_float: None,
             damage_victim: None,
+            cvar_get: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -5186,6 +5209,7 @@ mod frame_tests {
             damage_read_int: None,
             damage_write_float: None,
             damage_victim: None,
+            cvar_get: None,
         }
     }
 
@@ -5700,6 +5724,10 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_damage.Damage.onPre"), "function");
         assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().damage)"), "0");
         assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().victim)"), "null");
+        // Slice 6.7: cvar_get degrades to "" without the op; Server.getCvar/setCvar wired.
+        assert_eq!(eval_in_context_string("p", "String(__s2_cvar_get('sv_gravity'))"), "");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.getCvar"), "function");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.setCvar"), "function");
         shutdown();
     }
 
