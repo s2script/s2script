@@ -575,10 +575,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_chat = {
     color: "",
     toSlot: function (slot, msg) { __s2_client_print(slot | 0, __s2_chat.color + String(msg)); },
-    toAll:  function (msg) {
-      var s = __s2_chat.color + String(msg);
-      for (var i = 0; i < 64; i++) { if (__s2_client_valid(i)) { __s2_client_print(i, s); } }
-    },
+    // slot -1 = broadcast to all in ONE call (the shim routes it to the game's UTIL_ClientPrintAll, which
+    // renders true custom color, not team color — SourceMod's PrintToChatAll). NOT a per-slot loop.
+    toAll:  function (msg) { __s2_client_print(-1, __s2_chat.color + String(msg)); },
   };
   globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
   // --- Slice 6.4: server module (command / isMapValid; engine-generic server control) ---

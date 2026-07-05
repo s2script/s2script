@@ -11,16 +11,20 @@ import { Plugins } from "@s2script/plugins";
 // (from admins.json or a runtime Admin.add), else it replies "You do not have access." Chat.toAll delivers
 // the SayText2 chat message (6.1c). Admin cache = host-global (file admins.json ⊕ runtime), from @s2script/admin.
 export function onLoad(): void {
-  // Color is CONTENT, not a native-layer default (the shim is a dumb pipe; SourceMod-parity). The plugin
-  // picks its chat color once via @s2script/cs2's ChatColors control bytes; @s2script/chat prepends it to
-  // chat messages only (NOT rcon/console replies). A message may still embed its own colors mid-string, and
-  // any plugin can change Chat.color at runtime. CS2 needs a leading control byte for chat to render at all.
-  Chat.color = ChatColors.Green;
+  // Color is CONTENT the message owns (SourceMod-parity): the plugin embeds @s2script/cs2 ChatColors
+  // control bytes INLINE to color parts of a message and switch back — NO blanket color. Chat.toAll/toSlot
+  // send the string verbatim, prepending only Chat.color (below). CS2's chat also MUTES the very first
+  // color byte, so we prime Chat.color with White (\x01, a default — not a color choice) so a plugin's own
+  // FIRST color byte lands as the second byte and renders. Uncolored text then defaults to white.
+  Chat.color = ChatColors.White;
 
   Commands.registerAdmin("sm_say", ADMFLAG.CHAT, (ctx) => {
     const msg = ctx.argString.trim();
     if (!msg) { ctx.reply("Usage: sm_say <message>"); return; }
-    Chat.toAll("[SM] " + msg);
+    // Inline color (SourceMod-style): "[SM] " renders in the default white, then GREEN for the message.
+    // The color byte is embedded in the string and only applies AFTER text (CS2 swallows a leading byte or
+    // two consecutive bytes), so it goes after "[SM] ". Switch colors anywhere with more ChatColors bytes.
+    Chat.toAll("[SM] " + ChatColors.Green + msg);
     console.log("[basecommands] sm_say by slot=" + ctx.callerSlot + " msg=" + msg);
   });
 

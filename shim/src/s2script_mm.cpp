@@ -562,8 +562,22 @@ static void s2_concommand_register(const char* name) {
 // it faulted on the controller/send path — deferred (the signature is confirmed; the controller resolution
 // needs careful offline RE). Degrade-never-crash: every null-path is a no-op.
 // ---------------------------------------------------------------------------
+// The game's broadcast chat-print (SourceMod PrintToChatAll). No controller → true custom color, no crash.
+typedef void (*ClientPrintAll_t)(int hudDest, const char* msg, const char* p1, const char* p2, const char* p3, const char* p4);
+static ClientPrintAll_t g_ClientPrintAll = nullptr;
+static const int kHudDestChat = 3;   // HudDestination::Chat (from CSSharp's HudDestination enum)
+
 static void s2_client_print(int slot, const char* msg) {
-    if (slot < 0 || slot >= 64 || !msg) return;
+    if (!msg) return;
+    // slot < 0 = BROADCAST to all: use the game's UTIL_ClientPrintAll. It renders true custom color (a
+    // leading \x04 = green, NOT team-colored) and takes NO controller, so it can't hit the per-controller
+    // crash. This is what Chat.toAll routes to.
+    if (slot < 0) {
+        if (g_ClientPrintAll) g_ClientPrintAll(kHudDestChat, msg, nullptr, nullptr, nullptr, nullptr);
+        return;
+    }
+    // slot >= 0 = a single client: SayText2 (renders, but team-colored — see the KNOWN LIMITATION above).
+    if (slot >= 64) return;
     if (!s_pEngine || !s_pGameEventSystem || !s_pNetworkMessages) {
         static bool s_warned = false;
         if (!s_warned) { s_warned = true;
@@ -1317,6 +1331,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                         META_CONPRINTF("[s2script] WARN: HostSay detour install failed — chat triggers off\n");
                     }
                 }   // hOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Slice 6.1d: resolve UTIL_ClientPrintAll (broadcast colored chat). A plain function pointer we
+            // call from s2_client_print(slot<0). Degrade-never-crash: unresolved -> Chat.toAll no-op.
+            auto cait = sigs.find("ClientPrintAll");
+            if (cait == sigs.end()) {
+                GamedataResult("ClientPrintAll", false, "signature absent from gamedata");
+            } else {
+                int64_t caOff = ResolveSigValidated("ClientPrintAll", cait->second);
+                ModText camt = FindModuleText(cait->second.module.c_str());
+                if (caOff != s2sig::kFail && camt.text) {
+                    g_ClientPrintAll = reinterpret_cast<ClientPrintAll_t>(const_cast<uint8_t*>(camt.text) + caOff);
+                    META_CONPRINTF("[s2script] ClientPrintAll resolved @%p (broadcast colored chat)\n", reinterpret_cast<void*>(g_ClientPrintAll));
+                }   // caOff == kFail: ResolveSigValidated already recorded the reason
             }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
