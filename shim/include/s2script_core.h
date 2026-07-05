@@ -83,6 +83,8 @@ typedef float (*s2_damage_read_float_fn)(int offset);
 typedef int   (*s2_damage_read_int_fn)(int offset);
 // Stage 3 (modify): write m_flDamage etc. during a pre-hook.
 typedef void  (*s2_damage_write_float_fn)(int offset, float value);
+// The victim's raw CEntityHandle (from the detour `this`); -1/0xFFFFFFFF = none. JS decodes -> EntityRef.
+typedef int   (*s2_damage_victim_fn)(void);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -129,6 +131,7 @@ typedef struct {
     s2_damage_read_float_fn  damage_read_float;
     s2_damage_read_int_fn    damage_read_int;
     s2_damage_write_float_fn damage_write_float;
+    s2_damage_victim_fn      damage_victim;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

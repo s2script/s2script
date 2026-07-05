@@ -14,6 +14,8 @@ export interface DamageInfo {
   readonly attacker: EntityRef | null;
   /** The inflicting entity (m_hInflictor), or null if none/stale. */
   readonly inflictor: EntityRef | null;
+  /** The victim — the entity taking damage (the hooked `this`), or null if stale. */
+  readonly victim: EntityRef | null;
 }
 
 export declare const Damage: {

@@ -247,7 +247,8 @@ static std::set<std::string> s_subscribedNames;
 // reads to prove the hook fires + identify the CTakeDamageInfo arg, then always calls the original.
 typedef int64_t (*DispatchTraceAttack_t)(void* thisptr, void* a2, void* a3, void* a4);
 static DispatchTraceAttack_t g_origDTA = nullptr;
-static void* s_currentDamageInfo = nullptr;  // the CTakeDamageInfo* for the in-flight damage dispatch (block-scoped)
+static void* s_currentDamageInfo = nullptr;    // the CTakeDamageInfo* for the in-flight damage dispatch (block-scoped)
+static void* s_currentDamageVictim = nullptr;  // the victim CEntityInstance* (detour `this`) for the same dispatch
 
 static const uintptr_t kDtaSelfTest = 0xD2A7E57ULL;  // sentinel `this` for the install-time diversion self-test
 
@@ -267,8 +268,10 @@ static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, voi
     };
     META_CONPRINTF("[s2script] DTA fired: this=%p a2.dmg=%.1f a3.dmg=%.1f\n", thisptr, rd(a2), rd(a3));
     s_currentDamageInfo = a2;                     // block-scoped: valid only across this dispatch
+    s_currentDamageVictim = thisptr;              // the victim entity (this)
     s2script_core_dispatch_damage();              // run Damage.onPre (read/modify the live info in place)
     s_currentDamageInfo = nullptr;
+    s_currentDamageVictim = nullptr;
     return g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;  // original uses any modified damage
 }
 
@@ -664,6 +667,12 @@ static int s2_damage_read_int(int offset) {
 static void s2_damage_write_float(int offset, float value) {
     if (!s_currentDamageInfo || offset < 0 || offset > 4096) return;
     *reinterpret_cast<float*>(reinterpret_cast<char*>(s_currentDamageInfo) + offset) = value;
+}
+// The victim's raw CEntityHandle from the detour `this` (CEntityInstance::GetRefEHandle().ToInt() — inline,
+// == the raw m_Index the JS handle-decode expects). -1 when absent. The raw pointer never crosses to JS.
+static int s2_damage_victim() {
+    if (!s_currentDamageVictim) return -1;
+    return static_cast<CEntityInstance*>(s_currentDamageVictim)->GetRefEHandle().ToInt();
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,6 +1284,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.damage_read_float  = &s2_damage_read_float;
     ops.damage_read_int    = &s2_damage_read_int;
     ops.damage_write_float = &s2_damage_write_float;
+    ops.damage_victim      = &s2_damage_victim;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -1391,9 +1401,14 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
         memset(fakeInfo, 0, sizeof(fakeInfo));
         *reinterpret_cast<float*>(fakeInfo + 68) = 42.0f;   // CTakeDamageInfo::m_flDamage
         s_currentDamageInfo = fakeInfo;
-        META_CONPRINTF("[s2script] damage self-test (frame %ld): dispatching synthetic damage (m_flDamage=42)\n", s_frameNo);
+        void* victimEnt = nullptr;                          // scan for a REAL entity (idx 1+) -> proves the victim path
+        for (int i = 1; i < 128 && !victimEnt; ++i) victimEnt = s2_ent_by_index(i);
+        s_currentDamageVictim = victimEnt;
+        META_CONPRINTF("[s2script] damage self-test (frame %ld): synthetic damage (m_flDamage=42, victim=%p, raw=%d)\n",
+                       s_frameNo, victimEnt, s2_damage_victim());
         s2script_core_dispatch_damage();
         s_currentDamageInfo = nullptr;
+        s_currentDamageVictim = nullptr;
     }
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));

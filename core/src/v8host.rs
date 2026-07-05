@@ -109,6 +109,7 @@ pub type ServerMapValidFn = extern "C" fn(map: *const c_char) -> c_int;
 pub type DamageReadFloatFn  = extern "C" fn(offset: c_int) -> f32;
 pub type DamageReadIntFn    = extern "C" fn(offset: c_int) -> c_int;
 pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
+pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityHandle; -1 = none
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -159,6 +160,7 @@ pub struct S2EngineOps {
     pub damage_read_float:  Option<DamageReadFloatFn>,
     pub damage_read_int:    Option<DamageReadIntFn>,
     pub damage_write_float: Option<DamageWriteFloatFn>,
+    pub damage_victim:      Option<DamageVictimFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -602,6 +604,16 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     attacker:  { get: function () { return __s2_dmg_ref("m_hAttacker"); },  enumerable: true, configurable: true },
     inflictor: { get: function () { return __s2_dmg_ref("m_hInflictor"); }, enumerable: true, configurable: true },
+    // The victim (the entity taking damage) — decoded from the detour `this`, not a field of the info.
+    victim: {
+      get: function () {
+        var h = __s2_damage_victim() >>> 0;
+        if (h === 0 || h === 0xFFFFFFFF) return null;
+        var d = __s2_handle_decode(h);
+        var ref = new EntityRef(d[0], d[1]);
+        return ref.isValid() ? ref : null;
+      }, enumerable: true, configurable: true,
+    },
   });
   var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
   globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
@@ -2071,6 +2083,17 @@ fn s2_damage_write_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
+/// `__s2_damage_victim() -> i32` — the victim's raw CEntityHandle (from the detour `this`). -1 if no op.
+/// JS decodes it via `__s2_handle_decode` into an EntityRef.
+fn s2_damage_victim(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(-1.0);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.damage_victim else { return };
+        rv.set_double(func() as f64);
+    }));
+}
+
 /// Native `__s2_event_get_bool(key) -> boolean`. Calls the `event_get_bool` engine-op; degrades to false.
 fn s2_event_get_bool(
     scope: &mut v8::PinScope,
@@ -2625,6 +2648,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
     set_native(scope, global_obj, "__s2_damage_read_int", s2_damage_read_int);
     set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
+    set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_server_command", s2_server_command);
     set_native(scope, global_obj, "__s2_server_map_valid", s2_server_map_valid);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
@@ -5037,6 +5061,7 @@ mod frame_tests {
             damage_read_float: None,
             damage_read_int: None,
             damage_write_float: None,
+            damage_victim: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -5160,6 +5185,7 @@ mod frame_tests {
             damage_read_float: None,
             damage_read_int: None,
             damage_write_float: None,
+            damage_victim: None,
         }
     }
 
@@ -5665,6 +5691,29 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_server_map_valid('x'))"), "0");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.command"), "function");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.isMapValid('x'))"), "false");
+        // Slice 6.6: the damage natives degrade without ops (read->0, victim->-1, write no-op) and the
+        // @s2script/damage module wires (Damage.onPre a function; DamageInfo reads degrade to 0/null).
+        assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_float(68))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_int(60))"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2_damage_victim())"), "-1");
+        assert_eq!(eval_in_context_string("p", "String(__s2_damage_write_float(68, 5))"), "undefined");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_damage.Damage.onPre"), "function");
+        assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().damage)"), "0");
+        assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().victim)"), "null");
+        shutdown();
+    }
+
+    /// Slice 6.6: Damage.onPre subscribes to DAMAGE_MUX and dispatch_damage runs the handler with a
+    /// DamageInfo (no engine ops → the handler's info.damage reads 0, but the pipeline fires).
+    #[test]
+    fn damage_dispatch_runs_subscriber() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__dmgFired = 0; __s2pkg_damage.Damage.onPre(function (info) { globalThis.__dmgFired = 1; globalThis.__dmgVal = info.damage; });").unwrap();
+        dispatch_damage();
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgFired)"), "1", "the onPre handler ran");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgVal)"), "0", "info.damage reads 0 without an engine op");
         shutdown();
     }
 
