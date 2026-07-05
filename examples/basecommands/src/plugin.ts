@@ -127,7 +127,9 @@ export function onLoad(): void {
     const value = parts.slice(1).join(" ");
     console.log("[basecommands] sm_cvar SET " + name + " = " + value + " by slot=" + ctx.callerSlot);
     Server.setCvar(name, value);
-    ctx.reply("[SM] " + name + " = " + Server.getCvar(name));   // read back to confirm
+    // NOTE: Server.command queues the set for next frame, so an immediate getCvar reads the OLD value —
+    // echo the requested value instead of a stale read-back.
+    ctx.reply("[SM] " + name + " set to " + value);
   });
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
