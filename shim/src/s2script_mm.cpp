@@ -593,6 +593,11 @@ static void s2_client_print(int slot, const char* msg) {
             META_CONPRINTF("[s2script] client_print: SayText2 not found — chat not delivered\n"); }
         return;
     }
+    // Per-recipient colored chat (proven live via a field-combo probe): entityindex = the recipient's
+    // controller (slot+1) so it renders (entityindex=0 is DROPPED), and chat = FALSE so it renders as a
+    // SERVER message (NOT player chat) — which means it is NOT team-colored and RESPECTS inline color codes
+    // (the caller embeds ChatColors bytes, same as the UTIL_ClientPrintAll broadcast path). messagename =
+    // the message VERBATIM (dumb pipe; color is caller content).
     CNetMessage* pData = pInfo->AllocateMessage();
     if (!pData) return;
     google::protobuf::Message* m = reinterpret_cast<google::protobuf::Message*>(pData->AsProto());
@@ -601,7 +606,7 @@ static void s2_client_print(int slot, const char* msg) {
         const google::protobuf::Reflection*  r = m->GetReflection();
         if (d && r) {
             if (const auto* f = d->FindFieldByName("entityindex")) r->SetInt32(m, f, slot + 1);
-            if (const auto* f = d->FindFieldByName("chat"))        r->SetBool(m, f, true);
+            if (const auto* f = d->FindFieldByName("chat"))        r->SetBool(m, f, false);
             if (const auto* f = d->FindFieldByName("messagename")) r->SetString(m, f, msg);
         }
     }

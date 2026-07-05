@@ -50,10 +50,8 @@ function formatActivitySource(actorSlot: number, recipientSlot: number): { show:
 export function onLoad(): void {
   // Color is CONTENT the message owns (SourceMod-parity): the plugin embeds @s2script/cs2 ChatColors
   // control bytes INLINE to color parts of a message and switch back — NO blanket color. Chat.toAll/toSlot
-  // send the string verbatim, prepending only Chat.color (below). CS2's chat also MUTES the very first
-  // color byte, so we prime Chat.color with White (\x01, a default — not a color choice) so a plugin's own
-  // FIRST color byte lands as the second byte and renders. Uncolored text then defaults to white.
-  Chat.color = ChatColors.White;
+  // send the string verbatim (no prime), so the message owns its full color layout including the first byte.
+  Chat.color = "";
 
   // sm_say — SourceMod-parity sender-aware admin say. Each recipient gets a line whose SENDER NAME is
   // customized by show-activity: normal players see "(ALL) ADMIN: msg", admins see "(ALL) gkh: msg".
@@ -64,7 +62,10 @@ export function onLoad(): void {
     if (!msg) { ctx.reply("Usage: sm_say <message>"); return; }
     for (const p of Player.allConnected()) {
       const src = formatActivitySource(ctx.callerSlot, p.slot);
-      if (src.show) Chat.toSlot(p.slot, "(ALL) " + src.name + ": " + msg);
+      // "(ALL) name:" GREEN, then the message WHITE (SM look). A leading SPACE is the "text" that lets the
+      // first green byte apply (CS2 swallows a leading color byte, and the leading segment is team-colored;
+      // a space's color is invisible). Then true per-recipient color via the chat=false server-message path.
+      if (src.show) Chat.toSlot(p.slot, " " + ChatColors.Green + "(ALL) " + src.name + ": " + ChatColors.White + msg);
     }
     console.log("[basecommands] sm_say by slot=" + ctx.callerSlot + " msg=" + msg);
   });
