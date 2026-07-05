@@ -1496,7 +1496,7 @@ in the host — a plugin whose `apiVersion` major differs from the host is skipp
   named imports (`import { greet } from "@demo/greeter"`) — esbuild bundles them to the same runtime
   access, so this is authoring hygiene, not a behaviour change.
 - **Inter-plugin deps** are `any` for now (a typed producer→consumer `.d.ts` is deferred).
-- Every `examples/*` plugin passes the gate (`scripts/check-examples-typecheck.sh`), which keeps the
+- Every `examples/*` and `plugins/*` plugin passes the gate (`scripts/check-plugins-typecheck.sh`), which keeps the
   shipped `.d.ts` surface honest.
 
 ---
