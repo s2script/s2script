@@ -626,8 +626,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var s = (slot | 0);
     var raw = String(argString == null ? "" : argString);
     var args = raw.length ? raw.split(/\s+/).filter(function (a) { return a.length; }) : [];
-    return { callerSlot: s, args: args, argString: raw,
-      reply: function (m) { if (s < 0) { console.log(String(m)); } else { globalThis.__s2pkg_chat.Chat.toSlot(s, String(m)); } } };
+    return {
+      callerSlot: s,
+      args: args,                                  // 0-based, split on whitespace (kept for compat)
+      argString: raw,                              // the full raw arg string (SM GetCmdArgString)
+      argCount: args.length,                       // SM GetCmdArgs
+      // SM-parity argument retrieval so commands don't hand-roll a parser (0-based; the command name is NOT arg 0).
+      arg: function (n) { var a = args[n | 0]; return a == null ? "" : a; },                 // "" if absent (SM GetCmdArg)
+      argInt: function (n, fb) { var v = parseInt(args[n | 0], 10); return isNaN(v) ? (fb === undefined ? 0 : fb) : v; },
+      argFloat: function (n, fb) { var v = parseFloat(args[n | 0]); return isNaN(v) ? (fb === undefined ? 0 : fb) : v; },
+      argsFrom: function (n) { return args.slice(n | 0).join(" "); },   // the rest, re-joined (a reason/value that spans spaces)
+      reply: function (m) { if (s < 0) { console.log(String(m)); } else { globalThis.__s2pkg_chat.Chat.toSlot(s, String(m)); } }
+    };
   }
   var __s2_commands = {
     register: function (name, handler) {
@@ -5790,12 +5800,20 @@ mod frame_tests {
             var C = __s2pkg_commands.Commands;
             C.register("sm_test", function (ctx) {
                 globalThis.__seen = ctx.callerSlot + "|" + ctx.args.join(",") + "|" + ctx.argString;
+                // SM-parity arg API (Slice 6.10): arg/argInt/argFloat/argsFrom/argCount.
+                globalThis.__argapi = [ctx.argCount, ctx.arg(0), ctx.argInt(1), ctx.argFloat(1),
+                                        ctx.argsFrom(2), ctx.arg(99), ctx.argInt(99, 7)].join("|");
                 if (ctx.callerSlot < 0) ctx.reply("console-reply");   // routes to console.log
             });
         "#, "{}");
         // Simulate the engine firing the command from the server console (slot -1).
         dispatch_concommand("sm_test", -1, "foo bar");
         assert_eq!(eval_in_context_string("cmd", "String(globalThis.__seen)"), "-1|foo,bar|foo bar");
+        // The arg API: dispatch "target 42 hello world" and verify typed retrieval.
+        dispatch_concommand("sm_test", -1, "target 42 hello world");
+        assert_eq!(eval_in_context_string("cmd", "String(globalThis.__argapi)"),
+                   "4|target|42|42|hello world||7",
+                   "argCount|arg(0)|argInt(1)|argFloat(1)|argsFrom(2)|arg(99)=''|argInt(99,7)=7");
         assert!(LOG.lock().unwrap().iter().any(|m| m.contains("console-reply")), "console reply routed to log");
         // A throwing handler is caught (no panic).
         load_plugin_js("cmd2", r#" __s2pkg_commands.Commands.register("sm_boom", function(){ throw new Error("x"); }); "#, "{}");

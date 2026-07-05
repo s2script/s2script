@@ -20,10 +20,9 @@ export function onLoad(): void {
   // 6.3 — sm_kick <target> [reason] (ADMFLAG.KICK). Resolves the SM target string (#userid/name/@all/@me)
   // and disconnects each match via the engine KickClient. Server console / rcon is root.
   Commands.registerAdmin("sm_kick", ADMFLAG.KICK, (ctx) => {
-    const parts = ctx.argString.trim().split(/\s+/).filter(Boolean);
-    const targetStr = parts[0];
+    const targetStr = ctx.arg(0);
     if (!targetStr) { ctx.reply("Usage: sm_kick <target> [reason]"); return; }
-    const reason = parts.slice(1).join(" ") || "Kicked by admin";
+    const reason = ctx.argsFrom(1) || "Kicked by admin";
     const targets = Player.target(targetStr, ctx.callerSlot);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
     // Destructive-command safety (SM COMMAND_FILTER_NO_MULTI): an ambiguous NAME matching >1 player kicks
@@ -43,10 +42,9 @@ export function onLoad(): void {
   // 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY). Reliable damage (a direct health write, clamped >= 1)
   // plus a best-effort velocity knockback (may be reset by physics next tick; the slice doesn't depend on it).
   Commands.registerAdmin("sm_slap", ADMFLAG.SLAY, (ctx) => {
-    const parts = ctx.argString.trim().split(/\s+/).filter(Boolean);
-    const targetStr = parts[0];
+    const targetStr = ctx.arg(0);
     if (!targetStr) { ctx.reply("Usage: sm_slap <target> [damage]"); return; }
-    const damage = parts[1] ? Math.max(0, parseInt(parts[1], 10) || 0) : 0;
+    const damage = Math.max(0, ctx.argInt(1, 0));
     const targets = Player.target(targetStr, ctx.callerSlot);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
     let n = 0;
@@ -67,7 +65,7 @@ export function onLoad(): void {
   // 6.4 — sm_map <mapname> (ADMFLAG.CHANGEMAP). Sanitizes the name (injection guard, we build a
   // "changelevel <map>" string), rejects an invalid map cleanly, then changes level via @s2script/server.
   Commands.registerAdmin("sm_map", ADMFLAG.CHANGEMAP, (ctx) => {
-    const map = ctx.argString.trim().split(/\s+/)[0] || "";
+    const map = ctx.arg(0);
     if (!map) { ctx.reply("Usage: sm_map <mapname>"); return; }
     if (!/^[A-Za-z0-9_]+$/.test(map)) { ctx.reply("[SM] Invalid map name."); return; }
     if (!Server.isMapValid(map)) { ctx.reply("[SM] '" + map + "' is not a valid map."); return; }
@@ -98,7 +96,7 @@ export function onLoad(): void {
 
   // 6.5 — sm_exec <cfgfile> (ADMFLAG.CONFIG): exec a server config. Sanitize the filename (we build "exec <file>").
   Commands.registerAdmin("sm_exec", ADMFLAG.CONFIG, (ctx) => {
-    const file = ctx.argString.trim().split(/\s+/)[0] || "";
+    const file = ctx.arg(0);
     if (!file) { ctx.reply("Usage: sm_exec <cfgfile>"); return; }
     if (!/^[A-Za-z0-9_./-]+$/.test(file) || file.indexOf("..") !== -1) { ctx.reply("[SM] Invalid config name."); return; }
     console.log("[basecommands] sm_exec by slot=" + ctx.callerSlot + " file=" + file);
@@ -120,11 +118,10 @@ export function onLoad(): void {
   // 6.7 — sm_cvar <name> [value] (ADMFLAG.CVARS). No value → GET (reply the value); with a value → SET
   // (via the console) then read back. Name sanitized (we build a console command for SET).
   Commands.registerAdmin("sm_cvar", ADMFLAG.CONVARS, (ctx) => {
-    const parts = ctx.argString.trim().split(/\s+/).filter(Boolean);
-    const name = parts[0] || "";
+    const name = ctx.arg(0);
     if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { ctx.reply("Usage: sm_cvar <name> [value]"); return; }
-    if (parts.length < 2) { ctx.reply("[SM] " + name + " = " + Server.getCvar(name)); return; }  // GET
-    const value = parts.slice(1).join(" ");
+    if (ctx.argCount < 2) { ctx.reply("[SM] " + name + " = " + Server.getCvar(name)); return; }  // GET
+    const value = ctx.argsFrom(1);
     // SECURITY: setCvar concatenates into a server console command, which splits on ';'. Reject the
     // console-injection chars so an ADMFLAG.CONVARS admin can't escalate to arbitrary server commands
     // (e.g. `sm_cvar x "0; sv_cheats 1"`); quote the value so a legit multi-word string cvar is one token.
