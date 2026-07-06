@@ -165,6 +165,11 @@ int s2script_core_dispatch_chat(int slot, const char* text, int teamonly);
  * (Slice 6.11c). slot = the player's slot, name = CCommand::Arg(0), args = ArgS(). Dispatches the
  * matching registered command. Returns 1 if handled (the caller SUPERCEDEs the engine's handling). */
 int s2script_core_dispatch_client_command(int slot, const char* name, const char* args);
+/* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
+ * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
+ * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->
+ * 0 (fail-open: a core bug must never wedge all connections). */
+int s2script_core_ban_check(uint64_t xuid, int64_t now, char* out_reason, int cap);
 /* Shim -> core: called by the IGameEventListener2 trampoline when a game event fires.
  * name = ev->GetName().  During this call the shim's s_currentEvent is set so the
  * event accessor ops (event_get_int / float / bool / string / uint64 / player_slot)

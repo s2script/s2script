@@ -166,6 +166,32 @@ pub extern "C" fn s2script_core_dispatch_client_command(slot: c_int, name: *cons
     .unwrap_or(0)
 }
 
+/// C-ABI entry point: is `xuid` currently banned? (Slice 6.18). The shim's `ClientConnect` hook calls
+/// this with the connecting player's SteamID64 (`xuid`) and the current unix time (`now`). Returns 1 iff
+/// banned (perm or unexpired); on a hit, the ban reason is bounded-copied into `out_reason` (NUL-terminated,
+/// truncated to `cap-1`) for the shim's log line. Panic → 0 (FAIL-OPEN: a core bug must never wedge all
+/// connections; a banned player merely connecting through beats every connection being rejected).
+#[no_mangle]
+pub extern "C" fn s2script_core_ban_check(xuid: u64, now: i64, out_reason: *mut c_char, cap: c_int) -> c_int {
+    std::panic::catch_unwind(|| {
+        match v8host::ban_check(xuid, now) {
+            Some(reason) => {
+                if !out_reason.is_null() && cap > 1 {
+                    let bytes = reason.as_bytes();
+                    let n = std::cmp::min(bytes.len(), (cap as usize) - 1);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_reason as *mut u8, n);
+                        *out_reason.add(n) = 0;
+                    }
+                }
+                1
+            }
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
+}
+
 /// C-ABI entry point retained for shim link-compatibility.  Now a degrade-safe no-op: game JS
 /// is provided to core via `s2script_core_register_package` instead (see below).
 /// `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
