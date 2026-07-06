@@ -909,23 +909,35 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   var __s2_pendingKicks = {};
   var __s2_kickWired = false;
-  function __s2_wireKickOnActive() {
-    if (__s2_kickWired) return; __s2_kickWired = true;
-    __s2_client_on("active", function (c) {
-      var p = __s2_pendingKicks[c.slot]; if (!p) return;
-      delete __s2_pendingKicks[c.slot];
-      c.chat(p.reason); c.print(p.reason);
-      globalThis.__s2pkg_timers.delay(p.delay * 1000).then(function () {
-        var cc = __s2_clients.fromSlot(c.slot); if (cc) cc.kick(p.reason);
-      });
-    });
-    // Drop a pending kick if the client leaves before going active — else a reused slot
-    // would deliver a stale reason + a false kick to the next client on that slot.
-    __s2_client_on("disconnect", function (c) { delete __s2_pendingKicks[c.slot]; });
+  // Deliver the reason to the client REPEATEDLY (chat + console, once per second) so they see it even if
+  // they were mid-load, then kick on the final tick. Re-resolves the client each tick — stops if they left.
+  function __s2_deliverAndKick(slot, reason, remaining) {
+    var c = __s2_clients.fromSlot(slot);
+    if (!c) return;                                          // already gone → nothing to do
+    if (remaining <= 0) { c.kick(reason); return; }          // time's up → kick
+    c.chat(reason); c.print(reason);                         // show in chat AND console, each second
+    globalThis.__s2pkg_timers.delay(1000).then(function () { __s2_deliverAndKick(slot, reason, remaining - 1); });
   }
+  function __s2_deliverPending(slot) {
+    var p = __s2_pendingKicks[slot]; if (!p) return;
+    delete __s2_pendingKicks[slot];
+    __s2_deliverAndKick(slot, p.reason, Math.max(1, Math.round(p.delay)));
+  }
+  function __s2_wireKick() {
+    if (__s2_kickWired) return; __s2_kickWired = true;
+    __s2_client_on("active", function (c) { __s2_deliverPending(c.slot); });          // reconnect path: deliver once in-game
+    __s2_client_on("disconnect", function (c) { delete __s2_pendingKicks[c.slot]; }); // left before active → drop
+  }
+  // Show a reason in chat + console (repeated once per second) then kick after ~delaySeconds. Works on an
+  // ALREADY-in-game client (e.g. sm_ban — delivered immediately) AND from onConnect (deferred until the
+  // client is in-game so they can actually see it). signonState >= 4 = past the connection handshake / in
+  // the server (a still-connecting client is at CONNECTED=2), so it can receive messages now.
   Client.prototype.kickWithReason = function (reason, delaySeconds) {
-    __s2_wireKickOnActive();
-    __s2_pendingKicks[this.slot] = { reason: String(reason), delay: (delaySeconds == null ? 5 : delaySeconds) };
+    __s2_wireKick();
+    var r = String(reason);
+    var d = Math.max(1, Math.round(delaySeconds == null ? 5 : delaySeconds));
+    if (this.signonState >= 4) { __s2_deliverAndKick(this.slot, r, d); }          // in-game now → deliver immediately
+    else { __s2_pendingKicks[this.slot] = { reason: r, delay: d }; }              // still connecting → deliver at onActive
   };
   globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
 })();
