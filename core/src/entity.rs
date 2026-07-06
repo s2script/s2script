@@ -131,6 +131,37 @@ pub fn read_u16(base: *const u8, offset: i32) -> u32 {
     unsafe { *(base.add(offset as usize) as *const u16) as u32 }
 }
 
+/// Write an i8 (truncated from an i32). No-op on null / negative offset.
+pub fn write_i8(base: *mut u8, offset: i32, value: i32) {
+    if base.is_null() || offset < 0 { return; }
+    // SAFETY: caller supplies a live entity pointer + a schema-resolved in-object offset.
+    unsafe { *(base.add(offset as usize) as *mut i8) = value as i8; }
+}
+/// Write an i16 (truncated from an i32). No-op on null / negative offset.
+pub fn write_i16(base: *mut u8, offset: i32, value: i32) {
+    if base.is_null() || offset < 0 { return; }
+    // SAFETY: caller supplies a live entity pointer + a schema-resolved in-object offset.
+    unsafe { *(base.add(offset as usize) as *mut i16) = value as i16; }
+}
+/// Write a u8 (truncated from an i32; e.g. 300 -> 44). No-op on null / negative offset.
+pub fn write_u8(base: *mut u8, offset: i32, value: i32) {
+    if base.is_null() || offset < 0 { return; }
+    // SAFETY: caller supplies a live entity pointer + a schema-resolved in-object offset.
+    unsafe { *base.add(offset as usize) = value as u8; }
+}
+/// Write a u16 (truncated from an i32). No-op on null / negative offset.
+pub fn write_u16(base: *mut u8, offset: i32, value: i32) {
+    if base.is_null() || offset < 0 { return; }
+    // SAFETY: caller supplies a live entity pointer + a schema-resolved in-object offset.
+    unsafe { *(base.add(offset as usize) as *mut u16) = value as u16; }
+}
+/// Write a u32. No-op on null / negative offset.
+pub fn write_u32(base: *mut u8, offset: i32, value: u32) {
+    if base.is_null() || offset < 0 { return; }
+    // SAFETY: caller supplies a live entity pointer + a schema-resolved in-object offset.
+    unsafe { *(base.add(offset as usize) as *mut u32) = value; }
+}
+
 /// Decode a `CEntityHandle` uint32 into `(index, serial)` using the CS2 bit-split.
 pub fn decode_handle(handle: u32) -> (i32, i32) {
     let index = (handle & ((1u32 << HANDLE_ENTRY_BITS) - 1)) as i32;
@@ -267,6 +298,45 @@ mod tests {
         let base = &x as *const Fake as *const u8;
         assert_eq!(read_u8(base, 0), 255);      // zero-extended, not -1
         assert_eq!(read_u16(base, 2), 65535);
+    }
+
+    #[test]
+    fn narrow_int_writes_roundtrip_truncate_and_signextend() {
+        #[repr(C)]
+        struct Fake { u8v: u8, i8v: i8, u16v: u16, i16v: i16, u32v: u32 }
+        let mut f = Fake { u8v: 0, i8v: 0, u16v: 0, i16v: 0, u32v: 0 };
+        let base = &mut f as *mut Fake as *mut u8;
+        // u8 round-trip (offset 0)
+        write_u8(base, 0, 200);
+        assert_eq!(read_u8(base as *const u8, 0), 200);
+        // u8 truncation: 300 & 0xFF == 44
+        write_u8(base, 0, 300);
+        assert_eq!(read_u8(base as *const u8, 0), 44);
+        // i8 negative round-trip (offset 1; sign-extended on read)
+        write_i8(base, 1, -5);
+        assert_eq!(read_i8(base as *const u8, 1), -5);
+        // u16 round-trip (offset 2)
+        write_u16(base, 2, 60000);
+        assert_eq!(read_u16(base as *const u8, 2), 60000);
+        // i16 negative round-trip (offset 4)
+        write_i16(base, 4, -1000);
+        assert_eq!(read_i16(base as *const u8, 4), -1000);
+        // u32 round-trip beyond i32::MAX (offset 8)
+        write_u32(base, 8, 0xDEAD_BEEF);
+        assert_eq!(read_u32(base as *const u8, 8), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn narrow_int_writes_guard_null_and_negative_offset() {
+        // writes to null / negative offset must not crash and must be no-ops:
+        write_i8(std::ptr::null_mut(), 0, 1);
+        write_i16(std::ptr::null_mut(), 0, 1);
+        write_u8(std::ptr::null_mut(), 0, 1);
+        write_u16(std::ptr::null_mut(), 0, 1);
+        write_u32(std::ptr::null_mut(), 0, 1);
+        let mut v: u32 = 5;
+        write_u32(&mut v as *mut u32 as *mut u8, -4, 9);
+        assert_eq!(v, 5);
     }
 
     #[test]

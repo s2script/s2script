@@ -519,6 +519,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readUInt8:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U8); },
     readUInt16:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U16); },
     readUInt32:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U32); },
+    writeInt8:        function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.I8, v); },
+    writeInt16:       function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.I16, v); },
+    writeUInt8:       function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.U8, v); },
+    writeUInt16:      function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.U16, v); },
+    writeUInt32:      function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.U32, v); },
     readUInt64:       function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.U64); },
     readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.I64); },
     readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.F64); },
@@ -1408,7 +1413,7 @@ fn s2_ent_ref_read(
 }
 
 /// Native `__s2_ent_ref_write(index, serial, offset, kind, value) -> boolean`. Serial-gated typed write
-/// (I32/F32/BOOL only this slice; narrow-width writes deferred → false).
+/// (I32/F32/BOOL + narrow ints I8/I16/U8/U16/U32; 64-bit writes deferred → false).
 fn s2_ent_ref_write(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -1426,7 +1431,12 @@ fn s2_ent_ref_write(
             KIND_I32  => crate::entity::write_i32(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
             KIND_F32  => crate::entity::write_f32(ent, off, args.get(4).number_value(scope).unwrap_or(0.0) as f32),
             KIND_BOOL => crate::entity::write_bool(ent, off, args.get(4).boolean_value(scope)),
-            _         => return,                   // unknown / deferred write kind → false
+            KIND_I8   => crate::entity::write_i8(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
+            KIND_I16  => crate::entity::write_i16(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
+            KIND_U8   => crate::entity::write_u8(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
+            KIND_U16  => crate::entity::write_u16(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
+            KIND_U32  => crate::entity::write_u32(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as u32),
+            _         => return,                   // unknown / deferred write kind (64-bit) → false
         }
         rv.set_bool(true);
     }));

@@ -36,6 +36,16 @@ export declare class EntityRef {
   readUInt16(offset: number): number | null;
   /** Read a u32 at `offset`, or null if the ref is stale. */
   readUInt32(offset: number): number | null;
+  /** Write an i8 (truncated) at `offset`. Returns true on success, false if stale. */
+  writeInt8(offset: number, value: number): boolean;
+  /** Write an i16 (truncated) at `offset`. Returns true on success, false if stale. */
+  writeInt16(offset: number, value: number): boolean;
+  /** Write a u8 (truncated) at `offset`. Returns true on success, false if stale. */
+  writeUInt8(offset: number, value: number): boolean;
+  /** Write a u16 (truncated) at `offset`. Returns true on success, false if stale. */
+  writeUInt16(offset: number, value: number): boolean;
+  /** Write a u32 at `offset`. Returns true on success, false if stale. */
+  writeUInt32(offset: number, value: number): boolean;
   /** Read a u64 at `offset` as a BigInt, or null if the ref is stale. */
   readUInt64(offset: number): bigint | null;
   /** Read an i64 at `offset` as a BigInt, or null if the ref is stale. */
