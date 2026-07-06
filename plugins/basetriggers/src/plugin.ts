@@ -11,6 +11,7 @@
 import { Chat } from "@s2script/chat";
 import { Server } from "@s2script/server";
 import { HookResult } from "@s2script/events";
+import { nextFrame } from "@s2script/timers";
 
 function timeLeft(): string {
   const timelimit = parseFloat(Server.getCvar("mp_timelimit")) || 0; // minutes; 0 = no limit
@@ -43,7 +44,12 @@ export function onLoad(): void {
     else if (t === "thetime") answer = theTime();
     else if (t === "currentmap" || t === "map") answer = currentMap();
     else if (t === "nextmap") answer = nextMap();
-    if (answer !== null) Chat.toAll(answer);
+    if (answer !== null) {
+      const a = answer;
+      // Chat.onMessage is a PRE-hook (runs before the say is broadcast), so a synchronous reply would
+      // appear BEFORE the player's trigger word. Defer one frame so the word broadcasts first, then the answer.
+      nextFrame().then(() => Chat.toAll(a));
+    }
     return HookResult.Continue; // never suppress — the player's trigger word still shows (SM behavior)
   });
 
