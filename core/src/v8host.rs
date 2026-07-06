@@ -918,6 +918,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         var cc = __s2_clients.fromSlot(c.slot); if (cc) cc.kick(p.reason);
       });
     });
+    // Drop a pending kick if the client leaves before going active — else a reused slot
+    // would deliver a stale reason + a false kick to the next client on that slot.
+    __s2_client_on("disconnect", function (c) { delete __s2_pendingKicks[c.slot]; });
   }
   Client.prototype.kickWithReason = function (reason, delaySeconds) {
     __s2_wireKickOnActive();
