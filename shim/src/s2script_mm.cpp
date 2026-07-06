@@ -77,6 +77,18 @@ SH_DECL_HOOK2_void(ISource2GameClients, ClientCommand, SH_NOATTRIB, 0, CPlayerSl
 // Pre hook only — a banned SteamID64 (arg #3, the xuid) is rejected via s2script_core_ban_check.
 SH_DECL_HOOK6(ISource2GameClients, ClientConnect, SH_NOATTRIB, 0, bool, CPlayerSlot, const char*, uint64, const char*, bool, CBufferString*);
 
+// Client lifecycle notify-hooks (@s2script/clients sub-project) — six post-hooks on the same
+// m_gameClients interface. Signatures verbatim from eiface.h (:567/:578/:582/:584/:587/:599);
+// each forwards to s2script_core_dispatch_client_event and RETURN_META(MRES_IGNORED) (never alters flow).
+// `uint64` here matches the shim's Valve typedef; the Hook_* decls in the header use `unsigned long long`
+// (== uint64 on Linux) because META_NO_HL2SDK keeps HL2SDK basetypes out of the header.
+SH_DECL_HOOK6_void(ISource2GameClients, OnClientConnected, SH_NOATTRIB, 0, CPlayerSlot, const char*, uint64, const char*, const char*, bool);      // :567
+SH_DECL_HOOK4_void(ISource2GameClients, ClientPutInServer, SH_NOATTRIB, 0, CPlayerSlot, const char*, int, uint64);                                 // :578
+SH_DECL_HOOK4_void(ISource2GameClients, ClientActive, SH_NOATTRIB, 0, CPlayerSlot, bool, const char*, uint64);                                     // :582
+SH_DECL_HOOK1_void(ISource2GameClients, ClientFullyConnect, SH_NOATTRIB, 0, CPlayerSlot);                                                          // :584
+SH_DECL_HOOK5_void(ISource2GameClients, ClientDisconnect, SH_NOATTRIB, 0, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*); // :587
+SH_DECL_HOOK1_void(ISource2GameClients, ClientSettingsChanged, SH_NOATTRIB, 0, CPlayerSlot);                                                       // :599
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -1164,6 +1176,21 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                             SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientConnect), false);
                 m_clientConnectHookInstalled = true;
                 META_CONPRINTF("[s2script] ClientConnect hook installed (ban enforcement)\n");
+                // @s2script/clients: six notify lifecycle hooks -> s2script_core_dispatch_client_event.
+                SH_ADD_HOOK(ISource2GameClients, OnClientConnected, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_OnClientConnected), false);
+                SH_ADD_HOOK(ISource2GameClients, ClientPutInServer, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientPutInServer), false);
+                SH_ADD_HOOK(ISource2GameClients, ClientActive, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientActive), false);
+                SH_ADD_HOOK(ISource2GameClients, ClientFullyConnect, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientFullyConnect), false);
+                SH_ADD_HOOK(ISource2GameClients, ClientDisconnect, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientDisconnect), false);
+                SH_ADD_HOOK(ISource2GameClients, ClientSettingsChanged, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
+                m_clientLifecycleHooksInstalled = true;
+                META_CONPRINTF("[s2script] client lifecycle hooks installed (6 notify)\n");
             } else {
                 m_gameClients = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameClients (%s) — console commands off\n", verStr);
@@ -1579,6 +1606,23 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_clientConnectHookInstalled = false;
     }
 
+    // Remove the six client lifecycle notify-hooks (@s2script/clients).
+    if (m_clientLifecycleHooksInstalled && m_gameClients) {
+        SH_REMOVE_HOOK(ISource2GameClients, OnClientConnected, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_OnClientConnected), false);
+        SH_REMOVE_HOOK(ISource2GameClients, ClientPutInServer, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientPutInServer), false);
+        SH_REMOVE_HOOK(ISource2GameClients, ClientActive, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientActive), false);
+        SH_REMOVE_HOOK(ISource2GameClients, ClientFullyConnect, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientFullyConnect), false);
+        SH_REMOVE_HOOK(ISource2GameClients, ClientDisconnect, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientDisconnect), false);
+        SH_REMOVE_HOOK(ISource2GameClients, ClientSettingsChanged, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
+        m_clientLifecycleHooksInstalled = false;
+    }
+
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
     s2detour::RemoveAll();
 
@@ -1687,4 +1731,33 @@ bool S2ScriptPlugin::Hook_ClientConnect(CPlayerSlot slot, const char* name, uint
         RETURN_META_VALUE(MRES_SUPERCEDE, false);   // reject the connection
     }
     RETURN_META_VALUE(MRES_IGNORED, true);           // not banned → connect normally
+}
+
+// Client lifecycle notify-hooks (@s2script/clients sub-project). Each forwards the player slot to the
+// Task-1 dispatch (runs the JS Clients.on(name) subscribers) and RETURN_META(MRES_IGNORED) — notify-only,
+// never alters flow. The `uint64` param types match the SH_DECL_HOOK above (== the header's `unsigned long
+// long` on Linux, per the Hook_ClientConnect gotcha). Post-hooks (added `false`).
+void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
+    s2script_core_dispatch_client_event("connect", slot.Get());
+    RETURN_META(MRES_IGNORED);
+}
+void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, uint64) {
+    s2script_core_dispatch_client_event("putinserver", slot.Get());
+    RETURN_META(MRES_IGNORED);
+}
+void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
+    s2script_core_dispatch_client_event("active", slot.Get());
+    RETURN_META(MRES_IGNORED);
+}
+void S2ScriptPlugin::Hook_ClientFullyConnect(CPlayerSlot slot) {
+    s2script_core_dispatch_client_event("fullyconnect", slot.Get());
+    RETURN_META(MRES_IGNORED);
+}
+void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason, const char*, uint64, const char*) {
+    s2script_core_dispatch_client_event("disconnect", slot.Get());
+    RETURN_META(MRES_IGNORED);
+}
+void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
+    s2script_core_dispatch_client_event("settingschanged", slot.Get());
+    RETURN_META(MRES_IGNORED);
 }

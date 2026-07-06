@@ -15,6 +15,10 @@ class CPlayerSlot;
 // Forward-declared for the ClientConnect hook (Slice 6.18); the reject-reason buffer is left
 // untouched (writing it is the tier1 dlopen-cascade risk), so a pointer forward-decl suffices.
 class CBufferString;
+// Forward-declared for the ClientDisconnect lifecycle hook (@s2script/clients). This header is parsed
+// before eiface.h pulls the full definition, so an opaque enum decl with the SDK's fixed underlying type
+// (`: int`, per network_connection.pb.h) is required; it is compatible with the later full definition.
+enum ENetworkDisconnectionReason : int;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
@@ -43,6 +47,19 @@ public:
     bool Hook_ClientConnect(CPlayerSlot slot, const char* name, unsigned long long xuid, const char* netid,
                             bool unk1, CBufferString* rejectReason);
 
+    // Client lifecycle notify-hooks (@s2script/clients sub-project) — six post-hooks on the same
+    // m_gameClients interface. Each forwards to s2script_core_dispatch_client_event and never alters flow.
+    // `uint64` params are declared `unsigned long long` (== uint64 on Linux) because META_NO_HL2SDK keeps
+    // HL2SDK basetypes out of this header (matches the Hook_ClientConnect xuid gotcha above).
+    void Hook_OnClientConnected(CPlayerSlot slot, const char* name, unsigned long long xuid,
+                                const char* netid, const char* addr, bool fake);
+    void Hook_ClientPutInServer(CPlayerSlot slot, const char* name, int type, unsigned long long xuid);
+    void Hook_ClientActive(CPlayerSlot slot, bool bLoadGame, const char* name, unsigned long long xuid);
+    void Hook_ClientFullyConnect(CPlayerSlot slot);
+    void Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason reason, const char* name,
+                               unsigned long long xuid, const char* netid);
+    void Hook_ClientSettingsChanged(CPlayerSlot slot);
+
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
     ISource2GameClients* m_gameClients = nullptr;
@@ -50,6 +67,7 @@ public:
     bool m_eventHookInstalled  = false;
     bool m_clientCmdHookInstalled = false;
     bool m_clientConnectHookInstalled = false;
+    bool m_clientLifecycleHooksInstalled = false;  // @s2script/clients: the six notify lifecycle hooks
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }

@@ -83,6 +83,20 @@ pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) {
     });
 }
 
+/// Shim → core: called by the shim's six client-lifecycle SourceHooks (Clients sub-project) with the
+/// lifecycle event `name` ("connect"/"putinserver"/"active"/"fullyconnect"/"disconnect"/
+/// "settingschanged") + the client's `slot`. Notify-only: dispatches to the name's `Clients.on*` JS
+/// subscribers. `catch_unwind`-wrapped; null pointer / invalid UTF-8 degrade to a no-op (never panic
+/// across the FFI boundary per spec §6).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_client_event(name: *const c_char, slot: c_int) {
+    let _ = catch_unwind(|| {
+        if name.is_null() { return; }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
+        v8host::dispatch_client_event(name_str, slot as i32);
+    });
+}
+
 /// Shim → core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
 /// (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
 /// (a pre-hook returned Handled/Stop), else 0.
