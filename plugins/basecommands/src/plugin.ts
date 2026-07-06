@@ -167,7 +167,7 @@ export function onLoad(): void {
   console.log("[basecommands] admin diag: runtime-add hasKick=" + (t ? String(t.hasFlags(ADMFLAG.KICK)) : "null")
     + " hasBan=" + (t ? String(t.hasFlags(ADMFLAG.BAN)) : "null"));
   console.log("[basecommands] admin diag: slot0=" + (Admin.forSlot(0) ? "admin" : "not-admin (bot/steamid=0)"));
-  console.log("[basecommands] onLoad — kick/slap/map/who/rcon/exec/cvar registered");
+  console.log("[basecommands] onLoad — kick/slap/map/who/rcon/exec/cvar/sm registered");
 }
 
 export function onUnload(): void { console.log("[basecommands] onUnload"); }

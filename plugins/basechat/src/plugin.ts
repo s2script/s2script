@@ -80,8 +80,10 @@ export function onLoad(): void {
       if (t) doPsay(slot, t, rest.slice(sp + 1).trim());
       return HookResult.Handled;
     }
-    if (teamonly) doAdminChat(slot, text.slice(1).trim());
-    else doSay(slot, text.slice(1).trim());
+    const body = text.slice(1).trim();
+    if (!body) return HookResult.Handled; // bare "@" with no message: consume, send nothing
+    if (teamonly) doAdminChat(slot, body);
+    else doSay(slot, body);
     return HookResult.Handled;
   });
 }

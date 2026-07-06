@@ -15,7 +15,9 @@
       if ((flags & (kAdmins | kAdminsNames)) || ((flags & kRootNames) && recipientIsRoot)) show = true;
       if ((flags & kAdminsNames) || ((flags & kRootNames) && recipientIsRoot) || recipientIsActor) useReal = true;
     }
-    return { show: show, name: useReal ? actorReal : actorLabel };
+    // name is the generic label whenever show is false (SM parity: the original set the real
+    // name only inside the show branch, so a caller must read name only when show === true).
+    return { show: show, name: (show && useReal) ? actorReal : actorLabel };
   }
 
   var api = { computeActivitySource: computeActivitySource, SHOW_ACTIVITY_DEFAULT: SHOW_ACTIVITY_DEFAULT };

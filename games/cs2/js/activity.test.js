@@ -32,3 +32,9 @@ test("flag 16 (kRootNames): only root recipient sees real name + is shown", () =
   // admin-but-not-root under flags 16 alone: not shown
   assert.strictEqual(computeActivitySource(16, "ADMIN", "gkh", true, false, false).show, false);
 });
+test("show=false short-circuit: name is the generic label even when recipient is the actor", () => {
+  // flags 0 => not shown; recipientIsActor alone would set useReal, but name must stay generic when !show
+  const r = computeActivitySource(0, "ADMIN", "gkh", false, false, true);
+  assert.strictEqual(r.show, false);
+  assert.strictEqual(r.name, "ADMIN");
+});
