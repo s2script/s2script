@@ -1,0 +1,6 @@
+{
+  "name": "@s2script/adminhelp",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "s2script": { "apiVersion": "1.x" }
+}
