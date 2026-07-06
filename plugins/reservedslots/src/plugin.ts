@@ -30,6 +30,7 @@ export function onLoad(): void {
     if (admin && admin.hasFlags(ADMFLAG.RESERVATION)) return; // reserved player — always allowed
     const max = Server.maxPlayers;
     if (max <= 0) return; // maxPlayers unavailable (degrade) — never kick on bad data
+    if (reserved >= max) return; // misconfig: reserved >= capacity would kick everyone — treat as disabled
     if (Player.allConnected().length > max - reserved) {
       c.kick(KICK_MESSAGE);
     }
