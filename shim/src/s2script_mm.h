@@ -12,6 +12,9 @@ class IGameEvent;
 class ISource2GameClients;
 class CCommand;
 class CPlayerSlot;
+// Forward-declared for the ClientConnect hook (Slice 6.18); the reject-reason buffer is left
+// untouched (writing it is the tier1 dlopen-cascade risk), so a pointer forward-decl suffices.
+class CBufferString;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
@@ -31,12 +34,22 @@ public:
     // (slot, CCommand) — no low-level detour. Installed in Load() once ISource2GameClients is acquired.
     void Hook_ClientCommand(CPlayerSlot slot, const CCommand& args);
 
+    // ClientConnect hook (Slice 6.18) — the engine callback when a client attempts to connect (NOT called
+    // for bots). Returning false rejects the connection (eiface.h:569-571). Sibling of Hook_ClientCommand
+    // on the same m_gameClients interface; rejects a banned SteamID64 (via s2script_core_ban_check).
+    // `unsigned long long` (not the Valve `uint64` typedef) because META_NO_HL2SDK keeps HL2SDK basetypes
+    // out of this header; on Linux `uint64` IS `unsigned long long` (platform.h), so the .cpp definition's
+    // `uint64` matches this declaration exactly and SH_MEMBER binds the hook.
+    bool Hook_ClientConnect(CPlayerSlot slot, const char* name, unsigned long long xuid, const char* netid,
+                            bool unk1, CBufferString* rejectReason);
+
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
     ISource2GameClients* m_gameClients = nullptr;
     bool m_frameHookInstalled  = false;
     bool m_eventHookInstalled  = false;
     bool m_clientCmdHookInstalled = false;
+    bool m_clientConnectHookInstalled = false;
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }
