@@ -339,6 +339,14 @@ thread_local! {
     /// no engine-op on empty teardown. `remove_by_owner` on unload; reset on shutdown.
     static CHAT_MSG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Client-lifecycle subscriber mux (Clients sub-project): name → per-plugin subscribers, keyed by
+    /// the lifecycle event name ("connect"/"putinserver"/"active"/"fullyconnect"/"disconnect"/
+    /// "settingschanged"). Same EventMux shape/discipline as EVENT_MUX; notify-only (a handler's return
+    /// is ignored — no HookResult collapse). The shim's six lifecycle hooks are installed unconditionally
+    /// at Load, so there is no per-subscribe engine-op and no engine-op on empty teardown.
+    /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
+    static CLIENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
     /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
@@ -863,6 +871,32 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // One-shot file load (first plugin to import @s2script/bans triggers this).
   if (!__s2_ban_mark_loaded()) { __s2_ban_load(); }
   globalThis.__s2pkg_bans = { Bans: __s2_bans };   // named export `Bans`
+  // --- Clients sub-project: @s2script/clients (engine-generic slot-backed Client + lifecycle events).
+  //     Client wraps only EXISTING client_* natives (no new engine primitive); Clients.on* subscribe via
+  //     __s2_client_subscribe and construct a Client from the dispatched slot. Identity = slot (a client's
+  //     slot is stable for its connection; a reused slot is a fresh onConnect). ---
+  function Client(slot) { this.slot = slot | 0; }
+  Client.prototype.isValid = function () { return __s2_client_valid(this.slot); };
+  Object.defineProperty(Client.prototype, "steamId",     { get: function () { return __s2_client_steamid(this.slot); } });
+  Object.defineProperty(Client.prototype, "name",        { get: function () { var n = __s2_client_name(this.slot); return n == null ? "" : n; } });
+  Object.defineProperty(Client.prototype, "userId",      { get: function () { return __s2_client_userid(this.slot); } });
+  Object.defineProperty(Client.prototype, "signonState", { get: function () { return __s2_client_signon(this.slot); } });
+  Object.defineProperty(Client.prototype, "isBot",       { get: function () { return __s2_client_steamid(this.slot) === "0"; } });
+  Client.prototype.kick = function (reason)  { __s2_client_kick(this.slot, reason == null ? "" : String(reason)); };
+  Client.prototype.chat = function (message) { __s2_client_print(this.slot, String(message)); };
+  var __s2_MAX_CLIENTS = 64;
+  function __s2_client_on(event, h) { __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
+  var __s2_clients = {
+    onConnect:         function (h) { __s2_client_on("connect", h); },
+    onPutInServer:     function (h) { __s2_client_on("putinserver", h); },
+    onActive:          function (h) { __s2_client_on("active", h); },
+    onFullyConnect:    function (h) { __s2_client_on("fullyconnect", h); },
+    onDisconnect:      function (h) { __s2_client_on("disconnect", h); },
+    onSettingsChanged: function (h) { __s2_client_on("settingschanged", h); },
+    fromSlot: function (slot) { slot = slot | 0; return __s2_client_valid(slot) ? new Client(slot) : null; },
+    all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_valid(s)) out.push(new Client(s)); } return out; }
+  };
+  globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
 })();
 "#;
 
@@ -1733,6 +1767,55 @@ fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
     suppress
 }
 
+/// Deliver a client-lifecycle notification to the `Clients.on*` subscribers for `event` (Clients
+/// sub-project). Called from `ffi.rs`'s `s2script_core_dispatch_client_event` (the shim's six lifecycle
+/// hooks pass the event name + slot). Mirrors `dispatch_chat_message`: snapshot (release the mux borrow),
+/// `try_borrow_mut` re-entrancy guard, per-subscriber `is_live` + context clone + HandleScope/
+/// ContextScope/TryCatch + WARN-on-throw. Notify-only — each handler is called with the single Integer
+/// `slot` and its return is ignored (no suppress/HookResult collapse).
+pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
+    // Phase 1: snapshot — release CLIENT_MUX borrow before entering any context.
+    let snap = CLIENT_MUX.with(|m| m.borrow().snapshot(event));
+    if snap.is_empty() { return; }
+
+    // Phase 2: enter each subscriber's context and invoke handler(slot).
+    HOST.with(|h| {
+        // Re-entrancy guard (mirrors dispatch_chat_message / dispatch_game_event): a client handler
+        // that re-enters dispatch while HOST is already borrowed is skipped, not double-borrowed.
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, generation, handler_g) in &snap {
+            // Liveness check (release REGISTRY borrow before entering context).
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            // Per-subscriber HandleScope+ContextScope — mirrors dispatch_chat_message.
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            // Per-handler TryCatch isolates a throwing handler from the rest.
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
+            let func = v8::Local::new(tc, handler_g);
+            if func.call(tc, recv, &[slot_val]).is_none() {
+                let msg = tc.exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_client('{}'): handler '{}': {}", event, owner, msg));
+            }
+        }
+    });
+}
+
 /// Slice 6.11c: dispatch a player's CONSOLE command (from the ClientCommand hook). Unlike chat, the
 /// command name is raw (`sm_say`, not `!sm_say`), so match the EXACT registered name only — never an
 /// `sm_` fallback (that would hijack a real engine command like `say`). Returns true iff a registered
@@ -2361,6 +2444,24 @@ fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+    }));
+}
+
+/// `__s2_client_subscribe(event, handler)` — subscribe a JS fn to a client-lifecycle event name
+/// (Clients sub-project). Owner-tracked (mirror `__s2_event_subscribe`); the shim's six lifecycle hooks
+/// are installed unconditionally at Load, so there is no per-name engine-op — the "first subscriber"
+/// signal is ignored. The handler receives the raw `slot` at dispatch; the `@s2script/clients` JS
+/// wrapper builds a `Client` from it. Notify-only (the return is ignored).
+fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let event = args.get(0).to_rust_string_lossy(scope);
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        // Capture the calling plugin's (id, generation) for liveness-gated dispatch.
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, owner, generation, handler_g); });
     }));
 }
 
@@ -3051,6 +3152,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_client_print", s2_client_print);
     // Raw-chat subscriber (Slice 6.13b): register a Chat.onMessage handler.
     set_native(scope, global_obj, "__s2_chat_on_message", s2_chat_on_message);
+    // Client-lifecycle subscriber (Clients sub-project): register a Clients.on* handler.
+    set_native(scope, global_obj, "__s2_client_subscribe", s2_client_subscribe);
 
     set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
     set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
@@ -4060,6 +4163,8 @@ pub fn shutdown() {
     DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the raw-chat subscriber mux (Slice 6.13b) so a re-init starts clean.
     CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the client-lifecycle mux (Clients sub-project) so a re-init starts clean.
+    CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -4222,6 +4327,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // (a2c') Drop the plugin's Chat.onMessage subscriptions (Slice 6.13b). The Host_Say detour is
     // installed for the process lifetime (removed in the shim's Unload), so no hook-removal request.
     CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c'') Drop the plugin's client-lifecycle subscriptions (Clients sub-project). The six shim
+    // lifecycle hooks are installed for the process lifetime (removed in the shim's Unload), so no
+    // per-plugin hook-removal request is needed.
+    CLIENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -5350,6 +5459,69 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_client_signon(0))"), "-1");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_name(0))"), "null");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_find_by_userid(5))"), "-1");
+        shutdown();
+    }
+
+    /// Clients sub-project Task 1: the `@s2script/clients` prelude exposes the `Client` class + the
+    /// `Clients` namespace (6 lifecycle `on*` + `fromSlot`/`all`).  With no engine-ops table wired,
+    /// `__s2_client_valid` degrades false → `fromSlot(0)` is null and `all()` is empty; `Client.isBot`
+    /// derives from `steamId === "0"` (the no-ops steamid degrade), so a bare `new Client(0)` is a bot.
+    #[test]
+    fn clients_prelude_exposes_client_and_clients_namespace() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);                 // no ops → __s2_client_valid degrades false, steamid "0"
+        create_plugin_context("pcl");
+        assert_eq!(eval_in_context_string("pcl", "typeof globalThis.__s2pkg_clients"), "object");
+        assert_eq!(eval_in_context_string("pcl", "typeof __s2pkg_clients.Client"), "function");
+        // All 6 lifecycle subscribers + the two enumerators are present as functions.
+        for m in ["onConnect", "onPutInServer", "onActive", "onFullyConnect", "onDisconnect",
+                  "onSettingsChanged", "fromSlot", "all"] {
+            assert_eq!(
+                eval_in_context_string("pcl", &format!("typeof __s2pkg_clients.Clients.{}", m)),
+                "function", "Clients.{} must be a function", m);
+        }
+        // No engine → an empty slot: fromSlot(0) is null, all() is [].
+        assert_eq!(eval_in_context_string("pcl", "String(__s2pkg_clients.Clients.fromSlot(0))"), "null");
+        assert_eq!(eval_in_context_string("pcl", "String(__s2pkg_clients.Clients.all().length)"), "0");
+        // A Client is slot-backed; isBot derives from steamId === "0" (no-ops steamid → "0" → bot).
+        assert_eq!(eval_in_context_string("pcl", "String(new __s2pkg_clients.Client(3).slot)"), "3");
+        assert_eq!(eval_in_context_string("pcl", "String(new __s2pkg_clients.Client(3).isBot)"), "true");
+        shutdown();
+    }
+
+    /// Clients sub-project Task 1: a subscribed `onConnect` handler receives a `Client` whose `.slot`
+    /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
+    /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
+    /// `unload_plugin` (remove_by_owner teardown) further dispatches are a safe no-op.
+    #[test]
+    fn client_dispatch_delivers_client_with_slot() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        load_plugin_js("pcl", r#"
+            __s2pkg_clients.Clients.onConnect(function (c) {
+                globalThis.__cl_ran  = (globalThis.__cl_ran || 0) + 1;
+                globalThis.__cl_slot = c.slot;
+                globalThis.__cl_ctor = (c instanceof __s2pkg_clients.Client) ? 1 : 0;
+            });
+            __s2pkg_clients.Clients.onActive(function (c) {
+                globalThis.__cl_active_slot = c.slot;
+            });
+        "#, "{}");
+
+        // Dispatch "connect" slot 3 → the connect handler runs once and receives a Client(3).
+        dispatch_client_event("connect", 3);
+        assert_eq!(read_i32_global_in("pcl", "__cl_ran"), 1, "connect handler must run exactly once");
+        assert_eq!(read_i32_global_in("pcl", "__cl_slot"), 3, "handler must receive the dispatched slot");
+        assert_eq!(read_i32_global_in("pcl", "__cl_ctor"), 1, "the argument must be a Client instance");
+
+        // Independence: dispatching "active" must not re-run the connect handler.
+        dispatch_client_event("active", 5);
+        assert_eq!(read_i32_global_in("pcl", "__cl_ran"), 1, "connect handler must not run for 'active'");
+        assert_eq!(read_i32_global_in("pcl", "__cl_active_slot"), 5, "the active handler receives its own slot");
+
+        // Teardown: unload removes all of pcl's client subs; a later dispatch is a safe no-op.
+        unload_plugin("pcl");
+        dispatch_client_event("connect", 9);   // must not crash / must not deliver (context disposed)
         shutdown();
     }
 
