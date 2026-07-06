@@ -179,18 +179,26 @@
 
   // --- Activity.formatSource: SourceMod FormatActivitySource port ---
   // activity.js (concatenated ahead of pawn.js) sets globalThis.__s2_activity = { computeActivitySource, SHOW_ACTIVITY_DEFAULT }.
-  var __admin = __s2require("@s2script/admin");
-  var Admin = __admin.Admin, ADMFLAG = __admin.ADMFLAG;
   var __act = globalThis.__s2_activity;
+  // Resolve @s2script/admin lazily + memoized: at IIFE-init the admin prelude may not be registered
+  // yet, so eager resolution could abort CS2 module init; by formatSource call-time it is always present.
+  var __adminMod = null;
+  function __resolveAdmin() {
+    if (__adminMod === null) __adminMod = __s2require("@s2script/admin") || {};
+    return __adminMod;
+  }
 
   var Activity = {
     formatSource: function (actorSlot, recipientSlot) {
+      var __a = __resolveAdmin();
+      var Admin = __a.Admin, ADMFLAG = __a.ADMFLAG;
       var flags = __act.SHOW_ACTIVITY_DEFAULT;
       var actorReal, actorLabel;
       if (actorSlot < 0) { actorReal = "Console"; actorLabel = "Console"; }
       else {
         var ap = Player.fromSlot(actorSlot);
-        actorReal = (ap && ap.playerName) ? ap.playerName : "";
+        // SM FormatActivitySource: unresolvable actor name falls back to "ADMIN", not "".
+        actorReal = (ap && ap.playerName) ? ap.playerName : "ADMIN";
         var aAdmin = Admin.forSlot(actorSlot);
         actorLabel = (aAdmin && aAdmin.hasFlags(ADMFLAG.GENERIC)) ? "ADMIN" : "PLAYER";
       }
