@@ -7,8 +7,11 @@
 import { Clients } from "@s2script/clients";
 
 export function onLoad(): void {
-  Clients.onConnect((c) =>
-    console.log(`[clients-demo] connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot}`));
+  Clients.onConnect((c) => {
+    console.log(`[clients-demo] connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} ip=${c.ip}`);
+    c.print("s2script clients-demo: connected");
+    console.log(`[clients-demo] kickWithReason surface: typeof=${typeof c.kickWithReason}`);
+  });
   Clients.onPutInServer((c) =>
     console.log(`[clients-demo] putInServer slot=${c.slot} name=${c.name}`));
   Clients.onActive((c) =>

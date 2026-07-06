@@ -890,6 +890,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Object.defineProperty(Client.prototype, "isBot",       { get: function () { return __s2_client_steamid(this.slot) === "0"; } });
   Client.prototype.kick = function (reason)  { __s2_client_kick(this.slot, reason == null ? "" : String(reason)); };
   Client.prototype.chat = function (message) { __s2_client_print(this.slot, String(message)); };
+  Client.prototype.print = function (msg) { __s2_client_console_print(this.slot, String(msg) + "\n"); };
+  Object.defineProperty(Client.prototype, "ip", { get: function () {
+    var a = __s2_client_address(this.slot); if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
+  } });
   var __s2_MAX_CLIENTS = 64;
   function __s2_client_on(event, h) { __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
   var __s2_clients = {
@@ -901,6 +905,23 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     onSettingsChanged: function (h) { __s2_client_on("settingschanged", h); },
     fromSlot: function (slot) { slot = slot | 0; return __s2_client_valid(slot) ? new Client(slot) : null; },
     all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_valid(s)) out.push(new Client(s)); } return out; }
+  };
+  var __s2_pendingKicks = {};
+  var __s2_kickWired = false;
+  function __s2_wireKickOnActive() {
+    if (__s2_kickWired) return; __s2_kickWired = true;
+    __s2_client_on("active", function (c) {
+      var p = __s2_pendingKicks[c.slot]; if (!p) return;
+      delete __s2_pendingKicks[c.slot];
+      c.chat(p.reason); c.print(p.reason);
+      globalThis.__s2pkg_timers.delay(p.delay * 1000).then(function () {
+        var cc = __s2_clients.fromSlot(c.slot); if (cc) cc.kick(p.reason);
+      });
+    });
+  }
+  Client.prototype.kickWithReason = function (reason, delaySeconds) {
+    __s2_wireKickOnActive();
+    __s2_pendingKicks[this.slot] = { reason: String(reason), delay: (delaySeconds == null ? 5 : delaySeconds) };
   };
   globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
 })();
@@ -6447,6 +6468,50 @@ mod frame_tests {
         // address returns "" (empty string, NOT null) without the op.
         assert_eq!(eval_in_context_string("p", "__s2_client_address(0)"), "");
         assert_eq!(eval_in_context_string("p", "typeof __s2_client_address(0)"), "string");
+        shutdown();
+    }
+
+    /// Ban-reason sub-project 2: the `@s2script/clients` prelude exposes `Client.prototype.print`,
+    /// the `ip` getter, and `Client.prototype.kickWithReason` on the module surface.  With no engine
+    /// ops, `print` is a no-op (returns undefined), `ip` returns "" (address degrade → ""), and
+    /// `kickWithReason` is a callable function.  Also verifies the ":port" strip logic via a faked
+    /// `__s2_client_address` in-isolate.
+    #[test]
+    fn clients_prelude_exposes_print_ip_and_kick_with_reason() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        set_engine_ops(None);   // no ops → __s2_client_address returns ""
+        create_plugin_context("pcl2");
+        // print is a function on the prototype.
+        assert_eq!(eval_in_context_string("pcl2", "typeof __s2pkg_clients.Client.prototype.print"), "function");
+        // kickWithReason is a function on the prototype.
+        assert_eq!(eval_in_context_string("pcl2", "typeof __s2pkg_clients.Client.prototype.kickWithReason"), "function");
+        // ip getter: no engine → address "" → ip "".
+        assert_eq!(eval_in_context_string("pcl2", "new __s2pkg_clients.Client(0).ip"), "");
+        // print is a no-op without the op (returns undefined, never throws).
+        assert_eq!(eval_in_context_string("pcl2", "String(new __s2pkg_clients.Client(0).print('hello'))"), "undefined");
+        // ":port" strip logic: fake __s2_client_address then check the getter strips correctly.
+        assert_eq!(
+            eval_in_context_string("pcl2",
+                "(function () { \
+                    var orig = globalThis.__s2_client_address; \
+                    globalThis.__s2_client_address = function () { return \"1.2.3.4:27005\"; }; \
+                    var ip = new __s2pkg_clients.Client(0).ip; \
+                    globalThis.__s2_client_address = orig; \
+                    return ip; \
+                }())"),
+            "1.2.3.4");
+        // address with no colon returns the value unchanged.
+        assert_eq!(
+            eval_in_context_string("pcl2",
+                "(function () { \
+                    var orig = globalThis.__s2_client_address; \
+                    globalThis.__s2_client_address = function () { return \"1.2.3.4\"; }; \
+                    var ip = new __s2pkg_clients.Client(0).ip; \
+                    globalThis.__s2_client_address = orig; \
+                    return ip; \
+                }())"),
+            "1.2.3.4");
         shutdown();
     }
 
