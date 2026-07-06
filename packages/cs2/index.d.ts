@@ -37,6 +37,9 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly aimPunchServices: AimPunchServices | null;
   /** Best-effort velocity write (m_vecAbsVelocity); returns false if stale/unresolved. */
   setVelocity(x: number, y: number, z: number): boolean;
+  /** The pawn's MoveType_t (uint8; null on a stale ref). Setting writes both m_MoveType and
+   *  m_nActualMoveType + notifies. Values (MoveType_t): NONE=0, WALK=2, NOCLIP=7. */
+  moveType: number | null;
   /** Kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale). */
   slay(): void;
 }

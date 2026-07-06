@@ -170,6 +170,25 @@
     return !!ok;
   };
 
+  // pawn.moveType — the pawn's MoveType_t (a uint8 enum → not codegen'd, so hand-written). GET reads
+  // m_MoveType (null on a stale ref). SET writes BOTH m_MoveType AND m_nActualMoveType (CS2 uses the
+  // Type/ActualType pair — one alone may not take) + notifyStateChanged. @s2script/funcommands uses this
+  // for noclip (NOCLIP=7 <-> WALK=2) and freeze (NONE=0). MoveType_t (const.h): NONE=0, WALK=2, NOCLIP=7.
+  Object.defineProperty(Pawn.prototype, "moveType", {
+    get: function () {
+      var o = __s2_schema_offset("CBaseEntity", "m_MoveType");
+      return o < 0 ? null : this.ref.readUInt8(o);
+    },
+    set: function (v) {
+      var o1 = __s2_schema_offset("CBaseEntity", "m_MoveType");
+      var o2 = __s2_schema_offset("CBaseEntity", "m_nActualMoveType");
+      if (o1 < 0) return;
+      var ok = this.ref.writeUInt8(o1, v | 0);
+      if (o2 >= 0) this.ref.writeUInt8(o2, v | 0);
+      if (ok) this.ref.notifyStateChanged(o1);
+    }
+  });
+
   // slot -> controller entity (index slot+1) -> m_hPlayerPawn handle -> pawn EntityRef.
   Pawn.forSlot = function (slot) {
     var PAWN_HANDLE = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
