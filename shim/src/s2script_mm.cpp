@@ -42,6 +42,11 @@
 #include <engine/igameeventsystem.h>
 #include <networksystem/inetworkmessages.h>
 
+// INetworkGameServer + CGlobalVars (via edict.h) — the held game-server pointer is cast to
+// INetworkGameServer* for the server-info ops (reservedslots+basetriggers): GetMaxClients /
+// GetMapName / GetGlobals()->curtime (typed vtable calls; the compiler derives the index).
+#include <iserver.h>
+
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <link.h>       // dl_iterate_phdr, ElfW
@@ -692,6 +697,36 @@ static void s2_server_command(const char* cmd) {
 static int s2_server_map_valid(const char* map) {
     if (!s_pEngine || !map) return 0;
     return s_pEngine->IsMapValid(map) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Server-info ops (reservedslots+basetriggers) — typed vtable calls on the SAME
+// game-server pointer the 5D.2 client-list code dereferences (INetworkServerService +
+// s_offGameServer). We cast that void* to INetworkGameServer* and call the typed methods
+// (GetMaxClients / GetMapName / GetGlobals()->curtime) so the compiler derives the vtable
+// index from iserver.h — no manual index math. Degrade-never-crash: null → 0 / "" / 0.
+// ---------------------------------------------------------------------------
+static INetworkGameServer* S2_GameServer() {
+    if (!s_pNetworkServerService || s_offGameServer < 0) return nullptr;
+    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
+    return reinterpret_cast<INetworkGameServer*>(gs);
+}
+static int s2_server_max_clients() {
+    INetworkGameServer* gs = S2_GameServer();
+    return gs ? gs->GetMaxClients() : 0;
+}
+static std::string s_mapNameBuf;
+static const char* s2_server_map_name() {
+    s_mapNameBuf = "";
+    INetworkGameServer* gs = S2_GameServer();
+    if (gs) { const char* m = gs->GetMapName(); if (m) s_mapNameBuf = m; }
+    return s_mapNameBuf.c_str();
+}
+static float s2_server_game_time() {
+    INetworkGameServer* gs = S2_GameServer();
+    if (!gs) return 0.0f;
+    CGlobalVars* g = gs->GetGlobals();
+    return g ? g->curtime : 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -1542,6 +1577,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Console print + client address (ban-reason sub-project 2): APPENDED after pawn_commit_suicide; order MUST match S2EngineOps.
     ops.client_console_print = &s2_client_console_print;
     ops.client_address       = &s2_client_address;
+    // Server-info ops (reservedslots+basetriggers): APPENDED after client_address; order MUST match S2EngineOps.
+    ops.server_max_clients = &s2_server_max_clients;
+    ops.server_map_name    = &s2_server_map_name;
+    ops.server_game_time   = &s2_server_game_time;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

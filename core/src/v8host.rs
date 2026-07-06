@@ -116,6 +116,10 @@ pub type PawnCommitSuicideFn = extern "C" fn(idx: c_int, serial: c_int);
 // --- ban-reason sub-project 2: console-print + client-address ops (C-ABI; the C header must match exactly) ---
 pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
 pub type ClientAddressFn      = extern "C" fn(slot: c_int) -> *const c_char;
+// --- reservedslots+basetriggers: server-info ops (C-ABI; the C header must match exactly) ---
+pub type ServerMaxClientsFn = extern "C" fn() -> c_int;          // GetMaxClients(); 0 if unavailable
+pub type ServerMapNameFn    = extern "C" fn() -> *const c_char;  // GetMapName(); "" if unavailable
+pub type ServerGameTimeFn   = extern "C" fn() -> f32;            // GetGlobals()->curtime; 0 if unavailable
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -173,6 +177,10 @@ pub struct S2EngineOps {
     // --- ban-reason sub-project 2 (APPENDED after pawn_commit_suicide; order is the ABI; do not reorder) ---
     pub client_console_print: Option<ClientConsolePrintFn>,
     pub client_address:       Option<ClientAddressFn>,
+    // --- reservedslots+basetriggers: server-info ops (APPENDED after client_address; order is the ABI; do not reorder above) ---
+    pub server_max_clients: Option<ServerMaxClientsFn>,
+    pub server_map_name:    Option<ServerMapNameFn>,
+    pub server_game_time:   Option<ServerGameTimeFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -634,6 +642,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
     getCvar: function (name) { return __s2_cvar_get(String(name)); },                 // "" if absent
     setCvar: function (name, value) { __s2_server_command(String(name) + " " + String(value)); },
+    get maxPlayers() { return __s2_server_max_clients(); },   // GetMaxClients(); 0 if unavailable
+    get mapName() { return __s2_server_map_name(); },         // GetMapName(); "" if unavailable
+    get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
   // --- Slice 6.6: damage module (Damage.onPre + block-scoped DamageInfo over the current CTakeDamageInfo).
@@ -3229,6 +3240,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_plugin_load", s2_plugin_load);
     set_native(scope, global_obj, "__s2_server_command", s2_server_command);
     set_native(scope, global_obj, "__s2_server_map_valid", s2_server_map_valid);
+    // reservedslots+basetriggers: server-info natives (max clients / map name / game time).
+    set_native(scope, global_obj, "__s2_server_max_clients", s2_server_max_clients);
+    set_native(scope, global_obj, "__s2_server_map_name", s2_server_map_name);
+    set_native(scope, global_obj, "__s2_server_game_time", s2_server_game_time);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
     set_native(scope, global_obj, "__s2_config_read_raw", s2_config_read_raw);
     set_native(scope, global_obj, "__s2_config_write_raw", s2_config_write_raw);
@@ -3796,6 +3811,46 @@ fn s2_server_map_valid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
             Some(if f(cmap.as_ptr()) != 0 { 1 } else { 0 })
         })().unwrap_or(0);
         rv.set_double(valid as f64);
+    }));
+}
+
+/// `__s2_server_max_clients() -> number` — the server's max client count. 0 without the op / null.
+fn s2_server_max_clients(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = scope;
+        let n: i32 = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.server_max_clients?;
+            Some(f())
+        })().unwrap_or(0);
+        rv.set_double(n as f64);
+    }));
+}
+
+/// `__s2_server_map_name() -> string` — the current map name (BSP). "" without the op / null.
+fn s2_server_map_name(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let s: String = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.server_map_name?;
+            let ptr = f();
+            if ptr.is_null() { return None; }
+            Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        })().unwrap_or_default();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// `__s2_server_game_time() -> number` — the map time (GetGlobals()->curtime) in seconds. 0 without the op / null.
+fn s2_server_game_time(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = scope;
+        let t: f32 = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.server_game_time?;
+            Some(f())
+        })().unwrap_or(0.0);
+        rv.set_double(t as f64);
     }));
 }
 
@@ -5869,6 +5924,9 @@ mod frame_tests {
             pawn_commit_suicide: None,
             client_console_print: None,
             client_address: None,
+            server_max_clients: None,
+            server_map_name: None,
+            server_game_time: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -5997,6 +6055,9 @@ mod frame_tests {
             pawn_commit_suicide: None,
             client_console_print: None,
             client_address: None,
+            server_max_clients: None,
+            server_map_name: None,
+            server_game_time: None,
         }
     }
 
@@ -6575,6 +6636,15 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_cvar_get('sv_gravity'))"), "");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.getCvar"), "function");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.setCvar"), "function");
+        // reservedslots+basetriggers: server-info natives degrade (max_clients->0, map_name->"", game_time->0)
+        // and the @s2script/server module exposes maxPlayers/mapName/gameTime getters that pass them through.
+        assert_eq!(eval_in_context_string("p", "String(__s2_server_max_clients())"), "0");
+        assert_eq!(eval_in_context_string("p", "__s2_server_map_name()"), "");
+        assert_eq!(eval_in_context_string("p", "typeof __s2_server_map_name()"), "string");
+        assert_eq!(eval_in_context_string("p", "String(__s2_server_game_time())"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.maxPlayers)"), "0");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.mapName)"), "");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.gameTime)"), "0");
         // Slice 6.14: __s2_pawn_commit_suicide degrades to a no-op (undefined) without the op.
         assert_eq!(eval_in_context_string("p", "String(__s2_pawn_commit_suicide(1,7))"), "undefined");
         // Slice 6.12: plugin natives degrade (no file-watch in-isolate → empty list, ops false) + module wires.

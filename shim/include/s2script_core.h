@@ -95,6 +95,10 @@ typedef void (*s2_pawn_commit_suicide_fn)(int idx, int serial);
 typedef void (*s2_client_console_print_fn)(int slot, const char* msg);
 // Client IP address ("IP:port"; "" for a bot/no netchannel). Valid until the next call.
 typedef const char* (*s2_client_address_fn)(int slot);
+// Server-info ops (reservedslots+basetriggers) — typed calls on the held INetworkGameServer*.
+typedef int         (*s2_server_max_clients_fn)(void); /* GetMaxClients(); 0 if unavailable */
+typedef const char* (*s2_server_map_name_fn)(void);    /* GetMapName(); "" if unavailable. Valid until next call. */
+typedef float       (*s2_server_game_time_fn)(void);   /* GetGlobals()->curtime; 0 if unavailable */
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -148,6 +152,10 @@ typedef struct {
     /* Console print + client address (ban-reason sub-project 2) — APPENDED after pawn_commit_suicide; order is the ABI. */
     s2_client_console_print_fn client_console_print;
     s2_client_address_fn       client_address;
+    /* Server-info ops (reservedslots+basetriggers) — APPENDED after client_address; order is the ABI. */
+    s2_server_max_clients_fn server_max_clients;
+    s2_server_map_name_fn    server_map_name;
+    s2_server_game_time_fn   server_game_time;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

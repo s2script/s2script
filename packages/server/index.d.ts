@@ -12,4 +12,10 @@ export declare const Server: {
    * sanitize/quote any untrusted value to avoid command injection. Queued: applies next frame.
    */
   setCvar(name: string, value: string): void;
+  /** The server's configured max client count (`GetMaxClients()`). `0` if unavailable. */
+  readonly maxPlayers: number;
+  /** The current map name (`GetMapName()`, the BSP). `""` if unavailable. */
+  readonly mapName: string;
+  /** The current map time in seconds (`GetGlobals()->curtime`). `0` if unavailable. */
+  readonly gameTime: number;
 };
