@@ -92,6 +92,17 @@
     __s2_client_kick(this.slot, String(reason == null ? "Kicked by admin" : reason));
   };
 
+  // player.setName(name) — overwrite the player's display name (m_iszPlayerName on the controller).
+  // Offset live-resolved via __s2_schema_offset (never baked); notifyStateChanged propagates the write.
+  // Returns true on success, false if the field is unresolved or the ref is stale.
+  Player.prototype.setName = function (name) {
+    var off = __s2_schema_offset("CBasePlayerController", "m_iszPlayerName");
+    if (off < 0) return false;
+    var ok = this.ref.writeString(off, 128, String(name));
+    if (ok) this.ref.notifyStateChanged(off);
+    return ok;
+  };
+
   // Player.target(pattern, callerSlot) -> Player[] — SourceMod target-string resolution (core set).
   //   "#<userid>" -> that player; "@all" -> allConnected; "@me" -> the caller (empty from console);
   //   otherwise a case-insensitive name match (exact wins, else all partials). Empty on no match.
@@ -143,6 +154,11 @@
       return h ? new Player(h) : null;
     }, enumerable: true, configurable: true,
   });
+
+  // pawn.slay() — kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale).
+  Pawn.prototype.slay = function () {
+    __s2_pawn_commit_suicide(this.ref.index, this.ref.serial);
+  };
 
   // pawn.setVelocity(x,y,z) — best-effort velocity write (serial-gated). Writes m_vecAbsVelocity's
   // 3 floats + one notifyStateChanged; returns false if the field is unresolved or the ref is stale.

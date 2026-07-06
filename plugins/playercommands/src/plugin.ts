@@ -1,6 +1,6 @@
 import { Commands } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
-import { Player } from "@s2script/cs2";
+import { Player, Events } from "@s2script/cs2";
 
 // Slice 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY). Reliable damage (a direct health write, clamped >= 1)
 // plus a best-effort velocity knockback (may be reset by physics next tick; the slice doesn't depend on it).
@@ -26,7 +26,49 @@ export function onLoad(): void {
     ctx.reply("[SM] Slapped " + n + " player" + (n === 1 ? "" : "s") + " for " + damage + " damage.");
   });
 
-  console.log("[playercommands] onLoad — slap registered");
+  // 6.14 — sm_slay <target> (ADMFLAG.SLAY). Kills each matched player's pawn via CommitSuicide.
+  // A null pawn (dead/absent) is skipped; the native is serial-gated and no-ops on a stale ref.
+  Commands.registerAdmin("sm_slay", ADMFLAG.SLAY, (ctx) => {
+    const targetStr = ctx.arg(0);
+    if (!targetStr) { ctx.reply("Usage: sm_slay <target>"); return; }
+    const targets = Player.target(targetStr, ctx.callerSlot);
+    if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
+    let n = 0;
+    for (const p of targets) {
+      const pawn = p.pawn;
+      if (!pawn) continue;
+      pawn.slay();
+      console.log("[playercommands] sm_slay slot=" + p.slot);
+      n++;
+    }
+    ctx.reply("[SM] Slayed " + n + " player" + (n === 1 ? "" : "s") + ".");
+  });
+
+  // 6.14 — sm_rename <target> <newname> (ADMFLAG.SLAY). Single-target only (reject ambiguous multi).
+  // Strips control chars (< 0x20), bounds to 127 bytes, writes m_iszPlayerName, then fires player_changename.
+  Commands.registerAdmin("sm_rename", ADMFLAG.SLAY, (ctx) => {
+    const targetStr = ctx.arg(0);
+    const rawName = ctx.argsFrom(1).trim();
+    if (!targetStr || !rawName) { ctx.reply("Usage: sm_rename <target> <newname>"); return; }
+    const targets = Player.target(targetStr, ctx.callerSlot);
+    if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
+    if (targets.length > 1) {
+      ctx.reply("[SM] Ambiguous target — matched " + targets.length + " players. Use #userid or full name.");
+      return;
+    }
+    const p = targets[0];
+    // Strip control chars (< 0x20) and bound to 127 bytes.
+    const newname = rawName.replace(/[\x00-\x1F]/g, "").slice(0, 127);
+    if (!newname) { ctx.reply("[SM] Invalid name (empty after sanitization)."); return; }
+    const oldname = p.playerName ?? "";
+    p.setName(newname);
+    // Best-effort: fire player_changename so other plugins and clients learn of the rename.
+    Events.fire("player_changename", { userid: p.userId, oldname, newname });
+    console.log("[playercommands] sm_rename slot=" + p.slot + " '" + oldname + "' -> '" + newname + "'");
+    ctx.reply("[SM] Renamed " + oldname + " to " + newname + ".");
+  });
+
+  console.log("[playercommands] onLoad — slap/slay/rename registered");
 }
 
 export function onUnload(): void { console.log("[playercommands] onUnload"); }

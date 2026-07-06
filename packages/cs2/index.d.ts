@@ -37,6 +37,8 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly aimPunchServices: AimPunchServices | null;
   /** Best-effort velocity write (m_vecAbsVelocity); returns false if stale/unresolved. */
   setVelocity(x: number, y: number, z: number): boolean;
+  /** Kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale). */
+  slay(): void;
 }
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */
@@ -65,6 +67,8 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   readonly steamId: string;
   /** Disconnect this player (engine KickClient). */
   kick(reason?: string): void;
+  /** Overwrite the player's display name (m_iszPlayerName); returns false if stale/unresolved. */
+  setName(name: string): boolean;
 }
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */
