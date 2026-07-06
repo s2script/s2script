@@ -101,6 +101,18 @@ export declare const Events: {
 };
 
 /**
+ * Show-activity helper: SourceMod's FormatActivitySource per-recipient decision.
+ * For each connected recipient, call `formatSource(actorSlot, recipientSlot)` to get
+ * `{ show, name }` — whether to display the action to that recipient, and under what name
+ * (real name for admins / self, generic label for non-admins, per the SHOW_ACTIVITY flags).
+ * `actorSlot < 0` = server console (always real "Console" label).
+ */
+export declare const Activity: {
+  /** SourceMod FormatActivitySource: per-recipient {show, name} for an admin action by actorSlot (actorSlot < 0 = server console). */
+  formatSource(actorSlot: number, recipientSlot: number): { show: boolean; name: string };
+};
+
+/**
  * CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). Prepend one to a chat
  * message to color it — CS2 requires a leading control byte for the message to render at all. The plugin
  * owns color (SourceMod-parity): e.g. `Chat.toAll(ChatColors.Green + "[SM] hello")`.

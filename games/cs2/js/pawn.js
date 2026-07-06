@@ -177,5 +177,29 @@
     BlueGrey: "\x0D", Purple: "\x0E", LightRed: "\x0F", Orange: "\x10"
   });
 
-  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors };
+  // --- Activity.formatSource: SourceMod FormatActivitySource port ---
+  // activity.js (concatenated ahead of pawn.js) sets globalThis.__s2_activity = { computeActivitySource, SHOW_ACTIVITY_DEFAULT }.
+  var __admin = __s2require("@s2script/admin");
+  var Admin = __admin.Admin, ADMFLAG = __admin.ADMFLAG;
+  var __act = globalThis.__s2_activity;
+
+  var Activity = {
+    formatSource: function (actorSlot, recipientSlot) {
+      var flags = __act.SHOW_ACTIVITY_DEFAULT;
+      var actorReal, actorLabel;
+      if (actorSlot < 0) { actorReal = "Console"; actorLabel = "Console"; }
+      else {
+        var ap = Player.fromSlot(actorSlot);
+        actorReal = (ap && ap.playerName) ? ap.playerName : "";
+        var aAdmin = Admin.forSlot(actorSlot);
+        actorLabel = (aAdmin && aAdmin.hasFlags(ADMFLAG.GENERIC)) ? "ADMIN" : "PLAYER";
+      }
+      var recipientIsAdmin = false, recipientIsRoot = false;
+      var rAdmin = Admin.forSlot(recipientSlot);
+      if (rAdmin) { recipientIsAdmin = rAdmin.hasFlags(ADMFLAG.GENERIC); recipientIsRoot = rAdmin.hasFlags(ADMFLAG.ROOT); }
+      return __act.computeActivitySource(flags, actorLabel, actorReal, recipientIsAdmin, recipientIsRoot, actorSlot === recipientSlot);
+    }
+  };
+
+  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity };
 })();
