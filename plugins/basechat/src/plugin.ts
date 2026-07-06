@@ -29,9 +29,10 @@ function doAdminChat(actorSlot: number, msg: string): void {
 
 function doPsay(actorSlot: number, target: Player, msg: string): void {
   const name = actorName(actorSlot);
-  Chat.toSlot(target.slot, " " + GREEN + "(private) " + name + ": " + WHITE + msg);
+  const tn = target.playerName || "";
+  // Recipient sees who it was directed to + who sent it; sender gets a confirmation echo.
+  Chat.toSlot(target.slot, " " + GREEN + "(private to " + tn + ") " + name + ": " + WHITE + msg);
   if (actorSlot >= 0 && actorSlot !== target.slot) {
-    const tn = target.playerName || "";
     Chat.toSlot(actorSlot, " " + GREEN + "(private to " + tn + ") " + WHITE + msg);
   }
 }
