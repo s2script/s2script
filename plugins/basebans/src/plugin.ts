@@ -19,6 +19,14 @@ import { Bans } from "@s2script/bans";
 import { Clients } from "@s2script/clients";
 import { Player } from "@s2script/cs2";
 
+// The message a banned player sees (chat + console) — shared by the immediate sm_ban path and the
+// reconnect enforcement so the wording is identical.
+function banMessage(reason: string, until: number): string {
+  const now = Date.now() / 1000;
+  const expiry = until === 0 ? "permanent" : "expires in " + Math.ceil((until - now) / 60) + " min";
+  return "[SM] You are banned: " + (reason || "No reason") + " (" + expiry + ")";
+}
+
 export function onLoad(): void {
   // sm_ban <target> <minutes> [reason] — ADMFLAG.BAN
   // Resolves the target live, validates the SteamID, adds the ban, and kicks the player.
@@ -57,7 +65,12 @@ export function onLoad(): void {
     }
 
     Bans.add(sid, minutes, reason);
-    p.kick("Banned: " + (reason || "No reason"));
+    // Show the reason (chat + console, repeated) then kick — the player is online/in-game, so
+    // kickWithReason delivers immediately. (A plain kick would disconnect them with no reason shown.)
+    const b = Bans.get(sid);
+    const c = Clients.fromSlot(p.slot);
+    if (c) c.kickWithReason(banMessage(reason, b ? b.until : 0));
+    else p.kick("Banned: " + (reason || "No reason"));   // fallback: no Client for the slot
 
     const durStr = minutes > 0
       ? " for " + minutes + " minute" + (minutes === 1 ? "" : "s")
@@ -110,8 +123,7 @@ export function onLoad(): void {
     if (!b) return;
     const now = Date.now() / 1000;
     if (b.until !== 0 && b.until <= now) return;           // expired — let them in
-    const expiry = b.until === 0 ? "permanent" : "expires in " + Math.ceil((b.until - now) / 60) + " min";
-    c.kickWithReason("[SM] You are banned: " + (b.reason || "No reason") + " (" + expiry + ")");
+    c.kickWithReason(banMessage(b.reason, b.until));
   });
 
   console.log("[basebans] onLoad - sm_ban/sm_unban/sm_addban + connect enforcement registered");
