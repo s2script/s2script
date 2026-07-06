@@ -4,9 +4,11 @@
  * Resolved at runtime via `globalThis.__s2pkg_bans`; no game-specific symbols.
  * Import: `import { Bans } from "@s2script/bans";`
  *
- * The store is host-global in core (its reader is the C++ ClientConnect hook, not a JS context),
- * populated from `addons/s2script/configs/bans.json` via the config bridge. A banned SteamID64 is
- * rejected at connect time by the shim.
+ * The store is host-global in core, populated from `addons/s2script/configs/bans.json` via the config
+ * bridge. Enforcement is JS-driven: a ban plugin (e.g. @s2script/basebans) registers a
+ * `Clients.onConnect` handler that looks a connecting SteamID64 up here and, if banned, shows the
+ * reason then kicks (`Client.kickWithReason`) — a banned player is admitted, shown their reason, and
+ * kicked, not instant-rejected. A 3rd-party ban system registers its own onConnect against its own store.
  */
 
 /** A ban entry's value: expiry + reason. `until === 0` = permanent, else unix-second expiry. */

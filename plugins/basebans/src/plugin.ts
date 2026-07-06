@@ -7,13 +7,16 @@
 //  - UNBAN (sm_unban): removes a ban by SteamID64. No live player needed — offline bans supported.
 //  - ADDBAN (sm_addban): offline ban by SteamID64 without a live player (e.g. from logs or a roster).
 //
-//  Connect enforcement: a banned SteamID64 is rejected at connect time by the shim's ClientConnect hook
-//  (engine-side, in core). This plugin manages the ban list and kicks the currently-online player; the
-//  ClientConnect reject is handled automatically by the engine layer with NO per-plugin wiring.
+//  Connect enforcement (sub-project 3): a banned SteamID64 is NOT instant-rejected at connect anymore —
+//  the shim admits every client, and this plugin enforces the ban in JS via Clients.onConnect, showing the
+//  reason (chat + console) then kicking (Client.kickWithReason). sm_ban still kicks the ONLINE player
+//  immediately; the onConnect handler is the RECONNECT enforcement + is where a 3rd party would query
+//  their own ban store instead of ours.
 
 import { Commands } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
 import { Bans } from "@s2script/bans";
+import { Clients } from "@s2script/clients";
 import { Player } from "@s2script/cs2";
 
 export function onLoad(): void {
@@ -98,7 +101,20 @@ export function onLoad(): void {
     ctx.reply("[SM] Added ban for " + sid + durStr + reasonStr + ".");
   });
 
-  console.log("[basebans] onLoad - sm_ban/sm_unban/sm_addban registered");
+  // Connect-time enforcement: admit -> show reason (chat + console) -> kick. Runs for every connecting
+  // client; a banned SteamID64 gets kickWithReason (delivered once they're in-game, then kicked ~5s later).
+  // A 3rd-party ban system would register its OWN Clients.onConnect here, querying its store instead of Bans.
+  Clients.onConnect((c) => {
+    if (c.isBot) return;                                   // bots have steamId "0" — never banned
+    const b = Bans.get(c.steamId);
+    if (!b) return;
+    const now = Date.now() / 1000;
+    if (b.until !== 0 && b.until <= now) return;           // expired — let them in
+    const expiry = b.until === 0 ? "permanent" : "expires in " + Math.ceil((b.until - now) / 60) + " min";
+    c.kickWithReason("[SM] You are banned: " + (b.reason || "No reason") + " (" + expiry + ")");
+  });
+
+  console.log("[basebans] onLoad - sm_ban/sm_unban/sm_addban + connect enforcement registered");
 }
 
 export function onUnload(): void { console.log("[basebans] onUnload"); }

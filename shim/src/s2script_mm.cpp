@@ -50,7 +50,6 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
-#include <ctime>     // time() — the ClientConnect ban check timestamp (Slice 6.18)
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -73,10 +72,9 @@ SH_DECL_HOOK2(IGameEventManager2, FireEvent, SH_NOATTRIB, 0, bool, IGameEvent*, 
 // for player CONSOLE commands — a clean (slot, CCommand), no low-level detour.
 SH_DECL_HOOK2_void(ISource2GameClients, ClientCommand, SH_NOATTRIB, 0, CPlayerSlot, const CCommand&);
 
-// ISource2GameClients::ClientConnect(CPlayerSlot, const char*, uint64, const char*, bool, CBufferString*)
-// -> bool (Slice 6.18). Returning false rejects the connection (eiface.h:569-571; NOT called for bots).
-// Pre hook only — a banned SteamID64 (arg #3, the xuid) is rejected via s2script_core_ban_check.
-SH_DECL_HOOK6(ISource2GameClients, ClientConnect, SH_NOATTRIB, 0, bool, CPlayerSlot, const char*, uint64, const char*, bool, CBufferString*);
+// (The Slice-6.18 ClientConnect reject SourceHook was removed in sub-project 3: ban enforcement moved to
+// the JS onConnect event [basebans], which admits the client then shows the reason + kicks. The core
+// s2script_core_ban_check export is retained as an available synchronous primitive but is no longer called.)
 
 // Client lifecycle notify-hooks (@s2script/clients sub-project) — six post-hooks on the same
 // m_gameClients interface. Signatures verbatim from eiface.h (:567/:578/:582/:584/:587/:599);
@@ -1199,11 +1197,6 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                             SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientCommand), false);
                 m_clientCmdHookInstalled = true;
                 META_CONPRINTF("[s2script] ClientCommand hook installed (player console commands)\n");
-                // Slice 6.18: reject banned SteamID64s at connect time (same interface, NOT called for bots).
-                SH_ADD_HOOK(ISource2GameClients, ClientConnect, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientConnect), false);
-                m_clientConnectHookInstalled = true;
-                META_CONPRINTF("[s2script] ClientConnect hook installed (ban enforcement)\n");
                 // @s2script/clients: six notify lifecycle hooks -> s2script_core_dispatch_client_event.
                 SH_ADD_HOOK(ISource2GameClients, OnClientConnected, m_gameClients,
                             SH_MEMBER(this, &S2ScriptPlugin::Hook_OnClientConnected), false);
@@ -1630,13 +1623,6 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_clientCmdHookInstalled = false;
     }
 
-    // Remove the ClientConnect hook (Slice 6.18).
-    if (m_clientConnectHookInstalled && m_gameClients) {
-        SH_REMOVE_HOOK(ISource2GameClients, ClientConnect, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientConnect), false);
-        m_clientConnectHookInstalled = false;
-    }
-
     // Remove the six client lifecycle notify-hooks (@s2script/clients).
     if (m_clientLifecycleHooksInstalled && m_gameClients) {
         SH_REMOVE_HOOK(ISource2GameClients, OnClientConnected, m_gameClients,
@@ -1747,27 +1733,10 @@ void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) 
     RETURN_META(MRES_IGNORED);         // not ours → the engine handles it normally
 }
 
-// Slice 6.18: a client is attempting to connect (NOT called for bots). Log the connect (the diagnostic that
-// live-verifies the hook fires + the xuid is the real SteamID64), then ask core whether this SteamID is
-// banned. If banned, SUPERCEDE with false (rejects with the generic engine message; a custom reject string
-// is deferred — writing rejectReason is the tier1 CBufferString::Insert dlopen-cascade risk). Else IGNORE.
-bool S2ScriptPlugin::Hook_ClientConnect(CPlayerSlot slot, const char* name, uint64 xuid, const char* netid,
-                                        [[maybe_unused]] bool unk1, [[maybe_unused]] CBufferString* rejectReason) {
-    META_CONPRINTF("[s2script] connect: slot=%d xuid=%llu name=%s netid=%s\n",
-                   slot.Get(), (unsigned long long)xuid, name ? name : "?", netid ? netid : "?");
-    char reason[256] = {0};
-    if (s2script_core_ban_check(xuid, (int64_t)time(NULL), reason, sizeof(reason))) {
-        META_CONPRINTF("[s2script] rejected banned player %s (xuid=%llu reason=%s)\n",
-                       name ? name : "?", (unsigned long long)xuid, reason);
-        RETURN_META_VALUE(MRES_SUPERCEDE, false);   // reject the connection
-    }
-    RETURN_META_VALUE(MRES_IGNORED, true);           // not banned → connect normally
-}
-
 // Client lifecycle notify-hooks (@s2script/clients sub-project). Each forwards the player slot to the
 // Task-1 dispatch (runs the JS Clients.on(name) subscribers) and RETURN_META(MRES_IGNORED) — notify-only,
 // never alters flow. The `uint64` param types match the SH_DECL_HOOK above (== the header's `unsigned long
-// long` on Linux, per the Hook_ClientConnect gotcha). Post-hooks (added `false`).
+// long` on Linux). Post-hooks (added `false`).
 void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
     s2script_core_dispatch_client_event("connect", slot.Get());
     RETURN_META(MRES_IGNORED);
