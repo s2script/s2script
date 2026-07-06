@@ -1,12 +1,13 @@
 // @s2script/funcommands — SourceMod funcommands: fun admin effects.
 //
-//   v1 ships gravity / blind / noclip / freeze — all schema-field writes (no game-function RE):
+//   v1 ships gravity / noclip / freeze — all schema-field writes (no game-function RE):
 //     - sm_gravity  -> pawn.gravityScale + actualGravityScale (generated setters)
-//     - sm_blind    -> pawn.flashDuration + flashMaxAlpha (the CS2 flashbang white-out)
 //     - sm_noclip   -> pawn.moveType toggled WALK<->NOCLIP (needs the uint8 write kind)
 //     - sm_freeze   -> pawn.moveType = NONE, auto-restored to WALK after [seconds]
-//   sm_burn (an ignite game-function with no framework sig to port) and sm_beacon (a particle/temp-entity
-//   subsystem) are DEFERRED — both are real from-scratch engine RE.
+//   With no target argument, each command targets the CALLER (self) — SM behavior.
+//   DEFERRED: sm_blind (needs a black-screen CUserMessageFade via a new client_fade op — the flashbang
+//   fields produced no visible effect), sm_burn (an ignite game-function, no framework sig to port),
+//   sm_beacon (a particle/temp-entity subsystem). All three are documented follow-ups.
 
 import { Commands, CommandContext } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
@@ -18,10 +19,15 @@ const WALK = 2;
 const NOCLIP = 7;
 const NONE = 0;
 
-// Resolve the target, apply `fn` to each live pawn, and reply with the count.
+// Resolve the target, apply `fn` to each live pawn, and reply with the count. With no target argument,
+// defaults to the caller (self) — SM behavior — unless run from the console, which must name a target.
 function forEachPawn(ctx: CommandContext, usage: string, verb: string, fn: (p: Player, pw: Pawn) => void): void {
-  if (!ctx.arg(0)) { ctx.reply("[SM] Usage: " + usage); return; }
-  const targets = Player.target(ctx.arg(0), ctx.callerSlot);
+  let pattern = ctx.arg(0);
+  if (!pattern) {
+    if (ctx.callerSlot < 0) { ctx.reply("[SM] Usage: " + usage); return; } // console must name a target
+    pattern = "@me"; // in-game with no arg → self
+  }
+  const targets = Player.target(pattern, ctx.callerSlot);
   if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
   let n = 0;
   for (const p of targets) {
@@ -41,14 +47,9 @@ export function onLoad(): void {
     });
   });
 
-  // sm_blind <target> [seconds] — flashbang-style white-out for [seconds] (0 = un-blind).
-  Commands.registerAdmin("sm_blind", ADMFLAG.SLAY, (ctx) => {
-    const secs = ctx.argFloat(1, 20);
-    forEachPawn(ctx, "sm_blind <target> [seconds]", secs <= 0 ? "Un-blinded" : "Blinded", (_p, pw) => {
-      pw.flashDuration = secs <= 0 ? 0 : secs;
-      pw.flashMaxAlpha = secs <= 0 ? 0 : 255;
-    });
-  });
+  // sm_blind is DEFERRED to the next cut — it needs a proper black screen fade (a CUserMessageFade via the
+  // SayText2 reflection path), not the flashbang fields (which produced no visible effect). Coming as a
+  // follow-up with a new client_fade op.
 
   // sm_noclip <target> — toggle noclip (WALK <-> NOCLIP).
   Commands.registerAdmin("sm_noclip", ADMFLAG.SLAY, (ctx) => {
@@ -79,7 +80,7 @@ export function onLoad(): void {
     });
   });
 
-  console.log("[funcommands] onLoad — gravity/blind/noclip/freeze/unfreeze registered (burn/beacon deferred)");
+  console.log("[funcommands] onLoad — gravity/noclip/freeze/unfreeze registered (blind/burn/beacon deferred)");
 }
 
 export function onUnload(): void {
