@@ -1,0 +1,15 @@
+# Run the Rust test suites single-threaded.
+#
+# core's `v8host::frame_tests` share a few PROCESS-GLOBAL capture buffers across tests —
+# `LOG`, `EV_SUBSCRIBED`, `EV_UNSUBSCRIBED` (all test-only `Mutex<Vec<String>>`) — and each test
+# `.clear()`s them at entry. That design assumes SERIAL execution: the V8 `HOST` isolate and the
+# `ENGINE_OPS` table are `thread_local!` (safe across parallel test threads), but those shared mock
+# buffers are not. Run in parallel, one test's `.clear()`/push corrupts a concurrent test's
+# assertion — a flaky failure that reproduces on any branch (it is not tied to a specific change,
+# only to thread scheduling).
+#
+# Forcing libtest to one thread makes `cargo test` deterministic. The full core suite runs serially
+# in well under a second, so there is no meaningful speed cost. If the frame tests are ever made
+# parallel-safe (e.g. by making those buffers `thread_local!`), this can be removed.
+[env]
+RUST_TEST_THREADS = "1"
