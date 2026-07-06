@@ -373,10 +373,11 @@ thread_local! {
     static ADMIN_FILE_LOADED: std::cell::Cell<bool> = std::cell::Cell::new(false);
 
     /// Slice 6.18: the host-global ban cache — SteamID64 → (until_unix, reason). `until == 0` = permanent;
-    /// else the unix-second expiry. Must be host-global in core (not plugin-local JS) because its reader is
-    /// the C++ `ClientConnect` hook (via the `s2script_core_ban_check` ffi export), not a JS context — the
-    /// identical constraint that forced the admin cache into core. Populated by JS via the `__s2_ban_*`
-    /// natives (loaded from bans.json through the config bridge).
+    /// else the unix-second expiry. Host-global in core (not plugin-local JS) so it is visible across all
+    /// plugin contexts (like the admin cache). Populated by JS via the `__s2_ban_*` natives (loaded from
+    /// bans.json through the config bridge). Enforcement is JS-driven (sub-project 3): a ban plugin's
+    /// `Clients.onConnect` handler reads it via `__s2_ban_get` and shows-then-kicks a banned player. The
+    /// `ban_check` ffi export below is retained as an available synchronous primitive but is no longer called.
     static BAN_CACHE: std::cell::RefCell<std::collections::HashMap<String, (i64, String)>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// One-shot guard so bans.json loads once (mirrors `ADMIN_FILE_LOADED`).
@@ -3694,7 +3695,8 @@ fn s2_ban_mark_loaded(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgu
 }
 
 /// Returns `Some(reason)` if `xuid` is currently banned (perm or unexpired), else `None`.
-/// The reader for the shim's `ClientConnect` hook (via the `s2script_core_ban_check` ffi export).
+/// Retained as an available synchronous ban-check primitive (via the `s2script_core_ban_check` ffi
+/// export); no longer called by the shim since sub-project 3 moved enforcement to the JS onConnect path.
 pub fn ban_check(xuid: u64, now: i64) -> Option<String> {
     let key = xuid.to_string();
     BAN_CACHE.with(|m| {

@@ -12,9 +12,6 @@ class IGameEvent;
 class ISource2GameClients;
 class CCommand;
 class CPlayerSlot;
-// Forward-declared for the ClientConnect hook (Slice 6.18); the reject-reason buffer is left
-// untouched (writing it is the tier1 dlopen-cascade risk), so a pointer forward-decl suffices.
-class CBufferString;
 // Forward-declared for the ClientDisconnect lifecycle hook (@s2script/clients). This header is parsed
 // before eiface.h pulls the full definition, so an opaque enum decl with the SDK's fixed underlying type
 // (`: int`, per network_connection.pb.h) is required; it is compatible with the later full definition.
