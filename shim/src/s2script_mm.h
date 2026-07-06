@@ -38,19 +38,12 @@ public:
     // (slot, CCommand) — no low-level detour. Installed in Load() once ISource2GameClients is acquired.
     void Hook_ClientCommand(CPlayerSlot slot, const CCommand& args);
 
-    // ClientConnect hook (Slice 6.18) — the engine callback when a client attempts to connect (NOT called
-    // for bots). Returning false rejects the connection (eiface.h:569-571). Sibling of Hook_ClientCommand
-    // on the same m_gameClients interface; rejects a banned SteamID64 (via s2script_core_ban_check).
-    // `unsigned long long` (not the Valve `uint64` typedef) because META_NO_HL2SDK keeps HL2SDK basetypes
-    // out of this header; on Linux `uint64` IS `unsigned long long` (platform.h), so the .cpp definition's
-    // `uint64` matches this declaration exactly and SH_MEMBER binds the hook.
-    bool Hook_ClientConnect(CPlayerSlot slot, const char* name, unsigned long long xuid, const char* netid,
-                            bool unk1, CBufferString* rejectReason);
-
     // Client lifecycle notify-hooks (@s2script/clients sub-project) — six post-hooks on the same
     // m_gameClients interface. Each forwards to s2script_core_dispatch_client_event and never alters flow.
+    // (Ban enforcement no longer rejects at ClientConnect — sub-project 3 moved it to the JS onConnect
+    // event [basebans], which shows the reason then kicks; the old ClientConnect reject hook was removed.)
     // `uint64` params are declared `unsigned long long` (== uint64 on Linux) because META_NO_HL2SDK keeps
-    // HL2SDK basetypes out of this header (matches the Hook_ClientConnect xuid gotcha above).
+    // HL2SDK basetypes out of this header.
     void Hook_OnClientConnected(CPlayerSlot slot, const char* name, unsigned long long xuid,
                                 const char* netid, const char* addr, bool fake);
     void Hook_ClientPutInServer(CPlayerSlot slot, const char* name, int type, unsigned long long xuid);
@@ -66,7 +59,6 @@ public:
     bool m_frameHookInstalled  = false;
     bool m_eventHookInstalled  = false;
     bool m_clientCmdHookInstalled = false;
-    bool m_clientConnectHookInstalled = false;
     bool m_clientLifecycleHooksInstalled = false;  // @s2script/clients: the six notify lifecycle hooks
 
     // Plugin info
