@@ -44,6 +44,9 @@ export declare class EntityRef {
   readFloat64(offset: number): number | null;
   /** Read a NUL-terminated string (up to `maxLen` bytes) at `offset`, or null if the ref is stale. */
   readString(offset: number, maxLen: number): string | null;
+  /** Write a bounded, NUL-terminated string into an inline `char[maxLen]` field at `offset` (truncated to
+   *  `maxLen-1` bytes + always NUL-terminated). Returns true on success, false if the ref is stale. */
+  writeString(offset: number, maxLen: number, value: string): boolean;
   /** Read `count` (1..4) contiguous float32s at `offset` into a number[], or null if the ref is stale. */
   readFloats(offset: number, count: number): number[] | null;
   /** Follow a chain of pointer derefs (each an offset into the current target), then read `count` (1..4) floats

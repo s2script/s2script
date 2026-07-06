@@ -111,6 +111,8 @@ pub type DamageReadIntFn    = extern "C" fn(offset: c_int) -> c_int;
 pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
 pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityHandle; -1 = none
 pub type CvarGetFn          = extern "C" fn(name: *const c_char) -> *const c_char;   // Slice 6.7: cvar value string
+// Slice 6.14: kill a pawn via the sig-resolved CommitSuicide (shim reconstructs + serial-gates from idx/serial).
+pub type PawnCommitSuicideFn = extern "C" fn(idx: c_int, serial: c_int);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -163,6 +165,8 @@ pub struct S2EngineOps {
     pub damage_write_float: Option<DamageWriteFloatFn>,
     pub damage_victim:      Option<DamageVictimFn>,
     pub cvar_get:           Option<CvarGetFn>,
+    // --- Slice 6.14: pawn suicide op (APPENDED after cvar_get; order is the ABI; do not reorder above) ---
+    pub pawn_commit_suicide: Option<PawnCommitSuicideFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -479,6 +483,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.I64); },
     readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.F64); },
     readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.serial, o, maxLen); },
+    writeString:      function (o, maxLen, s) { return __s2_ent_ref_write_string(this.index, this.serial, o, maxLen, String(s)); },
     readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.serial, o, count); },
     readFloatsChain: function (chain, finalOff, count) { return __s2_ent_ref_read_floats_chain(this.index, this.serial, chain, finalOff, count); },
     readInt32Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I32); },
@@ -1279,6 +1284,29 @@ fn s2_ent_ref_read_string(
         if ent.is_null() { return; }                 // invalid → null (already set)
         let s = crate::entity::read_string(ent as *const u8, off, max_len);
         if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_ent_ref_write_string(index, serial, offset, maxLen, str) -> boolean`. Serial-gated
+/// mirror of `read_string`: writes a bounded, NUL-terminated string into an inline `char[maxLen]` field
+/// (truncated to `maxLen-1` bytes + always NUL-terminated; never past the bound). The raw pointer is
+/// resolved + used entirely in core and never crosses to JS. false on a stale/invalid ref.
+fn s2_ent_ref_write_string(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let max_len = args.get(3).integer_value(scope).unwrap_or(0) as i32;
+        let s = args.get(4).to_rust_string_lossy(scope);
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }                 // invalid → false (already set)
+        crate::entity::write_string(ent, off, max_len, s.as_bytes());
+        rv.set_bool(true);
     }));
 }
 
@@ -2328,6 +2356,21 @@ fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mu
     }));
 }
 
+/// `__s2_pawn_commit_suicide(index, serial)` — kill a pawn via the sig-resolved CommitSuicide engine-op.
+/// A thin pass-through: the shim reconstructs + serial-gates the pawn from (index, serial). No-op without
+/// the op (unresolved signature) — the shim itself no-ops a stale ref. Engine-generic (a pawn is a
+/// Source2 base-type concept; only the resolving signature is game-specific).
+fn s2_pawn_commit_suicide(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.pawn_commit_suicide else { return };
+        f(index, serial);
+    }));
+}
+
 /// `__s2_plugins_list() -> string` — JSON array of `{id, loaded}` for `sm plugins list` / `Plugins.list()`.
 fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2859,6 +2902,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
     set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
     set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
+    set_native(scope, global_obj, "__s2_ent_ref_write_string", s2_ent_ref_write_string);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats_chain", s2_ent_ref_read_floats_chain);
     set_native(scope, global_obj, "__s2_ent_ref_read_chain", s2_ent_ref_read_chain);
@@ -2925,6 +2969,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
     set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
+    set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
     set_native(scope, global_obj, "__s2_plugin_reload", s2_plugin_reload);
@@ -5150,12 +5195,15 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1,7,8,11))"), "null");
         // the string native degrades:
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read_string(1,7,8,128))"), "null");
+        // the string WRITE native degrades to false (stale/unresolved ref → no write):
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_string(1,7,8,128,'x'))"), "false");
         // EntityRef methods degrade (proving they're wired) — use `__s2require` (the native, available in a
         // create_plugin_context raw scope, as `eval_std` uses), NOT the CJS `require` (only in load_plugin_js):
         assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readUInt64(8))"#), "null");
         assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readInt64(8))"#), "null");
         assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readFloat64(8))"#), "null");
         assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readString(8,128))"#), "null");
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).writeString(8,128,'x'))"#), "false");
         shutdown();
     }
 
@@ -5348,6 +5396,7 @@ mod frame_tests {
             damage_write_float: None,
             damage_victim: None,
             cvar_get: None,
+            pawn_commit_suicide: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -5473,6 +5522,7 @@ mod frame_tests {
             damage_write_float: None,
             damage_victim: None,
             cvar_get: None,
+            pawn_commit_suicide: None,
         }
     }
 
@@ -5991,6 +6041,8 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_cvar_get('sv_gravity'))"), "");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.getCvar"), "function");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.setCvar"), "function");
+        // Slice 6.14: __s2_pawn_commit_suicide degrades to a no-op (undefined) without the op.
+        assert_eq!(eval_in_context_string("p", "String(__s2_pawn_commit_suicide(1,7))"), "undefined");
         // Slice 6.12: plugin natives degrade (no file-watch in-isolate → empty list, ops false) + module wires.
         assert_eq!(eval_in_context_string("p", "__s2_plugins_list()"), "[]");
         assert_eq!(eval_in_context_string("p", "String(__s2_plugin_unload('x'))"), "false");

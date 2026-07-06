@@ -91,6 +91,30 @@
         "pattern": "55 48 89 E5 41 57 4D 89 CF 41 56 4D 89 C6 41 55 49 89 CD 41 54 49 89 D4 53 48 8D",
         "resolve": "direct"
       }
+    },
+    // CBasePlayerPawn::CommitSuicide(bool bExplode, bool bForce) — the lethal-kill entry the failed
+    // Slice-6.8 sm_slay branch (a085d5a) reached by the ModSharp vtable INDEX 400. That index is DEAD
+    // WRONG on our pinned build (index 400 is a m_flDeathTime float getter) — CommitSuicide is vtable
+    // index 819 here — which is why the borrowed-index call broke live. Per the RE doctrine we ship a
+    // by-ADDRESS prologue signature instead, self-resolved on OUR libserver.so, NOT a borrowed index.
+    // Identity (self-resolved, triple-confirmed at vaddr 0x1694d70 / file 0x1693d70):
+    //   (1) BODY: the canonical suicide rate-limiter — reads m_fNextSuicideTime (GameTime_t @0xE50,
+    //       from schema-catalog), `comiss` vs curtime, `test bForce; je ret`, then writes it back;
+    //       preceded by a virtual IsAlive() call, followed by a stack CTakeDamageInfo build + TakeDamage
+    //       + dtor, with bExplode driving the DMG_ damagetype bits (`movzbl r13b; shl $6`, `sbb/and $0x20`).
+    //   (2) VTABLE: the sole implementation inherited (never overridden) across the CBasePlayerPawn /
+    //       CCSPlayerPawnBase / CCSPlayerPawn pawn-family vtables (RTTI-walked).
+    //   (3) CALLER: a devirtualized `xor edx,edx; xor esi,esi; mov rbx,rdi; call 0x1694d70` proves the
+    //       ABI is (this /*rdi*/, bool bExplode /*esi*/, bool bForce /*edx*/) — two bools after `this`.
+    // A DIRECT prologue pattern (match offset == function start). Masks the rip-relative `lea` disp and
+    // the volatile stack-frame immediate. Validated UNIQUE (exactly 1 match) in the pinned libserver.so
+    // PF_X range by two independent scans. Per-update the prologue/offset move each patch (the treadmill).
+    "CommitSuicide": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 89 F5 41 54 41 89 D4 53 48 8D 15 ? ? ? ? 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct"
+      }
     }
   }
 }

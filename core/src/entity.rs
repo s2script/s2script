@@ -72,6 +72,24 @@ pub fn read_string(base: *const u8, offset: i32, max_len: i32) -> String {
     }
 }
 
+/// Write `bytes` as a bounded, NUL-terminated string into an inline `char[max_len]` buffer at
+/// `base + offset`. Copies `min(bytes.len(), max_len - 1)` bytes then writes a single NUL terminator —
+/// so it NEVER writes past `base + offset + max_len - 1` (one byte is always reserved for the NUL).
+/// No-op on a null base, negative offset, or `max_len <= 0` (degrade-safe). The pointer stays in core;
+/// the caller resolves it serial-gated and discards it within the native.
+pub fn write_string(base: *mut u8, offset: i32, max_len: i32, bytes: &[u8]) {
+    if base.is_null() || offset < 0 || max_len <= 0 { return; }
+    let start = unsafe { base.add(offset as usize) };
+    let cap = max_len as usize;                       // cap >= 1 (max_len > 0)
+    let n = core::cmp::min(bytes.len(), cap - 1);     // reserve 1 byte for the NUL terminator
+    // SAFETY: caller supplies a live entity pointer + a schema-resolved in-object offset; `n < cap`
+    // and the NUL lands at `n < max_len`, so no byte past `offset + max_len - 1` is touched.
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), start, n);
+        *start.add(n) = 0;
+    }
+}
+
 /// Read an f32 at `base + offset`. 0.0 on null base / negative offset (degrade-safe).
 pub fn read_f32(base: *const u8, offset: i32) -> f32 {
     if base.is_null() || offset < 0 { return 0.0; }
@@ -299,5 +317,44 @@ mod tests {
         let b: [u8; 2] = [b'x', 0];
         assert_eq!(read_string(b.as_ptr(), -1, 8), "");       // negative offset
         assert_eq!(read_string(b.as_ptr(), 0, 0), "");        // non-positive max_len
+    }
+
+    #[test]
+    fn write_string_writes_nul_terminates_and_truncates() {
+        // char[8] prefilled with 0xFF so a write's extent + the terminator are exactly visible.
+        let mut buf: [u8; 8] = [0xFF; 8];
+        write_string(buf.as_mut_ptr(), 0, 8, b"hi");
+        assert_eq!(&buf[0..3], b"hi\0");                       // 'h','i', then the NUL
+        assert_eq!(buf[3], 0xFF, "no write past the string + its NUL");
+
+        // Write into a char[5] window at offset 3 → bytes 3,4,5 = 'a','b','\0'; the prefix untouched.
+        let mut b2: [u8; 8] = [0xFF; 8];
+        write_string(b2.as_mut_ptr(), 3, 5, b"ab");
+        assert_eq!(&b2[3..6], b"ab\0");
+        assert_eq!(b2[0], 0xFF, "bytes before the offset untouched");
+
+        // Truncation: a string longer than max_len-1 is cut and STILL NUL-terminated at max_len-1;
+        // the byte at max_len is never touched (the bound).
+        let mut b3: [u8; 8] = [0x11; 8];
+        write_string(b3.as_mut_ptr(), 0, 4, b"abcdef");       // char[4] → 'a','b','c','\0'
+        assert_eq!(&b3[0..4], b"abc\0");
+        assert_eq!(b3[4], 0x11, "never writes past max_len-1 (the bound)");
+
+        // char[1] → exactly one NUL (empty string), nothing past it.
+        let mut b4: [u8; 4] = [0x22; 4];
+        write_string(b4.as_mut_ptr(), 0, 1, b"xyz");
+        assert_eq!(b4[0], 0);
+        assert_eq!(b4[1], 0x22, "char[1] writes exactly one NUL, nothing past it");
+    }
+
+    #[test]
+    fn write_string_guards_null_and_bad_bounds() {
+        // null base / negative offset / non-positive max_len are all no-ops (no crash, no write):
+        write_string(std::ptr::null_mut(), 0, 8, b"hi");
+        let mut buf: [u8; 4] = [0x33; 4];
+        write_string(buf.as_mut_ptr(), -1, 4, b"hi");         // negative offset → no-op
+        write_string(buf.as_mut_ptr(), 0, 0, b"hi");          // non-positive max_len → no-op
+        write_string(buf.as_mut_ptr(), 0, -4, b"hi");         // negative max_len → no-op
+        assert_eq!(buf, [0x33; 4], "all guarded calls left the buffer untouched");
     }
 }

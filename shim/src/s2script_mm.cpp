@@ -685,6 +685,34 @@ static const char* s2_cvar_get(const char* name) {
 }
 
 // ---------------------------------------------------------------------------
+// pawn_commit_suicide (Slice 6.14) — kill a pawn via CBasePlayerPawn::CommitSuicide. The failed Slice-6.8
+// branch (a085d5a) reached it by the borrowed ModSharp VTABLE INDEX (400 — wrong on our build; it's 819
+// here), which broke live. Per the RE doctrine we resolve it by a DIRECT prologue SIGNATURE self-scanned
+// on OUR libserver.so (s_pCommitSuicide, loaded in Load), NOT a borrowed index. GUARDED: the pawn is
+// reconstructed from (idx, serial) + serial-gated (s2_deref_handle → null if stale), and the resolved fn
+// ptr must point into libserver's .text (a null/out-of-range ptr degrades to a logged no-op, not a crash).
+// Signature: void CBasePlayerPawn::CommitSuicide(bool bExplode /*esi*/, bool bForce /*edx*/).
+// ---------------------------------------------------------------------------
+typedef void (*CommitSuicide_t)(void* thisptr, bool bExplode, bool bForce);
+static CommitSuicide_t s_pCommitSuicide = nullptr;       // sig-resolved fn ptr (loaded in Load)
+static const uint8_t*  s_serverText     = nullptr;       // libserver.so .text range for the call-site guard
+static size_t          s_serverTextSize = 0;
+static void s2_pawn_commit_suicide(int idx, int serial) {
+    if (!s_pCommitSuicide) return;                        // signature unresolved -> no-op
+    // Reconstruct the packed CEntityHandle from (index, serial) using the SDK bitfield layout
+    // (m_EntityIndex:15, m_Serial:17) — no magic constants — then serial-gate via s2_deref_handle.
+    CEntityHandle h(idx, serial);
+    void* pawn = s2_deref_handle(static_cast<unsigned int>(h.ToInt()));  // null if stale/free slot
+    if (!pawn) return;
+    const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pCommitSuicide);
+    if (!s_serverText || f < s_serverText || f >= s_serverText + s_serverTextSize) {
+        META_CONPRINTF("[s2script] CommitSuicide fn %p out of libserver .text — no-op\n", (const void*)f);
+        return;
+    }
+    s_pCommitSuicide(pawn, /*bExplode=*/false, /*bForce=*/true);
+}
+
+// ---------------------------------------------------------------------------
 // Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
 // (s_currentDamageInfo, set by the DispatchTraceAttack detour) at a schema-resolved byte offset.
 // Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
@@ -1350,6 +1378,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] ClientPrintAll resolved @%p (broadcast colored chat)\n", reinterpret_cast<void*>(g_ClientPrintAll));
                 }   // caOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Slice 6.14: resolve CBasePlayerPawn::CommitSuicide (the lethal-kill entry; sm_slay). A DIRECT
+            // prologue signature self-resolved on OUR libserver.so (NOT the ModSharp vtable index, which was
+            // version-wrong on the pinned build). Store the fn ptr + libserver's .text range for the call-site
+            // guard. Degrade-never-crash: unresolved -> pawn_commit_suicide no-op.
+            auto csit = sigs.find("CommitSuicide");
+            if (csit == sigs.end()) {
+                GamedataResult("CommitSuicide", false, "signature absent from gamedata");
+            } else {
+                int64_t csOff = ResolveSigValidated("CommitSuicide", csit->second);
+                ModText csmt = FindModuleText(csit->second.module.c_str());
+                if (csOff != s2sig::kFail && csmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pCommitSuicide = reinterpret_cast<CommitSuicide_t>(const_cast<uint8_t*>(csmt.text) + csOff);
+                    s_serverText = csmt.text; s_serverTextSize = csmt.size;   // .text range for the call guard
+                    META_CONPRINTF("[s2script] CommitSuicide resolved @%p (sm_slay; libserver .text=%p+%zu)\n",
+                                   reinterpret_cast<void*>(s_pCommitSuicide), (const void*)s_serverText, s_serverTextSize);
+                }   // csOff == kFail: ResolveSigValidated already recorded the reason
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
@@ -1433,6 +1478,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.damage_write_float = &s2_damage_write_float;
     ops.damage_victim      = &s2_damage_victim;
     ops.cvar_get           = &s2_cvar_get;
+    // Pawn suicide (Slice 6.14): APPENDED after cvar_get; order MUST match S2EngineOps.
+    ops.pawn_commit_suicide = &s2_pawn_commit_suicide;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

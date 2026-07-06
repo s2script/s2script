@@ -87,6 +87,10 @@ typedef void  (*s2_damage_write_float_fn)(int offset, float value);
 typedef int   (*s2_damage_victim_fn)(void);
 // Slice 6.7: read a cvar's current value as a string ("" if absent). Valid until the next cvar_get call.
 typedef const char* (*s2_cvar_get_fn)(const char* name);
+// Slice 6.14: kill a player pawn via CBasePlayerPawn::CommitSuicide (a sig-resolved DIRECT call — NOT a
+// vtable index). The shim reconstructs + serial-gates the pawn from (idx, serial); no-op on a stale ref or
+// an unresolved signature. Calls CommitSuicide(pawn, /*bExplode=*/false, /*bForce=*/true).
+typedef void (*s2_pawn_commit_suicide_fn)(int idx, int serial);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -135,6 +139,8 @@ typedef struct {
     s2_damage_write_float_fn damage_write_float;
     s2_damage_victim_fn      damage_victim;
     s2_cvar_get_fn           cvar_get;
+    /* Pawn suicide (Slice 6.14) — APPENDED after cvar_get; order is the ABI. */
+    s2_pawn_commit_suicide_fn pawn_commit_suicide;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
