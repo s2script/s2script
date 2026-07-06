@@ -91,6 +91,10 @@ typedef const char* (*s2_cvar_get_fn)(const char* name);
 // vtable index). The shim reconstructs + serial-gates the pawn from (idx, serial); no-op on a stale ref or
 // an unresolved signature. Calls CommitSuicide(pawn, /*bExplode=*/false, /*bForce=*/true).
 typedef void (*s2_pawn_commit_suicide_fn)(int idx, int serial);
+// Slice sub-project-2: print one line to a client's developer console (IVEngineServer2::ClientPrintf).
+typedef void (*s2_client_console_print_fn)(int slot, const char* msg);
+// Client IP address ("IP:port"; "" for a bot/no netchannel). Valid until the next call.
+typedef const char* (*s2_client_address_fn)(int slot);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -141,6 +145,9 @@ typedef struct {
     s2_cvar_get_fn           cvar_get;
     /* Pawn suicide (Slice 6.14) — APPENDED after cvar_get; order is the ABI. */
     s2_pawn_commit_suicide_fn pawn_commit_suicide;
+    /* Console print + client address (ban-reason sub-project 2) — APPENDED after pawn_commit_suicide; order is the ABI. */
+    s2_client_console_print_fn client_console_print;
+    s2_client_address_fn       client_address;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

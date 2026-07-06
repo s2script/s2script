@@ -113,6 +113,9 @@ pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityH
 pub type CvarGetFn          = extern "C" fn(name: *const c_char) -> *const c_char;   // Slice 6.7: cvar value string
 // Slice 6.14: kill a pawn via the sig-resolved CommitSuicide (shim reconstructs + serial-gates from idx/serial).
 pub type PawnCommitSuicideFn = extern "C" fn(idx: c_int, serial: c_int);
+// --- ban-reason sub-project 2: console-print + client-address ops (C-ABI; the C header must match exactly) ---
+pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
+pub type ClientAddressFn      = extern "C" fn(slot: c_int) -> *const c_char;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -167,6 +170,9 @@ pub struct S2EngineOps {
     pub cvar_get:           Option<CvarGetFn>,
     // --- Slice 6.14: pawn suicide op (APPENDED after cvar_get; order is the ABI; do not reorder above) ---
     pub pawn_commit_suicide: Option<PawnCommitSuicideFn>,
+    // --- ban-reason sub-project 2 (APPENDED after pawn_commit_suicide; order is the ABI; do not reorder) ---
+    pub client_console_print: Option<ClientConsolePrintFn>,
+    pub client_address:       Option<ClientAddressFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -884,6 +890,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Object.defineProperty(Client.prototype, "isBot",       { get: function () { return __s2_client_steamid(this.slot) === "0"; } });
   Client.prototype.kick = function (reason)  { __s2_client_kick(this.slot, reason == null ? "" : String(reason)); };
   Client.prototype.chat = function (message) { __s2_client_print(this.slot, String(message)); };
+  Client.prototype.print = function (msg) { __s2_client_console_print(this.slot, String(msg) + "\n"); };
+  Object.defineProperty(Client.prototype, "ip", { get: function () {
+    var a = __s2_client_address(this.slot); if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
+  } });
   var __s2_MAX_CLIENTS = 64;
   function __s2_client_on(event, h) { __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
   var __s2_clients = {
@@ -895,6 +905,26 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     onSettingsChanged: function (h) { __s2_client_on("settingschanged", h); },
     fromSlot: function (slot) { slot = slot | 0; return __s2_client_valid(slot) ? new Client(slot) : null; },
     all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_valid(s)) out.push(new Client(s)); } return out; }
+  };
+  var __s2_pendingKicks = {};
+  var __s2_kickWired = false;
+  function __s2_wireKickOnActive() {
+    if (__s2_kickWired) return; __s2_kickWired = true;
+    __s2_client_on("active", function (c) {
+      var p = __s2_pendingKicks[c.slot]; if (!p) return;
+      delete __s2_pendingKicks[c.slot];
+      c.chat(p.reason); c.print(p.reason);
+      globalThis.__s2pkg_timers.delay(p.delay * 1000).then(function () {
+        var cc = __s2_clients.fromSlot(c.slot); if (cc) cc.kick(p.reason);
+      });
+    });
+    // Drop a pending kick if the client leaves before going active — else a reused slot
+    // would deliver a stale reason + a false kick to the next client on that slot.
+    __s2_client_on("disconnect", function (c) { delete __s2_pendingKicks[c.slot]; });
+  }
+  Client.prototype.kickWithReason = function (reason, delaySeconds) {
+    __s2_wireKickOnActive();
+    __s2_pendingKicks[this.slot] = { reason: String(reason), delay: (delaySeconds == null ? 5 : delaySeconds) };
   };
   globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
 })();
@@ -3169,6 +3199,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ban_mark_loaded", s2_ban_mark_loaded);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
+    // ban-reason sub-project 2: developer-console print + client IP address.
+    set_native(scope, global_obj, "__s2_client_console_print", s2_client_console_print);
+    set_native(scope, global_obj, "__s2_client_address", s2_client_address);
     set_native(scope, global_obj, "__s2_damage_subscribe", s2_damage_subscribe);
     set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
     set_native(scope, global_obj, "__s2_damage_read_int", s2_damage_read_int);
@@ -3695,6 +3728,34 @@ fn s2_client_kick(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.client_kick else { return };
         if let Ok(creason) = CString::new(reason) { f(slot, creason.as_ptr()); }
+    }));
+}
+
+/// `__s2_client_console_print(slot, msg)` — print one line to the client's developer console.
+/// No-op without the op / for a bad slot / for a bot (shim skips a null-netchannel fake client).
+fn s2_client_console_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let msg = args.get(1).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.client_console_print else { return };
+        if let Ok(cmsg) = CString::new(msg) { f(slot, cmsg.as_ptr()); }
+    }));
+}
+
+/// `__s2_client_address(slot) -> string` — the client's IP address ("IP:port"). `""` without the op / for a bot / on null.
+fn s2_client_address(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let s: String = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.client_address?;
+            let ptr = f(slot);
+            if ptr.is_null() { return None; }
+            Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        })().unwrap_or_default();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
     }));
 }
 
@@ -5792,6 +5853,8 @@ mod frame_tests {
             damage_victim: None,
             cvar_get: None,
             pawn_commit_suicide: None,
+            client_console_print: None,
+            client_address: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -5918,6 +5981,8 @@ mod frame_tests {
             damage_victim: None,
             cvar_get: None,
             pawn_commit_suicide: None,
+            client_console_print: None,
+            client_address: None,
         }
     }
 
@@ -6390,6 +6455,66 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toSlot(0, 'hi'))"), "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toAll('hi'))"),      "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_print(0, 'hi'))"),          "undefined");
+        shutdown();
+    }
+
+    /// Ban-reason sub-project 2: the console-print + client-address natives degrade cleanly
+    /// with no engine ops wired — `__s2_client_console_print` is a no-op (never throws) and
+    /// `__s2_client_address` returns "" (an empty string, never null).
+    #[test]
+    fn client_console_print_and_address_degrade_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // console-print no-ops (returns undefined, never throws) without the op.
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_console_print(0, 'x'))"), "undefined");
+        // address returns "" (empty string, NOT null) without the op.
+        assert_eq!(eval_in_context_string("p", "__s2_client_address(0)"), "");
+        assert_eq!(eval_in_context_string("p", "typeof __s2_client_address(0)"), "string");
+        shutdown();
+    }
+
+    /// Ban-reason sub-project 2: the `@s2script/clients` prelude exposes `Client.prototype.print`,
+    /// the `ip` getter, and `Client.prototype.kickWithReason` on the module surface.  With no engine
+    /// ops, `print` is a no-op (returns undefined), `ip` returns "" (address degrade → ""), and
+    /// `kickWithReason` is a callable function.  Also verifies the ":port" strip logic via a faked
+    /// `__s2_client_address` in-isolate.
+    #[test]
+    fn clients_prelude_exposes_print_ip_and_kick_with_reason() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        set_engine_ops(None);   // no ops → __s2_client_address returns ""
+        create_plugin_context("pcl2");
+        // print is a function on the prototype.
+        assert_eq!(eval_in_context_string("pcl2", "typeof __s2pkg_clients.Client.prototype.print"), "function");
+        // kickWithReason is a function on the prototype.
+        assert_eq!(eval_in_context_string("pcl2", "typeof __s2pkg_clients.Client.prototype.kickWithReason"), "function");
+        // ip getter: no engine → address "" → ip "".
+        assert_eq!(eval_in_context_string("pcl2", "new __s2pkg_clients.Client(0).ip"), "");
+        // print is a no-op without the op (returns undefined, never throws).
+        assert_eq!(eval_in_context_string("pcl2", "String(new __s2pkg_clients.Client(0).print('hello'))"), "undefined");
+        // ":port" strip logic: fake __s2_client_address then check the getter strips correctly.
+        assert_eq!(
+            eval_in_context_string("pcl2",
+                "(function () { \
+                    var orig = globalThis.__s2_client_address; \
+                    globalThis.__s2_client_address = function () { return \"1.2.3.4:27005\"; }; \
+                    var ip = new __s2pkg_clients.Client(0).ip; \
+                    globalThis.__s2_client_address = orig; \
+                    return ip; \
+                }())"),
+            "1.2.3.4");
+        // address with no colon returns the value unchanged.
+        assert_eq!(
+            eval_in_context_string("pcl2",
+                "(function () { \
+                    var orig = globalThis.__s2_client_address; \
+                    globalThis.__s2_client_address = function () { return \"1.2.3.4\"; }; \
+                    var ip = new __s2pkg_clients.Client(0).ip; \
+                    globalThis.__s2_client_address = orig; \
+                    return ip; \
+                }())"),
+            "1.2.3.4");
         shutdown();
     }
 

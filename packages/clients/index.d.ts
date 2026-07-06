@@ -21,6 +21,12 @@ export declare class Client {
   kick(reason?: string): void;
   /** Send a chat (SayText2) line to this client. */
   chat(message: string): void;
+  /** Print one line to this client's developer console (skipped for bots). */
+  print(message: string): void;
+  /** This client's IP address (":port" stripped); "" for a bot. */
+  readonly ip: string;
+  /** Show `reason` (chat + console) once the client is in-game, then kick after `delaySeconds` (default 5). Intended to be called from a Clients.onConnect handler. */
+  kickWithReason(reason: string, delaySeconds?: number): void;
 }
 export declare const Clients: {
   /** Fires when a client connects (all clients incl. bots; carries name/xuid). May be async. */
