@@ -26,7 +26,7 @@ export function onLoad(): void {
     ctx.reply("[SM] Slapped " + n + " player" + (n === 1 ? "" : "s") + " for " + damage + " damage.");
   });
 
-  // 6.14 — sm_slay <target> (ADMFLAG.SLAY). Kills each matched player's pawn via CommitSuicide.
+  // Slice 6.14 — sm_slay <target> (ADMFLAG.SLAY). Kills each matched player's pawn via CommitSuicide.
   // A null pawn (dead/absent) is skipped; the native is serial-gated and no-ops on a stale ref.
   Commands.registerAdmin("sm_slay", ADMFLAG.SLAY, (ctx) => {
     const targetStr = ctx.arg(0);
@@ -44,7 +44,7 @@ export function onLoad(): void {
     ctx.reply("[SM] Slayed " + n + " player" + (n === 1 ? "" : "s") + ".");
   });
 
-  // 6.14 — sm_rename <target> <newname> (ADMFLAG.SLAY). Single-target only (reject ambiguous multi).
+  // Slice 6.14 — sm_rename <target> <newname> (ADMFLAG.SLAY). Single-target only (reject ambiguous multi).
   // Strips control chars (< 0x20), bounds to 127 bytes, writes m_iszPlayerName, then fires player_changename.
   Commands.registerAdmin("sm_rename", ADMFLAG.SLAY, (ctx) => {
     const targetStr = ctx.arg(0);
@@ -61,8 +61,8 @@ export function onLoad(): void {
     const newname = rawName.replace(/[\x00-\x1F]/g, "").slice(0, 127);
     if (!newname) { ctx.reply("[SM] Invalid name (empty after sanitization)."); return; }
     const oldname = p.playerName ?? "";
-    p.setName(newname);
-    // Best-effort: fire player_changename so other plugins and clients learn of the rename.
+    if (!p.setName(newname)) { ctx.reply("[SM] Rename failed (player became unavailable)."); return; }
+    // Best-effort: fire player_changename so other plugins and clients learn of the rename (only after a real write).
     Events.fire("player_changename", { userid: p.userId, oldname, newname });
     console.log("[playercommands] sm_rename slot=" + p.slot + " '" + oldname + "' -> '" + newname + "'");
     ctx.reply("[SM] Renamed " + oldname + " to " + newname + ".");
