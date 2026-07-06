@@ -709,7 +709,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       argInt: function (n, fb) { var v = parseInt(args[n | 0], 10); return isNaN(v) ? (fb === undefined ? 0 : fb) : v; },
       argFloat: function (n, fb) { var v = parseFloat(args[n | 0]); return isNaN(v) ? (fb === undefined ? 0 : fb) : v; },
       argsFrom: function (n) { return args.slice(n | 0).join(" "); },   // the rest, re-joined (a reason/value that spans spaces)
-      reply: function (m) { if (s < 0) { console.log(String(m)); } else { globalThis.__s2pkg_chat.Chat.toSlot(s, String(m)); } }
+      // A player's reply is DEFERRED one frame: for a chat-triggered command (!cmd) the command runs in the
+      // Host_Say PRE-hook, before the player's command text is broadcast, so a synchronous reply would land
+      // BEFORE their "!slap …" line (jarring). nextFrame lands it after. Console/rcon (s < 0) stays immediate.
+      reply: function (m) {
+        if (s < 0) { console.log(String(m)); return; }
+        var msg = String(m);
+        globalThis.__s2pkg_timers.nextFrame().then(function () { globalThis.__s2pkg_chat.Chat.toSlot(s, msg); });
+      }
     };
   }
   // Slice 6.11: a per-context registry of wrapped dispatch fns (name -> function(slot, argString)), so a
