@@ -149,10 +149,12 @@ void s2script_core_shutdown(void);
 void s2script_core_dispatch_concommand(const char* name, int slot, const char* args);
 /* Shim -> core: called by the Host_Say detour for every player chat line (Slice 6.11b).
  * slot = the speaker's player slot (controller entity index - 1), text = CCommand::Arg(1)
- * (the raw message). Parses a `!cmd` / `/cmd` trigger and dispatches the matching command.
- * Returns 1 if the caller should SUPPRESS the chat broadcast (a matched silent `/` trigger),
- * else 0 (the public `!` trigger and ordinary chat always show). */
-int s2script_core_dispatch_chat(int slot, const char* text);
+ * (the raw message), teamonly = 1 for team-only chat else 0. Parses a `!cmd` / `/cmd` trigger and
+ * dispatches the matching command; a non-command line is delivered to the raw Chat.onMessage
+ * subscribers (Slice 6.13b) with (slot, text, teamonly). Returns 1 if the caller should SUPPRESS the
+ * chat broadcast (a matched silent `/` trigger, OR a raw subscriber that returned >= Handled), else 0
+ * (the public `!` trigger and ordinary chat with no blocking subscriber show). */
+int s2script_core_dispatch_chat(int slot, const char* text, int teamonly);
 /* Shim -> core: called by the ClientCommand hook when a player types a command at the console
  * (Slice 6.11c). slot = the player's slot, name = CCommand::Arg(0), args = ArgS(). Dispatches the
  * matching registered command. Returns 1 if handled (the caller SUPERCEDEs the engine's handling). */

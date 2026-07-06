@@ -735,7 +735,7 @@ static void Detour_HostSay(void* pController, void* pCmd, bool teamonly, int a4,
     }
     int suppress = 0;
     if (slot >= 0 && msg && msg[0]) {
-        suppress = s2script_core_dispatch_chat(slot, msg);       // parse trigger + dispatch + suppress?
+        suppress = s2script_core_dispatch_chat(slot, msg, teamonly ? 1 : 0); // trigger/dispatch + raw subs + suppress?
     }
     // suppress (a matched silent `/` trigger) -> skip the original so the message is NOT broadcast.
     if (!suppress && g_origHostSay) g_origHostSay(pController, pCmd, teamonly, a4, a5);

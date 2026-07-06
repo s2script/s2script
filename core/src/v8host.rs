@@ -321,6 +321,13 @@ thread_local! {
     /// `remove_by_owner` called on unload; reset on shutdown so a re-init starts empty.
     static CONFIG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Raw-chat subscriber mux (Slice 6.13b): `Chat.onMessage(h)` subscribers, keyed by the constant
+    /// "" (chat has no name dimension — a single un-keyed list). Same EventMux shape/discipline;
+    /// handlers receive `(slot, text, teamonly)` and may return a HookResult (>= Handled suppresses the
+    /// broadcast). The Host_Say detour is always installed, so there is no per-subscribe engine-op and
+    /// no engine-op on empty teardown. `remove_by_owner` on unload; reset on shutdown.
+    static CHAT_MSG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
     /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
@@ -578,6 +585,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // slot -1 = broadcast to all in ONE call (the shim routes it to the game's UTIL_ClientPrintAll, which
     // renders true custom color, not team color — SourceMod's PrintToChatAll). NOT a per-slot loop.
     toAll:  function (msg) { __s2_client_print(-1, __s2_chat.color + String(msg)); },
+    // Slice 6.13b: subscribe to raw player chat. The handler gets (slot, text, teamonly) and may return
+    // a HookResult (>= Handled suppresses the broadcast). Delivered from the Host_Say detour for every
+    // non-command chat line; the `@`-trigger layer (a later slice) subscribes through this.
+    onMessage: function (handler) { __s2_chat_on_message(handler); },
   };
   globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
   // --- Slice 6.4: server module (command / isMapValid; engine-generic server control) ---
@@ -1518,35 +1529,105 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
 /// with the speaker's slot as the caller. SM convention: `!kick` tries `kick`, then falls back to
 /// `sm_kick`. Engine-generic: it only knows names + slots, never a game type.
 ///
-/// Returns `true` iff the caller should SUPPRESS the chat broadcast — only for the SILENT trigger
-/// (`/`) AND only when a command actually matched (never swallow ordinary chat or an unknown `/foo`).
-/// The public trigger (`!`) always shows. No CONCOMMANDS borrow is held across `dispatch_concommand`.
-pub(crate) fn dispatch_chat(slot: i32, text: &str) -> bool {
+/// On a MATCHED command trigger, returns `silent` (suppress iff the trigger was `/`) after dispatching.
+/// Otherwise (not a trigger, empty trigger, or an unmatched trigger) the raw line is delivered to the
+/// `Chat.onMessage` subscribers (Slice 6.13b): each live subscriber gets `(slot, text, teamonly)` and a
+/// return of `>= HookResult.Handled` (2) suppresses the broadcast. No CONCOMMANDS borrow is held across
+/// `dispatch_concommand`. Engine-generic: core passes only slot/text/teamonly, never a game type.
+pub(crate) fn dispatch_chat(slot: i32, text: &str, teamonly: bool) -> bool {
     let (silent, is_trigger) = match text.as_bytes().first() {
         Some(b'!') => (false, true),
         Some(b'/') => (true, true),
         _ => (false, false),
     };
-    if !is_trigger { return false; }
-    let rest = text[1..].trim();
-    if rest.is_empty() { return false; }
-    // Split into command name + argument string (SM: the name is the first whitespace-delimited token).
-    let (name, args) = match rest.find(char::is_whitespace) {
-        Some(i) => (rest[..i].to_string(), rest[i..].trim_start().to_string()),
-        None => (rest.to_string(), String::new()),
-    };
-    // Resolve `name`, else the SM-prefixed `sm_<name>`. Brief immutable borrow, released before dispatch.
-    let sm_name = format!("sm_{}", name);
-    let matched = CONCOMMANDS.with(|m| {
-        let map = m.borrow();
-        if map.contains_key(&name) { Some(name.clone()) }
-        else if map.contains_key(&sm_name) { Some(sm_name) }
-        else { None }
-    });
-    match matched {
-        Some(cmd) => { dispatch_concommand(&cmd, slot, &args); silent }
-        None => false,
+    if is_trigger {
+        let rest = text[1..].trim();
+        if !rest.is_empty() {
+            // Split into command name + argument string (SM: the name is the first whitespace-delimited token).
+            let (name, args) = match rest.find(char::is_whitespace) {
+                Some(i) => (rest[..i].to_string(), rest[i..].trim_start().to_string()),
+                None => (rest.to_string(), String::new()),
+            };
+            // Resolve `name`, else the SM-prefixed `sm_<name>`. Brief immutable borrow, released before dispatch.
+            let sm_name = format!("sm_{}", name);
+            let matched = CONCOMMANDS.with(|m| {
+                let map = m.borrow();
+                if map.contains_key(&name) { Some(name.clone()) }
+                else if map.contains_key(&sm_name) { Some(sm_name) }
+                else { None }
+            });
+            if let Some(cmd) = matched {
+                // Matched command → the command path, exactly as before. Never reach the subscriber loop.
+                dispatch_concommand(&cmd, slot, &args);
+                return silent;
+            }
+        }
     }
+    // No !/ command matched → deliver the raw line to the Chat.onMessage subscribers.
+    dispatch_chat_message(slot, text, teamonly)
+}
+
+/// Deliver a raw chat line to the `Chat.onMessage` subscribers (Slice 6.13b). Mirrors
+/// `dispatch_game_event`: snapshot (release the mux borrow), re-entrancy guard, per-subscriber
+/// liveness + context + TryCatch. Each handler is called with `(slot, text, teamonly)`; a return of
+/// `>= HookResult.Handled` (numeric `>= 2`) sets suppress. `undefined`/non-number/throw ⇒ Continue.
+/// Returns true iff any live subscriber requested suppression of the broadcast.
+fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
+    // Phase 1: snapshot — release CHAT_MSG_SUBS borrow before entering any context. Fixed key "".
+    let snap = CHAT_MSG_SUBS.with(|m| m.borrow().snapshot(""));
+    if snap.is_empty() { return false; }
+
+    let mut suppress = false;
+    // Phase 2: enter each subscriber's context and invoke handler(slot, text, teamonly).
+    HOST.with(|h| {
+        // Re-entrancy guard (mirrors dispatch_game_event): a chat-triggered handler that re-enters
+        // dispatch while HOST is already borrowed is skipped, not double-borrowed (would panic).
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, generation, handler_g) in &snap {
+            // Liveness check (release REGISTRY borrow before entering context).
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            // Per-subscriber HandleScope+ContextScope — mirrors dispatch_game_event.
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            // Per-handler TryCatch isolates a throwing handler from the rest.
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
+            let text_val: v8::Local<v8::Value> = match v8::String::new(tc, text) {
+                Some(s) => s.into(),
+                None => v8::undefined(tc).into(),
+            };
+            let team_val: v8::Local<v8::Value> = v8::Boolean::new(tc, teamonly).into();
+
+            let func = v8::Local::new(tc, handler_g);
+            match func.call(tc, recv, &[slot_val, text_val, team_val]) {
+                None => {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: dispatch_chat: onMessage handler '{}': {}", owner, msg));
+                }
+                // A numeric return >= Handled (2) suppresses; undefined/non-number ⇒ Continue.
+                Some(ret) if ret.is_number() => {
+                    if ret.uint32_value(tc).unwrap_or(0) >= 2 { suppress = true; }
+                }
+                Some(_) => {}
+            }
+        }
+    });
+    suppress
 }
 
 /// Slice 6.11c: dispatch a player's CONSOLE command (from the ClientCommand hook). Unlike chat, the
@@ -2161,6 +2242,22 @@ fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         DAMAGE_MUX.with(|m| { m.borrow_mut().subscribe("onPre", owner, generation, handler_g); });
+    }));
+}
+
+/// `__s2_chat_on_message(handler)` — subscribe a JS fn to raw player chat (Slice 6.13b). Owner-tracked;
+/// the Host_Say detour is installed at Load, so no per-subscribe engine registration is needed. The
+/// handler receives `(slot, text, teamonly)` at dispatch and may return a HookResult to suppress the
+/// broadcast. Fixed mux key "" (chat has no name dimension); the "first subscriber" signal is ignored
+/// (no per-name engine-op to toggle).
+fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
     }));
 }
 
@@ -2812,6 +2909,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_config_on_change", s2_config_on_change);
     // Chat messaging (Slice 6.1): print a message to one client's chat.
     set_native(scope, global_obj, "__s2_client_print", s2_client_print);
+    // Raw-chat subscriber (Slice 6.13b): register a Chat.onMessage handler.
+    set_native(scope, global_obj, "__s2_chat_on_message", s2_chat_on_message);
 
     set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
     set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
@@ -3727,6 +3826,8 @@ pub fn shutdown() {
     CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the damage pre-hook mux (Slice 6.6) so a re-init starts clean.
     DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the raw-chat subscriber mux (Slice 6.13b) so a re-init starts clean.
+    CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -3883,6 +3984,9 @@ pub(crate) fn unload_plugin(id: &str) {
     // (a2c) Drop the plugin's Damage.onPre subscriptions (Slice 6.6). The detour stays installed for the
     // process lifetime (removed in the shim's Unload), so no per-plugin hook-removal request is needed.
     DAMAGE_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c') Drop the plugin's Chat.onMessage subscriptions (Slice 6.13b). The Host_Say detour is
+    // installed for the process lifetime (removed in the shim's Unload), so no hook-removal request.
+    CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -6019,18 +6123,67 @@ mod frame_tests {
             C.register("sm_test", function (ctx) { globalThis.__ran = ctx.callerSlot + ":" + ctx.argString; });
         "#, "{}");
         // Public `!test` → dispatches sm_test (sm_ fallback) with slot 5 + args, and NEVER suppresses.
-        assert_eq!(dispatch_chat(5, "!test foo bar"), false, "! trigger never suppresses");
+        assert_eq!(dispatch_chat(5, "!test foo bar", false), false, "! trigger never suppresses");
         assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "5:foo bar", "!test dispatched sm_test");
         // Silent `/test` → dispatches AND suppresses (matched silent trigger).
         eval_in_context("hs", "globalThis.__ran = '';").unwrap();
-        assert_eq!(dispatch_chat(7, "/test"), true, "matched / trigger suppresses");
+        assert_eq!(dispatch_chat(7, "/test", false), true, "matched / trigger suppresses");
         assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "7:", "/test dispatched with empty args");
         // Ordinary chat (no trigger char) → no dispatch, no suppress.
         eval_in_context("hs", "globalThis.__ran = 'untouched';").unwrap();
-        assert_eq!(dispatch_chat(5, "hello world"), false, "ordinary chat is not a trigger");
+        assert_eq!(dispatch_chat(5, "hello world", false), false, "ordinary chat is not a trigger");
         assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "untouched", "ordinary chat did not dispatch");
         // Unknown `/nope` → no command match → NOT suppressed (never swallow a non-command message).
-        assert_eq!(dispatch_chat(5, "/nope"), false, "unmatched silent trigger is not suppressed");
+        assert_eq!(dispatch_chat(5, "/nope", false), false, "unmatched silent trigger is not suppressed");
+        shutdown();
+    }
+
+    /// Slice 6.13b Task 3: the raw-chat subscriber mechanism (`Chat.onMessage`). A non-command chat
+    /// line is delivered to `CHAT_MSG_SUBS` subscribers with `(slot, text, teamonly)`; if a live
+    /// subscriber returns `>= HookResult.Handled` (2) the broadcast is suppressed (`dispatch_chat`
+    /// returns true). `Continue`/`undefined`/non-number → no suppress. A matched command trigger
+    /// takes the command path and never reaches the subscriber loop. Engine-generic: core passes
+    /// only slot/text/teamonly (no game type).
+    #[test]
+    fn chat_message_subscriber_suppresses_on_handled() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_plugin_js("cm", r#"
+            var Chat = __s2pkg_chat.Chat;
+            globalThis.__got = null;
+            globalThis.__block = false;
+            Chat.onMessage(function (slot, text, teamonly) {
+                globalThis.__got = slot + "|" + text + "|" + teamonly;
+                return globalThis.__block ? 2 /*Handled*/ : 0 /*Continue*/;
+            });
+        "#, "{}");
+        // Continue (return 0) → not suppressed; the subscriber still saw slot/text/teamonly.
+        assert_eq!(dispatch_chat(3, "hello world", true), false, "Continue does not suppress");
+        assert_eq!(eval_in_context_string("cm", "globalThis.__got"), "3|hello world|true", "subscriber saw slot/text/teamonly");
+        // Handled (return 2) → suppressed; teamonly=false threads through as `false`.
+        eval_in_context("cm", "globalThis.__block = true;").unwrap();
+        assert_eq!(dispatch_chat(4, "hi again", false), true, ">= Handled suppresses");
+        assert_eq!(eval_in_context_string("cm", "globalThis.__got"), "4|hi again|false", "subscriber saw the second line");
+        // A command trigger with NO subscriber-reachable path: `!nope` doesn't match a command, so it
+        // falls to the raw-chat subscriber loop — the subscriber (blocking) suppresses it too.
+        eval_in_context("cm", "globalThis.__got = 'x';").unwrap();
+        assert_eq!(dispatch_chat(5, "!nope", false), true, "unmatched trigger reaches subscribers (blocking)");
+        assert_eq!(eval_in_context_string("cm", "globalThis.__got"), "5|!nope|false", "unmatched trigger delivered raw to subscriber");
+        shutdown();
+    }
+
+    /// Slice 6.13b Task 3: `__s2_chat_on_message` degrades safely with no engine ops present — the
+    /// native only touches CHAT_MSG_SUBS (no engine-op), so subscribing must not panic, and a
+    /// dispatch with no subscriber-return-value change (handler returns nothing) does not suppress.
+    #[test]
+    fn chat_on_message_native_degrades_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();               // no engine ops set
+        create_plugin_context("p");
+        // Subscribing must not throw even with no ops.
+        eval_in_context("p", "__s2_chat_on_message(function (slot, text, teamonly) { /* returns undefined */ });").unwrap();
+        // A handler returning undefined ⇒ Continue ⇒ no suppress.
+        assert_eq!(dispatch_chat(1, "plain line", false), false, "undefined return ⇒ Continue ⇒ no suppress");
         shutdown();
     }
 

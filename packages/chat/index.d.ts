@@ -1,4 +1,6 @@
 /** @s2script/chat — print messages to player chat. NO runtime code (injected at load). */
+import type { HookResultValue } from "@s2script/events";
+
 export declare const Chat: {
   /**
    * An opaque prefix prepended to every chat message (NOT rcon/console replies). Color is content the
@@ -11,4 +13,10 @@ export declare const Chat: {
   toSlot(slot: number, message: string): void;
   /** Print to every live player's chat. */
   toAll(message: string): void;
+  /**
+   * Subscribe to raw player chat. The handler receives the speaker's `slot`, the raw `text`, and
+   * `teamonly`. Returning `>= HookResult.Handled` (2) suppresses the broadcast (SM-parity). Non-command
+   * chat lines are delivered here; the `@`-trigger layer subscribes through this.
+   */
+  onMessage(handler: (slot: number, text: string, teamonly: boolean) => HookResultValue | void): void;
 };

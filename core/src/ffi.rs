@@ -132,18 +132,20 @@ pub extern "C" fn s2script_core_dispatch_concommand(
 /// C-ABI entry point: dispatch a player chat line for command triggers (Slice 6.11b).  The shim's
 /// Host_Say detour calls this with the speaker's `slot` + the raw message text (CCommand::Arg(1)).
 ///
-/// Returns 1 if the caller should SUPPRESS the chat broadcast (a matched SILENT `/` trigger), else 0
-/// (the public `!` trigger and ordinary chat always show).  `catch_unwind`-wrapped; a null pointer /
-/// invalid UTF-8 degrades to 0 (no suppress, never panic across the FFI boundary per spec §6).
+/// Returns 1 if the caller should SUPPRESS the chat broadcast (a matched SILENT `/` trigger, OR a raw
+/// `Chat.onMessage` subscriber that returned >= Handled), else 0 (the public `!` trigger and ordinary
+/// chat with no blocking subscriber show).  `teamonly` (0/1) is threaded to the raw-chat subscribers.
+/// `catch_unwind`-wrapped; a null pointer / invalid UTF-8 degrades to 0 (no suppress, never panic
+/// across the FFI boundary per spec §6).
 #[no_mangle]
-pub extern "C" fn s2script_core_dispatch_chat(slot: c_int, text: *const c_char) -> c_int {
+pub extern "C" fn s2script_core_dispatch_chat(slot: c_int, text: *const c_char, teamonly: c_int) -> c_int {
     catch_unwind(|| {
         if text.is_null() { return 0; }
         let text_str = match unsafe { CStr::from_ptr(text) }.to_str() {
             Ok(s) => s,
             Err(_) => return 0,
         };
-        if v8host::dispatch_chat(slot as i32, text_str) { 1 } else { 0 }
+        if v8host::dispatch_chat(slot as i32, text_str, teamonly != 0) { 1 } else { 0 }
     })
     .unwrap_or(0)
 }
