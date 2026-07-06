@@ -1,75 +1,13 @@
 import { Commands } from "@s2script/commands";
-import { Chat } from "@s2script/chat";
 import { Admin, ADMFLAG } from "@s2script/admin";
-import { Player, ChatColors } from "@s2script/cs2";
+import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/server";
 import { Damage } from "@s2script/damage";
 import { Plugins } from "@s2script/plugins";
 
-// SourceMod show-activity flags (sm_show_activity). Default 13 = 1|4|8: non-admins see the generic "ADMIN"
-// name, admins see the real name. (A future refinement makes this a live cvar/config.)
-const SHOW_ACTIVITY = 13;
-const kNonAdmins = 1, kNonAdminsNames = 2, kAdmins = 4, kAdminsNames = 8, kRootNames = 16;
-
-// A port of SourceMod's FormatActivitySource: for ONE recipient, decide whether to show them an admin's
-// activity and under what name (real vs generic), per the show-activity flags + the actor/recipient admin
-// status. Pure logic (admin lookup + player name only) — the correctness core, unit-testable.
-function formatActivitySource(actorSlot: number, recipientSlot: number): { show: boolean; name: string } {
-  const flags = SHOW_ACTIVITY;
-  let real = "Console";       // identity[0]
-  let generic = "ADMIN";      // identity[1]
-  if (actorSlot >= 0) {
-    const actor = Player.fromSlot(actorSlot);
-    real = actor && actor.playerName ? actor.playerName : "ADMIN";
-    const a = Admin.forSlot(actorSlot);
-    if (!a || !a.hasFlags(ADMFLAG.GENERIC)) generic = "PLAYER";   // actor isn't really an admin
-  }
-  let mode = 1;               // 0 = real name, 1 = generic
-  let show = false;
-  const r = Admin.forSlot(recipientSlot);
-  const recipientIsAdmin = !!r && r.hasFlags(ADMFLAG.GENERIC);
-  if (!recipientIsAdmin) {
-    if ((flags & kNonAdmins) || (flags & kNonAdminsNames)) {
-      if ((flags & kNonAdminsNames) || recipientSlot === actorSlot) mode = 0;   // you always see your own name
-      show = true;
-    }
-  } else {
-    const isRoot = r!.hasFlags(ADMFLAG.ROOT);
-    if ((flags & kAdmins) || (flags & kAdminsNames) || ((flags & kRootNames) && isRoot)) {
-      if ((flags & kAdminsNames) || ((flags & kRootNames) && isRoot) || recipientSlot === actorSlot) mode = 0;
-      show = true;
-    }
-  }
-  return { show, name: mode === 0 ? real : generic };
-}
-
-// Slice 6.2 live gate — admin-gated commands. sm_say is now registered via Commands.registerAdmin with
-// ADMFLAG.CHAT: the server console / rcon is root (always allowed); an in-game player needs the CHAT flag
-// (from admins.json or a runtime Admin.add), else it replies "You do not have access." Chat.toAll delivers
-// the SayText2 chat message (6.1c). Admin cache = host-global (file admins.json ⊕ runtime), from @s2script/admin.
+// Slice 6.2 live gate — admin-gated commands. Admin cache = host-global (file admins.json ⊕ runtime),
+// from @s2script/admin. sm_say has moved to @s2script/basechat.
 export function onLoad(): void {
-  // Color is CONTENT the message owns (SourceMod-parity): the plugin embeds @s2script/cs2 ChatColors
-  // control bytes INLINE to color parts of a message and switch back — NO blanket color. Chat.toAll/toSlot
-  // send the string verbatim (no prime), so the message owns its full color layout including the first byte.
-  Chat.color = "";
-
-  // sm_say — SourceMod-parity sender-aware admin say. Each recipient gets a line whose SENDER NAME is
-  // customized by show-activity: normal players see "(ALL) ADMIN: msg", admins see "(ALL) gkh: msg".
-  // Per-recipient (the name differs by recipient), so it iterates connected players. Delivery is currently
-  // the team-colored SayText2 path (Chat.toSlot); true per-recipient color awaits the ClientPrint fix.
-  Commands.registerAdmin("sm_say", ADMFLAG.CHAT, (ctx) => {
-    const msg = ctx.argString.trim();
-    if (!msg) { ctx.reply("Usage: sm_say <message>"); return; }
-    for (const p of Player.allConnected()) {
-      const src = formatActivitySource(ctx.callerSlot, p.slot);
-      // "(ALL) name:" GREEN, then the message WHITE (SM look). A leading SPACE is the "text" that lets the
-      // first green byte apply (CS2 swallows a leading color byte, and the leading segment is team-colored;
-      // a space's color is invisible). Then true per-recipient color via the chat=false server-message path.
-      if (src.show) Chat.toSlot(p.slot, " " + ChatColors.Green + "(ALL) " + src.name + ": " + ChatColors.White + msg);
-    }
-    console.log("[basecommands] sm_say by slot=" + ctx.callerSlot + " msg=" + msg);
-  });
-
   // 6.3 — sm_kick <target> [reason] (ADMFLAG.KICK). Resolves the SM target string (#userid/name/@all/@me)
   // and disconnects each match via the engine KickClient. Server console / rcon is root.
   Commands.registerAdmin("sm_kick", ADMFLAG.KICK, (ctx) => {
