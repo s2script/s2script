@@ -26,8 +26,9 @@ export function onLoad(): void {
       ctx.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
       return;
     }
-    if (ctx.arg(1) === "") {
-      // A missing minutes arg must NOT silently become a permanent ban.
+    if (!/^\d+$/.test(ctx.arg(1))) {
+      // A missing OR non-numeric minutes arg must NOT silently become a permanent ban
+      // (argInt falls back to 0 = permanent for NaN). Require explicit digits; "0" = permanent.
       ctx.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
       return;
     }
@@ -82,7 +83,8 @@ export function onLoad(): void {
       ctx.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
       return;
     }
-    if (ctx.arg(1) === "") {
+    if (!/^\d+$/.test(ctx.arg(1))) {
+      // Missing or non-numeric minutes → usage, not a silent permanent ban (see sm_ban).
       ctx.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
       return;
     }
