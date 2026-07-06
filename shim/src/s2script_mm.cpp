@@ -11,6 +11,7 @@
 #include <eiface.h>
 #include <playerslot.h>   // CPlayerSlot — IVEngineServer2::ClientPrintf target (Slice 6.1b)
 #include <inetchannel.h>  // NetChannelBufType_t / BUF_RELIABLE (Slice 6.1c PostEventAbstract)
+#include <inetchannelinfo.h>  // INetChannelInfo::GetAddress — client_address (ban-reason sub-project 2)
 #include <networksystem/netmessage.h>            // CNetMessage::AsProto (Slice 6.1c)
 #include <google/protobuf/message.h>             // Message/Reflection (Slice 6.1c SayText2 reflection)
 #include <google/protobuf/descriptor.h>          // Descriptor::FindFieldByName (Slice 6.1c)
@@ -654,6 +655,33 @@ static const char* s2_client_steamid(int slot) {
 static void s2_client_kick(int slot, const char* reason) {
     if (!s_pEngine || slot < 0 || slot >= 64) return;
     s_pEngine->KickClient(CPlayerSlot(slot), reason ? reason : "Kicked by admin", NETWORK_DISCONNECT_KICKED);
+}
+
+// ---------------------------------------------------------------------------
+// client_console_print (ban-reason sub-project 2) — print one line to a client's
+// developer console via IVEngineServer2::ClientPrintf (eiface.h:238, proven live-safe in 6.1b).
+// The bot-skip guard (GetPlayerNetInfo == null) is MANDATORY — a print to a null-netchannel
+// fake client segfaults (mirrors the s2_client_print guard at :606).
+// ---------------------------------------------------------------------------
+static void s2_client_console_print(int slot, const char* msg) {
+    if (!s_pEngine || slot < 0 || slot >= 64) return;
+    if (!s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) return;   // bot / no netchannel — skip (would segfault)
+    s_pEngine->ClientPrintf(CPlayerSlot(slot), msg ? msg : "");
+}
+
+// ---------------------------------------------------------------------------
+// client_address (ban-reason sub-project 2) — the client's "IP:port" via
+// GetPlayerNetInfo(slot)->GetAddress(). "" for a bot / no netchannel (mirrors the
+// s_steamidBuf static-string pattern at :642). Valid until the next call.
+// ---------------------------------------------------------------------------
+static std::string s_addressBuf;
+static const char* s2_client_address(int slot) {
+    s_addressBuf = "";
+    if (s_pEngine && slot >= 0 && slot < 64) {
+        INetChannelInfo* nci = s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot));
+        if (nci) { const char* a = nci->GetAddress(); if (a) s_addressBuf = a; }
+    }
+    return s_addressBuf.c_str();
 }
 
 // ---------------------------------------------------------------------------
@@ -1518,6 +1546,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.cvar_get           = &s2_cvar_get;
     // Pawn suicide (Slice 6.14): APPENDED after cvar_get; order MUST match S2EngineOps.
     ops.pawn_commit_suicide = &s2_pawn_commit_suicide;
+    // Console print + client address (ban-reason sub-project 2): APPENDED after pawn_commit_suicide; order MUST match S2EngineOps.
+    ops.client_console_print = &s2_client_console_print;
+    ops.client_address       = &s2_client_address;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

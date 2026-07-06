@@ -113,6 +113,9 @@ pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityH
 pub type CvarGetFn          = extern "C" fn(name: *const c_char) -> *const c_char;   // Slice 6.7: cvar value string
 // Slice 6.14: kill a pawn via the sig-resolved CommitSuicide (shim reconstructs + serial-gates from idx/serial).
 pub type PawnCommitSuicideFn = extern "C" fn(idx: c_int, serial: c_int);
+// --- ban-reason sub-project 2: console-print + client-address ops (C-ABI; the C header must match exactly) ---
+pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
+pub type ClientAddressFn      = extern "C" fn(slot: c_int) -> *const c_char;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -167,6 +170,9 @@ pub struct S2EngineOps {
     pub cvar_get:           Option<CvarGetFn>,
     // --- Slice 6.14: pawn suicide op (APPENDED after cvar_get; order is the ABI; do not reorder above) ---
     pub pawn_commit_suicide: Option<PawnCommitSuicideFn>,
+    // --- ban-reason sub-project 2 (APPENDED after pawn_commit_suicide; order is the ABI; do not reorder) ---
+    pub client_console_print: Option<ClientConsolePrintFn>,
+    pub client_address:       Option<ClientAddressFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -3169,6 +3175,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ban_mark_loaded", s2_ban_mark_loaded);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
+    // ban-reason sub-project 2: developer-console print + client IP address.
+    set_native(scope, global_obj, "__s2_client_console_print", s2_client_console_print);
+    set_native(scope, global_obj, "__s2_client_address", s2_client_address);
     set_native(scope, global_obj, "__s2_damage_subscribe", s2_damage_subscribe);
     set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
     set_native(scope, global_obj, "__s2_damage_read_int", s2_damage_read_int);
@@ -3695,6 +3704,34 @@ fn s2_client_kick(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.client_kick else { return };
         if let Ok(creason) = CString::new(reason) { f(slot, creason.as_ptr()); }
+    }));
+}
+
+/// `__s2_client_console_print(slot, msg)` — print one line to the client's developer console.
+/// No-op without the op / for a bad slot / for a bot (shim skips a null-netchannel fake client).
+fn s2_client_console_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let msg = args.get(1).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.client_console_print else { return };
+        if let Ok(cmsg) = CString::new(msg) { f(slot, cmsg.as_ptr()); }
+    }));
+}
+
+/// `__s2_client_address(slot) -> string` — the client's IP address ("IP:port"). `""` without the op / for a bot / on null.
+fn s2_client_address(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let s: String = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.client_address?;
+            let ptr = f(slot);
+            if ptr.is_null() { return None; }
+            Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        })().unwrap_or_default();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
     }));
 }
 
@@ -5792,6 +5829,8 @@ mod frame_tests {
             damage_victim: None,
             cvar_get: None,
             pawn_commit_suicide: None,
+            client_console_print: None,
+            client_address: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -5918,6 +5957,8 @@ mod frame_tests {
             damage_victim: None,
             cvar_get: None,
             pawn_commit_suicide: None,
+            client_console_print: None,
+            client_address: None,
         }
     }
 
@@ -6390,6 +6431,22 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toSlot(0, 'hi'))"), "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toAll('hi'))"),      "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_print(0, 'hi'))"),          "undefined");
+        shutdown();
+    }
+
+    /// Ban-reason sub-project 2: the console-print + client-address natives degrade cleanly
+    /// with no engine ops wired — `__s2_client_console_print` is a no-op (never throws) and
+    /// `__s2_client_address` returns "" (an empty string, never null).
+    #[test]
+    fn client_console_print_and_address_degrade_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // console-print no-ops (returns undefined, never throws) without the op.
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_console_print(0, 'x'))"), "undefined");
+        // address returns "" (empty string, NOT null) without the op.
+        assert_eq!(eval_in_context_string("p", "__s2_client_address(0)"), "");
+        assert_eq!(eval_in_context_string("p", "typeof __s2_client_address(0)"), "string");
         shutdown();
     }
 
