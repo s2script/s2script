@@ -42,4 +42,7 @@ export declare const Commands: {
   handleChatTrigger(slot: number, message: string): { silent: boolean; ran: boolean } | null;
   /** The trigger characters — SM PublicChatTrigger (`"!"`) / SilentChatTrigger (`"/"`). Mutate to reconfigure. */
   readonly triggers: { public: string; silent: string };
+  /** Every globally-registered command with its required admin `flags`: `0` = anyone, `-1` = console/server-only,
+   * else the `ADMFLAG` bit mask (map bits→names in your plugin). The `sm_help` backend. */
+  list(): { name: string; flags: number }[];
 };

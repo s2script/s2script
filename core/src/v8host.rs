@@ -272,6 +272,13 @@ thread_local! {
     /// `shutdown` (BEFORE the isolate is dropped — same discipline as `RESOLVERS`).
     static CONCOMMANDS: std::cell::RefCell<std::collections::HashMap<String, (String, u64, v8::Global<v8::Function>)>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// `name → flags` sidecar for registered ConCommands (Slice 6.16, backing `sm_help` / `Commands.list()`).
+    /// `flags` encodes the required admin bit mask: `0` = anyone, `-1` = console/server-only sentinel,
+    /// else the `ADMFLAG` bit mask (`registerAdmin`). Pure `i64` — NO V8 handles — so it need not be cleared
+    /// before the isolate drops; `__s2_commands_list` joins on live `CONCOMMANDS` keys (a stale meta entry is
+    /// ignored). Dropped per-plugin alongside `CONCOMMANDS` in `unload_plugin`, cleared on `shutdown`.
+    static COMMAND_META: std::cell::RefCell<std::collections::HashMap<String, i64>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Per-plugin `v8::Context` registry, keyed by plugin id — the multi-context path that will
     /// eventually replace the single shared `HOST.context` (Task 5 migrates the natives/dispatch
     /// onto it).  Each `Global<Context>` is stamped with a `PluginId` slot at creation.  ADDED
@@ -673,18 +680,20 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // command can be invoked BY NAME (chat triggers) reusing the SAME wrapper as the ConCommand path (admin
   // gating included). __s2cmd_add both registers the engine ConCommand and records the wrapper here.
   var __s2cmd_reg = {};
-  function __s2cmd_add(name, wrapped) { __s2cmd_reg[name] = wrapped; __s2_concommand(name, wrapped); }
+  // `flags` (default 0) records the required admin mask for Commands.list()/sm_help: 0 = anyone,
+  // -1 = console/server-only sentinel, else the ADMFLAG bit mask. Passed through to the __s2_concommand native.
+  function __s2cmd_add(name, wrapped, flags) { __s2cmd_reg[name] = wrapped; __s2_concommand(name, wrapped, flags | 0); }
   var __s2cmd_triggers = { public: "!", silent: "/" };   // SM PublicChatTrigger / SilentChatTrigger; mutable
   var __s2_commands = {
     register: function (name, handler) {
-      __s2cmd_add(name, function (slot, a) { handler(__s2cmd_ctx(slot, a)); });
+      __s2cmd_add(name, function (slot, a) { handler(__s2cmd_ctx(slot, a)); }, 0);   // 0 = anyone
     },
     registerServer: function (name, handler) {
       __s2cmd_add(name, function (slot, a) {
         var ctx = __s2cmd_ctx(slot, a);
         if (ctx.callerSlot < 0) { handler(ctx); }
         else { ctx.reply("[SM] This command can only be run from the server console."); }
-      });
+      }, -1);   // -1 = console/server-only sentinel
     },
     registerAdmin: function (name, flags, handler) {
       __s2cmd_add(name, function (slot, a) {
@@ -698,7 +707,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         }
         if (check(ctx.callerSlot, flags | 0)) { handler(ctx); }
         else { ctx.reply("[SM] You do not have access to this command."); }
-      });
+      }, flags | 0);   // the ADMFLAG mask this command requires
     },
     // Slice 6.11: invoke a registered command by name (same context, synchronous — the wrapper applies
     // gating). Returns true if the command exists in this plugin. Used by chat triggers.
@@ -732,6 +741,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return { silent: t.silent, ran: ran };
     },
     triggers: __s2cmd_triggers,   // { public: "!", silent: "/" } — reconfigure the trigger chars here
+    // List every globally-registered ConCommand + its required admin flags (0 = anyone, -1 = console-only,
+    // else the ADMFLAG bit mask) — the sm_help backend. Degrades to [] on any error.
+    list: function () { try { return JSON.parse(__s2_commands_list()); } catch (e) { return []; } },
   };
   globalThis.__s2pkg_commands = { Commands: __s2_commands };   // named export `Commands`
   // --- Slice 6.2 Task 2: admin module (engine-generic; no CS2/game symbol; ADMFLAG + Admin API + file load) ---
@@ -1453,8 +1465,9 @@ fn s2_handle_decode(
     }));
 }
 
-/// Native `__s2_concommand(name: string, fn: (slot: number, argString: string) => void)`.
-/// Stores the JS callback `Global<Function>` keyed by command name in `CONCOMMANDS`, then
+/// Native `__s2_concommand(name: string, fn: (slot: number, argString: string) => void, flags?: number)`.
+/// Stores the JS callback `Global<Function>` keyed by command name in `CONCOMMANDS`, records the optional
+/// admin-flag mask (`flags`, default 0) in `COMMAND_META` (backing `Commands.list()` / `sm_help`), then
 /// calls `ops.concommand_register(name)` to register the raw ConCommand engine-side (shim).
 /// Degrades (WARN) if ops/fn null; `catch_unwind`; does NOT touch `HOST`.
 fn s2_concommand(
@@ -1478,6 +1491,10 @@ fn s2_concommand(
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         CONCOMMANDS.with(|m| m.borrow_mut().insert(name.clone(), (owner, generation, global)));
+
+        // Record the required admin-flag mask (default 0 = anyone) for `Commands.list()` / `sm_help`.
+        let flags = if args.length() >= 3 { args.get(2).integer_value(scope).unwrap_or(0) } else { 0 };
+        COMMAND_META.with(|m| m.borrow_mut().insert(name.clone(), flags));
 
         // Register the raw ConCommand engine-side via the shim's ops table.
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
@@ -2382,6 +2399,27 @@ fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgument
     }));
 }
 
+/// `__s2_commands_list() -> string` — JSON array of `{name, flags}` for `Commands.list()` / `sm_help`.
+/// Joins on live `CONCOMMANDS` keys (a stale `COMMAND_META` entry is ignored); `flags` defaults to 0 if a
+/// command has no meta entry. Degrades to `"[]"` on any error (`catch_unwind`).
+fn s2_commands_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let items: Vec<serde_json::Value> = CONCOMMANDS.with(|c| {
+            COMMAND_META.with(|meta| {
+                let meta = meta.borrow();
+                c.borrow().keys()
+                    .map(|name| serde_json::json!({
+                        "name": name,
+                        "flags": meta.get(name).copied().unwrap_or(0),
+                    }))
+                    .collect()
+            })
+        });
+        let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
+        if let Some(js) = v8::String::new(scope, &json) { rv.set(js.into()); }
+    }));
+}
+
 /// `__s2_plugin_unload(id) -> bool` — enqueue an unload (runs on the next frame drain). False if not loaded.
 fn s2_plugin_unload(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2971,6 +3009,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
+    set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
     set_native(scope, global_obj, "__s2_plugin_reload", s2_plugin_reload);
     set_native(scope, global_obj, "__s2_plugin_load", s2_plugin_load);
@@ -3839,6 +3878,8 @@ pub fn shutdown() {
     // Clear CONCOMMANDS BEFORE dropping the isolate — same discipline as RESOLVERS: the map holds
     // Global<Function>s into the isolate; dropping them while the isolate is alive is required.
     CONCOMMANDS.with(|m| m.borrow_mut().clear());
+    // Clear the flag-meta sidecar too (pure i64, no V8 handles, but reset for re-init hygiene).
+    COMMAND_META.with(|m| m.borrow_mut().clear());
     // Clear inter-plugin method + subscriber Globals BEFORE the isolate drops (same discipline as
     // RESOLVERS/CONCOMMANDS: they hold Global<Function>s into the isolate).
     IFACE_METHODS.with(|m| m.borrow_mut().clear());
@@ -4039,7 +4080,15 @@ pub(crate) fn unload_plugin(id: &str) {
     // per-plugin (.s2sp) unload: we remove from the JS dispatch map only — the shim's ICvar ConCommand
     // stays registered (idempotent, reload-safe) and re-routes to the new handler on reload. The engine-
     // side ICvar unregister happens on full shim teardown (Metamod Unload → s2script_mm.cpp, UAF-safe).
-    CONCOMMANDS.with(|m| m.borrow_mut().retain(|_, (owner, _, _)| owner != id));
+    let dropped_cmds: Vec<String> = CONCOMMANDS.with(|m| {
+        let mut b = m.borrow_mut();
+        let names: Vec<String> = b.iter().filter(|(_, (owner, _, _))| owner == id).map(|(n, _)| n.clone()).collect();
+        b.retain(|_, (owner, _, _)| owner != id);
+        names
+    });
+    // Drop the departing plugin's flag-meta alongside its commands (a stale entry would be ignored by the
+    // list join anyway, but keep the sidecar tidy — trivial).
+    COMMAND_META.with(|m| { let mut b = m.borrow_mut(); for n in &dropped_cmds { b.remove(n); } });
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
     // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
@@ -4556,6 +4605,31 @@ mod frame_tests {
         // Simulate the engine invoking the command (bypasses ConCommand registration):
         dispatch_concommand("s2_test", 3, "1234");
         assert_eq!(eval_in_context_string("cc_test", "String(globalThis.__cc)"), "3:1234");
+        shutdown();
+    }
+
+    /// `__s2_commands_list` returns valid JSON: `[]` when no commands are registered, and a
+    /// `[{name, flags}]` entry (with the flags passed to `__s2_concommand`) once one is registered.
+    /// Mirrors the plugins-list style; exercises the store + list join without the engine.
+    #[test]
+    fn commands_list_returns_name_and_flags() {
+        init(dummy_logger()).unwrap();
+        // Load a plugin whose body: (1) confirms the list is empty BEFORE any registration, then
+        // (2) registers two commands with distinct flag masks (2nd arg is the callback, 3rd is the flags).
+        load_plugin_js("cl_test", r#"
+            globalThis.__cl_empty = __s2_commands_list();               // must be "[]" — nothing registered yet
+            __s2_concommand("s2_open", function () {}, 0);              // 0 = anyone
+            __s2_concommand("s2_admin", function () {}, 6);             // an ADMFLAG bit mask
+            var list = JSON.parse(__s2_commands_list());
+            var byName = {};
+            for (var i = 0; i < list.length; i++) { byName[list[i].name] = list[i].flags; }
+            globalThis.__cl = list.length + "|" + byName["s2_open"] + "|" + byName["s2_admin"];
+        "#, "{}");
+        // Empty (valid JSON) before registration, then both commands surface with their flags.
+        assert_eq!(eval_in_context_string("cl_test", "String(globalThis.__cl_empty)"), "[]");
+        assert_eq!(eval_in_context_string("cl_test", "String(globalThis.__cl)"), "2|0|6");
+        // Native still returns valid JSON directly.
+        assert_eq!(eval_in_context_string("cl_test", "typeof __s2_commands_list()"), "string");
         shutdown();
     }
 
