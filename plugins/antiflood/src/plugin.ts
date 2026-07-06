@@ -1,15 +1,18 @@
 // @s2script/antiflood — the first non-command base plugin: a passive chat-flood moderator over the
 // raw-chat subscriber (Chat.onMessage). A client spamming say/say_team is throttled by a pure
-// token-decay model; a flooded message is suppressed by returning HookResult.Handled. Admins are
-// exempt. Config-driven (flood_time / max_tokens), live-reloadable via config.onChange.
+// leaky-bucket model; a flooded message is suppressed by returning HookResult.Handled, and the client
+// gets a throttled "slow down" notice (SM parity). Config-driven (flood_time / max_tokens),
+// live-reloadable via config.onChange.
 
 import { Chat } from "@s2script/chat";
-import { Admin, ADMFLAG } from "@s2script/admin";
 import { config } from "@s2script/config";
 import { HookResult } from "@s2script/events";
-import { floodStep, FloodState } from "./flood";
+import { ChatColors } from "@s2script/cs2";
+import { floodStep } from "./flood";
 
-const state = new Map<number, FloodState>();
+interface SlotState { tokens: number; lastTime: number; lastNotify: number; }
+const state = new Map<number, SlotState>();
+const NOTIFY_INTERVAL = 2.0; // seconds — throttle the "slow down" notice so it isn't itself spammy
 
 export function onLoad(): void {
   // Log tuning changes so an admin editing the config file sees them take effect (also opts this
@@ -22,13 +25,22 @@ export function onLoad(): void {
     const floodTime = config.getFloat("flood_time");
     if (floodTime <= 0) return HookResult.Continue; // disabled
 
-    const admin = Admin.forSlot(slot);
-    if (admin && admin.hasFlags(ADMFLAG.CHAT)) return HookResult.Continue; // admins aren't throttled
-
+    // Base SM antiflood throttles EVERYONE (admins included); admin-immunity is a separate opt-in
+    // system, deferred as a follow-up. Time source: Date.now() (wall-clock ms -> seconds).
     const maxTokens = config.getInt("max_tokens");
-    const prev = state.get(slot) ?? { tokens: 0, lastTime: 0 };
-    const r = floodStep(prev, Date.now() / 1000, floodTime, maxTokens);
-    state.set(slot, { tokens: r.tokens, lastTime: r.lastTime });
+    const now = Date.now() / 1000;
+    const prev = state.get(slot) ?? { tokens: 0, lastTime: 0, lastNotify: 0 };
+    const r = floodStep({ tokens: prev.tokens, lastTime: prev.lastTime }, now, floodTime, maxTokens);
+
+    // On a blocked message, tell the client to slow down — but throttle the notice itself so a
+    // sustained flood doesn't produce a wall of notices (they'd be the only lines the flooder sees).
+    let lastNotify = prev.lastNotify;
+    if (r.block && now - lastNotify >= NOTIFY_INTERVAL) {
+      // Leading space so the red byte lands on the text (a leading color byte is swallowed).
+      Chat.toSlot(slot, " " + ChatColors.Red + "[antiflood] You are sending messages too fast. Please slow down.");
+      lastNotify = now;
+    }
+    state.set(slot, { tokens: r.tokens, lastTime: r.lastTime, lastNotify });
     return r.block ? HookResult.Handled : HookResult.Continue;
   });
 
