@@ -3279,6 +3279,14 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ban_clear", s2_ban_clear);
     set_native(scope, global_obj, "__s2_ban_list", s2_ban_list);
     set_native(scope, global_obj, "__s2_ban_mark_loaded", s2_ban_mark_loaded);
+    // clientprefs: cookie cache natives (engine-generic — a SteamID/string-KV map, like admin/ban).
+    set_native(scope, global_obj, "__s2_cookie_get", s2_cookie_get);
+    set_native(scope, global_obj, "__s2_cookie_set", s2_cookie_set);
+    set_native(scope, global_obj, "__s2_cookie_load", s2_cookie_load);
+    set_native(scope, global_obj, "__s2_cookie_get_dirty", s2_cookie_get_dirty);
+    set_native(scope, global_obj, "__s2_cookie_clear", s2_cookie_clear);
+    set_native(scope, global_obj, "__s2_cookie_mark_cached", s2_cookie_mark_cached);
+    set_native(scope, global_obj, "__s2_cookie_is_cached", s2_cookie_is_cached);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
     // ban-reason sub-project 2: developer-console print + client IP address.
@@ -3794,6 +3802,77 @@ pub fn ban_check(xuid: u64, now: i64) -> Option<String> {
             if *until == 0 || *until > now { Some(reason.clone()) } else { None }
         })
     })
+}
+
+// --- clientprefs: cookie cache natives over crate::cookies (host-global, mirrors admin/ban). ---
+
+/// `__s2_cookie_get(steamid, name) -> string` — "" on miss.
+fn s2_cookie_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let v = crate::cookies::get(&sid, &name);
+        if let Some(s) = v8::String::new(scope, &v) { rv.set(s.into()); }
+    }));
+}
+
+/// `__s2_cookie_set(steamid, name, value)` — write via the API; marks the entry dirty.
+fn s2_cookie_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let val = args.get(2).to_rust_string_lossy(scope);
+        crate::cookies::set(&sid, &name, &val);
+    }));
+}
+
+/// `__s2_cookie_load(steamid, name, value)` — write from the DB load; NOT dirty.
+fn s2_cookie_load(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let val = args.get(2).to_rust_string_lossy(scope);
+        crate::cookies::load(&sid, &name, &val);
+    }));
+}
+
+/// `__s2_cookie_get_dirty(steamid) -> { [name]: value }` — the dirty (disconnect flush) set as a JS object.
+fn s2_cookie_get_dirty(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let pairs = crate::cookies::get_dirty(&sid);
+        let obj = v8::Object::new(scope);
+        for (name, value) in pairs.iter() {
+            let k = v8::String::new(scope, name).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+            let v = v8::String::new(scope, value).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+            obj.set(scope, k.into(), v.into());
+        }
+        rv.set(obj.into());
+    }));
+}
+
+/// `__s2_cookie_clear(steamid)` — drop a client's entries (on disconnect, after the flush captures the dirty set).
+fn s2_cookie_clear(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        crate::cookies::clear(&sid);
+    }));
+}
+
+/// `__s2_cookie_mark_cached(steamid)` — mark a client's cookies loaded (a zero-cookie client is still "cached").
+fn s2_cookie_mark_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        crate::cookies::mark_cached(&sid);
+    }));
+}
+
+/// `__s2_cookie_is_cached(steamid) -> boolean`.
+fn s2_cookie_is_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        rv.set(v8::Boolean::new(scope, crate::cookies::is_cached(&sid)).into());
+    }));
 }
 
 /// `__s2_client_steamid(slot) -> string` — the client's SteamID64 as a decimal string; "0" if no op / bot / invalid.
@@ -7025,6 +7104,24 @@ mod frame_tests {
         assert_eq!(ban_check(333, now), None);
         // absent → not banned.
         assert_eq!(ban_check(444, now), None);
+        shutdown();
+    }
+
+    /// clientprefs Task 2: `__s2_cookie_*` natives round-trip through `crate::cookies` — a loaded
+    /// value is NOT dirty, a set value IS, `get_dirty` returns only the dirty entries, and
+    /// `is_cached` reflects `mark_cached`.
+    #[test]
+    fn cookie_natives_round_trip() {
+        let _ = init(dummy_logger());
+        load_plugin_js("ck", r#"
+            __s2_cookie_load("S1", "a", "1");         // loaded, not dirty
+            __s2_cookie_set("S1", "b", "2");          // set, dirty
+            __s2_cookie_mark_cached("S1");
+            var dirty = __s2_cookie_get_dirty("S1");
+            globalThis.__out = __s2_cookie_get("S1","a") + "," + __s2_cookie_get("S1","b")
+                + "," + __s2_cookie_is_cached("S1") + "," + Object.keys(dirty).join("|") + "=" + dirty.b;
+        "#, "{}");
+        assert_eq!(read_global_string("ck", "__out"), "1,2,true,b=2"); // only b is dirty
         shutdown();
     }
 
