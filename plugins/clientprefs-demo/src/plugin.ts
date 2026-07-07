@@ -2,7 +2,7 @@
 // cookies, so the real client lifecycle is a deferred human-client test). A boot counter climbs
 // across restarts: load DB -> cache, get+increment+set, flush dirty -> DB.
 import { Database } from "@s2script/db";
-import { Cookies } from "@s2script/clientprefs";
+import { Cookies } from "@s2script/cookies";
 
 declare function __s2_cookie_load(steamid: string, name: string, value: string): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;

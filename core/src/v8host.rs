@@ -1004,7 +1004,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   globalThis.__s2pkg_db = { Database: __s2_Database };   // named export `Database` (matches the .d.ts)
-  // --- @s2script/clientprefs: SM-parity cookies over the __s2_cookie_* host-global cache ---
+  // --- @s2script/cookies: SM-parity cookies over the __s2_cookie_* host-global cache ---
   var __s2_cookie_defs = {};   // per-context registry: name -> Cookie (idempotent register)
   var __s2_Cookies = {
     register: function (name, opts) {
@@ -1027,7 +1027,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return !!client && client.steamId !== "0" && __s2_cookie_is_cached(client.steamId);
     },
   };
-  globalThis.__s2pkg_clientprefs = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
+  globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
 })();
 "#;
 
@@ -7151,7 +7151,7 @@ mod frame_tests {
         shutdown();
     }
 
-    /// clientprefs Task 3: the `@s2script/clientprefs` module — `Cookies.register` is idempotent,
+    /// clientprefs Task 3: the `@s2script/cookies` module — `Cookies.register` is idempotent,
     /// `get`/`set` route through the cache with a default fallback, and bots (`steamId === "0"`)
     /// are skipped entirely by both `get` (returns the default) and `set` (a no-op — the raw
     /// native cache stays empty for that steamid).
@@ -7159,7 +7159,7 @@ mod frame_tests {
     fn clientprefs_module_get_set_default_and_bot_skip() {
         let _ = init(dummy_logger());
         load_plugin_js("cp", r#"
-            var { Cookies } = require("@s2script/clientprefs");
+            var { Cookies } = require("@s2script/cookies");
             var c = Cookies.register("hud", { default: "white" });
             var real = { steamId: "S9" };
             var bot  = { steamId: "0" };
