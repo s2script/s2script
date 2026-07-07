@@ -42,10 +42,11 @@ The cookie *system* splits across three layers; one-way dependencies (game → c
 - `__s2_cookie_load(steamid, name, value)` — write **without** marking dirty (the DB-load path — a loaded value is not a change).
 - `__s2_cookie_get_dirty(steamid) → JSON "{name: value}"` — the dirty subset, for the disconnect flush (JSON string; the config bridge uses the same native-returns-JSON pattern).
 - `__s2_cookie_clear(steamid)` — drop a client's entries (on disconnect, after flush).
-- `__s2_cookie_mark_cached(steamid)` / `__s2_cookie_is_cached(steamid) → bool` — the `OnClientCookiesCached`/`AreClientCookiesCached` state (a client with zero cookies is still "cached").
-- `__s2_cookie_on_cached(handler)` — subscribe to the "cookies cached" event (ledgered, per-plugin). `__s2_cookie_dispatch_cached(slot)` — the clientprefs plugin calls this after a load completes; core dispatches `slot` to every subscriber across contexts. This is a **notify-mux mirroring the client lifecycle events** (`core/src/event_mux.rs::EventMux` reuse — snapshot-release, `try_borrow_mut` re-entrancy guard, per-sub liveness + `remove_by_owner` teardown), so `onCached` is a genuine cross-context event, not a poll.
+- `__s2_cookie_mark_cached(steamid)` / `__s2_cookie_is_cached(steamid) → bool` — the `AreClientCookiesCached` state (a client with zero cookies is still "cached").
 
-No shim change (the cache + mux are core-internal); one sniper rebuild for the core natives.
+No shim change (the cache is core-internal); one sniper rebuild for the core natives.
+
+**`onCached` (`OnClientCookiesCached`) is DEFERRED** — it is a *cross-context* event (the plugin loads in its context; a consumer's handler is in another), but the load completes inside a `.then` that runs under the isolate borrow (the frame-drain microtask checkpoint), so a JS-triggered fan-out hits the `try_borrow_mut` re-entrancy skip (the `Events.fire`-can't-re-dispatch limitation). Firing it reliably needs a post-drain pending-dispatch (queue the slot during the drain, fan out to subscribers after HOST is free) — a scoped follow-up. This slice ships `areCached`; a consumer that needs the exact "ready" moment is the forcing function for building `onCached` then.
 
 ## `@s2script/clientprefs` — the API
 
@@ -63,22 +64,20 @@ export declare const Cookies: {
   set(client: Client, cookie: Cookie, value: string): void;
   /** Has this client's cookies finished loading from the DB? */
   areCached(client: Client): boolean;
-  /** Fires when a client's cookies finish loading (SM's OnClientCookiesCached). */
-  onCached(handler: (client: Client) => void): void;
+  // onCached (OnClientCookiesCached) is DEFERRED — see the core section. Gate on areCached for now.
 };
 ```
 
 - `client` is a `Client` (`@s2script/clients`); the module resolves `client.steamId`. **Bots** (`steamId === "0"`) are skipped by `get`/`set` (return `default`/no-op).
 - `get`/`set` are synchronous in-context native calls against the core cache.
-- `register` records the definition (name/default/access) in a per-context registry and returns a `Cookie`. `CookieAccess` is carried for the future menu.
-- `onCached` wraps the `__s2_cookie_on_cached` subscribe native (the core notify-mux above); the handler receives `Clients.fromSlot(slot)` from the dispatched slot. It is an event (not a query): a handler registered after a client already cached won't fire for that client — use `areCached` for already-connected clients (SM-parity).
+- `register` records the definition (name/default/access) in a lightweight per-context map (idempotent — a repeat `register(name)` returns the same `Cookie`) and returns a `Cookie`. `CookieAccess` is carried for the future menu.
 
 ## The `clientprefs` base plugin — the DB lifecycle
 
 Uses `@s2script/db` + `@s2script/clients`; owns the table. On first load: `db.execute("CREATE TABLE IF NOT EXISTS cookies (steamid TEXT, name TEXT, value TEXT, updated INTEGER, PRIMARY KEY (steamid, name))")`.
 
 - **Load** on `Clients.onPutInServer(client)` (SteamID valid + client in server — SM's `OnClientAuthorized` analog); skip bots:
-  `db.query("SELECT name, value FROM cookies WHERE steamid = ?", [client.steamId])` → for each row `__s2_cookie_load(steamId, name, value)` → `__s2_cookie_mark_cached(steamId)` → `__s2_cookie_dispatch_cached(client.slot)` (core fans out to every `onCached` subscriber).
+  `db.query("SELECT name, value FROM cookies WHERE steamid = ?", [client.steamId])` → for each row `__s2_cookie_load(steamId, name, value)` → `__s2_cookie_mark_cached(steamId)`. (`onCached` fan-out deferred — see the core section.)
 - **Save** on `Clients.onDisconnect(client)`; skip bots:
   read `__s2_cookie_get_dirty(steamId)` (sync), `__s2_cookie_clear(steamId)` (sync), then for each dirty `(name, value)` `db.execute("INSERT OR REPLACE INTO cookies (steamid, name, value, updated) VALUES (?,?,?,?)", [steamId, name, value, nowSeconds])` — the writes use the captured values, so the clear can't race them.
 
@@ -100,4 +99,4 @@ Uses `@s2script/db` + `@s2script/clients`; owns the table. On first load: `db.ex
 
 ## Deferred follow-ons summary
 
-The menu surface (+ `sm_settings`/`sm_cookies`, needs the menu primitive); `SetAuthIdCookie`; `GetClientCookieTime`; access-level enforcement; fast-reconnect pending-op tracking; SM's two-table dbId normalization.
+`onCached` (`OnClientCookiesCached` — needs the post-drain pending-dispatch mechanism); the menu surface (+ `sm_settings`/`sm_cookies`, needs the menu primitive); `SetAuthIdCookie`; `GetClientCookieTime`; access-level enforcement; fast-reconnect pending-op tracking; SM's two-table dbId normalization.
