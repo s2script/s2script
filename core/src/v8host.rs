@@ -1331,6 +1331,98 @@ fn s2_thread_sleep(
     }));
 }
 
+/// Read `obj[name]` as a `String`, or `None` if the property is absent/`null`/`undefined` (a
+/// missing/nullish `options` field should fall back to its default, not stringify to `"undefined"`).
+fn get_str_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str) -> Option<String> {
+    let key = v8::String::new(scope, name)?;
+    let val = obj.get(scope, key.into())?;
+    if val.is_null_or_undefined() {
+        return None;
+    }
+    Some(val.to_rust_string_lossy(scope))
+}
+
+/// Native `__s2_fetch(url, options) -> Promise<rawResponse>` where `rawResponse =
+/// {status, ok, statusText, headers, body}`.  MIRRORS `s2_thread_sleep`'s resolver/ledger/pending
+/// block exactly (a `Job` resource — teardown drops its `RESOLVERS` entry before the context
+/// disposes, and a completion for an unloaded/reloaded plugin is DROPPED by the async-liveness
+/// guard in the drain step, never resolved) but hands off to `crate::http::fetch` (the
+/// process-global tokio+reqwest engine, Task 1) instead of the blocking-sleep worker pool — so the
+/// calling (main/game) thread never blocks on I/O; the request runs off-thread and the Promise
+/// resolves on a LATER `frame_async_drain` via `resolve_fetch`.
+///
+/// `options` (all optional): `method` (default `"GET"`), `headers` (a plain string→string object),
+/// `body` (a string), `timeoutMs` (default 30000). Degrade-never-crash: the whole body runs under
+/// `catch_unwind`; a malformed/absent `options` degrades to the defaults (never throws
+/// synchronously) — the actual network outcome (incl. a 4xx/5xx, which RESOLVES with `ok:false`,
+/// vs. a network/timeout error, which REJECTS) is decided later by `resolve_fetch`.
+fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let url = args.get(0).to_rust_string_lossy(scope);
+        // Parse options (defaults GET / no headers / no body / 30000ms timeout).
+        let mut method = "GET".to_string();
+        let mut headers: Vec<(String, String)> = Vec::new();
+        let mut body: Option<String> = None;
+        let mut timeout_ms = 30_000u64;
+        if let Ok(opts) = v8::Local::<v8::Object>::try_from(args.get(1)) {
+            if let Some(v) = get_str_prop(scope, opts, "method") {
+                method = v;
+            }
+            if let Some(v) = get_str_prop(scope, opts, "body") {
+                body = Some(v);
+            }
+            if let Some(k) = v8::String::new(scope, "timeoutMs") {
+                if let Some(v) = opts.get(scope, k.into()) {
+                    if v.is_number() {
+                        timeout_ms = v.integer_value(scope).unwrap_or(30_000).max(0) as u64;
+                    }
+                }
+            }
+            if let Some(k) = v8::String::new(scope, "headers") {
+                if let Some(hv) = opts.get(scope, k.into()) {
+                    if let Ok(ho) = v8::Local::<v8::Object>::try_from(hv) {
+                        if let Some(names) = ho.get_own_property_names(scope, Default::default()) {
+                            for i in 0..names.length() {
+                                let Some(key) = names.get_index(scope, i) else { continue };
+                                let Some(val) = ho.get(scope, key) else { continue };
+                                headers.push((
+                                    key.to_rust_string_lossy(scope),
+                                    val.to_rust_string_lossy(scope),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let id = next_async_id();
+        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
+        let owner = resolver_owner_tag(scope);
+        // Ledger this async job against the CALLING plugin (teardown authority) — a non-plugin/
+        // unknown owner is a safe no-op; no borrow held across a JS call.
+        if let Some((ref oid, _)) = owner {
+            REGISTRY.with(|r| {
+                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                    l.record_job(id);
+                }
+            });
+        }
+        RESOLVERS.with(|m| {
+            m.borrow_mut()
+                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+        });
+        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        crate::http::fetch(
+            id,
+            crate::http::FetchRequest { method, url, headers, body, timeout_ms },
+        );
+        refresh_detour();
+        rv.set(promise.into());
+    }));
+}
+
 /// Native `__s2_schema_offset(class, field) -> i32`.  Resolves a schema field's byte offset
 /// within a class via the live SchemaSystem (through the shim's `schema_offset` engine-op),
 /// caching the result.  Returns `-1` on any miss (no ops / null pointer / class or field not
@@ -3452,6 +3544,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_sqlite_query", s2_sqlite_query);
     set_native(scope, global_obj, "__s2_sqlite_execute", s2_sqlite_execute);
     set_native(scope, global_obj, "__s2_sqlite_close", s2_sqlite_close);
+    // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
+    set_native(scope, global_obj, "__s2_fetch", s2_fetch);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -4549,6 +4643,10 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
 pub fn init(logger: LogFn) -> Result<(), String> {
     ensure_platform();
     LOGGER.with(|l| l.set(Some(logger)));
+    // Slice HTTP Task 2: build the process-global tokio+reqwest engine (idempotent — a OnceLock,
+    // survives a Metamod re-init just like `pool()`). Holds no V8 handles; wiring it here (rather
+    // than lazily on first `__s2_fetch` call) keeps engine-generic subsystem setup in one place.
+    crate::http::init();
 
     let mut isolate = v8::Isolate::new(v8::CreateParams::default());
 
@@ -4872,6 +4970,70 @@ fn resolve_or_drop(host: &mut Host, entry: &ResolverEntry) {
     resolver.resolve(scope, undef.into());
 }
 
+/// Resolve (or drop, on the async-liveness guard) a completed `__s2_fetch` job in its OWNING
+/// plugin's context — MIRRORS `resolve_or_drop`'s owner-liveness + context-clone +
+/// HandleScope/ContextScope preamble exactly (the use-after-free killer: never resolve into a
+/// disposed/replaced context), but builds the raw `{status, ok, statusText, headers, body}`
+/// Response payload on `Ok`, or rejects with an `Error` on `Err` (a network/timeout failure),
+/// instead of `resolve_or_drop`'s bare `undefined`.
+fn resolve_fetch(
+    host: &mut Host,
+    entry: &ResolverEntry,
+    result: Result<crate::http::FetchResponse, String>,
+) {
+    let g_ctx = match &entry.owner {
+        Some((id, generation)) => {
+            if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
+                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
+            }
+            match PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) {
+                Some(g) => g,
+                None => return, // context gone (defensive) → drop
+            }
+        }
+        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
+    };
+
+    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+    let hs = &mut hs;
+    let ctx_local = v8::Local::new(hs, &g_ctx);
+    let scope = &mut v8::ContextScope::new(hs, ctx_local);
+    let resolver = v8::Local::new(scope, &entry.resolver);
+
+    match result {
+        Ok(r) => {
+            let obj = v8::Object::new(scope);
+            let status_key = v8::String::new(scope, "status").unwrap();
+            obj.set(scope, status_key.into(), v8::Number::new(scope, r.status as f64).into());
+            let ok_key = v8::String::new(scope, "ok").unwrap();
+            obj.set(scope, ok_key.into(), v8::Boolean::new(scope, (200..300).contains(&r.status)).into());
+            let status_text_key = v8::String::new(scope, "statusText").unwrap();
+            let status_text_val = v8::String::new(scope, &r.status_text)
+                .unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+            obj.set(scope, status_text_key.into(), status_text_val.into());
+            let hobj = v8::Object::new(scope);
+            for (k, v) in &r.headers {
+                let Some(kk) = v8::String::new(scope, k) else { continue };
+                let vv = v8::String::new(scope, v).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+                hobj.set(scope, kk.into(), vv.into());
+            }
+            let headers_key = v8::String::new(scope, "headers").unwrap();
+            obj.set(scope, headers_key.into(), hobj.into());
+            let body_key = v8::String::new(scope, "body").unwrap();
+            let body_val = v8::String::new(scope, &r.body)
+                .unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+            obj.set(scope, body_key.into(), body_val.into());
+            resolver.resolve(scope, obj.into());
+        }
+        Err(e) => {
+            let msg = v8::String::new(scope, &e).unwrap_or_else(|| v8::String::new(scope, "fetch error").unwrap());
+            let ex = v8::Exception::error(scope, msg);
+            resolver.reject(scope, ex);
+        }
+    }
+}
+
 /// Per-frame async drain: resolve every due timer + completed job IN ITS OWNING PLUGIN CONTEXT
 /// (dropping any whose plugin is gone/reloaded — the async-liveness guard), advance the frame
 /// counter, then run the single V8 microtask checkpoint for this frame.  Called once per Post-phase
@@ -4908,6 +5070,14 @@ pub(crate) fn frame_async_drain() {
             // completion rule): a stale id from a prior isolate has no entry and skips this.
             PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
             resolve_or_drop(host, &entry);
+        }
+        // Resolve completed fetch requests (payload-carrying, from the tokio+reqwest engine in
+        // core/src/http.rs; Slice HTTP Task 2). Mirrors the pool-completion loop above exactly,
+        // except the payload is a built Response object (or a rejection) via `resolve_fetch`.
+        while let Some(c) = crate::http::try_recv_completed() {
+            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&c.id)) else { continue };
+            PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
+            resolve_fetch(host, &entry, c.result);
         }
 
         // Advance the counter BEFORE the checkpoint so continuations observe the new count.
@@ -7804,6 +7974,134 @@ mod frame_tests {
         "#, "{}");
         frame_async_drain();
         assert_eq!(read_global_string("dbdrv", "__out"), "fake=yes name=whatever-name");
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice HTTP Task 2: __s2_fetch native + the async-result drain step (frame_async_drain's
+    // new fetch-completion loop + resolve_fetch) — the async spine over core/src/http.rs (Task 1).
+    // ---------------------------------------------------------------------------
+
+    /// A tiny local HTTP/1.1 server on an ephemeral port; returns one canned response then exits.
+    /// Duplicated from `http::tests::spawn_server` (that helper is private to `http`'s own test
+    /// module) so this module can drive `__s2_fetch` end to end without any real-network egress.
+    fn spawn_local_http_server(response: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(response.as_bytes());
+            }
+        });
+        port
+    }
+
+    /// `__s2_fetch` end-to-end against a real (local) HTTP server: the native hands off to the
+    /// tokio engine and returns a pending Promise immediately (never blocking the calling thread);
+    /// the Promise resolves only on a LATER `frame_async_drain()` once the background request
+    /// completes — proving the whole async-result spine (RESOLVERS + PENDING_JOBS + the fetch
+    /// drain step + `resolve_fetch`'s payload-building) together.
+    #[test]
+    fn fetch_native_resolves_on_a_later_drain_with_the_response_payload() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_http_server("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        load_plugin_js(
+            "fetchp",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            __s2_fetch("http://127.0.0.1:{port}/", {{}}).then(function (r) {{
+                globalThis.__out = r.status + ":" + r.ok + ":" + r.body;
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        // The response arrives async (a real background thread) — poll the drain up to ~500
+        // times (bounded) rather than assuming it lands on the very next drain.
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            if read_global_string("fetchp", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "fetch promise never resolved on a drain");
+        assert_eq!(read_global_string("fetchp", "__out"), "200:true:hello");
+        shutdown();
+    }
+
+    /// A 4xx/5xx HTTP status RESOLVES the Promise with `ok:false` (never rejects) — the
+    /// degrade-never-crash contract for an application-level error vs. a network/timeout failure.
+    #[test]
+    fn fetch_native_404_resolves_with_ok_false() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_http_server("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        load_plugin_js(
+            "fetch404",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            __s2_fetch("http://127.0.0.1:{port}/", {{}}).then(function (r) {{
+                globalThis.__out = r.status + ":" + r.ok;
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            if read_global_string("fetch404", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "fetch promise never resolved on a drain");
+        assert_eq!(read_global_string("fetch404", "__out"), "404:false");
+        shutdown();
+    }
+
+    /// A network failure (connection refused) REJECTS the Promise (the `.catch` runs) rather than
+    /// resolving or panicking — the native never blocks nor crashes on an unreachable host.
+    #[test]
+    fn fetch_native_bad_host_rejects_the_promise() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "fetchbad",
+            r#"
+            globalThis.__out = "pending";
+            __s2_fetch("http://127.0.0.1:1/", { timeoutMs: 1000 }).then(function (r) {
+                globalThis.__out = "should-not-resolve:" + r.status;
+            }).catch(function (e) {
+                globalThis.__out = "rejected:" + (String(e).length > 0);
+            });
+        "#,
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            if read_global_string("fetchbad", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "fetch promise never settled on a drain");
+        assert_eq!(read_global_string("fetchbad", "__out"), "rejected:true");
         shutdown();
     }
 }
