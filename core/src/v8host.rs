@@ -1004,6 +1004,30 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   globalThis.__s2pkg_db = { Database: __s2_Database };   // named export `Database` (matches the .d.ts)
+  // --- @s2script/clientprefs: SM-parity cookies over the __s2_cookie_* host-global cache ---
+  var __s2_cookie_defs = {};   // per-context registry: name -> Cookie (idempotent register)
+  var __s2_Cookies = {
+    register: function (name, opts) {
+      if (__s2_cookie_defs[name]) return __s2_cookie_defs[name];
+      opts = opts || {};
+      var cookie = { name: name, access: (opts.access == null ? 0 : opts.access), default: (opts.default == null ? "" : String(opts.default)) };
+      __s2_cookie_defs[name] = cookie;
+      return cookie;
+    },
+    get: function (client, cookie) {
+      if (!client || client.steamId === "0") return cookie.default;      // bots have no cookies
+      var v = __s2_cookie_get(client.steamId, cookie.name);
+      return v === "" ? cookie.default : v;
+    },
+    set: function (client, cookie, value) {
+      if (!client || client.steamId === "0") return;                     // no-op for bots
+      __s2_cookie_set(client.steamId, cookie.name, String(value));
+    },
+    areCached: function (client) {
+      return !!client && client.steamId !== "0" && __s2_cookie_is_cached(client.steamId);
+    },
+  };
+  globalThis.__s2pkg_clientprefs = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
 })();
 "#;
 
@@ -7122,6 +7146,27 @@ mod frame_tests {
                 + "," + __s2_cookie_is_cached("S1") + "," + Object.keys(dirty).join("|") + "=" + dirty.b;
         "#, "{}");
         assert_eq!(read_global_string("ck", "__out"), "1,2,true,b=2"); // only b is dirty
+        shutdown();
+    }
+
+    /// clientprefs Task 3: the `@s2script/clientprefs` module — `Cookies.register` is idempotent,
+    /// `get`/`set` route through the cache with a default fallback, and bots (`steamId === "0"`)
+    /// are skipped entirely by both `get` (returns the default) and `set` (a no-op — the raw
+    /// native cache stays empty for that steamid).
+    #[test]
+    fn clientprefs_module_get_set_default_and_bot_skip() {
+        let _ = init(dummy_logger());
+        load_plugin_js("cp", r#"
+            var { Cookies } = require("@s2script/clientprefs");
+            var c = Cookies.register("hud", { default: "white" });
+            var real = { steamId: "S9" };
+            var bot  = { steamId: "0" };
+            globalThis.__out = Cookies.get(real, c)                 // default (empty cache) -> "white"
+                + "," + (function(){ Cookies.set(real, c, "red"); return Cookies.get(real, c); })()  // "red"
+                + "," + Cookies.get(bot, c)                          // bot -> default "white"
+                + "," + (function(){ Cookies.set(bot, c, "x"); return __s2_cookie_get("0","hud"); })(); // bot set is a no-op -> ""
+        "#, "{}");
+        assert_eq!(read_global_string("cp", "__out"), "white,red,white,");
         shutdown();
     }
 
