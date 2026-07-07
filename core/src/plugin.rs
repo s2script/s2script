@@ -25,6 +25,9 @@ pub enum Resource {
     /// An open DB connection handle (opaque, from `db::open`). Teardown closes it even if the
     /// plugin never calls `close()` itself.
     DbConn(u64),
+    /// An open WebSocket connection id (opaque, from `ws::connect`). Teardown closes it (regardless
+    /// of owner — the ledger owns the id) even if the plugin never calls `close()` itself.
+    WsConn(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +99,11 @@ impl PluginLedger {
     /// Record an open DB connection handle against this plugin (teardown authority for Task 3).
     pub fn record_db_conn(&mut self, handle: u64) {
         self.order.push(Resource::DbConn(handle));
+    }
+
+    /// Record an open WebSocket connection id against this plugin (teardown authority, ws Task 2).
+    pub fn record_ws_conn(&mut self, id: u64) {
+        self.order.push(Resource::WsConn(id));
     }
 
     /// Resources in REVERSE acquisition order — last-acquired torn down first.

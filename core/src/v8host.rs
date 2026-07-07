@@ -378,6 +378,18 @@ thread_local! {
     /// `dispatch_pending_cookie_cached()` post-drain fan-out. Draining + clearing happens with HOST free.
     static COOKIE_CACHED_PENDING: std::cell::RefCell<Vec<i32>> = std::cell::RefCell::new(Vec::new());
 
+    /// WebSocket Task 2: `WebSocket.on*` subscriber mux, keyed `"<conn_id>:<event>"` (event =
+    /// "message"/"close"/"error"). Same EventMux shape/discipline as COOKIE_CACHED_MUX; fanned out
+    /// post-frame by `dispatch_pending_ws_events` (called from `ffi.rs` AFTER `frame_async_drain()`
+    /// returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
+    static WS_EVENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// WebSocket Task 2: `(conn_id, event, payload1, payload2)` queued during `frame_async_drain`'s
+    /// signal-routing step, fanned out post-drain (HOST free) by `dispatch_pending_ws_events`. For
+    /// "message"/"error" the 3rd tuple field is the text and the 4th is unused (0); for "close" the
+    /// 3rd is the reason and the 4th is the code.
+    static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32)>> = std::cell::RefCell::new(Vec::new());
+
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
     /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
     /// Reload) and revived via `iface_from_json`; cleared by the loader on a final removal (Vanished);
@@ -1433,6 +1445,196 @@ fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
         refresh_detour();
         rv.set(promise.into());
     }));
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket (client) Task 2: __s2_ws_* natives + signal routing + teardown.
+// Mirrors s2_fetch (the connect native)/resolve_fetch (-> resolve_ws_connect)/
+// s2_cookie_on_cached (the subscribe)/dispatch_pending_cookie_cached (-> dispatch_pending_ws_events).
+// ---------------------------------------------------------------------------
+
+/// Native `__s2_ws_connect(url) -> Promise<connId>`.  MIRRORS `s2_fetch`'s resolver/ledger/pending
+/// block exactly (a `Job` resource — teardown drops its `RESOLVERS` entry before the context
+/// disposes, and a completion for an unloaded/reloaded plugin is DROPPED by the async-liveness
+/// guard in the drain step, never resolved), except the SAME fresh async id is used as BOTH the
+/// connect-resolver id (in `RESOLVERS`) AND the ws connection id (`ws::connect`'s `conn_id`), and
+/// the connection is additionally ledgered as a `WsConn` resource (teardown authority) so an
+/// unclosed connection is closed even if the plugin never calls `close()`.  Hands off to
+/// `crate::ws::connect` (the process-global tokio+tungstenite engine, Task 1) — the calling
+/// (main/game) thread never blocks; the Promise resolves on a LATER `frame_async_drain` via
+/// `resolve_ws_connect`.
+fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let url = args.get(0).to_rust_string_lossy(scope);
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let id = next_async_id();
+        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
+        let owner = resolver_owner_tag(scope);
+        let owner_string = current_plugin(scope).unwrap_or_default();
+        // Ledger this async job (as a Job, for RESOLVERS/PENDING_JOBS cleanup) AND the connection
+        // itself (as a WsConn, so an unclosed connection is closed at teardown) against the CALLING
+        // plugin — a non-plugin/unknown owner is a safe no-op; no borrow held across a JS call.
+        if let Some((ref oid, _)) = owner {
+            REGISTRY.with(|r| {
+                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                    l.record_job(id);
+                    l.record_ws_conn(id);
+                }
+            });
+        }
+        RESOLVERS.with(|m| {
+            m.borrow_mut()
+                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+        });
+        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        crate::ws::connect(id, url, owner_string);
+        refresh_detour();
+        rv.set(promise.into());
+    }));
+}
+
+/// Resolve (or drop, on the async-liveness guard) a completed `__s2_ws_connect` job in its OWNING
+/// plugin's context — MIRRORS `resolve_fetch`'s owner-liveness + context-clone +
+/// HandleScope/ContextScope preamble exactly, but resolves with the conn-id `Number` on `Ok`
+/// (the plugin's `WebSocket.connect` prelude then wraps it into a handle), or rejects with an
+/// `Error` on `Err` (a connect failure — bad host/port/handshake).
+fn resolve_ws_connect(host: &mut Host, entry: &ResolverEntry, id: u64, result: Result<(), String>) {
+    let g_ctx = match &entry.owner {
+        Some((oid, generation)) => {
+            if !REGISTRY.with(|r| r.borrow().is_live(oid, *generation)) {
+                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
+            }
+            match PLUGINS.with(|p| p.borrow().get(oid).map(|pi| pi.context.clone())) {
+                Some(g) => g,
+                None => return, // context gone (defensive) → drop
+            }
+        }
+        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
+    };
+
+    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+    let hs = &mut hs;
+    let ctx_local = v8::Local::new(hs, &g_ctx);
+    let scope = &mut v8::ContextScope::new(hs, ctx_local);
+    let resolver = v8::Local::new(scope, &entry.resolver);
+
+    match result {
+        Ok(()) => {
+            let id_val = v8::Number::new(scope, id as f64);
+            resolver.resolve(scope, id_val.into());
+        }
+        Err(e) => {
+            let msg = v8::String::new(scope, &e).unwrap_or_else(|| v8::String::new(scope, "ws connect error").unwrap());
+            let ex = v8::Exception::error(scope, msg);
+            resolver.reject(scope, ex);
+        }
+    }
+}
+
+/// Native `__s2_ws_send(id, text)`.  Owner-scoped (a no-op for a conn this plugin doesn't own, or an
+/// absent conn); hands off to `crate::ws::send` (a non-blocking unbounded-channel send — never
+/// blocks the calling thread). No return value.
+fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let text = args.get(1).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_default();
+        crate::ws::send(id, &owner, text);
+    }));
+}
+
+/// Native `__s2_ws_close(id)`.  Owner-scoped (mirrors `s2_ws_send`); hands off to `crate::ws::close`
+/// (a non-blocking command send). No return value.
+fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let owner = current_plugin(scope).unwrap_or_default();
+        crate::ws::close(id, &owner);
+    }));
+}
+
+/// Native `__s2_ws_on(id, event, handler)` — subscribe a JS fn to a ws connection's event
+/// ("message"/"close"/"error"). MIRRORS `s2_cookie_on_cached` (owner-tracked, keyed mux) but the
+/// mux key is `"<id>:<event>"` (a connection has a name dimension, unlike cookies-cached).
+fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let event = args.get(1).to_rust_string_lossy(scope);
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let key = format!("{id}:{event}");
+        WS_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
+    }));
+}
+
+/// Drain `WS_EVENT_PENDING` and fan each queued `(conn_id, event, s, n)` out to the `WS_EVENT_MUX`
+/// subscribers keyed `"<conn_id>:<event>"` (WebSocket Task 2). Called from `ffi.rs`'s Post-frame
+/// branch AFTER `frame_async_drain()` returns (HOST is free). Mirrors
+/// `dispatch_pending_cookie_cached` verbatim (snapshot, `try_borrow_mut` re-entrancy guard,
+/// per-subscriber liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw),
+/// except the payload carries the event data: for "message"/"error" a single String arg `s`; for
+/// "close" two args `(Number code, String reason)` built from `(s, n)` = `(reason, code)`.
+pub(crate) fn dispatch_pending_ws_events() {
+    let pending: Vec<(u64, String, String, i32)> = WS_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if pending.is_empty() { return; }
+
+    for (conn_id, event, s, n) in pending {
+        let key = format!("{conn_id}:{event}");
+        // Phase 1: snapshot — release WS_EVENT_MUX borrow before entering any context.
+        let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
+        if snap.is_empty() { continue; }
+
+        // Phase 2: enter each subscriber's context and invoke handler(...).
+        HOST.with(|h| {
+            // Re-entrancy guard (mirrors dispatch_pending_cookie_cached): expected free here (called
+            // after frame_async_drain returns), but guarded anyway per the shared discipline.
+            let Ok(mut borrow) = h.try_borrow_mut() else { return };
+            let Some(host) = borrow.as_mut() else { return };
+
+            for (owner, generation, handler_g) in &snap {
+                // Liveness check (release REGISTRY borrow before entering context).
+                if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+                // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
+                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+                let hs = &mut hs;
+                let ctx_local = v8::Local::new(hs, &g_ctx);
+                let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+                let mut tc_storage = v8::TryCatch::new(scope);
+                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+                let tc = &mut tc;
+
+                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                let func = v8::Local::new(tc, handler_g);
+                let call_result = if event == "close" {
+                    let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
+                    let reason_val: v8::Local<v8::Value> =
+                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
+                    func.call(tc, recv, &[code_val, reason_val])
+                } else {
+                    let s_val: v8::Local<v8::Value> =
+                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
+                    func.call(tc, recv, &[s_val])
+                };
+                if call_result.is_none() {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: dispatch_pending_ws_events('{}'): handler '{}': {}", key, owner, msg));
+                }
+            }
+        });
+    }
 }
 
 /// Native `__s2_schema_offset(class, field) -> i32`.  Resolves a schema field's byte offset
@@ -3558,6 +3760,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_sqlite_close", s2_sqlite_close);
     // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
     set_native(scope, global_obj, "__s2_fetch", s2_fetch);
+    // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
+    set_native(scope, global_obj, "__s2_ws_connect", s2_ws_connect);
+    set_native(scope, global_obj, "__s2_ws_send", s2_ws_send);
+    set_native(scope, global_obj, "__s2_ws_close", s2_ws_close);
+    set_native(scope, global_obj, "__s2_ws_on", s2_ws_on);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -4930,6 +5137,9 @@ pub fn shutdown() {
     // Reset the Cookies.onCached mux + pending queue (clientprefs Task 4) so a re-init starts clean.
     COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear());
+    // Reset the WebSocket on* mux + pending queue (WebSocket Task 2) so a re-init starts clean.
+    WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    WS_EVENT_PENDING.with(|q| q.borrow_mut().clear());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -5091,6 +5301,41 @@ pub(crate) fn frame_async_drain() {
             PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
             resolve_fetch(host, &entry, c.result);
         }
+        // Route completed ws signals (WebSocket Task 2, over core/src/ws.rs's tokio+tungstenite
+        // engine). ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect
+        // Promise INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then`
+        // continuation — which subscribes onMessage — runs THIS frame); Message/Errored/Closed are
+        // queued into WS_EVENT_PENDING and fanned out separately, AFTER this whole drain returns
+        // (dispatch_pending_ws_events, called from ffi.rs, HOST free) — never before the checkpoint.
+        while let Some(sig) = crate::ws::try_recv_signal() {
+            match sig.kind {
+                crate::ws::WsSignalKind::Connected => {
+                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
+                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+                        resolve_ws_connect(host, &entry, sig.conn_id, Ok(()));
+                    }
+                }
+                crate::ws::WsSignalKind::ConnectFailed(e) => {
+                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
+                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+                        resolve_ws_connect(host, &entry, sig.conn_id, Err(e));
+                    }
+                    crate::ws::drop_conn(sig.conn_id);
+                }
+                crate::ws::WsSignalKind::Message(t) => {
+                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "message".into(), t, 0)));
+                }
+                crate::ws::WsSignalKind::Errored(e) => {
+                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "error".into(), e, 0)));
+                }
+                crate::ws::WsSignalKind::Closed(code, reason) => {
+                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "close".into(), reason, code as i32)));
+                    crate::ws::drop_conn(sig.conn_id);
+                    // (mux subscribers for this conn are cleaned up when the plugin unloads; a closed
+                    // conn's stale subscribers simply never fire again — acceptable.)
+                }
+            }
+        }
 
         // Advance the counter BEFORE the checkpoint so continuations observe the new count.
         FRAME_COUNTER.with(|c| c.set(frame.wrapping_add(1)));
@@ -5173,6 +5418,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // (a2c'') Drop the plugin's Cookies.onCached subscriptions (clientprefs Task 4). No engine-level
     // hook to remove (the fan-out is a pure post-frame JS dispatch, no shim involvement).
     COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c''') Drop the plugin's WebSocket on* subscriptions (WebSocket Task 2). No engine-level hook
+    // to remove (the fan-out is a pure post-frame JS dispatch, like COOKIE_CACHED_MUX); the underlying
+    // connections themselves are closed below via the ledger's WsConn resources.
+    WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -5295,6 +5544,13 @@ pub(crate) fn unload_plugin(id: &str) {
                     // unloading plugin's OWN id as the owner (it owns every handle in its ledger).
                     // Idempotent (an already-closed handle is a harmless no-op inside db::close).
                     crate::db::close(h, id);
+                }
+                plugin::Resource::WsConn(conn_id) => {
+                    // A late/never `close()` — teardown closes the ws connection now regardless of
+                    // owner (the ledger owns the id; `drop_conn` mirrors `db::close`'s idempotence —
+                    // an already-removed conn_id is a harmless no-op inside ws::drop_conn). This also
+                    // covers the ConnectFailed case (the drain step already called drop_conn once).
+                    crate::ws::drop_conn(conn_id);
                 }
             }
         }
@@ -8179,6 +8435,117 @@ mod frame_tests {
             read_global_string("httpmod", "__out"),
             "200:true:OK:{\"a\":\"b\"}:b"
         );
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // WebSocket Task 2: __s2_ws_* natives + signal routing (connect resolver + event mux) — the
+    // async spine over core/src/ws.rs's tokio+tungstenite engine (Task 1).
+    // ---------------------------------------------------------------------------
+
+    /// A tiny local WebSocket echo server on an ephemeral port. Duplicated from
+    /// `ws::tests::echo_server_port` (that helper is private to `ws`'s own test module) so this
+    /// module can drive `__s2_ws_connect`/`__s2_ws_send`/`__s2_ws_on` end to end without any
+    /// real-network egress.
+    fn spawn_local_ws_echo_server() -> u16 {
+        use futures_util::{SinkExt, StreamExt};
+        crate::http::init();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        crate::http::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            if let Ok((stream, _)) = listener.accept().await {
+                if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
+                    let (mut w, mut r) = ws.split();
+                    while let Some(Ok(m)) = r.next().await {
+                        if m.is_close() {
+                            break;
+                        }
+                        if w.send(m).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        port
+    }
+
+    /// `__s2_ws_connect` end-to-end against a local ws echo server: the native hands off to the
+    /// tokio engine and returns a pending Promise immediately (never blocking the calling thread);
+    /// the connect Promise resolves with the conn id on a LATER `frame_async_drain()` — and its
+    /// `.then` continuation (which subscribes `__s2_ws_on(id,"message",...)` and sends "hi") runs
+    /// THAT SAME drain, before the checkpoint returns (the load-bearing ordering: resolve happens
+    /// inside the drain so the plugin can subscribe before any message could arrive). The echoed
+    /// "message" event is then queued and fanned out by `dispatch_pending_ws_events` (post-drain,
+    /// HOST free) — proving the whole natives + signal-routing + WS_EVENT_MUX spine together.
+    #[test]
+    fn ws_connect_send_on_message_round_trips_the_echo() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_echo_server();
+        load_plugin_js(
+            "wsp",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            __s2_ws_connect("ws://127.0.0.1:{port}/").then(function (id) {{
+                __s2_ws_on(id, "message", function (m) {{ globalThis.__out = m; }});
+                __s2_ws_send(id, "hi");
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsp", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "ws message never arrived on a drain");
+        assert_eq!(read_global_string("wsp", "__out"), "hi");
+        shutdown();
+    }
+
+    /// A ws connect failure (connection refused) REJECTS the connect Promise (the `.catch` runs)
+    /// rather than resolving or panicking — mirrors `fetch_native_bad_host_rejects_the_promise`,
+    /// proving `resolve_ws_connect`'s `Err` branch + the drain's `ConnectFailed` routing (incl. the
+    /// `ws::drop_conn` cleanup of the now-dead registry entry).
+    #[test]
+    fn ws_connect_bad_host_rejects_the_promise() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "wsbad",
+            r#"
+            globalThis.__out = "pending";
+            __s2_ws_connect("ws://127.0.0.1:1/").then(function (id) {
+                globalThis.__out = "should-not-resolve:" + id;
+            }).catch(function (e) {
+                globalThis.__out = "rejected:" + (String(e).length > 0);
+            });
+        "#,
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsbad", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "ws connect promise never settled on a drain");
+        assert_eq!(read_global_string("wsbad", "__out"), "rejected:true");
         shutdown();
     }
 }
