@@ -6,7 +6,7 @@ export interface CookieOptions { description?: string; access?: CookieAccess; de
 export declare const Cookies: {
   /** Register (or return an existing) cookie definition. */
   register(name: string, opts?: CookieOptions): Cookie;
-  /** Cache value for this client, else the cookie's default, else "". "" for bots. */
+  /** Cache value for this client (a stored "" is a real value), else the cookie's default. Default for bots. */
   get(client: Client, cookie: Cookie): string;
   /** Write the cache + mark dirty (flushed to the DB on disconnect). No-op for bots. */
   set(client: Client, cookie: Cookie, value: string): void;

@@ -6,7 +6,7 @@
 import { Database } from "@s2script/db";
 import { Cookies } from "@s2script/cookies";
 
-declare function __s2_cookie_load(steamid: string, name: string, value: string): void;
+declare function __s2_cookie_load(steamid: string, name: string, value: string, updated?: number): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
 
 const FAKE = "76561199999999999";          // demo_boots — the demo owns its flush

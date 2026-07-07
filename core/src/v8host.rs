@@ -1046,7 +1046,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       __s2_cookie_set_authid(String(steamId), cookie.name, String(value), Math.floor(Date.now() / 1000));
     },
     onCached: function (h) {
-      __s2_cookie_on_cached(function (slot) { h(globalThis.__s2pkg_clients.Clients.fromSlot(slot)); });
+      // Guard: fromSlot is null if the client disconnected in the load->fan-out window, so only fire
+      // for a still-connected Client (the .d.ts promises a non-null Client). A departed client's
+      // "cookies cached" notification is moot.
+      __s2_cookie_on_cached(function (slot) { var c = globalThis.__s2pkg_clients.Clients.fromSlot(slot); if (c) h(c); });
     },
   };
   globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
