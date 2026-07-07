@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-struct Entry { value: String, dirty: bool }
+struct Entry { value: String, dirty: bool, updated: i64 }
 #[derive(Default)]
 struct ClientCookies { cached: bool, entries: HashMap<String, Entry> }
 
@@ -12,30 +12,37 @@ thread_local! {
     static CACHE: RefCell<HashMap<String, ClientCookies>> = RefCell::new(HashMap::new());
 }
 
-/// Cache value, or "" if the client/name is absent.
-pub fn get(steamid: &str, name: &str) -> String {
+/// Cache value, or `None` if the client/name is absent (a true miss — distinct from a stored `""`).
+pub fn get(steamid: &str, name: &str) -> Option<String> {
     CACHE.with(|c| c.borrow().get(steamid)
         .and_then(|cc| cc.entries.get(name))
-        .map(|e| e.value.clone())
-        .unwrap_or_default())
+        .map(|e| e.value.clone()))
 }
 
 /// Write via the API — marks the entry dirty (flushed on disconnect).
-pub fn set(steamid: &str, name: &str, value: &str) {
+pub fn set(steamid: &str, name: &str, value: &str, updated: i64) {
     CACHE.with(|c| {
         let mut m = c.borrow_mut();
         let cc = m.entry(steamid.to_string()).or_default();
-        cc.entries.insert(name.to_string(), Entry { value: value.to_string(), dirty: true });
+        cc.entries.insert(name.to_string(), Entry { value: value.to_string(), dirty: true, updated });
     });
 }
 
 /// Write from the DB load — NOT dirty (a loaded value is not a change).
-pub fn load(steamid: &str, name: &str, value: &str) {
+pub fn load(steamid: &str, name: &str, value: &str, updated: i64) {
     CACHE.with(|c| {
         let mut m = c.borrow_mut();
         let cc = m.entry(steamid.to_string()).or_default();
-        cc.entries.insert(name.to_string(), Entry { value: value.to_string(), dirty: false });
+        cc.entries.insert(name.to_string(), Entry { value: value.to_string(), dirty: false, updated });
     });
+}
+
+/// The stored `updated` timestamp for a client's cookie, or 0 if absent.
+pub fn get_time(steamid: &str, name: &str) -> i64 {
+    CACHE.with(|c| c.borrow().get(steamid)
+        .and_then(|cc| cc.entries.get(name))
+        .map(|e| e.updated)
+        .unwrap_or(0))
 }
 
 /// The dirty (name, value) pairs for a client — the disconnect flush set.
@@ -80,25 +87,25 @@ mod tests {
     // test so they don't observe each other's entries.
     #[test]
     fn set_get_and_dirty() {
-        set("A1", "color", "red");
-        assert_eq!(get("A1", "color"), "red");
+        set("A1", "color", "red", 0);
+        assert_eq!(get("A1", "color"), Some("red".to_string()));
         let d = get_dirty("A1");
         assert_eq!(d, vec![("color".to_string(), "red".to_string())]);
-        assert_eq!(get("A1", "missing"), "");
+        assert_eq!(get("A1", "missing"), None);
     }
     #[test]
     fn load_is_not_dirty() {
-        load("A2", "k", "v");
-        assert_eq!(get("A2", "k"), "v");
+        load("A2", "k", "v", 0);
+        assert_eq!(get("A2", "k"), Some("v".to_string()));
         assert!(get_dirty("A2").is_empty(), "a loaded value is not dirty");
-        set("A2", "k2", "v2");   // a later set IS dirty
+        set("A2", "k2", "v2", 0);   // a later set IS dirty
         assert_eq!(get_dirty("A2"), vec![("k2".to_string(), "v2".to_string())]);
     }
     #[test]
     fn clear_removes_client() {
-        set("A3", "k", "v");
+        set("A3", "k", "v", 0);
         clear("A3");
-        assert_eq!(get("A3", "k"), "");
+        assert_eq!(get("A3", "k"), None);
         assert!(get_dirty("A3").is_empty());
     }
     #[test]
@@ -109,10 +116,27 @@ mod tests {
     }
     #[test]
     fn reset_clears_all() {
-        set("A5", "k", "v");
+        set("A5", "k", "v", 0);
         mark_cached("A5");
         reset();
-        assert_eq!(get("A5", "k"), "");
+        assert_eq!(get("A5", "k"), None);
         assert!(!is_cached("A5"));   // stale cached flag gone
+    }
+    /// Task 2: a stored `""` is a HIT (`Some("")`), distinct from a true miss (`None`) — the
+    /// module-layer empty-string-vs-default bug this task fixes.
+    #[test]
+    fn empty_string_is_a_hit_not_a_miss() {
+        set("A6", "k", "", 0);
+        assert_eq!(get("A6", "k"), Some("".to_string()));
+        assert_eq!(get("A6", "missing"), None);
+    }
+    /// Task 2: `get_time` returns the stored `updated` for both `set` and `load`, and 0 when absent.
+    #[test]
+    fn get_time_reads_back_updated() {
+        assert_eq!(get_time("A7", "k"), 0);   // absent
+        set("A7", "k", "v", 1_700_000_000);
+        assert_eq!(get_time("A7", "k"), 1_700_000_000);
+        load("A7", "k2", "v2", 1_600_000_000);
+        assert_eq!(get_time("A7", "k2"), 1_600_000_000);
     }
 }

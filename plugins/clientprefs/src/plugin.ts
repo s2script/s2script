@@ -5,7 +5,7 @@ import { Database } from "@s2script/db";
 import { Clients, Client } from "@s2script/clients";
 
 // The core natives (injected globals; not in the module's typed surface).
-declare function __s2_cookie_load(steamid: string, name: string, value: string): void;
+declare function __s2_cookie_load(steamid: string, name: string, value: string, updated: number): void;
 declare function __s2_cookie_mark_cached(steamid: string): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
 declare function __s2_cookie_clear(steamid: string): void;
@@ -30,8 +30,8 @@ async function loadCookies(client: Client): Promise<void> {
   if (!db || client.steamId === "0") return;   // skip bots
   const steamId = client.steamId;
   try {
-    const rows = await db.query("SELECT name, value FROM cookies WHERE steamid = ?", [steamId]);
-    for (const row of rows) __s2_cookie_load(steamId, String(row.name), String(row.value));
+    const rows = await db.query("SELECT name, value, updated FROM cookies WHERE steamid = ?", [steamId]);
+    for (const row of rows) __s2_cookie_load(steamId, String(row.name), String(row.value), Number(row.updated));
     __s2_cookie_mark_cached(steamId);
   } catch (e) {
     console.log("[clientprefs] load ERROR for " + steamId + ": " + String(e));

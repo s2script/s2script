@@ -12,4 +12,6 @@ export declare const Cookies: {
   set(client: Client, cookie: Cookie, value: string): void;
   /** Has this client's cookies finished loading from the DB? */
   areCached(client: Client): boolean;
+  /** Unix timestamp of the cookie's last write (set or DB load), or 0 if never set. 0 for bots. */
+  getTime(client: Client, cookie: Cookie): number;
 };

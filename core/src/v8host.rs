@@ -1017,14 +1017,17 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     get: function (client, cookie) {
       if (!client || client.steamId === "0") return cookie.default;      // bots have no cookies
       var v = __s2_cookie_get(client.steamId, cookie.name);
-      return v === "" ? cookie.default : v;
+      return v === undefined ? cookie.default : v;   // a stored "" is a hit, not a miss
     },
     set: function (client, cookie, value) {
       if (!client || client.steamId === "0") return;                     // no-op for bots
-      __s2_cookie_set(client.steamId, cookie.name, String(value));
+      __s2_cookie_set(client.steamId, cookie.name, String(value), Math.floor(Date.now() / 1000));
     },
     areCached: function (client) {
       return !!client && client.steamId !== "0" && __s2_cookie_is_cached(client.steamId);
+    },
+    getTime: function (client, cookie) {
+      return (!client || client.steamId === "0") ? 0 : __s2_cookie_get_time(client.steamId, cookie.name);
     },
   };
   globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
@@ -3307,6 +3310,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cookie_get", s2_cookie_get);
     set_native(scope, global_obj, "__s2_cookie_set", s2_cookie_set);
     set_native(scope, global_obj, "__s2_cookie_load", s2_cookie_load);
+    set_native(scope, global_obj, "__s2_cookie_get_time", s2_cookie_get_time);
     set_native(scope, global_obj, "__s2_cookie_get_dirty", s2_cookie_get_dirty);
     set_native(scope, global_obj, "__s2_cookie_clear", s2_cookie_clear);
     set_native(scope, global_obj, "__s2_cookie_mark_cached", s2_cookie_mark_cached);
@@ -3830,33 +3834,48 @@ pub fn ban_check(xuid: u64, now: i64) -> Option<String> {
 
 // --- clientprefs: cookie cache natives over crate::cookies (host-global, mirrors admin/ban). ---
 
-/// `__s2_cookie_get(steamid, name) -> string` — "" on miss.
+/// `__s2_cookie_get(steamid, name) -> string | undefined` — `undefined` on a true miss (distinct
+/// from a stored `""`); the module layer decides the default fallback.
 fn s2_cookie_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let sid = args.get(0).to_rust_string_lossy(scope);
         let name = args.get(1).to_rust_string_lossy(scope);
-        let v = crate::cookies::get(&sid, &name);
-        if let Some(s) = v8::String::new(scope, &v) { rv.set(s.into()); }
+        match crate::cookies::get(&sid, &name) {
+            Some(v) => { if let Some(s) = v8::String::new(scope, &v) { rv.set(s.into()); } }
+            None => { rv.set(v8::undefined(scope).into()); }
+        }
     }));
 }
 
-/// `__s2_cookie_set(steamid, name, value)` — write via the API; marks the entry dirty.
+/// `__s2_cookie_set(steamid, name, value, updated)` — write via the API; marks the entry dirty.
 fn s2_cookie_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let sid = args.get(0).to_rust_string_lossy(scope);
         let name = args.get(1).to_rust_string_lossy(scope);
         let val = args.get(2).to_rust_string_lossy(scope);
-        crate::cookies::set(&sid, &name, &val);
+        let updated = args.get(3).integer_value(scope).unwrap_or(0);
+        crate::cookies::set(&sid, &name, &val, updated);
     }));
 }
 
-/// `__s2_cookie_load(steamid, name, value)` — write from the DB load; NOT dirty.
+/// `__s2_cookie_load(steamid, name, value, updated)` — write from the DB load; NOT dirty.
 fn s2_cookie_load(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let sid = args.get(0).to_rust_string_lossy(scope);
         let name = args.get(1).to_rust_string_lossy(scope);
         let val = args.get(2).to_rust_string_lossy(scope);
-        crate::cookies::load(&sid, &name, &val);
+        let updated = args.get(3).integer_value(scope).unwrap_or(0);
+        crate::cookies::load(&sid, &name, &val, updated);
+    }));
+}
+
+/// `__s2_cookie_get_time(steamid, name) -> number` — the stored `updated` timestamp, or 0 if absent.
+fn s2_cookie_get_time(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let t = crate::cookies::get_time(&sid, &name);
+        rv.set(v8::Number::new(scope, t as f64).into());
     }));
 }
 
@@ -7140,14 +7159,31 @@ mod frame_tests {
     fn cookie_natives_round_trip() {
         let _ = init(dummy_logger());
         load_plugin_js("ck", r#"
-            __s2_cookie_load("S1", "a", "1");         // loaded, not dirty
-            __s2_cookie_set("S1", "b", "2");          // set, dirty
+            __s2_cookie_load("S1", "a", "1", 111);    // loaded, not dirty
+            __s2_cookie_set("S1", "b", "2", 222);     // set, dirty
             __s2_cookie_mark_cached("S1");
             var dirty = __s2_cookie_get_dirty("S1");
             globalThis.__out = __s2_cookie_get("S1","a") + "," + __s2_cookie_get("S1","b")
                 + "," + __s2_cookie_is_cached("S1") + "," + Object.keys(dirty).join("|") + "=" + dirty.b;
         "#, "{}");
         assert_eq!(read_global_string("ck", "__out"), "1,2,true,b=2"); // only b is dirty
+        shutdown();
+    }
+
+    /// clientprefs Task 2: `__s2_cookie_get` returns `undefined` (not `""`) on a true miss, so a
+    /// stored `""` reads back as a real hit distinct from an absent name; `__s2_cookie_get_time`
+    /// reads back the `updated` passed to `set`/`load`, and is 0 when absent.
+    #[test]
+    fn cookie_natives_empty_string_and_get_time() {
+        let _ = init(dummy_logger());
+        load_plugin_js("ck2", r#"
+            __s2_cookie_set("S2", "empty", "", 12345);
+            var missing = __s2_cookie_get("S2", "nope");
+            var empty = __s2_cookie_get("S2", "empty");
+            globalThis.__out = (missing === undefined) + "," + (empty === "") + ","
+                + __s2_cookie_get_time("S2", "empty") + "," + __s2_cookie_get_time("S2", "nope");
+        "#, "{}");
+        assert_eq!(read_global_string("ck2", "__out"), "true,true,12345,0");
         shutdown();
     }
 
@@ -7166,9 +7202,31 @@ mod frame_tests {
             globalThis.__out = Cookies.get(real, c)                 // default (empty cache) -> "white"
                 + "," + (function(){ Cookies.set(real, c, "red"); return Cookies.get(real, c); })()  // "red"
                 + "," + Cookies.get(bot, c)                          // bot -> default "white"
-                + "," + (function(){ Cookies.set(bot, c, "x"); return __s2_cookie_get("0","hud"); })(); // bot set is a no-op -> ""
+                + "," + (function(){ Cookies.set(bot, c, "x"); return __s2_cookie_get("0","hud"); })(); // bot set is a no-op -> undefined
         "#, "{}");
-        assert_eq!(read_global_string("cp", "__out"), "white,red,white,");
+        assert_eq!(read_global_string("cp", "__out"), "white,red,white,undefined");
+        shutdown();
+    }
+
+    /// clientprefs Task 2 (module layer): a `Cookies.set(client, cookie, "")` followed by
+    /// `Cookies.get` returns `""` — NOT the cookie's default — the empty-string-vs-miss fix; and
+    /// `Cookies.getTime` reads back a nonzero timestamp after a set, 0 before any set, and 0 for a bot.
+    #[test]
+    fn clientprefs_module_empty_string_and_get_time() {
+        let _ = init(dummy_logger());
+        load_plugin_js("cp2", r#"
+            var { Cookies } = require("@s2script/cookies");
+            var c = Cookies.register("nickname", { default: "Anonymous" });
+            var real = { steamId: "S10" };
+            var bot  = { steamId: "0" };
+            var beforeSetTime = Cookies.getTime(real, c);      // 0 — never set
+            Cookies.set(real, c, "");
+            var afterEmptySet = Cookies.get(real, c);          // "" not "Anonymous"
+            var afterSetTime = Cookies.getTime(real, c);       // nonzero now
+            var botTime = Cookies.getTime(bot, c);             // 0 — bots skipped
+            globalThis.__out = beforeSetTime + "," + (afterEmptySet === "") + "," + (afterSetTime > 0) + "," + botTime;
+        "#, "{}");
+        assert_eq!(read_global_string("cp2", "__out"), "0,true,true,0");
         shutdown();
     }
 
