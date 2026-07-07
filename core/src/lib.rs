@@ -10,6 +10,7 @@ pub mod plugin;
 pub(crate) mod entity;
 mod event_mux;
 mod ffi;
+mod http;
 mod loader;
 mod multiplexer;
 mod schema;

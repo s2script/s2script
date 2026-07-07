@@ -26,3 +26,7 @@ serde_json = "1"
 # Engine-generic SQLite subsystem (core/src/db.rs). Bundled: compiles SQLite's C
 # in directly, so no system libsqlite3 dependency at build or runtime.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# Engine-generic async HTTP subsystem (core/src/http.rs): a process-global tokio
+# runtime + a shared reqwest::Client. rustls-only (no system OpenSSL dependency).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
