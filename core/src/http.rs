@@ -70,7 +70,7 @@ async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchRes
     if let Some(b) = req.body {
         rb = rb.body(b);
     }
-    let resp = rb.send().await.map_err(|e| e.to_string())?; // network/timeout → Err
+    let mut resp = rb.send().await.map_err(|e| e.to_string())?; // network/timeout → Err
     let status = resp.status().as_u16();
     let status_text = resp.status().canonical_reason().unwrap_or("").to_string();
     let headers = resp
@@ -78,16 +78,22 @@ async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchRes
         .iter()
         .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
+    // Fast reject on a declared oversized body...
     if let Some(len) = resp.content_length() {
         if len as usize > MAX_BODY {
             return Err("response body too large".into());
         }
     }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_BODY {
-        return Err("response body too large".into());
+    // ...but a chunked / no-Content-Length response can lie, so STREAM the body and abort the moment
+    // the accumulated size exceeds MAX_BODY — never buffer an unbounded (hostile) response into memory.
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if buf.len() + chunk.len() > MAX_BODY {
+            return Err("response body too large".into());
+        }
+        buf.extend_from_slice(&chunk);
     }
-    let body = String::from_utf8_lossy(&bytes).into_owned();
+    let body = String::from_utf8_lossy(&buf).into_owned();
     Ok(FetchResponse { status, status_text, headers, body })
 }
 
