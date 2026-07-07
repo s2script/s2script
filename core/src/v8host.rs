@@ -3268,6 +3268,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
     set_native(scope, global_obj, "__s2_config_read_raw", s2_config_read_raw);
     set_native(scope, global_obj, "__s2_config_write_raw", s2_config_write_raw);
+    // Slice DB Task 3: the `__s2_sqlite_*` natives (sync-behind-Promise) for `@s2script/db`.
+    set_native(scope, global_obj, "__s2_sqlite_open", s2_sqlite_open);
+    set_native(scope, global_obj, "__s2_sqlite_query", s2_sqlite_query);
+    set_native(scope, global_obj, "__s2_sqlite_execute", s2_sqlite_execute);
+    set_native(scope, global_obj, "__s2_sqlite_close", s2_sqlite_close);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -3912,6 +3917,192 @@ fn s2_config_write_raw(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
             Some(f(cid.as_ptr(), ccontent.as_ptr()))
         })();
         rv.set_int32(result.unwrap_or(0));
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Slice DB Task 3: the `__s2_sqlite_*` natives — sync-behind-Promise execution over
+// `crate::db` (Task 1) + the `db_data_dir` engine op (Task 2). Every native returns a real
+// `Promise` (the async API contract), resolved/rejected INLINE (no threadpool this slice — see
+// the plan's simplification note). A connection handle is ledgered against the CALLING plugin
+// (`record_db_conn`) so an unclosed connection is closed at teardown (`Resource::DbConn` arm in
+// `unload_plugin`). Degrade-never-crash: every body runs under `catch_unwind`; a bad handle / SQL
+// error rejects the Promise, never panics/throws synchronously.
+// ---------------------------------------------------------------------------
+
+/// JS array (params) -> `Vec<DbValue>`. `bool` -> `Int(0|1)`; an integral `number` -> `Int`, else
+/// `Real`; `string` -> `Text`; `null`/`undefined` -> `Null`. A non-array `val` (e.g. omitted arg)
+/// yields an empty params vec (degrade, not a crash).
+fn js_params_to_db(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<crate::db::DbValue> {
+    use crate::db::DbValue;
+    let mut out = Vec::new();
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(val) {
+        for i in 0..arr.length() {
+            let Some(el) = arr.get_index(scope, i) else { out.push(DbValue::Null); continue; };
+            let dv = if el.is_null_or_undefined() {
+                DbValue::Null
+            } else if el.is_boolean() {
+                DbValue::Int(if el.boolean_value(scope) { 1 } else { 0 })
+            } else if el.is_string() {
+                DbValue::Text(el.to_rust_string_lossy(scope))
+            } else if el.is_number() {
+                let n = el.number_value(scope).unwrap_or(0.0);
+                if n.fract() == 0.0 && n.abs() < 9.007e15 { DbValue::Int(n as i64) } else { DbValue::Real(n) }
+            } else {
+                DbValue::Text(el.to_rust_string_lossy(scope))
+            };
+            out.push(dv);
+        }
+    }
+    out
+}
+
+/// `DbValue` -> a JS value in `scope`'s current context. `Int`/`Real` -> `Number` (a value beyond
+/// 2^53 loses precision — documented; 64-bit ids should be stored/read as `Text`). `Text` ->
+/// `String`. `Null` -> `null`.
+fn db_value_to_v8<'s>(scope: &mut v8::PinScope<'s, '_>, v: &crate::db::DbValue) -> v8::Local<'s, v8::Value> {
+    use crate::db::DbValue;
+    match v {
+        DbValue::Null => v8::null(scope).into(),
+        DbValue::Int(i) => v8::Number::new(scope, *i as f64).into(),
+        DbValue::Real(f) => v8::Number::new(scope, *f).into(),
+        DbValue::Text(s) => v8::String::new(scope, s).unwrap().into(),
+    }
+}
+
+/// Resolve the s2script data directory via the `db_data_dir` engine op, or `None` if the op table
+/// / the function pointer is absent (degrade path — `open` then rejects "db not available").
+fn db_data_dir() -> Option<String> {
+    ENGINE_OPS.with(|o| o.get())
+        .and_then(|ops| ops.db_data_dir)
+        .map(|f| unsafe { std::ffi::CStr::from_ptr(f()) }.to_string_lossy().into_owned())
+}
+
+/// Native `__s2_sqlite_open(name: string) -> Promise<number>`. Opens (or creates)
+/// `<data_dir>/<name>.sqlite` and resolves the opaque connection handle; ledgers it against the
+/// CALLING plugin. Rejects on an invalid name, an unavailable data dir (no engine op), or an
+/// open failure.
+fn s2_sqlite_open(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let result = match db_data_dir() {
+            Some(dir) => crate::db::open(std::path::Path::new(&dir), &name),
+            None => Err("db not available".to_string()),
+        };
+        match result {
+            Ok(handle) => {
+                // Ledger the connection against the CALLING plugin (teardown authority) — a
+                // non-plugin/unknown owner (the shared HOST context) is a safe no-op.
+                if let Some((ref oid, _)) = resolver_owner_tag(scope) {
+                    REGISTRY.with(|r| {
+                        if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                            l.record_db_conn(handle);
+                        }
+                    });
+                }
+                resolver.resolve(scope, v8::Number::new(scope, handle as f64).into());
+            }
+            Err(e) => {
+                let msg = v8::String::new(scope, &e).unwrap();
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
+            }
+        }
+        rv.set(promise.into());
+    }));
+}
+
+/// Native `__s2_sqlite_query(handle, sql, params) -> Promise<Row[]>`. Runs a parameterized SELECT
+/// synchronously and resolves an array of row objects keyed by column name (`db_value_to_v8`); an
+/// invalid handle or SQL error rejects the Promise.
+fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1);
+        let sql = args.get(1).to_rust_string_lossy(scope);
+        let params = js_params_to_db(scope, args.get(2));
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let result = if handle < 0 {
+            Err("invalid db handle".to_string())
+        } else {
+            crate::db::query(handle as u64, &sql, &params)
+        };
+        match result {
+            Ok(qr) => {
+                let arr = v8::Array::new(scope, qr.rows.len() as i32);
+                for (ri, row) in qr.rows.iter().enumerate() {
+                    let obj = v8::Object::new(scope);
+                    for (ci, col) in qr.columns.iter().enumerate() {
+                        let key = v8::String::new(scope, col).unwrap();
+                        let val = db_value_to_v8(scope, &row[ci]);
+                        obj.set(scope, key.into(), val);
+                    }
+                    arr.set_index(scope, ri as u32, obj.into());
+                }
+                resolver.resolve(scope, arr.into());
+            }
+            Err(e) => {
+                let msg = v8::String::new(scope, &e).unwrap();
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
+            }
+        }
+        rv.set(promise.into());
+    }));
+}
+
+/// Native `__s2_sqlite_execute(handle, sql, params) -> Promise<{changes, lastInsertId}>`. Runs a
+/// parameterized INSERT/UPDATE/DELETE/DDL statement synchronously; resolves `{changes,
+/// lastInsertId}` (both JS numbers); an invalid handle or SQL error rejects the Promise.
+fn s2_sqlite_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1);
+        let sql = args.get(1).to_rust_string_lossy(scope);
+        let params = js_params_to_db(scope, args.get(2));
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let result = if handle < 0 {
+            Err("invalid db handle".to_string())
+        } else {
+            crate::db::execute(handle as u64, &sql, &params)
+        };
+        match result {
+            Ok(er) => {
+                let obj = v8::Object::new(scope);
+                let k = v8::String::new(scope, "changes").unwrap();
+                let v = v8::Number::new(scope, er.changes as f64);
+                obj.set(scope, k.into(), v.into());
+                let k = v8::String::new(scope, "lastInsertId").unwrap();
+                let v = v8::Number::new(scope, er.last_insert_id as f64);
+                obj.set(scope, k.into(), v.into());
+                resolver.resolve(scope, obj.into());
+            }
+            Err(e) => {
+                let msg = v8::String::new(scope, &e).unwrap();
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
+            }
+        }
+        rv.set(promise.into());
+    }));
+}
+
+/// Native `__s2_sqlite_close(handle) -> Promise<void>`. Closes the connection (a harmless no-op
+/// if already closed / never open) and always resolves `undefined` — teardown may later close the
+/// same handle again (idempotent), so `close()` never rejects.
+fn s2_sqlite_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1);
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        if handle >= 0 {
+            crate::db::close(handle as u64);
+        }
+        let undef = v8::undefined(scope);
+        resolver.resolve(scope, undef.into());
+        rv.set(promise.into());
     }));
 }
 
@@ -4599,6 +4790,11 @@ pub(crate) fn unload_plugin(id: &str) {
                     // remove_subscribers_by_consumer(id) (belt-and-suspenders for any not yet dropped).
                 }
                 plugin::Resource::Import(_name) => { /* edge only; no Global to drop */ }
+                plugin::Resource::DbConn(h) => {
+                    // A late/never `close()` — teardown closes the connection now. Idempotent
+                    // (an already-closed handle is a harmless no-op inside db::close).
+                    crate::db::close(h);
+                }
             }
         }
     }
@@ -6949,6 +7145,114 @@ mod frame_tests {
         // Fail-safe: with NO admin-check hook installed, a player is DENIED (never accidentally granted).
         eval_in_context("t", "delete globalThis.__s2_admin_check; globalThis.__adm = 'none';").unwrap();
         dispatch_concommand("sm_adm", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // no hook → denied
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice DB Task 3: __s2_sqlite_* natives — sync-behind-Promise round trip + degrade tests.
+    // ---------------------------------------------------------------------------
+
+    /// A fresh per-call SQLite connection "name" — avoids cross-test file collisions (tests run
+    /// serially via `.cargo/config.toml` `RUST_TEST_THREADS=1`, but the on-disk file persists
+    /// across separate `cargo test` invocations, so a fixed name could see stale state).
+    fn unique_db_name(prefix: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        format!("{}_{}_{}", prefix, std::process::id(), n)
+    }
+
+    /// Mock `db_data_dir` op: a fixed OS-temp subdirectory, lazily created (mirrors the shim
+    /// `s2_db_data_dir`'s static-buffer-return style).
+    extern "C" fn mock_db_data_dir() -> *const c_char {
+        use std::sync::OnceLock;
+        static DIR: OnceLock<std::ffi::CString> = OnceLock::new();
+        let c = DIR.get_or_init(|| {
+            let mut p = std::env::temp_dir();
+            p.push("s2script_test_db_data");
+            let _ = std::fs::create_dir_all(&p);
+            std::ffi::CString::new(p.to_string_lossy().into_owned()).unwrap()
+        });
+        c.as_ptr()
+    }
+
+    /// A full ops table with ONLY `db_data_dir` wired (reuses `mock_event_ops()`'s all-None base
+    /// via struct-update syntax — every other field stays None).
+    fn db_ops() -> S2EngineOps {
+        S2EngineOps { db_data_dir: Some(mock_db_data_dir), ..mock_event_ops() }
+    }
+
+    /// The full happy path: open -> execute(CREATE) -> execute(INSERT, parameterized) ->
+    /// query(parameterized) -> close, all chained through native-returned Promises and drained by
+    /// ONE `frame_async_drain()` (a single `perform_microtask_checkpoint()` empties the whole
+    /// already-resolved chain, since each link resolves synchronously before the next `.then`
+    /// attaches). Proves value marshalling both directions (params in, columns/rows out) and the
+    /// `lastInsertId`/`changes` execute-result shape.
+    #[test]
+    fn sqlite_open_execute_query_round_trip() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        let name = unique_db_name("t3_roundtrip");
+        load_plugin_js("dbp", &format!(r#"
+            globalThis.__out = "pending";
+            __s2_sqlite_open("{name}").then(function (h) {{
+                return __s2_sqlite_execute(h, "CREATE TABLE kv (k TEXT, v TEXT)", []).then(function () {{
+                    return __s2_sqlite_execute(h, "INSERT INTO kv (k, v) VALUES (?, ?)", ["color", "red"]);
+                }}).then(function (er) {{
+                    return __s2_sqlite_query(h, "SELECT k, v FROM kv WHERE k = ?", ["color"]).then(function (rows) {{
+                        globalThis.__out = "changes=" + er.changes + " id=" + er.lastInsertId
+                            + " rows=" + rows.length + " v=" + rows[0].v + " k=" + rows[0].k;
+                        return __s2_sqlite_close(h);
+                    }});
+                }});
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#, name = name), "{}");
+        frame_async_drain();
+        assert_eq!(read_global_string("dbp", "__out"), "changes=1 id=1 rows=1 v=red k=color");
+        shutdown();
+    }
+
+    /// A bad-SQL query rejects the Promise (not a panic/crash) — the `.catch` handler runs and
+    /// records the error, proving `db::query`'s `Err` path reaches JS as a rejection.
+    #[test]
+    fn sqlite_bad_sql_rejects_promise() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        let name = unique_db_name("t3_badsql");
+        load_plugin_js("dbp2", &format!(r#"
+            globalThis.__out = "pending";
+            __s2_sqlite_open("{name}").then(function (h) {{
+                return __s2_sqlite_query(h, "SELECT * FROM nope", []);
+            }}).then(function () {{
+                globalThis.__out = "should-not-resolve";
+            }}).catch(function (e) {{
+                globalThis.__out = "rejected:" + (String(e).length > 0);
+            }});
+        "#, name = name), "{}");
+        frame_async_drain();
+        assert_eq!(read_global_string("dbp2", "__out"), "rejected:true");
+        shutdown();
+    }
+
+    /// Degrade path: with NO `db_data_dir` op wired, `__s2_sqlite_open` rejects gracefully (never
+    /// panics) — proving the natives are registered and reachable even when the engine op table
+    /// is absent (e.g. a stale core against an old shim).
+    #[test]
+    fn sqlite_open_degrades_without_data_dir_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None); // no ops at all -> db_data_dir() returns None -> open() rejects
+        load_plugin_js("dbp3", r#"
+            globalThis.__out = "pending";
+            __s2_sqlite_open("whatever").then(function () {
+                globalThis.__out = "should-not-resolve";
+            }).catch(function (e) {
+                globalThis.__out = "rejected:" + (String(e).length > 0);
+            });
+        "#, "{}");
+        frame_async_drain();
+        assert_eq!(read_global_string("dbp3", "__out"), "rejected:true");
         shutdown();
     }
 }

@@ -22,6 +22,9 @@ pub enum Resource {
     EventSub(u64),
     /// A consumer→producer import edge (interface name). Teardown drops the edge (no Global).
     Import(String),
+    /// An open DB connection handle (opaque, from `db::open`). Teardown closes it even if the
+    /// plugin never calls `close()` itself.
+    DbConn(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +91,11 @@ impl PluginLedger {
     pub fn record_import(&mut self, name: String) {
         self.order.push(Resource::Import(name.clone()));
         self.imports.push(name);
+    }
+
+    /// Record an open DB connection handle against this plugin (teardown authority for Task 3).
+    pub fn record_db_conn(&mut self, handle: u64) {
+        self.order.push(Resource::DbConn(handle));
     }
 
     /// Resources in REVERSE acquisition order — last-acquired torn down first.
