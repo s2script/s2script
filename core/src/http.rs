@@ -61,6 +61,17 @@ pub fn try_recv_completed() -> Option<FetchCompletion> {
     ENGINE.get()?.rx.lock().ok()?.try_recv().ok()
 }
 
+/// Spawn a future on the shared tokio runtime (used by ws.rs to reuse the one runtime). No-op if
+/// the engine hasn't been initialized yet (degrade, never panic).
+pub fn spawn<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    if let Some(e) = ENGINE.get() {
+        e.runtime.spawn(future);
+    }
+}
+
 async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchResponse, String> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|e| e.to_string())?;
     let mut rb = client.request(method, &req.url).timeout(Duration::from_millis(req.timeout_ms));
