@@ -1611,10 +1611,11 @@ pub(crate) fn dispatch_pending_ws_events() {
         let key = format!("{conn_id}:{event}");
         // Phase 1: snapshot — release WS_EVENT_MUX borrow before entering any context.
         let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
-        if snap.is_empty() { continue; }
 
         // Phase 2: enter each subscriber's context and invoke handler(...).
-        HOST.with(|h| {
+        // Skipped when this (conn,event) key has no subscriber — but the terminal-close
+        // prune in Phase 3 still runs, so an onMessage-only conn is pruned on close.
+        if !snap.is_empty() { HOST.with(|h| {
             // Re-entrancy guard (mirrors dispatch_pending_cookie_cached): expected free here (called
             // after frame_async_drain returns), but guarded anyway per the shared discipline.
             let Ok(mut borrow) = h.try_borrow_mut() else { return };
@@ -1655,7 +1656,24 @@ pub(crate) fn dispatch_pending_ws_events() {
                     log_warn(&format!("WARN: dispatch_pending_ws_events('{}'): handler '{}': {}", key, owner, msg));
                 }
             }
-        });
+        }); }
+
+        // Phase 3: on the terminal "close" event, prune every subscriber key for this conn_id
+        // (message/close/error). conn ids are monotonic (next_async_id, never reused), so nothing
+        // ever re-subscribes these keys — without this, a reconnect-on-close loop accumulates dead
+        // EventMux entries + retained JS closure Globals for the plugin's whole uptime. Runs outside
+        // the Phase-2 empty-check so a conn with only onMessage is still pruned. Every teardown path
+        // funnels through Closed: peer close, self-close (WsCommand::Close), stream-end, and read
+        // error (ws.rs emits Closed after Errored). It runs AFTER this close's own fan-out, so any
+        // onClose handler has already been invoked from the snapshot taken above.
+        if event == "close" {
+            WS_EVENT_MUX.with(|m| {
+                let mut mux = m.borrow_mut();
+                for ev in ["message", "close", "error"] {
+                    mux.remove_by_name(&format!("{conn_id}:{ev}"));
+                }
+            });
+        }
     }
 }
 

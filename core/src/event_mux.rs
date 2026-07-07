@@ -50,6 +50,14 @@ impl<H: Clone> EventMux<H> {
             false
         }
     }
+
+    /// Drop an entire name key and all its subscribers (releasing any retained handler clones).
+    /// Unlike `remove_by_owner*`, this is keyed only by `name` — used to prune a terminated
+    /// resource's keys (e.g. a closed WebSocket conn id's `<id>:message`/`close`/`error`) whose
+    /// name is never re-subscribed, so the entry would otherwise accumulate for the plugin's uptime.
+    pub fn remove_by_name(&mut self, name: &str) {
+        self.by_name.remove(name);
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +119,25 @@ mod tests {
         let became_empty = m.remove_by_owner_on("test_event", "owner_a");
         assert!(!became_empty,
             "absent name must return false, not 'became empty' — prevents a spurious event_unsubscribe call");
+    }
+
+    /// WebSocket terminal-close prune: `remove_by_name` drops the whole key regardless of owner,
+    /// and dropping an absent key is a harmless no-op. This is what keeps a reconnect-on-close
+    /// loop (fresh monotonic conn ids) from accumulating dead per-conn subscriber entries.
+    #[test]
+    fn remove_by_name_drops_whole_key_and_absent_is_noop() {
+        let mut m: EventMux<&'static str> = EventMux::new();
+        m.subscribe("7:message", "owner_a".into(), 1, "h_a");
+        m.subscribe("7:message", "owner_b".into(), 1, "h_b");
+        m.subscribe("7:close", "owner_a".into(), 1, "h_c");
+        assert_eq!(m.snapshot("7:message").len(), 2);
+
+        m.remove_by_name("7:message");
+        assert_eq!(m.snapshot("7:message").len(), 0, "the whole key is gone, both owners");
+        assert_eq!(m.snapshot("7:close").len(), 1, "an unrelated key is untouched");
+
+        m.remove_by_name("7:close");
+        assert!(m.is_empty());
+        m.remove_by_name("nonexistent");  // no panic
     }
 }

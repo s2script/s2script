@@ -85,7 +85,16 @@ pub fn connect(conn_id: u64, url: String, owner: String) {
                         let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(code, reason) }); break;
                     }
                     Some(Ok(_)) => { /* Ping/Pong handled by tungstenite */ }
-                    Some(Err(err)) => { let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Errored(err.to_string()) }); break; }
+                    Some(Err(err)) => {
+                        // A mid-stream read error is terminal. Emit BOTH signals, browser-parity:
+                        // `onError(err)` fires, then `onClose(1006, ...)` — 1006 = Abnormal Closure
+                        // (no clean close frame). The following Closed is what makes the drain call
+                        // `drop_conn` (the Errored arm alone does not) and prune the conn's mux keys,
+                        // so the error path cleans up exactly like every other terminal path.
+                        let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Errored(err.to_string()) });
+                        let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(1006, "connection error".into()) });
+                        break;
+                    }
                     None => { let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(1006, "stream ended".into()) }); break; }
                 },
                 cmd = cmd_rx.recv() => match cmd {
@@ -128,10 +137,9 @@ pub fn close(conn_id: u64, owner: &str) -> bool {
     let e = engine();
     let map = e.conns.lock().unwrap();
     match map.get(&conn_id) {
-        Some(c) if c.owner == owner => {
-            let _ = c.cmd_tx.send(WsCommand::Close);
-            true
-        }
+        // Report the actual send outcome (mirrors `send`): `false` if the task is already gone,
+        // rather than an unconditional `true` that would mislead a future caller.
+        Some(c) if c.owner == owner => c.cmd_tx.send(WsCommand::Close).is_ok(),
         _ => false,
     }
 }
