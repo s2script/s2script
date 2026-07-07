@@ -20,7 +20,17 @@ pub struct WsSignal {
 }
 enum WsCommand {
     Send(String),
+    /// JS-initiated close (`__s2_ws_close` -> `ws::close`, owner-checked): the task emits its own
+    /// `Closed` WsSignal so `onClose` fires and the drain's Closed-routing deregisters the conn
+    /// (see the signal-routing step in v8host.rs's `frame_async_drain`).
     Close,
+    /// Ledger-teardown close (`ws::drop_conn`, unconditional — plugin unload / process shutdown):
+    /// closes the socket WITHOUT emitting a signal. The registry entry is already removed
+    /// synchronously by `drop_conn` before this is even sent, and the owning plugin's WS_EVENT_MUX
+    /// subscribers are torn down in the same teardown pass — nothing is left to route a signal to.
+    /// Kept distinct from `Close` so a late-arriving teardown signal can never be misrouted onto an
+    /// unrelated LATER connection that happens to reuse this same numeric conn id.
+    Shutdown,
 }
 
 struct Conn {
@@ -80,7 +90,26 @@ pub fn connect(conn_id: u64, url: String, owner: String) {
                 },
                 cmd = cmd_rx.recv() => match cmd {
                     Some(WsCommand::Send(t)) => { if write.send(Message::text(t)).await.is_err() { break; } }
-                    Some(WsCommand::Close) | None => { let _ = write.send(Message::Close(None)).await; break; }
+                    Some(WsCommand::Close) => {
+                        // Self-initiated close (JS called ws.close()). We don't block waiting on the
+                        // peer's close-frame acknowledgment (the peer may never send one) — emit our
+                        // own Closed signal (1000 = Normal Closure, per RFC 6455) so the drain's
+                        // Closed routing fires onClose AND ws::drop_conn deregisters this conn_id
+                        // from the registry, exactly like a peer-initiated close already does above.
+                        let _ = write.send(Message::Close(None)).await;
+                        let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(1000, String::new()) });
+                        break;
+                    }
+                    Some(WsCommand::Shutdown) | None => {
+                        // Ledger-teardown close (plugin unload / shutdown) or the sender vanished
+                        // unexpectedly: close the socket but emit NO signal. `drop_conn` already
+                        // removed the registry entry synchronously before sending this, and the
+                        // owner's WS_EVENT_MUX subs are torn down in the same pass, so there is
+                        // nothing left to route a signal to (and, unlike `Close`, never risking a
+                        // late signal landing on a future connection that reuses this conn id).
+                        let _ = write.send(Message::Close(None)).await;
+                        break;
+                    }
                 }
             }
         }
@@ -114,9 +143,12 @@ pub fn is_owner(conn_id: u64, owner: &str) -> bool {
     matches!(map.get(&conn_id), Some(c) if c.owner == owner)
 }
 /// Teardown / post-close deregister — closes regardless of owner (the ledger owns the id).
+/// Sends `Shutdown` (not `Close`): this path never emits a `WsSignal::Closed` (see `WsCommand`'s
+/// doc) since there is no live owner left to route a signal to, and doing so would risk a
+/// late-arriving signal misrouting onto a future, unrelated connection that reuses this conn id.
 pub fn drop_conn(conn_id: u64) {
     if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) {
-        let _ = c.cmd_tx.send(WsCommand::Close);
+        let _ = c.cmd_tx.send(WsCommand::Shutdown);
     }
 }
 pub fn try_recv_signal() -> Option<WsSignal> {
@@ -168,9 +200,12 @@ mod tests {
     fn connect_send_echo_close() {
         let port = echo_server_port();
         connect(1, format!("ws://127.0.0.1:{port}/"), "p".into());
-        // wait for Connected, then send, then expect the echo
+        // Drive the full signal flow the design doc calls for: Connected -> Message -> Closed.
+        // On the echo, self-initiate a close and verify it actually produces a Closed signal
+        // (the regression this test used to miss: it called close() with no follow-up assertion).
         let mut got_connected = false;
         let mut echo = None;
+        let mut closed = None;
         for _ in 0..500 {
             while let Some(s) = try_recv_signal() {
                 match s.kind {
@@ -180,18 +215,29 @@ mod tests {
                     }
                     WsSignalKind::Message(t) => {
                         echo = Some(t);
+                        close(1, "p");
+                    }
+                    WsSignalKind::Closed(code, reason) => {
+                        closed = Some((code, reason));
                     }
                     _ => {}
                 }
             }
-            if echo.is_some() {
+            if closed.is_some() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(got_connected);
         assert_eq!(echo.as_deref(), Some("hi"));
-        close(1, "p");
+        // A self-initiated close signals Closed(1000, "") (RFC 6455 Normal Closure) even though
+        // the peer never echoes a close frame back (this test's echo_server_port helper just
+        // drops the connection on receiving a close, per its `m.is_close() => break`).
+        assert_eq!(closed, Some((1000, String::new())));
+        // The Closed signal is what drives ws::drop_conn in the real drain (v8host.rs); here we
+        // call it directly to verify a self-close leaves no leaked registry entry.
+        drop_conn(1);
+        assert!(!is_owner(1, "p"));
     }
     #[test]
     fn connect_bad_port_fails() {

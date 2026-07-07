@@ -8694,4 +8694,46 @@ mod frame_tests {
         assert_eq!(read_global_string("wsmod", "__out"), "hi");
         shutdown();
     }
+
+    /// Regression: a plugin that calls `ws.close()` from inside its OWN `onMessage` handler —
+    /// exactly `plugins/ws-demo`'s pattern (log the echo, then close) — must still see `onClose`
+    /// fire. A self-initiated close used to be a silent `write.send(Close) + break` with NO
+    /// `WsSignal` emitted, so `onClose` (and the ledger's `ws::drop_conn` registry cleanup, which
+    /// is driven off that same `Closed` signal in the drain) never ran.
+    #[test]
+    fn ws_module_self_close_fires_on_close() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_echo_server();
+        load_plugin_js(
+            "wsclose",
+            &format!(
+                r#"
+            var {{ WebSocket }} = require("@s2script/ws");
+            globalThis.__out = "pending";
+            WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
+                ws.onMessage(function (m) {{ ws.close(); }});
+                ws.onClose(function (code, reason) {{ globalThis.__out = "closed:" + code + ":" + reason; }});
+                ws.send("hi");
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsclose", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "onClose never fired for a self-initiated close");
+        assert_eq!(read_global_string("wsclose", "__out"), "closed:1000:");
+        shutdown();
+    }
 }
