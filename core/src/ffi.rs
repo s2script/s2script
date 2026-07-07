@@ -57,6 +57,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
         let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
         if phase == Phase::Post {
             v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
+            v8host::dispatch_pending_cookie_cached(); // Post, HOST free: fan out queued Cookies.onCached
             crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
         }
         out.result as c_int

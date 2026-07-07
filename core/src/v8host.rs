@@ -366,6 +366,18 @@ thread_local! {
     static CLIENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
+    /// clientprefs Task 4: `Cookies.onCached` subscriber mux, keyed by the constant "" (no name
+    /// dimension — a single un-keyed list, like `CHAT_MSG_SUBS`). Fanned out post-frame by
+    /// `dispatch_pending_cookie_cached` (called from `ffi.rs` AFTER `frame_async_drain()` returns, so
+    /// HOST is free — no re-entrancy risk from the plugin's own async cookie-load work).
+    /// `remove_by_owner` on unload; reset on shutdown.
+    static COOKIE_CACHED_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// clientprefs Task 4: slots queued by `__s2_cookie_dispatch_cached` (called from inside the
+    /// plugin's `loadCookies` async continuation, i.e. possibly mid-async-drain) for the NEXT
+    /// `dispatch_pending_cookie_cached()` post-drain fan-out. Draining + clearing happens with HOST free.
+    static COOKIE_CACHED_PENDING: std::cell::RefCell<Vec<i32>> = std::cell::RefCell::new(Vec::new());
+
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
     /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
     /// Reload) and revived via `iface_from_json`; cleared by the loader on a final removal (Vanished);
@@ -1032,6 +1044,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     setAuthId: function (steamId, cookie, value) {
       if (!steamId || steamId === "0") return;   // no-op for bots
       __s2_cookie_set_authid(String(steamId), cookie.name, String(value), Math.floor(Date.now() / 1000));
+    },
+    onCached: function (h) {
+      __s2_cookie_on_cached(function (slot) { h(globalThis.__s2pkg_clients.Clients.fromSlot(slot)); });
     },
   };
   globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
@@ -1959,6 +1974,60 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
     });
 }
 
+/// Drain `COOKIE_CACHED_PENDING` and fan each queued slot out to the `Cookies.onCached` subscribers
+/// (clientprefs Task 4). Called from `ffi.rs`'s Post-frame branch AFTER `frame_async_drain()` returns
+/// (HOST is free — no re-entrancy risk from the plugin's own async cookie-load work). Mirrors
+/// `dispatch_client_event` verbatim: snapshot (release the mux borrow), `try_borrow_mut` re-entrancy
+/// guard, per-subscriber liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw.
+/// Notify-only — each handler is called with the single Integer `slot` and its return is ignored.
+pub(crate) fn dispatch_pending_cookie_cached() {
+    let slots: Vec<i32> = COOKIE_CACHED_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if slots.is_empty() { return; }
+
+    // Phase 1: snapshot — release COOKIE_CACHED_MUX borrow before entering any context. Fixed key "".
+    let snap = COOKIE_CACHED_MUX.with(|m| m.borrow().snapshot(""));
+    if snap.is_empty() { return; }
+
+    for slot in slots {
+        // Phase 2: enter each subscriber's context and invoke handler(slot).
+        HOST.with(|h| {
+            // Re-entrancy guard (mirrors dispatch_client_event): expected free here (called after
+            // frame_async_drain returns), but guarded anyway per the shared discipline.
+            let Ok(mut borrow) = h.try_borrow_mut() else { return };
+            let Some(host) = borrow.as_mut() else { return };
+
+            for (owner, generation, handler_g) in &snap {
+                // Liveness check (release REGISTRY borrow before entering context).
+                if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+                // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
+                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+                // Per-subscriber HandleScope+ContextScope — mirrors dispatch_client_event.
+                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+                let hs = &mut hs;
+                let ctx_local = v8::Local::new(hs, &g_ctx);
+                let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+                // Per-handler TryCatch isolates a throwing handler from the rest.
+                let mut tc_storage = v8::TryCatch::new(scope);
+                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+                let tc = &mut tc;
+
+                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
+                let func = v8::Local::new(tc, handler_g);
+                if func.call(tc, recv, &[slot_val]).is_none() {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: dispatch_pending_cookie_cached: handler '{}': {}", owner, msg));
+                }
+            }
+        });
+    }
+}
+
 /// Slice 6.11c: dispatch a player's CONSOLE command (from the ClientCommand hook). Unlike chat, the
 /// command name is raw (`sm_say`, not `!sm_say`), so match the EXACT registered name only — never an
 /// `sm_` fallback (that would hijack a real engine command like `say`). Returns true iff a registered
@@ -2605,6 +2674,32 @@ fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, owner, generation, handler_g); });
+    }));
+}
+
+/// `__s2_cookie_on_cached(handler)` — subscribe a JS fn to `Cookies.onCached` (clientprefs Task 4).
+/// Owner-tracked (mirrors `__s2_client_subscribe`); fixed mux key "" (cookies-cached has no name
+/// dimension, like `Chat.onMessage`). The handler receives the raw `slot` at dispatch; the
+/// `@s2script/cookies` prelude wraps it into a `Client` via `Clients.fromSlot`.
+fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+    }));
+}
+
+/// `__s2_cookie_dispatch_cached(slot)` — enqueue `slot` for the next post-frame
+/// `dispatch_pending_cookie_cached()` fan-out (clientprefs Task 4). No HOST access here (safe to call
+/// from inside the plugin's own async `loadCookies` continuation, which may run mid-async-drain); the
+/// actual `onCached` handler invocation happens later, once HOST is free.
+fn s2_cookie_dispatch_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push(slot));
     }));
 }
 
@@ -3321,6 +3416,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cookie_is_cached", s2_cookie_is_cached);
     set_native(scope, global_obj, "__s2_cookie_set_authid", s2_cookie_set_authid);
     set_native(scope, global_obj, "__s2_cookie_take_offline_writes", s2_cookie_take_offline_writes);
+    set_native(scope, global_obj, "__s2_cookie_on_cached", s2_cookie_on_cached);
+    set_native(scope, global_obj, "__s2_cookie_dispatch_cached", s2_cookie_dispatch_cached);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
     // ban-reason sub-project 2: developer-console print + client IP address.
@@ -4717,6 +4814,9 @@ pub fn shutdown() {
     CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the client-lifecycle mux (Clients sub-project) so a re-init starts clean.
     CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the Cookies.onCached mux + pending queue (clientprefs Task 4) so a re-init starts clean.
+    COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -4885,6 +4985,9 @@ pub(crate) fn unload_plugin(id: &str) {
     // lifecycle hooks are installed for the process lifetime (removed in the shim's Unload), so no
     // per-plugin hook-removal request is needed.
     CLIENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c'') Drop the plugin's Cookies.onCached subscriptions (clientprefs Task 4). No engine-level
+    // hook to remove (the fan-out is a pure post-frame JS dispatch, no shim involvement).
+    COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -7305,6 +7408,42 @@ mod frame_tests {
             globalThis.__out = seenByClient + "," + botRaw;
         "#, "{}");
         assert_eq!(read_global_string("cp3", "__out"), "blue,undefined");
+        shutdown();
+    }
+
+    /// clientprefs Task 4: `Cookies.onCached` (post-drain fan-out). Subscribing via the raw native
+    /// `__s2_cookie_on_cached` and enqueuing a slot via `__s2_cookie_dispatch_cached` does NOT run the
+    /// handler immediately (only `dispatch_pending_cookie_cached()` — the ffi.rs post-`frame_async_drain`
+    /// call site — does); calling it fans the queued slot out to the handler exactly once, and a second
+    /// call (now-empty queue) does not re-run it. After `unload_plugin` (remove_by_owner teardown), a
+    /// further enqueue+dispatch is a safe no-op.
+    #[test]
+    fn cookie_cached_dispatch_fans_out_queued_slots() {
+        let _ = init(dummy_logger());
+        load_plugin_js("ck4", r#"
+            __s2_cookie_on_cached(function (slot) {
+                globalThis.__ck_ran = (globalThis.__ck_ran || 0) + 1;
+                globalThis.__ck_slot = slot;
+            });
+            __s2_cookie_dispatch_cached(5);
+        "#, "{}");
+
+        // Enqueuing alone must not have run the handler yet.
+        assert_eq!(read_i32_global_in("ck4", "__ck_ran"), 0, "enqueue must not itself dispatch");
+
+        dispatch_pending_cookie_cached();
+        assert_eq!(read_i32_global_in("ck4", "__ck_ran"), 1, "handler must run exactly once");
+        assert_eq!(read_i32_global_in("ck4", "__ck_slot"), 5, "handler must receive the queued slot");
+
+        // An empty queue: a further dispatch is a no-op (does not re-run the handler).
+        dispatch_pending_cookie_cached();
+        assert_eq!(read_i32_global_in("ck4", "__ck_ran"), 1, "an empty queue must not re-run the handler");
+
+        // Teardown: unload removes ck4's subscription; a later enqueue+dispatch is a safe no-op
+        // (must not crash even though the context is disposed).
+        unload_plugin("ck4");
+        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push(9));
+        dispatch_pending_cookie_cached();
         shutdown();
     }
 

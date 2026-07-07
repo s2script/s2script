@@ -11,6 +11,7 @@ declare function __s2_cookie_mark_cached(steamid: string): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
 declare function __s2_cookie_clear(steamid: string): void;
 declare function __s2_cookie_take_offline_writes(): Array<[string, string, string, number]>;
+declare function __s2_cookie_dispatch_cached(slot: number): void;
 
 let db: Database | null = null;
 
@@ -36,6 +37,7 @@ async function loadCookies(client: Client): Promise<void> {
     const rows = await db.query("SELECT name, value, updated FROM cookies WHERE steamid = ?", [steamId]);
     for (const row of rows) __s2_cookie_load(steamId, String(row.name), String(row.value), Number(row.updated));
     __s2_cookie_mark_cached(steamId);
+    __s2_cookie_dispatch_cached(client.slot);
   } catch (e) {
     console.log("[clientprefs] load ERROR for " + steamId + ": " + String(e));
   }

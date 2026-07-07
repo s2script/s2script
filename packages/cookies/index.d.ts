@@ -19,4 +19,7 @@ export declare const Cookies: {
    * clientprefs plugin to persist directly next frame — an offline SteamID never fires the disconnect
    * flush. No-op for "0" (bot/unset). */
   setAuthId(steamId: string, cookie: Cookie, value: string): void;
+  /** Fires once per client, after that client's cookies finish loading (`OnClientCookiesCached`
+   * parity) — post-frame, after the load's async DB read completes. */
+  onCached(handler: (client: Client) => void): void;
 };
