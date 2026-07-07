@@ -1029,6 +1029,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     getTime: function (client, cookie) {
       return (!client || client.steamId === "0") ? 0 : __s2_cookie_get_time(client.steamId, cookie.name);
     },
+    setAuthId: function (steamId, cookie, value) {
+      if (!steamId || steamId === "0") return;   // no-op for bots
+      __s2_cookie_set_authid(String(steamId), cookie.name, String(value), Math.floor(Date.now() / 1000));
+    },
   };
   globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
 })();
@@ -3315,6 +3319,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cookie_clear", s2_cookie_clear);
     set_native(scope, global_obj, "__s2_cookie_mark_cached", s2_cookie_mark_cached);
     set_native(scope, global_obj, "__s2_cookie_is_cached", s2_cookie_is_cached);
+    set_native(scope, global_obj, "__s2_cookie_set_authid", s2_cookie_set_authid);
+    set_native(scope, global_obj, "__s2_cookie_take_offline_writes", s2_cookie_take_offline_writes);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
     // ban-reason sub-project 2: developer-console print + client IP address.
@@ -3915,6 +3921,41 @@ fn s2_cookie_is_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let sid = args.get(0).to_rust_string_lossy(scope);
         rv.set(v8::Boolean::new(scope, crate::cookies::is_cached(&sid)).into());
+    }));
+}
+
+/// `__s2_cookie_set_authid(steamid, name, value, updated)` — `SetAuthIdCookie` parity: write for a
+/// SteamID that may not currently be connected (cache write + queue for offline persistence).
+fn s2_cookie_set_authid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let val = args.get(2).to_rust_string_lossy(scope);
+        let updated = args.get(3).integer_value(scope).unwrap_or(0);
+        crate::cookies::set_authid(&sid, &name, &val, updated);
+    }));
+}
+
+/// `__s2_cookie_take_offline_writes() -> Array<[steamid, name, value, updated]>` — drain + clear the
+/// queued offline writes for the plugin to persist directly (an offline SteamID never fires the
+/// disconnect flush).
+fn s2_cookie_take_offline_writes(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let writes = crate::cookies::take_offline_writes();
+        let out = v8::Array::new(scope, writes.len() as i32);
+        for (i, (sid, name, val, updated)) in writes.iter().enumerate() {
+            let row = v8::Array::new(scope, 4);
+            let sid_s = v8::String::new(scope, sid).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+            let name_s = v8::String::new(scope, name).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+            let val_s = v8::String::new(scope, val).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+            let updated_n = v8::Number::new(scope, *updated as f64);
+            row.set_index(scope, 0, sid_s.into());
+            row.set_index(scope, 1, name_s.into());
+            row.set_index(scope, 2, val_s.into());
+            row.set_index(scope, 3, updated_n.into());
+            out.set_index(scope, i as u32, row.into());
+        }
+        rv.set(out.into());
     }));
 }
 
@@ -7227,6 +7268,43 @@ mod frame_tests {
             globalThis.__out = beforeSetTime + "," + (afterEmptySet === "") + "," + (afterSetTime > 0) + "," + botTime;
         "#, "{}");
         assert_eq!(read_global_string("cp2", "__out"), "0,true,true,0");
+        shutdown();
+    }
+
+    /// clientprefs Task 3: `__s2_cookie_set_authid` writes the cache (a subsequent `__s2_cookie_get`
+    /// sees it immediately) AND queues the write, drained via `__s2_cookie_take_offline_writes` as a
+    /// `[steamid,name,value,updated]` row; a second take is empty.
+    #[test]
+    fn cookie_set_authid_native_writes_cache_and_queues_offline_write() {
+        let _ = init(dummy_logger());
+        load_plugin_js("ck3", r#"
+            __s2_cookie_set_authid("S11", "k", "v", 999);
+            var cached = __s2_cookie_get("S11", "k");
+            var writes = __s2_cookie_take_offline_writes();
+            var again = __s2_cookie_take_offline_writes();
+            globalThis.__out = cached + "," + writes.length + "," + writes[0].join("|") + "," + again.length;
+        "#, "{}");
+        assert_eq!(read_global_string("ck3", "__out"), "v,1,S11|k|v|999,0");
+        shutdown();
+    }
+
+    /// clientprefs Task 3 (module layer): `Cookies.setAuthId` writes for a SteamID not passed as a
+    /// `Client` at all (offline parity) — a subsequent `Cookies.get` on that steamid sees the value,
+    /// and it is a no-op for "0" (bot/unset).
+    #[test]
+    fn clientprefs_module_set_authid_offline_and_bot_skip() {
+        let _ = init(dummy_logger());
+        load_plugin_js("cp3", r#"
+            var { Cookies } = require("@s2script/cookies");
+            var c = Cookies.register("hud", { default: "white" });
+            Cookies.setAuthId("S12", c, "blue");
+            var real = { steamId: "S12" };
+            var seenByClient = Cookies.get(real, c);           // "blue" — the offline write is visible
+            Cookies.setAuthId("0", c, "x");                    // bot steamid — no-op
+            var botRaw = __s2_cookie_get("0", "hud");
+            globalThis.__out = seenByClient + "," + botRaw;
+        "#, "{}");
+        assert_eq!(read_global_string("cp3", "__out"), "blue,undefined");
         shutdown();
     }
 

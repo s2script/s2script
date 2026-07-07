@@ -10,6 +10,10 @@ struct ClientCookies { cached: bool, entries: HashMap<String, Entry> }
 
 thread_local! {
     static CACHE: RefCell<HashMap<String, ClientCookies>> = RefCell::new(HashMap::new());
+    /// Offline writes (`setAuthId`) queued for the plugin to drain into the DB each frame —
+    /// (steamid, name, value, updated). Distinct from the dirty-flag disconnect flush: an offline
+    /// SteamID may never connect, so it needs its own persistence path.
+    static OFFLINE: RefCell<Vec<(String, String, String, i64)>> = RefCell::new(Vec::new());
 }
 
 /// Cache value, or `None` if the client/name is absent (a true miss — distinct from a stored `""`).
@@ -59,6 +63,19 @@ pub fn get_dirty(steamid: &str) -> Vec<(String, String)> {
     })
 }
 
+/// Write a cookie for a SteamID that may not currently be connected (`SetAuthIdCookie` parity) —
+/// updates the cache (so an online client's value is immediately correct) AND queues the write for
+/// the plugin to persist directly (an offline SteamID never fires the disconnect flush).
+pub fn set_authid(steamid: &str, name: &str, value: &str, updated: i64) {
+    set(steamid, name, value, updated);
+    OFFLINE.with(|q| q.borrow_mut().push((steamid.to_string(), name.to_string(), value.to_string(), updated)));
+}
+
+/// Drain + clear the queued offline writes (called once per frame by the clientprefs plugin).
+pub fn take_offline_writes() -> Vec<(String, String, String, i64)> {
+    OFFLINE.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
 /// Drop a client's entries (on disconnect, after the flush captures the dirty set).
 pub fn clear(steamid: &str) {
     CACHE.with(|c| { c.borrow_mut().remove(steamid); });
@@ -78,6 +95,7 @@ pub fn is_cached(steamid: &str) -> bool {
 /// don't survive — mirrors the admin/ban caches, which reset the same way.
 pub fn reset() {
     CACHE.with(|c| c.borrow_mut().clear());
+    OFFLINE.with(|q| q.borrow_mut().clear());
 }
 
 #[cfg(test)]
@@ -138,5 +156,16 @@ mod tests {
         assert_eq!(get_time("A7", "k"), 1_700_000_000);
         load("A7", "k2", "v2", 1_600_000_000);
         assert_eq!(get_time("A7", "k2"), 1_600_000_000);
+    }
+    /// Task 3: `set_authid` writes the cache (an online client immediately sees the value) AND
+    /// queues the write for offline persistence; `take_offline_writes` drains + clears (a second
+    /// take is empty).
+    #[test]
+    fn set_authid_writes_cache_and_queues_offline_write() {
+        set_authid("A8", "k", "v", 1_234_567_890);
+        assert_eq!(get("A8", "k"), Some("v".to_string()));   // cache write visible immediately
+        let writes = take_offline_writes();
+        assert_eq!(writes, vec![("A8".to_string(), "k".to_string(), "v".to_string(), 1_234_567_890)]);
+        assert!(take_offline_writes().is_empty(), "a second take drains nothing new");
     }
 }

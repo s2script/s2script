@@ -14,4 +14,9 @@ export declare const Cookies: {
   areCached(client: Client): boolean;
   /** Unix timestamp of the cookie's last write (set or DB load), or 0 if never set. 0 for bots. */
   getTime(client: Client, cookie: Cookie): number;
+  /** Write a cookie for a SteamID64 that may not be connected right now (`SetAuthIdCookie` parity):
+   * updates the cache immediately (an online client sees it right away) and queues the write for the
+   * clientprefs plugin to persist directly next frame — an offline SteamID never fires the disconnect
+   * flush. No-op for "0" (bot/unset). */
+  setAuthId(steamId: string, cookie: Cookie, value: string): void;
 };

@@ -3,12 +3,14 @@
 // @s2script/clientprefs MODULE; this plugin only drives persistence.
 import { Database } from "@s2script/db";
 import { Clients, Client } from "@s2script/clients";
+import { OnGameFrame } from "@s2script/frame";
 
 // The core natives (injected globals; not in the module's typed surface).
 declare function __s2_cookie_load(steamid: string, name: string, value: string, updated: number): void;
 declare function __s2_cookie_mark_cached(steamid: string): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
 declare function __s2_cookie_clear(steamid: string): void;
+declare function __s2_cookie_take_offline_writes(): Array<[string, string, string, number]>;
 
 let db: Database | null = null;
 
@@ -20,6 +22,7 @@ export async function onLoad(): Promise<void> {
     );
     Clients.onPutInServer(loadCookies);
     Clients.onDisconnect(saveCookies);
+    OnGameFrame.subscribe(drainOfflineWrites);
     console.log("[clientprefs] onLoad — table ready, lifecycle hooked");
   } catch (e) {
     console.log("[clientprefs] onLoad ERROR: " + String(e));
@@ -53,6 +56,20 @@ async function saveCookies(client: Client): Promise<void> {
     }
   } catch (e) {
     console.log("[clientprefs] save ERROR for " + steamId + ": " + String(e));
+  }
+}
+
+// setAuthId (SetAuthIdCookie parity) writes for a SteamID that may not be connected — it can't ride
+// the onDisconnect flush, so drain the core's offline-write queue every frame (cheap idle check).
+function drainOfflineWrites(): void {
+  if (!db) return;
+  const writes = __s2_cookie_take_offline_writes();
+  if (writes.length === 0) return;
+  for (const [steamid, name, value, updated] of writes) {
+    db.execute(
+      "INSERT OR REPLACE INTO cookies (steamid, name, value, updated) VALUES (?, ?, ?, ?)",
+      [steamid, name, value, updated]
+    ).catch((e) => console.log("[clientprefs] offline-write ERROR: " + String(e)));
   }
 }
 
