@@ -1077,6 +1077,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       });
     },
   };
+  // --- @s2script/ws: client WebSocket over __s2_ws_* (connect resolver + per-conn event subs) ---
+  globalThis.__s2pkg_ws = {
+    WebSocket: {
+      connect: function (url) {
+        return __s2_ws_connect(String(url)).then(function (id) {
+          return {
+            onMessage: function (h) { __s2_ws_on(id, "message", function (m) { h(m); }); },
+            onClose:   function (h) { __s2_ws_on(id, "close", function (code, reason) { h(code, reason); }); },
+            onError:   function (h) { __s2_ws_on(id, "error", function (e) { h(e); }); },
+            send:      function (data) { __s2_ws_send(id, String(data)); },
+            close:     function () { __s2_ws_close(id); },
+          };
+        });
+      },
+    },
+  };
 })();
 "#;
 
@@ -8613,6 +8629,69 @@ mod frame_tests {
             "none",
             "a non-owning plugin must not receive another plugin's ws message"
         );
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // WebSocket Task 3: `@s2script/ws` — the __s2pkg_ws prelude runtime (the `WebSocket` handle
+    // over __s2_ws_connect/send/close/on, mirroring @s2script/http's fetch wrapper).
+    // ---------------------------------------------------------------------------
+
+    /// The module resolves via `require("@s2script/ws")` (the generic `s2require` rule) and
+    /// exposes `WebSocket.connect` (the named export) as a function.
+    #[test]
+    fn ws_module_resolves_with_expected_shape() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "wsshape",
+            r#"
+            var { WebSocket } = require("@s2script/ws");
+            globalThis.__out = String(typeof WebSocket.connect === "function");
+        "#,
+            "{}",
+        );
+        assert_eq!(read_global_string("wsshape", "__out"), "true");
+        shutdown();
+    }
+
+    /// End-to-end through the PUBLIC `@s2script/ws` API (not the raw `__s2_ws_*` natives): connect
+    /// against a local ws echo server, subscribe `onMessage`, send a message, and read the echoed
+    /// reply back through the wrapper's `WebSocket` handle — proving the prelude the module builds
+    /// over the raw natives (connect resolves a handle object; `onMessage`/`send` close over its
+    /// conn id).
+    #[test]
+    fn ws_module_connect_send_on_message_round_trip() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_echo_server();
+        load_plugin_js(
+            "wsmod",
+            &format!(
+                r#"
+            var {{ WebSocket }} = require("@s2script/ws");
+            globalThis.__out = "pending";
+            WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
+                ws.onMessage(function (m) {{ globalThis.__out = m; }});
+                ws.send("hi");
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsmod", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "ws module message never arrived on a drain");
+        assert_eq!(read_global_string("wsmod", "__out"), "hi");
         shutdown();
     }
 }
