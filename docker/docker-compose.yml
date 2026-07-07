@@ -34,6 +34,11 @@ services:
       # nested mounts by longest target path, so this rw configs dir overlays the read-only addon.
       - ../dist/addons/s2script/configs:/home/steam/cs2-dedicated/game/csgo/addons/s2script/configs
 
+      # SQLite databases (Slice DB). Same nested-RW pattern as configs/ above: @s2script/db
+      # creates addons/s2script/data/<name>.sqlite at runtime, which needs CONTAINER writes the
+      # :ro addon parent forbids. Overlays the read-only addon by longest-target-path resolution.
+      - ../dist/addons/s2script/data:/home/steam/cs2-dedicated/game/csgo/addons/s2script/data
+
       # Metamod:Source itself — operator must pre-install into docker/metamod/.
       # scripts/package-addon.sh also places s2script.vdf here, so a single
       # dir mount is sufficient.
