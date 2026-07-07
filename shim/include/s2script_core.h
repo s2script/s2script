@@ -99,6 +99,8 @@ typedef const char* (*s2_client_address_fn)(int slot);
 typedef int         (*s2_server_max_clients_fn)(void); /* GetMaxClients(); 0 if unavailable */
 typedef const char* (*s2_server_map_name_fn)(void);    /* GetMapName(); "" if unavailable. Valid until next call. */
 typedef float       (*s2_server_game_time_fn)(void);   /* GetGlobals()->curtime; 0 if unavailable */
+// Slice DB: absolute path to the s2script data directory (<addon>/data), created if absent.
+typedef const char* (*s2_db_data_dir_fn)(void);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -156,6 +158,8 @@ typedef struct {
     s2_server_max_clients_fn server_max_clients;
     s2_server_map_name_fn    server_map_name;
     s2_server_game_time_fn   server_game_time;
+    /* Slice DB — APPENDED after server_game_time; order is the ABI. */
+    s2_db_data_dir_fn db_data_dir;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

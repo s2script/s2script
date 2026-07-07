@@ -1089,6 +1089,33 @@ static int s2_config_write(const char* id, const char* content) {
 }
 
 // ---------------------------------------------------------------------------
+// db_data_dir (Slice DB): absolute path to addons/s2script/data, created if absent. Resolved
+// relative to the plugin .so via dladdr (mirrors ConfigPath's dirname ×3 walk to the addon root),
+// sibling of the configs/ dir.
+// ---------------------------------------------------------------------------
+static std::string s_dbDataDirBuf;
+static const char* s2_db_data_dir(void) {
+    Dl_info info;
+    std::string dir;
+    if (dladdr(reinterpret_cast<void*>(&s2_db_data_dir), &info) && info.dli_fname) {
+        char buf[4096];
+        snprintf(buf, sizeof buf, "%s", info.dli_fname);
+        std::string d = dirname(buf);               // linuxsteamrt64
+        snprintf(buf, sizeof buf, "%s", d.c_str());
+        d = dirname(buf);                            // bin
+        snprintf(buf, sizeof buf, "%s", d.c_str());
+        d = dirname(buf);                            // s2script addon root
+        dir = d + "/data";
+    } else {
+        // Fallback: relative to the server's cwd.
+        dir = "addons/s2script/data";
+    }
+    std::error_code ec; std::filesystem::create_directories(dir, ec);
+    s_dbDataDirBuf = dir;
+    return s_dbDataDirBuf.c_str();
+}
+
+// ---------------------------------------------------------------------------
 // Hook-request callback: invoked by the Rust core to install/remove the
 // SourceHook detour.  Called while the core holds an internal borrow —
 // MUST NOT call back into the core (no eval/dispatch/shutdown).
@@ -1581,6 +1608,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.server_max_clients = &s2_server_max_clients;
     ops.server_map_name    = &s2_server_map_name;
     ops.server_game_time   = &s2_server_game_time;
+    // Slice DB: APPENDED after server_game_time; order MUST match S2EngineOps.
+    ops.db_data_dir        = &s2_db_data_dir;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

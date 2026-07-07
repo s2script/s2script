@@ -120,6 +120,8 @@ pub type ClientAddressFn      = extern "C" fn(slot: c_int) -> *const c_char;
 pub type ServerMaxClientsFn = extern "C" fn() -> c_int;          // GetMaxClients(); 0 if unavailable
 pub type ServerMapNameFn    = extern "C" fn() -> *const c_char;  // GetMapName(); "" if unavailable
 pub type ServerGameTimeFn   = extern "C" fn() -> f32;            // GetGlobals()->curtime; 0 if unavailable
+// --- Slice DB: data-dir op (C-ABI; the C header must match exactly) ---
+pub type DbDataDirFn = extern "C" fn() -> *const c_char; // absolute path to <addon>/data, created if absent
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -181,6 +183,8 @@ pub struct S2EngineOps {
     pub server_max_clients: Option<ServerMaxClientsFn>,
     pub server_map_name:    Option<ServerMapNameFn>,
     pub server_game_time:   Option<ServerGameTimeFn>,
+    // --- Slice DB: data-dir op (APPENDED after server_game_time; order is the ABI; do not reorder above) ---
+    pub db_data_dir: Option<DbDataDirFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -5944,6 +5948,7 @@ mod frame_tests {
             server_max_clients: None,
             server_map_name: None,
             server_game_time: None,
+            db_data_dir: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -6075,6 +6080,7 @@ mod frame_tests {
             server_max_clients: None,
             server_map_name: None,
             server_game_time: None,
+            db_data_dir: None,
         }
     }
 
