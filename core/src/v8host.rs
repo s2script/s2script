@@ -4669,6 +4669,8 @@ pub fn shutdown() {
     // Reset the ban cache (Slice 6.18) so a re-init starts with no bans.
     BAN_CACHE.with(|m| m.borrow_mut().clear());
     BAN_LOADED.with(|c| c.set(false));
+    // Reset the cookie cache (clientprefs) so a re-init starts with no stale entries / cached flags.
+    crate::cookies::reset();
 }
 
 /// Resolve one pending async `entry` in its OWNING plugin's context, or DROP it (the async-liveness

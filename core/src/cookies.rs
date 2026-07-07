@@ -66,6 +66,13 @@ pub fn is_cached(steamid: &str) -> bool {
     CACHE.with(|c| c.borrow().get(steamid).map(|cc| cc.cached).unwrap_or(false))
 }
 
+/// Drop ALL clients' cookies. Called from `shutdown()` on a core re-init (a same-thread
+/// `shutdown()`→`init()` cycle, e.g. a Metamod reload) so stale entries + stale `cached` flags
+/// don't survive — mirrors the admin/ban caches, which reset the same way.
+pub fn reset() {
+    CACHE.with(|c| c.borrow_mut().clear());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +106,13 @@ mod tests {
         assert!(!is_cached("A4"));
         mark_cached("A4");        // a zero-cookie client can still be cached
         assert!(is_cached("A4"));
+    }
+    #[test]
+    fn reset_clears_all() {
+        set("A5", "k", "v");
+        mark_cached("A5");
+        reset();
+        assert_eq!(get("A5", "k"), "");
+        assert!(!is_cached("A5"));   // stale cached flag gone
     }
 }
