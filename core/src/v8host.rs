@@ -1560,14 +1560,20 @@ fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _r
 /// Native `__s2_ws_on(id, event, handler)` — subscribe a JS fn to a ws connection's event
 /// ("message"/"close"/"error"). MIRRORS `s2_cookie_on_cached` (owner-tracked, keyed mux) but the
 /// mux key is `"<id>:<event>"` (a connection has a name dimension, unlike cookies-cached).
+/// Owner-scoped like `s2_ws_send`/`s2_ws_close`: conn ids are small sequential integers shared
+/// across every async primitive, so WITHOUT this check any co-loaded plugin could subscribe to
+/// (and read) another plugin's inbound WebSocket traffic by guessing/enumerating conn ids — gated
+/// via `crate::ws::is_owner` (a no-op subscribe for a conn this plugin doesn't own, mirroring the
+/// `owner == owner` check `ws::send`/`ws::close` already perform).
 fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 3 { return; }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let event = args.get(1).to_rust_string_lossy(scope);
         let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        if !crate::ws::is_owner(id, &owner) { return; }
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{id}:{event}");
         WS_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
@@ -8546,6 +8552,67 @@ mod frame_tests {
         }
         assert!(resolved, "ws connect promise never settled on a drain");
         assert_eq!(read_global_string("wsbad", "__out"), "rejected:true");
+        shutdown();
+    }
+
+    /// Regression for the owner-scoping finding: `__s2_ws_on` must verify the CALLING plugin owns
+    /// the conn id, exactly like `__s2_ws_send`/`__s2_ws_close` already do — a co-loaded plugin that
+    /// never opened a connection must NOT be able to subscribe to (and read) another plugin's
+    /// inbound WebSocket traffic by guessing/reusing its numeric conn id.
+    #[test]
+    fn ws_on_wrong_owner_does_not_subscribe() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_echo_server();
+
+        // Plugin A opens the only connection.
+        load_plugin_js(
+            "wsOwnerA",
+            &format!(
+                r#"
+            globalThis.__connId = -1;
+            __s2_ws_connect("ws://127.0.0.1:{port}/").then(function (id) {{
+                globalThis.__connId = id;
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut a_id = -1;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            a_id = read_i32_global_in("wsOwnerA", "__connId");
+            if a_id >= 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(a_id >= 0, "plugin A's connect never resolved");
+
+        // Plugin B never opened anything — it tries to subscribe directly to A's numeric conn id.
+        load_plugin_js("wsOwnerB", r#"globalThis.__spied = "none";"#, "{}");
+        eval_in_context(
+            "wsOwnerB",
+            &format!(r#"__s2_ws_on({a_id}, "message", function (m) {{ globalThis.__spied = m; }});"#, a_id = a_id),
+        )
+        .expect("eval in wsOwnerB failed");
+
+        // A sends a message on its own conn; the local echo server echoes it back as a "message" event.
+        eval_in_context("wsOwnerA", &format!(r#"__s2_ws_send({a_id}, "secret-from-A");"#, a_id = a_id))
+            .expect("eval in wsOwnerA failed");
+
+        for _ in 0..200 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            read_global_string("wsOwnerB", "__spied"),
+            "none",
+            "a non-owning plugin must not receive another plugin's ws message"
+        );
         shutdown();
     }
 }

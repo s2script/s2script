@@ -106,6 +106,13 @@ pub fn close(conn_id: u64, owner: &str) -> bool {
         _ => false,
     }
 }
+/// Ownership check for `__s2_ws_on` (mirrors the `owner == owner` guard baked into `send`/`close`) —
+/// a subscribe attempt on a conn this plugin doesn't own must no-op, exactly like a send/close would.
+pub fn is_owner(conn_id: u64, owner: &str) -> bool {
+    let e = engine();
+    let map = e.conns.lock().unwrap();
+    matches!(map.get(&conn_id), Some(c) if c.owner == owner)
+}
 /// Teardown / post-close deregister — closes regardless of owner (the ledger owns the id).
 pub fn drop_conn(conn_id: u64) {
     if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) {
