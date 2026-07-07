@@ -3,6 +3,7 @@
 
 mod async_rt;
 pub mod config;
+mod cookies;
 mod db;
 pub mod interfaces;
 pub mod plugin;
