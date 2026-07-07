@@ -3984,7 +3984,9 @@ fn js_params_to_db(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<c
                 DbValue::Text(el.to_rust_string_lossy(scope))
             } else if el.is_number() {
                 let n = el.number_value(scope).unwrap_or(0.0);
-                if n.fract() == 0.0 && n.abs() < 9.007e15 { DbValue::Int(n as i64) } else { DbValue::Real(n) }
+                // 2^53 — beyond it a JS number can't represent every integer, so keep it a Real
+                // (64-bit ids are passed as strings per the contract).
+                if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 { DbValue::Int(n as i64) } else { DbValue::Real(n) }
             } else {
                 DbValue::Text(el.to_rust_string_lossy(scope))
             };
@@ -4003,7 +4005,11 @@ fn db_value_to_v8<'s>(scope: &mut v8::PinScope<'s, '_>, v: &crate::db::DbValue) 
         DbValue::Null => v8::null(scope).into(),
         DbValue::Int(i) => v8::Number::new(scope, *i as f64).into(),
         DbValue::Real(f) => v8::Number::new(scope, *f).into(),
-        DbValue::Text(s) => v8::String::new(scope, s).unwrap().into(),
+        // A value that exceeds V8's max string length yields None — fall back to "" (empty always
+        // succeeds) rather than panicking into `undefined` (an absurd-size TEXT edge; no crash).
+        DbValue::Text(s) => v8::String::new(scope, s)
+            .unwrap_or_else(|| v8::String::new(scope, "").unwrap())
+            .into(),
     }
 }
 
@@ -4022,10 +4028,11 @@ fn db_data_dir() -> Option<String> {
 fn s2_sqlite_open(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let name = args.get(0).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_default();
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let result = match db_data_dir() {
-            Some(dir) => crate::db::open(std::path::Path::new(&dir), &name),
+            Some(dir) => crate::db::open(std::path::Path::new(&dir), &name, &owner),
             None => Err("db not available".to_string()),
         };
         match result {
@@ -4059,12 +4066,13 @@ fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
         let sql = args.get(1).to_rust_string_lossy(scope);
         let params = js_params_to_db(scope, args.get(2));
+        let owner = current_plugin(scope).unwrap_or_default();
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let result = if handle < 0 {
             Err("invalid db handle".to_string())
         } else {
-            crate::db::query(handle as u64, &sql, &params)
+            crate::db::query(handle as u64, &sql, &params, &owner)
         };
         match result {
             Ok(qr) => {
@@ -4098,12 +4106,13 @@ fn s2_sqlite_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
         let sql = args.get(1).to_rust_string_lossy(scope);
         let params = js_params_to_db(scope, args.get(2));
+        let owner = current_plugin(scope).unwrap_or_default();
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let result = if handle < 0 {
             Err("invalid db handle".to_string())
         } else {
-            crate::db::execute(handle as u64, &sql, &params)
+            crate::db::execute(handle as u64, &sql, &params, &owner)
         };
         match result {
             Ok(er) => {
@@ -4132,10 +4141,11 @@ fn s2_sqlite_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
 fn s2_sqlite_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
+        let owner = current_plugin(scope).unwrap_or_default();
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         if handle >= 0 {
-            crate::db::close(handle as u64);
+            crate::db::close(handle as u64, &owner);
         }
         let undef = v8::undefined(scope);
         resolver.resolve(scope, undef.into());
@@ -4828,9 +4838,10 @@ pub(crate) fn unload_plugin(id: &str) {
                 }
                 plugin::Resource::Import(_name) => { /* edge only; no Global to drop */ }
                 plugin::Resource::DbConn(h) => {
-                    // A late/never `close()` — teardown closes the connection now. Idempotent
-                    // (an already-closed handle is a harmless no-op inside db::close).
-                    crate::db::close(h);
+                    // A late/never `close()` — teardown closes the connection now, passing the
+                    // unloading plugin's OWN id as the owner (it owns every handle in its ledger).
+                    // Idempotent (an already-closed handle is a harmless no-op inside db::close).
+                    crate::db::close(h, id);
                 }
             }
         }
