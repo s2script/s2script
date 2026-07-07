@@ -1053,6 +1053,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
+  // --- @s2script/http: fetch over __s2_fetch (adds text()/json() over the buffered body) ---
+  globalThis.__s2pkg_http = {
+    fetch: function (url, options) {
+      return __s2_fetch(String(url), options || {}).then(function (raw) {
+        return {
+          status: raw.status, ok: raw.ok, statusText: raw.statusText, headers: raw.headers,
+          text: function () { return raw.body; },
+          json: function () { return JSON.parse(raw.body); },
+        };
+      });
+    },
+  };
 })();
 "#;
 
@@ -8102,6 +8114,71 @@ mod frame_tests {
         }
         assert!(resolved, "fetch promise never settled on a drain");
         assert_eq!(read_global_string("fetchbad", "__out"), "rejected:true");
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice HTTP Task 3: `@s2script/http` — the __s2pkg_http prelude runtime (fetch over
+    // __s2_fetch, adding text()/json() over the buffered body).
+    // ---------------------------------------------------------------------------
+
+    /// The module resolves via `require("@s2script/http")` (the generic `s2require` rule) and
+    /// exposes `fetch` (the named export) as a function.
+    #[test]
+    fn http_module_resolves_with_expected_shape() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "httpshape",
+            r#"
+            var { fetch } = require("@s2script/http");
+            globalThis.__out = String(typeof fetch === "function");
+        "#,
+            "{}",
+        );
+        assert_eq!(read_global_string("httpshape", "__out"), "true");
+        shutdown();
+    }
+
+    /// End-to-end through the PUBLIC `@s2script/http` API (not the raw native): `fetch` against a
+    /// real local server resolves with `status`/`ok`/`statusText`/`headers` plus the `text()`/
+    /// `json()` accessors over the buffered body — proving the wrapper the prelude builds over the
+    /// raw `__s2_fetch` payload.
+    #[test]
+    fn http_module_fetch_round_trip_with_text_and_json() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_http_server(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9\r\n\r\n{\"a\":\"b\"}",
+        );
+        load_plugin_js(
+            "httpmod",
+            &format!(
+                r#"
+            var {{ fetch }} = require("@s2script/http");
+            globalThis.__out = "pending";
+            fetch("http://127.0.0.1:{port}/").then(function (r) {{
+                globalThis.__out = r.status + ":" + r.ok + ":" + r.statusText + ":" + r.text() + ":" + r.json().a;
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            if read_global_string("httpmod", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "http module fetch never resolved on a drain");
+        assert_eq!(
+            read_global_string("httpmod", "__out"),
+            "200:true:OK:{\"a\":\"b\"}:b"
+        );
         shutdown();
     }
 }
