@@ -967,6 +967,43 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     else { __s2_pendingKicks[this.slot] = { reason: r, delay: d }; }              // still connecting → deliver at onActive
   };
   globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
+  // --- Slice DB Task 4: @s2script/db — Database.open/query/execute/close over the __s2_sqlite_*
+  //     natives (sync-behind-Promise this slice) + a Driver seam (SQLite is the built-in, dogfooded
+  //     reference driver; registerDriver lets a plugin add another later, e.g. MySQL, with no API
+  //     change). name -> config resolution is stubbed to local SQLite (a databases.cfg-style remap
+  //     is a follow-on, not this slice). ---
+  var __s2_db_drivers = {};
+  var __s2_sqliteDriver = {
+    name: "sqlite",
+    connect: function (config) {
+      return __s2_sqlite_open(config.name).then(function (handle) {
+        return {
+          query:   function (sql, params) { return __s2_sqlite_query(handle, sql, params || []); },
+          execute: function (sql, params) { return __s2_sqlite_execute(handle, sql, params || []); },
+          close:   function () { return __s2_sqlite_close(handle); },
+        };
+      });
+    },
+  };
+  __s2_db_drivers["sqlite"] = __s2_sqliteDriver;
+  var __s2_Database = {
+    registerDriver: function (driver) { __s2_db_drivers[driver.name] = driver; },
+    open: function (name) {
+      var connName = name || "default";
+      // This slice: every name resolves to the local SQLite driver. (databases.cfg remap is a follow-on.)
+      var config = { driver: "sqlite", name: connName };
+      var driver = __s2_db_drivers[config.driver];
+      if (!driver) return Promise.reject(new Error("unknown db driver: " + config.driver));
+      return driver.connect(config).then(function (conn) {
+        return {
+          query:   function (sql, params) { return conn.query(sql, params); },
+          execute: function (sql, params) { return conn.execute(sql, params); },
+          close:   function () { return conn.close(); },
+        };
+      });
+    },
+  };
+  globalThis.__s2pkg_db = { Database: __s2_Database };   // named export `Database` (matches the .d.ts)
 })();
 "#;
 
@@ -7253,6 +7290,87 @@ mod frame_tests {
         "#, "{}");
         frame_async_drain();
         assert_eq!(read_global_string("dbp3", "__out"), "rejected:true");
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Slice DB Task 4: `@s2script/db` — the __s2pkg_db prelude runtime (Database.open/query/
+    // execute/close over the __s2_sqlite_* natives, registerDriver seam).
+    // ---------------------------------------------------------------------------
+
+    /// The module resolves via `require("@s2script/db")` (the generic `s2require` rule) and
+    /// exposes `Database.open`/`Database.registerDriver` as functions.
+    #[test]
+    fn db_module_resolves_with_expected_shape() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        load_plugin_js("dbshape", r#"
+            var { Database } = require("@s2script/db");
+            globalThis.__out = (typeof Database.open === "function") + "," + (typeof Database.registerDriver === "function");
+        "#, "{}");
+        assert_eq!(read_global_string("dbshape", "__out"), "true,true");
+        shutdown();
+    }
+
+    /// End-to-end through the PUBLIC `@s2script/db` API (not the raw natives): open a named
+    /// database, CREATE + INSERT (parameterized), SELECT it back, close. Proves the Database
+    /// object built by the prelude (over the SQLite reference driver) round-trips correctly.
+    #[test]
+    fn db_module_open_execute_query_round_trip() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        let name = unique_db_name("t4_roundtrip");
+        load_plugin_js("dbmod", &format!(r#"
+            var {{ Database }} = require("@s2script/db");
+            globalThis.__out = "pending";
+            Database.open("{name}").then(function (db) {{
+                return db.execute("CREATE TABLE kv (k TEXT, v TEXT)").then(function () {{
+                    return db.execute("INSERT INTO kv (k, v) VALUES (?, ?)", ["color", "red"]);
+                }}).then(function (er) {{
+                    return db.query("SELECT k, v FROM kv WHERE k = ?", ["color"]).then(function (rows) {{
+                        globalThis.__out = "changes=" + er.changes + " id=" + er.lastInsertId
+                            + " rows=" + rows.length + " v=" + rows[0].v + " k=" + rows[0].k;
+                        return db.close();
+                    }});
+                }});
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#, name = name), "{}");
+        frame_async_drain();
+        assert_eq!(read_global_string("dbmod", "__out"), "changes=1 id=1 rows=1 v=red k=color");
+        shutdown();
+    }
+
+    /// `registerDriver` actually takes effect: `Database.open`'s config is stubbed to the
+    /// `"sqlite"`-named driver this slice, so registering a fake driver UNDER THAT NAME proves the
+    /// seam is live (the fake's `connect` runs instead of the real SQLite one) without needing a
+    /// second name->config route.
+    #[test]
+    fn db_module_register_driver_seam_overrides_by_name() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        load_plugin_js("dbdrv", r#"
+            var { Database } = require("@s2script/db");
+            globalThis.__out = "pending";
+            Database.registerDriver({
+                name: "sqlite",
+                connect: function (config) {
+                    return Promise.resolve({
+                        query: function () { return Promise.resolve([{ fake: "yes", name: config.name }]); },
+                        execute: function () { return Promise.resolve({ changes: 0, lastInsertId: 0 }); },
+                        close: function () { return Promise.resolve(); },
+                    });
+                },
+            });
+            Database.open("whatever-name").then(function (db) {
+                return db.query("SELECT 1").then(function (rows) {
+                    globalThis.__out = "fake=" + rows[0].fake + " name=" + rows[0].name;
+                });
+            }).catch(function (e) { globalThis.__out = "ERROR:" + String(e); });
+        "#, "{}");
+        frame_async_drain();
+        assert_eq!(read_global_string("dbdrv", "__out"), "fake=yes name=whatever-name");
         shutdown();
     }
 }
