@@ -1591,9 +1591,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_offSscName     = pick("ServerSideClient.name");
             s_offSscSignon   = pick("ServerSideClient.signon");
             s_offSscUserId   = pick("ServerSideClient.userId");
-            META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d evlistener=%d\n",
+            META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d\n",
                            s_offGameServer, s_offClientCount, s_offClientElems,
-                           s_offSscName, s_offSscSignon, s_offSscUserId, s_offSscEventListener);
+                           s_offSscName, s_offSscSignon, s_offSscUserId);
             // Slice 6.9: record offset presence in the gamedata report (a -1 = a missing/typo'd key). A
             // deeper deref-sanity check (does the offset point to a sane value) is a follow-up per re-strategy.
             for (auto kv : { std::make_pair("NetworkServerService.gameServer", s_offGameServer),
@@ -1601,8 +1601,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                              std::make_pair("NetworkGameServer.clientElems",   s_offClientElems),
                              std::make_pair("ServerSideClient.name",           s_offSscName),
                              std::make_pair("ServerSideClient.signon",         s_offSscSignon),
-                             std::make_pair("ServerSideClient.userId",         s_offSscUserId),
-                             std::make_pair("ServerSideClient.eventListener",  s_offSscEventListener) })
+                             std::make_pair("ServerSideClient.userId",         s_offSscUserId) })
                 GamedataResult(kv.first, kv.second >= 0, "offset key absent from gamedata");
         }
         GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
