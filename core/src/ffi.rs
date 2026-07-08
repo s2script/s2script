@@ -59,6 +59,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
             v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
             v8host::dispatch_pending_cookie_cached(); // Post, HOST free: fan out queued Cookies.onCached
             v8host::dispatch_pending_ws_events(); // Post, HOST free: fan out queued WebSocket on* events
+            v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
             crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
         }
         out.result as c_int

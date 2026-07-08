@@ -422,6 +422,27 @@ thread_local! {
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// One-shot guard so bans.json loads once (mirrors `ADMIN_FILE_LOADED`).
     static BAN_LOADED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+
+    /// TopMenu registry (adminmenu framework). Ordered category names (deduped) + items owned by a
+    /// plugin. Item `onSelect` is a Global<Function> held like a command handler (NOT marshalled;
+    /// invoked in the owner's context on select). Owner-scoped teardown mirrors CONCOMMANDS.
+    static TOPMENU_CATEGORIES: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    static TOPMENU_ITEMS: std::cell::RefCell<std::collections::HashMap<String, TopMenuItem>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Slots+ids queued by __s2_topmenu_select (called under the isolate borrow from a menu onSelect);
+    /// fanned out post-frame by dispatch_pending_topmenu_select (ffi.rs, HOST free). Same discipline as
+    /// COOKIE_CACHED_PENDING — sidesteps the re-entrant double-borrow.
+    static TOPMENU_PENDING: std::cell::RefCell<Vec<(String, i32)>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// A registered TopMenu item. `on_select` is invoked in `owner`'s context (liveness-gated by `generation`).
+struct TopMenuItem {
+    category: String,
+    name: String,
+    flags: i64,
+    owner: String,
+    generation: u64,
+    on_select: v8::Global<v8::Function>,
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -812,6 +833,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
   globalThis.__s2pkg_config     = { config: __s2_config };   // named export `config` (matches the .d.ts: import { config } from "@s2script/config")
   globalThis.__s2pkg_menu       = { Menu: Menu, MenuStyle: MenuStyle, MenuCancelReason: MenuCancelReason };
+  // --- adminmenu framework: the TopMenu registry (categories/items owned by the registering plugin;
+  // onSelect is dispatched to the OWNER's context post-drain — see __s2_topmenu_select). ---
+  globalThis.__s2pkg_topmenu = { TopMenu: {
+    addCategory: function (name) { __s2_topmenu_add_category(String(name)); },
+    addItem: function (category, item) { __s2_topmenu_add_item(String(category), String(item.id), String(item.name), item.flags | 0, item.onSelect); },
+    snapshot: function () { return __s2_topmenu_snapshot(); },
+    select: function (id, slot) { __s2_topmenu_select(String(id), slot | 0); },
+  } };
   // --- Slice 6.1: chat module (toSlot/toAll; toAll loops __s2_client_valid, engine-generic) ---
   // `color` is an OPAQUE leading prefix prepended to every chat message (NOT the console.log reply path,
   // so rcon/server-console output stays clean). Core doesn't know what it means — a game package or plugin
@@ -3367,6 +3396,92 @@ fn s2_commands_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgumen
     }));
 }
 
+/// `__s2_topmenu_add_category(name)` — append a category if absent (order = insertion; deduped).
+fn s2_topmenu_add_category(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        TOPMENU_CATEGORIES.with(|c| { let mut b = c.borrow_mut(); if !b.contains(&name) { b.push(name); } });
+    }));
+}
+
+/// `__s2_topmenu_add_item(category, id, name, flags, onSelectFn)` — register/replace an item owned by
+/// current_plugin. Auto-creates the category (order hint). Mirrors s2_concommand's owner+gen+Global store.
+fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 5 { return; }
+        let category = args.get(0).to_rust_string_lossy(scope);
+        let id = args.get(1).to_rust_string_lossy(scope);
+        let name = args.get(2).to_rust_string_lossy(scope);
+        let flags = args.get(3).integer_value(scope).unwrap_or(0);
+        let func_local = match v8::Local::<v8::Function>::try_from(args.get(4)) { Ok(f) => f, Err(_) => return };
+        let on_select = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        TOPMENU_CATEGORIES.with(|c| { let mut b = c.borrow_mut(); if !b.contains(&category) { b.push(category.clone()); } });
+        TOPMENU_ITEMS.with(|m| m.borrow_mut().insert(id, TopMenuItem { category, name, flags, owner, generation, on_select }));
+    }));
+}
+
+/// `__s2_topmenu_snapshot() -> { categories: string[], items: [{id, category, name, flags}] }` (metadata only).
+fn s2_topmenu_snapshot(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let cats: Vec<String> = TOPMENU_CATEGORIES.with(|c| c.borrow().clone());
+        let items: Vec<serde_json::Value> = TOPMENU_ITEMS.with(|m| m.borrow().iter().map(|(id, it)| {
+            serde_json::json!({ "id": id, "category": it.category, "name": it.name, "flags": it.flags })
+        }).collect());
+        let obj = serde_json::json!({ "categories": cats, "items": items });
+        // serialize to a JS value via the JSON string round-trip (the established snapshot pattern).
+        if let Some(s) = v8::String::new(scope, &obj.to_string()) {
+            if let Some(parsed) = v8::json::parse(scope, s) { rv.set(parsed); }
+        }
+    }));
+}
+
+/// `__s2_topmenu_select(id, slot)` — QUEUE a select for post-drain dispatch (never synchronous — a menu
+/// onSelect calls this under the isolate borrow).
+fn s2_topmenu_select(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let id = args.get(0).to_rust_string_lossy(scope);
+        let slot = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        TOPMENU_PENDING.with(|q| q.borrow_mut().push((id, slot)));
+    }));
+}
+
+/// Fan out queued TopMenu selects to each item's owner context. Called from ffi.rs AFTER
+/// frame_async_drain() (HOST free). Mirrors dispatch_pending_cookie_cached / dispatch_concommand.
+pub(crate) fn dispatch_pending_topmenu_select() {
+    let pending: Vec<(String, i32)> = TOPMENU_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if pending.is_empty() { return; }
+    for (id, slot) in pending {
+        // snapshot (owner, gen, Global) — release TOPMENU_ITEMS borrow before entering a context.
+        let entry = TOPMENU_ITEMS.with(|m| m.borrow().get(&id).map(|it| (it.owner.clone(), it.generation, it.on_select.clone())));
+        let Some((owner, gen, global)) = entry else { continue };   // stale id -> no-op
+        if !REGISTRY.with(|r| r.borrow().is_live(&owner, gen)) { continue; }
+        let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.context.clone())) else { continue };
+        HOST.with(|h| {
+            let Ok(mut borrow) = h.try_borrow_mut() else { return };
+            let Some(host) = borrow.as_mut() else { return };
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let slot_val: v8::Local<v8::Value> = v8::Number::new(tc, slot as f64).into();
+            let func = v8::Local::new(tc, &global);
+            if func.call(tc, recv, &[slot_val]).is_none() {
+                let msg = tc.exception().map(|e| e.to_rust_string_lossy(&*tc)).unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_pending_topmenu_select('{}'): {}", id, msg));
+            }
+        });
+    }
+}
+
 /// `__s2_plugin_unload(id) -> bool` — enqueue an unload (runs on the next frame drain). False if not loaded.
 fn s2_plugin_unload(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4021,6 +4136,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ws_send", s2_ws_send);
     set_native(scope, global_obj, "__s2_ws_close", s2_ws_close);
     set_native(scope, global_obj, "__s2_ws_on", s2_ws_on);
+    // TopMenu registry (adminmenu framework): owner-tracked categories/items + post-drain select dispatch.
+    set_native(scope, global_obj, "__s2_topmenu_add_category", s2_topmenu_add_category);
+    set_native(scope, global_obj, "__s2_topmenu_add_item", s2_topmenu_add_item);
+    set_native(scope, global_obj, "__s2_topmenu_snapshot", s2_topmenu_snapshot);
+    set_native(scope, global_obj, "__s2_topmenu_select", s2_topmenu_select);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -5354,6 +5474,11 @@ pub fn shutdown() {
     CONCOMMANDS.with(|m| m.borrow_mut().clear());
     // Clear the flag-meta sidecar too (pure i64, no V8 handles, but reset for re-init hygiene).
     COMMAND_META.with(|m| m.borrow_mut().clear());
+    // Clear the TopMenu registry BEFORE dropping the isolate — TOPMENU_ITEMS holds Global<Function>s
+    // into it (same discipline as CONCOMMANDS); categories/pending are pure Rust, cleared for hygiene.
+    TOPMENU_ITEMS.with(|m| m.borrow_mut().clear());
+    TOPMENU_CATEGORIES.with(|c| c.borrow_mut().clear());
+    TOPMENU_PENDING.with(|q| q.borrow_mut().clear());
     // Clear inter-plugin method + subscriber Globals BEFORE the isolate drops (same discipline as
     // RESOLVERS/CONCOMMANDS: they hold Global<Function>s into the isolate).
     IFACE_METHODS.with(|m| m.borrow_mut().clear());
@@ -5694,6 +5819,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // Drop the departing plugin's flag-meta alongside its commands (a stale entry would be ignored by the
     // list join anyway, but keep the sidecar tidy — trivial).
     COMMAND_META.with(|m| { let mut b = m.borrow_mut(); for n in &dropped_cmds { b.remove(n); } });
+    // (a2e) Drop the plugin's registered TopMenu items (adminmenu framework). Categories are left in
+    // place (harmless if empty; SM parity — a category persists once created) — only owner-scoped items
+    // are torn down, mirroring the CONCOMMANDS cleanup above.
+    TOPMENU_ITEMS.with(|m| m.borrow_mut().retain(|_, it| it.owner != id));
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
     // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
@@ -9275,6 +9404,69 @@ mod frame_tests {
             JSON.stringify({ r1: r1 == null || r1 < 2, r2: r2 == null || r2 < 2 });
         "#);
         assert_eq!(out, r#"{"r1":true,"r2":true}"#);
+        shutdown();
+    }
+
+    /// adminmenu Task 1: a plugin registers a category + two items; `snapshot()` returns them (metadata
+    /// only, no functions) — reachable from a DIFFERENT plugin context (the registry is host-global,
+    /// like CONCOMMANDS), proving cross-context owner-scoped visibility.
+    #[test]
+    fn topmenu_add_snapshot_and_owner_scoped() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js("tm_a", r#"
+            var { TopMenu } = globalThis.__s2pkg_topmenu;
+            TopMenu.addCategory("Player Commands");
+            TopMenu.addItem("Player Commands", { id: "a:kick", name: "Kick", flags: 8, onSelect: function(){} });
+            TopMenu.addItem("Player Commands", { id: "a:slap", name: "Slap", flags: 16, onSelect: function(){} });
+        "#, "{}");
+        // Build a NEW plain object with an explicit key order in the test itself (rather than
+        // stringifying `kick` directly) — independent of whichever key order the native's JSON
+        // round-trip happens to produce (an implementation detail, not a contract).
+        let out = eval_std("q1", r#"
+            var s = globalThis.__s2pkg_topmenu.TopMenu.snapshot();
+            var kick = s.items.filter(function(i){return i.id==="a:kick";})[0];
+            JSON.stringify({ cats: s.categories, ids: s.items.map(function(i){return i.id;}).sort(),
+                             kickId: kick.id, kickCategory: kick.category, kickName: kick.name, kickFlags: kick.flags });
+        "#);
+        assert_eq!(out, r#"{"cats":["Player Commands"],"ids":["a:kick","a:slap"],"kickId":"a:kick","kickCategory":"Player Commands","kickName":"Kick","kickFlags":8}"#);
+        shutdown();
+    }
+
+    /// adminmenu Task 1: `TopMenu.select` only QUEUES (never synchronous — a menu onSelect runs under
+    /// the isolate borrow, so a synchronous cross-context dispatch would double-borrow); the owner's
+    /// `onSelect` fires only once `dispatch_pending_topmenu_select` runs post-drain (HOST free).
+    #[test]
+    fn topmenu_select_dispatches_to_owner_post_drain() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js("tm_b", r#"
+            var { TopMenu } = globalThis.__s2pkg_topmenu;
+            globalThis.__tm_picked = null;
+            TopMenu.addItem("Player Commands", { id: "b:kick", name: "Kick", flags: 8,
+                onSelect: function(slot){ globalThis.__tm_picked = "b:kick@" + slot; } });
+        "#, "{}");
+        // select QUEUES; it must NOT have fired yet (synchronous would double-borrow).
+        eval_std("q2", r#" globalThis.__s2pkg_topmenu.TopMenu.select("b:kick", 3); "#);
+        assert_eq!(eval_in_context_string("tm_b", r#" String(globalThis.__tm_picked) "#), "null",
+            "select must not dispatch synchronously");
+        // fan out post-drain (HOST free) — dispatch runs the owner's onSelect.
+        dispatch_pending_topmenu_select();
+        let out = eval_in_context_string("tm_b", r#" String(globalThis.__tm_picked) "#);
+        assert_eq!(out, "b:kick@3");
+        shutdown();
+    }
+
+    /// adminmenu Task 1: unload drops the departing plugin's TopMenu items (owner-scoped teardown,
+    /// mirrors the CONCOMMANDS cleanup) — a subsequent snapshot no longer lists them.
+    #[test]
+    fn topmenu_unload_drops_owner_items() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js("tm_c", r#"
+            var { TopMenu } = globalThis.__s2pkg_topmenu;
+            TopMenu.addItem("Player Commands", { id: "c:ban", name: "Ban", flags: 2, onSelect: function(){} });
+        "#, "{}");
+        unload_plugin("tm_c");   // Vanished
+        let out = eval_std("q3", r#" String(globalThis.__s2pkg_topmenu.TopMenu.snapshot().items.length) "#);
+        assert_eq!(out, "0");   // the departed plugin's item is gone
         shutdown();
     }
 }
