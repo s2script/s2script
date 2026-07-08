@@ -431,12 +431,14 @@ static void* s_pNetworkServerService = nullptr;
 static int s_offGameServer  = -1, s_offClientCount = -1, s_offClientElems = -1;
 static int s_offSscName     = -1, s_offSscSignon   = -1, s_offSscUserId   = -1;
 static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connected (incl. pawnless). Pin on gate.
-// Slice menu (bounded spike): offset of the IGameEventListener2 subobject within CServerSideClient, i.e.
-// the byte offset to add to a CServerSideClient* before reinterpret_cast<IGameEventListener2*> to reach
-// its FireGameEvent vtable. -1 = unresolved/absent from gamedata; s2_event_fire_to_client treats -1 the
-// same as 0 (the client object IS the listener — the most likely single-inheritance-first-base form) so
-// the primitive degrades to a best-effort guess rather than a hard miss. Live-validated in the Task 5 gate.
-static int s_offSscEventListener = -1;
+// Slice menu: GetLegacyGameEventListener(int slot) -> IGameEventListener2* — the CS2 engine helper that
+// returns a client's per-client legacy game-event listener (a frameless leaf that indexes a global array
+// by slot). Sig-resolved on OUR libserver.so via a DIRECT prologue signature (NOT a CServerSideClient
+// offset cast — the earlier offset guess was wrong; CSSharp reaches the listener through THIS function).
+// event_fire_to_client calls it, then IGameEventListener2::FireGameEvent. Unresolved -> nullptr ->
+// s2_event_fire_to_client degrades to a hard miss (no-op), never a garbage vtable call.
+typedef IGameEventListener2* (*GetLegacyListener_t)(int slot);
+static GetLegacyListener_t s_pGetLegacyListener = nullptr;
 
 // ---------------------------------------------------------------------------
 // EngineCvar (ICvar*) — stored at Load() for ConCommand registration (Slice 6.1).
@@ -511,8 +513,8 @@ static int s2_client_find_by_userid(int id) {
 // FireEvent pre-hook / JS dispatch. Bot-skip is EXPLICIT (S2_ClientAt indexes the raw client array —
 // bots ARE present there, same array s2_client_valid/allConnected() report them in — so it does NOT
 // imply a netchannel): guarded the same way as s2_client_print/s2_client_console_print, via
-// GetPlayerNetInfo(slot) == null. s_offSscEventListener is a bounded RE spike (see its declaration)
-// live-validated by the Task 5 gate.
+// GetPlayerNetInfo(slot) == null. The per-client listener comes from the sig-resolved engine helper
+// s_pGetLegacyListener(slot) (GetLegacyGameEventListener), NOT a CServerSideClient offset cast.
 // ---------------------------------------------------------------------------
 static int s2_event_fire_to_client(int slot) {
     if (!s_pGameEventManager || !s_pendingFireEvent) return 0;
@@ -525,15 +527,18 @@ static int s2_event_fire_to_client(int slot) {
     s_pendingFireEvent  = nullptr;
     s_currentEvent      = s_savedCurrentEvent;  // restore the write target (mirrors s2_event_fire)
     s_savedCurrentEvent = nullptr;
-    void* client = S2_ClientAt(slot);
-    // invalid slot, or a bot / a client with no netchannel yet — skip (a fire to one would be pointless
-    // or, per the print-ops precedent, unsafe) but still free the event on this miss path.
-    if (!client || !s_pEngine || !s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) {
+    // Require the sig-resolved listener helper, and bot-skip: a fake client has no netchannel
+    // (GetPlayerNetInfo == null) — firing to one is pointless/unsafe (the print-ops precedent). Free the
+    // event on every miss path so the CreateEvent()'d event never leaks.
+    if (!s_pGetLegacyListener || !s_pEngine || !s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) {
         s_pGameEventManager->FreeEvent(e);
         return 0;
     }
-    IGameEventListener2* pListener = reinterpret_cast<IGameEventListener2*>(
-        reinterpret_cast<char*>(client) + (s_offSscEventListener >= 0 ? s_offSscEventListener : 0));
+    IGameEventListener2* pListener = s_pGetLegacyListener(slot);   // engine helper: slot -> per-client listener
+    if (!pListener) {
+        s_pGameEventManager->FreeEvent(e);
+        return 0;
+    }
     pListener->FireGameEvent(e);        // serialize to this client's netchannel (no broadcast)
     s_pGameEventManager->FreeEvent(e);  // FireGameEvent does not consume the event; free it (CSSharp parity)
     return 1;
@@ -1558,6 +1563,22 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pCommitSuicide), (const void*)s_serverText, s_serverTextSize);
                 }   // csOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Slice menu: resolve GetLegacyGameEventListener (per-client event fire; Events.fireToClient).
+            // A DIRECT prologue signature self-resolved on OUR libserver.so (CSSharp reaches the per-client
+            // listener via this engine function, NOT a CServerSideClient cast). Unresolved ->
+            // s_pGetLegacyListener stays null -> s2_event_fire_to_client no-ops (degrade-never-crash).
+            auto lelit = sigs.find("LegacyGameEventListener");
+            if (lelit == sigs.end()) {
+                GamedataResult("LegacyGameEventListener", false, "signature absent from gamedata");
+            } else {
+                int64_t lelOff = ResolveSigValidated("LegacyGameEventListener", lelit->second);
+                ModText lelmt = FindModuleText(lelit->second.module.c_str());
+                if (lelOff != s2sig::kFail && lelmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pGetLegacyListener = reinterpret_cast<GetLegacyListener_t>(const_cast<uint8_t*>(lelmt.text) + lelOff);
+                    META_CONPRINTF("[s2script] LegacyGameEventListener resolved @%p (Events.fireToClient)\n",
+                                   reinterpret_cast<void*>(s_pGetLegacyListener));
+                }   // lelOff == kFail: ResolveSigValidated already recorded the reason
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
@@ -1570,9 +1591,6 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_offSscName     = pick("ServerSideClient.name");
             s_offSscSignon   = pick("ServerSideClient.signon");
             s_offSscUserId   = pick("ServerSideClient.userId");
-            // Slice menu (bounded spike): the IGameEventListener2 subobject offset within CServerSideClient.
-            // Absent/typo'd -> -1 -> s2_event_fire_to_client treats it the same as 0 (best-effort guess).
-            s_offSscEventListener = pick("ServerSideClient.eventListener");
             META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d evlistener=%d\n",
                            s_offGameServer, s_offClientCount, s_offClientElems,
                            s_offSscName, s_offSscSignon, s_offSscUserId, s_offSscEventListener);

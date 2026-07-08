@@ -38,15 +38,7 @@
     "NetworkGameServer.clientElems":   { "linuxsteamrt64": 600 },   // 0x258: CServerSideClient** elems
     "ServerSideClient.name":           { "linuxsteamrt64": 64  },   // 0x40 : char* (null -> empty)
     "ServerSideClient.signon":         { "linuxsteamrt64": 100 },   // 0x64 : int32 signon state
-    "ServerSideClient.userId":         { "linuxsteamrt64": 168 },   // 0xa8 : int16 CPlayerUserId (-1 = unassigned)
-    // Menu primitive (bounded spike, UNVALIDATED): offset of the IGameEventListener2 subobject within
-    // CServerSideClient — added to a CServerSideClient* before reinterpret_cast<IGameEventListener2*> to
-    // reach FireGameEvent, used by event_fire_to_client (SourceMod FireToClient parity). 0 = the client
-    // object IS the listener (single-inheritance-first base), the most likely form since the engine
-    // registers each CServerSideClient as a legacy per-client game-event listener. Live-validate against
-    // the pinned libserver.so at the menu-primitive live gate (a real client receiving a fired event); a
-    // wrong value degrades to a garbage vtable call, so treat this one as unconfirmed until that gate runs.
-    "ServerSideClient.eventListener":  { "linuxsteamrt64": 0 }
+    "ServerSideClient.userId":         { "linuxsteamrt64": 168 }    // 0xa8 : int16 CPlayerUserId (-1 = unassigned)
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
@@ -121,6 +113,21 @@
       "linuxsteamrt64": {
         "module": "libserver.so",
         "pattern": "55 48 89 E5 41 55 41 89 F5 41 54 41 89 D4 53 48 8D 15 ? ? ? ? 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
+    // GetLegacyGameEventListener(int slot) -> IGameEventListener2* : the CS2 engine helper that returns a
+    // client's per-client legacy game-event listener (a frameless leaf that loads a global array base,
+    // bounds-checks the slot, and indexes it). event_fire_to_client (SourceMod FireToClient parity) calls
+    // it, then IGameEventListener2::FireGameEvent serializes the event to that ONE client's netchannel (NOT
+    // the broadcast IGameEventManager2::FireEvent). CS2 exposes no interface for this; CSSharp reaches the
+    // listener through THIS function, NOT a CServerSideClient offset cast (the earlier offset guess was
+    // wrong). DIRECT signature — the match IS the function entry (cast + call). Pattern sourced from the
+    // CSSharp gamedata (LegacyGameEventListener), re-resolved + validated UNIQUE against our libserver.so.
+    "LegacyGameEventListener": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8B 05 ? ? ? ? 48 85 C0 74 ? 83 FF ? 77 ? 48 63 FF 48 C1 E7 ? 48 8D 44 38",
         "resolve": "direct"
       }
     }
