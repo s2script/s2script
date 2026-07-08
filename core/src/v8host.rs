@@ -704,7 +704,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     for (var k = 0; k < pageItems.length; k++) {
       var idx = pageItems[k], it = m.items[idx], key = null, selectable = false;
       if (!it.disabled) { key = String(keyNum++); selectable = true; this._selectable.push(idx); }
-      lines.push({ text: it.display, key: key, selectable: selectable, cursor: (this.style === MenuStyle.Center && this._centerCursorIdx() === idx), index: idx });
+      lines.push({ text: it.display, key: key, selectable: selectable, cursor: (this.menu.style === MenuStyle.Center && this._centerCursorIdx() === idx), index: idx });
     }
     var pc = this.pageCount();
     if (this.page > 0)      lines.push({ text: "Back", key: "8", selectable: false, control: "back" });
@@ -9006,6 +9006,29 @@ mod frame_tests {
             picked;
         "#);
         assert_eq!(out, "y");
+        shutdown();
+    }
+
+    #[test]
+    fn menu_model_center_style_rendered_cursor_flag() {
+        init(dummy_logger()).unwrap();
+        // MenuSession must resolve `cursor` off the owning Menu's style (MenuStyle.Center), not
+        // an (unset) session-local `.style` -- else every rendered line's `cursor` is always false,
+        // even for a Center-style menu, silently breaking the center renderer's highlight.
+        let out = eval_std("mcs", r#"
+            var { Menu, MenuStyle } = globalThis.__s2pkg_menu;
+            var last = null;
+            Menu.registerRenderer(MenuStyle.Center, { open: function (s){ last = s; }, update: function (s){ last = s; }, close: function(){} });
+            var m = new Menu("T"); m.style = MenuStyle.Center;
+            m.addItem("x", "X"); m.addItem("y", "Y"); m.addItem("z", "Z");
+            m.display(3, 0);
+            last.moveDown();     // cursor 0 -> 1 (Y)
+            var v = last.view();
+            // only the 3 item-lines carry a `cursor` flag; control lines (e.g. Exit) don't set one.
+            var cursorFlags = v.lines.filter(function (l) { return l.selectable; }).map(function (l) { return l.cursor; });
+            JSON.stringify({ cursorFlags: cursorFlags, highlightedText: v.lines[1].text });
+        "#);
+        assert_eq!(out, r#"{"cursorFlags":[false,true,false],"highlightedText":"Y"}"#);
         shutdown();
     }
 }
