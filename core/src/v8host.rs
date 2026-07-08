@@ -681,11 +681,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     if (typeof slot !== "number" || slot < 0) return;   // console/invalid is never a menu target
     var renderer = __s2_menu_renderers[this.style] || __s2_menu_renderers[MenuStyle.Chat];
     if (!renderer) { globalThis.console && console.log("[menu] no renderer for style " + this.style); return; }
-    // Replace any existing session for this slot (NewMenu).
+    // Install THIS session as the active one for the slot BEFORE ending the previous — so prev._end()
+    // (which runs the plugin's onCancel synchronously) can't mis-delete us, and a re-entrant display()
+    // from that onCancel replaces our map entry, which we then respect instead of clobbering.
     var prev = __s2_menu_activeBySlot[slot];
-    if (prev) prev._end(MenuCancelReason.NewMenu);
     var session = new MenuSession(this, slot, renderer, seconds || 0);
     __s2_menu_activeBySlot[slot] = session;
+    if (prev) prev._end(MenuCancelReason.NewMenu);        // NewMenu; may re-enter display() for this slot
+    if (__s2_menu_activeBySlot[slot] !== session) return; // a re-entrant display won — abandon this one
     session._start();
   };
   Menu.prototype.close = function (slot) {
@@ -701,7 +704,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   }
   // Selectable item indices for a chat page: up to MENU_ITEMS_PER_PAGE, skipping disabled.
   MenuSession.prototype._pageItems = function (page) {
-    var out = [], start = page * MENU_ITEMS_PER_PAGE, seen = 0, i = start;
+    var out = [], start = page * MENU_ITEMS_PER_PAGE, i = start;
     // NOTE: disabled items still occupy a slot in the on-screen list but get no number.
     for (; i < this.menu.items.length && (i - start) < MENU_ITEMS_PER_PAGE; i++) out.push(i);
     return out;
@@ -709,28 +712,36 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   MenuSession.prototype.pageCount = function () {
     return Math.max(1, Math.ceil(this.menu.items.length / MENU_ITEMS_PER_PAGE));
   };
+  // Center navigable targets on the CURRENT page, in display order: the selectable items, then the
+  // Back/Next/Exit controls. The CENTER cursor indexes into THIS list (not just items) so W/S can reach
+  // paging + Exit and E confirms them — otherwise a center menu can't paginate or be dismissed.
+  MenuSession.prototype._navTargets = function () {
+    var t = [], pageItems = this._pageItems(this.page);
+    for (var k = 0; k < pageItems.length; k++) { var idx = pageItems[k]; if (!this.menu.items[idx].disabled) t.push({ kind: "item", index: idx }); }
+    var pc = this.pageCount();
+    if (this.page > 0)        t.push({ kind: "back" });
+    if (this.page < pc - 1)   t.push({ kind: "next" });
+    if (this.menu.exitButton) t.push({ kind: "exit" });
+    return t;
+  };
   // Build the resolved view the renderer paints. Assigns chat number keys 1..7 to selectable items,
-  // then control keys 8=Back, 9=Next, 0=Exit as applicable.
+  // then control keys 8=Back, 9=Next, 0=Exit as applicable. For a Center menu, marks the line under
+  // the cursor (an item OR a control) so the renderer can highlight it.
   MenuSession.prototype.view = function () {
     var m = this.menu, pageItems = this._pageItems(this.page), lines = [], keyNum = 1;
     this._selectable = [];
+    var nav = (m.style === MenuStyle.Center) ? this._navTargets() : null;
+    var cur = (nav && this.cursor >= 0 && this.cursor < nav.length) ? nav[this.cursor] : null;
     for (var k = 0; k < pageItems.length; k++) {
       var idx = pageItems[k], it = m.items[idx], key = null, selectable = false;
       if (!it.disabled) { key = String(keyNum++); selectable = true; this._selectable.push(idx); }
-      lines.push({ text: it.display, key: key, selectable: selectable, cursor: (this.menu.style === MenuStyle.Center && this._centerCursorIdx() === idx), index: idx });
+      lines.push({ text: it.display, key: key, selectable: selectable, cursor: !!(cur && cur.kind === "item" && cur.index === idx), index: idx });
     }
     var pc = this.pageCount();
-    if (this.page > 0)      lines.push({ text: "Back", key: "8", selectable: false, control: "back" });
-    if (this.page < pc - 1) lines.push({ text: "Next", key: "9", selectable: false, control: "next" });
-    if (m.exitButton)       lines.push({ text: "Exit", key: "0", selectable: false, control: "exit" });
+    if (this.page > 0)      lines.push({ text: "Back", key: "8", selectable: false, control: "back", cursor: !!(cur && cur.kind === "back") });
+    if (this.page < pc - 1) lines.push({ text: "Next", key: "9", selectable: false, control: "next", cursor: !!(cur && cur.kind === "next") });
+    if (m.exitButton)       lines.push({ text: "Exit", key: "0", selectable: false, control: "exit", cursor: !!(cur && cur.kind === "exit") });
     return { title: m.title, lines: lines, page: this.page, pageCount: pc, exit: m.exitButton };
-  };
-  // (Center) the menu.items index currently under the cursor, or -1.
-  MenuSession.prototype._centerCursorIdx = function () {
-    var pageItems = this._pageItems(this.page);
-    // cursor indexes selectable-on-page; map through non-disabled.
-    var sel = pageItems.filter(function (i) { return !this.menu.items[i].disabled; }, this);
-    return (this.cursor >= 0 && this.cursor < sel.length) ? sel[this.cursor] : -1;
   };
   MenuSession.prototype._start = function () { this.renderer.open(this); if (this.seconds > 0) this._armTimeout(); };
   // Timeout: arm a delay that cancels the session (any renderer). Lazily reads __s2pkg_timers at
@@ -769,20 +780,26 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var slotN = n - 1;
     if (slotN >= 0 && slotN < this._selectable.length) this._select(this._selectable[slotN]);
   };
-  // Center idiom: cursor navigation.
+  // Center idiom: cursor navigation over _navTargets (items + Back/Next/Exit controls).
   MenuSession.prototype.moveUp = function () {
-    if (this._ended) return; this.view();
-    var count = this._selectable.length; if (!count) return;
-    this.cursor = (this.cursor - 1 + count) % count; this._repaint();
+    if (this._ended) return;
+    var n = this._navTargets().length; if (!n) return;
+    this.cursor = (this.cursor - 1 + n) % n; this._repaint();
   };
   MenuSession.prototype.moveDown = function () {
-    if (this._ended) return; this.view();
-    var count = this._selectable.length; if (!count) return;
-    this.cursor = (this.cursor + 1) % count; this._repaint();
+    if (this._ended) return;
+    var n = this._navTargets().length; if (!n) return;
+    this.cursor = (this.cursor + 1) % n; this._repaint();
   };
+  // Confirm the current cursor target: an item selects; Back/Next paginate (cursor to top); Exit cancels.
   MenuSession.prototype.confirm = function () {
-    if (this._ended) return; this.view();
-    if (this.cursor >= 0 && this.cursor < this._selectable.length) this._select(this._selectable[this.cursor]);
+    if (this._ended) return;
+    var nav = this._navTargets(); if (this.cursor < 0 || this.cursor >= nav.length) return;
+    var t = nav[this.cursor];
+    if (t.kind === "item")      this._select(t.index);
+    else if (t.kind === "back") { this.page--; this.cursor = 0; this._repaint(); }
+    else if (t.kind === "next") { this.page++; this.cursor = 0; this._repaint(); }
+    else if (t.kind === "exit") this._end(MenuCancelReason.Exit);
   };
   MenuSession.prototype.cancel = function () { if (!this._ended) this._end(MenuCancelReason.Exit); };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
@@ -9120,6 +9137,78 @@ mod frame_tests {
             JSON.stringify({ cursorFlags: cursorFlags, highlightedText: v.lines[1].text });
         "#);
         assert_eq!(out, r#"{"cursorFlags":[false,true,false],"highlightedText":"Y"}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn menu_model_center_paginate_and_exit() {
+        init(dummy_logger()).unwrap();
+        // A center menu's cursor must reach the Next/Back/Exit controls (not just items) so pages
+        // beyond 1 are reachable + the menu is dismissable. 9 items + exitButton -> page-0 nav targets =
+        // [item0..item6 (7), next (idx7), exit (idx8)].
+        let out = eval_std("mcp", r#"
+            var { Menu, MenuStyle } = globalThis.__s2pkg_menu;
+            var last = null, picked = null;
+            Menu.registerRenderer(MenuStyle.Center, { open: function (s){ last = s; }, update: function (s){ last = s; }, close: function(){} });
+            var m = new Menu("T"); m.style = MenuStyle.Center;
+            for (var i = 0; i < 9; i++) m.addItem("info" + i, "Item " + i);
+            m.onSelect(function (e){ picked = e.info; });
+            m.display(3, 0);
+            last.moveUp();   // wrap 0 -> idx 8 (Exit control)
+            var onExit = last.view().lines.filter(function(l){return l.control==="exit";})[0].cursor;
+            last.moveUp();   // -> idx 7 (Next control)
+            var onNext = last.view().lines.filter(function(l){return l.control==="next";})[0].cursor;
+            last.confirm();  // Next -> page 1 (items 7,8), cursor 0
+            var pageAfterNext = last.page;
+            var page1first = last.view().lines.filter(function(l){return l.selectable;})[0].text;
+            last.confirm();  // select page-1 item 0 == info7
+            JSON.stringify({ onExit: onExit, onNext: onNext, page: pageAfterNext, page1first: page1first, picked: picked });
+        "#);
+        assert_eq!(out, r#"{"onExit":true,"onNext":true,"page":1,"page1first":"Item 7","picked":"info7"}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn menu_model_center_exit_cancels() {
+        init(dummy_logger()).unwrap();
+        // Confirming the Exit control on a center menu cancels it with reason Exit (0) -- a seconds:0
+        // center menu is dismissable by the player (the review-1 gap).
+        let out = eval_std("mce", r#"
+            var { Menu, MenuStyle, MenuCancelReason } = globalThis.__s2pkg_menu;
+            var cancelled = null;
+            Menu.registerRenderer(MenuStyle.Center, { open: function (s){ last = s; }, update: function (s){ last = s; }, close: function(){} });
+            var last = null;
+            var m = new Menu("T"); m.style = MenuStyle.Center;
+            m.addItem("a", "A"); m.onCancel(function (e){ cancelled = e.reason; });
+            m.display(3, 0);
+            last.moveDown();  // item(0) -> exit(1)
+            last.confirm();   // Exit -> cancel
+            JSON.stringify({ cancelled: cancelled, exitReason: MenuCancelReason.Exit });
+        "#);
+        assert_eq!(out, r#"{"cancelled":0,"exitReason":0}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn menu_model_newmenu_replaces_and_reentrant_display_wins() {
+        init(dummy_logger()).unwrap();
+        // A 2nd display to a slot cancels the 1st with NewMenu (3); and if that onCancel synchronously
+        // displays a re-entrant menu for the slot, the re-entrant one must WIN (not be clobbered by the
+        // outer display) -- the review-2 guard.
+        let out = eval_std("mnm", r#"
+            var { Menu, MenuCancelReason } = globalThis.__s2pkg_menu;
+            var opened = [];
+            Menu.registerRenderer("recX", { open: function (s){ opened.push(s.menu.title); }, update: function(){}, close: function(){} });
+            var reentrant = new Menu("REENTRANT"); reentrant.style = "recX"; reentrant.addItem("r","R");
+            var first = new Menu("FIRST"); first.style = "recX"; first.addItem("a","A");
+            var firstCancelReason = null;
+            first.onCancel(function (e){ firstCancelReason = e.reason; reentrant.display(3, 0); });
+            var second = new Menu("SECOND"); second.style = "recX"; second.addItem("b","B");
+            first.display(3, 0);    // opens FIRST
+            second.display(3, 0);   // cancels FIRST(NewMenu) -> onCancel opens REENTRANT -> SECOND abandoned
+            JSON.stringify({ firstCancelReason: firstCancelReason, newMenu: MenuCancelReason.NewMenu, opened: opened });
+        "#);
+        assert_eq!(out, r#"{"firstCancelReason":3,"newMenu":3,"opened":["FIRST","REENTRANT"]}"#);
         shutdown();
     }
 

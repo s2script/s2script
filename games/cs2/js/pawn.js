@@ -280,7 +280,7 @@
     // parity), so every fireToClient call below must carry the real target userid, not the field's
     // zero-value default.
     function getUserId(slot) { return __s2_client_userid(slot | 0); }
-    function escapeHtml(s) { return ("" + s).replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    function escapeHtml(s) { return ("" + s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     function renderHtml(session) {
       var v = session.view(), html = "<font class='fontSize-l' color='#ffffff'>" + escapeHtml(v.title) + "</font>";
       for (var i = 0; i < v.lines.length; i++) {
