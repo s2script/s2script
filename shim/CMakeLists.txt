@@ -21,6 +21,10 @@ add_library(s2script SHARED
     # length disassembler (pure, no OS deps). No third-party detour library / no dlopen cascade.
     src/detour.cpp
     ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
+    # Ray-trace slice: RTTI vtable-by-name resolution (ported DynLibUtils algorithm) + the
+    # CNavPhysicsInterface::TraceShape structs/call. Engine-generic (Source-2 physics).
+    src/vtable.cpp
+    src/trace.cpp
 )
 
 target_include_directories(s2script PRIVATE

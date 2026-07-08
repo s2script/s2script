@@ -110,6 +110,28 @@ typedef int (*s2_event_fire_to_client_fn)(int slot);
 typedef const char* (*s2_config_read_file_fn)(const char* name);
 typedef int         (*s2_config_write_file_fn)(const char* name, const char* content);
 
+/* Ray-trace slice: CNavPhysicsInterface::TraceShape, resolved by an RTTI vtable-by-name scan
+ * (shim/src/vtable.{h,cpp}) — CS2 does not export this vtable via dlsym. ENGINE-GENERIC (Source-2
+ * physics; no CS2 names here). Returns 1 and fills *out on a completed trace (didHit/fraction from
+ * CGameTrace::DidHit()/m_flFraction, endpos/normal copied out, allSolid from m_bStartInSolid,
+ * hitEntHandle = the hit CEntityInstance's GetRefEHandle().ToInt() or -1). Returns 0 (op
+ * unavailable / vtable unresolved) leaving *out untouched — degrade-never-crash. The ignore entity
+ * is resolved shim-side from (ignoreEntIdx, ignoreEntSerial) via the EXISTING serial-gated entity
+ * lookup (s2_deref_handle); a negative idx/serial means "no ignore entity". The hit entity crosses
+ * back ONLY as hitEntHandle (an (index,serial)-decodable int) — never a raw pointer; the Rust core
+ * decodes it into a serial-gated EntityRef (the DamageInfo.victim pattern). */
+typedef struct {
+    int   didHit;
+    float fraction;
+    float endpos[3];
+    float normal[3];
+    int   allSolid;
+    int   hitEntHandle;
+} S2TraceResult;
+typedef int (*s2_trace_shape_fn)(const float* start, const float* end, const float* mins, const float* maxs,
+                                 unsigned long long interactsWith, unsigned long long interactsExclude,
+                                 int ignoreEntIdx, int ignoreEntSerial, S2TraceResult* out);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -173,6 +195,8 @@ typedef struct {
     /* Slice nominations: raw configs-dir file read/write — APPENDED after event_fire_to_client; order is the ABI. */
     s2_config_read_file_fn  config_read_file;
     s2_config_write_file_fn config_write_file;
+    /* Ray-trace slice — APPENDED after config_write_file; order is the ABI. */
+    s2_trace_shape_fn trace_shape;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

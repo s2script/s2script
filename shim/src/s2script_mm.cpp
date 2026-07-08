@@ -52,6 +52,8 @@
 #include <link.h>       // dl_iterate_phdr, ElfW
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
+#include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
+#include "trace.h"    // Ray-trace slice: Ray_t/CTraceFilterEx/CGameTrace + the TraceShape call
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
@@ -249,6 +251,44 @@ static void s2_ent_state_changed(void* ent, int offset) {
     // s2_ent_by_index or s2_deref_handle and must not cross an await boundary.
     static_cast<CEntityInstance*>(ent)->NetworkStateChanged(
         NetworkStateChangedData(static_cast<uint32>(offset)));
+}
+
+// ---------------------------------------------------------------------------
+// trace_shape op (ray-trace slice, Task 1): CNavPhysicsInterface::TraceShape, resolved via RTTI
+// (s2vtable::GetVTableByName — CS2 does not export game vtables/symbols). s_pTraceShape is set in
+// Load() only after BOTH the RTTI resolve AND a .text-membership validation succeed; null here
+// means "unavailable on this binary" and the op degrades (returns 0, *out untouched).
+// ---------------------------------------------------------------------------
+static s2trace::TraceShapeFn s_pTraceShape = nullptr;
+
+static int s2_trace_shape(const float* start, const float* end, const float* mins, const float* maxs,
+                           unsigned long long interactsWith, unsigned long long interactsExclude,
+                           int ignoreEntIdx, int ignoreEntSerial, S2TraceResult* out) {
+    if (!s_pTraceShape || !start || !end || !mins || !maxs || !out) return 0;
+
+    // Resolve the ignore entity from (idx, serial) via the EXISTING serial-gated chunk-walk
+    // (s2_deref_handle) — a raw pointer never crosses to JS; a stale/reused (idx, serial) pair
+    // degrades to "no ignore entity" (never a dangling deref), exactly like the damage-victim and
+    // pawn-suicide ops.
+    CEntityInstance* ignoreEnt = nullptr;
+    if (ignoreEntIdx >= 0 && ignoreEntSerial >= 0) {
+        CEntityHandle h(ignoreEntIdx, ignoreEntSerial);
+        ignoreEnt = static_cast<CEntityInstance*>(s2_deref_handle(static_cast<unsigned int>(h.ToInt())));
+    }
+
+    s2trace::S2TraceResultOut r{};
+    if (!s2trace::RunTraceShape(s_pTraceShape, start, end, mins, maxs,
+                                 static_cast<uint64_t>(interactsWith), static_cast<uint64_t>(interactsExclude),
+                                 ignoreEnt, &r)) {
+        return 0;
+    }
+    out->didHit  = r.didHit;
+    out->fraction = r.fraction;
+    out->endpos[0] = r.endpos[0]; out->endpos[1] = r.endpos[1]; out->endpos[2] = r.endpos[2];
+    out->normal[0] = r.normal[0]; out->normal[1] = r.normal[1]; out->normal[2] = r.normal[2];
+    out->allSolid  = r.allSolid;
+    out->hitEntHandle = r.hitEntHandle;
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -1641,6 +1681,45 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                              std::make_pair("ServerSideClient.userId",         s_offSscUserId) })
                 GamedataResult(kv.first, kv.second >= 0, "offset key absent from gamedata");
         }
+        // Resolve CNavPhysicsInterface::TraceShape via an RTTI vtable-by-name scan (ray-trace
+        // slice, Task 1). CS2 does not export this vtable through dlsym (stripped .symtab, not in
+        // .dynsym) — s2vtable::GetVTableByName locates it from the RTTI type_info name embedded in
+        // .rodata (self-resolve doctrine: no borrowed pointer, only a borrowed vtable INDEX, which
+        // is gamedata and validated below). Unresolved -> s_pTraceShape stays null -> the
+        // trace_shape op degrades to a no-op (never a crash).
+        {
+            void** vt = s2vtable::GetVTableByName("libserver.so", "CNavPhysicsInterface");
+            if (!vt) {
+                GamedataResult("CNavPhysicsInterface (RTTI vtable)", false,
+                               "RTTI typeinfo/vtable not found in libserver.so — regenerate");
+            } else {
+                std::string offErr;
+                auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
+                auto oit = offs.find("CNavPhysicsInterface_TraceShape");
+                if (oit == offs.end() || oit->second < 0) {
+                    GamedataResult("CNavPhysicsInterface_TraceShape", false,
+                                   "offset (vtable index) key absent from gamedata");
+                } else {
+                    int idx = oit->second;
+                    void* fn = vt[idx];
+                    // Validate the resolved slot lands inside libserver.so's own executable range
+                    // (Rule 2 parity with ResolveSigValidated) — a borrowed/stale index could point
+                    // anywhere; a wrong-but-in-range value would otherwise crash on first call.
+                    ModText svt = FindModuleText("libserver.so");
+                    const uint8_t* f = reinterpret_cast<const uint8_t*>(fn);
+                    if (fn && svt.text && f >= svt.text && f < svt.text + svt.size) {
+                        s_pTraceShape = reinterpret_cast<s2trace::TraceShapeFn>(fn);
+                        GamedataResult("CNavPhysicsInterface_TraceShape", true, nullptr);
+                        META_CONPRINTF("[s2script] trace: OK (RTTI CNavPhysicsInterface idx %d, fn=%p)\n",
+                                       idx, fn);
+                    } else {
+                        GamedataResult("CNavPhysicsInterface_TraceShape", false,
+                                       "resolved fn ptr outside libserver.so .text — stale index");
+                        META_CONPRINTF("[s2script] trace: MISSING (resolved slot out of range)\n");
+                    }
+                }
+            }
+        }
         GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
     }
     // --- end interface acquisition ---
@@ -1715,6 +1794,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Slice nominations: raw configs-dir file read/write — APPENDED after event_fire_to_client; order MUST match S2EngineOps.
     ops.config_read_file  = &s2_config_read_file;
     ops.config_write_file = &s2_config_write_file;
+    // Ray-trace slice — APPENDED after config_write_file; order MUST match S2EngineOps.
+    ops.trace_shape = &s2_trace_shape;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
