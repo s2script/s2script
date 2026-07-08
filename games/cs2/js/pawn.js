@@ -417,13 +417,24 @@
       for (var k in tallies) { if (tallies[k]) return; }
       if (pollSub) { pollSub.dispose(); pollSub = null; }   // OnGameFrame.subscribe() -> { dispose() }
     }
+    function clearTally(slot) {
+      delete tallies[slot]; stopIfIdle();
+      Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: " ", duration: MENU_TTL, userid: getUserId(slot) });   // wipe
+    }
     globalThis.__s2pkg_votes.Vote.registerTallyRenderer({
       show: function (slot, tally) { tallies[slot] = tally; ensurePoll(); },
-      clear: function (slot) {
-        delete tallies[slot]; stopIfIdle();
-        Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: " ", duration: MENU_TTL, userid: getUserId(slot) });   // wipe
-      },
+      clear: clearTally,
     });
+    // Defensive self-heal (blocking review finding): a voter who disconnects mid-vote is removed from
+    // the core vote's tally (@s2script/votes' own Clients.onDisconnect deletes st.votes[slot]), but the
+    // core's clear-at-end pass only walks __s2_vote_eligibleSlots() AT END TIME, which excludes anyone
+    // who already left — so tallies[slot] here would otherwise never be deleted, the OnGameFrame poll
+    // would never go idle, and the stale/frozen HTML would keep being fireToClient'd every frame forever,
+    // including to whichever future client is later assigned that same slot (Client is documented as NOT
+    // serial/userId-gated). Subscribe here too so the renderer self-heals without depending on core
+    // notifying it per-slot; fireToClient no-ops for an already-gone slot (GetLegacyGameEventListener
+    // resolves null), matching the existing menu-close-on-disconnect precedent above.
+    globalThis.__s2pkg_clients.Clients.onDisconnect(function (c) { if (tallies[c.slot]) clearTally(c.slot); });
   })();
 
   // pickPlayer(adminSlot, onPicked): a target-picker Center menu over connected players (the adminmenu
