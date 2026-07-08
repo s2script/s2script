@@ -508,20 +508,32 @@ static int s2_client_find_by_userid(int id) {
 // s2_event_create (s_pendingFireEvent) directly to ONE client's per-client legacy game-event
 // listener, i.e. IGameEventListener2::FireGameEvent — this serializes straight to that client's
 // netchannel and does NOT pass through IGameEventManager2::FireEvent, so it never re-enters our own
-// FireEvent pre-hook / JS dispatch. Bot-skip is implicit: a bot's CServerSideClient has no netchannel,
-// so a real engine would no-op the send; s_offSscEventListener is a bounded RE spike (see its
-// declaration) live-validated by the Task 5 gate.
+// FireEvent pre-hook / JS dispatch. Bot-skip is EXPLICIT (S2_ClientAt indexes the raw client array —
+// bots ARE present there, same array s2_client_valid/allConnected() report them in — so it does NOT
+// imply a netchannel): guarded the same way as s2_client_print/s2_client_console_print, via
+// GetPlayerNetInfo(slot) == null. s_offSscEventListener is a bounded RE spike (see its declaration)
+// live-validated by the Task 5 gate.
 // ---------------------------------------------------------------------------
 static int s2_event_fire_to_client(int slot) {
     if (!s_pGameEventManager || !s_pendingFireEvent) return 0;
-    void* client = S2_ClientAt(slot);
-    if (!client) return 0;   // invalid slot or a bot (fake client has no per-client listener/netchannel)
-    IGameEventListener2* pListener = reinterpret_cast<IGameEventListener2*>(
-        reinterpret_cast<char*>(client) + (s_offSscEventListener >= 0 ? s_offSscEventListener : 0));
+    // Grab + clear the pending event and restore s_currentEvent UNCONDITIONALLY once we know there is
+    // a manager + a pending event — every path below (miss or hit) frees `e` and restores the save/
+    // restore nesting exactly once. Doing this BEFORE the client/netinfo checks matters: an early
+    // `return 0` on a miss must not leak the CreateEvent()'d event or leave s_currentEvent pointing at
+    // an orphaned event (which would corrupt a later, unrelated fire()/fireToClient() call's target).
     IGameEvent* e = s_pendingFireEvent;
     s_pendingFireEvent  = nullptr;
     s_currentEvent      = s_savedCurrentEvent;  // restore the write target (mirrors s2_event_fire)
     s_savedCurrentEvent = nullptr;
+    void* client = S2_ClientAt(slot);
+    // invalid slot, or a bot / a client with no netchannel yet — skip (a fire to one would be pointless
+    // or, per the print-ops precedent, unsafe) but still free the event on this miss path.
+    if (!client || !s_pEngine || !s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) {
+        s_pGameEventManager->FreeEvent(e);
+        return 0;
+    }
+    IGameEventListener2* pListener = reinterpret_cast<IGameEventListener2*>(
+        reinterpret_cast<char*>(client) + (s_offSscEventListener >= 0 ? s_offSscEventListener : 0));
     pListener->FireGameEvent(e);        // serialize to this client's netchannel (no broadcast)
     s_pGameEventManager->FreeEvent(e);  // FireGameEvent does not consume the event; free it (CSSharp parity)
     return 1;
