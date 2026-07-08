@@ -1,0 +1,16 @@
+{
+  "name": "@s2script/rockthevote",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "apiVersion": "1.x",
+    "config": {
+      "rtv_threshold": { "type": "float", "default": 0.6, "description": "Fraction of connected non-bot players that must RTV to start a vote." },
+      "rtv_min_players": { "type": "int", "default": 0, "description": "Minimum connected non-bot players required before RTV can trigger." },
+      "rtv_map_count": { "type": "int", "default": 5, "description": "Number of map options on the ballot (capped at 8; \"Don't Change\" takes the 9th slot)." },
+      "rtv_cooldown": { "type": "int", "default": 5, "description": "Distinct maps that must play before a map is RTV-eligible again." },
+      "rtv_vote_duration": { "type": "int", "default": 20, "description": "Seconds the RTV map vote stays open." },
+      "rtv_show_tally": { "type": "bool", "default": true, "description": "Show the live center-screen tally during the RTV vote." }
+    }
+  }
+}
