@@ -15,7 +15,9 @@ Voting is a core SourceMod base plugin and fills the empty **Voting Commands** T
 
 **In scope:** `@s2script/votes` (the vote primitive + a tally-render seam); the CS2 center-tally renderer; `sm_vote` (custom) + `sm_votekick` (the built-in proof) in a new `basevotes` plugin; the TopMenu **Votekick** item (Voting Commands category).
 
-**Deferred (named follow-ons):** `sm_voteban` / `sm_votemap` (mechanical once the primitive works); `funvotes`; a **cross-plugin global vote lock** (the MVP lock is per-context — one plugin); vote **cooldowns** and **min-turnout** thresholds (a simple majority for the MVP); a native CS2 F1/F2 vote panel (`CVoteController` RE — a separate, larger direction we chose not to take).
+**Deferred (named follow-ons):** `sm_voteban` / `sm_votemap` (mechanical once the primitive works); `funvotes`; a **cross-plugin global vote lock** (the MVP lock is per-context — one plugin); vote **cooldowns** and **min-turnout** thresholds (a simple majority for the MVP).
+
+**Non-goal (will NOT be built):** the native CS2 F1/F2 vote panel (`CVoteController` RE). The chat-ballot + optional-center-tally combo is the intended, permanent vote UX for s2script — the native panel is explicitly not on the roadmap.
 
 ## Approach (decided)
 
@@ -23,7 +25,7 @@ Voting is a core SourceMod base plugin and fills the empty **Voting Commands** T
 - **Vote logic** (options, per-player tally, revote, duration/lifecycle, pass/fail) + **chat ballot** (`Chat.toAll`/`Chat.onMessage`) + **player enumeration** (`Clients.all()`) — engine-generic → `@s2script/votes`.
 - **The live center-tally HTML** (`show_survival_respawn_status`, re-sent each tick) — CS2-specific → a renderer registered through a **`registerTallyRenderer` seam** (mirrors `@s2script/menu`'s `registerRenderer`), invoked only when `showLiveTally` is set.
 
-Rejected — the **native CS2 vote panel** (F1/F2 via `CVoteController`): the "real" vote UX but a substantial engine-RE spike; deferred in favor of the chat-based MVP that ships now on existing primitives.
+Not pursued (a permanent non-goal, user-confirmed) — the **native CS2 vote panel** (F1/F2 via `CVoteController`): a substantial engine-RE spike, and the chat-ballot + center-tally combo is the intended vote UX for s2script for good. It is not a future direction.
 
 ## Architecture
 
