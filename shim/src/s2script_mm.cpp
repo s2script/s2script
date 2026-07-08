@@ -1135,6 +1135,43 @@ static int s2_config_write(const char* id, const char* content) {
     std::ofstream f(path); if (!f) return 0; f << content; return f.good() ? 1 : 0;
 }
 
+// ConfigFilePath: like ConfigPath but the name INCLUDES its extension (no .json append). Reuses the same
+// sanitize (non-[A-Za-z0-9._-] -> '_', which neutralizes '/'); additionally refuses names containing ".."
+// or empty (returns "" -> read/write fail) so there is no traversal.
+static std::string ConfigFilePath(const char* name) {
+    if (!name || !*name) return "";
+    if (std::string(name).find("..") != std::string::npos) return "";
+    std::string safe;
+    for (const char* p = name; *p; ++p) {
+        char c = *p;
+        safe += ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                 || c == '.' || c == '_' || c == '-') ? c : '_';
+    }
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(&ConfigFilePath), &info) && info.dli_fname) {
+        char buf[4096];
+        snprintf(buf, sizeof buf, "%s", info.dli_fname);
+        std::string dir = dirname(buf); snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);             snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);
+        return dir + "/configs/" + safe;
+    }
+    return "addons/s2script/configs/" + safe;
+}
+static std::string s_configFileReadBuf;
+static const char* s2_config_read_file(const char* name) {
+    std::string path = ConfigFilePath(name);
+    if (path.empty()) return nullptr;
+    std::ifstream f(path); if (!f) return nullptr;
+    std::stringstream ss; ss << f.rdbuf(); s_configFileReadBuf = ss.str();
+    return s_configFileReadBuf.c_str();
+}
+static int s2_config_write_file(const char* name, const char* content) {
+    std::string path = ConfigFilePath(name); if (path.empty() || !content) return 0;
+    std::error_code ec; std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::ofstream f(path); if (!f) return 0; f << content; return f.good() ? 1 : 0;
+}
+
 // ---------------------------------------------------------------------------
 // db_data_dir (Slice DB): absolute path to addons/s2script/data, created if absent. Resolved
 // relative to the plugin .so via dladdr (mirrors ConfigPath's dirname ×3 walk to the addon root),
@@ -1675,6 +1712,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.db_data_dir        = &s2_db_data_dir;
     // Slice menu: per-client event fire — APPENDED after db_data_dir; order MUST match S2EngineOps.
     ops.event_fire_to_client = &s2_event_fire_to_client;
+    // Slice nominations: raw configs-dir file read/write — APPENDED after event_fire_to_client; order MUST match S2EngineOps.
+    ops.config_read_file  = &s2_config_read_file;
+    ops.config_write_file = &s2_config_write_file;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

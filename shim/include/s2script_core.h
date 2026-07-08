@@ -104,6 +104,11 @@ typedef const char* (*s2_db_data_dir_fn)(void);
 // Slice menu: fire the pending created event to ONE client's per-client legacy listener (SourceMod
 // FireToClient parity). Returns 1 on success, 0 on a miss (no manager / no pending event / no client / bot).
 typedef int (*s2_event_fire_to_client_fn)(int slot);
+// Slice nominations: raw configs-dir file read/write (name includes its extension; no .json append).
+// Reads/writes addons/s2script/configs/<sanitized name>; a ".." or empty name resolves to a null read /
+// no-op write (no traversal). APPENDED after event_fire_to_client; order is the ABI.
+typedef const char* (*s2_config_read_file_fn)(const char* name);
+typedef int         (*s2_config_write_file_fn)(const char* name, const char* content);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -165,6 +170,9 @@ typedef struct {
     s2_db_data_dir_fn db_data_dir;
     /* Slice menu: per-client event fire — APPENDED after db_data_dir; order is the ABI. */
     s2_event_fire_to_client_fn event_fire_to_client;
+    /* Slice nominations: raw configs-dir file read/write — APPENDED after event_fire_to_client; order is the ABI. */
+    s2_config_read_file_fn  config_read_file;
+    s2_config_write_file_fn config_write_file;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

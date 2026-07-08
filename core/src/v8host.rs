@@ -125,6 +125,11 @@ pub type ServerGameTimeFn   = extern "C" fn() -> f32;            // GetGlobals()
 // --- Slice DB: data-dir op (C-ABI; the C header must match exactly) ---
 pub type DbDataDirFn = extern "C" fn() -> *const c_char; // absolute path to <addon>/data, created if absent
 
+// --- Slice nominations: raw configs-dir file read/write (C-ABI; the C header must match exactly).
+// Mirrors ConfigReadFn/ConfigWriteFn but the name INCLUDES its extension (no .json append). ---
+type ConfigReadFileFn  = extern "C" fn(name: *const c_char) -> *const c_char;
+type ConfigWriteFileFn = extern "C" fn(name: *const c_char, content: *const c_char) -> i32;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -189,6 +194,9 @@ pub struct S2EngineOps {
     pub db_data_dir: Option<DbDataDirFn>,
     // --- Slice menu: per-client event fire (APPENDED after db_data_dir; order is the ABI; do not reorder above) ---
     pub event_fire_to_client: Option<EventFireToClientFn>,
+    // --- Slice nominations: raw config-file read/write (APPENDED after event_fire_to_client; order is the ABI) ---
+    pub config_read_file:  Option<ConfigReadFileFn>,
+    pub config_write_file: Option<ConfigWriteFileFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -682,6 +690,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     getFloat:  function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : v; },
     getBool:   function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v === true; },
     onChange:  function (h) { __s2_config_on_change(h); },
+    readFile:  function (name) { return __s2_config_read_file(String(name)); },
+    writeFile: function (name, content) { __s2_config_write_file(String(name), String(content)); },
   };
   // --- Menu primitive (engine-generic): model + pagination + registerRenderer seam. Slot-based. ---
   var MenuStyle = { Chat: "chat", Center: "center" };
@@ -4240,6 +4250,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
     set_native(scope, global_obj, "__s2_config_read_raw", s2_config_read_raw);
     set_native(scope, global_obj, "__s2_config_write_raw", s2_config_write_raw);
+    // Slice nominations Task 1: raw configs-dir file read/write for @s2script/config.
+    set_native(scope, global_obj, "__s2_config_read_file", s2_config_read_file);
+    set_native(scope, global_obj, "__s2_config_write_file", s2_config_write_file);
     // Slice DB Task 3: the `__s2_sqlite_*` natives (sync-behind-Promise) for `@s2script/db`.
     set_native(scope, global_obj, "__s2_sqlite_open", s2_sqlite_open);
     set_native(scope, global_obj, "__s2_sqlite_query", s2_sqlite_query);
@@ -5022,6 +5035,47 @@ fn s2_config_write_raw(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
             Some(f(cid.as_ptr(), ccontent.as_ptr()))
         })();
         rv.set_int32(result.unwrap_or(0));
+    }));
+}
+
+/// `__s2_config_read_file(name) -> string | null` — raw configs-dir file read (name includes its
+/// extension, e.g. "maplist.txt"); null if no op / file absent / name rejected (".."/empty).
+/// Slice nominations Task 1. Mirrors `s2_config_read_raw`.
+fn s2_config_read_file(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        ENGINE_OPS.with(|c| {
+            let ops = c.get();
+            if let Some(func) = ops.and_then(|o| o.config_read_file) {
+                let cname = std::ffi::CString::new(name).unwrap_or_default();
+                let p = func(cname.as_ptr());
+                if !p.is_null() {
+                    let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned();
+                    if let Some(v) = v8::String::new(scope, &s) { rv.set(v.into()); }
+                }
+            }
+        });
+    }));
+}
+
+/// `__s2_config_write_file(name, content)` — raw configs-dir file write (creates/overwrites); a
+/// no-op (never throws) with no op / a rejected name (".."/empty). Slice nominations Task 1.
+/// Mirrors `s2_config_read_raw`'s ENGINE_OPS/CString access pattern.
+fn s2_config_write_file(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let content = args.get(1).to_rust_string_lossy(scope);
+        ENGINE_OPS.with(|c| {
+            let ops = c.get();
+            if let Some(func) = ops.and_then(|o| o.config_write_file) {
+                let cn = std::ffi::CString::new(name).unwrap_or_default();
+                let cc = std::ffi::CString::new(content).unwrap_or_default();
+                func(cn.as_ptr(), cc.as_ptr());
+            }
+        });
     }));
 }
 
@@ -7442,6 +7496,8 @@ mod frame_tests {
             server_game_time: None,
             db_data_dir: None,
             event_fire_to_client: None,
+            config_read_file: None,
+            config_write_file: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -7575,6 +7631,8 @@ mod frame_tests {
             server_game_time: None,
             db_data_dir: None,
             event_fire_to_client: None,
+            config_read_file: None,
+            config_write_file: None,
         }
     }
 
@@ -8044,6 +8102,21 @@ mod frame_tests {
         re_materialize_config("p");
         // Values still re-injected (even with no handlers).
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('x'))"), "42");
+        shutdown();
+    }
+
+    /// Slice nominations Task 1: `config.readFile`/`writeFile` degrade cleanly with no engine ops
+    /// wired — readFile returns null, writeFile is a no-op (never throws).
+    #[test]
+    fn config_read_file_degrades_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // No engine ops -> readFile returns null, writeFile is a no-op (never throws).
+        assert_eq!(
+            eval_in_context_string("p", r#"var {config}=__s2pkg_config; config.writeFile("x.txt","hi"); String(config.readFile("x.txt"))"#),
+            "null"
+        );
         shutdown();
     }
 
