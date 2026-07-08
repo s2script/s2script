@@ -374,6 +374,58 @@
     });
   })();
 
+  // --- CS2 vote-tally renderer: the live center HTML for @s2script/votes (NON-freezing; no input). ---
+  // @s2script/votes (the vote model + chat ballot/capture + lifecycle + registerTallyRenderer seam) stays
+  // engine-generic; this registers the live-tally display backend into it, reusing the same
+  // show_survival_respawn_status/loc_token path as the center menu renderer above (re-sent each tick since
+  // CS2 paints that event's HTML for one frame only). Unlike the menu, there is no input/freeze — the vote
+  // itself is captured via chat digits (@s2script/votes), so this is purely a per-tick display.
+  (function () {
+    if (!globalThis.__s2pkg_votes) return;   // votes module present?
+    var Events = globalThis.__s2pkg_events.Events;
+    var OnGameFrame = globalThis.__s2pkg_frame.OnGameFrame;
+    var tallies = {};   // slot -> current tally (VoteTally), while a live-tally vote is active
+    var pollSub = null; // lazy OnGameFrame subscription (armed only while >=1 tally is showing)
+    var MENU_TTL = 1;   // same self-clearing-TTL discipline as the center menu renderer above
+
+    // The engine userid for the slot (CS2's client-side handler for this event filters per-player on
+    // userid — same reason the center menu renderer above resolves it per fireToClient call).
+    function getUserId(slot) { return __s2_client_userid(slot | 0); }
+    // Verbatim copy of the center menu renderer's escapeHtml (that one is local to its own IIFE above,
+    // not shared) — keep both in sync if this ever changes.
+    function escapeHtml(s) { return ("" + s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+    function renderTallyHtml(t) {
+      var html = "<font class='fontSize-m' color='#ffd700'>" + escapeHtml(t.question) + "</font>";
+      for (var i = 0; i < t.options.length; i++) {
+        var o = t.options[i];
+        html += "<br><font class='fontSize-sm' color='#cccccc'>" + (i + 1) + ". " + escapeHtml(o.label) + " — " + o.count + "</font>";
+      }
+      html += "<br><font class='fontSize-s' color='#8a8a8a'>" + t.total + " voted &nbsp; " + t.secondsLeft + "s</font>";
+      return html;
+    }
+    function ensurePoll() {
+      if (pollSub) return;
+      pollSub = OnGameFrame.subscribe(function () {
+        for (var slot in tallies) {
+          var sl = slot | 0;
+          Events.fireToClient(sl, "show_survival_respawn_status", { loc_token: renderTallyHtml(tallies[slot]), duration: MENU_TTL, userid: getUserId(sl) });
+        }
+      });
+    }
+    function stopIfIdle() {
+      for (var k in tallies) { if (tallies[k]) return; }
+      if (pollSub) { pollSub.dispose(); pollSub = null; }   // OnGameFrame.subscribe() -> { dispose() }
+    }
+    globalThis.__s2pkg_votes.Vote.registerTallyRenderer({
+      show: function (slot, tally) { tallies[slot] = tally; ensurePoll(); },
+      clear: function (slot) {
+        delete tallies[slot]; stopIfIdle();
+        Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: " ", duration: MENU_TTL, userid: getUserId(slot) });   // wipe
+      },
+    });
+  })();
+
   // pickPlayer(adminSlot, onPicked): a target-picker Center menu over connected players (the adminmenu
   // framework's shared player-picker). The item info is the userid (stable across the pick), re-resolved
   // via Player.fromUserId on select so a player who left in the meantime -> a graceful skip (never a stale
