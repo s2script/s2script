@@ -371,5 +371,27 @@
     });
   })();
 
-  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity };
+  // pickPlayer(adminSlot, onPicked): a target-picker Center menu over connected players (the adminmenu
+  // framework's shared player-picker). The item info is the userid (stable across the pick), re-resolved
+  // via Player.fromUserId on select so a player who left in the meantime -> a graceful skip (never a stale
+  // handle/pointer crossing the menu selection).
+  function pickPlayer(adminSlot, onPicked) {
+    var Menu = globalThis.__s2pkg_menu.Menu, MenuStyle = globalThis.__s2pkg_menu.MenuStyle;
+    var m = new Menu("Select a player");
+    m.style = MenuStyle.Center;
+    m.freezePlayer = true;
+    var players = Player.allConnected();
+    for (var i = 0; i < players.length; i++) {
+      var p = players[i];
+      m.addItem(String(p.userId), (p.playerName || ("slot " + p.slot)));
+    }
+    m.onSelect(function (e) {
+      var target = Player.fromUserId(parseInt(e.info, 10));
+      if (!target) { globalThis.__s2pkg_chat.Chat.toSlot(adminSlot, "Player no longer available"); return; }
+      onPicked(target);
+    });
+    m.display(adminSlot, 30);
+  }
+
+  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer };
 })();

@@ -131,3 +131,11 @@ export declare const ChatColors: {
   readonly DarkBlue: string; readonly BlueGrey: string; readonly Purple: string; readonly LightRed: string;
   readonly Orange: string;
 };
+
+/**
+ * Show a target-picker Center menu of connected players to `adminSlot` (the adminmenu framework's shared
+ * player picker; `freezePlayer` is on). The picked player is re-resolved via `Player.fromUserId` at select
+ * time, so `onPicked` only ever receives a live target — a player who left in the meantime is skipped with
+ * a chat notice to `adminSlot`, and `onPicked` is not called.
+ */
+export declare function pickPlayer(adminSlot: number, onPicked: (target: Player) => void): void;
