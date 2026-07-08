@@ -53,8 +53,13 @@ Parsed into `MapEntry[] = { name: string, workshopId: string | null }` (split ea
 
 ### `nominations` plugin (`plugins/disabled/nominations`, CS2)
 
-- **`sm_nominate <map>`** — read + parse `maplist.txt` → the pool; reject if `<map>` isn't in the pool (by name), or is in cooldown, or is already nominated; else **one-nomination-per-player** (`DELETE FROM nominations WHERE nominator = <slot>` then `INSERT`), and `Chat.toAll("[nominations] <player> nominated <map>")`.
+- **`sm_nominate <partial>`** — **best-guess resolve** the input against the `maplist.txt` pool (mirrors `Player.target`): a case-insensitive **exact name match wins**; else **substring matches** (`jb_nocturnal` matches `nocturnal`). Then:
+  - **0 matches** → `"No map matching '<partial>'."`
+  - **1 match** → validate it (reject with the reason if in cooldown or already nominated) → else **one-nomination-per-player** (`DELETE FROM nominations WHERE nominator = <slot>` then `INSERT`) + `Chat.toAll("[nominations] <player> nominated <map>")`.
+  - **> 1 match** → a **chat menu** of just those matched maps → pick → validate → nominate (disambiguation, same as a full menu but filtered).
 - **`sm_nominate`** (no arg) — a **chat menu** (`@s2script/menu`, non-freezing, paginated) of nominatable maps (pool − cooldown − already-nominated) → on pick, nominate that map.
+
+A shared helper resolves and nominates: `resolveMap(input) → MapEntry[]` (exact-else-substring against the pool) and `nominate(slot, map)` (validate cooldown/already-nominated, then the one-per-player replace + announce), used by the arg, the no-arg menu, and the disambiguation menu.
 - **Config:** `map_cooldown` (int, default 5 — distinct maps that must play before a map is nominatable again).
 - **`onLoad`:** open the DB, create tables, record the play history (above), and register the commands. Async DB calls are fire-and-forget with per-call error logging.
 
