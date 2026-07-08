@@ -61,13 +61,29 @@ function changeToNext(): void {
   if (changing) return;
   changing = true;
   const next = override ?? rotationNext(currentMap);
-  if (!next) { console.log("[nextmap] no next map available"); return; }
+  if (!next) {
+    // No candidate (e.g. maplist.txt empty/missing on a fresh deploy) — don't wedge the guard:
+    // leave `changing` reset so the NEXT round_end/timelimit tick (or a later sm_setnextmap) retries.
+    changing = false;
+    console.log("[nextmap] no next map available");
+    Chat.toAll("[nextmap] Auto map change failed: no next map available (check maplist.txt or sm_setnextmap)");
+    return;
+  }
   if (!/^[A-Za-z0-9_]+$/.test(next.name) || (next.workshopId !== null && !/^[0-9]+$/.test(next.workshopId))) {
-    console.log("[nextmap] next map failed validation: " + JSON.stringify(next)); return;
+    changing = false;
+    console.log("[nextmap] next map failed validation: " + JSON.stringify(next));
+    Chat.toAll("[nextmap] Auto map change failed: next map entry is invalid");
+    return;
   }
   const secs = config.getInt("nextmap_change_delay");
+  const scheduledMap = currentMap; // captured now — if an external actor changes the map before
+  // our delay fires, Server.mapName will have moved on and the stale changelevel is skipped below.
   Chat.toAll("[nextmap] Changing to " + next.name + " in " + secs + "s");
   delay(secs * 1000).then(() => {
+    if (Server.mapName !== scheduledMap) {
+      console.log("[nextmap] scheduled change to " + next.name + " skipped — map already changed to " + Server.mapName);
+      return;
+    }
     Server.command(next.workshopId ? "host_workshop_map " + next.workshopId : "changelevel " + next.name);
   }).catch(logErr);
 }
