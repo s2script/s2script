@@ -1367,8 +1367,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     if (d < 1 || d > st.options.length) return 0;                  // out of range -> pass through
     st.votes.set(slot, d - 1);                                     // revote replaces
     __s2_vote_showTally(st);
-    // NOTE: deliberately no "everyone voted -> end early" shortcut here — a revote must stay possible
-    // for the full `duration` (the vote only ends via the __s2_vote_tick countdown or Vote.cancel()).
+    // NOTE: the "every connected non-bot has voted -> end early" check (design doc Flow step 5) lives
+    // in __s2_vote_tick, NOT here. Checking synchronously on every cast would end the vote the instant
+    // the last eligible voter casts a FIRST vote, pre-empting a later revote from any of them within the
+    // same synchronous burst (see votes_cast_revote_tally_and_winner). Checking at the 1s tick boundary
+    // instead gives a full window for still-pending revotes to land before turnout is judged complete.
     return VOTE_HANDLED;
   }
   function __s2_vote_ensureSubs() {
@@ -1381,6 +1384,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     if (st.secondsLeft <= 0) { __s2_vote_end(); return; }
     st.secondsLeft--;
     __s2_vote_showTally(st);
+    // End early once every connected non-bot has voted (design doc Flow step 5). Guarded on elig > 0 so
+    // a vote started with zero connected non-bots doesn't vacuously "complete" inside Vote.start() itself.
+    var elig = __s2_vote_eligibleSlots().length;
+    if (elig > 0 && st.votes.size >= elig) { __s2_vote_end(); return; }
     globalThis.__s2pkg_timers.delay(1000).then(function () { __s2_vote_tick(st); });
   }
   function __s2_vote_end() {
@@ -9680,6 +9687,29 @@ mod frame_tests {
             String(calls);
         "#);
         assert_eq!(out, "0");
+        shutdown();
+    }
+
+    #[test]
+    fn votes_ends_early_once_everyone_voted_even_with_time_left() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("vt5", r#"
+            var chatHandler = null, delayed = [];
+            globalThis.__s2pkg_chat.Chat.toAll = function () {};
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
+            var V = globalThis.__s2pkg_votes.Vote, res = null;
+            V.start({ question:"Q", options:["A","B"], duration:10, onEnd:function(r){ res = r; } });
+            chatHandler(0, "1"); chatHandler(1, "1");   // both eligible voters cast -> full turnout
+            var endedBeforeDrain = !V.isActive();       // no tick has run yet -> must still be active
+            delayed.shift()();                          // drain exactly ONE tick (duration=10, nowhere near 0)
+            JSON.stringify({ endedBeforeDrain: endedBeforeDrain, pendingAfterOneTick: delayed.length, active: V.isActive(), winner: res && res.winner, total: res && res.total });
+        "#);
+        // full turnout ends the vote at the NEXT tick boundary (not synchronously mid-cast, and well
+        // before the configured 10s duration elapses) — the reconciled design-doc Flow step 5 behavior.
+        assert_eq!(out, r#"{"endedBeforeDrain":false,"pendingAfterOneTick":0,"active":false,"winner":0,"total":2}"#);
         shutdown();
     }
 }
