@@ -83,6 +83,7 @@ function changeToNext(): void {
   }
   failNotified = false; // a valid candidate — clear so a future failure re-logs
   const secs = config.getInt("nextmap_change_delay");
+  console.log("[nextmap] map end reached — changing to " + next.name + " in " + secs + "s");
   const scheduledMap = currentMap; // captured now — if an external actor changes the map before
   // our delay fires, Server.mapName will have moved on and the stale changelevel is skipped below.
   Chat.toAll("[nextmap] Changing to " + next.name + " in " + secs + "s");
