@@ -112,6 +112,7 @@ async function buildBallot(): Promise<{ options: string[]; entries: Map<string, 
     }
     for (const m of pool) {
       if (options.length >= cap) break;
+      if (entries.has(m.name)) continue;   // a duplicate maplist.txt entry must not split the vote
       options.push(m.name);
       entries.set(m.name, m);
     }
@@ -126,8 +127,8 @@ async function buildBallot(): Promise<{ options: string[]; entries: Map<string, 
 /** Apply the vote's result: map the winning index back to its display string, then either keep
  *  the map (tie / no votes / "Don't Change") or stage the winner for the round_end apply. */
 function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>): void {
-  voteRunning = false;
-  votedThisMap = true;
+  voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — a tie /
+                         // "Don't Change" / invalid winner leaves RTV open to re-accumulate (SM parity)
 
   const chosen = result.winner === null ? null : options[result.winner];
   if (chosen === null || chosen === DONT_CHANGE) {
@@ -143,12 +144,14 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
   }
 
   pendingMap = entry;
+  votedThisMap = true;   // a change is queued for round end — block further RTV until the map changes
   Chat.toAll("[RTV] " + chosen + " won — changing at the end of the round");
 }
 
-/** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes. */
-function startVote(force: boolean): void {
-  if (voteRunning || Vote.isActive()) return;
+/** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes.
+ *  Returns true if the request was accepted (the lock claimed); false if a vote is already active. */
+function startVote(force: boolean): boolean {
+  if (voteRunning || Vote.isActive()) return false;
   voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
   buildBallot().then(ballot => {
     if (ballot === null) {
@@ -168,6 +171,7 @@ function startVote(force: boolean): void {
     });
     console.log("[rockthevote] startVote force=" + force + " options=" + JSON.stringify(options));
   }).catch(e => { voteRunning = false; logErr(e); });   // release the lock on a build error too
+  return true;
 }
 
 function requestRtv(slot: number): void {
@@ -195,21 +199,29 @@ function requestRtv(slot: number): void {
 
 // Plugins persist across a changelevel — the shim has no level-init reload hook, so onLoad fires
 // once per plugin-load, NOT per map. Poll Server.mapName (throttled) to catch map transitions and
-// reset all per-map RTV state (mirrors the nominations pattern).
-function pollMapChange(): void {
+// reset all per-map RTV state (mirrors the nominations pattern); also re-evaluate the RTV threshold
+// (a disconnect lowers the denominator but the per-player path can't re-trigger — SM re-checks on
+// disconnect; we do it on the settled ~1s tick to avoid racing the disconnect event).
+function pollTick(): void {
   if (++frameCounter < 64) return; // ~once/sec at 64-tick
   frameCounter = 0;
   const m = Server.mapName;
-  if (!m || m === currentMap) return; // no change
-  currentMap = m;
-  rtvVoters.clear();
-  voteRunning = false;
-  votedThisMap = false;
-  pendingMap = null;
+  if (m && m !== currentMap) { // map changed — reset all per-map RTV state
+    currentMap = m;
+    rtvVoters.clear();
+    voteRunning = false;
+    votedThisMap = false;
+    pendingMap = null;
+    return;
+  }
+  if (!voteRunning && !votedThisMap && rtvVoters.size > 0) {
+    const pc = playerCount();
+    if (pc > 0 && rtvVoters.size >= Math.ceil(config.getFloat("rtv_threshold") * pc)) startVote(false);
+  }
 }
 
 export function onLoad(): void {
-  OnGameFrame.subscribe(pollMapChange);
+  OnGameFrame.subscribe(pollTick);
 
   Database.open("mapvote").then(d => { db = d; }).catch(logErr); // nominations owns CREATE TABLE
 
@@ -232,8 +244,7 @@ export function onLoad(): void {
   });
 
   Commands.registerAdmin("sm_forcertv", ADMFLAG.CHANGEMAP, ctx => {
-    startVote(true);
-    ctx.reply("RTV forced.");
+    ctx.reply(startVote(true) ? "RTV forced." : "A vote is already running.");
   });
 
   Clients.onDisconnect(c => rtvVoters.delete(c.slot));
