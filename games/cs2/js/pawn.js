@@ -275,6 +275,11 @@
       var s = pawn.ref.readUInt64Via([msPtrOff], btnOff + btnStateOff);   // index 0 of m_pButtonStates[3]
       return (s === null) ? 0 : Number(s);   // menu bits are low -> Number is exact
     }
+    // The engine userid for the slot (-1 if unassigned/absent, e.g. a slot that just disconnected).
+    // CS2's client-side handler for this event filters per-player on userid (SM's PrintToCenterHtml
+    // parity), so every fireToClient call below must carry the real target userid, not the field's
+    // zero-value default.
+    function getUserId(slot) { return __s2_client_userid(slot | 0); }
     function escapeHtml(s) { return ("" + s).replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     function renderHtml(session) {
       var v = session.view(), html = "<font class='fontSize-l' color='#ffffff'>" + escapeHtml(v.title) + "</font>";
@@ -295,7 +300,7 @@
           else if (pressed & IN_BACK) s.moveDown();
           else if (pressed & IN_USE) s.confirm();
           // Re-send every tick — CS2 paints show_survival_respawn_status's loc_token for one frame only.
-          if (!s._ended) Events.fireToClient(sl, "show_survival_respawn_status", { loc_token: renderHtml(s), duration: 5 });
+          if (!s._ended) Events.fireToClient(sl, "show_survival_respawn_status", { loc_token: renderHtml(s), duration: 5, userid: getUserId(sl) });
         }
       });
     }
@@ -306,12 +311,12 @@
     globalThis.__s2pkg_menu.Menu.registerRenderer(globalThis.__s2pkg_menu.MenuStyle.Center, {
       open: function (session) {
         centerSessions[session.slot] = session; prevMask[session.slot] = 0; ensurePoll();
-        Events.fireToClient(session.slot, "show_survival_respawn_status", { loc_token: renderHtml(session), duration: 5 });
+        Events.fireToClient(session.slot, "show_survival_respawn_status", { loc_token: renderHtml(session), duration: 5, userid: getUserId(session.slot) });
       },
       update: function (session) { /* no-op: the next poll tick re-fires with the current view */ },
       close: function (slot) {
         delete centerSessions[slot]; delete prevMask[slot]; stopPollIfIdle();
-        Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: "", duration: 0 });   // clear
+        Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: "", duration: 0, userid: getUserId(slot) });   // clear
       },
     });
   })();
