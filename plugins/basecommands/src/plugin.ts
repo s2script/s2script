@@ -155,6 +155,7 @@ export function onLoad(): void {
     onSelect: adminSlot => {
       const m = new Menu("Change Map");
       m.style = MenuStyle.Center;
+      m.freezePlayer = true;   // WASD nav — keep the admin frozen through the sub-menu
       for (const map of MAP_CHOICES) if (Server.isMapValid(map)) m.addItem(map, map);
       m.onSelect(e => { Server.command("changelevel " + e.info); });
       m.display(adminSlot, 30);

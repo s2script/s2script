@@ -12,6 +12,7 @@ function showCategory(slot: number, category: string, flags: number): void {
   const items = itemsFor(category, flags);
   const m = new Menu(category);
   m.style = MenuStyle.Center;
+  m.freezePlayer = true;   // WASD nav — freeze movement while the menu is open
   for (const it of items) m.addItem(it.id, it.name);
   m.onSelect(e => { TopMenu.select(e.info, slot); });
   m.display(slot, 30);
@@ -34,6 +35,7 @@ export function onLoad(): void {
     if (cats.length === 0) { ctx.reply("No admin actions available."); return; }
     const m = new Menu("Admin Menu");
     m.style = MenuStyle.Center;
+    m.freezePlayer = true;   // WASD nav — freeze movement while the menu is open
     for (const c of cats) m.addItem(c, c);
     m.onSelect(e => { showCategory(slot, e.info, admin.flags); });
     m.display(slot, 30);
