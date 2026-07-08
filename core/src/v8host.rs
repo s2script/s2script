@@ -433,15 +433,21 @@ thread_local! {
     /// fanned out post-frame by dispatch_pending_topmenu_select (ffi.rs, HOST free). Same discipline as
     /// COOKIE_CACHED_PENDING — sidesteps the re-entrant double-borrow.
     static TOPMENU_PENDING: std::cell::RefCell<Vec<(String, i32)>> = std::cell::RefCell::new(Vec::new());
+    /// Monotonic insertion counter → each item's `seq`, so `snapshot` renders items in REGISTRATION order
+    /// (a HashMap iterates in random per-instance order that would shuffle across restarts; the spec commits
+    /// the MVP to insertion order). A re-added id reuses its existing seq so a plugin reload doesn't reorder.
+    static TOPMENU_SEQ: std::cell::Cell<u64> = std::cell::Cell::new(0);
 }
 
 /// A registered TopMenu item. `on_select` is invoked in `owner`'s context (liveness-gated by `generation`).
+/// `seq` is a monotonic insertion index — `snapshot` sorts by it for stable, registration-order rendering.
 struct TopMenuItem {
     category: String,
     name: String,
     flags: i64,
     owner: String,
     generation: u64,
+    seq: u64,
     on_select: v8::Global<v8::Function>,
 }
 
@@ -3419,7 +3425,10 @@ fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         TOPMENU_CATEGORIES.with(|c| { let mut b = c.borrow_mut(); if !b.contains(&category) { b.push(category.clone()); } });
-        TOPMENU_ITEMS.with(|m| m.borrow_mut().insert(id, TopMenuItem { category, name, flags, owner, generation, on_select }));
+        // Reuse the existing seq on a re-add (reload) so positions stay stable; else take the next counter.
+        let seq = TOPMENU_ITEMS.with(|m| m.borrow().get(&id).map(|it| it.seq))
+            .unwrap_or_else(|| TOPMENU_SEQ.with(|c| { let s = c.get(); c.set(s + 1); s }));
+        TOPMENU_ITEMS.with(|m| m.borrow_mut().insert(id, TopMenuItem { category, name, flags, owner, generation, seq, on_select }));
     }));
 }
 
@@ -3427,9 +3436,15 @@ fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 fn s2_topmenu_snapshot(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let cats: Vec<String> = TOPMENU_CATEGORIES.with(|c| c.borrow().clone());
-        let items: Vec<serde_json::Value> = TOPMENU_ITEMS.with(|m| m.borrow().iter().map(|(id, it)| {
-            serde_json::json!({ "id": id, "category": it.category, "name": it.name, "flags": it.flags })
-        }).collect());
+        // Sort by seq → items render in registration order (stable across restarts), not random HashMap order.
+        let items: Vec<serde_json::Value> = TOPMENU_ITEMS.with(|m| {
+            let b = m.borrow();
+            let mut entries: Vec<(&String, &TopMenuItem)> = b.iter().collect();
+            entries.sort_by_key(|(_, it)| it.seq);
+            entries.into_iter().map(|(id, it)| {
+                serde_json::json!({ "id": id, "category": it.category, "name": it.name, "flags": it.flags })
+            }).collect()
+        });
         let obj = serde_json::json!({ "categories": cats, "items": items });
         // serialize to a JS value via the JSON string round-trip (the established snapshot pattern).
         if let Some(s) = v8::String::new(scope, &obj.to_string()) {
@@ -5478,6 +5493,7 @@ pub fn shutdown() {
     // into it (same discipline as CONCOMMANDS); categories/pending are pure Rust, cleared for hygiene.
     TOPMENU_ITEMS.with(|m| m.borrow_mut().clear());
     TOPMENU_CATEGORIES.with(|c| c.borrow_mut().clear());
+    TOPMENU_SEQ.with(|c| c.set(0));
     TOPMENU_PENDING.with(|q| q.borrow_mut().clear());
     // Clear inter-plugin method + subscriber Globals BEFORE the isolate drops (same discipline as
     // RESOLVERS/CONCOMMANDS: they hold Global<Function>s into the isolate).
@@ -9467,6 +9483,25 @@ mod frame_tests {
         unload_plugin("tm_c");   // Vanished
         let out = eval_std("q3", r#" String(globalThis.__s2pkg_topmenu.TopMenu.snapshot().items.length) "#);
         assert_eq!(out, "0");   // the departed plugin's item is gone
+        shutdown();
+    }
+
+    #[test]
+    fn topmenu_snapshot_preserves_registration_order() {
+        init(dummy_logger()).unwrap();
+        // snapshot must return items in REGISTRATION order (by seq), not random HashMap order — the spec
+        // commits the MVP to insertion order + stable-across-restarts. Register many so a HashMap would
+        // very likely scramble them.
+        load_plugin_js("tm_ord", r#"
+            var { TopMenu } = globalThis.__s2pkg_topmenu;
+            ["zeta","alpha","mike","bravo","yankee","charlie","delta","echo"].forEach(function (n, i) {
+                TopMenu.addItem("Player Commands", { id: "ord:" + i, name: n, flags: 0, onSelect: function(){} });
+            });
+        "#, "{}");
+        let out = eval_std("qord", r#"
+            globalThis.__s2pkg_topmenu.TopMenu.snapshot().items.map(function (i) { return i.name; }).join(",")
+        "#);
+        assert_eq!(out, "zeta,alpha,mike,bravo,yankee,charlie,delta,echo");
         shutdown();
     }
 }

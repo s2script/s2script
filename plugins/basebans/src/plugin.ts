@@ -133,7 +133,7 @@ export function onLoad(): void {
     onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick("Kicked by admin")) });
   TopMenu.addItem("Player Commands", { id: "basebans:ban", name: "Ban", flags: ADMFLAG.BAN,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
-      const sid = t.steamId, name = t.playerName || "player";
+      const sid = t.steamId, uid = t.userId, name = t.playerName || "player";
       if (!sid || sid === "0") {   // bot / unauthenticated — never ban (sm_ban parity: a "0" entry is shared)
         const admin = Clients.fromSlot(adminSlot);
         if (admin) admin.chat("Cannot ban " + name + " (bot / not authenticated)");
@@ -145,11 +145,17 @@ export function onLoad(): void {
       for (const m of mins) dm.addItem(String(m), m === 0 ? "Permanent" : (m + " min"));
       dm.onSelect(e => {
         const minutes = parseInt(e.info, 10);
-        Bans.add(sid, minutes, "Banned by admin");
+        Bans.add(sid, minutes, "Banned by admin");   // ban record is keyed by SteamID — always correct
         const b = Bans.get(sid);
-        const c = Clients.fromSlot(t.slot);
-        if (c) c.kickWithReason(banMessage("Banned by admin", b ? b.until : 0));
-        else t.kick("Banned by admin");
+        // Re-resolve by userId at kick time: the target may have left (and the slot been reused) between
+        // the player pick and the duration pick — only kick if the SAME player is still connected.
+        const cur = Player.fromUserId(uid);
+        if (cur && cur.steamId === sid) {
+          const c = Clients.fromSlot(cur.slot);
+          if (c) c.kickWithReason(banMessage("Banned by admin", b ? b.until : 0));
+          else cur.kick("Banned by admin");
+        }
+        // else: they left / the slot was reused — the persisted ban + reconnect enforcement handles it.
       });
       dm.display(adminSlot, 30);
     }) });
