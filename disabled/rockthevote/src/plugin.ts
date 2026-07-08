@@ -22,6 +22,9 @@ import { Database } from "@s2script/db";
 /** A map option: its stock/BSP name, or a workshop id (mutually informative — see the ballot). */
 interface MapEntry { name: string; workshopId: string | null; }
 
+/** The non-map ballot sentinel (SM "Don't Change") — one literal, referenced by both build + finish. */
+const DONT_CHANGE = "Don't Change";
+
 // --- module state (persists across a changelevel — see pollMapChange below) ---
 const rtvVoters: Set<number> = new Set();
 let voteRunning = false;
@@ -116,7 +119,7 @@ async function buildBallot(): Promise<{ options: string[]; entries: Map<string, 
 
   if (options.length === 0) return null;
 
-  options.push("Don't Change");
+  options.push(DONT_CHANGE);
   return { options, entries };
 }
 
@@ -127,7 +130,7 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
   votedThisMap = true;
 
   const chosen = result.winner === null ? null : options[result.winner];
-  if (chosen === null || chosen === "Don't Change") {
+  if (chosen === null || chosen === DONT_CHANGE) {
     Chat.toAll(chosen === null ? "[RTV] Vote tied — map stays" : "[RTV] Don't Change won — map stays");
     return;
   }
@@ -146,14 +149,14 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
 /** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes. */
 function startVote(force: boolean): void {
   if (voteRunning || Vote.isActive()) return;
+  voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
   buildBallot().then(ballot => {
     if (ballot === null) {
       Chat.toAll("[RTV] No maps available to vote on");
-      voteRunning = false;
+      voteRunning = false;      // release — nothing started
       votedThisMap = true;
       return;
     }
-    voteRunning = true;
     rtvVoters.clear();
     const { options, entries } = ballot;
     Vote.start({
@@ -164,7 +167,7 @@ function startVote(force: boolean): void {
       onEnd: (result) => finishVote(result, options, entries),
     });
     console.log("[rockthevote] startVote force=" + force + " options=" + JSON.stringify(options));
-  }).catch(logErr);
+  }).catch(e => { voteRunning = false; logErr(e); });   // release the lock on a build error too
 }
 
 function requestRtv(slot: number): void {
