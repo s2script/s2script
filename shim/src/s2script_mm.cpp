@@ -431,6 +431,12 @@ static void* s_pNetworkServerService = nullptr;
 static int s_offGameServer  = -1, s_offClientCount = -1, s_offClientElems = -1;
 static int s_offSscName     = -1, s_offSscSignon   = -1, s_offSscUserId   = -1;
 static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connected (incl. pawnless). Pin on gate.
+// Slice menu (bounded spike): offset of the IGameEventListener2 subobject within CServerSideClient, i.e.
+// the byte offset to add to a CServerSideClient* before reinterpret_cast<IGameEventListener2*> to reach
+// its FireGameEvent vtable. -1 = unresolved/absent from gamedata; s2_event_fire_to_client treats -1 the
+// same as 0 (the client object IS the listener — the most likely single-inheritance-first-base form) so
+// the primitive degrades to a best-effort guess rather than a hard miss. Live-validated in the Task 5 gate.
+static int s_offSscEventListener = -1;
 
 // ---------------------------------------------------------------------------
 // EngineCvar (ICvar*) — stored at Load() for ConCommand registration (Slice 6.1).
@@ -495,6 +501,30 @@ static int s2_client_find_by_userid(int id) {
         if (s2_client_valid(slot) && s2_client_userid(slot) == id) return slot;
     }
     return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Slice menu: per-client event fire (SourceMod FireToClient parity). Fires the event created by
+// s2_event_create (s_pendingFireEvent) directly to ONE client's per-client legacy game-event
+// listener, i.e. IGameEventListener2::FireGameEvent — this serializes straight to that client's
+// netchannel and does NOT pass through IGameEventManager2::FireEvent, so it never re-enters our own
+// FireEvent pre-hook / JS dispatch. Bot-skip is implicit: a bot's CServerSideClient has no netchannel,
+// so a real engine would no-op the send; s_offSscEventListener is a bounded RE spike (see its
+// declaration) live-validated by the Task 5 gate.
+// ---------------------------------------------------------------------------
+static int s2_event_fire_to_client(int slot) {
+    if (!s_pGameEventManager || !s_pendingFireEvent) return 0;
+    void* client = S2_ClientAt(slot);
+    if (!client) return 0;   // invalid slot or a bot (fake client has no per-client listener/netchannel)
+    IGameEventListener2* pListener = reinterpret_cast<IGameEventListener2*>(
+        reinterpret_cast<char*>(client) + (s_offSscEventListener >= 0 ? s_offSscEventListener : 0));
+    IGameEvent* e = s_pendingFireEvent;
+    s_pendingFireEvent  = nullptr;
+    s_currentEvent      = s_savedCurrentEvent;  // restore the write target (mirrors s2_event_fire)
+    s_savedCurrentEvent = nullptr;
+    pListener->FireGameEvent(e);        // serialize to this client's netchannel (no broadcast)
+    s_pGameEventManager->FreeEvent(e);  // FireGameEvent does not consume the event; free it (CSSharp parity)
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -1528,9 +1558,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_offSscName     = pick("ServerSideClient.name");
             s_offSscSignon   = pick("ServerSideClient.signon");
             s_offSscUserId   = pick("ServerSideClient.userId");
-            META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d\n",
+            // Slice menu (bounded spike): the IGameEventListener2 subobject offset within CServerSideClient.
+            // Absent/typo'd -> -1 -> s2_event_fire_to_client treats it the same as 0 (best-effort guess).
+            s_offSscEventListener = pick("ServerSideClient.eventListener");
+            META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d evlistener=%d\n",
                            s_offGameServer, s_offClientCount, s_offClientElems,
-                           s_offSscName, s_offSscSignon, s_offSscUserId);
+                           s_offSscName, s_offSscSignon, s_offSscUserId, s_offSscEventListener);
             // Slice 6.9: record offset presence in the gamedata report (a -1 = a missing/typo'd key). A
             // deeper deref-sanity check (does the offset point to a sane value) is a follow-up per re-strategy.
             for (auto kv : { std::make_pair("NetworkServerService.gameServer", s_offGameServer),
@@ -1538,7 +1571,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                              std::make_pair("NetworkGameServer.clientElems",   s_offClientElems),
                              std::make_pair("ServerSideClient.name",           s_offSscName),
                              std::make_pair("ServerSideClient.signon",         s_offSscSignon),
-                             std::make_pair("ServerSideClient.userId",         s_offSscUserId) })
+                             std::make_pair("ServerSideClient.userId",         s_offSscUserId),
+                             std::make_pair("ServerSideClient.eventListener",  s_offSscEventListener) })
                 GamedataResult(kv.first, kv.second >= 0, "offset key absent from gamedata");
         }
         GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
@@ -1610,6 +1644,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.server_game_time   = &s2_server_game_time;
     // Slice DB: APPENDED after server_game_time; order MUST match S2EngineOps.
     ops.db_data_dir        = &s2_db_data_dir;
+    // Slice menu: per-client event fire — APPENDED after db_data_dir; order MUST match S2EngineOps.
+    ops.event_fire_to_client = &s2_event_fire_to_client;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

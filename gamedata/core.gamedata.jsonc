@@ -38,7 +38,15 @@
     "NetworkGameServer.clientElems":   { "linuxsteamrt64": 600 },   // 0x258: CServerSideClient** elems
     "ServerSideClient.name":           { "linuxsteamrt64": 64  },   // 0x40 : char* (null -> empty)
     "ServerSideClient.signon":         { "linuxsteamrt64": 100 },   // 0x64 : int32 signon state
-    "ServerSideClient.userId":         { "linuxsteamrt64": 168 }    // 0xa8 : int16 CPlayerUserId (-1 = unassigned)
+    "ServerSideClient.userId":         { "linuxsteamrt64": 168 },   // 0xa8 : int16 CPlayerUserId (-1 = unassigned)
+    // Menu primitive (bounded spike, UNVALIDATED): offset of the IGameEventListener2 subobject within
+    // CServerSideClient — added to a CServerSideClient* before reinterpret_cast<IGameEventListener2*> to
+    // reach FireGameEvent, used by event_fire_to_client (SourceMod FireToClient parity). 0 = the client
+    // object IS the listener (single-inheritance-first base), the most likely form since the engine
+    // registers each CServerSideClient as a legacy per-client game-event listener. Live-validate against
+    // the pinned libserver.so at the menu-primitive live gate (a real client receiving a fired event); a
+    // wrong value degrades to a garbage vtable call, so treat this one as unconfirmed until that gate runs.
+    "ServerSideClient.eventListener":  { "linuxsteamrt64": 0 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see

@@ -41,4 +41,6 @@ export declare const Events: {
   onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
   /** Fire a game event. Returns the engine FireEvent result. */
   fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
+  /** Fire a game event to ONE client (SourceMod FireToClient). Same field type-inference as `fire`. Returns false on miss. */
+  fireToClient(slot: number, name: string, fields?: Record<string, string | number | boolean | bigint>): boolean;
 };

@@ -88,6 +88,8 @@ pub type EventSetStringFn = extern "C" fn(key: *const c_char, value: *const c_ch
 pub type EventSetUint64Fn = extern "C" fn(key: *const c_char, value: u64);
 pub type EventCreateFn    = extern "C" fn(name: *const c_char) -> c_int;
 pub type EventFireFn      = extern "C" fn(dont_broadcast: c_int) -> c_int;
+// --- Slice menu: per-client event fire (C-ABI; the C header must match exactly) ---
+pub type EventFireToClientFn = extern "C" fn(slot: c_int) -> c_int;
 
 // --- Slice 5E.2: config ops (C-ABI; the C header must match exactly) ---
 pub type ConfigReadFn  = extern "C" fn(id: *const c_char) -> *const c_char;
@@ -185,6 +187,8 @@ pub struct S2EngineOps {
     pub server_game_time:   Option<ServerGameTimeFn>,
     // --- Slice DB: data-dir op (APPENDED after server_game_time; order is the ABI; do not reorder above) ---
     pub db_data_dir: Option<DbDataDirFn>,
+    // --- Slice menu: per-client event fire (APPENDED after db_data_dir; order is the ABI; do not reorder above) ---
+    pub event_fire_to_client: Option<EventFireToClientFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -617,22 +621,31 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     on:    function (name, handler) { __s2_event_subscribe(name, handler); },
     off:   function (name, handler) { __s2_event_unsubscribe(name, handler); },
     onPre: function (name, handler) { __s2_event_subscribe_pre(name, handler); },
+    // shared: apply { key: value } to the current event (create must have run). Type-infer as in `fire`.
+    _applyFields: function (fields) {
+      if (!fields) return;
+      for (var k in fields) {
+        if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
+        var v = fields[k], t = typeof v;
+        if (t === "boolean") __s2_event_set_bool(k, v);
+        else if (t === "string") __s2_event_set_string(k, v);
+        else if (t === "bigint") __s2_event_set_uint64(k, v.toString());
+        else if (t === "number") { if (Number.isInteger(v)) __s2_event_set_int(k, v); else __s2_event_set_float(k, v); }
+      }
+    },
     // Fire a game event. fields: { key: value }. Runtime type-infer: bool→setBool, string→setString,
     // bigint→setUint64, integer number→setInt, other number→setFloat. Returns the FireEvent result.
     fire:  function (name, fields, dontBroadcast) {
       if (!__s2_event_create(name)) return false;
-      if (fields) {
-        for (var k in fields) {
-          if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
-          var v = fields[k];
-          var t = typeof v;
-          if (t === "boolean") __s2_event_set_bool(k, v);
-          else if (t === "string") __s2_event_set_string(k, v);
-          else if (t === "bigint") __s2_event_set_uint64(k, v.toString());
-          else if (t === "number") { if (Number.isInteger(v)) __s2_event_set_int(k, v); else __s2_event_set_float(k, v); }
-        }
-      }
+      this._applyFields(fields);
       return __s2_event_fire(!!dontBroadcast);
+    },
+    // Fire a game event to ONE client (SourceMod FireToClient parity). Same field type-inference as
+    // `fire`. Returns false on any miss (no manager / no pending event / no client / bot).
+    fireToClient: function (slot, name, fields) {
+      if (!__s2_event_create(name)) return false;
+      this._applyFields(fields);
+      return __s2_event_fire_to_client(slot | 0);
     },
   };
   // --- Slice 5E.2: config module (typed getters over __s2pkg_config_values; zero-value fallback) ---
@@ -3633,6 +3646,20 @@ fn s2_event_fire(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
     }));
 }
 
+/// Native `__s2_event_fire_to_client(slot) -> boolean` — fire the created event to ONE client's
+/// per-client listener (serialized to that netchannel; does NOT pass through IGameEventManager2::FireEvent,
+/// so no pre-hook / dispatch re-entrancy). Returns false on any miss.
+fn s2_event_fire_to_client(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.event_fire_to_client else { return };
+        rv.set_bool(func(slot) != 0);
+    }));
+}
+
 /// Dispatch a game event by name to all LIVE JS subscribers.
 ///
 /// Called from `ffi.rs`'s `s2script_core_dispatch_game_event` (C-ABI export), which the shim's
@@ -3903,6 +3930,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_event_set_uint64", s2_event_set_uint64);
     set_native(scope, global_obj, "__s2_event_create", s2_event_create);
     set_native(scope, global_obj, "__s2_event_fire", s2_event_fire);
+    set_native(scope, global_obj, "__s2_event_fire_to_client", s2_event_fire_to_client);
     // Config live-reload (Slice 5E.2): register an onChange handler for this plugin's config file.
     set_native(scope, global_obj, "__s2_config_on_change", s2_config_on_change);
     // Chat messaging (Slice 6.1): print a message to one client's chat.
@@ -7149,6 +7177,7 @@ mod frame_tests {
             server_map_name: None,
             server_game_time: None,
             db_data_dir: None,
+            event_fire_to_client: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -7281,6 +7310,7 @@ mod frame_tests {
             server_map_name: None,
             server_game_time: None,
             db_data_dir: None,
+            event_fire_to_client: None,
         }
     }
 
@@ -7611,6 +7641,20 @@ mod frame_tests {
         // set*/create/fire degrade with no ops (no crash).
         assert_eq!(eval_in_context_string("p", r#"var {Events}=__s2pkg_events; String(Events.fire("x",{a:1}))"#), "false");
         eval_in_context("p", r#"var e = new (__s2pkg_events.GameEvent)("t"); e.setInt("k", 5);"#).unwrap();  // no-op, no throw
+        shutdown();
+    }
+
+    /// Slice menu: Events.fireToClient degrades to false with no engine ops (no create -> no fire).
+    #[test]
+    fn events_fire_to_client_degrades_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // With no engine ops, __s2_event_create returns false, so fireToClient short-circuits to false.
+        assert_eq!(
+            eval_in_context_string("p", r#"var {Events}=__s2pkg_events; String(Events.fireToClient(0, "x", {a:1}))"#),
+            "false"
+        );
         shutdown();
     }
 

@@ -101,6 +101,9 @@ typedef const char* (*s2_server_map_name_fn)(void);    /* GetMapName(); "" if un
 typedef float       (*s2_server_game_time_fn)(void);   /* GetGlobals()->curtime; 0 if unavailable */
 // Slice DB: absolute path to the s2script data directory (<addon>/data), created if absent.
 typedef const char* (*s2_db_data_dir_fn)(void);
+// Slice menu: fire the pending created event to ONE client's per-client legacy listener (SourceMod
+// FireToClient parity). Returns 1 on success, 0 on a miss (no manager / no pending event / no client / bot).
+typedef int (*s2_event_fire_to_client_fn)(int slot);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -160,6 +163,8 @@ typedef struct {
     s2_server_game_time_fn   server_game_time;
     /* Slice DB — APPENDED after server_game_time; order is the ABI. */
     s2_db_data_dir_fn db_data_dir;
+    /* Slice menu: per-client event fire — APPENDED after db_data_dir; order is the ABI. */
+    s2_event_fire_to_client_fn event_fire_to_client;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
