@@ -17,7 +17,9 @@ import { Commands } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
 import { Bans } from "@s2script/bans";
 import { Clients } from "@s2script/clients";
-import { Player } from "@s2script/cs2";
+import { Player, pickPlayer } from "@s2script/cs2";
+import { Menu, MenuStyle } from "@s2script/menu";
+import { TopMenu } from "@s2script/topmenu";
 
 // The message a banned player sees (chat + console) — shared by the immediate sm_ban path and the
 // reconnect enforcement so the wording is identical.
@@ -125,6 +127,27 @@ export function onLoad(): void {
     if (b.until !== 0 && b.until <= now) return;           // expired — let them in
     c.kickWithReason(banMessage(b.reason, b.until));
   });
+
+  // adminmenu — Kick + Ban proof items, same ADMFLAG as their text commands, via pickPlayer.
+  TopMenu.addItem("Player Commands", { id: "basebans:kick", name: "Kick", flags: ADMFLAG.KICK,
+    onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick("Kicked by admin")) });
+  TopMenu.addItem("Player Commands", { id: "basebans:ban", name: "Ban", flags: ADMFLAG.BAN,
+    onSelect: adminSlot => pickPlayer(adminSlot, t => {
+      const sid = t.steamId, name = t.playerName || "player";
+      const dm = new Menu("Ban " + name + " for");
+      dm.style = MenuStyle.Center;
+      const mins = [0, 5, 30, 60];   // 0 = permanent
+      for (const m of mins) dm.addItem(String(m), m === 0 ? "Permanent" : (m + " min"));
+      dm.onSelect(e => {
+        const minutes = parseInt(e.info, 10);
+        Bans.add(sid, minutes, "Banned by admin");
+        const b = Bans.get(sid);
+        const c = Clients.fromSlot(t.slot);
+        if (c) c.kickWithReason(banMessage("Banned by admin", b ? b.until : 0));
+        else t.kick("Banned by admin");
+      });
+      dm.display(adminSlot, 30);
+    }) });
 
   console.log("[basebans] onLoad - sm_ban/sm_unban/sm_addban + connect enforcement registered");
 }

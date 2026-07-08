@@ -12,8 +12,9 @@
 import { Commands } from "@s2script/commands";
 import { Chat } from "@s2script/chat";
 import { ADMFLAG } from "@s2script/admin";
-import { Player } from "@s2script/cs2";
+import { Player, pickPlayer } from "@s2script/cs2";
 import { HookResult } from "@s2script/events";
+import { TopMenu } from "@s2script/topmenu";
 
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
 const muted = new Set<string>();  // SteamIDs — voice mute requested (best-effort)
@@ -60,6 +61,10 @@ export function onLoad(): void {
     forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Silenced", "sm_silence <target>", (p) => { setGag(p, true); setMute(p, true); }));
   Commands.registerAdmin("sm_unsilence", ADMFLAG.CHAT, (ctx) =>
     forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Unsilenced", "sm_unsilence <target>", (p) => { setGag(p, false); setMute(p, false); }));
+
+  // adminmenu — Gag proof item, same ADMFLAG as sm_gag, via pickPlayer + the shared setGag routine.
+  TopMenu.addItem("Player Commands", { id: "basecomm:gag", name: "Gag", flags: ADMFLAG.CHAT,
+    onSelect: adminSlot => pickPlayer(adminSlot, t => setGag(t, true)) });
 
   console.log("[basecomm] onLoad - gag/ungag/mute/unmute/silence/unsilence registered");
 }

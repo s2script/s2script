@@ -4,6 +4,12 @@ import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/server";
 import { Damage } from "@s2script/damage";
 import { Plugins } from "@s2script/plugins";
+import { Menu, MenuStyle } from "@s2script/menu";
+import { TopMenu } from "@s2script/topmenu";
+
+// adminmenu — Change Map proof item (Server Commands, ADMFLAG.CHANGEMAP), a curated map picker filtered
+// by Server.isMapValid so an uninstalled map never shows.
+const MAP_CHOICES = ["de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_ancient", "de_anubis"];
 
 // Slice 6.2 live gate — admin-gated commands. Admin cache = host-global (file admins.json ⊕ runtime),
 // from @s2script/admin. sm_say has moved to @s2script/basechat.
@@ -144,6 +150,16 @@ export function onLoad(): void {
   console.log("[basecommands] admin diag: runtime-add hasKick=" + (t ? String(t.hasFlags(ADMFLAG.KICK)) : "null")
     + " hasBan=" + (t ? String(t.hasFlags(ADMFLAG.BAN)) : "null"));
   console.log("[basecommands] admin diag: slot0=" + (Admin.forSlot(0) ? "admin" : "not-admin (bot/steamid=0)"));
+
+  TopMenu.addItem("Server Commands", { id: "basecommands:map", name: "Change Map", flags: ADMFLAG.CHANGEMAP,
+    onSelect: adminSlot => {
+      const m = new Menu("Change Map");
+      m.style = MenuStyle.Center;
+      for (const map of MAP_CHOICES) if (Server.isMapValid(map)) m.addItem(map, map);
+      m.onSelect(e => { Server.command("changelevel " + e.info); });
+      m.display(adminSlot, 30);
+    } });
+
   console.log("[basecommands] onLoad — kick/map/who/rcon/exec/cvar/sm registered");
 }
 

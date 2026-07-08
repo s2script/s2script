@@ -1,6 +1,7 @@
 import { Commands } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
-import { Player, Events } from "@s2script/cs2";
+import { Player, Events, pickPlayer } from "@s2script/cs2";
+import { TopMenu } from "@s2script/topmenu";
 
 // Slice 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY). Reliable damage (a direct health write, clamped >= 1)
 // plus a best-effort velocity knockback (may be reset by physics next tick; the slice doesn't depend on it).
@@ -67,6 +68,12 @@ export function onLoad(): void {
     console.log("[playercommands] sm_rename slot=" + p.slot + " '" + oldname + "' -> '" + newname + "'");
     ctx.reply("[SM] Renamed " + oldname + " to " + newname + ".");
   });
+
+  // adminmenu — Slap/Slay proof items, same ADMFLAG as their text commands, via pickPlayer.
+  TopMenu.addItem("Player Commands", { id: "playercommands:slap", name: "Slap", flags: ADMFLAG.SLAY,
+    onSelect: adminSlot => pickPlayer(adminSlot, t => { const p = t.pawn; if (p) p.health = Math.max(1, (p.health ?? 1) - 5); }) });
+  TopMenu.addItem("Player Commands", { id: "playercommands:slay", name: "Slay", flags: ADMFLAG.SLAY,
+    onSelect: adminSlot => pickPlayer(adminSlot, t => { const p = t.pawn; if (p) p.slay(); }) });
 
   console.log("[playercommands] onLoad — slap/slay/rename registered");
 }
