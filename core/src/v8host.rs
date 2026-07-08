@@ -5071,8 +5071,9 @@ fn s2_config_write_file(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
         ENGINE_OPS.with(|c| {
             let ops = c.get();
             if let Some(func) = ops.and_then(|o| o.config_write_file) {
-                let cn = std::ffi::CString::new(name).unwrap_or_default();
-                let cc = std::ffi::CString::new(content).unwrap_or_default();
+                // Abort on an interior NUL (either arg) rather than truncate — a content with an embedded
+                // NUL must leave the target untouched, not write an empty/truncated file.
+                let (Ok(cn), Ok(cc)) = (std::ffi::CString::new(name), std::ffi::CString::new(content)) else { return };
                 func(cn.as_ptr(), cc.as_ptr());
             }
         });

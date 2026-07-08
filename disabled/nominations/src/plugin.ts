@@ -60,7 +60,7 @@ async function nominate(slot: number, name: string): Promise<void> {
   await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
   await db.execute("INSERT INTO nominations(map, nominator) VALUES(?, ?)", [name, slot]);
   const p = Player.fromSlot(slot);
-  Chat.toAll("[nominations] " + (p ? p.playerName : "A player") + " nominated " + name + ".");
+  Chat.toAll("[nominations] " + ((p && p.playerName) ? p.playerName : "A player") + " nominated " + name + ".");
 }
 
 function mapMenu(slot: number, entries: MapEntry[], title: string): void {
