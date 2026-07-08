@@ -25,6 +25,7 @@ let roundsPlayed = 0;
 let currentMap = "";
 let changing = false;
 let frameCounter = 0; // throttles the map-change poll to ~once/sec
+let failNotified = false; // debounces the misconfiguration log so a persistent failure doesn't spam every tick
 
 const logErr = (e: unknown) => console.log("[nextmap] error: " + e);
 
@@ -62,19 +63,19 @@ function changeToNext(): void {
   changing = true;
   const next = override ?? rotationNext(currentMap);
   if (!next) {
-    // No candidate (e.g. maplist.txt empty/missing on a fresh deploy) — don't wedge the guard:
-    // leave `changing` reset so the NEXT round_end/timelimit tick (or a later sm_setnextmap) retries.
+    // No candidate (e.g. maplist.txt empty/missing on a fresh deploy) — leave `changing` reset so the
+    // NEXT round_end/timelimit tick (or a later sm_setnextmap) retries; log ONCE per failure episode
+    // (an operator config error → the server log, not repeated player chat — SM parity).
     changing = false;
-    console.log("[nextmap] no next map available");
-    Chat.toAll("[nextmap] Auto map change failed: no next map available (check maplist.txt or sm_setnextmap)");
+    if (!failNotified) { failNotified = true; console.log("[nextmap] no next map available (check maplist.txt / sm_setnextmap)"); }
     return;
   }
   if (!/^[A-Za-z0-9_]+$/.test(next.name) || (next.workshopId !== null && !/^[0-9]+$/.test(next.workshopId))) {
     changing = false;
-    console.log("[nextmap] next map failed validation: " + JSON.stringify(next));
-    Chat.toAll("[nextmap] Auto map change failed: next map entry is invalid");
+    if (!failNotified) { failNotified = true; console.log("[nextmap] next map failed validation: " + JSON.stringify(next)); }
     return;
   }
+  failNotified = false; // a valid candidate — clear so a future failure re-logs
   const secs = config.getInt("nextmap_change_delay");
   const scheduledMap = currentMap; // captured now — if an external actor changes the map before
   // our delay fires, Server.mapName will have moved on and the stale changelevel is skipped below.
@@ -96,7 +97,7 @@ function pollTick(): void {
   frameCounter = 0;
   const m = Server.mapName;
   if (m && m !== currentMap) {                 // map changed — reset + seed nextlevel
-    currentMap = m; roundsPlayed = 0; changing = false; override = null;
+    currentMap = m; roundsPlayed = 0; changing = false; override = null; failNotified = false;
     const next = rotationNext(m); if (next) Server.setCvar("nextlevel", next.name);
     return;
   }
