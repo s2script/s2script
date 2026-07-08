@@ -1,7 +1,7 @@
 import { TopMenu } from "@s2script/topmenu";
 import { Menu, MenuStyle } from "@s2script/menu";
 import { Commands } from "@s2script/commands";
-import { Admin } from "@s2script/admin";
+import { Admin, ADMFLAG } from "@s2script/admin";
 
 // Fix the standard category order (items land in these; a plugin may add more).
 TopMenu.addCategory("Player Commands");
@@ -9,7 +9,7 @@ TopMenu.addCategory("Server Commands");
 TopMenu.addCategory("Voting Commands");
 
 function itemsFor(category: string, flags: number) {
-  return TopMenu.snapshot().items.filter(i => i.category === category && ((flags & (1 << 14)) !== 0 || (flags & i.flags) === i.flags));
+  return TopMenu.snapshot().items.filter(i => i.category === category && ((flags & ADMFLAG.ROOT) !== 0 || (flags & i.flags) === i.flags));
 }
 
 function showCategory(slot: number, category: string, flags: number): void {

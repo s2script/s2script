@@ -134,6 +134,11 @@ export function onLoad(): void {
   TopMenu.addItem("Player Commands", { id: "basebans:ban", name: "Ban", flags: ADMFLAG.BAN,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       const sid = t.steamId, name = t.playerName || "player";
+      if (!sid || sid === "0") {   // bot / unauthenticated — never ban (sm_ban parity: a "0" entry is shared)
+        const admin = Clients.fromSlot(adminSlot);
+        if (admin) admin.chat("Cannot ban " + name + " (bot / not authenticated)");
+        return;
+      }
       const dm = new Menu("Ban " + name + " for");
       dm.style = MenuStyle.Center;
       const mins = [0, 5, 30, 60];   // 0 = permanent
