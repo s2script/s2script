@@ -2,16 +2,19 @@
 // override, seeding the `nextlevel` cvar (basetriggers' `nextmap` chat trigger reads it) and
 // auto-changelevel at mp_maxrounds/mp_timelimit.
 //
-// Task 1 (this file, current state): the plugin scaffold, maplist parsing + rotation, the
-// sm_setnextmap override, and the per-map-change poll that reseeds nextlevel. `changeToNext` is
-// an intentional STUB here — Task 2 fills in the delayed, validated changelevel/host_workshop_map.
-// Task 2: round_end (mp_maxrounds) + mp_timelimit detection, and the real changeToNext body.
+// Task 1: the plugin scaffold, maplist parsing + rotation, the sm_setnextmap override, and the
+// per-map-change poll that reseeds nextlevel.
+// Task 2 (this file, current state): round_end (mp_maxrounds) + mp_timelimit detection, and the
+// real changeToNext body (delayed, validated changelevel/host_workshop_map).
 
 import { Commands } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
 import { OnGameFrame } from "@s2script/frame";
 import { Server } from "@s2script/server";
 import { config } from "@s2script/config";
+import { Events } from "@s2script/events";
+import { delay } from "@s2script/timers";
+import { Chat } from "@s2script/chat";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative). */
 interface MapEntry { name: string; workshopId: string | null; }
@@ -53,11 +56,20 @@ function rotationNext(map: string): MapEntry | null {
   return i < 0 ? list[0] : list[(i + 1) % list.length];
 }
 
-/** Task 1 STUB — Task 2 fills this in with the delayed, validated changelevel/host_workshop_map. */
+/** The delayed, validated changelevel/host_workshop_map — announces then switches after a config delay. */
 function changeToNext(): void {
   if (changing) return;
   changing = true;
-  console.log("[nextmap] changeToNext (stub)");
+  const next = override ?? rotationNext(currentMap);
+  if (!next) { console.log("[nextmap] no next map available"); return; }
+  if (!/^[A-Za-z0-9_]+$/.test(next.name) || (next.workshopId !== null && !/^[0-9]+$/.test(next.workshopId))) {
+    console.log("[nextmap] next map failed validation: " + JSON.stringify(next)); return;
+  }
+  const secs = config.getInt("nextmap_change_delay");
+  Chat.toAll("[nextmap] Changing to " + next.name + " in " + secs + "s");
+  delay(secs * 1000).then(() => {
+    Server.command(next.workshopId ? "host_workshop_map " + next.workshopId : "changelevel " + next.name);
+  }).catch(logErr);
 }
 
 // Plugins persist across a changelevel — the shim has no level-init reload hook, so onLoad fires
@@ -72,11 +84,21 @@ function pollTick(): void {
     const next = rotationNext(m); if (next) Server.setCvar("nextlevel", next.name);
     return;
   }
-  // (Task 2 adds the timelimit check here)
+  if (!changing && config.getBool("nextmap_use_timelimit")) {
+    const tl = parseInt(Server.getCvar("mp_timelimit"), 10);
+    if (tl > 0 && Server.gameTime >= tl * 60) changeToNext();
+  }
 }
 
 export function onLoad(): void {
   OnGameFrame.subscribe(pollTick);
+
+  Events.on("round_end", () => {
+    if (changing) return;
+    roundsPlayed++;
+    const max = parseInt(Server.getCvar("mp_maxrounds"), 10);
+    if (max > 0 && roundsPlayed >= max) changeToNext();
+  });
 
   Commands.registerAdmin("sm_setnextmap", ADMFLAG.CHANGEMAP, ctx => {
     const m = ctx.arg(0);
