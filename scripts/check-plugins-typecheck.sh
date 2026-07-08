@@ -4,7 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
-for base in examples plugins; do
+for base in examples plugins disabled; do
+  [ -d "$base" ] || continue
   for d in "$base"/*/; do
     [ -f "$d/package.json" ] || continue
     echo "=== typecheck $d ==="
