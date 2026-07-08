@@ -720,7 +720,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return (this.cursor >= 0 && this.cursor < sel.length) ? sel[this.cursor] : -1;
   };
   MenuSession.prototype._start = function () { this.renderer.open(this); if (this.seconds > 0) this._armTimeout(); };
-  MenuSession.prototype._armTimeout = function () { /* Task 2 wires __s2pkg_timers.delay */ };
+  // Timeout: arm a delay that cancels the session (any renderer). Lazily reads __s2pkg_timers at
+  // call time (not module-load time), so this is safe regardless of prelude assignment order.
+  MenuSession.prototype._armTimeout = function () {
+    var self = this, ms = (this.seconds | 0) * 1000;
+    globalThis.__s2pkg_timers.delay(ms).then(function () {
+      if (!self._ended) self._end(MenuCancelReason.Timeout);
+    });
+  };
   MenuSession.prototype._repaint = function () { if (!this._ended) this.renderer.update(this); };
   MenuSession.prototype._end = function (reason) {
     if (this._ended) return; this._ended = true;
@@ -1114,6 +1121,46 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     else { __s2_pendingKicks[this.slot] = { reason: r, delay: d }; }              // still connecting → deliver at onActive
   };
   globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
+  // --- Menu primitive Task 2: chat renderer (registers against @s2script/menu's registerRenderer seam)
+  //     + disconnect-close lifecycle. Placed here (not immediately after the Task 1 model) because both
+  //     blocks below make IMMEDIATE top-level calls into __s2pkg_menu / __s2pkg_chat / __s2pkg_clients
+  //     (Menu.registerRenderer(...) and Clients.onDisconnect(...) run at prelude-eval time, not lazily),
+  //     so they must run after all three are assigned to globalThis (menu @776, chat @794, clients above). ---
+  // Chat renderer: paints numbered lines via __s2pkg_chat; one shared onMessage sub captures picks.
+  (function () {
+    var HANDLED = (globalThis.HookResult && globalThis.HookResult.Handled) || 2;
+    var chatSessions = {};      // slot -> session (chat menus only)
+    var subInstalled = false;
+    function ensureSub() {
+      if (subInstalled) return; subInstalled = true;
+      globalThis.__s2pkg_chat.Chat.onMessage(function (slot, text, teamonly) {
+        var s = chatSessions[slot];
+        if (!s || s._ended) return;                 // no menu for this slot -> pass through
+        var t = ("" + text).trim();
+        if (!/^[0-9]$/.test(t)) return;             // not a single digit -> pass through (chat shows)
+        s.pickNumber(parseInt(t, 10));
+        return HANDLED;                              // swallow the menu pick from public chat
+      });
+    }
+    globalThis.__s2pkg_menu.Menu.registerRenderer(globalThis.__s2pkg_menu.MenuStyle.Chat, {
+      open: function (session) { ensureSub(); chatSessions[session.slot] = session; this.update(session); },
+      update: function (session) {
+        var v = session.view(), C = globalThis.__s2pkg_chat.Chat;
+        C.toSlot(session.slot, v.title);
+        for (var i = 0; i < v.lines.length; i++) {
+          var l = v.lines[i];
+          C.toSlot(session.slot, (l.key ? l.key + ". " : "   ") + l.text);
+        }
+      },
+      close: function (slot) { delete chatSessions[slot]; },
+    });
+  })();
+
+  // Disconnect: close any open menu for a leaving slot.
+  globalThis.__s2pkg_clients.Clients.onDisconnect(function (client) {
+    var s = __s2_menu_activeBySlot[client.slot];
+    if (s) s._end(MenuCancelReason.Disconnect);
+  });
   // --- Slice DB Task 4: @s2script/db — Database.open/query/execute/close over the __s2_sqlite_*
   //     natives (sync-behind-Promise this slice) + a Driver seam (SQLite is the built-in, dogfooded
   //     reference driver; registerDriver lets a plugin add another later, e.g. MySQL, with no API
@@ -9029,6 +9076,56 @@ mod frame_tests {
             JSON.stringify({ cursorFlags: cursorFlags, highlightedText: v.lines[1].text });
         "#);
         assert_eq!(out, r#"{"cursorFlags":[false,true,false],"highlightedText":"Y"}"#);
+        shutdown();
+    }
+
+    // --- Menu primitive Task 2: the built-in chat renderer (over __s2pkg_chat) + lifecycle. ---
+
+    #[test]
+    fn menu_chat_renders_and_number_selects() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("mchat", r#"
+            var { Menu, MenuStyle } = globalThis.__s2pkg_menu;
+            // capture chat lines sent to the slot
+            var sent = [];
+            var realToSlot = globalThis.__s2pkg_chat.Chat.toSlot;
+            globalThis.__s2pkg_chat.Chat.toSlot = function (s, msg) { sent.push([s, msg]); };
+            // capture the onMessage handler the renderer installs
+            var chatHandler = null;
+            var realOn = globalThis.__s2pkg_chat.Chat.onMessage;
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            var m = new Menu("Pick"); m.style = MenuStyle.Chat;
+            m.addItem("kick", "Kick"); m.addItem("ban", "Ban");
+            var got = null; m.onSelect(function (e){ got = e.info; });
+            m.display(3, 0);
+            // simulate slot 3 typing "2"
+            var suppressed = chatHandler(3, "2", false);
+            // restore
+            globalThis.__s2pkg_chat.Chat.toSlot = realToSlot;
+            globalThis.__s2pkg_chat.Chat.onMessage = realOn;
+            JSON.stringify({ sentCount: sent.length > 0, picked: got, suppressed: suppressed });
+        "#);
+        // "2" -> second item "ban"; a matched pick suppresses the chat line (>=2)
+        assert_eq!(out, r#"{"sentCount":true,"picked":"ban","suppressed":2}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn menu_chat_nonmatching_message_passes_through() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("mchat2", r#"
+            var { Menu, MenuStyle } = globalThis.__s2pkg_menu;
+            var chatHandler = null;
+            var realOn = globalThis.__s2pkg_chat.Chat.onMessage;
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            var m = new Menu("P"); m.style = MenuStyle.Chat; m.addItem("a", "A");
+            m.display(3, 0);
+            var r1 = chatHandler(3, "hello", false);   // not a digit -> pass through (undefined/0)
+            var r2 = chatHandler(4, "1", false);        // different slot -> pass through
+            globalThis.__s2pkg_chat.Chat.onMessage = realOn;
+            JSON.stringify({ r1: r1 == null || r1 < 2, r2: r2 == null || r2 < 2 });
+        "#);
+        assert_eq!(out, r#"{"r1":true,"r2":true}"#);
         shutdown();
     }
 }
