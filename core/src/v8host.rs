@@ -643,6 +643,128 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     getBool:   function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v === true; },
     onChange:  function (h) { __s2_config_on_change(h); },
   };
+  // --- Menu primitive (engine-generic): model + pagination + registerRenderer seam. Slot-based. ---
+  var MenuStyle = { Chat: "chat", Center: "center" };
+  var MenuCancelReason = { Exit: 0, Timeout: 1, Disconnect: 2, NewMenu: 3 };
+  var MENU_ITEMS_PER_PAGE = 7;            // chat page size (SM ITEMS_PER_PAGE)
+  var __s2_menu_renderers = {};           // style value -> renderer { open, update, close }
+  var __s2_menu_activeBySlot = {};        // slot -> session (one active menu per slot, this context)
+
+  function Menu(title) {
+    this.title = title || "";
+    this.style = MenuStyle.Chat;
+    this.exitButton = true;
+    this.items = [];
+    this._onSelect = null;
+    this._onCancel = null;
+  }
+  Menu.registerRenderer = function (name, renderer) { __s2_menu_renderers[name] = renderer; };
+  Menu.prototype.addItem = function (info, display, opts) {
+    this.items.push({ info: String(info), display: String(display), disabled: !!(opts && opts.disabled) });
+  };
+  Menu.prototype.onSelect = function (fn) { this._onSelect = fn; };
+  Menu.prototype.onCancel = function (fn) { this._onCancel = fn; };
+  Menu.prototype.display = function (slot, seconds) {
+    if (typeof slot !== "number" || slot < 0) return;   // console/invalid is never a menu target
+    var renderer = __s2_menu_renderers[this.style] || __s2_menu_renderers[MenuStyle.Chat];
+    if (!renderer) { globalThis.console && console.log("[menu] no renderer for style " + this.style); return; }
+    // Replace any existing session for this slot (NewMenu).
+    var prev = __s2_menu_activeBySlot[slot];
+    if (prev) prev._end(MenuCancelReason.NewMenu);
+    var session = new MenuSession(this, slot, renderer, seconds || 0);
+    __s2_menu_activeBySlot[slot] = session;
+    session._start();
+  };
+  Menu.prototype.close = function (slot) {
+    var s = __s2_menu_activeBySlot[slot];
+    if (s && s.menu === this) s._end(MenuCancelReason.Exit);
+  };
+
+  // A live display of one menu to one slot. Owns page/cursor state.
+  function MenuSession(menu, slot, renderer, seconds) {
+    this.menu = menu; this.slot = slot; this.renderer = renderer; this.seconds = seconds;
+    this.page = 0; this.cursor = 0; this._ended = false;
+    this._selectable = [];   // indices (into menu.items) that are selectable on the CURRENT page
+  }
+  // Selectable item indices for a chat page: up to MENU_ITEMS_PER_PAGE, skipping disabled.
+  MenuSession.prototype._pageItems = function (page) {
+    var out = [], start = page * MENU_ITEMS_PER_PAGE, seen = 0, i = start;
+    // NOTE: disabled items still occupy a slot in the on-screen list but get no number.
+    for (; i < this.menu.items.length && (i - start) < MENU_ITEMS_PER_PAGE; i++) out.push(i);
+    return out;
+  };
+  MenuSession.prototype.pageCount = function () {
+    return Math.max(1, Math.ceil(this.menu.items.length / MENU_ITEMS_PER_PAGE));
+  };
+  // Build the resolved view the renderer paints. Assigns chat number keys 1..7 to selectable items,
+  // then control keys 8=Back, 9=Next, 0=Exit as applicable.
+  MenuSession.prototype.view = function () {
+    var m = this.menu, pageItems = this._pageItems(this.page), lines = [], keyNum = 1;
+    this._selectable = [];
+    for (var k = 0; k < pageItems.length; k++) {
+      var idx = pageItems[k], it = m.items[idx], key = null, selectable = false;
+      if (!it.disabled) { key = String(keyNum++); selectable = true; this._selectable.push(idx); }
+      lines.push({ text: it.display, key: key, selectable: selectable, cursor: (this.style === MenuStyle.Center && this._centerCursorIdx() === idx), index: idx });
+    }
+    var pc = this.pageCount();
+    if (this.page > 0)      lines.push({ text: "Back", key: "8", selectable: false, control: "back" });
+    if (this.page < pc - 1) lines.push({ text: "Next", key: "9", selectable: false, control: "next" });
+    if (m.exitButton)       lines.push({ text: "Exit", key: "0", selectable: false, control: "exit" });
+    return { title: m.title, lines: lines, page: this.page, pageCount: pc, exit: m.exitButton };
+  };
+  // (Center) the menu.items index currently under the cursor, or -1.
+  MenuSession.prototype._centerCursorIdx = function () {
+    var pageItems = this._pageItems(this.page);
+    // cursor indexes selectable-on-page; map through non-disabled.
+    var sel = pageItems.filter(function (i) { return !this.menu.items[i].disabled; }, this);
+    return (this.cursor >= 0 && this.cursor < sel.length) ? sel[this.cursor] : -1;
+  };
+  MenuSession.prototype._start = function () { this.renderer.open(this); if (this.seconds > 0) this._armTimeout(); };
+  MenuSession.prototype._armTimeout = function () { /* Task 2 wires __s2pkg_timers.delay */ };
+  MenuSession.prototype._repaint = function () { if (!this._ended) this.renderer.update(this); };
+  MenuSession.prototype._end = function (reason) {
+    if (this._ended) return; this._ended = true;
+    if (__s2_menu_activeBySlot[this.slot] === this) delete __s2_menu_activeBySlot[this.slot];
+    this.renderer.close(this.slot);
+    if (this.menu._onCancel && (reason === MenuCancelReason.Timeout || reason === MenuCancelReason.Disconnect || reason === MenuCancelReason.NewMenu || reason === MenuCancelReason.Exit))
+      { try { this.menu._onCancel({ slot: this.slot, reason: reason }); } catch (e) { globalThis.console && console.log("[menu] onCancel threw: " + e); } }
+  };
+  MenuSession.prototype._select = function (itemIndex) {
+    var it = this.menu.items[itemIndex];
+    if (!it || it.disabled) return;
+    // mark ended BEFORE the callback so a re-display inside onSelect isn't clobbered
+    this._ended = true;
+    if (__s2_menu_activeBySlot[this.slot] === this) delete __s2_menu_activeBySlot[this.slot];
+    this.renderer.close(this.slot);
+    if (this.menu._onSelect) { try { this.menu._onSelect({ slot: this.slot, item: itemIndex, info: it.info, display: it.display }); } catch (e) { globalThis.console && console.log("[menu] onSelect threw: " + e); } }
+  };
+  // Chat idiom: a number-key pick against the current view's keys.
+  MenuSession.prototype.pickNumber = function (n) {
+    if (this._ended) return;
+    this.view();  // refresh this._selectable for the current page
+    var key = String(n);
+    if (key === "8" && this.page > 0)                      { this.page--; this.cursor = 0; this._repaint(); return; }
+    if (key === "9" && this.page < this.pageCount() - 1)   { this.page++; this.cursor = 0; this._repaint(); return; }
+    if (key === "0" && this.menu.exitButton)               { this._end(MenuCancelReason.Exit); return; }
+    var slotN = n - 1;
+    if (slotN >= 0 && slotN < this._selectable.length) this._select(this._selectable[slotN]);
+  };
+  // Center idiom: cursor navigation.
+  MenuSession.prototype.moveUp = function () {
+    if (this._ended) return; this.view();
+    var count = this._selectable.length; if (!count) return;
+    this.cursor = (this.cursor - 1 + count) % count; this._repaint();
+  };
+  MenuSession.prototype.moveDown = function () {
+    if (this._ended) return; this.view();
+    var count = this._selectable.length; if (!count) return;
+    this.cursor = (this.cursor + 1) % count; this._repaint();
+  };
+  MenuSession.prototype.confirm = function () {
+    if (this._ended) return; this.view();
+    if (this.cursor >= 0 && this.cursor < this._selectable.length) this._select(this._selectable[this.cursor]);
+  };
+  MenuSession.prototype.cancel = function () { if (!this._ended) this._end(MenuCancelReason.Exit); };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
@@ -651,6 +773,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_interfaces = interfaces;
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
   globalThis.__s2pkg_config     = { config: __s2_config };   // named export `config` (matches the .d.ts: import { config } from "@s2script/config")
+  globalThis.__s2pkg_menu       = { Menu: Menu, MenuStyle: MenuStyle, MenuCancelReason: MenuCancelReason };
   // --- Slice 6.1: chat module (toSlot/toAll; toAll loops __s2_client_valid, engine-generic) ---
   // `color` is an OPAQUE leading prefix prepended to every chat message (NOT the console.log reply path,
   // so rcon/server-console output stays clean). Core doesn't know what it means — a game package or plugin
@@ -5727,13 +5850,50 @@ mod frame_tests {
     // Create a fresh plugin context `id` and eval `src` in it with the frame + timers API
     // destructured into scope (so tests can write `OnGameFrame.subscribe(...)`, `delay(...)`, etc.
     // directly).  The renamed API is only reachable via `require`, matching the plugin model.
-    fn eval_std(id: &str, src: &str) {
+    // Returns the completion value of `src`'s last statement as a String (mirrors
+    // `eval_in_context_string`) so callers can assert on a computed value (e.g. `JSON.stringify(...)`);
+    // callers that only care about side effects may simply discard the return. Panics loudly (with the
+    // JS exception message) on a compile or runtime error, same as the previous void-returning behavior.
+    fn eval_std(id: &str, src: &str) -> String {
         create_plugin_context(id);
         let full = format!(
             "const {{ OnGameFrame }} = __s2require(\"@s2script/frame\");\nconst {{ delay, nextTick, nextFrame, threadSleep }} = __s2require(\"@s2script/timers\");\n{}",
             src
         );
-        eval_in_context(id, &full).expect("eval_std");
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("eval_std: no host");
+            let g_ctx = PLUGINS
+                .with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))
+                .unwrap_or_else(|| panic!("eval_std: no context for '{}'", id));
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            let code = v8::String::new(tc, &full).expect("failed to intern");
+            let script = match v8::Script::compile(tc, code, None) {
+                Some(s) => s,
+                None => panic!(
+                    "eval_std compile failed: {}",
+                    tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "unknown JavaScript error (compile)".into())
+                ),
+            };
+            match script.run(tc) {
+                Some(v) => v.to_rust_string_lossy(tc),
+                None => panic!(
+                    "eval_std run failed: {}",
+                    tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "unknown JavaScript error (run)".into())
+                ),
+            }
+        })
     }
 
     // Drive one full game frame: Pre dispatch, Post dispatch, then the async drain (mirrors the
@@ -8752,6 +8912,100 @@ mod frame_tests {
         }
         assert!(resolved, "onClose never fired for a self-initiated close");
         assert_eq!(read_global_string("wsclose", "__out"), "closed:1000:");
+        shutdown();
+    }
+
+    // --- Menu primitive Task 1: the pure Menu model + pagination + registerRenderer seam. ---
+    // A test-only "record renderer" captures each computed `view()` so the model is fully
+    // unit-testable with NO chat/timers/clients dependency.
+
+    #[test]
+    fn menu_model_pagination_pick_cursor() {
+        init(dummy_logger()).unwrap();
+        // Pagination: 9 items, exitButton -> page 0 shows items 1..7 as keys "1".."7",
+        // then control keys 9=Next, 0=Exit (no Back on page 0).
+        let out = eval_std("mp", r#"
+            var { Menu, MenuStyle } = globalThis.__s2pkg_menu;
+            var captured = [];
+            Menu.registerRenderer("rec", {
+                open: function (s) { captured.push(s.view()); },
+                update: function (s) { captured.push(s.view()); },
+                close: function () {},
+            });
+            var m = new Menu("T");
+            m.style = "rec";
+            for (var i = 0; i < 9; i++) m.addItem("info" + i, "Item " + i);
+            var picked = null;
+            m.onSelect(function (e) { picked = e.info + ":" + e.item; });
+            m.display(3, 0);
+            var v0 = captured[captured.length - 1];
+            // 7 selectable item-lines on page 0
+            var itemKeys = v0.lines.filter(function (l) { return l.selectable; }).map(function (l) { return l.key; });
+            // control keys present: Next="9", Exit="0"; no Back
+            var ctrlKeys = v0.lines.filter(function (l) { return !l.selectable && l.key; }).map(function (l) { return l.key; });
+            JSON.stringify({ items: itemKeys, ctrl: ctrlKeys, pageCount: v0.pageCount });
+        "#);
+        assert_eq!(out, r#"{"items":["1","2","3","4","5","6","7"],"ctrl":["9","0"],"pageCount":2}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn menu_model_next_page_and_select() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("mn", r#"
+            var { Menu } = globalThis.__s2pkg_menu;
+            var last = null;
+            Menu.registerRenderer("rec2", { open: function (s){ last = s; }, update: function (s){ last = s; }, close: function(){} });
+            var m = new Menu("T"); m.style = "rec2";
+            for (var i = 0; i < 9; i++) m.addItem("info" + i, "Item " + i);
+            var picked = null; m.onSelect(function (e){ picked = e.info + ":" + e.item; });
+            m.display(3, 0);
+            last.pickNumber(9);          // Next -> page 1 (items 8,9 => "info7","info8")
+            last.pickNumber(1);          // first item on page 1 = index 7
+            picked;
+        "#);
+        assert_eq!(out, "info7:7");
+        shutdown();
+    }
+
+    #[test]
+    fn menu_model_disabled_item_not_selectable() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("md", r#"
+            var { Menu } = globalThis.__s2pkg_menu;
+            var last = null;
+            Menu.registerRenderer("rec3", { open: function (s){ last = s; }, update: function (s){ last = s; }, close: function(){} });
+            var m = new Menu("T"); m.style = "rec3";
+            m.addItem("a", "A", { disabled: true });
+            m.addItem("b", "B");
+            var picked = "none"; m.onSelect(function (e){ picked = e.info; });
+            m.display(3, 0);
+            // disabled "a" has no number; "b" is key "1"
+            var v = last.view();
+            var aLine = v.lines[0], bLine = v.lines[1];
+            last.pickNumber(1);   // selects "b"
+            JSON.stringify({ aKey: aLine.key, aSel: aLine.selectable, bKey: bLine.key, picked: picked });
+        "#);
+        assert_eq!(out, r#"{"aKey":null,"aSel":false,"bKey":"1","picked":"b"}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn menu_model_center_cursor_and_confirm() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("mc", r#"
+            var { Menu } = globalThis.__s2pkg_menu;
+            var last = null;
+            Menu.registerRenderer("rec4", { open: function (s){ last = s; }, update: function (s){ last = s; }, close: function(){} });
+            var m = new Menu("T"); m.style = "rec4";
+            m.addItem("x", "X"); m.addItem("y", "Y"); m.addItem("z", "Z");
+            var picked = null; m.onSelect(function (e){ picked = e.info; });
+            m.display(3, 0);
+            last.moveDown();     // cursor 0 -> 1 (Y)
+            last.confirm();      // selects Y
+            picked;
+        "#);
+        assert_eq!(out, "y");
         shutdown();
     }
 }
