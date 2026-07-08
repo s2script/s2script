@@ -57,6 +57,12 @@ function rotationNext(map: string): MapEntry | null {
   return i < 0 ? list[0] : list[(i + 1) % list.length];
 }
 
+/** Injection guard for any entry whose name/id reaches Server.command/setCvar (the console splits on `;`).
+ *  Applied at EVERY sink — the nextlevel seed, sm_setnextmap, and changeToNext. */
+function isValidEntry(e: MapEntry): boolean {
+  return /^[A-Za-z0-9_]+$/.test(e.name) && (e.workshopId === null || /^[0-9]+$/.test(e.workshopId));
+}
+
 /** The delayed, validated changelevel/host_workshop_map — announces then switches after a config delay. */
 function changeToNext(): void {
   if (changing) return;
@@ -70,7 +76,7 @@ function changeToNext(): void {
     if (!failNotified) { failNotified = true; console.log("[nextmap] no next map available (check maplist.txt / sm_setnextmap)"); }
     return;
   }
-  if (!/^[A-Za-z0-9_]+$/.test(next.name) || (next.workshopId !== null && !/^[0-9]+$/.test(next.workshopId))) {
+  if (!isValidEntry(next)) {
     changing = false;
     if (!failNotified) { failNotified = true; console.log("[nextmap] next map failed validation: " + JSON.stringify(next)); }
     return;
@@ -98,11 +104,11 @@ function pollTick(): void {
   const m = Server.mapName;
   if (m && m !== currentMap) {                 // map changed — reset + seed nextlevel
     currentMap = m; roundsPlayed = 0; changing = false; override = null; failNotified = false;
-    const next = rotationNext(m); if (next) Server.setCvar("nextlevel", next.name);
+    const next = rotationNext(m); if (next && isValidEntry(next)) Server.setCvar("nextlevel", next.name);
     return;
   }
   if (!changing && config.getBool("nextmap_use_timelimit")) {
-    const tl = parseInt(Server.getCvar("mp_timelimit"), 10);
+    const tl = parseFloat(Server.getCvar("mp_timelimit"));   // float cvar in CS2 — parseFloat for exact SM parity
     if (tl > 0 && Server.gameTime >= tl * 60) changeToNext();
   }
 }
@@ -123,7 +129,7 @@ export function onLoad(): void {
     const inList = loadPool().find(e => e.name === m);
     const entry = inList ?? (Server.isMapValid(m) ? { name: m, workshopId: null } : null);
     if (!entry) { ctx.reply("'" + m + "' is not a valid map"); return; }
-    if (!/^[A-Za-z0-9_]+$/.test(entry.name)) { ctx.reply("Invalid map name"); return; }
+    if (!isValidEntry(entry)) { ctx.reply("Invalid map name"); return; }
     override = entry;
     Server.setCvar("nextlevel", entry.name);
     ctx.reply("Next map set to " + entry.name);
