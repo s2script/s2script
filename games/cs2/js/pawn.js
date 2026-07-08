@@ -244,5 +244,77 @@
     }
   };
 
+  // --- CS2 center menu renderer: WASD input (schema poll) + show_survival_respawn_status HTML ---
+  // The ONLY file with CS2 menu facts (button-mask schema fields, the show_survival_respawn_status
+  // event/loc_token). @s2script/menu (the model + chat renderer + registerRenderer seam) stays
+  // engine-generic; this registers the "center" backend into it.
+  (function () {
+    if (!globalThis.__s2pkg_menu) return;   // menu module present?
+    var Events = globalThis.__s2pkg_events.Events;
+    var OnGameFrame = globalThis.__s2pkg_frame.OnGameFrame;
+    var centerSessions = {};   // slot -> session
+    var prevMask = {};         // slot -> last button mask (edge detect)
+    var pollSub = null;        // lazy OnGameFrame subscription (armed only while >=1 center menu is open)
+
+    // IN_* bit values (Source button flags, third_party/hl2sdk/game/shared/in_buttons.h).
+    var IN_FORWARD = 8, IN_BACK = 16, IN_USE = 32;
+
+    // The live "buttons held" mask, via the pawn's movement-services pointer:
+    //   pawn (root) --m_pMovementServices(ptr)--> CPlayer_MovementServices
+    //     .m_nButtons (CInButtonState, embedded @ +80) .m_pButtonStates[0] (uint64, embedded @ +8)
+    // Offsets are re-resolved on every call (never cached at module scope) — the same self-healing
+    // convention as schema.generated.js/nav.generated.js, so a pawn.js load before the schema is warm
+    // degrades to 0 (no input) instead of baking in a permanent -1.
+    function readButtons(slot) {
+      var p = Player.fromSlot(slot); if (!p) return 0;
+      var pawn = p.pawn; if (!pawn) return 0;
+      var msPtrOff = __s2_schema_offset("CBasePlayerPawn", "m_pMovementServices");
+      var btnOff = __s2_schema_offset("CPlayer_MovementServices", "m_nButtons");
+      var btnStateOff = __s2_schema_offset("CInButtonState", "m_pButtonStates");
+      if (msPtrOff < 0 || btnOff < 0 || btnStateOff < 0) return 0;
+      var s = pawn.ref.readUInt64Via([msPtrOff], btnOff + btnStateOff);   // index 0 of m_pButtonStates[3]
+      return (s === null) ? 0 : Number(s);   // menu bits are low -> Number is exact
+    }
+    function escapeHtml(s) { return ("" + s).replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    function renderHtml(session) {
+      var v = session.view(), html = "<font class='fontSize-l' color='#ffffff'>" + escapeHtml(v.title) + "</font>";
+      for (var i = 0; i < v.lines.length; i++) {
+        var l = v.lines[i], color = l.cursor ? "#00ff00" : "#cccccc", mark = l.cursor ? "&#9654; " : "";
+        html += "<br><font color='" + color + "'>" + mark + escapeHtml(l.text) + "</font>";
+      }
+      return html;
+    }
+    function ensurePoll() {
+      if (pollSub) return;
+      pollSub = OnGameFrame.subscribe(function () {
+        for (var slot in centerSessions) {
+          var s = centerSessions[slot]; if (!s || s._ended) continue;
+          var sl = slot | 0, mask = readButtons(sl), prev = prevMask[sl] || 0, pressed = mask & ~prev;
+          prevMask[sl] = mask;
+          if (pressed & IN_FORWARD) s.moveUp();
+          else if (pressed & IN_BACK) s.moveDown();
+          else if (pressed & IN_USE) s.confirm();
+          // Re-send every tick — CS2 paints show_survival_respawn_status's loc_token for one frame only.
+          if (!s._ended) Events.fireToClient(sl, "show_survival_respawn_status", { loc_token: renderHtml(s), duration: 5 });
+        }
+      });
+    }
+    function stopPollIfIdle() {
+      for (var k in centerSessions) { if (centerSessions[k]) return; }
+      if (pollSub) { pollSub.dispose(); pollSub = null; }   // OnGameFrame.subscribe() -> { dispose() }
+    }
+    globalThis.__s2pkg_menu.Menu.registerRenderer(globalThis.__s2pkg_menu.MenuStyle.Center, {
+      open: function (session) {
+        centerSessions[session.slot] = session; prevMask[session.slot] = 0; ensurePoll();
+        Events.fireToClient(session.slot, "show_survival_respawn_status", { loc_token: renderHtml(session), duration: 5 });
+      },
+      update: function (session) { /* no-op: the next poll tick re-fires with the current view */ },
+      close: function (slot) {
+        delete centerSessions[slot]; delete prevMask[slot]; stopPollIfIdle();
+        Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: "", duration: 0 });   // clear
+      },
+    });
+  })();
+
   globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity };
 })();
