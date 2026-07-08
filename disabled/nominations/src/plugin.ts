@@ -8,6 +8,8 @@ import { Chat } from "@s2script/chat";
 
 interface MapEntry { name: string; workshopId: string | null; }
 
+const logErr = (e: unknown) => console.log("[nominations] error: " + e);
+
 const MAPLIST_TEMPLATE =
   "// nominations maplist — one map per line.\n" +
   "// Workshop maps: name:workshopId  (e.g. awp_lego_2:3070284539)\n" +
@@ -20,8 +22,9 @@ function parseMaplist(text: string): MapEntry[] {
     const line = raw.trim();
     if (!line || line.startsWith("//") || line.startsWith("#")) continue;
     const i = line.indexOf(":");
-    if (i >= 0) out.push({ name: line.slice(0, i).trim(), workshopId: line.slice(i + 1).trim() || null });
-    else out.push({ name: line, workshopId: null });
+    const name = i >= 0 ? line.slice(0, i).trim() : line;
+    if (!name) continue;   // skip a malformed ":123" (empty name) entry
+    out.push({ name, workshopId: i >= 0 ? (line.slice(i + 1).trim() || null) : null });
   }
   return out;
 }
@@ -44,7 +47,7 @@ let db: Database | null = null;
 
 async function cooldownSet(): Promise<Set<string>> {
   if (!db) return new Set();
-  const rows = await db.query("SELECT map FROM map_history GROUP BY map ORDER BY MAX(id) DESC LIMIT ?", [config.getInt("map_cooldown")]);
+  const rows = await db.query("SELECT map FROM map_history GROUP BY map ORDER BY MAX(id) DESC LIMIT ?", [Math.max(0, config.getInt("map_cooldown"))]);
   return new Set(rows.map(r => String(r.map)));
 }
 async function nominatedSet(): Promise<Set<string>> {
@@ -67,7 +70,7 @@ function mapMenu(slot: number, entries: MapEntry[], title: string): void {
   const m = new Menu(title);
   m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
   for (const e of entries) m.addItem(e.name, e.name);
-  m.onSelect(e => { void nominate(e.slot, e.info); });   // nominate re-validates
+  m.onSelect(e => { nominate(e.slot, e.info).catch(logErr); });   // nominate re-validates
   m.display(slot, 30);
 }
 
@@ -100,10 +103,10 @@ export function onLoad(): void {
     const slot = ctx.callerSlot;
     if (slot < 0) { ctx.reply("Nominate in-game."); return; }
     const arg = ctx.arg(0);
-    if (!arg) { void nominateMenu(slot); return; }
+    if (!arg) { nominateMenu(slot).catch(logErr); return; }
     const matches = resolveMap(arg, loadPool());
     if (matches.length === 0) ctx.reply("No map matching '" + arg + "'.");
-    else if (matches.length === 1) void nominate(slot, matches[0].name);
+    else if (matches.length === 1) nominate(slot, matches[0].name).catch(logErr);
     else mapMenu(slot, matches, "Did you mean...");   // disambiguate
   });
 
