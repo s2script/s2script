@@ -12,6 +12,10 @@ export declare class Menu {
   style: MenuStyle;
   /** Append an auto Exit control (default true). */
   exitButton: boolean;
+  /** When true, a renderer that supports it (the CS2 center renderer) freezes the player's movement
+   *  while the menu is open and restores it on close — buttons still register, so WASD nav still works.
+   *  The chat renderer ignores it. Default false (movement allowed, the normal behavior). */
+  freezePlayer: boolean;
   /** (info, display) — `info` is returned to onSelect; `display` is shown. */
   addItem(info: string, display: string, opts?: { disabled?: boolean }): void;
   onSelect(handler: (e: MenuSelectEvent) => void): void;

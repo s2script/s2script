@@ -667,6 +667,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     this.title = title || "";
     this.style = MenuStyle.Chat;
     this.exitButton = true;
+    this.freezePlayer = false;   // a renderer that supports it (CS2 center) freezes the player while open
     this.items = [];
     this._onSelect = null;
     this._onCancel = null;
@@ -9209,6 +9210,21 @@ mod frame_tests {
             JSON.stringify({ firstCancelReason: firstCancelReason, newMenu: MenuCancelReason.NewMenu, opened: opened });
         "#);
         assert_eq!(out, r#"{"firstCancelReason":3,"newMenu":3,"opened":["FIRST","REENTRANT"]}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn menu_freeze_player_flag_default_false_and_settable() {
+        init(dummy_logger()).unwrap();
+        // freezePlayer is an engine-generic Menu flag (default false = movement allowed); the CS2 center
+        // renderer honors it. The generic model just carries it.
+        let out = eval_std("mfp", r#"
+            var { Menu } = globalThis.__s2pkg_menu;
+            var a = new Menu("A");
+            var b = new Menu("B"); b.freezePlayer = true;
+            JSON.stringify({ def: a.freezePlayer, set: b.freezePlayer });
+        "#);
+        assert_eq!(out, r#"{"def":false,"set":true}"#);
         shutdown();
     }
 

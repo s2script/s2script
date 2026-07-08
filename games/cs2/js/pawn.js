@@ -255,6 +255,31 @@
     var centerSessions = {};   // slot -> session
     var prevMask = {};         // slot -> last button mask (edge detect)
     var pollSub = null;        // lazy OnGameFrame subscription (armed only while >=1 center menu is open)
+    var frozenMoveType = {};   // slot -> pre-freeze m_MoveType, when menu.freezePlayer captured it (restore on close)
+    var MOVETYPE_NONE = 0;     // MoveType_t::MOVETYPE_NONE (funcommands sm_freeze parity)
+    // Each show_survival_respawn_status frame shows for ~this long; we re-send every tick to keep the menu
+    // up, so a short TTL means it self-clears within ~TTL once we STOP re-sending (on close/select) — the
+    // old 5s made the menu linger for seconds after selecting. Integer (the event field is int), > the
+    // frame interval (~16ms @64tick) so no flicker.
+    var MENU_TTL = 1;
+
+    // Freeze the player's movement while a freezePlayer menu is open (buttons still register, so WASD nav
+    // still works). Capture the current moveType so close() can restore it. No-op if already frozen / no pawn.
+    function freezeIfRequested(session) {
+      if (!session.menu.freezePlayer || frozenMoveType[session.slot] !== undefined) return;
+      var p = Player.fromSlot(session.slot), pawn = p && p.pawn;
+      if (!pawn) return;
+      var mt = pawn.moveType;
+      if (mt === null || mt === MOVETYPE_NONE) return;   // unreadable or already frozen — don't capture/restore
+      frozenMoveType[session.slot] = mt;
+      pawn.moveType = MOVETYPE_NONE;
+    }
+    function unfreeze(slot) {
+      if (frozenMoveType[slot] === undefined) return;
+      var mt = frozenMoveType[slot]; delete frozenMoveType[slot];
+      var p = Player.fromSlot(slot), pawn = p && p.pawn;
+      if (pawn) pawn.moveType = mt;                       // gone/dead pawn -> nothing to restore (respawn defaults)
+    }
 
     // IN_* bit values (Source button flags, third_party/hl2sdk/game/shared/in_buttons.h).
     var IN_FORWARD = 8, IN_BACK = 16, IN_USE = 32;
@@ -281,13 +306,38 @@
     // zero-value default.
     function getUserId(slot) { return __s2_client_userid(slot | 0); }
     function escapeHtml(s) { return ("" + s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    // A fixed HEADER / CONTENT / FOOTER layout for the center HUD. CS2 center HTML is one flowing text
+    // block with no reserved regions, so the only way to keep the footer visible is to BOUND the content:
+    // header(1) + a fixed MAX_VISIBLE-row scrolled window + footer(1) = a constant line count that always
+    // leaves the footer on-screen (a long list scrolls WITHIN the window instead of pushing the footer off).
+    // Font tiers (CS2MenuManager parity): fontSize-m (header) > fontSize-sm (content) > fontSize-s (footer).
     function renderHtml(session) {
-      var v = session.view(), html = "<font class='fontSize-l' color='#ffffff'>" + escapeHtml(v.title) + "</font>";
-      for (var i = 0; i < v.lines.length; i++) {
-        var l = v.lines[i], color = l.cursor ? "#00ff00" : "#cccccc", mark = l.cursor ? "&#9654; " : "";
-        html += "<br><font color='" + color + "'>" + mark + escapeHtml(l.text) + "</font>";
+      var v = session.view(), MAX_VISIBLE = 6;
+      // HEADER.
+      var head = "<font class='fontSize-m' color='#ffd700'>" + escapeHtml(v.title) + "</font>";
+      // CONTENT — a fixed-height window scrolled to keep the cursor visible.
+      var total = v.lines.length, cursorIdx = 0;
+      for (var c = 0; c < total; c++) { if (v.lines[c].cursor) { cursorIdx = c; break; } }
+      var start = 0;
+      if (total > MAX_VISIBLE) {
+        start = cursorIdx - (MAX_VISIBLE >> 1);
+        if (start < 0) start = 0;
+        if (start + MAX_VISIBLE > total) start = total - MAX_VISIBLE;
       }
-      return html;
+      var end = (start + MAX_VISIBLE < total) ? start + MAX_VISIBLE : total;
+      var body = "";
+      for (var i = start; i < end; i++) {
+        var l = v.lines[i], color = l.cursor ? "#00ff00" : "#cccccc", mark = l.cursor ? "&#9654; " : "";
+        body += "<br><font class='fontSize-sm' color='" + color + "'>" + mark + escapeHtml(l.text) + "</font>";
+      }
+      // FOOTER (always the last line): the WASD control legend + page + scroll indicators folded in (so they
+      // cost no content rows). The button mapping is CS2-specific, so this legend lives in this renderer.
+      var foot = "<br><font class='fontSize-s' color='#8a8a8a'>[W/S] Move &nbsp; [E] Select";
+      if (v.pageCount > 1) foot += " &nbsp; " + (v.page + 1) + "/" + v.pageCount;
+      var scroll = (start > 0 ? "&#9650;" : "") + (end < total ? "&#9660;" : "");
+      if (scroll) foot += " &nbsp; " + scroll;
+      foot += "</font>";
+      return head + body + foot;
     }
     function ensurePoll() {
       if (pollSub) return;
@@ -300,7 +350,7 @@
           else if (pressed & IN_BACK) s.moveDown();
           else if (pressed & IN_USE) s.confirm();
           // Re-send every tick — CS2 paints show_survival_respawn_status's loc_token for one frame only.
-          if (!s._ended) Events.fireToClient(sl, "show_survival_respawn_status", { loc_token: renderHtml(s), duration: 5, userid: getUserId(sl) });
+          if (!s._ended) Events.fireToClient(sl, "show_survival_respawn_status", { loc_token: renderHtml(s), duration: MENU_TTL, userid: getUserId(sl) });
         }
       });
     }
@@ -310,13 +360,13 @@
     }
     globalThis.__s2pkg_menu.Menu.registerRenderer(globalThis.__s2pkg_menu.MenuStyle.Center, {
       open: function (session) {
-        centerSessions[session.slot] = session; prevMask[session.slot] = 0; ensurePoll();
-        Events.fireToClient(session.slot, "show_survival_respawn_status", { loc_token: renderHtml(session), duration: 5, userid: getUserId(session.slot) });
+        centerSessions[session.slot] = session; prevMask[session.slot] = 0; freezeIfRequested(session); ensurePoll();
+        Events.fireToClient(session.slot, "show_survival_respawn_status", { loc_token: renderHtml(session), duration: MENU_TTL, userid: getUserId(session.slot) });
       },
       update: function (session) { /* no-op: the next poll tick re-fires with the current view */ },
       close: function (slot) {
-        delete centerSessions[slot]; delete prevMask[slot]; stopPollIfIdle();
-        Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: "", duration: 0, userid: getUserId(slot) });   // clear
+        delete centerSessions[slot]; delete prevMask[slot]; unfreeze(slot); stopPollIfIdle();
+        Events.fireToClient(slot, "show_survival_respawn_status", { loc_token: " ", duration: MENU_TTL, userid: getUserId(slot) });   // clear
       },
     });
   })();

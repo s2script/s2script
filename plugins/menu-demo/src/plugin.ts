@@ -6,11 +6,19 @@ import { Player } from "@s2script/cs2";
 function showMenu(slot: number, style: MenuStyle): void {
   const m = new Menu("s2script Menu Demo");
   m.style = style;
+  m.freezePlayer = style === MenuStyle.Center;   // freeze movement while the WASD menu is open (nav still works)
   m.addItem("hp", "Heal to 100");
   m.addItem("noclip", "Toggle Noclip");
   m.addItem("disabled", "Coming soon", { disabled: true });
   for (let i = 1; i <= 8; i++) m.addItem("x" + i, "Extra option " + i);   // force pagination
-  m.onSelect(e => { console.log(`[menu-demo] select slot=${e.slot} item=${e.item} info=${e.info}`); });
+  m.onSelect(e => {
+    console.log(`[menu-demo] select slot=${e.slot} item=${e.item} info=${e.info}`);
+    const p = Player.fromSlot(e.slot);
+    const pawn = p && p.pawn;
+    if (!pawn) return;
+    if (e.info === "hp") pawn.health = 100;                                     // heal to full
+    else if (e.info === "noclip") pawn.moveType = pawn.moveType === 7 ? 2 : 7;  // MoveType_t: NOCLIP=7 <-> WALK=2
+  });
   m.onCancel(e => { console.log(`[menu-demo] cancel slot=${e.slot} reason=${e.reason}`); });
   m.display(slot, 30);
 }
