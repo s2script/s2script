@@ -360,7 +360,10 @@
     }
     globalThis.__s2pkg_menu.Menu.registerRenderer(globalThis.__s2pkg_menu.MenuStyle.Center, {
       open: function (session) {
-        centerSessions[session.slot] = session; prevMask[session.slot] = 0; freezeIfRequested(session); ensurePoll();
+        // Seed prevMask with the CURRENT button mask (not 0) so a button still held from the action that
+        // opened this menu (e.g. E pressed to select the parent category) is NOT seen as a fresh rising
+        // edge on the next poll — otherwise chaining menus with E "bleeds through" and instantly confirms.
+        centerSessions[session.slot] = session; prevMask[session.slot] = readButtons(session.slot); freezeIfRequested(session); ensurePoll();
         Events.fireToClient(session.slot, "show_survival_respawn_status", { loc_token: renderHtml(session), duration: MENU_TTL, userid: getUserId(session.slot) });
       },
       update: function (session) { /* no-op: the next poll tick re-fires with the current view */ },
