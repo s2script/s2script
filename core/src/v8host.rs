@@ -1329,6 +1329,95 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       },
     },
   };
+  // --- @s2script/votes: chat-ballot voting (revote) + an optional live center tally (a render seam). ---
+  var __s2_vote_state = null;             // the single active vote, or null (the per-context lock)
+  var __s2_vote_tallyRenderer = null;     // { show(slot, tally), clear(slot) } — CS2 registers it
+  var __s2_vote_subInstalled = false;     // lazy-once guard: install onMessage/onDisconnect on first start
+  var VOTE_HANDLED = (globalThis.HookResult && globalThis.HookResult.Handled) || 2;
+
+  function __s2_vote_eligibleSlots() {
+    var out = [], all = globalThis.__s2pkg_clients.Clients.all();
+    for (var i = 0; i < all.length; i++) if (!all[i].isBot) out.push(all[i].slot);
+    return out;
+  }
+  function __s2_vote_counts(st) {
+    var counts = [], total = 0;
+    for (var i = 0; i < st.options.length; i++) counts.push(0);
+    st.votes.forEach(function (idx) { if (idx >= 0 && idx < counts.length) { counts[idx]++; total++; } });
+    return { counts: counts, total: total };
+  }
+  function __s2_vote_showTally(st) {
+    if (!st.showLiveTally || !__s2_vote_tallyRenderer) return;
+    var c = __s2_vote_counts(st);
+    var opts = st.options.map(function (label, i) { return { label: label, count: c.counts[i] }; });
+    var tally = { question: st.question, options: opts, total: c.total, secondsLeft: st.secondsLeft };
+    var slots = __s2_vote_eligibleSlots();
+    for (var i = 0; i < slots.length; i++) { try { __s2_vote_tallyRenderer.show(slots[i], tally); } catch (e) {} }
+  }
+  function __s2_vote_clearTally(st) {
+    if (!st.showLiveTally || !__s2_vote_tallyRenderer) return;
+    var slots = __s2_vote_eligibleSlots();
+    for (var i = 0; i < slots.length; i++) { try { __s2_vote_tallyRenderer.clear(slots[i]); } catch (e) {} }
+  }
+  function __s2_vote_castFromChat(slot, text) {
+    var st = __s2_vote_state; if (!st) return 0;                    // no active vote -> pass through
+    var t = ("" + text).trim();
+    if (!/^[0-9]$/.test(t)) return 0;
+    var d = parseInt(t, 10);
+    if (d < 1 || d > st.options.length) return 0;                  // out of range -> pass through
+    st.votes.set(slot, d - 1);                                     // revote replaces
+    __s2_vote_showTally(st);
+    // NOTE: deliberately no "everyone voted -> end early" shortcut here — a revote must stay possible
+    // for the full `duration` (the vote only ends via the __s2_vote_tick countdown or Vote.cancel()).
+    return VOTE_HANDLED;
+  }
+  function __s2_vote_ensureSubs() {
+    if (__s2_vote_subInstalled) return; __s2_vote_subInstalled = true;
+    globalThis.__s2pkg_chat.Chat.onMessage(function (slot, text) { return __s2_vote_castFromChat(slot, text); });
+    globalThis.__s2pkg_clients.Clients.onDisconnect(function (c) { var st = __s2_vote_state; if (st) st.votes.delete(c.slot); });
+  }
+  function __s2_vote_tick(st) {
+    if (__s2_vote_state !== st) return;                            // ended/cancelled
+    if (st.secondsLeft <= 0) { __s2_vote_end(); return; }
+    st.secondsLeft--;
+    __s2_vote_showTally(st);
+    globalThis.__s2pkg_timers.delay(1000).then(function () { __s2_vote_tick(st); });
+  }
+  function __s2_vote_end() {
+    var st = __s2_vote_state; if (!st) return;
+    __s2_vote_state = null;                                        // release the lock BEFORE onEnd (so onEnd can start a new vote)
+    __s2_vote_clearTally(st);
+    var c = __s2_vote_counts(st), winner = null, best = -1, tie = false;
+    for (var i = 0; i < c.counts.length; i++) {
+      if (c.counts[i] > best) { best = c.counts[i]; winner = i; tie = false; }
+      else if (c.counts[i] === best) { tie = true; }
+    }
+    if (c.total === 0 || tie) winner = null;
+    var result = { winner: winner, counts: c.counts, total: c.total };
+    if (winner !== null) globalThis.__s2pkg_chat.Chat.toAll("[Vote] Passed: " + st.options[winner] + " (" + Math.round(c.counts[winner] / c.total * 100) + "%)");
+    else globalThis.__s2pkg_chat.Chat.toAll("[Vote] Failed — no majority.");
+    try { st.onEnd(result); } catch (e) { globalThis.console && console.log("[votes] onEnd threw: " + e); }
+  }
+  var Vote = {
+    start: function (config) {
+      if (__s2_vote_state) return false;                          // one vote at a time
+      if (!config || !config.question || !config.options || config.options.length < 2) return false;
+      __s2_vote_ensureSubs();
+      var dur = (config.duration | 0) || 20;
+      var st = { question: String(config.question), options: config.options.map(String), votes: new Map(),
+                 showLiveTally: !!config.showLiveTally, secondsLeft: dur,
+                 onEnd: (typeof config.onEnd === "function") ? config.onEnd : function () {} };
+      __s2_vote_state = st;
+      globalThis.__s2pkg_chat.Chat.toAll("[Vote] " + st.question + " — " + st.options.map(function (o, i) { return (i + 1) + "=" + o; }).join(", "));
+      __s2_vote_showTally(st);
+      __s2_vote_tick(st);                                         // starts the countdown + end
+      return true;
+    },
+    isActive: function () { return !!__s2_vote_state; },
+    cancel: function () { var st = __s2_vote_state; if (!st) return; __s2_vote_state = null; __s2_vote_clearTally(st); },
+    registerTallyRenderer: function (r) { __s2_vote_tallyRenderer = r; },
+  };
+  globalThis.__s2pkg_votes = { Vote: Vote };
 })();
 "#;
 
@@ -9502,6 +9591,95 @@ mod frame_tests {
             globalThis.__s2pkg_topmenu.TopMenu.snapshot().items.map(function (i) { return i.name; }).join(",")
         "#);
         assert_eq!(out, "zeta,alpha,mike,bravo,yankee,charlie,delta,echo");
+        shutdown();
+    }
+
+    // --- basevotes Task 1: @s2script/votes — chat-ballot voting (revote) + an optional live tally. ---
+
+    #[test]
+    fn votes_cast_revote_tally_and_winner() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("vt1", r#"
+            var sent = [], chatHandler = null, delayed = [];
+            globalThis.__s2pkg_chat.Chat.toAll = function (m) { sent.push(m); };
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false},{slot:9,isBot:true}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
+            var res = null;
+            var ok = globalThis.__s2pkg_votes.Vote.start({ question:"Q", options:["A","B"], duration:2, onEnd:function(r){ res = r; } });
+            var handled = chatHandler(0, "1");   // slot0 -> A
+            chatHandler(1, "2");                 // slot1 -> B
+            chatHandler(0, "2");                 // slot0 REVOTE -> B
+            while (delayed.length) delayed.shift()();   // drain the countdown -> end
+            JSON.stringify({ ok:ok, handled:handled, counts:res.counts, total:res.total, winner:res.winner });
+        "#);
+        // slot0 revoted to B, slot1 B -> A:0 B:2, winner index 1
+        assert_eq!(out, r#"{"ok":true,"handled":2,"counts":[0,2],"total":2,"winner":1}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn votes_tie_and_zero_are_null_winner_and_lock() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("vt2", r#"
+            var chatHandler = null, delayed = [];
+            globalThis.__s2pkg_chat.Chat.toAll = function () {};
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
+            var V = globalThis.__s2pkg_votes.Vote, res = null;
+            V.start({ question:"Q", options:["A","B"], duration:1, onEnd:function(r){ res = r; } });
+            var second = V.start({ question:"Q2", options:["A","B"], duration:1, onEnd:function(){} });  // locked out
+            var activeMid = V.isActive();
+            chatHandler(0, "1"); chatHandler(1, "2");   // 1-1 tie
+            while (delayed.length) delayed.shift()();
+            JSON.stringify({ second:second, activeMid:activeMid, winner:res.winner, activeEnd:V.isActive() });
+        "#);
+        assert_eq!(out, r#"{"second":false,"activeMid":true,"winner":null,"activeEnd":false}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn votes_live_tally_renderer_show_and_clear() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("vt3", r#"
+            var chatHandler = null, delayed = [], shows = [], clears = [];
+            globalThis.__s2pkg_chat.Chat.toAll = function () {};
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
+            var V = globalThis.__s2pkg_votes.Vote;
+            V.registerTallyRenderer({ show:function(slot,t){ shows.push(slot + ":" + t.options[0].count); }, clear:function(slot){ clears.push(slot); } });
+            V.start({ question:"Q", options:["A","B"], duration:1, showLiveTally:true, onEnd:function(){} });
+            chatHandler(0, "1");   // A:1
+            while (delayed.length) delayed.shift()();
+            JSON.stringify({ shows: shows.length > 0 && shows[shows.length-1] === "0:1", cleared: clears.indexOf(0) !== -1 });
+        "#);
+        assert_eq!(out, r#"{"shows":true,"cleared":true}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn votes_no_live_tally_never_calls_renderer() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("vt4", r#"
+            var chatHandler = null, delayed = [], calls = 0;
+            globalThis.__s2pkg_chat.Chat.toAll = function () {};
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
+            var V = globalThis.__s2pkg_votes.Vote;
+            V.registerTallyRenderer({ show:function(){ calls++; }, clear:function(){ calls++; } });
+            V.start({ question:"Q", options:["A","B"], duration:1, onEnd:function(){} });   // showLiveTally omitted -> false
+            chatHandler(0, "1");
+            while (delayed.length) delayed.shift()();
+            String(calls);
+        "#);
+        assert_eq!(out, "0");
         shutdown();
     }
 }
