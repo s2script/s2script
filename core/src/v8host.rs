@@ -1346,8 +1346,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     st.votes.forEach(function (idx) { if (idx >= 0 && idx < counts.length) { counts[idx]++; total++; } });
     return { counts: counts, total: total };
   }
+  var __s2_vote_warnedNoRenderer = false;
   function __s2_vote_showTally(st) {
-    if (!st.showLiveTally || !__s2_vote_tallyRenderer) return;
+    if (!st.showLiveTally) return;
+    if (!__s2_vote_tallyRenderer) {   // showLiveTally set but no renderer (a non-CS2 game) -> degrade to chat-only, warn once
+      if (!__s2_vote_warnedNoRenderer) { __s2_vote_warnedNoRenderer = true; globalThis.console && console.log("[votes] WARN: showLiveTally set but no tally renderer registered — chat-only."); }
+      return;
+    }
     var c = __s2_vote_counts(st);
     var opts = st.options.map(function (label, i) { return { label: label, count: c.counts[i] }; });
     var tally = { question: st.question, options: opts, total: c.total, secondsLeft: st.secondsLeft };
@@ -1410,7 +1415,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       if (__s2_vote_state) return false;                          // one vote at a time
       if (!config || !config.question || !config.options || config.options.length < 2) return false;
       __s2_vote_ensureSubs();
-      var dur = (config.duration | 0) || 20;
+      var dur = Math.max(1, (config.duration | 0) || 20);   // clamp: a negative config would end on the first tick
       var st = { question: String(config.question), options: config.options.map(String), votes: new Map(),
                  showLiveTally: !!config.showLiveTally, secondsLeft: dur,
                  onEnd: (typeof config.onEnd === "function") ? config.onEnd : function () {} };
@@ -9710,6 +9715,30 @@ mod frame_tests {
         // full turnout ends the vote at the NEXT tick boundary (not synchronously mid-cast, and well
         // before the configured 10s duration elapses) — the reconciled design-doc Flow step 5 behavior.
         assert_eq!(out, r#"{"endedBeforeDrain":false,"pendingAfterOneTick":0,"active":false,"winner":0,"total":2}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn votes_disconnect_drops_that_slots_vote() {
+        init(dummy_logger()).unwrap();
+        // A voter who disconnects mid-vote has their vote removed (the design doc's required case).
+        let out = eval_std("vt6", r#"
+            var chatHandler = null, disconnectHandler = null, delayed = [], res = null;
+            globalThis.__s2pkg_chat.Chat.toAll = function () {};
+            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function (fn) { disconnectHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
+            var V = globalThis.__s2pkg_votes.Vote;
+            V.start({ question:"Q", options:["A","B"], duration:2, onEnd:function(r){ res = r; } });
+            chatHandler(0, "1");   // slot0 -> A
+            chatHandler(1, "2");   // slot1 -> B
+            disconnectHandler({ slot: 0 });   // slot0 leaves -> its vote drops
+            while (delayed.length) delayed.shift()();
+            // A dropped, B remains -> counts [0,1], total 1, winner index 1
+            JSON.stringify({ counts: res.counts, total: res.total, winner: res.winner });
+        "#);
+        assert_eq!(out, r#"{"counts":[0,1],"total":1,"winner":1}"#);
         shutdown();
     }
 }

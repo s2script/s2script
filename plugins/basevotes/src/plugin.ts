@@ -15,8 +15,8 @@ function parseTokens(s: string): string[] {
   return out;
 }
 
-function startKickVote(userId: number, name: string): void {
-  Vote.start({
+function startKickVote(userId: number, name: string): boolean {
+  return Vote.start({
     question: "Kick " + name + "?",
     options: ["Yes", "No"],
     duration: config.getInt("vote_duration"),
@@ -56,7 +56,9 @@ export function onLoad(): void {
   });
 
   TopMenu.addItem("Voting Commands", { id: "basevotes:votekick", name: "Vote Kick", flags: ADMFLAG.VOTE,
-    onSelect: adminSlot => pickPlayer(adminSlot, t => startKickVote(t.userId, t.playerName ?? "player")) });
+    onSelect: adminSlot => pickPlayer(adminSlot, t => {
+      if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, "[SM] A vote is already in progress.");
+    }) });
 
   console.log("[basevotes] onLoad — sm_vote/sm_votekick registered");
 }
