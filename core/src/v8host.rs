@@ -3837,7 +3837,7 @@ fn s2_trace(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
         if let Some(k) = v8::String::new(scope, "endPos") { obj.set(scope, k.into(), end_pos_val); }
         if let Some(k) = v8::String::new(scope, "normal") { obj.set(scope, k.into(), normal_val); }
         if let Some(k) = v8::String::new(scope, "entity") { obj.set(scope, k.into(), entity_val); }
-        if let Some(k) = v8::String::new(scope, "allSolid") {
+        if let Some(k) = v8::String::new(scope, "startSolid") {
             let v = v8::Boolean::new(scope, all_solid);
             obj.set(scope, k.into(), v.into());
         }
@@ -7847,7 +7847,7 @@ mod frame_tests {
             var m = __s2require("@s2script/math");
             var hit = __s2_trace([0, 0, 0], [10, 20, 30], [0, 0, 0], [0, 0, 0], 1, 0, -1, -1);
             [
-                hit.didHit, hit.fraction, hit.allSolid, (hit.entity === null),
+                hit.didHit, hit.fraction, hit.startSolid, (hit.entity === null),
                 hit.endPos instanceof m.Vector, hit.endPos.x, hit.endPos.y, hit.endPos.z,
                 hit.normal instanceof m.Vector, hit.normal.x, hit.normal.y, hit.normal.z,
             ].join(",")

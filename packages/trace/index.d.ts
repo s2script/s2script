@@ -42,8 +42,9 @@ export interface TraceHit {
   normal: Vector;
   /** The hit entity, or null if none was hit (or it went stale in the same frame). */
   entity: EntityRef | null;
-  /** True iff the trace started embedded in solid geometry. */
-  allSolid: boolean;
+  /** True iff the trace STARTED embedded in solid geometry (Source `startsolid`; CS2's CGameTrace
+   *  exposes only `m_bStartInSolid`, not a whole-segment `allsolid` flag — don't confuse with SM's TR_AllSolid). */
+  startSolid: boolean;
 }
 
 /** Options shared by `Trace.line`/`ray`/`hull`. */
