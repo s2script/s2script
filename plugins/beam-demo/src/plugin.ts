@@ -1,18 +1,19 @@
 import { OnGameFrame } from "@s2script/frame";
 import { Pawn, Beam, BeamHandle } from "@s2script/cs2";
 import { Commands } from "@s2script/commands";
-import { createEntity } from "@s2script/entity";
+import { Vector } from "@s2script/math";
+import { delay } from "@s2script/timers";
 
 const IN_USE = 32;                       // the E key bit
 const state = new Map<number, { held: boolean; beam: BeamHandle | null }>();
 
-function eyeOf(pawn: any): { x: number; y: number; z: number } | null {
+function eyeOf(pawn: Pawn): Vector | null {
   const sn = pawn.sceneNode;
   const o = sn && sn.absOrigin;
-  return o ? { x: o.x, y: o.y, z: o.z + 64 } : null;   // standing eye height
+  return o ? new Vector(o.x, o.y, o.z + 64) : null;   // standing eye height
 }
 
-function clearBeam(slot: number) {
+function clearBeam(slot: number): void {
   const s = state.get(slot);
   if (s && s.beam) { s.beam.remove(); s.beam = null; }
 }
@@ -28,8 +29,8 @@ OnGameFrame.subscribe(() => {
       const eye = eyeOf(pawn);
       const hit = pawn.aimTrace();
       if (eye && hit) {
-        if (s.beam) s.beam.update(eye as any, hit.endPos as any);
-        else s.beam = Beam.draw(eye as any, hit.endPos as any, { color: [255, 0, 0, 255], width: 2 });
+        if (s.beam) s.beam.update(eye, hit.endPos);
+        else s.beam = Beam.draw(eye, hit.endPos, { color: [255, 0, 0, 255], width: 2 });
       }
     } else if (s.beam) {
       clearBeam(slot);
@@ -40,17 +41,17 @@ OnGameFrame.subscribe(() => {
 
 // Bot-provable rcon check: create a static beam at fixed coords and report the EntityRef validity.
 Commands.register("sm_beam", (ctx) => {
-  const start = { x: 0, y: 0, z: 100 }, end = { x: 200, y: 0, z: 100 };
-  const h = Beam.draw(start as any, end as any, { color: [0, 255, 0, 255], width: 3 });
+  const start = new Vector(0, 0, 100), end = new Vector(200, 0, 100);
+  const h = Beam.draw(start, end, { color: [0, 255, 0, 255], width: 3 });
   if (!h) { ctx.reply("[beam] createEntity FAILED"); return; }
-  ctx.reply("[beam] drawn ref valid=" + h.ref.isValid() + " index=" + (h.ref as any).index);
+  ctx.reply("[beam] drawn ref valid=" + h.ref.isValid() + " index=" + h.ref.index);
   // leave it for 3s then remove (prove teleport/remove too)
-  (globalThis as any).__s2pkg_timers.delay(3000).then(() => {
+  delay(3000).then(() => {
     ctx.reply("[beam] remove -> " + h.remove());
   });
 });
 
-export function onUnload() {
+export function onUnload(): void {
   for (const slot of state.keys()) clearBeam(slot);
   state.clear();
 }
