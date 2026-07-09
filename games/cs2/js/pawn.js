@@ -189,6 +189,23 @@
     }
   });
 
+  // pawn.buttons — the live "buttons held" mask (low 32 bits as a Number, so bitwise edge-detection
+  // works), via the same movement-services pointer chain the center-menu poller below uses (readButtons)
+  // — kept identical (CBasePlayerPawn -> m_pMovementServices -> CPlayer_MovementServices.m_nButtons ->
+  // CInButtonState.m_pButtonStates[0]) so the two never drift. IN_USE = 32 (in_buttons.h). 0 if the
+  // chain/ref is unreadable (stale ref, or before the schema is warm).
+  Object.defineProperty(Pawn.prototype, "buttons", {
+    get: function () {
+      var msPtrOff = __s2_schema_offset("CBasePlayerPawn", "m_pMovementServices");
+      var btnOff = __s2_schema_offset("CPlayer_MovementServices", "m_nButtons");
+      var btnStateOff = __s2_schema_offset("CInButtonState", "m_pButtonStates");
+      if (msPtrOff < 0 || btnOff < 0 || btnStateOff < 0) return 0;
+      var v = this.ref.readUInt64Via([msPtrOff], btnOff + btnStateOff);   // index 0 of m_pButtonStates[3]
+      return v === null ? 0 : Number(v & 0xFFFFFFFFn);
+    },
+    configurable: true
+  });
+
   // pawn.aimTrace(opts?) — trace from the pawn's eyes along its view angles: "what is this player
   // looking at". The engine-generic ray-trace (CNavPhysicsInterface::TraceShape) lives in
   // @s2script/trace; this composes the CS2 eye position + eyeAngles. Eye = the body world origin +
@@ -477,5 +494,45 @@
     m.display(adminSlot, 30);
   }
 
-  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer };
+  // --- Beam: a CEnvBeam point-to-point line. CS2 schema names live HERE (never in core). Composes the
+  //     engine-generic createEntity/spawn/teleport/remove primitive (@s2script/entity) + raw schema
+  //     writes on the created ref. Offsets are re-resolved per call (never cached at module scope) —
+  //     the same self-healing convention as the rest of this file.
+  var RENDERMODE_TRANSALPHA = 4;   // RenderMode_t::kRenderTransAlpha (verify at the live gate)
+  function beamPackRGBA(c) {
+    return ((c[0] & 255) | ((c[1] & 255) << 8) | ((c[2] & 255) << 16) | ((c[3] & 255) << 24)) >>> 0;
+  }
+  function beamWriteEnd(ref, end) {
+    var o = __s2_schema_offset("CBeam", "m_vecEndPos");
+    if (o < 0) return false;
+    var ok = ref.writeFloat32(o, end.x) && ref.writeFloat32(o + 4, end.y) && ref.writeFloat32(o + 8, end.z);
+    if (ok) ref.notifyStateChanged(o);
+    return !!ok;
+  }
+  var Beam = {
+    // Draw a point-to-point beam (env_beam) from start to end. Returns a handle, or null if the entity
+    // couldn't be created. The beam is game-world-owned (NOT auto-removed on plugin unload) — the caller
+    // owns cleanup via handle.remove().
+    draw: function (start, end, opts) {
+      opts = opts || {};
+      var ref = globalThis.__s2pkg_entity.createEntity("env_beam");
+      if (!ref) return null;
+      var rmOff = __s2_schema_offset("CBaseModelEntity", "m_nRenderMode");
+      if (rmOff >= 0) ref.writeUInt8(rmOff, RENDERMODE_TRANSALPHA);
+      var widthOff = __s2_schema_offset("CBeam", "m_flWidth");
+      if (widthOff >= 0) ref.writeFloat32(widthOff, opts.width || 2.0);
+      var colorOff = __s2_schema_offset("CBaseModelEntity", "m_clrRender");
+      if (colorOff >= 0) ref.writeUInt32(colorOff, beamPackRGBA(opts.color || [255, 0, 0, 255]));
+      beamWriteEnd(ref, end);
+      ref.teleport([start.x, start.y, start.z]);   // start = the entity's own origin
+      ref.spawn();
+      return {
+        ref: ref,
+        update: function (s, e) { ref.teleport([s.x, s.y, s.z]); beamWriteEnd(ref, e); },
+        remove: function () { return ref.remove(); }
+      };
+    }
+  };
+
+  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam };
 })();

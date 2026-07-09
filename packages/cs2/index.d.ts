@@ -41,6 +41,8 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   /** The pawn's MoveType_t (uint8; null on a stale ref). Setting writes both m_MoveType and
    *  m_nActualMoveType + notifies. Values (MoveType_t): NONE=0, WALK=2, NOCLIP=7. */
   moveType: number | null;
+  /** The currently-pressed button mask (low 32 bits; IN_USE/E = 32). 0 if the mask is unreadable. */
+  readonly buttons: number;
   /** Kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale). */
   slay(): void;
   /**
@@ -147,3 +149,15 @@ export declare const ChatColors: {
  * a chat notice to `adminSlot`, and `onPicked` is not called.
  */
 export declare function pickPlayer(adminSlot: number, onPicked: (target: Player) => void): void;
+
+/** A live CEnvBeam handle. update() moves both endpoints; remove() destroys it. */
+export interface BeamHandle {
+  readonly ref: EntityRef;
+  update(start: Vector, end: Vector): void;
+  remove(): boolean;
+}
+/** Draw a point-to-point beam (a CEnvBeam) from start to end. Returns a handle, or null if the entity
+ *  couldn't be created. The beam is game-world-owned — call handle.remove() to clean up. */
+export declare const Beam: {
+  draw(start: Vector, end: Vector, opts?: { color?: [number, number, number, number]; width?: number }): BeamHandle | null;
+};
