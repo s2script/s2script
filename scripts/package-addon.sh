@@ -40,7 +40,8 @@ if [ -f games/cs2/js/pawn.js ]; then
     # schema.generated.js MUST precede nav.generated.js (sets __s2pkg_cs2_schema).
     # nav.generated.js MUST precede activity.js (which precedes pawn.js, the final IIFE).
     # activity.js sets globalThis.__s2_activity before pawn.js reads it.
-    # csitem.generated.js sets globalThis.__s2pkg_cs2.CsItem before pawn.js's IIFE re-exports it.
+    # csitem.generated.js sets globalThis.__s2pkg_cs2.CsItem; pawn.js's IIFE MERGES into
+    # (not overwrites) globalThis.__s2pkg_cs2, so CsItem survives regardless of order.
     cat games/cs2/js/schema.generated.js games/cs2/js/nav.generated.js games/cs2/js/activity.js games/cs2/js/csitem.generated.js games/cs2/js/pawn.js > "$DIST/s2script/js/pawn.js"
 fi
 

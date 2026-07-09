@@ -534,5 +534,7 @@
     }
   };
 
-  globalThis.__s2pkg_cs2 = { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam };
+  // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
+  // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam });
 })();
