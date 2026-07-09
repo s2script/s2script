@@ -4736,13 +4736,19 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
 
             // Build the ev object directly (no JS constructor needed — the data is already in hand,
             // unlike GameEvent/DamageInfo which read live shim state via further op calls).
-            let activator_val: v8::Local<v8::Value> = if act_handle < 0 {
+            // NOTE: -1 is the EXACT sentinel the shim emits for "no entity" (a null pActivator/
+            // pCaller), never a broad sign test — a live CEntityHandle::ToInt() packs a 17-bit
+            // serial into the packed int's upper bits (HANDLE_ENTRY_BITS=15 in entity.rs), so a
+            // real handle whose serial has climbed to >= 65536 is a genuinely negative i32 and
+            // must still decode, not be misread as "none" (mirrors the exact-sentinel convention
+            // `s2_give_named_item` already uses for its packed-handle return: `if handle != 0`).
+            let activator_val: v8::Local<v8::Value> = if act_handle == -1 {
                 v8::null(tc).into()
             } else {
                 let (ai, aser) = crate::entity::decode_handle(act_handle as u32);
                 if entity_resolve_ptr(ai, aser).is_null() { v8::null(tc).into() } else { build_entity_ref(tc, ai, aser) }
             };
-            let caller_val: v8::Local<v8::Value> = if caller_handle < 0 {
+            let caller_val: v8::Local<v8::Value> = if caller_handle == -1 {
                 v8::null(tc).into()
             } else {
                 let (ci, cser) = crate::entity::decode_handle(caller_handle as u32);
