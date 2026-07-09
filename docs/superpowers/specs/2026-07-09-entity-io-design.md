@@ -15,29 +15,35 @@ Both directions of Source 2 entity I/O, engine-generic (`CEntityInstance`/`CEnti
    (`func_button`→`OnPressed`, `trigger_multiple`→`OnStartTouch`, `logic_relay`→`OnTrigger`, …); the handler
    may return a `HookResult ≥ Handled` to SUPPRESS the output (parity with the damage/event pre-hooks).
 
-## Direction 1 — `AcceptInput` (fire inputs)
+## Direction 1 — fire inputs (via `AddEntityIOEvent`)
 
-**ABI (confirmed from CSSharp's C++ native):**
+**Mechanism: `CEntitySystem::AddEntityIOEvent`** — UNIQUE ✓ (`@0x2128170`, validated), the game's OWN
+input-firing path (it's what map I/O and `FireOutputInternal` route through). Chosen over the direct
+`CEntityInstance::AcceptInput` because that sig is **STALE on our build (0 matches — its prologue changed
+past a re-derivable prefix)**; `AddEntityIOEvent` needs NO re-derivation and we already hold everything it
+needs. `delay 0` = the same-tick I/O pump → effectively immediate for entity I/O (this is how the engine
+itself fires connected inputs; a synchronous-within-the-call `AcceptInput` is a deferred optimization).
+
+**ABI (confirmed from CSSharp's C++, `entity_manager.h`):**
 ```cpp
-AcceptInput(CEntityInstance* this, const char* inputName, CEntityInstance* activator,
-            CEntityInstance* caller, variant_t* value, int outputID /*=0*/, void* /*=nullptr*/)
-// CSSharp: variant_t _value = variant_t(value /*string*/); AcceptInput(this, name, act, caller, &_value, id, nullptr);
+void AddEntityIOEvent(CEntitySystem* entitySystem, CEntityInstance* target, const char* inputName,
+                      CEntityInstance* activator, CEntityInstance* caller, variant_t* value,
+                      float delay, int outputID, void* /*=null*/, void* /*=null*/)
+// CSSharp: variant_t _value = variant_t(value/*string*/);
+//          AddEntityIOEvent(GameEntitySystem(), target, name, act, caller, &_value, delay, id, nullptr, nullptr);
 ```
-The `variant_t` is **the SDK type** (`third_party/hl2sdk/public/datamap.h`) constructed from a string —
-**no RE for the value** (Source parses the string per the input's expected field type). A value-less input
-passes an empty string → empty variant.
+The `entitySystem` = the `CGameEntitySystem*` the shim ALREADY resolves for every entity lookup
+(GameResourceService + offset 0x50). The `variant_t` is **the SDK type** (`third_party/hl2sdk/public/datamap.h`)
+built from a string — **no RE for the value** (Source parses the string per the input's field type; a
+value-less input passes an empty string).
 
-**The one spike:** the CSSharp `CEntityInstance_AcceptInput` signature is **STALE on our build (0 matches)**.
-Re-derive it on the pinned `libserver.so` — cleanest via the **`FireOutputInternal` xref** (`@0x2132a60`,
-UNIQUE — an output firing a targeted input calls `AcceptInput`/`AddEntityIOEvent`), or RTTI on the
-`CEntityInstance` vtable. **Fallback:** `CEntitySystem_AddEntityIOEvent` (UNIQUE ✓ `@0x2128170`) queues the
-input (delay 0 → next-think) if the direct `AcceptInput` re-derive proves hard.
-
-**Op** (ABI-appended after the last item op): `entity_accept_input(int idx, int serial, const char* inputName,
-const char* value, int actIdx, int actSerial, int callerIdx, int callerSerial) → int (bool)`. Shim: serial-gate
-the target; resolve activator/caller serial-gated (`<0` → null); `variant_t(value)`; call the re-derived
-`AcceptInput(target, inputName, activator, caller, &variant, 0, nullptr)`. **`EntityRef.acceptInput(inputName,
-value?, activator?, caller?)`** (engine-generic, `@s2script/entity`; activator/caller are optional `EntityRef`s).
+**Op** (ABI-appended after the last item op): `entity_fire_input(int idx, int serial, const char* inputName,
+const char* value, int actIdx, int actSerial, int callerIdx, int callerSerial, float delay) → int (bool)`.
+Shim: serial-gate the target; resolve activator/caller serial-gated (`<0` → null); `variant_t(value)`; call
+`AddEntityIOEvent(entitySystem, target, inputName, activator, caller, &variant, delay, 0, nullptr, nullptr)`.
+**`EntityRef.acceptInput(inputName, value?, activator?, caller?, delay?)`** (engine-generic, `@s2script/entity`;
+activator/caller optional `EntityRef`s; `delay` defaults 0 = same-tick). The name mirrors SM's `AcceptEntityInput`
+familiarity; the doc notes it queues same-tick (not synchronous-within-the-call).
 
 ## Direction 2 — output hooks (`FireOutputInternal` detour)
 
@@ -68,10 +74,12 @@ a new namespace in `@s2script/entity` (alongside `createEntity`). `classname`/`o
 
 ## The RE (validated offline against the pinned `libserver.so`, 2026-07-09)
 
+- `CEntitySystem_AddEntityIOEvent` — UNIQUE ✓ `@0x2128170` (**the input-firing primary**; ABI known, entity
+  system already resolved).
 - `CEntityIOOutput_FireOutputInternal` — UNIQUE ✓ `@0x2132a60` (the output-hook detour target).
-- `CEntitySystem_AddEntityIOEvent` — UNIQUE ✓ `@0x2128170` (the queued-input fallback).
-- `CEntityInstance_AcceptInput` — **STALE (0 matches)** → re-derive (spike; the CSSharp ABI + the SDK
-  `variant_t` are the givens, only the byte pattern moved).
+- `CEntityInstance_AcceptInput` — **STALE (0 matches; prefix-matching found only a false candidate)** →
+  NOT used this slice; the direct synchronous input call is a deferred optimization (`AddEntityIOEvent`
+  covers firing inputs).
 - `variant_t` — in the vendored SDK (`datamap.h`); `CVariant` read pattern from `natives_cvariant.cpp`.
 
 ## Boundary (both gates green)
@@ -89,9 +97,10 @@ schema names in core. The sigs + the `m_pDesc`/`m_pName` offsets are gamedata/SD
 - **Live gate — BOTH directions in ONE self-contained bot-provable flow:** the demo `createEntity("logic_relay")`,
   `Entity.onOutput("logic_relay", "OnTrigger", …)`, `relay.spawn()`, then `relay.acceptInput("Trigger")` →
   `FireOutputInternal` fires `OnTrigger` → our detour → the JS hook logs `caller=logic_relay output=OnTrigger`.
-  This proves **AcceptInput (input fired), the FireOutput detour (output caught), the mux dispatch, and the
-  EntityRef marshalling** with zero human client / no map dependency. Also fire `acceptInput("Kill")` on a
-  spawned entity → it's gone (`isValid()` false). `GAMEDATA VALIDATION` grows; `RestartCount=0`, no crash.
+  This proves **the input fire (`AddEntityIOEvent`), the FireOutput detour (output caught), the mux dispatch,
+  and the EntityRef marshalling** with zero human client / no map dependency. Also fire `acceptInput("Kill")`
+  on a spawned entity → it's gone next tick (`isValid()` false). `GAMEDATA VALIDATION` grows; `RestartCount=0`,
+  no crash.
 
 ## Non-goals (do NOT build)
 
@@ -104,9 +113,10 @@ schema names in core. The sigs + the `m_pDesc`/`m_pName` offsets are gamedata/SD
 
 ## Sequencing (spike-first, one slice)
 
-0. **Spike** — re-derive `AcceptInput` on the pinned binary (FireOutputInternal-xref / RTTI; AddEntityIOEvent
-   fallback); confirm the `CEntityIOOutput::m_pDesc->m_pName` + `GetClassname` accessors + the `CVariant` read.
-   Record the gamedata (the re-derived AcceptInput sig + the FireOutputInternal sig).
+0. **Spike (small — the input sig is already validated)** — confirm the `CEntityIOOutput::m_pDesc->m_pName`
+   + `CEntityInstance::GetClassname` accessors + the `CVariant` read against the pinned binary / the vendored
+   SDK types (the FireOutput detour's extraction). Record the gamedata (`AddEntityIOEvent` + `FireOutputInternal`
+   sigs, both already UNIQUE-validated).
 1. **Core ops + `EntityRef.acceptInput` + `output_mux` + `Entity.onOutput` + degrade/mux tests.**
 2. **Shim — `AcceptInput` call (variant_t via SDK) + the `FireOutputInternal` detour** (extract name/class/
    activator/caller/value, dispatch to core, `HookResult`→supersede); sniper build.
