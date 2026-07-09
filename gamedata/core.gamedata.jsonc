@@ -46,7 +46,14 @@
     // HINT, not a number: it is VALIDATED at load (the resolved fn ptr must land inside
     // libserver.so's own .text range) before ever being called; a stale/wrong index degrades the
     // trace op to unavailable, never crashes.
-    "CNavPhysicsInterface_TraceShape": { "linuxsteamrt64": 5 }
+    "CNavPhysicsInterface_TraceShape": { "linuxsteamrt64": 5 },
+    // Entity-creation lifecycle slice: CBaseEntity::Teleport's vtable INDEX (not a byte offset),
+    // on the entity's own (linear, single-inheritance) vtable — CSSharp's CBaseEntity_Teleport
+    // offset. Per the RE doctrine a borrowed index is a HINT: it is VALIDATED at load (the
+    // resolved fn ptr must land inside libserver.so's own .text range, mirroring
+    // CNavPhysicsInterface_TraceShape above) before ever being called; a stale/wrong index
+    // degrades the teleport op to unavailable, never crashes.
+    "CBaseEntity_Teleport": { "linuxsteamrt64": 162 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
@@ -136,6 +143,38 @@
       "linuxsteamrt64": {
         "module": "libserver.so",
         "pattern": "48 8B 05 ? ? ? ? 48 85 C0 74 ? 83 FF ? 77 ? 48 63 FF 48 C1 E7 ? 48 8D 44 38",
+        "resolve": "direct"
+      }
+    },
+    // Entity-creation lifecycle slice: UTIL_CreateEntityByName(const char* className, int
+    // forceEdictIndex) -> CBaseEntity*. A DIRECT prologue pattern (match offset == function
+    // start; the rip-relative `lea` disp is masked). Validated UNIQUE @ 2026-07-09 in the pinned
+    // libserver.so (@0x16a9140). Per-update the prologue/offset move each patch (the treadmill).
+    "UtilCreateEntityByName": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8D 05 ? ? ? ? 55 48 89 FA",
+        "resolve": "direct"
+      }
+    },
+    // Entity-creation lifecycle slice: CBaseEntity::DispatchSpawn(CEntityKeyValues* pKeyValues) —
+    // registers/activates a newly created entity (must be called before the entity is usable in
+    // the world). A DIRECT prologue pattern. Validated UNIQUE @ 2026-07-09 in the pinned
+    // libserver.so (@0x1785b00).
+    "DispatchSpawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 85 FF 74 ? 55 48 89 E5 41 55 41 54 49 89 FC",
+        "resolve": "direct"
+      }
+    },
+    // Entity-creation lifecycle slice: UTIL_Remove(CBaseEntity* entity) — schedules an entity for
+    // removal. A DIRECT prologue pattern. Validated UNIQUE @ 2026-07-09 in the pinned libserver.so
+    // (@0x16a9460).
+    "UtilRemove": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 89 FE 48 85 FF 74 ? 48 8D 05 ? ? ? ? 48",
         "resolve": "direct"
       }
     }

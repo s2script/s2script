@@ -1337,6 +1337,89 @@ static void GamedataBanner() {
 }
 
 // ---------------------------------------------------------------------------
+// Entity-creation lifecycle slice (Task 2): UTIL_CreateEntityByName / CBaseEntity::DispatchSpawn /
+// UTIL_Remove are self-validated byte signatures (resolved below, in Load()); CBaseEntity::Teleport
+// is called through the entity's own vtable at a gamedata-supplied INDEX, .text-validated before
+// the first call (never trusted blind — the CommitSuicide-index lesson). Entities are handled here
+// exactly as CEntityInstance* everywhere else in this file (id->m_pInstance IS a CEntityInstance*;
+// the class hierarchy is linear, so the object's vtable pointer at offset 0 and GetRefEHandle() are
+// valid through that type) — this file never needs the (incomplete, forward-declared-only)
+// CBaseEntity type. The raw pointer NEVER crosses to JS: entity_create packs it into a
+// CEntityHandle.ToInt() int; entity_spawn/teleport/remove take (index, serial) and re-resolve
+// through the EXISTING serial-gated chunk walk (s2_deref_handle) on every call.
+// ---------------------------------------------------------------------------
+using CreateEntityByNameFn = CEntityInstance* (*)(const char* className, int forceEdictIndex);
+using DispatchSpawnFn      = void (*)(CEntityInstance* self, void* pEntityKeyValues);
+using UtilRemoveFn         = void (*)(CEntityInstance* self);
+static CreateEntityByNameFn s_pCreateEntityByName = nullptr;
+static DispatchSpawnFn      s_pDispatchSpawn      = nullptr;
+static UtilRemoveFn         s_pUtilRemove         = nullptr;
+static int                  s_teleportVtblIndex   = -1;   // from gamedata offsets; -1 = unresolved
+
+// Resolve (index, serial) -> CEntityInstance*, serial-gated via the EXISTING chunk-walk resolver
+// (s2_deref_handle). Returns null on a stale/reused/out-of-range pair — never a dangling deref.
+static CEntityInstance* ResolveEntityBySerial(int index, int serial) {
+    if (index < 0 || serial < 0) return nullptr;
+    CEntityHandle h(index, serial);
+    return static_cast<CEntityInstance*>(s2_deref_handle(static_cast<unsigned int>(h.ToInt())));
+}
+
+// Validate a resolved (vtable-slot / signature) fn pointer lands inside libserver.so's own
+// executable range — Rule 2 parity with ResolveSigValidated / the TraceShape vtable-index check.
+// A borrowed/stale index could point anywhere; this stops a wrong-but-in-range call before it
+// happens rather than crashing on first use.
+static bool IsAddressInServerText(void* fn) {
+    if (!fn) return false;
+    ModText mt = FindModuleText("libserver.so");
+    const uint8_t* f = reinterpret_cast<const uint8_t*>(fn);
+    return mt.text && f >= mt.text && f < mt.text + mt.size;
+}
+
+// create: className -> packed CEntityHandle (ToInt). The raw ptr NEVER leaves the shim.
+static int Shim_EntityCreate(const char* className) {
+    if (!s_pCreateEntityByName || !className) return 0;
+    CEntityInstance* ent = s_pCreateEntityByName(className, -1);
+    if (!ent) return 0;
+    return ent->GetRefEHandle().ToInt();
+}
+
+// spawn: DispatchSpawn on a serial-gated entity. Returns 1 on success, 0 if unresolved/stale.
+static int Shim_EntitySpawn(int index, int serial) {
+    if (!s_pDispatchSpawn) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pDispatchSpawn(ent, nullptr);
+    return 1;
+}
+
+// teleport: CBaseEntity::Teleport via the gamedata vtable index, .text-validated on every call
+// (mirrors the trace-slice's load-time check but re-checked here since the index is read once at
+// load — this guards against a corrupted/freed vtable slot, not just a stale gamedata index).
+// origin/angles/velocity are nullable float[3] pointers (already validated 3-element arrays or
+// null by the Rust caller).
+static int Shim_EntityTeleport(int index, int serial, const float* o, const float* a, const float* v) {
+    if (s_teleportVtblIndex < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    void** vtbl = *reinterpret_cast<void***>(ent);
+    void* fn = vtbl[s_teleportVtblIndex];
+    if (!IsAddressInServerText(fn)) return 0;
+    using TeleportFn = void (*)(void*, const Vector*, const QAngle*, const Vector*);
+    reinterpret_cast<TeleportFn>(fn)(ent,
+        reinterpret_cast<const Vector*>(o), reinterpret_cast<const QAngle*>(a), reinterpret_cast<const Vector*>(v));
+    return 1;
+}
+
+// remove: UTIL_Remove on a serial-gated entity. Returns 1 on success, 0 if unresolved/stale.
+static int Shim_EntityRemove(int index, int serial) {
+    if (!s_pUtilRemove) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pUtilRemove(ent);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
@@ -1656,12 +1739,59 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pGetLegacyListener));
                 }   // lelOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Entity-creation lifecycle slice (Task 2): resolve UTIL_CreateEntityByName,
+            // CBaseEntity::DispatchSpawn, and UTIL_Remove — all DIRECT prologue signatures
+            // self-validated on OUR libserver.so. Degrade-never-crash: any unresolved leaves its
+            // s_p* null -> the matching entity_* op no-ops (createEntity/spawn/remove -> null/false).
+            auto ucbnit = sigs.find("UtilCreateEntityByName");
+            if (ucbnit == sigs.end()) {
+                GamedataResult("UtilCreateEntityByName", false, "signature absent from gamedata");
+            } else {
+                int64_t ucbnOff = ResolveSigValidated("UtilCreateEntityByName", ucbnit->second);
+                ModText ucbnmt = FindModuleText(ucbnit->second.module.c_str());
+                if (ucbnOff != s2sig::kFail && ucbnmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pCreateEntityByName = reinterpret_cast<CreateEntityByNameFn>(const_cast<uint8_t*>(ucbnmt.text) + ucbnOff);
+                    META_CONPRINTF("[s2script] UtilCreateEntityByName resolved @%p (createEntity)\n",
+                                   reinterpret_cast<void*>(s_pCreateEntityByName));
+                }   // ucbnOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            auto dsit = sigs.find("DispatchSpawn");
+            if (dsit == sigs.end()) {
+                GamedataResult("DispatchSpawn", false, "signature absent from gamedata");
+            } else {
+                int64_t dsOff = ResolveSigValidated("DispatchSpawn", dsit->second);
+                ModText dsmt = FindModuleText(dsit->second.module.c_str());
+                if (dsOff != s2sig::kFail && dsmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pDispatchSpawn = reinterpret_cast<DispatchSpawnFn>(const_cast<uint8_t*>(dsmt.text) + dsOff);
+                    META_CONPRINTF("[s2script] DispatchSpawn resolved @%p (EntityRef.spawn)\n",
+                                   reinterpret_cast<void*>(s_pDispatchSpawn));
+                }   // dsOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            auto urit = sigs.find("UtilRemove");
+            if (urit == sigs.end()) {
+                GamedataResult("UtilRemove", false, "signature absent from gamedata");
+            } else {
+                int64_t urOff = ResolveSigValidated("UtilRemove", urit->second);
+                ModText urmt = FindModuleText(urit->second.module.c_str());
+                if (urOff != s2sig::kFail && urmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pUtilRemove = reinterpret_cast<UtilRemoveFn>(const_cast<uint8_t*>(urmt.text) + urOff);
+                    META_CONPRINTF("[s2script] UtilRemove resolved @%p (EntityRef.remove)\n",
+                                   reinterpret_cast<void*>(s_pUtilRemove));
+                }   // urOff == kFail: ResolveSigValidated already recorded the reason
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
             std::string offErr;
             auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
             auto pick = [&](const char* k) { auto i = offs.find(k); return i != offs.end() ? i->second : -1; };
+            // Entity-creation lifecycle slice (Task 2): CBaseEntity::Teleport's vtable INDEX. A
+            // borrowed index is a HINT, not trusted blind — Shim_EntityTeleport re-validates the
+            // resolved fn ptr lands inside libserver.so's .text on EVERY call (IsAddressInServerText),
+            // so an absent/stale key here just means "no createEntity live gate for the value would be
+            // needed" — the real safety check is per-call, not this presence check.
+            s_teleportVtblIndex = pick("CBaseEntity_Teleport");
+            GamedataResult("CBaseEntity_Teleport", s_teleportVtblIndex >= 0, "offset (vtable index) key absent from gamedata");
             s_offGameServer  = pick("NetworkServerService.gameServer");
             s_offClientCount = pick("NetworkGameServer.clientCount");
             s_offClientElems = pick("NetworkGameServer.clientElems");
@@ -1796,6 +1926,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.config_write_file = &s2_config_write_file;
     // Ray-trace slice — APPENDED after config_write_file; order MUST match S2EngineOps.
     ops.trace_shape = &s2_trace_shape;
+    // Entity-creation lifecycle slice — APPENDED after trace_shape; order MUST match S2EngineOps.
+    ops.entity_create   = &Shim_EntityCreate;
+    ops.entity_spawn    = &Shim_EntitySpawn;
+    ops.entity_teleport = &Shim_EntityTeleport;
+    ops.entity_remove   = &Shim_EntityRemove;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
