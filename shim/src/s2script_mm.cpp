@@ -1370,9 +1370,15 @@ static CEntityInstance* ResolveEntityBySerial(int index, int serial) {
 // happens rather than crashing on first use.
 static bool IsAddressInServerText(void* fn) {
     if (!fn) return false;
-    ModText mt = FindModuleText("libserver.so");
+    // libserver.so's .text range is fixed after load; cache it on first use so the per-frame
+    // entity_teleport hot path (a beam.update per held-E player each frame) does NOT re-walk every
+    // loaded module via dl_iterate_phdr on every call. Function-local statics keep this decoupled
+    // from the CommitSuicide-path s_serverText global (which is only populated if that sig resolves).
+    static const uint8_t* s_text = nullptr;
+    static size_t          s_textSize = 0;
+    if (!s_text) { ModText mt = FindModuleText("libserver.so"); s_text = mt.text; s_textSize = mt.size; }
     const uint8_t* f = reinterpret_cast<const uint8_t*>(fn);
-    return mt.text && f >= mt.text && f < mt.text + mt.size;
+    return s_text && f >= s_text && f < s_text + s_textSize;
 }
 
 // create: className -> packed CEntityHandle (ToInt). The raw ptr NEVER leaves the shim.
