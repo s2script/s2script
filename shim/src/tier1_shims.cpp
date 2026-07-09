@@ -65,3 +65,28 @@ unsigned int MurmurHash2LowerCase(char const* pString, unsigned int nSeed) {
 // MurmurHash2LowerCase(str, 0x31415926)). The length-taking overload is intentionally NOT provided:
 // it's unused, and Valve's version lowercases the whole string then hashes nLength bytes (a subtle
 // parity trap if reimplemented). If a caller ever needs it, add it matching generichash.cpp exactly.
+
+// ---------------------------------------------------------------------------------------------------
+// quat_identity — the same self-contained-symbol pattern. mathlib.h declares
+//   extern const Quaternion quat_identity;
+// and it is referenced transitively (transform.h's CTransform uses it as the default orientation, so
+// any SDK header pulling in transform.h drags the reference into the shim). It is DEFINED in
+// mathlib/mathlib_base.cpp as `const Quaternion quat_identity(0,0,0,1)`; the engine does not export it,
+// and the shim deliberately does not link mathlib.a (it would cascade like tier1). Quaternion is a
+// POD `{ float x, y, z, w; }`; identity is (0,0,0,1). We need only the 16-byte symbol, so a
+// layout-compatible stand-in avoids pulling all of mathlib into this TU. Re-check on any hl2sdk bump.
+struct s2_QuatLayout { float x, y, z, w; };
+extern const s2_QuatLayout quat_identity;
+const s2_QuatLayout quat_identity = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+// The mathlib Vector/QAngle constants, same story (extern const in mathlib.h, defined in
+// mathlib_base.cpp, dragged in transitively, engine doesn't export them, mathlib.a would cascade
+// tier0). Vector and QAngle are both POD `{ float x, y, z; }`. vec3_origin/vec3_angle = (0,0,0);
+// vec3_invalid = (FLT_MAX,FLT_MAX,FLT_MAX). Only the 12-byte symbol matters, so a stand-in suffices.
+struct s2_Vec3Layout { float x, y, z; };
+extern const s2_Vec3Layout vec3_origin;
+const s2_Vec3Layout vec3_origin = { 0.0f, 0.0f, 0.0f };
+extern const s2_Vec3Layout vec3_angle;
+const s2_Vec3Layout vec3_angle = { 0.0f, 0.0f, 0.0f };
+extern const s2_Vec3Layout vec3_invalid;
+const s2_Vec3Layout vec3_invalid = { 3.402823466e+38f, 3.402823466e+38f, 3.402823466e+38f };
