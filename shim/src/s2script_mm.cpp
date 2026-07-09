@@ -1426,6 +1426,109 @@ static int Shim_EntityRemove(int index, int serial) {
 }
 
 // ---------------------------------------------------------------------------
+// Item / weapon manipulation slice (Task 2): GiveNamedItem / RemovePlayerItem are self-validated
+// DIRECT byte signatures (resolved below, in Load()), re-confirmed unique + ABI-checked by disasm
+// (spike, Task 2). entity_subobj_vcall is the reusable engine-generic primitive: it reads a
+// sub-object pointer off the entity at a caller-supplied offset (m_pItemServices/m_pWeaponServices,
+// live-schema-resolved JS-side — never a CS2 name in this file) and calls a caller-supplied vtable
+// INDEX on it, .text-validated before every call (the same IsAddressInServerText guard as
+// Shim_EntityTeleport — a borrowed/stale index can't jump outside libserver.so, but per the
+// gamedata-file comment on CCSPlayer_ItemServices_RemoveWeapons/DropActivePlayerWeapon, this spike
+// found the two BORROWED indices for THIS build resolve to something else entirely; they are
+// wired here only as the generic mechanism, not as confirmed-correct call sites — see the
+// gamedata comment). entity_read_handle_vector follows a pointer-deref chain then reads a
+// CUtlVector<CHandle> header: `count` @ `vectorOff` (uint32), `elements` @ `vectorOff + 8`
+// (CHandle*, 4-byte packed handles). SPIKE FINDING (CUtlVector layout, Task 2): a live disasm
+// access site specific to m_hMyWeapons was not pinned down within the spike's bound, but the
+// layout is the same CNetworkUtlVectorBase<T> used identically across every Source 2 title for
+// over a decade, and is independently cross-checked here against our OWN live schema-catalog.json
+// dump: m_hMyWeapons (CPlayer_WeaponServices) and m_networkAnimTiming (CCSPlayer_WeaponServices)
+// are both declared exactly 24 bytes wide (the gap to the next field), consistent with
+// int32-count(4)+pad(4)+T*-elements(8)+allocCount(4)+growSize(4) = 24 — i.e. count@+0/elements@+8.
+// The raw sub-object/elements pointers NEVER cross to JS: every handle is decoded + serial-gated
+// via ResolveEntityBySerial (through entity_resolve_ptr on the Rust side) before becoming an
+// EntityRef.
+// ---------------------------------------------------------------------------
+using GiveNamedItemFn    = CEntityInstance* (*)(void* itemServices, const char* name, void* iSubType, void* pScriptItem, void* a5, void* a6);
+using RemovePlayerItemFn = bool (*)(void* pawn, void* weapon);
+static GiveNamedItemFn    s_pGiveNamedItem    = nullptr;   // sig-resolved fn ptr (loaded in Load)
+static RemovePlayerItemFn s_pRemovePlayerItem = nullptr;   // sig-resolved fn ptr (loaded in Load)
+static int s_removeWeaponsVtblIndex = -1;   // gamedata (informational; the call site takes the index from the JS caller — see the header comment)
+static int s_dropActiveVtblIndex    = -1;   // gamedata (informational; the call site takes the index from the JS caller — see the header comment)
+
+// give: read a sub-object pointer (e.g. m_pItemServices) off a serial-gated entity, call
+// GiveNamedItem(itemServices, name, 0, nullptr, 0, nullptr). Returns a packed CEntityHandle
+// (ToInt) of the created weapon, or 0 on failure/unresolved. The raw CBaseEntity*/sub-object ptr
+// never crosses to JS.
+static int Shim_GiveNamedItem(int index, int serial, int subObjOffset, const char* className) {
+    if (!s_pGiveNamedItem || !className || subObjOffset < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    void* subObj = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ent) + subObjOffset);
+    if (!subObj) return 0;
+    CEntityInstance* w = s_pGiveNamedItem(subObj, className, 0, nullptr, 0, nullptr);
+    if (!w) return 0;
+    return w->GetRefEHandle().ToInt();
+}
+
+// subobj vcall: read a sub-object pointer off a serial-gated entity, then call vtable[vtableIndex]
+// on that sub-object with an optional single entity arg (argIdx<0 -> null). The resolved fn ptr is
+// validated to land inside libserver.so's own .text (IsAddressInServerText) before ever being
+// called — a stale/wrong index can't jump outside the module, though (per the gamedata comment on
+// the two borrowed indices this slice ships) it may still call the WRONG in-range function.
+// Returns 1 on success, 0 if unresolved/stale/invalid index.
+static int Shim_EntitySubobjVcall(int index, int serial, int subObjOffset, int vtableIndex, int argIdx, int argSerial) {
+    if (vtableIndex < 0 || subObjOffset < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    void* subObj = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ent) + subObjOffset);
+    if (!subObj) return 0;
+    void* argPtr = nullptr;
+    if (argIdx >= 0) {
+        argPtr = ResolveEntityBySerial(argIdx, argSerial);
+        if (!argPtr) return 0;   // an explicit arg was requested but didn't resolve -> fail, don't silently drop it
+    }
+    void** vtbl = *reinterpret_cast<void***>(subObj);
+    void* fn = vtbl[vtableIndex];
+    if (!IsAddressInServerText(fn)) return 0;
+    reinterpret_cast<void (*)(void*, void*)>(fn)(subObj, argPtr);
+    return 1;
+}
+
+// remove item: RemovePlayerItem(pawn, weapon) -> bool, both serial-gated. Returns 1/0.
+static int Shim_RemovePlayerItem(int pawnIndex, int pawnSerial, int weaponIndex, int weaponSerial) {
+    if (!s_pRemovePlayerItem) return 0;
+    CEntityInstance* pawn = ResolveEntityBySerial(pawnIndex, pawnSerial);
+    CEntityInstance* w    = ResolveEntityBySerial(weaponIndex, weaponSerial);
+    if (!pawn || !w) return 0;
+    s_pRemovePlayerItem(pawn, w);
+    return 1;
+}
+
+// read handle vector: follow a pointer-deref chain off a serial-gated entity, then read a
+// CUtlVector<CHandle> header (count @ vectorOff, elements @ vectorOff+8) and copy up to maxCount
+// packed CHandles into out[]. Returns the element count written (<= maxCount), 0 on any
+// unresolved step. Every intermediate pointer stays shim-side; only the packed int handles cross.
+static int Shim_EntityReadHandleVector(int index, int serial, const int* ptrOffs, int ptrCount, int vectorOff, int maxCount, int* out) {
+    if (vectorOff < 0 || maxCount <= 0 || !out) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    uint8_t* cur = reinterpret_cast<uint8_t*>(ent);
+    for (int i = 0; i < ptrCount; i++) {
+        cur = *reinterpret_cast<uint8_t**>(cur + ptrOffs[i]);
+        if (!cur) return 0;
+    }
+    uint32_t count = *reinterpret_cast<uint32_t*>(cur + vectorOff);          // size @ +0 (spike-confirmed via schema-catalog struct size cross-check)
+    uint8_t* elems = *reinterpret_cast<uint8_t**>(cur + vectorOff + 8);      // elements @ +8
+    if (!elems) return 0;
+    int n = static_cast<int>(count);
+    if (n < 0) n = 0;
+    if (n > maxCount) n = maxCount;
+    for (int i = 0; i < n; i++) out[i] = *reinterpret_cast<int*>(elems + i * 4);   // CHandle = 4-byte packed int
+    return n;
+}
+
+// ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
@@ -1785,6 +1888,34 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pUtilRemove));
                 }   // urOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Item slice (Task 2): resolve CCSPlayer_ItemServices::GiveNamedItem and
+            // CBasePlayerPawn::RemovePlayerItem — DIRECT prologue signatures self-validated on OUR
+            // libserver.so (re-confirmed unique + ABI-checked by disasm in the Task-2 spike).
+            // Degrade-never-crash: unresolved leaves its s_p* null -> the matching op no-ops.
+            auto gnit = sigs.find("GiveNamedItem");
+            if (gnit == sigs.end()) {
+                GamedataResult("GiveNamedItem", false, "signature absent from gamedata");
+            } else {
+                int64_t gnOff = ResolveSigValidated("GiveNamedItem", gnit->second);
+                ModText gnmt = FindModuleText(gnit->second.module.c_str());
+                if (gnOff != s2sig::kFail && gnmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pGiveNamedItem = reinterpret_cast<GiveNamedItemFn>(const_cast<uint8_t*>(gnmt.text) + gnOff);
+                    META_CONPRINTF("[s2script] GiveNamedItem resolved @%p (pawn.giveNamedItem)\n",
+                                   reinterpret_cast<void*>(s_pGiveNamedItem));
+                }   // gnOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            auto rpiit = sigs.find("RemovePlayerItem");
+            if (rpiit == sigs.end()) {
+                GamedataResult("RemovePlayerItem", false, "signature absent from gamedata");
+            } else {
+                int64_t rpiOff = ResolveSigValidated("RemovePlayerItem", rpiit->second);
+                ModText rpimt = FindModuleText(rpiit->second.module.c_str());
+                if (rpiOff != s2sig::kFail && rpimt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pRemovePlayerItem = reinterpret_cast<RemovePlayerItemFn>(const_cast<uint8_t*>(rpimt.text) + rpiOff);
+                    META_CONPRINTF("[s2script] RemovePlayerItem resolved @%p (pawn.removeWeapon)\n",
+                                   reinterpret_cast<void*>(s_pRemovePlayerItem));
+                }   // rpiOff == kFail: ResolveSigValidated already recorded the reason
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
@@ -1937,6 +2068,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_spawn    = &Shim_EntitySpawn;
     ops.entity_teleport = &Shim_EntityTeleport;
     ops.entity_remove   = &Shim_EntityRemove;
+    // Item slice — APPENDED after entity_remove; order MUST match S2EngineOps.
+    ops.give_named_item           = &Shim_GiveNamedItem;
+    ops.entity_subobj_vcall       = &Shim_EntitySubobjVcall;
+    ops.remove_player_item        = &Shim_RemovePlayerItem;
+    ops.entity_read_handle_vector = &Shim_EntityReadHandleVector;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

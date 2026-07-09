@@ -53,7 +53,26 @@
     // resolved fn ptr must land inside libserver.so's own .text range, mirroring
     // CNavPhysicsInterface_TraceShape above) before ever being called; a stale/wrong index
     // degrades the teleport op to unavailable, never crashes.
-    "CBaseEntity_Teleport": { "linuxsteamrt64": 162 }
+    "CBaseEntity_Teleport": { "linuxsteamrt64": 162 },
+    // Item slice (Task 2): CCSPlayer_ItemServices::RemoveWeapons / DropActivePlayerWeapon vtable
+    // INDICES, borrowed from ModSharp/CSSharp's "linux" gamedata (per the RE doctrine, a HINT, not
+    // a number). SPIKE FINDING (2026-07-09, recorded against this exact pinned libserver.so): an
+    // RTTI vtable-by-name resolve of "CCSPlayer_ItemServices" (mirroring s2vtable::GetVTableByName)
+    // followed by a disassembly of slots 24/25/26 shows they are GiveNamedItem-OVERLOAD THUNKS
+    // (each zeroes the extra args then tail-jumps/calls into the sig-resolved GiveNamedItem at
+    // 0x152c560) — NOT RemoveWeapons/DropActivePlayerWeapon on this build. The borrowed indices
+    // are therefore UNCONFIRMED (the same failure mode the CommitSuicide slice hit with a
+    // version-wrong index) — the shim's per-call `IsAddressInServerText` guard does NOT catch
+    // this (the thunks are valid in-range code, so a call would silently misbehave rather than
+    // crash — e.g. passing a raw entity pointer as `entity_subobj_vcall`'s arg would reach
+    // GiveNamedItem's `const char* name` parameter as an unterminated non-string pointer, an
+    // unsafe read). Kept here as data (regenerable, matches the "layout is data" charter rule) so
+    // a corrected index is a data-only fix, but pawn.stripWeapons()/dropActiveWeapon() (Task 4)
+    // MUST NOT be wired to these until independently re-confirmed (candidate worth investigating:
+    // this build's vtable slot 27, which reads a Vector* arg and computes a throw velocity —
+    // unconfirmed, not wired). Values kept as given for now; Task 4/5 own the go/no-go call.
+    "CCSPlayer_ItemServices_RemoveWeapons":          { "linuxsteamrt64": 25 },
+    "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
@@ -175,6 +194,31 @@
       "linuxsteamrt64": {
         "module": "libserver.so",
         "pattern": "48 89 FE 48 85 FF 74 ? 48 8D 05 ? ? ? ? 48",
+        "resolve": "direct"
+      }
+    },
+    // Item slice (Task 2): CCSPlayer_ItemServices::GiveNamedItem(void* iSubType, const char* name,
+    // int, void*, int, void*) -> CBaseEntity*. A DIRECT prologue pattern. Validated UNIQUE @
+    // 2026-07-09 in the pinned libserver.so (@0x152c560); ABI independently re-confirmed by disasm
+    // (spike, Task 2): saves rdi/edx/rcx/r8d/r9 to the frame, then a null/empty-string early-out
+    // on rsi (the name), then a strcmp-style scan against a static known-item-name table —
+    // consistent with (itemServices, name, iSubType, pScriptItem, a5, a6).
+    "GiveNamedItem": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 81 EC ? ? ? ? 48 89 BD ? ? ? ? 89 95 ? ? ? ? 48 89 8D ? ? ? ? 44 89 85",
+        "resolve": "direct"
+      }
+    },
+    // Item slice (Task 2): CBasePlayerPawn::RemovePlayerItem(CBasePlayerWeapon* weapon) -> bool —
+    // a proper unequip (used by pawn.removeWeapon). A DIRECT prologue pattern. Validated UNIQUE @
+    // 2026-07-09 in the pinned libserver.so (@0x1580110); ABI re-confirmed by disasm (spike, Task
+    // 2): `this`(rdi)->r12, weapon(rsi)->rbx, then a call whose result is compared against rbx
+    // (the weapon) — consistent with (pawn, weapon) -> bool.
+    "RemovePlayerItem": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 FC 53 48 89 F3 E8 ? ? ? ? 48 39 C3",
         "resolve": "direct"
       }
     }
