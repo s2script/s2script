@@ -519,7 +519,7 @@
       if (!ref) return null;
       var rmOff = __s2_schema_offset("CBaseModelEntity", "m_nRenderMode");
       if (rmOff >= 0) ref.writeUInt8(rmOff, RENDERMODE_TRANSALPHA);
-      var widthOff = __s2_schema_offset("CBeam", "m_flWidth");
+      var widthOff = __s2_schema_offset("CBeam", "m_fWidth");
       if (widthOff >= 0) ref.writeFloat32(widthOff, opts.width || 2.0);
       var colorOff = __s2_schema_offset("CBaseModelEntity", "m_clrRender");
       if (colorOff >= 0) ref.writeUInt32(colorOff, beamPackRGBA(opts.color || [255, 0, 0, 255]));
