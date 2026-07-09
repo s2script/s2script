@@ -206,16 +206,27 @@
     return __s2_remove_player_item(this.ref.index, this.ref.serial, weapon.index, weapon.serial);
   };
 
-  // pawn.stripWeapons() / pawn.dropActiveWeapon() — DEFERRED, always false. The generic
-  // entity_subobj_vcall mechanism (Task 1/2) exists, but Task 2's live disasm spike (recorded in
-  // gamedata/core.gamedata.jsonc, "CCSPlayer_ItemServices_RemoveWeapons"/"..._DropActivePlayerWeapon")
-  // found the two BORROWED vtable indices (25/24) resolve, on this pinned libserver.so, to
-  // GiveNamedItem-overload THUNKS — not RemoveWeapons/DropActivePlayerWeapon. Calling through with
-  // those indices would invoke the wrong function with mismatched args (e.g. an entity pointer read
-  // as GiveNamedItem's `const char* name` — an unsafe out-of-bounds/unterminated read), which would
-  // violate degrade-never-crash. Per the gamedata comment ("Task 4/5 own the go/no-go call"), these
-  // stay UNWIRED until the correct indices are independently re-confirmed (a follow-up RE spike).
-  Pawn.prototype.stripWeapons = function () { return false; };
+  // pawn.stripWeapons() — remove ALL weapons by COMPOSING the working primitives (no vtable path):
+  // enumerate m_hMyWeapons (readHandleVector) → removeWeapon each (RemovePlayerItem unequips it from
+  // the player's inventory) → w.remove() (UTIL_Remove destroys the weapon entity). `ws` is a snapshot
+  // (each EntityRef is independent + serial-gated), so mutating m_hMyWeapons mid-loop is safe; a
+  // remove() on an already-gone entity is a serial-gated no-op. Returns true iff every weapon unequipped.
+  Pawn.prototype.stripWeapons = function () {
+    var ws = this.weapons;
+    var ok = true;
+    for (var i = 0; i < ws.length; i++) {
+      if (!this.removeWeapon(ws[i])) ok = false;
+      ws[i].remove();
+    }
+    return ok;
+  };
+  // pawn.dropActiveWeapon() — still DEFERRED (always false). A true DROP spawns the weapon as a world
+  // pickup, which CANNOT be composed from removeWeapon/remove (those DESTROY the weapon); it needs the
+  // real CCSPlayer_ItemServices::DropActivePlayerWeapon function. Task 2's live disasm spike found the
+  // borrowed vtable index 24 resolves, on this pinned libserver.so, to a GiveNamedItem-overload THUNK
+  // (not DropActivePlayerWeapon) — calling through would pass an entity ptr as GiveNamedItem's
+  // `const char* name` (an unsafe read, violating degrade-never-crash). Stays UNWIRED until the correct
+  // function is self-resolved by SIGNATURE (a follow-up RE spike — NOT a borrowed vtable index).
   Pawn.prototype.dropActiveWeapon = function () { return false; };
 
   // pawn.moveType — the pawn's MoveType_t (a uint8 enum → not codegen'd, so hand-written). GET reads
