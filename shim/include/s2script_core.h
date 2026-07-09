@@ -156,6 +156,15 @@ typedef int (*s2_entity_subobj_vcall_fn)(int index, int serial, int subObjOffset
 typedef int (*s2_remove_player_item_fn)(int pawnIndex, int pawnSerial, int weaponIndex, int weaponSerial);
 typedef int (*s2_entity_read_handle_vector_fn)(int index, int serial, const int* ptrOffs, int ptrCount, int vectorOff, int maxCount, int* outHandles);
 
+/* Entity-I/O slice — APPENDED after entity_read_handle_vector; order is the ABI.
+ * entity_fire_input: fire an entity input via AddEntityIOEvent (the game's own input-firing path,
+ * used e.g. by map I/O and FireOutputInternal). (index,serial) serial-gates the target; value is the
+ * input's string argument ("" = none, Source parses it per the input's field type); (actIdx,actSerial)/
+ * (callerIdx,callerSerial) are the activator/caller entities (<0 = none/null); delay is queued same-tick
+ * via the engine's I/O event queue (0 = fires this same tick). Returns 1/0 success. */
+typedef int (*s2_entity_fire_input_fn)(int index, int serial, const char* input, const char* value,
+                                       int actIdx, int actSerial, int callerIdx, int callerSerial, float delay);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -231,6 +240,8 @@ typedef struct {
     s2_entity_subobj_vcall_fn       entity_subobj_vcall;
     s2_remove_player_item_fn        remove_player_item;
     s2_entity_read_handle_vector_fn entity_read_handle_vector;
+    /* Entity-I/O slice — APPENDED after entity_read_handle_vector; order is the ABI. */
+    s2_entity_fire_input_fn entity_fire_input;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -273,6 +284,15 @@ void s2script_core_dispatch_game_event(const char* name);
 // Slice 6.6 Stage 2: run the Damage.onPre subscribers over the current CTakeDamageInfo (set by the shim
 // detour). Handlers read/modify the live info in place (setting damage to 0 = block).
 void s2script_core_dispatch_damage(void);
+/* Shim -> core: called by the FireOutputInternal detour (entity-I/O slice) with the firing entity's
+ * classname, the output name, packed activator/caller CEntityHandle ints (-1 = none), the output's
+ * value as a string, and the delay. Runs the matching Entity.onOutput subscribers SYNCHRONOUSLY
+ * (key match on (class,output)/(class,"*")/("*",output)/("*","*")) and collapses their returned
+ * HookResults via run_chain; the caller supersedes the original FireOutputInternal (suppresses the
+ * output) when the returned value is >= Handled (2). Returns the collapsed HookResult (0 Continue ..
+ * 3 Stop). catch_unwind -> 0 (fail-open: a core bug must never suppress an output it didn't mean to). */
+int s2script_core_dispatch_output(const char* classname, const char* output, int actHandle, int callerHandle,
+                                  const char* value, float delay);
 /* Shim -> core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
  * (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
  * (a pre-hook returned Handled/Stop), else 0. */

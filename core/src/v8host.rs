@@ -171,6 +171,9 @@ type GiveNamedItemFn        = extern "C" fn(c_int, c_int, c_int, *const std::os:
 type EntitySubobjVcallFn    = extern "C" fn(c_int, c_int, c_int, c_int, c_int, c_int) -> c_int;
 type RemovePlayerItemFn     = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
 type EntityReadHandleVecFn  = extern "C" fn(c_int, c_int, *const c_int, c_int, c_int, c_int, *mut c_int) -> c_int;
+/// Entity-I/O slice: fire an entity input via AddEntityIOEvent. See the C typedef comment
+/// (shim/include/s2script_core.h) for the argument shape.
+type EntityFireInputFn = extern "C" fn(c_int, c_int, *const c_char, *const c_char, c_int, c_int, c_int, c_int, f32) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -251,6 +254,8 @@ pub struct S2EngineOps {
     pub entity_subobj_vcall:       Option<EntitySubobjVcallFn>,
     pub remove_player_item:        Option<RemovePlayerItemFn>,
     pub entity_read_handle_vector: Option<EntityReadHandleVecFn>,
+    // --- Entity-I/O slice (APPENDED after entity_read_handle_vector; order is the ABI; do not reorder above) ---
+    pub entity_fire_input: Option<EntityFireInputFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -455,6 +460,18 @@ thread_local! {
     /// "message"/"error" the 3rd tuple field is the text and the 4th is unused (0); for "close" the
     /// 3rd is the reason and the 4th is the code.
     static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32)>> = std::cell::RefCell::new(Vec::new());
+
+    /// Entity-I/O slice: `Entity.onOutput(classname, output, handler)` subscriber mux, keyed by the
+    /// literal string `"<classname>\0<output>"` (a NUL separator — classnames/outputs never contain one).
+    /// `"*"` is a valid wildcard for either half (matched at dispatch by querying all 4 combinations).
+    /// Unlike `DAMAGE_MUX`/`CHAT_MSG_SUBS` (whose detour is installed once, unconditionally, for the
+    /// process lifetime), the `FireOutputInternal` detour here is likewise installed unconditionally at
+    /// shim Load — so there is no per-subscribe engine-op and no engine-op on empty teardown. Dispatch is
+    /// SYNCHRONOUS (the detour blocks on it, mirrors `DAMAGE_MUX`/`EVENT_MUX_PRE`, NOT the post-drain
+    /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
+    /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
+    static OUTPUT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
     /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
@@ -691,6 +708,23 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   EntityRef.prototype.readHandleVector = function (ptrOffs, vectorOff, maxCount) {
     return __s2_entity_read_handle_vector(this.index, this.serial, ptrOffs || [], vectorOff, maxCount || 64);
   };
+  // Entity-I/O slice: fire an input (e.g. "Kill"/"Ignite"/"FireUser1") via AddEntityIOEvent — the
+  // game's own input-firing path (delay 0 = the same-tick I/O pump). value is the input's string
+  // argument (Source parses it per the input's field type); activator/caller are optional EntityRefs.
+  EntityRef.prototype.acceptInput = function (input, value, activator, caller, delay) {
+    return __s2_entity_fire_input(
+      this.index, this.serial, String(input),
+      (value === undefined || value === null) ? "" : String(value),
+      activator ? activator.index : -1, activator ? activator.serial : -1,
+      caller ? caller.index : -1, caller ? caller.serial : -1,
+      delay || 0);
+  };
+  // Entity-I/O slice: hook an entity output (e.g. "OnTrigger"/"OnPressed"/"OnStartTouch"). classname/
+  // output accept "*" wildcards. handler(ev) may return a HookResult >= Handled to suppress the output
+  // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
+  var Entity = {
+    onOutput: function (classname, output, handler) { __s2_output_subscribe(String(classname), String(output), handler); },
+  };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
   // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
   // plain data. `__entref__` is a reserved wire key. Used by iface_to_json / iface_from_json.
@@ -919,7 +953,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   MenuSession.prototype.cancel = function () { if (!this._ended) this._end(MenuCancelReason.Exit); };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
-  globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity };
+  globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
   globalThis.__s2pkg_console    = { console: console };
@@ -3982,6 +4016,68 @@ fn s2_entity_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
     }));
 }
 
+/// Native `__s2_entity_fire_input(index, serial, input, value, actIdx, actSerial, callerIdx,
+/// callerSerial, delay) -> boolean`. Over the `entity_fire_input` engine op (`AddEntityIOEvent`, the
+/// game's own input-firing path, sig-resolved shim-side). `actIdx`/`callerIdx` < 0 = no
+/// activator/caller (the shim passes null). Degrades to `false` with no op / a stale target ref.
+fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let input = args.get(2).to_rust_string_lossy(scope);
+        let value = args.get(3).to_rust_string_lossy(scope);
+        let act_idx = args.get(4).integer_value(scope).unwrap_or(-1) as i32;
+        let act_serial = args.get(5).integer_value(scope).unwrap_or(-1) as i32;
+        let caller_idx = args.get(6).integer_value(scope).unwrap_or(-1) as i32;
+        let caller_serial = args.get(7).integer_value(scope).unwrap_or(-1) as i32;
+        let delay = args.get(8).number_value(scope).unwrap_or(0.0) as f32;
+        let Ok(input_c) = std::ffi::CString::new(input) else { return };
+        let Ok(value_c) = std::ffi::CString::new(value) else { return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_fire_input) {
+            rv.set_bool(func(
+                index, serial, input_c.as_ptr(), value_c.as_ptr(),
+                act_idx, act_serial, caller_idx, caller_serial, delay,
+            ) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_output_subscribe(classname, output, handler)`. Subscribes a JS fn to `Entity.onOutput`
+/// (entity-I/O slice); owner-tracked in `OUTPUT_MUX` keyed `"<classname>\0<output>"`. The
+/// `FireOutputInternal` detour is installed unconditionally at shim Load, so no per-subscribe engine
+/// registration is needed (mirrors `s2_damage_subscribe`/`s2_chat_on_message`).
+fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let classname = args.get(0).to_rust_string_lossy(scope);
+        let output = args.get(1).to_rust_string_lossy(scope);
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let key = format!("{}\0{}", classname, output);
+        OUTPUT_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
+    }));
+}
+
+/// Native `__s2_output_unsubscribe(classname, output)`. Removes the CURRENT plugin's subscriptions for
+/// the `(classname, output)` key (best-effort, mirrors `EventMux::remove_by_owner_on` — V8 `Global`s
+/// can't be compared by identity, so this drops ALL of the caller's subs for that exact key). Available
+/// as a primitive; `Entity.onOutput` this slice has no matching `offOutput` — cleanup on unload/reload
+/// runs via `remove_by_owner`, not this native.
+fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let classname = args.get(0).to_rust_string_lossy(scope);
+        let output = args.get(1).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let key = format!("{}\0{}", classname, output);
+        OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_owner_on(&key, &owner); });
+    }));
+}
+
 /// Native `__s2_give_named_item(index, serial, subObjOffset, name) -> EntityRef | null`. Over the
 /// `give_named_item` engine op (`GiveNamedItem`, sig-resolved shim-side, called on the pawn's
 /// ItemServices sub-object at `subObjOffset` — a schema offset resolved JS-side, opaque here). The
@@ -4581,6 +4677,109 @@ pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
     if outcome.result >= HookResult::Handled { 1 } else { 0 }
 }
 
+/// Synchronous output dispatch (entity-I/O slice). Called from `ffi.rs`'s
+/// `s2script_core_dispatch_output` (a C-ABI export), which the shim's `FireOutputInternal` detour
+/// calls with the firing entity's classname, the output name, packed activator/caller
+/// `CEntityHandle` ints (-1 = none), the output's value as a string, and the delay. Runs every
+/// `Entity.onOutput` subscriber whose key matches `(class,output)`, `(class,"*")`, `("*",output)`, or
+/// `("*","*")`, collapses their returned `HookResult`s via `run_chain`, and returns the collapsed
+/// value (0 Continue .. 3 Stop) — the caller supersedes (suppresses) the original `FireOutputInternal`
+/// call when the result is >= Handled. Mirrors `dispatch_game_event_pre` / `dispatch_damage` (the
+/// SYNCHRONOUS pre-hook pattern — a handler must be able to block), NOT the post-drain
+/// `dispatch_pending_*` path. A `try_borrow_mut` graceful-skip guards re-entrancy (a handler firing
+/// another output mid-dispatch skips the nested dispatch — the documented `Events.fire` limitation).
+pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, caller_handle: i32, value: &str, delay: f32) -> i32 {
+    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
+    // Phase 1: snapshot every matching key, release the OUTPUT_MUX borrow before entering any context.
+    // Dedup keys that collapse onto the same string (a literal "*" classname/output would be unusual
+    // but harmless) so a subscriber is never invoked twice for the same fire.
+    let keys = [
+        format!("{}\0{}", classname, output),
+        format!("{}\0*", classname),
+        format!("*\0{}", output),
+        "*\0*".to_string(),
+    ];
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut snap0: Vec<(String, u64, v8::Global<v8::Function>)> = Vec::new();
+    for k in &keys {
+        if !seen.insert(k.as_str()) { continue; }
+        snap0.extend(OUTPUT_MUX.with(|m| m.borrow().snapshot(k)));
+    }
+    if snap0.is_empty() { return 0; }
+    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
+        .into_iter().enumerate()
+        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
+        .collect();
+
+    let outcome = HOST.with(|h| {
+        // Re-entrancy guard: a handler that fires another output (acceptInput) re-enters this dispatch
+        // while the isolate is already borrowed. ALLOW (Continue) rather than double-borrow (would
+        // panic) — the engine-side output still fires; only the nested JS re-dispatch is skipped.
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        let Some(host) = borrow.as_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else { return Ok(HookResult::Continue); };
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Build the ev object directly (no JS constructor needed — the data is already in hand,
+            // unlike GameEvent/DamageInfo which read live shim state via further op calls).
+            let activator_val: v8::Local<v8::Value> = if act_handle < 0 {
+                v8::null(tc).into()
+            } else {
+                let (ai, aser) = crate::entity::decode_handle(act_handle as u32);
+                if entity_resolve_ptr(ai, aser).is_null() { v8::null(tc).into() } else { build_entity_ref(tc, ai, aser) }
+            };
+            let caller_val: v8::Local<v8::Value> = if caller_handle < 0 {
+                v8::null(tc).into()
+            } else {
+                let (ci, cser) = crate::entity::decode_handle(caller_handle as u32);
+                if entity_resolve_ptr(ci, cser).is_null() { v8::null(tc).into() } else { build_entity_ref(tc, ci, cser) }
+            };
+
+            let ev_obj = v8::Object::new(tc);
+            if let Some(k) = v8::String::new(tc, "output") {
+                if let Some(v) = v8::String::new(tc, output) { ev_obj.set(tc, k.into(), v.into()); }
+            }
+            if let Some(k) = v8::String::new(tc, "activator") { ev_obj.set(tc, k.into(), activator_val); }
+            if let Some(k) = v8::String::new(tc, "caller") { ev_obj.set(tc, k.into(), caller_val); }
+            if let Some(k) = v8::String::new(tc, "value") {
+                if let Some(v) = v8::String::new(tc, value) { ev_obj.set(tc, k.into(), v.into()); }
+            }
+            if let Some(k) = v8::String::new(tc, "delay") {
+                let v = v8::Number::new(tc, delay as f64);
+                ev_obj.set(tc, k.into(), v.into());
+            }
+
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let ev_val: v8::Local<v8::Value> = ev_obj.into();
+            match func.call(tc, recv, &[ev_val]) {
+                None => Err(()),                                   // threw → drop this sub
+                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
+                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                    0 => HookResult::Continue, 1 => HookResult::Changed,
+                    2 => HookResult::Handled, 3 => HookResult::Stop,
+                    _ => HookResult::Continue,                     // out-of-range → Continue
+                }),
+            }
+        })
+    });
+    outcome.result as i32
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -4755,6 +4954,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_subobj_vcall", s2_entity_subobj_vcall);
     set_native(scope, global_obj, "__s2_remove_player_item", s2_remove_player_item);
     set_native(scope, global_obj, "__s2_entity_read_handle_vector", s2_entity_read_handle_vector);
+    // Entity-I/O slice: fire inputs (AddEntityIOEvent) + Entity.onOutput subscribe/unsubscribe
+    // (FireOutputInternal detour dispatch — installed at shim Load, see dispatch_output).
+    set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);
+    set_native(scope, global_obj, "__s2_output_subscribe", s2_output_subscribe);
+    set_native(scope, global_obj, "__s2_output_unsubscribe", s2_output_unsubscribe);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -6178,6 +6382,8 @@ pub fn shutdown() {
     // Reset the WebSocket on* mux + pending queue (WebSocket Task 2) so a re-init starts clean.
     WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     WS_EVENT_PENDING.with(|q| q.borrow_mut().clear());
+    // Reset the Entity.onOutput mux (entity-I/O slice) so a re-init starts clean.
+    OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -6460,6 +6666,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // to remove (the fan-out is a pure post-frame JS dispatch, like COOKIE_CACHED_MUX); the underlying
     // connections themselves are closed below via the ledger's WsConn resources.
     WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c'''') Drop the plugin's Entity.onOutput subscriptions (entity-I/O slice). The FireOutputInternal
+    // detour stays installed for the process lifetime (removed in the shim's Unload), so no per-plugin
+    // hook-removal request is needed.
+    OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -7993,6 +8203,7 @@ mod frame_tests {
             entity_subobj_vcall: None,
             remove_player_item: None,
             entity_read_handle_vector: None,
+            entity_fire_input: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -8204,6 +8415,78 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Entity-I/O slice: `acceptInput` degrades to `false` with no `entity_fire_input` op, and
+    /// `Entity.onOutput` registers without throwing (the core-side dispatch is exercised by the shim;
+    /// this only asserts the subscribe path is wired). Verbatim per the plan's Step 2.
+    #[test]
+    fn entity_io_degrades_and_mux_subscribes() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            const a = r.acceptInput("Kill");                 // no op -> false
+            let fired = 0;
+            __s2pkg_entity.Entity.onOutput("logic_relay", "OnTrigger", () => { fired++; });
+            // core-side dispatch is exercised by the shim; here assert subscribe didn't throw + acceptInput degraded
+            [String(a), typeof __s2pkg_entity.Entity.onOutput].join("|")
+        "#);
+        assert_eq!(out, "false|function");
+        shutdown();
+    }
+
+    /// Entity-I/O slice: `dispatch_output` runs every subscriber whose key matches `(class,output)`,
+    /// `(class,"*")`, `("*",output)`, `("*","*")` — a wildcard-class sub and an exact-key sub both fire
+    /// for one dispatch, but a DIFFERENT (class,output) pair does not. `activator`/`caller` are `null`
+    /// (no engine ops -> no entity system), `value`/`delay` are threaded through verbatim, and the
+    /// collapsed `HookResult` (Handled from the exact sub) is returned to the caller (>= Handled -> the
+    /// shim would supersede the original `FireOutputInternal`).
+    #[test]
+    fn output_dispatch_matches_wildcards_and_collapses_hookresult() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__wildcardRan = 0;
+            globalThis.__exactRan = 0;
+            __s2pkg_entity.Entity.onOutput("*", "*", function (ev) {
+                globalThis.__wildcardRan++;
+                globalThis.__wcValue = ev.value;
+                globalThis.__wcDelay = ev.delay;
+                globalThis.__wcActivator = ev.activator;
+                globalThis.__wcCaller = ev.caller;
+            });
+            __s2pkg_entity.Entity.onOutput("logic_relay", "OnTrigger", function (ev) {
+                globalThis.__exactRan++;
+                globalThis.__exactOutput = ev.output;
+                return HookResult.Handled;
+            });
+        "#).unwrap();
+
+        let result = dispatch_output("logic_relay", "OnTrigger", -1, -1, "some-value", 0.25);
+        assert_eq!(result, HookResult::Handled as i32, "collapsed HookResult must be Handled (2)");
+        assert_eq!(read_i32_global_in("p", "__wildcardRan"), 1, "the (*,*) sub must run");
+        assert_eq!(read_i32_global_in("p", "__exactRan"), 1, "the exact (class,output) sub must run");
+        assert_eq!(read_global_string("p", "__exactOutput"), "OnTrigger");
+        assert_eq!(read_global_string("p", "__wcValue"), "some-value");
+        assert!(eval_in_context_string("p", "String(globalThis.__wcDelay)").starts_with("0.25"));
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__wcActivator)"), "null", "no engine ops -> activator null");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__wcCaller)"), "null", "no engine ops -> caller null");
+
+        // A different (class,output) pair matches only the (*,*) wildcard, not the exact sub.
+        let result2 = dispatch_output("func_button", "OnPressed", -1, -1, "", 0.0);
+        assert_eq!(result2, HookResult::Continue as i32, "no exact sub for this pair -> Continue");
+        assert_eq!(read_i32_global_in("p", "__wildcardRan"), 2, "the (*,*) sub runs for every output");
+        assert_eq!(read_i32_global_in("p", "__exactRan"), 1, "the exact sub must NOT run for a different pair");
+
+        // Teardown: unload_plugin removes all of "p"'s output subs; a further dispatch is a safe no-op.
+        unload_plugin("p");
+        let result3 = dispatch_output("logic_relay", "OnTrigger", -1, -1, "", 0.0);
+        assert_eq!(result3, HookResult::Continue as i32, "no subscribers left after unload -> Continue, no panic");
+
+        shutdown();
+    }
+
     // ---------------------------------------------------------------------------
     // Slice 5D.1: game-event mechanism — subscribe/accessor/dispatch/teardown
     // ---------------------------------------------------------------------------
@@ -8278,6 +8561,7 @@ mod frame_tests {
             entity_subobj_vcall: None,
             remove_player_item: None,
             entity_read_handle_vector: None,
+            entity_fire_input: None,
         }
     }
 

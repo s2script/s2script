@@ -120,6 +120,37 @@ pub extern "C" fn s2script_core_dispatch_damage() {
     let _ = catch_unwind(|| v8host::dispatch_damage());
 }
 
+/// Shim → core: called by the `FireOutputInternal` detour (entity-I/O slice) with the firing entity's
+/// classname, the output name, packed activator/caller `CEntityHandle` ints (-1 = none), the output's
+/// value as a string, and the delay. Runs the matching `Entity.onOutput` subscribers SYNCHRONOUSLY and
+/// returns the collapsed `HookResult` (0 Continue .. 3 Stop) — the shim supersedes (suppresses) the
+/// original `FireOutputInternal` call when the result is >= Handled (2).
+///
+/// `catch_unwind`-wrapped and FAIL-OPEN (-> 0 Continue on a panic or invalid UTF-8): a core bug must
+/// never suppress an output it didn't mean to, mirroring `s2script_core_ban_check`'s fail-open shape.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_output(
+    classname: *const c_char,
+    output: *const c_char,
+    act_handle: c_int,
+    caller_handle: c_int,
+    value: *const c_char,
+    delay: f32,
+) -> c_int {
+    catch_unwind(|| {
+        if classname.is_null() || output.is_null() { return 0; }
+        let Ok(classname_str) = (unsafe { CStr::from_ptr(classname) }).to_str() else { return 0; };
+        let Ok(output_str) = (unsafe { CStr::from_ptr(output) }).to_str() else { return 0; };
+        let value_str = if value.is_null() {
+            ""
+        } else {
+            match (unsafe { CStr::from_ptr(value) }).to_str() { Ok(s) => s, Err(_) => "" }
+        };
+        v8host::dispatch_output(classname_str, output_str, act_handle as i32, caller_handle as i32, value_str, delay)
+    })
+    .unwrap_or(0)
+}
+
 /// C-ABI entry point the shim's ConCommand trampoline calls when a registered command fires.
 /// `name` = command name (Arg(0)), `slot` = CPlayerSlot::Get() (-1 for server console),
 /// `args` = CCommand::ArgS() (everything after the name).

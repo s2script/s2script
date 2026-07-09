@@ -2,6 +2,7 @@
  * @s2script/entity — author-time type stubs for the injected entity API.
  * NO runtime code: the engine injects the implementation at load time.
  */
+import type { HookResultValue } from "@s2script/events";
 
 /**
  * A serial-gated handle to a live entity. Wraps the `__s2_ent_ref_*` natives; the raw
@@ -89,9 +90,40 @@ export declare class EntityRef {
   /** Read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live serial-gated EntityRefs.
    *  Follows the pointer chain, reads count@+0 / elements@+8, caps at maxCount. [] if stale/unresolved. */
   readHandleVector(ptrOffs: number[], vectorOff: number, maxCount?: number): EntityRef[];
+  /** Fire an entity input (e.g. "Kill"/"Ignite"/"SetHealth"/"Enable"/"Open"/"FireUser1"/"AddOutput")
+   *  via `AddEntityIOEvent` — the game's own input-firing path (map I/O and `FireOutputInternal` route
+   *  through it). `value` is the input's string argument (Source parses it per the input's field type;
+   *  omit for a value-less input). `activator`/`caller` are optional entities threaded through to any
+   *  output the input triggers. `delay` queues the event on the engine's same-tick I/O pump (0 = fires
+   *  this same tick — NOT synchronous-within-the-call). Returns false with no op / a stale ref. */
+  acceptInput(input: string, value?: string, activator?: EntityRef, caller?: EntityRef, delay?: number): boolean;
 }
 
 /** Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null on
  *  failure. Call `.spawn()` after setting fields to register it. The created entity is game-world-owned
  *  (NOT auto-removed on plugin unload) — the plugin owns cleanup via `.remove()`. */
 export declare function createEntity(className: string): EntityRef | null;
+
+/** The payload delivered to an `Entity.onOutput` handler. */
+export interface OutputEvent {
+  /** The output's name (e.g. "OnTrigger", "OnPressed", "OnStartTouch"). */
+  output: string;
+  /** The entity that activated the chain leading to this output firing, or null. */
+  activator: EntityRef | null;
+  /** The entity that owns/fired this output (the `this` of `FireOutputInternal`), or null. */
+  caller: EntityRef | null;
+  /** The output's value, formatted as a string (MVP — typed `CVariant` marshalling is deferred). */
+  value: string;
+  /** The output's fire delay in seconds (0 = same-tick). */
+  delay: number;
+}
+
+/**
+ * Hook Source 2 entity outputs (`func_button`→`OnPressed`, `trigger_multiple`→`OnStartTouch`,
+ * `logic_relay`→`OnTrigger`, …) via a `FireOutputInternal` detour. `classname`/`output` accept `"*"`
+ * wildcards. The handler runs SYNCHRONOUSLY (may block): returning a `HookResultValue >= Handled`
+ * (2/3) SUPPRESSES the output — the original `FireOutputInternal` call is skipped.
+ */
+export declare const Entity: {
+  onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
+};
