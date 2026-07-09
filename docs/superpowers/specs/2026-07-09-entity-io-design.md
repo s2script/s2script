@@ -63,10 +63,14 @@ raw ptr to JS); value → a string (read `CVariant::m_type` + the typed field, f
 
 **Core `output_mux`** (mirrors `event_mux`/`damage_mux`): keyed by `(classname, outputName)` with `"*"`
 wildcards (matches CSSharp's search keys — `(class,output)`, `(class,"*")`, `("*",output)`, `("*","*")`);
-`remove_by_owner` on unload; dispatched **post-drain** (the `dispatch_pending_*` pattern — the detour queues,
-the fan-out runs HOST-free after `frame_async_drain`, dodging the isolate-borrow re-entrancy). The collapsed
-`HookResult` (via `run_chain`) ≥ `Handled` → the shim `MRES_SUPERCEDE`s / skips the original `FireOutputInternal`
-(suppresses the output). New ops (ABI-appended) for subscribe + the detour→core dispatch, mirroring the event ops.
+`remove_by_owner` on unload. Because the hook can **block**, dispatch is **SYNCHRONOUS during the detour** —
+the damage/event pre-hook pattern (`dispatch_damage`/`dispatch_game_event_pre`), NOT the post-drain
+`dispatch_pending_*` path (that's notify-only). The detour calls core → runs matching subscribers under the
+isolate borrow, collapsing `HookResult` via `run_chain`; a **`try_borrow_mut` graceful-skip** guards
+re-entrancy (a handler that fires another output skips the nested dispatch — the documented `Events.fire`
+limitation). Collapsed `HookResult` ≥ `Handled` → the shim **skips the original `FireOutputInternal`**
+(suppresses the output; `MRES_SUPERCEDE`-equivalent). New ops (ABI-appended) for subscribe/unsubscribe + the
+detour→core dispatch, mirroring the damage ops.
 
 **API:** `Entity.onOutput(classname: string, output: string, handler: (ev) => HookResultValue | void)` where
 `ev = { output, activator: EntityRef|null, caller: EntityRef|null, value: string, delay: number }`. `Entity` is
