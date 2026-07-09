@@ -157,6 +157,14 @@ pub type TraceShapeFn = extern "C" fn(
     out: *mut S2TraceResult,
 ) -> c_int;
 
+// --- Entity-creation lifecycle slice (APPENDED after trace_shape; order is the ABI). ENGINE-GENERIC:
+// create takes a className string (no CS2 semantics implied by the C ABI itself); spawn/teleport/remove
+// take the (index, serial) pair already used by every other serial-gated entity op.
+type EntityCreateFn   = extern "C" fn(*const std::os::raw::c_char) -> c_int;
+type EntitySpawnFn    = extern "C" fn(c_int, c_int) -> c_int;
+type EntityTeleportFn = extern "C" fn(c_int, c_int, *const f32, *const f32, *const f32) -> c_int;
+type EntityRemoveFn   = extern "C" fn(c_int, c_int) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -226,6 +234,11 @@ pub struct S2EngineOps {
     pub config_write_file: Option<ConfigWriteFileFn>,
     // --- Ray-trace slice: CNavPhysicsInterface::TraceShape (APPENDED after config_write_file; order is the ABI) ---
     pub trace_shape: Option<TraceShapeFn>,
+    // --- Entity-creation lifecycle slice (APPENDED after trace_shape; order is the ABI; do not reorder above) ---
+    pub entity_create:   Option<EntityCreateFn>,
+    pub entity_spawn:    Option<EntitySpawnFn>,
+    pub entity_teleport: Option<EntityTeleportFn>,
+    pub entity_remove:   Option<EntityRemoveFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -649,6 +662,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     notifyStateChanged: function (offset) { __s2_ent_ref_state_changed(this.index, this.serial, offset); },
   };
+  // --- Entity-creation lifecycle slice: spawn/teleport/remove over the entity_* engine ops. Kept as
+  //     separate prototype assignments (not folded into the object literal above) to minimize the diff. ---
+  EntityRef.prototype.spawn = function () { return __s2_entity_spawn(this.index, this.serial); };
+  EntityRef.prototype.teleport = function (origin, angles, velocity) {
+    return __s2_entity_teleport(this.index, this.serial,
+      origin ? [origin[0], origin[1], origin[2]] : null,
+      angles ? [angles[0], angles[1], angles[2]] : null,
+      velocity ? [velocity[0], velocity[1], velocity[2]] : null);
+  };
+  EntityRef.prototype.remove = function () { return __s2_entity_remove(this.index, this.serial); };
+  // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
+  function createEntity(className) { return __s2_entity_create(String(className)); }
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
   // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
   // plain data. `__entref__` is a reserved wire key. Used by iface_to_json / iface_from_json.
@@ -877,7 +902,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   MenuSession.prototype.cancel = function () { if (!this._ended) this._end(MenuCancelReason.Exit); };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
-  globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
+  globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
   globalThis.__s2pkg_console    = { console: console };
@@ -3845,6 +3870,88 @@ fn s2_trace(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
     }));
 }
 
+/// Like `read_vec3` but returns `None` when the arg isn't a 3-number array (for nullable teleport args —
+/// `origin`/`angles`/`velocity` are each independently optional).
+fn read_vec3_opt(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Option<[f32; 3]> {
+    let arr = v8::Local::<v8::Array>::try_from(v).ok()?;
+    if arr.length() != 3 { return None; }
+    let mut out = [0.0f32; 3];
+    for i in 0..3 {
+        out[i as usize] = arr.get_index(scope, i)?.number_value(scope).unwrap_or(0.0) as f32;
+    }
+    Some(out)
+}
+
+/// Native `__s2_entity_create(className) -> EntityRef | null`. Over the `entity_create` op
+/// (`UTIL_CreateEntityByName`, sig-resolved shim-side). The op returns a packed `CEntityHandle`
+/// (`ToInt()`); the raw `CBaseEntity*` never crosses to JS — the handle is decoded (pure bit-math)
+/// and re-validated live (`entity_resolve_ptr`) before building a serial-gated `EntityRef`, mirroring
+/// the `s2_trace` hit-entity pattern. Degrades to `null` with no op / a 0 handle / a same-frame stale
+/// decode (every in-isolate test hits this path).
+fn s2_entity_create(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_create) {
+            let handle = func(cname.as_ptr());
+            if handle != 0 {
+                let (index, serial) = crate::entity::decode_handle(handle as u32);
+                if !entity_resolve_ptr(index, serial).is_null() {
+                    rv.set(build_entity_ref(scope, index, serial));
+                }
+            }
+        }
+    }));
+}
+
+/// Native `__s2_entity_spawn(index, serial) -> boolean`. Serial-gated `DispatchSpawn`. Degrades to
+/// `false` with no op / a stale ref.
+fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_spawn) { rv.set_bool(func(index, serial) != 0); }
+    }));
+}
+
+/// Native `__s2_entity_teleport(index, serial, originArr|null, anglesArr|null, velArr|null) -> boolean`.
+/// Each array arg is independently optional (a non-3-element/non-array value degrades to a null pointer
+/// for that component, matching the shim's nullable `Vector*`/`QAngle*`/`Vector*` ABI). Degrades to
+/// `false` with no op / a stale ref.
+fn s2_entity_teleport(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let origin = read_vec3_opt(scope, args.get(2));
+        let angles = read_vec3_opt(scope, args.get(3));
+        let vel    = read_vec3_opt(scope, args.get(4));
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_teleport) {
+            let op = origin.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            let ap = angles.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            let vp = vel.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            rv.set_bool(func(index, serial, op, ap, vp) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_entity_remove(index, serial) -> boolean`. Serial-gated `UTIL_Remove`. Degrades to
+/// `false` with no op / a stale ref.
+fn s2_entity_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_remove) { rv.set_bool(func(index, serial) != 0); }
+    }));
+}
+
 /// `__s2_plugin_unload(id) -> bool` — enqueue an unload (runs on the next frame drain). False if not loaded.
 fn s2_plugin_unload(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4509,6 +4616,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_topmenu_select", s2_topmenu_select);
     // Ray-trace slice: the sole native over the trace_shape engine op (engine-generic, no CS2 names).
     set_native(scope, global_obj, "__s2_trace", s2_trace);
+    // Entity-creation lifecycle slice: createEntity + EntityRef.spawn/teleport/remove natives.
+    set_native(scope, global_obj, "__s2_entity_create", s2_entity_create);
+    set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
+    set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
+    set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -7739,6 +7851,10 @@ mod frame_tests {
             config_read_file: None,
             config_write_file: None,
             trace_shape: None,
+            entity_create: None,
+            entity_spawn: None,
+            entity_teleport: None,
+            entity_remove: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -7901,6 +8017,36 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Entity-creation lifecycle slice: `createEntity` degrades to `null` with no `entity_create`
+    /// op (e.g. every in-isolate test) — never a crash.
+    #[test]
+    fn entity_create_native_degrades_to_null_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const { createEntity } = __s2pkg_entity;
+            String(createEntity("env_beam"))
+        "#);
+        assert_eq!(out, "null");
+        shutdown();
+    }
+
+    /// Entity-creation lifecycle slice: `spawn`/`teleport`/`remove` on a synthetic `EntityRef` all
+    /// degrade to `false` with no engine ops wired.
+    #[test]
+    fn entity_lifecycle_methods_degrade_to_false_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            [r.spawn(), r.teleport([0,0,0]), r.teleport([0,0,0],null,null), r.remove()].join(",")
+        "#);
+        assert_eq!(out, "false,false,false,false");
+        shutdown();
+    }
+
     // ---------------------------------------------------------------------------
     // Slice 5D.1: game-event mechanism — subscribe/accessor/dispatch/teardown
     // ---------------------------------------------------------------------------
@@ -7967,6 +8113,10 @@ mod frame_tests {
             config_read_file: None,
             config_write_file: None,
             trace_shape: None,
+            entity_create: None,
+            entity_spawn: None,
+            entity_teleport: None,
+            entity_remove: None,
         }
     }
 

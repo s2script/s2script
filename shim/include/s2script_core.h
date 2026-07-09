@@ -132,6 +132,16 @@ typedef int (*s2_trace_shape_fn)(const float* start, const float* end, const flo
                                  unsigned long long interactsWith, unsigned long long interactsExclude,
                                  int ignoreEntIdx, int ignoreEntSerial, S2TraceResult* out);
 
+/* Entity-creation lifecycle slice — APPENDED after trace_shape; order is the ABI.
+ * create: className -> packed CEntityHandle (ToInt), 0 = failure. The raw CBaseEntity* is
+ * converted shim-side and never crosses to JS. spawn/teleport/remove take the (index, serial)
+ * pair already used by every other serial-gated entity op. teleport's origin/angles/velocity
+ * are nullable [x,y,z]/[pitch,yaw,roll] float triples. */
+typedef int (*s2_entity_create_fn)(const char* className);
+typedef int (*s2_entity_spawn_fn)(int index, int serial);
+typedef int (*s2_entity_teleport_fn)(int index, int serial, const float* origin, const float* angles, const float* velocity);
+typedef int (*s2_entity_remove_fn)(int index, int serial);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -197,6 +207,11 @@ typedef struct {
     s2_config_write_file_fn config_write_file;
     /* Ray-trace slice — APPENDED after config_write_file; order is the ABI. */
     s2_trace_shape_fn trace_shape;
+    /* Entity-creation lifecycle slice — APPENDED after trace_shape; order is the ABI. */
+    s2_entity_create_fn   entity_create;
+    s2_entity_spawn_fn    entity_spawn;
+    s2_entity_teleport_fn entity_teleport;
+    s2_entity_remove_fn   entity_remove;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

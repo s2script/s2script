@@ -80,4 +80,15 @@ export declare class EntityRef {
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */
   notifyStateChanged(offset: number): void;
+  /** DispatchSpawn this created entity (register/activate it). Returns false if stale/unresolved. */
+  spawn(): boolean;
+  /** Teleport this entity. origin/angles/velocity are [x,y,z] triples; any may be null. False if stale. */
+  teleport(origin: number[] | null, angles?: number[] | null, velocity?: number[] | null): boolean;
+  /** Remove (UTIL_Remove) this entity from the world. Returns false if stale/unresolved. */
+  remove(): boolean;
 }
+
+/** Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null on
+ *  failure. Call `.spawn()` after setting fields to register it. The created entity is game-world-owned
+ *  (NOT auto-removed on plugin unload) — the plugin owns cleanup via `.remove()`. */
+export declare function createEntity(className: string): EntityRef | null;
