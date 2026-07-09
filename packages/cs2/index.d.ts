@@ -52,9 +52,10 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   /** This pawn's held weapons (m_hMyWeapons, a CUtlVector<CHandle>). Empty if stale/unresolved/none. */
   readonly weapons: EntityRef[];
   /**
-   * Remove all this pawn's weapons. DEFERRED — always returns `false` (the borrowed vtable index for
-   * `RemoveWeapons` was found, on a live disasm spike, to resolve to the wrong function on this
-   * build; wiring it would risk an unsafe call. See the `gamedata/core.gamedata.jsonc` comment.
+   * Remove ALL this pawn's weapons: enumerate `weapons` (m_hMyWeapons), then unequip each
+   * (`removeWeapon`/RemovePlayerItem) + destroy its entity (`EntityRef.remove`/UTIL_Remove).
+   * Composed from working primitives — no vtable path. Returns true iff every weapon was unequipped.
+   * Live-proven (strip 3→0 on bots).
    */
   stripWeapons(): boolean;
   /**

@@ -1476,9 +1476,11 @@ static int Shim_GiveNamedItem(int index, int serial, int subObjOffset, const cha
 // validated to land inside libserver.so's own .text (IsAddressInServerText) before ever being
 // called — a stale/wrong index can't jump outside the module, though (per the gamedata comment on
 // the two borrowed indices this slice ships) it may still call the WRONG in-range function.
-// Returns 1 on success, 0 if unresolved/stale/invalid index.
+// vtableIndex is upper-bounded (< 512) BEFORE the vtbl[] read so a hostile/huge index (this native
+// is exposed on the plugin global) degrades rather than reading out of bounds — a vtable has a
+// natural small bound, unlike a raw byte offset. Returns 1 on success, 0 if unresolved/stale/invalid.
 static int Shim_EntitySubobjVcall(int index, int serial, int subObjOffset, int vtableIndex, int argIdx, int argSerial) {
-    if (vtableIndex < 0 || subObjOffset < 0) return 0;
+    if (vtableIndex < 0 || vtableIndex >= 512 || subObjOffset < 0) return 0;
     CEntityInstance* ent = ResolveEntityBySerial(index, serial);
     if (!ent) return 0;
     void* subObj = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ent) + subObjOffset);
