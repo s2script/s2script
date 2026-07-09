@@ -7,6 +7,7 @@
  */
 import type { EntityRef } from "@s2script/entity";
 import type { Vector, QAngle } from "@s2script/math";
+import type { TraceHit, TraceMask } from "@s2script/trace";
 export * from "./schema.generated";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
 export type { SceneNode, WeaponServices, MovementServices, AimPunchServices } from "./nav.generated";
@@ -42,6 +43,13 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   moveType: number | null;
   /** Kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale). */
   slay(): void;
+  /**
+   * Ray-trace from this pawn's eyes along its view angles — "what is this player looking at".
+   * Eye = the body world origin + a standing view-offset (~64u); direction = `eyeAngles`. Ignores
+   * this pawn's own entity unless `ignoreEntity` is given. Returns null if the transform/angles are
+   * unreadable (stale ref). `distance` defaults to 8192.
+   */
+  aimTrace(opts?: { distance?: number; mask?: TraceMask; ignoreEntity?: EntityRef }): TraceHit | null;
 }
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */

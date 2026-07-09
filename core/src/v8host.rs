@@ -130,6 +130,33 @@ pub type DbDataDirFn = extern "C" fn() -> *const c_char; // absolute path to <ad
 type ConfigReadFileFn  = extern "C" fn(name: *const c_char) -> *const c_char;
 type ConfigWriteFileFn = extern "C" fn(name: *const c_char, content: *const c_char) -> i32;
 
+// --- Ray-trace slice: CNavPhysicsInterface::TraceShape (C-ABI; the C header must match exactly).
+// ENGINE-GENERIC (Source-2 physics; no CS2 names). Mirrors shim/include/s2script_core.h's
+// `S2TraceResult` / `s2_trace_shape_fn` field-for-field — the ABI is layout, not just a contract.
+// Returns 1 and fills `*out` on a completed trace; returns 0 (op unavailable / vtable unresolved)
+// leaving `*out` untouched — degrade-never-crash (the native builds a MISS TraceHit itself).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2TraceResult {
+    pub did_hit: c_int,
+    pub fraction: f32,
+    pub endpos: [f32; 3],
+    pub normal: [f32; 3],
+    pub all_solid: c_int,
+    pub hit_ent_handle: c_int, // GetRefEHandle().ToInt() of the hit entity, or -1
+}
+pub type TraceShapeFn = extern "C" fn(
+    start: *const f32,
+    end: *const f32,
+    mins: *const f32,
+    maxs: *const f32,
+    interacts_with: u64,
+    interacts_exclude: u64,
+    ignore_ent_idx: c_int,
+    ignore_ent_serial: c_int,
+    out: *mut S2TraceResult,
+) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -197,6 +224,8 @@ pub struct S2EngineOps {
     // --- Slice nominations: raw config-file read/write (APPENDED after event_fire_to_client; order is the ABI) ---
     pub config_read_file:  Option<ConfigReadFileFn>,
     pub config_write_file: Option<ConfigWriteFileFn>,
+    // --- Ray-trace slice: CNavPhysicsInterface::TraceShape (APPENDED after config_write_file; order is the ABI) ---
+    pub trace_shape: Option<TraceShapeFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -637,6 +666,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Vector.prototype.toString = function () { return "Vector(" + this.x + ", " + this.y + ", " + this.z + ")"; };
   function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
   QAngle.prototype.toString = function () { return "QAngle(" + this.x + ", " + this.y + ", " + this.z + ")"; };
+  // Ray-trace slice: angle -> unit forward-direction vector (x=pitch, y=yaw, per the QAngle
+  // convention above). Pure math, no engine ops — lives in @s2script/math since a forward vector
+  // is Source-2-generic, not CS2-specific (@s2script/trace's Trace.ray composes it).
+  function forwardVector(a) {
+    var p = a.x * Math.PI / 180, y = a.y * Math.PI / 180;
+    return new Vector(Math.cos(p) * Math.cos(y), Math.cos(p) * Math.sin(y), -Math.sin(p));
+  }
   // --- Slice 5D.1: GameEvent constructor (dispatch_game_event constructs new GameEvent(name)
   //     per-plugin from globalThis.__s2pkg_events.GameEvent). ---
   function GameEvent(name) { this.name = name; }
@@ -840,7 +876,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     else if (t.kind === "exit") this._end(MenuCancelReason.Exit);
   };
   MenuSession.prototype.cancel = function () { if (!this._ended) this._end(MenuCancelReason.Exit); };
-  globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle };
+  globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -924,6 +960,61 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   });
   var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
   globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
+  // --- Ray-trace slice: @s2script/trace (Trace.line/ray/hull -> TraceHit, TraceMask). ENGINE-GENERIC
+  //     (Source-2 physics) — over the single __s2_trace native (the trace_shape engine op). ---
+  (function () {
+    // InteractionLayers bit positions (mirrors shim/src/trace.h's kLayer* constexprs exactly; all
+    // bit positions <=21, well within a JS/Rust-safe 32-bit range).
+    var L_SOLID       = 1 << 0;
+    var L_HITBOXES    = 1 << 1;
+    var L_PLAYERCLIP  = 1 << 4;
+    var L_NPCCLIP     = 1 << 5;
+    var L_WINDOW      = 1 << 12;
+    var L_PASSBULLETS = 1 << 13;
+    var L_PLAYER      = 1 << 18;
+    var L_NPC         = 1 << 19;
+    var L_PHYSICSPROP = 1 << 21;
+    var SHOT_PHYSICS = L_SOLID | L_PLAYERCLIP | L_WINDOW | L_PASSBULLETS | L_PLAYER | L_NPC | L_PHYSICSPROP;
+    var TraceMask = {
+      ShotPhysics: SHOT_PHYSICS,                          // world + player-clip + windows + players/NPCs/props (default)
+      ShotHitbox:  L_HITBOXES | L_PLAYER | L_NPC,          // hitboxes only (headshot-style detection)
+      ShotFull:    SHOT_PHYSICS | L_HITBOXES,              // physics + hitboxes (a full bullet trace)
+      WorldOnly:   L_SOLID | L_WINDOW | L_PASSBULLETS,     // world geometry only, no entities
+      Grenade:     L_SOLID | L_WINDOW | L_PHYSICSPROP | L_PASSBULLETS,
+      BrushOnly:   L_SOLID | L_WINDOW,                     // brushes only, no clip volumes/entities
+      PlayerMove:  L_SOLID | L_WINDOW | L_PLAYERCLIP | L_PASSBULLETS,
+      NPCMove:     L_SOLID | L_WINDOW | L_NPCCLIP | L_PASSBULLETS,
+    };
+    function ignoreOf(opts) {
+      var e = opts && opts.ignoreEntity;
+      return (e && typeof e.index === "number" && typeof e.serial === "number")
+        ? { idx: e.index, serial: e.serial } : { idx: -1, serial: -1 };
+    }
+    function maskOf(opts) { return (opts && typeof opts.mask === "number") ? opts.mask : TraceMask.ShotPhysics; }
+    function excludeOf(opts) { return (opts && typeof opts.exclude === "number") ? opts.exclude : 0; }
+    var Trace = {
+      line: function (start, end, opts) {
+        var ig = ignoreOf(opts);
+        return __s2_trace(
+          [start.x, start.y, start.z], [end.x, end.y, end.z], [0, 0, 0], [0, 0, 0],
+          maskOf(opts), excludeOf(opts), ig.idx, ig.serial
+        );
+      },
+      ray: function (start, angles, distance, opts) {
+        var f = __s2pkg_math.forwardVector(angles);
+        var end = { x: start.x + f.x * distance, y: start.y + f.y * distance, z: start.z + f.z * distance };
+        return Trace.line(start, end, opts);
+      },
+      hull: function (start, end, mins, maxs, opts) {
+        var ig = ignoreOf(opts);
+        return __s2_trace(
+          [start.x, start.y, start.z], [end.x, end.y, end.z], [mins.x, mins.y, mins.z], [maxs.x, maxs.y, maxs.z],
+          maskOf(opts), excludeOf(opts), ig.idx, ig.serial
+        );
+      },
+    };
+    globalThis.__s2pkg_trace = { Trace: Trace, TraceMask: TraceMask };
+  })();
   // --- Slice 6.12: plugin management (list / load / unload / reload — the SM `sm plugins` backend).
   //     Mutations are DEFERRED to the frame drain (the natives only enqueue), so this is safe from a command. ---
   var __s2_plugins = {
@@ -3608,6 +3699,152 @@ pub(crate) fn dispatch_pending_topmenu_select() {
     }
 }
 
+/// Read a JS array's first 3 elements as `[f32; 3]`. Non-array / missing/short-array elements
+/// read as `0.0` — a defensive default (a malformed `start`/`end`/`mins`/`maxs` arg degrades to a
+/// zero component rather than a native panic).
+fn read_vec3(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> [f32; 3] {
+    let mut out = [0f32; 3];
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(v) {
+        for i in 0..3u32 {
+            if let Some(el) = arr.get_index(scope, i) {
+                out[i as usize] = el.number_value(scope).unwrap_or(0.0) as f32;
+            }
+        }
+    }
+    out
+}
+
+/// Construct `new Vector(x, y, z)` via the injected `__s2pkg_math.Vector` constructor, looked up
+/// fresh from the calling context's global (the trace native holds no cached class reference).
+/// Falls back to `undefined` if `@s2script/math` isn't installed on this context (defensive; the
+/// trace module always sits alongside math in the prelude, so this should not happen in practice).
+fn build_vector<'s>(scope: &mut v8::PinScope<'s, '_>, x: f32, y: f32, z: f32) -> v8::Local<'s, v8::Value> {
+    let val: Option<v8::Local<'s, v8::Value>> = (|| {
+        let global = scope.get_current_context().global(scope);
+        let pkg_key = v8::String::new(scope, "__s2pkg_math")?;
+        let pkg = global.get(scope, pkg_key.into())?;
+        let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+        let ctor_key = v8::String::new(scope, "Vector")?;
+        let ctor_val = pkg.get(scope, ctor_key.into())?;
+        let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+        let xv = v8::Number::new(scope, x as f64);
+        let yv = v8::Number::new(scope, y as f64);
+        let zv = v8::Number::new(scope, z as f64);
+        ctor.new_instance(scope, &[xv.into(), yv.into(), zv.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+    })();
+    match val {
+        Some(v) => v,
+        None => v8::undefined(scope).into(),
+    }
+}
+
+/// Construct `new EntityRef(index, serial)` via the injected `__s2pkg_entity.EntityRef` constructor
+/// (the DamageInfo.victim / readHandle pattern — a raw handle never crosses to JS, only a decoded,
+/// serial-gated `(index, serial)` pair the resulting `EntityRef` re-validates on every field access).
+/// Falls back to `null` if `@s2script/entity` isn't installed on this context.
+fn build_entity_ref<'s>(scope: &mut v8::PinScope<'s, '_>, index: i32, serial: i32) -> v8::Local<'s, v8::Value> {
+    let val: Option<v8::Local<'s, v8::Value>> = (|| {
+        let global = scope.get_current_context().global(scope);
+        let pkg_key = v8::String::new(scope, "__s2pkg_entity")?;
+        let pkg = global.get(scope, pkg_key.into())?;
+        let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+        let ctor_key = v8::String::new(scope, "EntityRef")?;
+        let ctor_val = pkg.get(scope, ctor_key.into())?;
+        let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+        let idx_v = v8::Integer::new(scope, index);
+        let ser_v = v8::Integer::new(scope, serial);
+        ctor.new_instance(scope, &[idx_v.into(), ser_v.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+    })();
+    match val {
+        Some(v) => v,
+        None => v8::null(scope).into(),
+    }
+}
+
+/// `__s2_trace(startArr, endArr, minsArr, maxsArr, interactsWith, interactsExclude, ignoreIdx,
+/// ignoreSerial) -> TraceHit` — the ray-trace slice's sole native, over the `trace_shape` engine op
+/// (`CNavPhysicsInterface::TraceShape`, RTTI-resolved shim-side; ENGINE-GENERIC, no CS2 names here).
+///
+/// Degrade-never-crash: no `trace_shape` op (vtable unresolved, or the shim isn't wired at all —
+/// e.g. every in-isolate test) builds a MISS `TraceHit` (`didHit:false, fraction:1, endPos:end,
+/// normal:(0,0,0), entity:null, allSolid:false`) — `endPos` defaults to the requested `end` so a
+/// degraded trace still reports a sensible endpoint. The op itself returning 0 (unavailable at
+/// call time) degrades identically.
+///
+/// The hit entity crosses back ONLY as a raw `hitEntHandle` int (`GetRefEHandle().ToInt()`, or -1
+/// for no hit) — never a raw pointer. `hitEntHandle < 0` → `entity: null`; otherwise the handle is
+/// decoded (pure bit-math, mirrors `__s2_handle_decode`) and validated live (`entity_resolve_ptr`,
+/// the same check `EntityRef.isValid()` performs) before constructing a serial-gated `EntityRef` —
+/// a same-frame stale handle (should not happen, but defensive) degrades to `null` rather than a
+/// ref that instantly reads dead.
+fn s2_trace(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let start = read_vec3(scope, args.get(0));
+        let end   = read_vec3(scope, args.get(1));
+        let mins  = read_vec3(scope, args.get(2));
+        let maxs  = read_vec3(scope, args.get(3));
+        // TraceMask values are JS numbers well under 2^53 (the largest composite mask sets bit 21);
+        // `number_value` -> `u64` round-trips exactly.
+        let interacts_with    = args.get(4).number_value(scope).unwrap_or(0.0) as u64;
+        let interacts_exclude = args.get(5).number_value(scope).unwrap_or(0.0) as u64;
+        let ignore_idx    = args.get(6).integer_value(scope).unwrap_or(-1) as c_int;
+        let ignore_serial = args.get(7).integer_value(scope).unwrap_or(-1) as c_int;
+
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let (did_hit, fraction, endpos, normal, all_solid, hit_ent_handle) =
+            match ops.and_then(|o| o.trace_shape) {
+                Some(func) => {
+                    let mut out = S2TraceResult {
+                        did_hit: 0, fraction: 1.0, endpos: [0.0; 3], normal: [0.0; 3],
+                        all_solid: 0, hit_ent_handle: -1,
+                    };
+                    let ok = func(
+                        start.as_ptr(), end.as_ptr(), mins.as_ptr(), maxs.as_ptr(),
+                        interacts_with, interacts_exclude, ignore_idx, ignore_serial,
+                        &mut out as *mut S2TraceResult,
+                    );
+                    if ok != 0 {
+                        (out.did_hit != 0, out.fraction, out.endpos, out.normal, out.all_solid != 0, out.hit_ent_handle)
+                    } else {
+                        (false, 1.0, end, [0.0; 3], false, -1) // op present but unavailable -> MISS
+                    }
+                }
+                None => (false, 1.0, end, [0.0; 3], false, -1), // no op at all (e.g. every in-isolate test) -> MISS
+            };
+
+        let entity_val: v8::Local<v8::Value> = if hit_ent_handle < 0 {
+            v8::null(scope).into()
+        } else {
+            let (index, serial) = crate::entity::decode_handle(hit_ent_handle as u32);
+            if entity_resolve_ptr(index, serial).is_null() {
+                v8::null(scope).into() // a same-frame stale handle (defensive) -> null, not a dead ref
+            } else {
+                build_entity_ref(scope, index, serial)
+            }
+        };
+        let end_pos_val = build_vector(scope, endpos[0], endpos[1], endpos[2]);
+        let normal_val  = build_vector(scope, normal[0], normal[1], normal[2]);
+
+        let obj = v8::Object::new(scope);
+        if let Some(k) = v8::String::new(scope, "didHit") {
+            let v = v8::Boolean::new(scope, did_hit);
+            obj.set(scope, k.into(), v.into());
+        }
+        if let Some(k) = v8::String::new(scope, "fraction") {
+            let v = v8::Number::new(scope, fraction as f64);
+            obj.set(scope, k.into(), v.into());
+        }
+        if let Some(k) = v8::String::new(scope, "endPos") { obj.set(scope, k.into(), end_pos_val); }
+        if let Some(k) = v8::String::new(scope, "normal") { obj.set(scope, k.into(), normal_val); }
+        if let Some(k) = v8::String::new(scope, "entity") { obj.set(scope, k.into(), entity_val); }
+        if let Some(k) = v8::String::new(scope, "allSolid") {
+            let v = v8::Boolean::new(scope, all_solid);
+            obj.set(scope, k.into(), v.into());
+        }
+        rv.set(obj.into());
+    }));
+}
+
 /// `__s2_plugin_unload(id) -> bool` — enqueue an unload (runs on the next frame drain). False if not loaded.
 fn s2_plugin_unload(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4270,6 +4507,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_topmenu_add_item", s2_topmenu_add_item);
     set_native(scope, global_obj, "__s2_topmenu_snapshot", s2_topmenu_snapshot);
     set_native(scope, global_obj, "__s2_topmenu_select", s2_topmenu_select);
+    // Ray-trace slice: the sole native over the trace_shape engine op (engine-generic, no CS2 names).
+    set_native(scope, global_obj, "__s2_trace", s2_trace);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -7499,6 +7738,7 @@ mod frame_tests {
             event_fire_to_client: None,
             config_read_file: None,
             config_write_file: None,
+            trace_shape: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -7569,6 +7809,98 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Ray-trace slice: `@s2script/math`'s `forwardVector` — a known-angle sanity check
+    /// (yaw=0,pitch=0 -> forward (1,0,0); yaw=90,pitch=0 -> forward ~(0,1,0)). Pure math, no ops.
+    #[test]
+    fn forward_vector_known_angles() {
+        let _ = init(dummy_logger());
+        create_plugin_context("p");
+        assert_eq!(
+            eval_in_context_string("p", r#"
+                var m = __s2require("@s2script/math");
+                var f = m.forwardVector(new m.QAngle(0, 0, 0));
+                f.x.toFixed(3) + "," + f.y.toFixed(3) + "," + f.z.toFixed(3)
+            "#),
+            "1.000,0.000,0.000"
+        );
+        assert_eq!(
+            eval_in_context_string("p", r#"
+                var m = __s2require("@s2script/math");
+                var f = m.forwardVector(new m.QAngle(0, 90, 0));
+                f.x.toFixed(3) + "," + f.y.toFixed(3) + "," + f.z.toFixed(3)
+            "#),
+            "0.000,1.000,0.000"
+        );
+        shutdown();
+    }
+
+    /// Ray-trace slice: `__s2_trace` degrades to a MISS `TraceHit` when there's no `trace_shape`
+    /// op (e.g. every in-isolate test, which never wires the shim): `didHit:false, fraction:1,
+    /// allSolid:false, entity:null`, and `endPos` defaults to the requested `end` (not a zero
+    /// vector) — `endPos`/`normal` are real `Vector` instances, not plain objects.
+    #[test]
+    fn trace_native_degrades_to_miss_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let js = r#"
+            var m = __s2require("@s2script/math");
+            var hit = __s2_trace([0, 0, 0], [10, 20, 30], [0, 0, 0], [0, 0, 0], 1, 0, -1, -1);
+            [
+                hit.didHit, hit.fraction, hit.allSolid, (hit.entity === null),
+                hit.endPos instanceof m.Vector, hit.endPos.x, hit.endPos.y, hit.endPos.z,
+                hit.normal instanceof m.Vector, hit.normal.x, hit.normal.y, hit.normal.z,
+            ].join(",")
+        "#;
+        // NOTE: `entity` is asserted `=== null` explicitly — Array.join renders a bare `null` as an
+        // empty field, which would silently pass for `undefined` too.
+        assert_eq!(
+            eval_in_context_string("p", js),
+            "false,1,false,true,true,10,20,30,true,0,0,0"
+        );
+        shutdown();
+    }
+
+    /// Ray-trace slice: `TraceMask.ShotPhysics` matches the reference project's own
+    /// `static_assert(MASK_SHOT_PHYSICS == 0x2c3011, ...)` value (shim/src/trace.h) — the JS
+    /// composite mirrors the C++ constexpr bit-for-bit.
+    #[test]
+    fn trace_mask_shot_physics_matches_reference_value() {
+        let _ = init(dummy_logger());
+        create_plugin_context("p");
+        assert_eq!(
+            eval_in_context_string("p", r#"String(__s2require("@s2script/trace").TraceMask.ShotPhysics === 0x2c3011)"#),
+            "true"
+        );
+        assert_eq!(
+            eval_in_context_string("p", r#"String(__s2require("@s2script/trace").TraceMask.ShotPhysics)"#),
+            "2895889"
+        );
+        shutdown();
+    }
+
+    /// Ray-trace slice: `Trace.line`/`ray`/`hull` compose cleanly end-to-end through the public
+    /// `@s2script/trace` module (ignore-entity/mask/exclude defaulting, `forwardVector` composition
+    /// in `ray`) and degrade to a MISS (no `trace_shape` op in-isolate) without throwing.
+    #[test]
+    fn trace_module_line_ray_hull_degrade_cleanly() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let js = r#"
+            var t = __s2require("@s2script/trace").Trace;
+            var m = __s2require("@s2script/math");
+            var start = new m.Vector(0, 0, 0);
+            var end = new m.Vector(100, 0, 0);
+            var hitLine = t.line(start, end);
+            var hitRay = t.ray(start, new m.QAngle(0, 0, 0), 100);
+            var hitHull = t.hull(start, end, new m.Vector(-16, -16, -16), new m.Vector(16, 16, 16));
+            [hitLine.didHit, hitRay.didHit, hitHull.didHit, hitRay.endPos.x.toFixed(0)].join(",")
+        "#;
+        assert_eq!(eval_in_context_string("p", js), "false,false,false,100");
+        shutdown();
+    }
+
     // ---------------------------------------------------------------------------
     // Slice 5D.1: game-event mechanism — subscribe/accessor/dispatch/teardown
     // ---------------------------------------------------------------------------
@@ -7634,6 +7966,7 @@ mod frame_tests {
             event_fire_to_client: None,
             config_read_file: None,
             config_write_file: None,
+            trace_shape: None,
         }
     }
 

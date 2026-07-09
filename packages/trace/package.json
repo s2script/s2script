@@ -1,0 +1,6 @@
+{
+  "name": "@s2script/trace",
+  "version": "0.1.0",
+  "types": "index.d.ts",
+  "description": "Type stubs for the @s2script/trace injected ray-tracing API (Trace.line/ray/hull -> TraceHit). No runtime code."
+}

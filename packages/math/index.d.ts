@@ -22,3 +22,6 @@ export declare class QAngle {
   constructor(x: number, y: number, z: number);
   toString(): string;
 }
+
+/** The unit forward-direction vector for a Euler angle (pitch=`a.x`, yaw=`a.y`; ignores roll). */
+export declare function forwardVector(a: QAngle): Vector;

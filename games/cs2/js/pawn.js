@@ -189,6 +189,24 @@
     }
   });
 
+  // pawn.aimTrace(opts?) — trace from the pawn's eyes along its view angles: "what is this player
+  // looking at". The engine-generic ray-trace (CNavPhysicsInterface::TraceShape) lives in
+  // @s2script/trace; this composes the CS2 eye position + eyeAngles. Eye = the body world origin +
+  // the standing view-offset (~64u; m_vecViewOffset isn't a generated accessor, so a constant — a
+  // crouched eye (~46u) is close enough since the aim DIRECTION from eyeAngles dominates the trace).
+  // Ignores the pawn's own entity by default (don't self-hit). Returns a TraceHit, or null if the
+  // body transform / eye angles are unreadable (stale ref). CS2 field names stay in this game layer.
+  Pawn.prototype.aimTrace = function (opts) {
+    var s = this.sceneNode; var o = s ? s.absOrigin : null;
+    var a = this.eyeAngles;
+    if (!o || !a) return null;
+    var eye = { x: o.x, y: o.y, z: o.z + 64 };   // Trace.ray reads .x/.y/.z (plain object is fine)
+    return globalThis.__s2pkg_trace.Trace.ray(eye, a, (opts && opts.distance) || 8192, {
+      mask: opts && opts.mask,
+      ignoreEntity: (opts && opts.ignoreEntity !== undefined) ? opts.ignoreEntity : this.ref
+    });
+  };
+
   // slot -> controller entity (index slot+1) -> m_hPlayerPawn handle -> pawn EntityRef.
   Pawn.forSlot = function (slot) {
     var PAWN_HANDLE = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
