@@ -165,6 +165,13 @@ type EntitySpawnFn    = extern "C" fn(c_int, c_int) -> c_int;
 type EntityTeleportFn = extern "C" fn(c_int, c_int, *const f32, *const f32, *const f32) -> c_int;
 type EntityRemoveFn   = extern "C" fn(c_int, c_int) -> c_int;
 
+// --- Item slice (APPENDED after entity_remove; order is the ABI). ENGINE-GENERIC: the ops take
+// (idx, serial, offset(s)/index/string) — no CS2 schema/class names in the C ABI itself.
+type GiveNamedItemFn        = extern "C" fn(c_int, c_int, c_int, *const std::os::raw::c_char) -> c_int;
+type EntitySubobjVcallFn    = extern "C" fn(c_int, c_int, c_int, c_int, c_int, c_int) -> c_int;
+type RemovePlayerItemFn     = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
+type EntityReadHandleVecFn  = extern "C" fn(c_int, c_int, *const c_int, c_int, c_int, c_int, *mut c_int) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -239,6 +246,11 @@ pub struct S2EngineOps {
     pub entity_spawn:    Option<EntitySpawnFn>,
     pub entity_teleport: Option<EntityTeleportFn>,
     pub entity_remove:   Option<EntityRemoveFn>,
+    // --- Item slice (APPENDED after entity_remove; order is the ABI; do not reorder above) ---
+    pub give_named_item:           Option<GiveNamedItemFn>,
+    pub entity_subobj_vcall:       Option<EntitySubobjVcallFn>,
+    pub remove_player_item:        Option<RemovePlayerItemFn>,
+    pub entity_read_handle_vector: Option<EntityReadHandleVecFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -674,6 +686,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   EntityRef.prototype.remove = function () { return __s2_entity_remove(this.index, this.serial); };
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
   function createEntity(className) { return __s2_entity_create(String(className)); }
+  // Item slice: read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live serial-gated
+  // EntityRefs. Each element is decoded + validated core-side; the raw pointer never crosses to JS.
+  EntityRef.prototype.readHandleVector = function (ptrOffs, vectorOff, maxCount) {
+    return __s2_entity_read_handle_vector(this.index, this.serial, ptrOffs || [], vectorOff, maxCount || 64);
+  };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
   // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
   // plain data. `__entref__` is a reserved wire key. Used by iface_to_json / iface_from_json.
@@ -3882,6 +3899,19 @@ fn read_vec3_opt(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Option<[f
     Some(out)
 }
 
+/// Read a JS array of numbers into a `Vec<i32>`. Returns `[]` if `v` isn't an array (or on any
+/// per-element read failure the remaining elements are skipped) — never panics on bad input.
+fn read_int_array(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Vec<i32> {
+    let Ok(arr) = v8::Local::<v8::Array>::try_from(v) else { return Vec::new() };
+    let len = arr.length();
+    let mut out = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let Some(el) = arr.get_index(scope, i) else { break };
+        out.push(el.integer_value(scope).unwrap_or(0) as i32);
+    }
+    out
+}
+
 /// Native `__s2_entity_create(className) -> EntityRef | null`. Over the `entity_create` op
 /// (`UTIL_CreateEntityByName`, sig-resolved shim-side). The op returns a packed `CEntityHandle`
 /// (`ToInt()`); the raw `CBaseEntity*` never crosses to JS — the handle is decoded (pure bit-math)
@@ -3949,6 +3979,104 @@ fn s2_entity_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
         let ops = ENGINE_OPS.with(|o| o.get());
         if let Some(func) = ops.and_then(|o| o.entity_remove) { rv.set_bool(func(index, serial) != 0); }
+    }));
+}
+
+/// Native `__s2_give_named_item(index, serial, subObjOffset, name) -> EntityRef | null`. Over the
+/// `give_named_item` engine op (`GiveNamedItem`, sig-resolved shim-side, called on the pawn's
+/// ItemServices sub-object at `subObjOffset` — a schema offset resolved JS-side, opaque here). The
+/// op returns a packed `CEntityHandle` (`ToInt()`) of the created weapon; the raw pointer never
+/// crosses to JS — the handle is decoded and re-validated live (`entity_resolve_ptr`) before
+/// building a serial-gated `EntityRef`, mirroring `s2_entity_create`. Degrades to `null` with no
+/// op / a 0 handle / an unresolvable name / a same-frame stale decode.
+fn s2_give_named_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let name = args.get(3).to_rust_string_lossy(scope);
+        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.give_named_item) {
+            let handle = func(index, serial, off, cname.as_ptr());
+            if handle != 0 {
+                let (i, s) = crate::entity::decode_handle(handle as u32);
+                if !entity_resolve_ptr(i, s).is_null() { rv.set(build_entity_ref(scope, i, s)); }
+            }
+        }
+    }));
+}
+
+/// Native `__s2_entity_subobj_vcall(index, serial, subObjOffset, vtableIndex, argIndex, argSerial)
+/// -> boolean`. Calls a `.text`-validated vtable slot on the sub-object at `subObjOffset` (e.g.
+/// ItemServices' `RemoveWeapons`/`DropActivePlayerWeapon`), optionally passing a second
+/// serial-gated entity arg (`argIndex < 0` = no arg, e.g. no active weapon to pass). Degrades to
+/// `false` with no op / a stale root or arg ref / an unresolved sub-object / an out-of-`.text`
+/// vtable slot (shim-side guard).
+fn s2_entity_subobj_vcall(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let vtable_index = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
+        let arg_idx = args.get(4).integer_value(scope).unwrap_or(-1) as i32;
+        let arg_serial = args.get(5).integer_value(scope).unwrap_or(-1) as i32;
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_subobj_vcall) {
+            rv.set_bool(func(index, serial, off, vtable_index, arg_idx, arg_serial) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_remove_player_item(pawnIndex, pawnSerial, weaponIndex, weaponSerial) -> boolean`.
+/// Over the `remove_player_item` engine op (`RemovePlayerItem`, sig-resolved shim-side) — a proper
+/// unequip of one specific weapon (vs. `stripWeapons`'s blanket `RemoveWeapons`). Degrades to
+/// `false` with no op / either ref stale.
+fn s2_remove_player_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let pawn_idx = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let pawn_serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let weapon_idx = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let weapon_serial = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.remove_player_item) {
+            rv.set_bool(func(pawn_idx, pawn_serial, weapon_idx, weapon_serial) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_entity_read_handle_vector(index, serial, ptrOffs, vectorOff, maxCount) ->
+/// EntityRef[]`. Follows the `ptrOffs` pointer-deref chain from the root entity (e.g. to a
+/// WeaponServices sub-object), then reads a `CUtlVector<CHandle>` at `vectorOff` (size@+0,
+/// elements@+8, shim-side) — each packed handle is decoded and `entity_resolve_ptr`-validated
+/// before becoming a serial-gated `EntityRef` (raw pointers never cross to JS; `maxCount`-capped,
+/// itself clamped to `[0, 256]`). Degrades to `[]` with no op / a stale root / an unresolved chain.
+fn s2_entity_read_handle_vector(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let ptr_offs = read_int_array(scope, args.get(2));      // Vec<i32>, [] if not an array
+        let vector_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
+        let max_count = (args.get(4).integer_value(scope).unwrap_or(0) as i32).clamp(0, 256);
+        let arr = v8::Array::new(scope, 0);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_read_handle_vector) {
+            let mut out = vec![0i32; max_count as usize];
+            let n = func(index, serial, ptr_offs.as_ptr(), ptr_offs.len() as i32, vector_off, max_count, out.as_mut_ptr());
+            let mut w = 0u32;
+            for k in 0..(n.max(0) as usize).min(max_count as usize) {
+                let (i, s) = crate::entity::decode_handle(out[k] as u32);
+                if !entity_resolve_ptr(i, s).is_null() {
+                    let er = build_entity_ref(scope, i, s);
+                    arr.set_index(scope, w, er);
+                    w += 1;
+                }
+            }
+        }
+        rv.set(arr.into());
     }));
 }
 
@@ -4621,6 +4749,12 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
+    // Item slice: give/vcall/remove-item natives + the readHandleVector native (wrapped as an
+    // EntityRef prototype method in the prelude, below).
+    set_native(scope, global_obj, "__s2_give_named_item", s2_give_named_item);
+    set_native(scope, global_obj, "__s2_entity_subobj_vcall", s2_entity_subobj_vcall);
+    set_native(scope, global_obj, "__s2_remove_player_item", s2_remove_player_item);
+    set_native(scope, global_obj, "__s2_entity_read_handle_vector", s2_entity_read_handle_vector);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -7855,6 +7989,10 @@ mod frame_tests {
             entity_spawn: None,
             entity_teleport: None,
             entity_remove: None,
+            give_named_item: None,
+            entity_subobj_vcall: None,
+            remove_player_item: None,
+            entity_read_handle_vector: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -8047,6 +8185,25 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
+    /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
+    /// never a crash.
+    #[test]
+    fn item_natives_degrade_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            [ String(__s2_give_named_item(1,7,3304,"weapon_ak47")),
+              __s2_entity_subobj_vcall(1,7,3304,25,-1,-1),
+              __s2_remove_player_item(1,7,2,9),
+              JSON.stringify(r.readHandleVector([3296], 100, 64)) ].join("|")
+        "#);
+        assert_eq!(out, "null|false|false|[]");
+        shutdown();
+    }
+
     // ---------------------------------------------------------------------------
     // Slice 5D.1: game-event mechanism — subscribe/accessor/dispatch/teardown
     // ---------------------------------------------------------------------------
@@ -8117,6 +8274,10 @@ mod frame_tests {
             entity_spawn: None,
             entity_teleport: None,
             entity_remove: None,
+            give_named_item: None,
+            entity_subobj_vcall: None,
+            remove_player_item: None,
+            entity_read_handle_vector: None,
         }
     }
 

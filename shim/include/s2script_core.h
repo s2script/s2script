@@ -142,6 +142,20 @@ typedef int (*s2_entity_spawn_fn)(int index, int serial);
 typedef int (*s2_entity_teleport_fn)(int index, int serial, const float* origin, const float* angles, const float* velocity);
 typedef int (*s2_entity_remove_fn)(int index, int serial);
 
+/* Item slice — APPENDED after entity_remove; order is the ABI.
+ * give_named_item: (index,serial) of a pawn + a subObjOffset (m_pItemServices, live-schema-resolved
+ * JS-side) + a className -> a packed CEntityHandle (ToInt) of the created weapon, 0 on failure.
+ * entity_subobj_vcall: (index,serial) of an entity + a subObjOffset + a vtableIndex (.text-validated
+ * shim-side) + an optional (argIdx,argSerial) entity arg (-1,-1 = no arg) -> 1/0 success.
+ * remove_player_item: (pawnIndex,pawnSerial,weaponIndex,weaponSerial) -> 1/0 success.
+ * entity_read_handle_vector: (index,serial) + a pointer-deref chain (ptrOffs[ptrCount]) + a
+ * vectorOff (CUtlVector base) + a maxCount cap -> fills outHandles[] with packed CEntityHandles,
+ * returns the element count written (<= maxCount), 0 on any unresolved step. */
+typedef int (*s2_give_named_item_fn)(int index, int serial, int subObjOffset, const char* className);
+typedef int (*s2_entity_subobj_vcall_fn)(int index, int serial, int subObjOffset, int vtableIndex, int argIndex, int argSerial);
+typedef int (*s2_remove_player_item_fn)(int pawnIndex, int pawnSerial, int weaponIndex, int weaponSerial);
+typedef int (*s2_entity_read_handle_vector_fn)(int index, int serial, const int* ptrOffs, int ptrCount, int vectorOff, int maxCount, int* outHandles);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -212,6 +226,11 @@ typedef struct {
     s2_entity_spawn_fn    entity_spawn;
     s2_entity_teleport_fn entity_teleport;
     s2_entity_remove_fn   entity_remove;
+    /* Item slice — APPENDED after entity_remove; order is the ABI. */
+    s2_give_named_item_fn           give_named_item;
+    s2_entity_subobj_vcall_fn       entity_subobj_vcall;
+    s2_remove_player_item_fn        remove_player_item;
+    s2_entity_read_handle_vector_fn entity_read_handle_vector;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

@@ -86,6 +86,9 @@ export declare class EntityRef {
   teleport(origin: number[] | null, angles?: number[] | null, velocity?: number[] | null): boolean;
   /** Remove (UTIL_Remove) this entity from the world. Returns false if stale/unresolved. */
   remove(): boolean;
+  /** Read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live serial-gated EntityRefs.
+   *  Follows the pointer chain, reads count@+0 / elements@+8, caps at maxCount. [] if stale/unresolved. */
+  readHandleVector(ptrOffs: number[], vectorOff: number, maxCount?: number): EntityRef[];
 }
 
 /** Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null on
