@@ -221,6 +221,36 @@
         "pattern": "55 48 89 E5 41 54 49 89 FC 53 48 89 F3 E8 ? ? ? ? 48 39 C3",
         "resolve": "direct"
       }
+    },
+    // Entity-I/O slice: CEntitySystem::AddEntityIOEvent(CEntitySystem*, CEntityInstance* target,
+    // const char* input, CEntityInstance* activator, CEntityInstance* caller, variant_t* value,
+    // float delay, int outputID, void*, void*) — the game's OWN input-firing path (used by
+    // EntityRef.acceptInput, map I/O, and FireOutputInternal itself). A DIRECT prologue pattern.
+    // Validated UNIQUE @ 2026-07-09 in the pinned libserver.so (@0x2128170); ABI cross-confirmed
+    // against CounterStrikeSharp's entity_manager.h (CEntitySystem_AddEntityIOEvent, identical arg
+    // order) — chosen over CEntityInstance::AcceptInput, whose sig is stale on our build.
+    "AddEntityIOEvent": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 CD 41 54 49 89 FC 53 BB",
+        "resolve": "direct"
+      }
+    },
+    // Entity-I/O slice: CEntityIOOutput::FireOutputInternal(CEntityIOOutput* this,
+    // CEntityInstance* activator, CEntityInstance* caller, const CVariant* value, float delay,
+    // void* unk1, char* unk2) — every entity output (func_button OnPressed, logic_relay
+    // OnTrigger, …) routes through this call; detoured (not a vtable hook) to hook Entity.onOutput.
+    // A DIRECT prologue pattern. Validated UNIQUE @ 2026-07-09 in the pinned libserver.so
+    // (@0x2132a60); disasm-confirmed (spike, Task 2) against CounterStrikeSharp's
+    // entity_manager.h CEntityIOOutput layout (vtable@+0, m_pConnections@+0x8, m_pDesc@+0x10 —
+    // matches `mov r13,[this+0x8]` [connections-list walk] and `mov r8,[this+0x10]` [m_pDesc,
+    // passed to a debug-listener vcall] seen at the resolved address).
+    "FireOutputInternal": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 49 89 FF 41 56 41 55 41 54 49 89 D4 53 48 89 F3 48 83 EC ? 48 8D 05",
+        "resolve": "direct"
+      }
     }
   }
 }

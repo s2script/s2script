@@ -1531,6 +1531,116 @@ static int Shim_EntityReadHandleVector(int index, int serial, const int* ptrOffs
 }
 
 // ---------------------------------------------------------------------------
+// Entity-I/O slice (Task 2): fire inputs via AddEntityIOEvent (the game's own input-firing path)
+// + hook outputs by detouring FireOutputInternal (the 6.6 damage-hook detour engine).
+//
+// CEntityIOOutput / EntityIOOutputDesc_t: layouts NOT in the vendored SDK (recon gap — CS2's
+// public headers don't expose entity-I/O internals). Cross-confirmed via CounterStrikeSharp's
+// entity_manager.h (CEntityIOOutput { vtable; EntityIOConnection_t* m_pConnections;
+// EntityIOOutputDesc_t* m_pDesc; }, EntityIOOutputDesc_t { const char* m_pName; ...}) AND
+// independently disasm-verified at our OWN resolved FireOutputInternal address (spike, Task 2):
+// `mov r13,[this+0x8]` walks a linked list (m_pConnections) and `mov r8,[this+0x10]` passes
+// m_pDesc to a debug-listener vcall — matches vtable@0/m_pConnections@+0x8/m_pDesc@+0x10 exactly.
+// m_pConnections is opaque here (void*; we never walk it — only m_pDesc->m_pName is read).
+// ---------------------------------------------------------------------------
+struct EntityIOOutputDesc_t {
+    const char* m_pName;
+    uint32 m_nFlags;
+    uint32 m_nOutputOffset;
+};
+class CEntityIOOutput {
+public:
+    void* vtable;
+    void* m_pConnections;          // opaque linked-list head; not walked here
+    EntityIOOutputDesc_t* m_pDesc;
+};
+
+// AddEntityIOEvent(entitySystem, target, input, activator, caller, value, delay, outputID,
+// unk1, unk2) — the SDK's variant_t (public/variant.h, typedef'd from CVariant) built from a
+// string; Source parses it per the input's expected field type. ABI confirmed against
+// CounterStrikeSharp's entity_manager.h (CEntitySystem_AddEntityIOEvent, identical arg order).
+using AddEntityIOEventFn = void (*)(void* entitySystem, CEntityInstance* target, const char* input,
+                                    CEntityInstance* act, CEntityInstance* caller, variant_t* value,
+                                    float delay, int outputID, void*, void*);
+static AddEntityIOEventFn s_pAddEntityIOEvent = nullptr;
+
+// fire input: (index,serial) serial-gates the target; activator/caller are optional serial-gated
+// entities (<0 index = none/null); value is the input's string argument ("" = none). Returns 1/0.
+static int Shim_EntityFireInput(int index, int serial, const char* input, const char* value,
+                                int actIdx, int actSerial, int callerIdx, int callerSerial, float delay) {
+    if (!s_pAddEntityIOEvent || !input) return 0;
+    CEntityInstance* target = ResolveEntityBySerial(index, serial);
+    if (!target) return 0;
+    CGameEntitySystem* sys = GetEntitySystem();
+    if (!sys) return 0;
+    CEntityInstance* act    = (actIdx    >= 0) ? ResolveEntityBySerial(actIdx, actSerial)       : nullptr;
+    CEntityInstance* caller = (callerIdx >= 0) ? ResolveEntityBySerial(callerIdx, callerSerial) : nullptr;
+    variant_t v(value ? value : "");   // self-contained: CVariantDefaultAllocator is malloc/free, no tier1
+    s_pAddEntityIOEvent(sys, target, input, act, caller, &v, delay, 0, nullptr, nullptr);
+    return 1;
+}
+
+// Format a CVariant's value as a string WITHOUT calling any tier1 CBufferString method
+// (CVariant::ToString()/AssignTo(CBufferString&) call DLL_CLASS_IMPORT tier1 symbols — the exact
+// dlopen-cascade blocker from 5D.1/6.1c). Hand-rolled via snprintf on the union fields directly
+// (self-contained), mirroring natives_cvariant.cpp's per-type union-member access pattern.
+// Unsupported types (Color/Vector2D/Vector4D/EHANDLE/…) degrade to "" — MVP, per the spec's
+// documented non-goal (full typed CVariant marshalling deferred).
+static void CVariantToString(const CVariant* v, char* buf, size_t bufSize) {
+    if (bufSize == 0) return;
+    buf[0] = '\0';
+    if (!v) return;
+    switch (v->m_type) {
+        case FIELD_VOID:      break;
+        case FIELD_FLOAT32:   snprintf(buf, bufSize, "%g", v->m_float32); break;
+        case FIELD_FLOAT64:   snprintf(buf, bufSize, "%g", v->m_float64); break;
+        case FIELD_INT32:     snprintf(buf, bufSize, "%d", v->m_int32); break;
+        case FIELD_UINT32:    snprintf(buf, bufSize, "%u", v->m_uint32); break;
+        case FIELD_INT64:     snprintf(buf, bufSize, "%lld", static_cast<long long>(v->m_int64)); break;
+        case FIELD_UINT64:    snprintf(buf, bufSize, "%llu", static_cast<unsigned long long>(v->m_uint64)); break;
+        case FIELD_BOOLEAN:   snprintf(buf, bufSize, "%s", v->m_bool ? "true" : "false"); break;
+        case FIELD_CHARACTER: snprintf(buf, bufSize, "%c", v->m_char); break;
+        case FIELD_STRING:    snprintf(buf, bufSize, "%s", v->m_stringt.ToCStr()); break;
+        case FIELD_CSTRING:   snprintf(buf, bufSize, "%s", v->m_pszString ? v->m_pszString : ""); break;
+        case FIELD_VECTOR:
+            if (v->m_pVector) snprintf(buf, bufSize, "%g %g %g", v->m_pVector->x, v->m_pVector->y, v->m_pVector->z);
+            break;
+        case FIELD_QANGLE:
+            if (v->m_pQAngle) snprintf(buf, bufSize, "%g %g %g", v->m_pQAngle->x, v->m_pQAngle->y, v->m_pQAngle->z);
+            break;
+        default: break;   // unsupported -> "" (already set above)
+    }
+}
+
+// The FireOutputInternal detour target + trampoline (installed/removed via the shim's shared
+// s2detour engine — same mechanism as the 6.6 DispatchTraceAttack / 6.11b HostSay detours).
+using FireOutputInternalFn = void (*)(CEntityIOOutput*, CEntityInstance*, CEntityInstance*, const CVariant*, float, void*, char*);
+static FireOutputInternalFn s_origFireOutputInternal = nullptr;
+
+// Extract output name/class/activator/caller/value, dispatch SYNCHRONOUSLY to core (the
+// damage/event pre-hook pattern — a handler must be able to block), and supersede (skip) the
+// original call when the collapsed HookResult is >= Handled (2). The raw CEntityIOOutput* /
+// CEntityInstance* / CVariant* pointers NEVER cross to JS: activator/caller cross as packed
+// CEntityHandle ints (core decodes + serial-gate-validates them via the existing entity-ref
+// path), the value crosses as a string. Any resolve failure (null pThis/m_pDesc/m_pName) falls
+// straight through to the original — never suppress on a shim-side miss.
+static void Hook_FireOutputInternal(CEntityIOOutput* pThis, CEntityInstance* act, CEntityInstance* caller,
+                                    const CVariant* value, float delay, void* u1, char* u2) {
+    int result = 0;   // Continue
+    if (pThis && pThis->m_pDesc && pThis->m_pDesc->m_pName) {
+        const char* outputName = pThis->m_pDesc->m_pName;
+        const char* cls = caller ? caller->GetClassname() : "";
+        int actH    = act    ? act->GetRefEHandle().ToInt()    : -1;
+        int callerH = caller ? caller->GetRefEHandle().ToInt() : -1;
+        char valbuf[256];
+        CVariantToString(value, valbuf, sizeof valbuf);
+        result = s2script_core_dispatch_output(cls, outputName, actH, callerH, valbuf, delay);
+    }
+    if (result >= 2) return;   // Handled|Stop -> suppress: skip the original (do NOT call it)
+    if (s_origFireOutputInternal) s_origFireOutputInternal(pThis, act, caller, value, delay, u1, u2);
+}
+
+// ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
@@ -1918,6 +2028,42 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pRemovePlayerItem));
                 }   // rpiOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Entity-I/O slice (Task 2): resolve CEntitySystem::AddEntityIOEvent (fires inputs; the
+            // primary EntityRef.acceptInput mechanism) — a DIRECT prologue signature self-validated
+            // on OUR libserver.so. Degrade-never-crash: unresolved leaves s_pAddEntityIOEvent null ->
+            // entity_fire_input no-ops.
+            auto aioit = sigs.find("AddEntityIOEvent");
+            if (aioit == sigs.end()) {
+                GamedataResult("AddEntityIOEvent", false, "signature absent from gamedata");
+            } else {
+                int64_t aioOff = ResolveSigValidated("AddEntityIOEvent", aioit->second);
+                ModText aiomt = FindModuleText(aioit->second.module.c_str());
+                if (aioOff != s2sig::kFail && aiomt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pAddEntityIOEvent = reinterpret_cast<AddEntityIOEventFn>(const_cast<uint8_t*>(aiomt.text) + aioOff);
+                    META_CONPRINTF("[s2script] AddEntityIOEvent resolved @%p (EntityRef.acceptInput)\n",
+                                   reinterpret_cast<void*>(s_pAddEntityIOEvent));
+                }   // aioOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Entity-I/O slice (Task 2): resolve + detour CEntityIOOutput::FireOutputInternal (the
+            // output-hook entry) — same direct-prologue + inline-detour pattern as
+            // DispatchTraceAttack/HostSay. Degrade-never-crash: unresolved leaves outputs unhooked
+            // (Entity.onOutput never fires), never a crash.
+            auto foiit = sigs.find("FireOutputInternal");
+            if (foiit == sigs.end()) {
+                GamedataResult("FireOutputInternal", false, "signature absent from gamedata");
+            } else {
+                int64_t foiOff = ResolveSigValidated("FireOutputInternal", foiit->second);
+                ModText foimt = FindModuleText(foiit->second.module.c_str());
+                if (foiOff != s2sig::kFail && foimt.text) {  // resolve=="direct": the unique match IS the function start
+                    void* foiAddr = const_cast<uint8_t*>(foimt.text) + foiOff;
+                    if (s2detour::Install(foiAddr, reinterpret_cast<void*>(&Hook_FireOutputInternal),
+                                          reinterpret_cast<void**>(&s_origFireOutputInternal))) {
+                        META_CONPRINTF("[s2script] FireOutputInternal hooked @%p (Entity.onOutput)\n", foiAddr);
+                    } else {
+                        META_CONPRINTF("[s2script] WARN: FireOutputInternal detour install failed — Entity.onOutput off\n");
+                    }
+                }   // foiOff == kFail: ResolveSigValidated already recorded the reason
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
@@ -2075,6 +2221,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_subobj_vcall       = &Shim_EntitySubobjVcall;
     ops.remove_player_item        = &Shim_RemovePlayerItem;
     ops.entity_read_handle_vector = &Shim_EntityReadHandleVector;
+    // Entity-I/O slice — APPENDED after entity_read_handle_vector; order MUST match S2EngineOps.
+    ops.entity_fire_input = &Shim_EntityFireInput;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
