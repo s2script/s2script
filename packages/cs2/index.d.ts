@@ -46,6 +46,25 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly buttons: number;
   /** Kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale). */
   slay(): void;
+  /** Give this pawn a named item/weapon (e.g. CsItem.AK47 or a raw "weapon_*" string). Returns the
+   *  created weapon's EntityRef, or null if unresolved/failed/stale. */
+  giveNamedItem(name: string): EntityRef | null;
+  /** This pawn's held weapons (m_hMyWeapons, a CUtlVector<CHandle>). Empty if stale/unresolved/none. */
+  readonly weapons: EntityRef[];
+  /**
+   * Remove all this pawn's weapons. DEFERRED — always returns `false` (the borrowed vtable index for
+   * `RemoveWeapons` was found, on a live disasm spike, to resolve to the wrong function on this
+   * build; wiring it would risk an unsafe call. See the `gamedata/core.gamedata.jsonc` comment.
+   */
+  stripWeapons(): boolean;
+  /**
+   * Drop the currently-active weapon. DEFERRED — always returns `false`, same reason as
+   * `stripWeapons` (the borrowed `DropActivePlayerWeapon` vtable index resolves to the wrong function).
+   */
+  dropActiveWeapon(): boolean;
+  /** Remove one specific weapon from this pawn (a proper unequip via RemovePlayerItem, a sig-resolved
+   *  direct call). False if either the pawn or the weapon ref is stale/absent. */
+  removeWeapon(weapon: EntityRef): boolean;
   /**
    * Ray-trace from this pawn's eyes along its view angles — "what is this player looking at".
    * Eye = the body world origin + a standing view-offset (~64u); direction = `eyeAngles`. Ignores

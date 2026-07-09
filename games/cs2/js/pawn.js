@@ -170,6 +170,54 @@
     return !!ok;
   };
 
+  // --- Item / weapon manipulation slice (Task 4): pawn.giveNamedItem/weapons/stripWeapons/
+  // dropActiveWeapon/removeWeapon — over the Task-1 ops (__s2_give_named_item/
+  // __s2_entity_subobj_vcall/__s2_remove_player_item) + EntityRef.readHandleVector (Task 1).
+  // Offsets are live-resolved via __s2_schema_offset (never baked, self-healing); __s2_schema_offset
+  // walks the base-class chain (schema_find_field in the shim), so passing "CCSPlayer_WeaponServices"
+  // still resolves m_hMyWeapons even though it's declared on the base CPlayer_WeaponServices.
+
+  // pawn.giveNamedItem(name) — give this pawn a weapon/item by classname (CsItem.AK47 or a raw
+  // "weapon_*" string). Returns the created weapon's EntityRef, or null if the ItemServices pointer
+  // is unresolved / GiveNamedItem failed / the ref is stale.
+  Pawn.prototype.giveNamedItem = function (name) {
+    var off = __s2_schema_offset("CBasePlayerPawn", "m_pItemServices");
+    if (off < 0) return null;
+    return __s2_give_named_item(this.ref.index, this.ref.serial, off, String(name));
+  };
+
+  // pawn.weapons — this pawn's held weapons (m_hMyWeapons, a CUtlVector<CHandle> on the
+  // WeaponServices sub-object), each decoded + serial-gated into a live EntityRef. [] if the
+  // WeaponServices/vector offsets are unresolved, the pointer chain is unresolved, or the ref is stale.
+  Object.defineProperty(Pawn.prototype, "weapons", {
+    get: function () {
+      var wsOff = __s2_schema_offset("CBasePlayerPawn", "m_pWeaponServices");
+      var vecOff = __s2_schema_offset("CCSPlayer_WeaponServices", "m_hMyWeapons");
+      if (wsOff < 0 || vecOff < 0) return [];
+      return this.ref.readHandleVector([wsOff], vecOff, 64);
+    },
+    enumerable: true, configurable: true,
+  });
+
+  // pawn.removeWeapon(weapon) — a proper unequip of one specific weapon (RemovePlayerItem, a
+  // sig-resolved direct call — NOT the vtable path below). False if either ref is stale/absent.
+  Pawn.prototype.removeWeapon = function (weapon) {
+    if (!weapon) return false;
+    return __s2_remove_player_item(this.ref.index, this.ref.serial, weapon.index, weapon.serial);
+  };
+
+  // pawn.stripWeapons() / pawn.dropActiveWeapon() — DEFERRED, always false. The generic
+  // entity_subobj_vcall mechanism (Task 1/2) exists, but Task 2's live disasm spike (recorded in
+  // gamedata/core.gamedata.jsonc, "CCSPlayer_ItemServices_RemoveWeapons"/"..._DropActivePlayerWeapon")
+  // found the two BORROWED vtable indices (25/24) resolve, on this pinned libserver.so, to
+  // GiveNamedItem-overload THUNKS — not RemoveWeapons/DropActivePlayerWeapon. Calling through with
+  // those indices would invoke the wrong function with mismatched args (e.g. an entity pointer read
+  // as GiveNamedItem's `const char* name` — an unsafe out-of-bounds/unterminated read), which would
+  // violate degrade-never-crash. Per the gamedata comment ("Task 4/5 own the go/no-go call"), these
+  // stay UNWIRED until the correct indices are independently re-confirmed (a follow-up RE spike).
+  Pawn.prototype.stripWeapons = function () { return false; };
+  Pawn.prototype.dropActiveWeapon = function () { return false; };
+
   // pawn.moveType — the pawn's MoveType_t (a uint8 enum → not codegen'd, so hand-written). GET reads
   // m_MoveType (null on a stale ref). SET writes BOTH m_MoveType AND m_nActualMoveType (CS2 uses the
   // Type/ActualType pair — one alone may not take) + notifyStateChanged. @s2script/funcommands uses this
