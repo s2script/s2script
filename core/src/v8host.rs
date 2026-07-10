@@ -8706,7 +8706,7 @@ mod frame_tests {
         set_engine_ops(None);
         create_plugin_context("p");
         let out = eval_in_context_string("p", r#"
-            const refs = __s2pkg_entity.Entity.findByClass("cs_gamerules");
+            const refs = __s2pkg_entity.Entity.findByClass("some_class");
             String(Array.isArray(refs) && refs.length === 0)
         "#);
         assert_eq!(out, "true");

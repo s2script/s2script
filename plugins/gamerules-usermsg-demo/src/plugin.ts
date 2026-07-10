@@ -1,6 +1,6 @@
 import { Commands } from "@s2script/commands";
 import { Entity } from "@s2script/entity";
-import { GameRules, Fade, Player } from "@s2script/cs2";
+import { GameRules, Fade } from "@s2script/cs2";
 
 export function onLoad(): void {
   Commands.register("sm_gamerules", (ctx) => {
@@ -12,7 +12,8 @@ export function onLoad(): void {
   });
 
   Commands.register("sm_umsg", (ctx) => {
-    const slot = ctx.args.length > 1 ? parseInt(ctx.args[1], 10) : (ctx.callerSlot >= 0 ? ctx.callerSlot : 0);
+    // sm_umsg <slot> — the slot is the FIRST arg (ctx.args excludes the command name; no target token here).
+    const slot = ctx.args.length > 0 ? parseInt(ctx.args[0], 10) : (ctx.callerSlot >= 0 ? ctx.callerSlot : 0);
     const ok = Fade.blind(slot, 1500);
     ctx.reply(`[umsg] Fade.blind(slot=${slot}) -> ${ok}`);
   });

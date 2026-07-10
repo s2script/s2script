@@ -50,8 +50,8 @@ export function onLoad(): void {
   // sm_blind <target> [seconds] — full black-screen fade (CUserMessageFade) via the generic
   // @s2script/usermessages reflection path (Fade.blind). Replaces the flashbang-field approach.
   Commands.registerAdmin("sm_blind", ADMFLAG.SLAY, (ctx) => {
-    const secs = ctx.args.length > 1 ? parseFloat(ctx.args[1]) : 2;
-    const durMs = (isFinite(secs) && secs > 0 ? secs : 2) * 1000;
+    const secs = ctx.argFloat(1, 2);   // sm_blind <target> [seconds]: args[0]=target (forEachPawn), args[1]=seconds
+    const durMs = (secs > 0 ? secs : 2) * 1000;
     forEachPawn(ctx, "sm_blind <target> [seconds]", "Blinded", (p, _pw) => {
       Fade.blind(p.slot, durMs);
     });

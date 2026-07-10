@@ -797,7 +797,7 @@ static int s2_user_message_set_int(const char* field, int64_t value) {
     const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
     if (!d || !r) return 0;
     const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
-    if (!f) return 0;
+    if (!f || f->is_repeated()) return 0;   // repeated -> a scalar Set*() would abort the process (protobuf FATAL)
     using FD = google::protobuf::FieldDescriptor;
     switch (f->cpp_type()) {
         case FD::CPPTYPE_INT32:  r->SetInt32(s_umMsg, f, (int32_t)value);   break;
@@ -818,7 +818,7 @@ static int s2_user_message_set_float(const char* field, double value) {
     const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
     if (!d || !r) return 0;
     const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
-    if (!f) return 0;
+    if (!f || f->is_repeated()) return 0;   // repeated -> a scalar Set*() would abort the process (protobuf FATAL)
     using FD = google::protobuf::FieldDescriptor;
     if (f->cpp_type() == FD::CPPTYPE_FLOAT)  { r->SetFloat(s_umMsg, f, (float)value); return 1; }
     if (f->cpp_type() == FD::CPPTYPE_DOUBLE) { r->SetDouble(s_umMsg, f, value);       return 1; }
@@ -830,7 +830,7 @@ static int s2_user_message_set_string(const char* field, const char* value) {
     const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
     if (!d || !r) return 0;
     const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
-    if (!f) return 0;
+    if (!f || f->is_repeated()) return 0;   // repeated -> a scalar Set*() would abort the process (protobuf FATAL)
     if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) return 0;
     r->SetString(s_umMsg, f, value ? value : "");
     return 1;
@@ -841,7 +841,7 @@ static int s2_user_message_set_bool(const char* field, int value) {
     const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
     if (!d || !r) return 0;
     const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
-    if (!f) return 0;
+    if (!f || f->is_repeated()) return 0;   // repeated -> a scalar Set*() would abort the process (protobuf FATAL)
     if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_BOOL) return 0;
     r->SetBool(s_umMsg, f, value != 0);
     return 1;
