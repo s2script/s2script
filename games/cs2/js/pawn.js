@@ -624,7 +624,49 @@
     }
   };
 
+  // CS2 user-message sugar over the generic @s2script/usermessages builder.
+  var FFADE_IN = 1, FFADE_OUT = 2, FFADE_MODULATE = 4, FFADE_STAYOUT = 8, FFADE_PURGE = 16;
+  function _um(name) { return new (globalThis.__s2pkg_usermessages.UserMessage)(name); }
+  var Fade = {
+    // opts: { duration, holdTime?, color?, flags? }. duration/holdTime are engine fade units
+    // (tuned at the human visual test); color is a packed RGBA fixed32 (default opaque black).
+    to: function (slot, opts) {
+      opts = opts || {};
+      return _um("CUserMessageFade")
+        .setInt("duration",  opts.duration  != null ? opts.duration  : 1024)
+        .setInt("hold_time", opts.holdTime  != null ? opts.holdTime  : 0)
+        .setInt("flags",     opts.flags     != null ? opts.flags     : (FFADE_OUT | FFADE_PURGE))
+        .setInt("color",     opts.color     != null ? opts.color     : 0xFF000000)
+        .send(slot);
+    },
+    blind: function (slot, duration) {
+      var d = duration != null ? duration : 2000;
+      return Fade.to(slot, { duration: d, holdTime: d, flags: FFADE_OUT | FFADE_PURGE, color: 0xFF000000 });
+    }
+  };
+  var Shake = {
+    // opts: { amplitude, frequency, duration }. command 0 = start.
+    to: function (slot, opts) {
+      opts = opts || {};
+      return _um("CUserMessageShake")
+        .setInt("command",     opts.command   != null ? opts.command   : 0)
+        .setFloat("amplitude", opts.amplitude != null ? opts.amplitude : 10.0)
+        .setFloat("frequency", opts.frequency != null ? opts.frequency : 1.5)
+        .setFloat("duration",  opts.duration  != null ? opts.duration  : 1.0)
+        .send(slot);
+    }
+  };
+  // HintText: best-effort. The exact scalar CS2 hint message resolves during the shim/live gate;
+  // if a clean TextMsg-family message isn't available this is a no-op-returning send (Fade + Shake
+  // are the load-bearing sugar). Field wiring is confirmed/tuned at the live gate.
+  var HintText = {
+    to: function (slot, text) {
+      var m = _um("CUserMessageTextMsg");
+      return m.setInt("dest", 4 /* HUD_PRINTCENTER-ish; tuned live */).setString("param", String(text)).send(slot);
+    }
+  };
+
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText });
 })();

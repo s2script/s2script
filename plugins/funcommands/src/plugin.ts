@@ -4,14 +4,14 @@
 //     - sm_gravity  -> pawn.gravityScale + actualGravityScale (generated setters)
 //     - sm_noclip   -> pawn.moveType toggled WALK<->NOCLIP (needs the uint8 write kind)
 //     - sm_freeze   -> pawn.moveType = NONE, auto-restored to WALK after [seconds]
+//     - sm_blind    -> Fade.blind (CUserMessageFade black-screen fade via @s2script/usermessages)
 //   With no target argument, each command targets the CALLER (self) — SM behavior.
-//   DEFERRED: sm_blind (needs a black-screen CUserMessageFade via a new client_fade op — the flashbang
-//   fields produced no visible effect), sm_burn (an ignite game-function, no framework sig to port),
-//   sm_beacon (a particle/temp-entity subsystem). All three are documented follow-ups.
+//   DEFERRED: sm_burn (an ignite game-function, no framework sig to port),
+//   sm_beacon (a particle/temp-entity subsystem). Both are documented follow-ups.
 
 import { Commands, CommandContext } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
-import { Player, Pawn } from "@s2script/cs2";
+import { Player, Pawn, Fade } from "@s2script/cs2";
 import { delay } from "@s2script/timers";
 
 // MoveType_t (const.h)
@@ -47,9 +47,15 @@ export function onLoad(): void {
     });
   });
 
-  // sm_blind is DEFERRED to the next cut — it needs a proper black screen fade (a CUserMessageFade via the
-  // SayText2 reflection path), not the flashbang fields (which produced no visible effect). Coming as a
-  // follow-up with a new client_fade op.
+  // sm_blind <target> [seconds] — full black-screen fade (CUserMessageFade) via the generic
+  // @s2script/usermessages reflection path (Fade.blind). Replaces the flashbang-field approach.
+  Commands.registerAdmin("sm_blind", ADMFLAG.SLAY, (ctx) => {
+    const secs = ctx.args.length > 1 ? parseFloat(ctx.args[1]) : 2;
+    const durMs = (isFinite(secs) && secs > 0 ? secs : 2) * 1000;
+    forEachPawn(ctx, "sm_blind <target> [seconds]", "Blinded", (p, _pw) => {
+      Fade.blind(p.slot, durMs);
+    });
+  });
 
   // sm_noclip <target> — toggle noclip (WALK <-> NOCLIP).
   Commands.registerAdmin("sm_noclip", ADMFLAG.SLAY, (ctx) => {
@@ -80,7 +86,7 @@ export function onLoad(): void {
     });
   });
 
-  console.log("[funcommands] onLoad — gravity/noclip/freeze/unfreeze registered (blind/burn/beacon deferred)");
+  console.log("[funcommands] onLoad — gravity/noclip/freeze/unfreeze/blind registered (burn/beacon deferred)");
 }
 
 export function onUnload(): void {

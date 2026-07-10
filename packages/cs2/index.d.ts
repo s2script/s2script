@@ -202,3 +202,16 @@ export interface GameRulesView {
 /** Read CCSGameRules state. get() re-finds the cs_gamerules proxy each call (not a hot path); returns
  *  null when no proxy exists (e.g. pre-map-load). */
 export declare const GameRules: { get(): GameRulesView | null };
+
+/** Screen-fade user message (CUserMessageFade). duration/holdTime are engine fade units; color is a
+ *  packed RGBA fixed32. Returns false if the message/fields don't resolve. */
+export declare const Fade: {
+  to(slot: number, opts: { duration?: number; holdTime?: number; color?: number; flags?: number }): boolean;
+  blind(slot: number, duration?: number): boolean;
+};
+/** Screen-shake user message (CUserMessageShake). command 0 = start. Returns false if unresolved. */
+export declare const Shake: {
+  to(slot: number, opts: { command?: number; amplitude?: number; frequency?: number; duration?: number }): boolean;
+};
+/** Best-effort hint text (TextMsg-family). Returns false if the message/fields don't resolve. */
+export declare const HintText: { to(slot: number, text: string): boolean };
