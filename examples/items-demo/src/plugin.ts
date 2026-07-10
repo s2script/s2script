@@ -1,7 +1,7 @@
 // Live-gate demo for the item surface (giveNamedItem/weapons/stripWeapons/dropActiveWeapon) on
 // CS2 2000870. Player.target()/Player.allConnected() return 0 players on this build — the
 // client-list offsets (NetworkServerService/NetworkGameServer/ServerSideClient) are stale (the
-// same documented regression trace-demo routes around; see plugins/trace-demo/src/plugin.ts).
+// same documented regression trace-demo routes around; see examples/trace-demo/src/plugin.ts).
 // So these commands do NOT do SM-style name/target resolution here — they act on every live
 // pawn found via Pawn.forSlot (schema-based, self-healing), which is exactly what "@all" would
 // have resolved to anyway. Revert to Player.target once the client-list offsets are regenerated

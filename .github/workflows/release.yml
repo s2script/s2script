@@ -45,6 +45,14 @@ jobs:
       - name: Fix dist ownership after Docker
         run: sudo chown -R "$USER:$USER" dist build target docker/metamod 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" dist
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build base plugins
+        run: bash scripts/build-base-plugins.sh
+
       - name: Install zip
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zip
 
@@ -64,12 +72,12 @@ jobs:
         with:
           name: s2script ${{ steps.package.outputs.version }}
           body: |
-            SourceMod-style runtime for Counter-Strike 2 (Linux x86-64).
+            SourceMod-style runtime for Counter-Strike 2 (Linux x86-64), including the first-party base plugins.
 
             **Install:** extract `s2script-cs2-linux-${{ steps.package.outputs.version }}.zip` into your server's `game/csgo/` directory (overlays `addons/`). Metamod:Source 2.0 must already be installed. See [docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md).
 
             **SHA256:** `${{ steps.package.outputs.sha256 }}`
 
-            Plugin authors: drop built `.s2sp` files into `addons/s2script/plugins/`. Plugins declare `s2script.apiVersion: "1.x"` — the host major must match.
+            Base plugins load from `addons/s2script/plugins/` on first boot. Drop additional `.s2sp` files there to add more. Plugins declare `s2script.apiVersion: "1.x"` — the host major must match.
           files: ${{ steps.package.outputs.zip }}
           fail_on_unmatched_files: true
