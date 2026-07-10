@@ -90,3 +90,153 @@ extern const s2_Vec3Layout vec3_angle;
 const s2_Vec3Layout vec3_angle = { 0.0f, 0.0f, 0.0f };
 extern const s2_Vec3Layout vec3_invalid;
 const s2_Vec3Layout vec3_invalid = { 3.402823466e+38f, 3.402823466e+38f, 3.402823466e+38f };
+
+// ---------------------------------------------------------------------------------------------------
+// EKV slice (Task 1) — leaf self-shims for entity2/entitykeyvalues.cpp + tier1/keyvalues3.cpp (the
+// SDK's own CEntityKeyValues/KeyValues3 sources, compiled into the shim per the CSSharp approach).
+// Classified via the plan's Rule 1 (self-contained logging/string leaves) and confirmed via `nm -Cu`
+// triage against a Task-1 sniper build (comm -13 against the pre-EKV baseline `nm -u`) — every
+// symbol below is either a pure string/number-parsing leaf or a discard-the-message logging no-op,
+// none holds engine state or needs a live interface. All PLATFORM_INTERFACE-declared in
+// tier0/dbg.h, tier0/logging.h, or tier0/platform.h with `extern "C"` linkage (DLL_EXPORT expands to
+// `extern "C" __attribute__((visibility("default")))`), hence unmangled names below; MurmurHash2 is
+// the one exception (regular C++ linkage, no PLATFORM_INTERFACE) — reuses the s2_MurmurHash2 core
+// above (Valve's MurmurHash2 and MurmurHash2LowerCase share the identical core loop; this is the
+// non-lowercased sibling CUtlSymbolLarge_Hash's `false` branch calls).
+//
+// THREE further undefined symbols from the same triage — CBufferString::Purge(int),
+// CUtlBuffer::AddNullTermination(), CUtlBuffer::CUtlBuffer(int,int,BufferFlags_t) — are
+// DELIBERATELY left undefined here (NOT self-shimmed): they are VERIFIED EXPORTED by the container's
+// libtier0.so (`nm -DC libtier0.so`), so they live-resolve at dlopen (the shim .so link has no
+// --no-undefined — every engine interface call already resolves this way). Self-shimming a real
+// engine string-buffer/allocator method would be WRONG (wrong growable-buffer semantics, cross-heap
+// risk) — see the plan's Global Constraints "self-shim vs live-resolve doctrine". memoverride.cpp
+// (compiled alongside, see CMakeLists.txt) routes this TU's operator new/delete through the engine
+// allocator so the shim and the engine share ONE heap, making the live-resolved CUtlBuffer ctor/dtor
+// heap-safe.
+// ---------------------------------------------------------------------------------------------------
+#include <cstdarg>
+#include <cstdio>
+
+extern "C" {
+
+// LoggingChannelID_t LOG_GENERAL — a plain global (not mangled either way in C++); referenced by
+// Log_Msg(LOG_GENERAL, ...) call sites in CEntityKeyValues::AddRef/Release. Its value is inert since
+// LoggingSystem_IsChannelEnabled below always returns false (Log_Msg's InternalMsg macro checks it
+// first and skips the Log call entirely).
+int LOG_GENERAL = 0;
+
+// LoggingSystem_IsChannelEnabled(channelID, severity) — always-disabled, so every InternalMsg-style
+// call site (Log_Msg in the AddRef/Release refcount-logging calls) short-circuits before ever
+// building/forwarding a message. Matches the FIRST (PLATFORM_INTERFACE, unmangled) overload only —
+// the LoggingVerbosity_t overload is PLATFORM_OVERLOAD (mangled), unused here.
+bool LoggingSystem_IsChannelEnabled(int channelID, int severity) {
+    (void)channelID; (void)severity;
+    return false;
+}
+
+// LoggingSystem_Log(channelID, severity, fmt, ...) — a no-op returning LR_CONTINUE (0). Reachable
+// only if a caller ever manages to get past the (always-false) IsChannelEnabled check above, or from
+// a code path not gated by it; either way, discarding the message is safe (this is best-effort
+// diagnostic logging, never behavior-affecting).
+int LoggingSystem_Log(int channelID, int severity, const char* pMessageFormat, ...) {
+    (void)channelID; (void)severity; (void)pMessageFormat;
+    return 0;  // LR_CONTINUE
+}
+
+// Warning(fmt, ...) — CEntityKeyValues::SetKeyValue's misuse-guard paths (setting an attribute as a
+// non-attribute key or vice versa). Forwarded to stderr so a real misuse is still visible in the
+// container log, never silently dropped, but never crashes/blocks.
+void Warning(const char* pMsg, ...) {
+    va_list args;
+    va_start(args, pMsg);
+    std::vfprintf(stderr, pMsg ? pMsg : "", args);
+    va_end(args);
+}
+
+// Plat_ExitProcess(nCode) — the real implementation behind the (macro-neutered-to-empty)
+// Plat_FatalErrorFunc / the Plat_FatalError macro's terminate step; KV3's genuinely-fatal invariant
+// violations (e.g. CKV3Arena::Root() called on a rootless pool arena — never hit by this slice's
+// bNoRoot=true/scalar-only usage, but mirrors Valve's own intent: log + terminate, not a soft return).
+void Plat_ExitProcess(int nCode) {
+    std::fprintf(stderr, "[s2script] FATAL (tier0 shim Plat_ExitProcess, code=%d)\n", nCode);
+    std::abort();
+}
+
+// Plat_NonFatalErrorFunc(fmt, ...) — a logged-but-recoverable warning path (e.g. alignment checks);
+// log and return, never abort.
+void Plat_NonFatalErrorFunc(const char* pMsg, ...) {
+    va_list args;
+    va_start(args, pMsg);
+    std::vfprintf(stderr, pMsg ? pMsg : "", args);
+    va_end(args);
+}
+
+// V_StringToBool/V_StringToInt32/V_StringToFloat32 — KeyValues3::FromString<T> template
+// specializations (inline in keyvalues3.h) call these when a value is read back as a DIFFERENT type
+// than it was stored as (e.g. GetInt() on a string-typed value). Never exercised by this slice (every
+// EKV read-back in the demo/self-test Gets the SAME type it Set), so exact numeric-parsing fidelity
+// doesn't matter for correctness here — only that linkage resolves and a call never crashes. The
+// trailing (successful/remainder/flags/err_listener) parameters are accepted with primitive stand-ins
+// (pointer-sized, matching the SysV ABI slot regardless of pointee type — the same technique the
+// quat_identity/vec3_* PODs above use for layout-only compatibility) since extern "C" linkage means
+// only the symbol NAME is linker-checked, not the parameter list.
+bool V_StringToBool(const char* buf, bool default_value, bool* successful, char** remainder,
+                     unsigned int flags, void* err_listener) {
+    (void)remainder; (void)flags; (void)err_listener;
+    if (successful) *successful = (buf != nullptr);
+    if (!buf) return default_value;
+    if (buf[0] == '1' || buf[0] == 't' || buf[0] == 'T' || buf[0] == 'y' || buf[0] == 'Y') return true;
+    if (buf[0] == '0' || buf[0] == 'f' || buf[0] == 'F' || buf[0] == 'n' || buf[0] == 'N') return false;
+    return default_value;
+}
+
+int32_t V_StringToInt32(const char* buf, int32_t default_value, bool* successful, char** remainder,
+                         unsigned int flags, void* err_listener) {
+    (void)flags; (void)err_listener;
+    if (!buf) { if (successful) *successful = false; return default_value; }
+    char* end = nullptr;
+    long v = std::strtol(buf, &end, 10);
+    if (remainder) *remainder = end;
+    bool ok = (end != buf);
+    if (successful) *successful = ok;
+    return ok ? (int32_t)v : default_value;
+}
+
+float V_StringToFloat32(const char* buf, float default_value, bool* successful, char** remainder,
+                         unsigned int flags, void* err_listener) {
+    (void)flags; (void)err_listener;
+    if (!buf) { if (successful) *successful = false; return default_value; }
+    char* end = nullptr;
+    float v = std::strtof(buf, &end);
+    if (remainder) *remainder = end;
+    bool ok = (end != buf);
+    if (successful) *successful = ok;
+    return ok ? v : default_value;
+}
+
+// _V_strncpy(dest, src, maxLen) — the function behind the V_strncpy(dest,src,count) macro
+// (tier1/strtools.h); bounded copy with a GUARANTEED NUL terminator (unlike raw strncpy, which does
+// not NUL-terminate if src is >= maxLen).
+void _V_strncpy(char* dest, const char* src, int maxLen) {
+    if (!dest || maxLen <= 0) return;
+    if (!src) { dest[0] = '\0'; return; }
+    std::strncpy(dest, src, (size_t)maxLen);
+    dest[maxLen - 1] = '\0';
+}
+
+// V_tier0_memmove(dest, src, count) — the function behind the V_memmove(...) macro; a plain memmove.
+void V_tier0_memmove(void* dest, const void* src, size_t count) {
+    std::memmove(dest, src, count);
+}
+
+}  // extern "C"
+
+// MurmurHash2(key, len, seed) — regular C++ linkage (no PLATFORM_INTERFACE on this declaration in
+// generichash.h), reached via CUtlSymbolLarge_Hash's non-case-insensitive branch (a runtime bool
+// parameter, so both branches' call targets are always emitted regardless of which is taken).
+// Valve's MurmurHash2 and MurmurHash2LowerCase share the identical core loop (generichash.cpp) minus
+// the lowercase pass — reuse the anonymous-namespace core above rather than duplicating it.
+uint32_t MurmurHash2(const void* key, int len, uint32_t seed) {
+    return s2_MurmurHash2(key, len, seed);
+}

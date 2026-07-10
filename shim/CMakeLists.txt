@@ -25,6 +25,18 @@ add_library(s2script SHARED
     # CNavPhysicsInterface::TraceShape structs/call. Engine-generic (Source-2 physics).
     src/vtable.cpp
     src/trace.cpp
+    # EKV slice: compile the SDK's own CEntityKeyValues implementation into the shim (the CSSharp
+    # approach — its CMakeLists compiles exactly entity2/entitykeyvalues.cpp). keyvalues3.cpp uses
+    # plain libc malloc/free (verified), NOT g_pMemAlloc. ekv.cpp is the ONLY TU that includes
+    # entitykeyvalues.h; everything else sees void*.
+    src/ekv.cpp
+    ${HL2SDK}/entity2/entitykeyvalues.cpp
+    ${HL2SDK}/tier1/keyvalues3.cpp
+    ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
+                                             # through the engine allocator (g_pMemAlloc) so our
+                                             # compiled KV3 code + the engine share ONE heap. Do NOT
+                                             # apply gc-sections to this TU (its global new/delete
+                                             # operators must survive) — list it separately below.
 )
 
 target_include_directories(s2script PRIVATE
@@ -81,6 +93,27 @@ target_link_libraries(s2script PRIVATE
     ${HL2SDK}/lib/linux64/release/libprotobuf.a
 )
 target_include_directories(s2script PRIVATE include)
+
+# EKV slice: split the SDK TUs into per-function sections and GC unreachable ones at link time,
+# so never-called KV3 paths (ToString/CBufferString/CUtlBuffer serialization, V_StringTo* array
+# conversion, GetEHandle->FindFirstEntityHandleByName) drop their undefined symbol references.
+set_source_files_properties(
+    src/ekv.cpp
+    ${HL2SDK}/entity2/entitykeyvalues.cpp
+    ${HL2SDK}/tier1/keyvalues3.cpp
+    # NOTE: memoverride.cpp is deliberately EXCLUDED here — its global operator new/delete must
+    # NOT be gc-sectioned away (they're the whole point). It compiles WITHOUT these flags.
+    PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections"
+)
+target_link_options(s2script PRIVATE -Wl,--gc-sections)
+
+# EKV slice: memoverride.cpp needs MEMOVERRIDE_MODULE defined (it stringifies the value into
+# g_pszModule via MKSTRING) — only relevant for the debug-allocator-attribution build (unused
+# here), but the macro must still expand to SOMETHING for the TU to compile.
+set_source_files_properties(${HL2SDK}/public/tier0/memoverride.cpp PROPERTIES
+    COMPILE_DEFINITIONS "MEMOVERRIDE_MODULE=s2script"
+)
+
 # Ensure the runtime can find libs2script_core.so next to the plugin.
 # Output as s2script.so (no lib prefix) to match Metamod's loader expectations.
 set_target_properties(s2script PROPERTIES
