@@ -1,0 +1,72 @@
+name: release
+
+# Build a SourceMod-style runtime zip (GLIBC ≤ 2.31) and publish it to a
+# GitHub Release. Triggered only on version tags so PRs stay on the cheap
+# host CI in ci.yml.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Sniper build (bullseye / glibc 2.31)
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            -v s2script-cargo:/usr/local/cargo/registry \
+            rust:bullseye \
+            bash /repo/scripts/build-sniper.sh
+
+      - name: Assert GLIBC ≤ 2.31
+        run: |
+          set -euo pipefail
+          check() {
+            local so="$1"
+            local max
+            max=$(objdump -T "$so" | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1)
+            echo "$so needs $max"
+            # Compare versions: fail if required > 2.31
+            printf '%s\n' "2.31" "${max#GLIBC_}" | sort -V | tail -1 | grep -qx '2.31'
+          }
+          check dist/addons/s2script/bin/linuxsteamrt64/s2script.so
+          check dist/addons/s2script/bin/linuxsteamrt64/libs2script_core.so
+
+      - name: Install zip
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zip
+
+      - name: Package release zip
+        id: package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash scripts/package-release.sh "$VERSION"
+          ZIP="dist/s2script-cs2-linux-${VERSION}.zip"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$ZIP" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: s2script ${{ steps.package.outputs.version }}
+          body: |
+            SourceMod-style runtime for Counter-Strike 2 (Linux x86-64).
+
+            **Install:** extract `s2script-cs2-linux-${{ steps.package.outputs.version }}.zip` into your server's `game/csgo/` directory (overlays `addons/`). Metamod:Source 2.0 must already be installed. See [docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md).
+
+            **SHA256:** `${{ steps.package.outputs.sha256 }}`
+
+            Plugin authors: drop built `.s2sp` files into `addons/s2script/plugins/`. Plugins declare `s2script.apiVersion: "1.x"` — the host major must match.
+          files: ${{ steps.package.outputs.zip }}
+          fail_on_unmatched_files: true
