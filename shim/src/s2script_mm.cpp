@@ -54,6 +54,7 @@
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
 #include "trace.h"    // Ray-trace slice: Ray_t/CTraceFilterEx/CGameTrace + the TraceShape call
+#include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
@@ -130,6 +131,10 @@ static CGameEntitySystem* GetEntitySystem() {
         reinterpret_cast<uintptr_t>(s_pGameResourceService)
         + static_cast<size_t>(s_gameEntitySystemOffset));
 }
+
+// EKV slice: non-static bridge so ekv.cpp (the SDK-including TU) can define GameEntitySystem()
+// without itself needing s_pGameResourceService/s_gameEntitySystemOffset (file-scope statics here).
+CGameEntitySystem* S2_EntitySystemBridge() { return GetEntitySystem(); }
 
 // ---------------------------------------------------------------------------
 // Engine-op: resolve a schema field's flattened byte offset within a class via
@@ -2136,6 +2141,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
         }
         GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
+
+        // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
+        // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
+        META_CONPRINTF("[s2script] EKV self-test: %s\n", S2EKV_SelfTest() ? "OK" : "FAILED (kv-spawn degraded)");
     }
     // --- end interface acquisition ---
 
