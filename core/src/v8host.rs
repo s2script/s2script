@@ -475,6 +475,11 @@ thread_local! {
     static CLIENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
+    /// Map-start subscribers (clientlist-fakeconvar-onmapstart slice). Fixed key "" (map-start has
+    /// no name dimension, like CHAT_MSG_SUBS); notify-only.
+    static MAP_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
     /// clientprefs Task 4: `Cookies.onCached` subscriber mux, keyed by the constant "" (no name
     /// dimension — a single un-keyed list, like `CHAT_MSG_SUBS`). Fanned out post-frame by
     /// `dispatch_pending_cookie_cached` (called from `ffi.rs` AFTER `frame_async_drain()` returns, so
@@ -1136,6 +1141,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         opts.min == null ? null : String(opts.min),
         opts.max == null ? null : String(opts.max)) === 1;
     },
+    // Subscribe to map start (the framework event replacing the Server.mapName OnGameFrame poll).
+    // Fires on every StartupServer (boot-loaded plugins get the first map); a plugin hot-loaded
+    // mid-map should read Server.mapName at load for the CURRENT map. Handlers may be async
+    // (fire-and-forget). Auto-ledgered per plugin; torn down on unload.
+    onMapStart: function (h) { __s2_map_start_subscribe(h); },
     get maxPlayers() { return __s2_server_max_clients(); },   // GetMaxClients(); 0 if unavailable
     get mapName() { return __s2_server_map_name(); },         // GetMapName(); "" if unavailable
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
@@ -2980,6 +2990,50 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
     });
 }
 
+/// Deliver a map-start notification to the `Server.onMapStart` subscribers. Called from ffi.rs's
+/// `s2script_core_dispatch_map_start` (the shim's INetworkServerService::StartupServer POST hook).
+/// Mirrors `dispatch_client_event` verbatim: snapshot (release the mux borrow), `try_borrow_mut`
+/// re-entrancy guard, per-subscriber `is_live` + context clone + HandleScope/ContextScope/TryCatch +
+/// WARN-on-throw. Notify-only — each handler is called with the single String `map` and its return
+/// is ignored.
+pub(crate) fn dispatch_map_start(map: &str) {
+    let snap = MAP_MUX.with(|m| m.borrow().snapshot(""));
+    if snap.is_empty() { return; }
+
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, generation, handler_g) in &snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let map_val: v8::Local<v8::Value> = match v8::String::new(tc, map) {
+                Some(s) => s.into(),
+                None => continue,
+            };
+            let func = v8::Local::new(tc, handler_g);
+            if func.call(tc, recv, &[map_val]).is_none() {
+                let msg = tc.exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_map_start: handler '{}': {}", owner, msg));
+            }
+        }
+    });
+}
+
 /// Drain `COOKIE_CACHED_PENDING` and fan each queued slot out to the `Cookies.onCached` subscribers
 /// (clientprefs Task 4). Called from `ffi.rs`'s Post-frame branch AFTER `frame_async_drain()` returns
 /// (HOST is free — no re-entrancy risk from the plugin's own async cookie-load work). Mirrors
@@ -3680,6 +3734,19 @@ fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, owner, generation, handler_g); });
+    }));
+}
+
+/// `__s2_map_start_subscribe(handler)` — subscribe a JS fn to the map-start event. Owner-tracked
+/// (mirrors `__s2_chat_on_message`); fixed mux key "". The handler receives the map name string.
+fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        MAP_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
     }));
 }
 
@@ -5227,6 +5294,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_chat_on_message", s2_chat_on_message);
     // Client-lifecycle subscriber (Clients sub-project): register a Clients.on* handler.
     set_native(scope, global_obj, "__s2_client_subscribe", s2_client_subscribe);
+    // Map-start subscriber (clientlist-fakeconvar-onmapstart slice): register a Server.onMapStart handler.
+    set_native(scope, global_obj, "__s2_map_start_subscribe", s2_map_start_subscribe);
 
     set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
     set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
@@ -6743,6 +6812,8 @@ pub fn shutdown() {
     CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the client-lifecycle mux (Clients sub-project) so a re-init starts clean.
     CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the map-start mux (clientlist-fakeconvar-onmapstart slice) so a re-init starts clean.
+    MAP_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the Cookies.onCached mux + pending queue (clientprefs Task 4) so a re-init starts clean.
     COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear());
@@ -7026,6 +7097,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // lifecycle hooks are installed for the process lifetime (removed in the shim's Unload), so no
     // per-plugin hook-removal request is needed.
     CLIENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c'') Drop the plugin's Server.onMapStart subscriptions (clientlist-fakeconvar-onmapstart
+    // slice). The StartupServer hook is installed for the process lifetime (removed in the shim's
+    // Unload), so no per-plugin hook-removal request is needed.
+    MAP_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c'') Drop the plugin's Cookies.onCached subscriptions (clientprefs Task 4). No engine-level
     // hook to remove (the fan-out is a pure post-frame JS dispatch, no shim involvement).
     COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
@@ -8282,6 +8357,23 @@ mod frame_tests {
         // Teardown: unload removes all of pcl's client subs; a later dispatch is a safe no-op.
         unload_plugin("pcl");
         dispatch_client_event("connect", 9);   // must not crash / must not deliver (context disposed)
+        shutdown();
+    }
+
+    /// dispatch_map_start delivers the map name to a Server.onMapStart subscriber (the MAP_MUX reuse +
+    /// the string-arg dispatch); mirrors client_event_dispatch_reaches_subscriber.
+    #[test]
+    fn map_start_dispatch_delivers_map_name() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("pms");
+        eval_in_context_string("pms", r#"
+            globalThis.__map = "";
+            __s2pkg_server.Server.onMapStart(function (m) { globalThis.__map = m; });
+            "ok"
+        "#);
+        dispatch_map_start("de_test");
+        assert_eq!(eval_in_context_string("pms", "globalThis.__map"), "de_test");
         shutdown();
     }
 

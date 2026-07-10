@@ -27,6 +27,13 @@ export declare const Server: {
     min?: number;
     max?: number;
   }): boolean;
+  /**
+   * Subscribe to map start (fires on every server map startup — the framework event that replaces
+   * polling `Server.mapName` on OnGameFrame). Boot-loaded plugins receive the first map's fire;
+   * a plugin hot-loaded mid-map does NOT get a synthetic fire for the current map — read
+   * `Server.mapName` at load. Torn down automatically on plugin unload.
+   */
+  onMapStart(handler: (mapName: string) => void): void;
   /** The server's configured max client count (`GetMaxClients()`). `0` if unavailable. */
   readonly maxPlayers: number;
   /** The current map name (`GetMapName()`, the BSP). `""` if unavailable. */

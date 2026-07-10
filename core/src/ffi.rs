@@ -100,6 +100,19 @@ pub extern "C" fn s2script_core_dispatch_client_event(name: *const c_char, slot:
     });
 }
 
+/// Shim → core: the INetworkServerService::StartupServer POST hook reports a map start with the
+/// live map name. Notify-only: dispatches to the `Server.onMapStart` JS subscribers.
+/// `catch_unwind`-wrapped; a null pointer degrades to "" (never panic across the FFI boundary).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) {
+    let _ = catch_unwind(|| {
+        let map_str = if map.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(map) }).to_str().unwrap_or("")
+        };
+        v8host::dispatch_map_start(map_str);
+    });
+}
+
 /// Shim → core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
 /// (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
 /// (a pre-hook returned Handled/Stop), else 0.

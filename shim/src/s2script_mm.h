@@ -16,6 +16,18 @@ class CPlayerSlot;
 // before eiface.h pulls the full definition, so an opaque enum decl with the SDK's fixed underlying type
 // (`: int`, per network_connection.pb.h) is required; it is compatible with the later full definition.
 enum ENetworkDisconnectionReason : int;
+// Forward-declared for the StartupServer map-start hook (clientlist-fakeconvar-onmapstart slice); full
+// definitions (iserver.h) live in s2script_mm.cpp. INetworkServerService / ISource2WorldSession are
+// forward-declared classes in iserver.h too (iserver.h:41,43), so `class` here is compatible.
+// GameSessionConfiguration_t is only ever forward-declared across the whole SDK (its real body is
+// commented out), so it stays INCOMPLETE here — but the SH_DECL_HOOK3_void macro in the .cpp sizeof's
+// the by-ref param type, and `sizeof` needs a COMPLETE type. s2script_mm.cpp therefore promotes it to a
+// (definitionally empty, ABI-safe) complete type with `class GameSessionConfiguration_t {};` just before
+// the SH_DECL; the forward decl here remains compatible with that later definition (forward-decl then
+// define within the one TU is legal).
+class INetworkServerService;
+class GameSessionConfiguration_t;
+class ISource2WorldSession;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
@@ -50,6 +62,12 @@ public:
                                unsigned long long xuid, const char* netid);
     void Hook_ClientSettingsChanged(CPlayerSlot slot);
 
+    // Map-start hook (clientlist-fakeconvar-onmapstart slice) — POST hook on
+    // INetworkServerService::StartupServer (the CSSharp OnMapStart mechanism). Reads the live map
+    // name off the (typed) game server and forwards to s2script_core_dispatch_map_start.
+    void Hook_StartupServer(const GameSessionConfiguration_t& config, ISource2WorldSession* session,
+                            const char* unk);
+
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
     ISource2GameClients* m_gameClients = nullptr;
@@ -57,6 +75,7 @@ public:
     bool m_eventHookInstalled  = false;
     bool m_clientCmdHookInstalled = false;
     bool m_clientLifecycleHooksInstalled = false;  // @s2script/clients: the six notify lifecycle hooks
+    bool m_startupServerHookInstalled = false;     // OnMapStart: the StartupServer POST hook
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }

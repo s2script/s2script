@@ -96,6 +96,23 @@ SH_DECL_HOOK1_void(ISource2GameClients, ClientFullyConnect, SH_NOATTRIB, 0, CPla
 SH_DECL_HOOK5_void(ISource2GameClients, ClientDisconnect, SH_NOATTRIB, 0, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*); // :587
 SH_DECL_HOOK1_void(ISource2GameClients, ClientSettingsChanged, SH_NOATTRIB, 0, CPlayerSlot);                                                       // :599
 
+// GameSessionConfiguration_t is only FORWARD-DECLARED across the whole pinned SDK (iserver.h:43,
+// eiface.h:88, iloopmode.h:107, igamesystem.h:43; the one body at iloopmode.h:109 is commented out),
+// and the SH_DECL_HOOK3_void macro below applies __SH_GPI(tt) = { sizeof(tt), ... } (sourcehook.h:1081)
+// to EVERY param type — so `sizeof(const GameSessionConfiguration_t&)` (the size of the referent)
+// requires a COMPLETE type or the shim will not compile at the sniper step. An empty stub definition
+// (following the forward decls) makes it complete and is ABI-safe: StartupServer takes it ONLY by
+// const-reference, SourceHook passes a ByRef param as a pointer (PassInfo.size is not used to copy the
+// referent), and our Hook_StartupServer body never names or dereferences it — no GameSessionConfiguration_t
+// is ever constructed, sized-into, or copied in this TU, so there is no interaction with the engine's real
+// type. (CCommand-by-ref at :81 compiles only because convar.h makes CCommand complete; this is the first
+// hook to pass a forward-declared class by reference.)
+class GameSessionConfiguration_t {};
+
+// INetworkServerService::StartupServer (clientlist-fakeconvar-onmapstart slice) — the CSSharp OnMapStart
+// mechanism (mm_plugin.cpp:82), verbatim. POST hook only. Signature confirmed against OUR iserver.h:221.
+SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*);
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -2046,6 +2063,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_pNetworkServerService = engineFactory ? engineFactory(verStr, &ret) : nullptr;
             if (s_pNetworkServerService && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: NetworkServerService (%s)\n", verStr);
+                // OnMapStart (clientlist-fakeconvar-onmapstart slice): POST hook StartupServer on the
+                // just-acquired NetworkServerService — the CSSharp OnMapStart mechanism.
+                SH_ADD_HOOK(INetworkServerService, StartupServer,
+                            static_cast<INetworkServerService*>(s_pNetworkServerService),
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_StartupServer), true);   // POST
+                m_startupServerHookInstalled = true;
             } else {
                 s_pNetworkServerService = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkServerService (%s) — identity natives degrade\n", verStr);
@@ -2592,6 +2615,14 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_clientLifecycleHooksInstalled = false;
     }
 
+    // Remove the StartupServer map-start POST hook (clientlist-fakeconvar-onmapstart slice).
+    if (m_startupServerHookInstalled && s_pNetworkServerService) {
+        SH_REMOVE_HOOK(INetworkServerService, StartupServer,
+                       static_cast<INetworkServerService*>(s_pNetworkServerService),
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_StartupServer), true);
+        m_startupServerHookInstalled = false;
+    }
+
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
     s2detour::RemoveAll();
 
@@ -2726,5 +2757,17 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
 }
 void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
     s2script_core_dispatch_client_event("settingschanged", slot.Get());
+    RETURN_META(MRES_IGNORED);
+}
+
+// POST StartupServer = the map is starting up on a live, named game server (CSSharp reads the map
+// name in its POST hook the same way). Also doubles as the client-list slice's boot sanity line —
+// a garbage GetIGameServer()/GetMapName()/GetMaxClients() vtable read would be visible here.
+void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISource2WorldSession*, const char*) {
+    INetworkGameServer* gs = S2_GameServer();
+    const char* map = gs ? gs->GetMapName() : nullptr;
+    META_CONPRINTF("[s2script] map start: %s (maxClients=%d)\n",
+                   map ? map : "<null>", gs ? gs->GetMaxClients() : -1);
+    s2script_core_dispatch_map_start(map ? map : "");
     RETURN_META(MRES_IGNORED);
 }

@@ -315,6 +315,10 @@ int s2script_core_dispatch_client_command(int slot, const char* name, const char
  * name is one of connect/putinserver/active/fullyconnect/disconnect/settingschanged; slot is the
  * player's slot (CPlayerSlot::Get()). Notify-only: runs the JS Clients.on(name) subscribers. */
 void s2script_core_dispatch_client_event(const char* name, int slot);
+/* Shim -> core: the INetworkServerService::StartupServer POST hook reports a map start with the
+ * live map name (clientlist-fakeconvar-onmapstart slice). Notify-only: runs the JS Server.onMapStart
+ * subscribers. catch_unwind-wrapped; a null pointer degrades to "" (never panic across the boundary). */
+void s2script_core_dispatch_map_start(const char* map);
 /* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
  * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
  * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->
