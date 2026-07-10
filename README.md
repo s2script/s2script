@@ -8,13 +8,13 @@ s2script is a TypeScript plugin framework for Source 2 engine games (Counter-Str
 
 ## Install (server operators)
 
-Download a SourceMod-style zip from [GitHub Releases](https://github.com/GabeHirakawa/s2script/releases), extract it into your CS2 server's `game/csgo/` directory, ensure [Metamod:Source 2.0](https://www.sourcemm.net/) is installed, patch `gameinfo.gi` for the Metamod SearchPath, and drop `.s2sp` plugins into `addons/s2script/plugins/`.
+Download a SourceMod-style zip from [GitHub Releases](https://github.com/GabeHirakawa/s2script/releases), extract it into your CS2 server's `game/csgo/` directory, ensure [Metamod:Source 2.0](https://www.sourcemm.net/) is installed, and patch `gameinfo.gi` for the Metamod SearchPath. The zip includes the runtime **and** the first-party base plugins under `addons/s2script/plugins/`.
 
 Full steps (writable `configs/`/`data/`, post-update notes, maintainer tag flow): **[`docs/INSTALL.md`](docs/INSTALL.md)**.
 
 ```bash
 cd /path/to/cs2/game/csgo
-unzip s2script-cs2-linux-0.1.0.zip   # overlays addons/
+unzip s2script-cs2-linux-0.1.1.zip   # overlays addons/ (runtime + base plugins)
 # patch gameinfo.gi → first SearchPath: Game  csgo/addons/metamod
 # restart → meta list should show s2script
 ```
@@ -101,12 +101,12 @@ dist/addons/
       core.gamedata.jsonc
     js/
       pawn.js
-    plugins/          # empty — drop .s2sp here
+    plugins/          # base .s2sp plugins (release) / drop zone
     configs/          # empty — writable at runtime
     data/             # empty — writable at runtime
 ```
 
-For a SourceMod-style operator zip (`addons/` at the archive root), run `scripts/package-release.sh <version>` after a sniper build — see [`docs/INSTALL.md`](docs/INSTALL.md).
+For a SourceMod-style operator zip (`addons/` at the archive root, including base plugins), run `scripts/build-base-plugins.sh` then `scripts/package-release.sh <version>` after a sniper build — see [`docs/INSTALL.md`](docs/INSTALL.md).
 
 > ⚠️ The host `make` build above is **dev-only**. Binaries built on a modern host (newer glibc) will
 > NOT load on the CS2 server — see [Building for the server](#building-for-the-server-steam-runtime--glibc-231).

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stage a SourceMod-style release zip from an already-packaged dist/addons/.
 # Caller must run scripts/build-sniper.sh (or make package) first.
+# Base plugins: run scripts/build-base-plugins.sh first (or this script builds them).
 #
 # Usage:
 #   scripts/package-release.sh [VERSION]
@@ -58,6 +59,15 @@ fi
 ZIP_NAME="s2script-cs2-linux-${VERSION}.zip"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"
 
+# Build base plugins if none are present yet (release CI builds them explicitly first).
+shopt -s nullglob
+existing_s2sp=(plugins/*/dist/*.s2sp)
+shopt -u nullglob
+if [ "${#existing_s2sp[@]}" -eq 0 ]; then
+    echo "=== no built .s2sp found — running build-base-plugins.sh ==="
+    bash scripts/build-base-plugins.sh
+fi
+
 rm -rf "$STAGE"
 mkdir -p "$STAGE/addons"
 
@@ -71,14 +81,31 @@ mkdir -p \
     "$STAGE/addons/s2script/configs" \
     "$STAGE/addons/s2script/data"
 
-# Drop-zone hint (SourceMod ships empty plugins/ with a readme).
-cat > "$STAGE/addons/s2script/plugins/README.txt" <<'EOF'
-Drop built .s2sp plugin archives here.
+# Clear any leftover .s2sp from a local Docker deploy, then install base plugins.
+find "$STAGE/addons/s2script/plugins" -maxdepth 1 -type f -name '*.s2sp' -delete
+
+plugin_count=0
+shopt -s nullglob
+for s2sp in plugins/*/dist/*.s2sp; do
+    # Skip any *-demo that somehow remained under plugins/
+    case "$s2sp" in
+        */*-demo/*) continue ;;
+    esac
+    cp "$s2sp" "$STAGE/addons/s2script/plugins/"
+    plugin_count=$((plugin_count + 1))
+done
+shopt -u nullglob
+
+if [ "$plugin_count" -eq 0 ]; then
+    echo "ERROR: no base plugin .s2sp files to include — run scripts/build-base-plugins.sh" >&2
+    exit 1
+fi
+
+cat > "$STAGE/addons/s2script/plugins/README.txt" <<EOF
+First-party base plugins ($plugin_count) ship in this release.
+Drop additional .s2sp archives here to load them.
 The runtime watches this directory (top-level only) and hot-loads / reloads / unloads on change.
 EOF
-
-# Strip any leftover .s2sp from a local Docker deploy so the release stays runtime-only.
-find "$STAGE/addons/s2script/plugins" -maxdepth 1 -type f -name '*.s2sp' -delete
 
 printf '%s\n' "$VERSION" > "$STAGE/addons/s2script/VERSION"
 
@@ -91,7 +118,8 @@ rm -f "$ZIP_PATH"
 
 echo ""
 echo "release: $ZIP_PATH"
+echo "base plugins included: $plugin_count"
 echo -n "sha256: "
 sha256sum "$ZIP_PATH" | awk '{print $1}'
 echo "layout:"
-unzip -l "$ZIP_PATH" | sed -n '1,40p'
+unzip -l "$ZIP_PATH" | sed -n '1,60p'

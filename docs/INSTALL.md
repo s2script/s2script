@@ -1,6 +1,6 @@
 # Installing s2script (CS2, Linux)
 
-s2script ships as a **SourceMod-style zip**: extract over your server's `game/csgo/` directory so `addons/` overlays in place. Plugins are separate `.s2sp` archives you drop into `addons/s2script/plugins/`.
+s2script ships as a **SourceMod-style zip**: extract over your server's `game/csgo/` directory so `addons/` overlays in place. The zip includes the runtime **and** the first-party base plugins (already under `addons/s2script/plugins/`).
 
 Linux x86-64 only. Windows is not supported yet.
 
@@ -16,7 +16,7 @@ Linux x86-64 only. Windows is not supported yet.
 
    ```bash
    cd /path/to/cs2/game/csgo
-   unzip /path/to/s2script-cs2-linux-0.1.0.zip
+   unzip /path/to/s2script-cs2-linux-0.1.1.zip
    ```
 
    That creates:
@@ -29,7 +29,7 @@ Linux x86-64 only. Windows is not supported yet.
      bin/linuxsteamrt64/libs2script_core.so
      gamedata/core.gamedata.jsonc
      js/pawn.js
-     plugins/          # drop .s2sp here
+     plugins/          # base .s2sp plugins + drop more here
      configs/          # auto-generated on first load
      data/             # SQLite DBs
    ```
@@ -50,9 +50,17 @@ Linux x86-64 only. Windows is not supported yet.
    meta list
    ```
 
-   You should see `s2script` loaded, and server logs should include `[s2script]` boot lines (gamedata validation, plugin dir, etc.).
+   You should see `s2script` loaded, and server logs should include `[s2script]` boot lines (gamedata validation, plugin dir, etc.) plus the base plugins loading.
 
-## Install plugins
+## Base plugins (included)
+
+The release ships the SourceMod-parity suite from `plugins/` (demos live under `examples/` and are not packaged):
+
+`adminhelp` · `adminmenu` · `antiflood` · `basebans` · `basechat` · `basecomm` · `basecommands` · `basetriggers` · `basevotes` · `clientprefs` · `funcommands` · `playercommands` · `reservedslots`
+
+Opt-in plugins under `disabled/` (nominations, rockthevote, nextmap, funvotes) are **not** in the zip — build and drop them yourself if you want them.
+
+## Add more plugins
 
 Build a plugin to a `.s2sp` (see the README authoring section), then copy it into:
 
@@ -72,17 +80,18 @@ Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismat
 ## Publishing a release (maintainers)
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
-The [`release`](../.github/workflows/release.yml) workflow sniper-builds (GLIBC ≤ 2.31), packages `s2script-cs2-linux-0.1.0.zip`, and uploads it to a GitHub Release for that tag.
+The [`release`](../.github/workflows/release.yml) workflow sniper-builds (GLIBC ≤ 2.31), builds base plugins, packages `s2script-cs2-linux-*.zip`, and uploads it to a GitHub Release for that tag.
 
 Local dry-run (after a sniper build):
 
 ```bash
 docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
   rust:bullseye bash /repo/scripts/build-sniper.sh
-bash scripts/package-release.sh 0.1.0
-# → dist/s2script-cs2-linux-0.1.0.zip
+bash scripts/build-base-plugins.sh
+bash scripts/package-release.sh 0.1.1
+# → dist/s2script-cs2-linux-0.1.1.zip
 ```
