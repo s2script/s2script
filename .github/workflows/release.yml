@@ -42,6 +42,9 @@ jobs:
           check dist/addons/s2script/bin/linuxsteamrt64/s2script.so
           check dist/addons/s2script/bin/linuxsteamrt64/libs2script_core.so
 
+      - name: Fix dist ownership after Docker
+        run: sudo chown -R "$USER:$USER" dist build target docker/metamod 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" dist
+
       - name: Install zip
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zip
 

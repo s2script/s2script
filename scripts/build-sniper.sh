@@ -40,6 +40,9 @@ echo "=== GLIBC requirement after bullseye build (must be <= 2.31) ==="
 echo -n "s2script.so      needs: "; objdump -T build/shim/s2script.so | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1
 echo -n "libs2script_core needs: "; objdump -T target/release/libs2script_core.so | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1
 
-# return ownership to the host user (container runs as root)
-chown -R 1000:1000 /repo/target /repo/build /repo/dist /repo/docker/metamod 2>/dev/null || true
+# return ownership to the host user that owns the bind-mounted repo
+# (container runs as root; hardcoded 1000:1000 breaks GitHub Actions uid 1001)
+HOST_UID=$(stat -c %u /repo)
+HOST_GID=$(stat -c %g /repo)
+chown -R "$HOST_UID:$HOST_GID" /repo/target /repo/build /repo/dist /repo/docker/metamod 2>/dev/null || true
 echo "=== DONE ==="
