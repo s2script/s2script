@@ -73,3 +73,21 @@ The spike REPORTS: which detection path fired (output vs poll), the exact workin
 ## Slice shape
 
 Exploratory. Likely a JS-only plugin (no sniper) in the happy path; a sniper rebuild only if the ladder forces a collision op. **Executed interactively (controller-driven) with live iteration** — a spike needs the live touch/no-touch feedback to walk the recipe ladder, which a fire-and-forget workflow can't see. Live gate → report the working recipe → feeds sub-slice 2's plan.
+
+---
+
+## Spike result & decision (2026-07-10)
+
+**Outcome: real-trigger backend PARKED; the zone-detection spine ships on ORIGIN-POLLING (user-chosen fallback).**
+
+**What the spike proved about real triggers (the RE finding):**
+- `createEntity("trigger_multiple")` + the bbox recipe all work: the collision schema writes LAND (readback confirmed `solidType=2 SOLID_BBOX`, `solidFlags=12 NOT_SOLID|TRIGGER`, `disabled=false`, `mins=-250`).
+- BUT the engine never fires touch, because the entity is never registered with the collision **spatial partition**. The SDK path: the partition handle is created only inside `CCollisionProperty::UpdatePartition()`, which only runs for entities on a global dirty list (`s_DirtyKDTree`), which is populated only by `CCollisionProperty::MarkPartitionHandleDirty()` (also sets `EFL_DIRTY_SPATIAL_PARTITION`). Raw schema writes bypass all of it, and the eflag can't be shortcut via schema (it's a "already-in-list" guard — setting it alone makes the real code SKIP the list-add).
+- The exhausted JS-only ladder: spawnflags variants, `Enable` input, bbox-before/after-spawn, teleport-last (Teleport → the collision refresh) — none registered it.
+- The fix needs an internal `CCollisionProperty` call (`MarkPartitionHandleDirty`/`SetSolid`/`SetCollisionBounds`), which is **un-exported and published by NO framework** (CSSharp/ModSharp only hook map-authored triggers) → a from-scratch disassembly hunt with no clean anchor. Combined with no local disassembler tooling AND the teleport-last empirical failure (suggesting even the right single call may be insufficient — the trigger likely needs the full `InitTrigger` sequence or a model), the RE was judged to stall/be fragile.
+
+**Decision (user, timeboxed-RE-then-fallback):** pivot to origin-polling — what most SourceMod zone mods use, and box-zone player-detection is its sweet spot.
+
+**Polling spine (shipped, live-proven):** `examples/zones-spike` polls `pawn.origin` for every `Player.all()` on an `OnGameFrame` throttle (~8 Hz), AABB-tests against the zone box, and diffs the inside-set → `OnZoneEnter`/`OnZoneLeave` (`OnZoneStay` while inside is the API, unlogged here). Proven on de_inferno (`bot_quota 4`, moving bots): a box on bot 0 → `ENTER: Maximus (slot 0)` immediately, and three wandering bots (`Kask`/`Blackwolf`/`Enforcer`) fired `ENTER` as they crossed in — real players entering a coordinate zone fire the event. Hot-reloaded (no restart), `RestartCount=0`. No new engine primitive.
+
+**The `OnZoneEnter/Leave/Stay(player, zoneName)` API is backend-agnostic** — sub-slice 2 (persistence) and sub-slice 3 (the inter-plugin interface) are unaffected. **Real trigger-backed zones remain a documented future enhancement**, gated on the `collision_mark_partition_dirty` engine op (the disassembly RE), if precise engine collision or non-player-entity zones are ever needed.
