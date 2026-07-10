@@ -13,7 +13,7 @@ export declare class Client {
   readonly name: string;
   /** Engine user-id; -1 if none. */
   readonly userId: number;
-  /** Raw signon state; -1 if none. */
+  /** Tracked signon state: 0 = none/disconnected, 2 = connected, 5 = spawned, 6 = full (in-game); -1 if the slot is out of range. */
   readonly signonState: number;
   /** True for a fake client (bot) — derived from steamId === "0". */
   readonly isBot: boolean;

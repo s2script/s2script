@@ -502,14 +502,12 @@ static int s2_event_fire(int dontBroadcast) {
 }
 
 // ---------------------------------------------------------------------------
-// Engine-identity: INetworkServerService -> INetworkGameServer -> CServerSideClient[]
-// (Slice 5D.2). s_pNetworkServerService acquired in Load() (was log-only); offsets
-// from gamedata (layout-is-data). Degrade-never-crash: any null/bad-offset returns safe miss.
+// Engine-identity: TYPED SDK VIRTUALS (clientlist-fakeconvar-onmapstart slice — replaces the 5D.2
+// hand-offset walk that went stale on 2000870). s_pNetworkServerService is acquired in Load(); the
+// client ops that consume it (and s_pEngine) are defined below, AFTER s_pEngine's declaration.
+// Degrade-never-crash: any null -> safe miss.
 // ---------------------------------------------------------------------------
 static void* s_pNetworkServerService = nullptr;
-static int s_offGameServer  = -1, s_offClientCount = -1, s_offClientElems = -1;
-static int s_offSscName     = -1, s_offSscSignon   = -1, s_offSscUserId   = -1;
-static const int kSignonConnected = 2;  // SIGNONSTATE_CONNECTED; >=2 = connected (incl. pawnless). Pin on gate.
 // Slice menu: GetLegacyGameEventListener(int slot) -> IGameEventListener2* — the CS2 engine helper that
 // returns a client's per-client legacy game-event listener (a frameless leaf that indexes a global array
 // by slot). Sig-resolved on OUR libserver.so via a DIRECT prologue signature (NOT a CServerSideClient
@@ -545,41 +543,57 @@ static IVEngineServer2* s_pEngine = nullptr;
 static IGameEventSystem* s_pGameEventSystem = nullptr;
 static INetworkMessages*  s_pNetworkMessages  = nullptr;
 
-static void* S2_ClientAt(int slot) {
-    if (!s_pNetworkServerService || s_offGameServer < 0) return nullptr;
-    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
-    if (!gs || s_offClientCount < 0 || s_offClientElems < 0) return nullptr;
-    int n = *reinterpret_cast<int*>(reinterpret_cast<char*>(gs) + s_offClientCount);
-    if (slot < 0 || slot >= n) return nullptr;
-    void** elems = *reinterpret_cast<void***>(reinterpret_cast<char*>(gs) + s_offClientElems);
-    return elems ? elems[slot] : nullptr;
+// ---------------------------------------------------------------------------
+// Engine-identity ops — TYPED SDK VIRTUALS (clientlist-fakeconvar-onmapstart slice; retires the 5D.2
+// hand-offset walk that went stale on 2000870). Every read is a compiler-resolved virtual against the
+// pinned hl2sdk headers (self-healing on the routine per-update SDK bump — no gamedata, no shim edit
+// on a layout move). CSSharp-cross-validated: their player_manager reads userids via GetPlayerUserId
+// and tracks occupancy from the lifecycle hooks, never touching CServerSideClient. Placed AFTER the
+// s_pEngine declaration above (these call it). Degrade-never-crash: any null -> safe miss.
+//
+// The one client fact with NO engine virtual is per-slot signon state (nothing on IVEngineServer2 /
+// INetworkGameServer exposes it). Tracked from the six ALREADY-INSTALLED ISource2GameClients lifecycle
+// hooks (the CSSharp lifecycle-driven model — the design's endorsed approach). Values preserve the two
+// observable JS gates: >= 2 = connected (kSignonConnected), >= 4 = in-game (Client.kickWithReason
+// deliver-now). This TRACKED signon is ALSO the validity signal (connect fires for bots too, so bots
+// read valid — preserving the client_valid "connected incl. bots incl. pawnless" contract).
+//   Why not GetPlayerUserId for validity: CPlayerUserId::_index is an `unsigned short`, so `.Get()`
+//   returns 0..65535 and can NEVER equal -1 — `userid != -1` would mark every empty slot valid
+//   (Clients.all() would yield 64 phantom clients). userid/name gate on the tracked-signon validity.
+// ---------------------------------------------------------------------------
+static const int kSignonNone = 0, kSignonConnected = 2, kSignonSpawn = 5, kSignonFull = 6;
+static const int kMaxClientSlots = 64;
+static int s_trackedSignon[kMaxClientSlots] = {0};
+
+// INetworkGameServer via the TYPED virtual (replaces the NetworkServerService.gameServer offset).
+// CNetworkGameServerBase (the GetIGameServer return type) IS-A INetworkGameServer.
+static INetworkGameServer* S2_GameServer() {
+    if (!s_pNetworkServerService) return nullptr;
+    return static_cast<INetworkServerService*>(s_pNetworkServerService)->GetIGameServer();
 }
+
 static int s2_client_signon(int slot) {
-    void* c = S2_ClientAt(slot);
-    return (c && s_offSscSignon >= 0)
-        ? *reinterpret_cast<int*>(reinterpret_cast<char*>(c) + s_offSscSignon) : -1;
-}
-static int s2_client_userid(int slot) {
-    void* c = S2_ClientAt(slot);
-    if (!c || s_offSscUserId < 0) return -1;
-    return static_cast<int>(*reinterpret_cast<int16_t*>(reinterpret_cast<char*>(c) + s_offSscUserId));
+    if (slot < 0 || slot >= kMaxClientSlots) return -1;
+    return s_trackedSignon[slot];                        // 0 = never-connected / disconnected
 }
 static int s2_client_valid(int slot) {
-    int s = s2_client_signon(slot);
-    return (s >= kSignonConnected) ? 1 : 0;
+    return s2_client_signon(slot) >= kSignonConnected ? 1 : 0;   // tracked; bots included (connect fires)
+}
+static int s2_client_userid(int slot) {
+    if (!s_pEngine || !s2_client_valid(slot)) return -1;
+    return s_pEngine->GetPlayerUserId(CPlayerSlot(slot)).Get();  // real engine user-id for an occupied slot
 }
 static const char* s2_client_name(int slot) {
-    void* c = S2_ClientAt(slot);
-    if (!c || s_offSscName < 0) return nullptr;
-    return *reinterpret_cast<const char**>(reinterpret_cast<char*>(c) + s_offSscName);  // core copies now
+    if (!s_pEngine || !s2_client_valid(slot)) return nullptr;
+    return s_pEngine->GetClientConVarValue(CPlayerSlot(slot), "name");  // userinfo name; core copies
 }
 static int s2_client_find_by_userid(int id) {
-    if (!s_pNetworkServerService || s_offGameServer < 0) return -1;
-    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
-    if (!gs || s_offClientCount < 0) return -1;
-    int n = *reinterpret_cast<int*>(reinterpret_cast<char*>(gs) + s_offClientCount);
+    if (id < 0) return -1;
+    INetworkGameServer* gs = S2_GameServer();
+    int n = gs ? gs->GetMaxClients() : kMaxClientSlots;
+    if (n <= 0 || n > kMaxClientSlots) n = kMaxClientSlots;
     for (int slot = 0; slot < n; slot++) {
-        if (s2_client_valid(slot) && s2_client_userid(slot) == id) return slot;
+        if (s2_client_userid(slot) == id) return slot;
     }
     return -1;
 }
@@ -589,9 +603,9 @@ static int s2_client_find_by_userid(int id) {
 // s2_event_create (s_pendingFireEvent) directly to ONE client's per-client legacy game-event
 // listener, i.e. IGameEventListener2::FireGameEvent — this serializes straight to that client's
 // netchannel and does NOT pass through IGameEventManager2::FireEvent, so it never re-enters our own
-// FireEvent pre-hook / JS dispatch. Bot-skip is EXPLICIT (S2_ClientAt indexes the raw client array —
-// bots ARE present there, same array s2_client_valid/allConnected() report them in — so it does NOT
-// imply a netchannel): guarded the same way as s2_client_print/s2_client_console_print, via
+// FireEvent pre-hook / JS dispatch. Bot-skip is EXPLICIT (a valid slot per s2_client_valid includes
+// bots — allConnected() reports them — so validity does NOT imply a netchannel): guarded the same way
+// as s2_client_print/s2_client_console_print, via
 // GetPlayerNetInfo(slot) == null. The per-client listener comes from the sig-resolved engine helper
 // s_pGetLegacyListener(slot) (GetLegacyGameEventListener), NOT a CServerSideClient offset cast.
 // ---------------------------------------------------------------------------
@@ -935,17 +949,11 @@ static int s2_server_map_valid(const char* map) {
 }
 
 // ---------------------------------------------------------------------------
-// Server-info ops (reservedslots+basetriggers) — typed vtable calls on the SAME
-// game-server pointer the 5D.2 client-list code dereferences (INetworkServerService +
-// s_offGameServer). We cast that void* to INetworkGameServer* and call the typed methods
-// (GetMaxClients / GetMapName / GetGlobals()->curtime) so the compiler derives the vtable
-// index from iserver.h — no manual index math. Degrade-never-crash: null → 0 / "" / 0.
+// Server-info ops (reservedslots+basetriggers) — typed vtable calls on the game-server pointer.
+// Reuse the client-list slice's typed S2_GameServer() (INetworkServerService::GetIGameServer());
+// the compiler derives the GetMaxClients / GetMapName / GetGlobals()->curtime vtable indices from
+// iserver.h — no manual index math. Degrade-never-crash: null → 0 / "" / 0.
 // ---------------------------------------------------------------------------
-static INetworkGameServer* S2_GameServer() {
-    if (!s_pNetworkServerService || s_offGameServer < 0) return nullptr;
-    void* gs = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_pNetworkServerService) + s_offGameServer);
-    return reinterpret_cast<INetworkGameServer*>(gs);
-}
 static int s2_server_max_clients() {
     INetworkGameServer* gs = S2_GameServer();
     return gs ? gs->GetMaxClients() : 0;
@@ -2249,24 +2257,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             // needed" — the real safety check is per-call, not this presence check.
             s_teleportVtblIndex = pick("CBaseEntity_Teleport");
             GamedataResult("CBaseEntity_Teleport", s_teleportVtblIndex >= 0, "offset (vtable index) key absent from gamedata");
-            s_offGameServer  = pick("NetworkServerService.gameServer");
-            s_offClientCount = pick("NetworkGameServer.clientCount");
-            s_offClientElems = pick("NetworkGameServer.clientElems");
-            s_offSscName     = pick("ServerSideClient.name");
-            s_offSscSignon   = pick("ServerSideClient.signon");
-            s_offSscUserId   = pick("ServerSideClient.userId");
-            META_CONPRINTF("[s2script] identity offsets: gs=%d cnt=%d elems=%d name=%d signon=%d uid=%d\n",
-                           s_offGameServer, s_offClientCount, s_offClientElems,
-                           s_offSscName, s_offSscSignon, s_offSscUserId);
-            // Slice 6.9: record offset presence in the gamedata report (a -1 = a missing/typo'd key). A
-            // deeper deref-sanity check (does the offset point to a sane value) is a follow-up per re-strategy.
-            for (auto kv : { std::make_pair("NetworkServerService.gameServer", s_offGameServer),
-                             std::make_pair("NetworkGameServer.clientCount",   s_offClientCount),
-                             std::make_pair("NetworkGameServer.clientElems",   s_offClientElems),
-                             std::make_pair("ServerSideClient.name",           s_offSscName),
-                             std::make_pair("ServerSideClient.signon",         s_offSscSignon),
-                             std::make_pair("ServerSideClient.userId",         s_offSscUserId) })
-                GamedataResult(kv.first, kv.second >= 0, "offset key absent from gamedata");
+            // clientlist-fakeconvar-onmapstart slice: the six 5D.2 engine-identity offsets
+            // (NetworkServerService.gameServer / NetworkGameServer.clientCount+clientElems /
+            // ServerSideClient.name+signon+userId) are RETIRED — the client ops now use typed SDK
+            // virtuals (GetIGameServer / GetPlayerUserId / GetClientConVarValue) + a lifecycle-tracked
+            // signon array, so there is nothing to pick() or validate here (offsets were never re-scanned,
+            // which is exactly how they went stale on 2000870). GAMEDATA VALIDATION count drops by 6.
         }
         // Resolve CNavPhysicsInterface::TraceShape via an RTTI vtable-by-name scan (ray-trace
         // slice, Task 1). CS2 does not export this vtable through dlsym (stripped .symtab, not in
@@ -2605,24 +2601,39 @@ void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) 
 // Task-1 dispatch (runs the JS Clients.on(name) subscribers) and RETURN_META(MRES_IGNORED) — notify-only,
 // never alters flow. The `uint64` param types match the SH_DECL_HOOK above (== the header's `unsigned long
 // long` on Linux). Post-hooks (added `false`).
+//
+// clientlist-fakeconvar-onmapstart slice: these bodies now ALSO drive the tracked signon array
+// (s_trackedSignon) that s2_client_signon/valid/userid/name read (the offset-free replacement). State
+// is set BEFORE the core dispatch so a handler observes the new signon (connect: valid==true during
+// dispatch); disconnect clears AFTER dispatch so the handler still sees the client as valid.
 void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
-    s2script_core_dispatch_client_event("connect", slot.Get());
+    int s = slot.Get();
+    if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
+    s2script_core_dispatch_client_event("connect", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, uint64) {
-    s2script_core_dispatch_client_event("putinserver", slot.Get());
+    int s = slot.Get();
+    if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonSpawn;
+    s2script_core_dispatch_client_event("putinserver", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
-    s2script_core_dispatch_client_event("active", slot.Get());
+    int s = slot.Get();
+    if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
+    s2script_core_dispatch_client_event("active", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientFullyConnect(CPlayerSlot slot) {
-    s2script_core_dispatch_client_event("fullyconnect", slot.Get());
+    int s = slot.Get();
+    if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
+    s2script_core_dispatch_client_event("fullyconnect", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason, const char*, uint64, const char*) {
-    s2script_core_dispatch_client_event("disconnect", slot.Get());
+    int s = slot.Get();
+    s2script_core_dispatch_client_event("disconnect", s);   // dispatch FIRST — handler still sees valid
+    if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonNone;
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {

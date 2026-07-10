@@ -41,11 +41,13 @@ typedef const char*  (*s2_event_get_string_fn)(const char* key);      /* valid d
 typedef uint64_t     (*s2_event_get_uint64_fn)(const char* key);
 typedef int          (*s2_event_get_player_slot_fn)(const char* key); /* -1 if absent */
 
-/* Engine-identity ops (Slice 5D.2) — read the connected-client list (INetworkServerService ->
- * game server -> CServerSideClient[]) at gamedata offsets. All degrade to safe misses on any null. */
-typedef int          (*s2_client_valid_fn)(int slot);          /* 0/1: connected client at slot */
+/* Engine-identity ops — the connected-client list via TYPED SDK VIRTUALS (GetIGameServer /
+ * GetPlayerUserId / GetClientConVarValue) + a lifecycle-tracked signon array
+ * (clientlist-fakeconvar-onmapstart slice; retired the 5D.2 hand offsets). Contracts unchanged.
+ * All degrade to safe misses on any null. */
+typedef int          (*s2_client_valid_fn)(int slot);          /* 0/1: connected client at slot (incl. bots) */
 typedef int          (*s2_client_userid_fn)(int slot);         /* engine user-id, or -1 */
-typedef int          (*s2_client_signon_fn)(int slot);         /* signon state, or -1 */
+typedef int          (*s2_client_signon_fn)(int slot);         /* tracked signon: 0 none/disconnected, 2 connected, 5 spawned, 6 full in-game; -1 slot OOB */
 typedef const char*  (*s2_client_name_fn)(int slot);           /* valid during call; core copies now */
 typedef int          (*s2_client_find_by_userid_fn)(int userid); /* slot, or -1 */
 
