@@ -1,14 +1,19 @@
 // zones-consumer-demo — a SEPARATE plugin that consumes the `zones` inter-plugin interface
-// (published by @s2script/zones). Proves zones are a platform: this plugin reacts to zone events
+// (published by @s2script/zones-lib). Proves zones are a platform: this plugin reacts to zone events
 // it doesn't own — logging enter/leave and HEALING players who stand in a zone named "heal".
-import { on, getZones } from "zones";        // hard dep -> producer-backed proxy (throws while producer unloaded)
+//
+// LOAD-ORDER NOTE: the loader loads plugins alphabetically (no dependency order), so this @demo
+// consumer loads BEFORE the @s2script producer. A subscription registered while the producer is absent
+// does NOT receive later emits (on(...) doesn't throw, but doesn't wire either) — so we DEFER the
+// subscription until the producer is live, probing with a method call (which DOES throw while absent).
+import { on, getZones } from "zones";        // hard dep -> producer-backed proxy
+import { OnGameFrame } from "@s2script/frame";
 import { Player } from "@s2script/cs2";
 
-// The gate types a plugin-dependency import as `any`, so annotate the event payload explicitly
-// (mirrors greeter-consumer; the hand-written zones.d.ts types it in an editor).
 type ZoneEvent = { zone: string; slot: number; userId: number };
+let subscribed = false;
 
-export function onLoad(): void {
+function subscribe(): void {
   on("enter", (p: ZoneEvent) => {
     const nm = Player.fromSlot(p.slot)?.playerName ?? `slot ${p.slot}`;
     console.log(`[zones-consumer] ENTER ${p.zone}: ${nm}`);
@@ -24,12 +29,30 @@ export function onLoad(): void {
     if (pw && pw.health != null && pw.health < 100) {
       const nh = Math.min(100, pw.health + 1);
       pw.health = nh;
-      if (nh % 20 === 0 || nh === 100) console.log(`[zones-consumer] healed slot ${p.slot} -> ${nh}`);  // throttled progression log
+      if (nh % 20 === 0 || nh === 100) console.log(`[zones-consumer] healed slot ${p.slot} -> ${nh}`);
     }
   });
-  try {
-    console.log(`[zones-consumer] onLoad — subscribed; getZones()=${getZones().length}`);
-  } catch (e) {
-    console.log(`[zones-consumer] onLoad — subscribed (producer absent: ${String(e)})`);
+}
+
+// True once the `zones` producer is live (a method call no longer throws InterfaceUnavailable).
+function tryConnect(): boolean {
+  try { getZones(); } catch { return false; }   // producer not up yet
+  subscribe();                                   // producer live -> on(...) wires now
+  return true;
+}
+
+export function onLoad(): void {
+  if (tryConnect()) {
+    subscribed = true;
+    console.log("[zones-consumer] onLoad — subscribed (producer live)");
+    return;
   }
+  console.log("[zones-consumer] onLoad — producer not up yet; deferring subscription");
+  OnGameFrame.subscribe(() => {
+    if (subscribed) return;
+    if (tryConnect()) {
+      subscribed = true;
+      console.log("[zones-consumer] subscribed (deferred, producer now live)");
+    }
+  });
 }
