@@ -1403,6 +1403,30 @@ static int Shim_EntitySpawn(int index, int serial) {
     return 1;
 }
 
+// spawn-with-keyvalues: DispatchSpawn(ent, CEntityKeyValues) — the entity's own Spawn() parses the
+// keys (the SM DispatchKeyValue / CSSharp DispatchSpawn(kv) mechanism). The EKV's whole lifecycle is
+// inside this call: build -> AddRef (so a balanced engine AddRef/Release can never delete our-heap
+// memory mid-call) -> DispatchSpawn -> Release IF the engine isn't still holding it queued (then we
+// WARN once + deliberately leak one small object — a bounded leak beats a UAF/cross-heap free).
+static int Shim_EntitySpawnKv(int index, int serial, int count,
+                              const char* const* keys, const int* types, const char* const* values) {
+    if (!s_pDispatchSpawn) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    void* ekv = S2EKV_Build(count, keys, types, values);
+    if (!ekv) return 0;
+    S2EKV_AddRef(ekv);
+    s_pDispatchSpawn(ent, ekv);
+    if (!S2EKV_ReleaseIfSafe(ekv)) {
+        static bool s_warnedEkvLeak = false;
+        if (!s_warnedEkvLeak) {
+            s_warnedEkvLeak = true;
+            META_CONPRINTF("[s2script] WARN: engine kept a spawn CEntityKeyValues queued — leaking it (once-per-boot notice)\n");
+        }
+    }
+    return 1;
+}
+
 // teleport: CBaseEntity::Teleport via the gamedata vtable index, .text-validated on every call
 // (mirrors the trace-slice's load-time check but re-checked here since the index is read once at
 // load — this guards against a corrupted/freed vtable slot, not just a stale gamedata index).
@@ -2232,6 +2256,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_read_handle_vector = &Shim_EntityReadHandleVector;
     // Entity-I/O slice — APPENDED after entity_read_handle_vector; order MUST match S2EngineOps.
     ops.entity_fire_input = &Shim_EntityFireInput;
+    // EKV slice — APPENDED after entity_fire_input; order MUST match S2EngineOps.
+    ops.entity_spawn_kv = &Shim_EntitySpawnKv;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
