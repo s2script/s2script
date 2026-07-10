@@ -4129,6 +4129,12 @@ fn s2_entity_spawn_kv(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
             if !(0..=3).contains(&t) { return; }
             let kc = match std::ffi::CString::new(k) { Ok(c) => c, Err(_) => return };
             let vc = match std::ffi::CString::new(val) { Ok(c) => c, Err(_) => return };
+            // BYTE-length guard (the true choke point): the JS prelude caps UTF-16 .length at 1024,
+            // but CKV3Arena's AddPage() aborts the WHOLE process on a string whose UTF-8 BYTE length
+            // exceeds ~2KB — and a BMP char (CJK, U+0800..U+FFFF) is 3 UTF-8 bytes/code-unit, so 1024
+            // code units can be ~3KB. Re-check the exact UTF-8 byte length here (free — the CString is
+            // built) and fail the WHOLE map closed (no partial spawn) BEFORE any engine call.
+            if kc.as_bytes().len() > 1024 || vc.as_bytes().len() > 1024 { return; }
             keys_c.push(kc); vals_c.push(vc); types_v.push(t);
         }
         let key_ptrs: Vec<*const std::os::raw::c_char> = keys_c.iter().map(|c| c.as_ptr()).collect();
@@ -8600,14 +8606,16 @@ mod frame_tests {
         let out = eval_in_context_string("p", r#"
             const r = new (__s2pkg_entity.EntityRef)(1, 7);
             const big = "x".repeat(2050);   // beyond the real ~2048-byte engine abort bound
+            const cjk = "字".repeat(500); // .length 500 (UNDER the JS .length cap) but 1500 UTF-8 bytes
             const ok  = "x".repeat(100);    // comfortably under the cap
             [
-                String(r.spawn({ message: big })),   // oversized VALUE -> false, never reaches the op
-                String(r.spawn({ [big]: 1 })),        // oversized KEY -> false, never reaches the op
+                String(r.spawn({ message: big })),   // oversized ASCII VALUE -> rejected by the JS .length cap
+                String(r.spawn({ [big]: 1 })),        // oversized KEY -> rejected by the JS .length cap
+                String(r.spawn({ message: cjk })),    // multibyte VALUE: passes .length cap, rejected by the NATIVE byte guard
                 String(r.spawn({ message: ok }))      // normal-length value -> reaches the fake op -> true
             ].join(",")
         "#);
-        assert_eq!(out, "false,false,true");
+        assert_eq!(out, "false,false,false,true");
         assert_eq!(EKV_CAPTURE.lock().unwrap().len(), 1, "only the normal-length spawn should have reached the op");
         shutdown();
     }
