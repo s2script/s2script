@@ -182,3 +182,23 @@ export interface BeamHandle {
 export declare const Beam: {
   draw(start: Vector, end: Vector, opts?: { color?: [number, number, number, number]; width?: number }): BeamHandle | null;
 };
+
+/** A live read view over CCSGameRules (via the cs_gamerules proxy). Every field is serial-gated at the
+ *  proxy root and reads null if the proxy is gone (e.g. between maps). */
+export interface GameRulesView {
+  readonly warmupPeriod: boolean | null;
+  readonly freezePeriod: boolean | null;
+  readonly roundTime: number | null;
+  readonly freezeTime: number | null;
+  readonly totalRoundsPlayed: number | null;
+  readonly gamePhase: number | null;
+  readonly bombPlanted: boolean | null;
+  readonly roundsPlayedThisPhase: number | null;
+  readonly gameRestart: boolean | null;
+  readonly gameStartTime: number | null;
+  readonly matchWaitingForResume: boolean | null;
+  readonly hasMatchStarted: boolean | null;
+}
+/** Read CCSGameRules state. get() re-finds the cs_gamerules proxy each call (not a hot path); returns
+ *  null when no proxy exists (e.g. pre-map-load). */
+export declare const GameRules: { get(): GameRulesView | null };

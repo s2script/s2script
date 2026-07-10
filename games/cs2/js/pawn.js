@@ -593,7 +593,38 @@
     }
   };
 
+  // GameRules — read CCSGameRules via the cs_gamerules proxy's m_pGameRules pointer.
+  // Serial-gated at the proxy root (readVia); offsets live-resolved per access (self-healing across map
+  // changes — the proxy dies and re-resolves). All getters read null if the proxy is gone.
+  function GameRulesView(proxyRef) { this.ref = proxyRef; }
+  function grPath() { var o = __s2_schema_offset("CCSGameRulesProxy", "m_pGameRules"); return o < 0 ? null : [o]; }
+  function grBool(field)  { return { get: function () { var p = grPath(); if (!p) return null; var o = __s2_schema_offset("CCSGameRules", field); return o < 0 ? null : this.ref.readBoolVia(p, o); } }; }
+  function grInt(field)   { return { get: function () { var p = grPath(); if (!p) return null; var o = __s2_schema_offset("CCSGameRules", field); return o < 0 ? null : this.ref.readInt32Via(p, o); } }; }
+  function grFloat(field) { return { get: function () { var p = grPath(); if (!p) return null; var o = __s2_schema_offset("CCSGameRules", field); return o < 0 ? null : this.ref.readFloat32Via(p, o); } }; }
+  Object.defineProperties(GameRulesView.prototype, {
+    warmupPeriod:          grBool("m_bWarmupPeriod"),
+    freezePeriod:          grBool("m_bFreezePeriod"),
+    roundTime:             grInt("m_iRoundTime"),
+    freezeTime:            grInt("m_iFreezeTime"),
+    totalRoundsPlayed:     grInt("m_totalRoundsPlayed"),
+    gamePhase:             grInt("m_gamePhase"),
+    bombPlanted:           grBool("m_bBombPlanted"),
+    roundsPlayedThisPhase: grInt("m_nRoundsPlayedThisPhase"),
+    gameRestart:           grBool("m_bGameRestart"),
+    gameStartTime:         grFloat("m_flGameStartTime"),
+    matchWaitingForResume: grBool("m_bMatchWaitingForResume"),
+    hasMatchStarted:       grBool("m_bHasMatchStarted")
+  });
+  var GameRules = {
+    get: function () {
+      var ent = globalThis.__s2pkg_entity;
+      var refs = ent && ent.Entity ? ent.Entity.findByClass("cs_gamerules") : null;
+      if (!refs || refs.length === 0) return null;
+      return new GameRulesView(refs[0]);
+    }
+  };
+
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules });
 })();
