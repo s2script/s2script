@@ -714,6 +714,92 @@ static void s2_concommand_register(const char* name) {
 }
 
 // ---------------------------------------------------------------------------
+// FakeConVar registration (clientlist-fakeconvar-onmapstart slice). Fills ConVarCreation_t exactly
+// as the SDK's CConVar<T>::Register does (name/help/flags + ConVarValueInfo_t(type) + typed
+// SetDefaultValue/SetMinValue/SetMaxValue; m_Version stays 0 — verified in tier1/convar.cpp, which
+// passes the struct through to ICvar::RegisterConVar untouched), then vtable-calls RegisterConVar
+// directly on s_pCvar — bypassing the NON-INLINE tier1 SetupConVar/SanitiseConVarFlags (the 5D.1
+// dlopen cascade), the same call-the-interface-directly pattern as RegisterConCommand (6.1).
+// s_convarRefs is the name-lifetime anchor + idempotency guard (mirrors s_concommandRefs): the map
+// key owns m_pszName's storage; help/default strings persist in the entry. No unregistration — a
+// registered cvar persists for the process lifetime (SM parity; no callback into plugin code, so
+// no UAF surface on plugin reload).
+// ---------------------------------------------------------------------------
+struct S2ConVarReg { ConVarRef ref; std::string help; std::string defVal; };
+static std::map<std::string, S2ConVarReg> s_convarRefs;
+// CVValue_t's string arm is a CUtlString == exactly one char* member; every CUtlString mutator is
+// DLL_CLASS_IMPORT (tier0). We therefore set a string default by writing the pointer bytes directly
+// (SetDefaultValue<const char*>) into the value slot — guarded here. The engine copies the value
+// into its own ConVarData at registration; our buffer additionally persists in s_convarRefs.
+static_assert(sizeof(CUtlString) == sizeof(const char*),
+              "CUtlString layout changed — string convar default punning is invalid");
+
+static int s2_convar_register(const char* name, const char* help, uint64_t flags, int type,
+                              const char* defaultValue, const char* minValue, const char* maxValue) {
+    if (!name || !name[0] || !defaultValue) return 0;
+    if (!s_pCvar) {
+        META_CONPRINTF("[s2script] WARN: ConVar '%s' not registered — ICvar not acquired\n", name);
+        return 0;
+    }
+    auto found = s_convarRefs.find(name);
+    if (found != s_convarRefs.end()) return found->second.ref.IsValidRef() ? 1 : 0;  // idempotent (reload-safe)
+
+    auto it = s_convarRefs.emplace(name, S2ConVarReg{}).first;
+    S2ConVarReg& reg = it->second;
+    reg.help   = help ? help : "s2script convar";
+    reg.defVal = defaultValue;
+
+    ConVarCreation_t setup;
+    setup.m_pszName       = it->first.c_str();      // persistent (map key) — name-lifetime anchor
+    setup.m_pszHelpString = reg.help.c_str();       // persistent (entry)
+    // FCVAR_RELEASE: without it a retail CS2 hides the cvar from customers. Caller flags are additive.
+    setup.m_nFlags        = flags | FCVAR_RELEASE;
+
+    switch (type) {
+        case 0: {   // bool
+            setup.m_valueInfo = ConVarValueInfo_t(EConVarType_Bool);
+            bool v = (reg.defVal == "1" || reg.defVal == "true");
+            setup.m_valueInfo.SetDefaultValue<bool>(v);
+            break;
+        }
+        case 1: {   // int32
+            setup.m_valueInfo = ConVarValueInfo_t(EConVarType_Int32);
+            setup.m_valueInfo.SetDefaultValue<int32>(atoi(reg.defVal.c_str()));
+            if (minValue) setup.m_valueInfo.SetMinValue<int32>(atoi(minValue));
+            if (maxValue) setup.m_valueInfo.SetMaxValue<int32>(atoi(maxValue));
+            break;
+        }
+        case 2: {   // float32
+            setup.m_valueInfo = ConVarValueInfo_t(EConVarType_Float32);
+            setup.m_valueInfo.SetDefaultValue<float>(static_cast<float>(atof(reg.defVal.c_str())));
+            if (minValue) setup.m_valueInfo.SetMinValue<float>(static_cast<float>(atof(minValue)));
+            if (maxValue) setup.m_valueInfo.SetMaxValue<float>(static_cast<float>(atof(maxValue)));
+            break;
+        }
+        case 3: {   // string — pointer punning into the CUtlString slot (see static_assert above)
+            setup.m_valueInfo = ConVarValueInfo_t(EConVarType_String);
+            setup.m_valueInfo.SetDefaultValue<const char*>(reg.defVal.c_str());  // persistent buffer
+            break;
+        }
+        default:
+            s_convarRefs.erase(it);
+            return 0;
+    }
+
+    ConVarRef ref;
+    ConVarData* data = nullptr;
+    s_pCvar->RegisterConVar(setup, 0, &ref, &data);
+    reg.ref = ref;
+    if (ref.IsValidRef()) {
+        META_CONPRINTF("[s2script] ConVar '%s' registered (accessIdx=%u)\n",
+                       it->first.c_str(), (unsigned)ref.GetAccessIndex());
+        return 1;
+    }
+    META_CONPRINTF("[s2script] WARN: ConVar '%s' — RegisterConVar returned invalid ref\n", it->first.c_str());
+    return 0;   // entry stays in the map (invalid ref) to prevent retry loops
+}
+
+// ---------------------------------------------------------------------------
 // Chat print: client_print (Slice 6.1) — a CUserMessageSayText2 user message via protobuf reflection.
 //
 // Sends messagename VERBATIM (dumb pipe; color is caller content via the @s2script/chat `color` prefix).
@@ -2406,6 +2492,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.user_message_set_string = &s2_user_message_set_string;
     ops.user_message_set_bool   = &s2_user_message_set_bool;
     ops.user_message_send       = &s2_user_message_send;
+    // FakeConVar slice — APPENDED after user_message_send; order MUST match S2EngineOps.
+    ops.convar_register         = &s2_convar_register;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

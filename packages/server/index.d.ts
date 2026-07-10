@@ -12,6 +12,21 @@ export declare const Server: {
    * sanitize/quote any untrusted value to avoid command injection. Queued: applies next frame.
    */
   setCvar(name: string, value: string): void;
+  /**
+   * Register a plugin-owned ConVar (CSSharp FakeConVar / SM CreateConVar parity). Idempotent —
+   * re-registering an existing name is a no-op success, and the cvar + its value persist across
+   * plugin reloads (SourceMod parity). The shim adds FCVAR_RELEASE (customer-visible); `flags`
+   * are additive raw FCVAR bits. Read the value with `getCvar`; set it with `setCvar`/the console.
+   * `min`/`max` apply to numeric types only.
+   */
+  registerCvar(name: string, opts: {
+    type: "bool" | "int" | "float" | "string";
+    default: boolean | number | string;
+    help?: string;
+    flags?: number;
+    min?: number;
+    max?: number;
+  }): boolean;
   /** The server's configured max client count (`GetMaxClients()`). `0` if unavailable. */
   readonly maxPlayers: number;
   /** The current map name (`GetMapName()`, the BSP). `""` if unavailable. */

@@ -190,6 +190,13 @@ typedef int (*s2_user_message_set_string_fn)(const char* field, const char* valu
 typedef int (*s2_user_message_set_bool_fn)(const char* field, int value);
 typedef int (*s2_user_message_send_fn)(const int* slots, int slotCount);
 
+/* convar_register: register a plugin-owned ConVar via ICvar::RegisterConVar (FakeConVar slice).
+ * type: 0=bool 1=int32 2=float32 3=string. defaultValue always a string (shim parses).
+ * minValue/maxValue: nullable, numeric types only. FCVAR_RELEASE is OR'd shim-side.
+ * Returns 1 registered (or already registered — idempotent), 0 fail. */
+typedef int (*s2_convar_register_fn)(const char* name, const char* help, uint64_t flags, int type,
+                                     const char* defaultValue, const char* minValue, const char* maxValue);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -278,6 +285,8 @@ typedef struct {
     s2_user_message_set_string_fn user_message_set_string;
     s2_user_message_set_bool_fn   user_message_set_bool;
     s2_user_message_send_fn       user_message_send;
+    /* FakeConVar (clientlist-fakeconvar-onmapstart slice) — APPENDED after user_message_send; order is the ABI. */
+    s2_convar_register_fn convar_register;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

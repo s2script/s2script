@@ -194,6 +194,12 @@ type UserMessageSetStringFn = extern "C" fn(*const std::os::raw::c_char, *const 
 type UserMessageSetBoolFn   = extern "C" fn(*const std::os::raw::c_char, i32) -> i32;
 type UserMessageSendFn      = extern "C" fn(*const i32, i32) -> i32;
 
+// --- FakeConVar (APPENDED after user_message_send; order is the ABI). ENGINE-GENERIC: a plugin-owned
+// ConVar registered via ICvar::RegisterConVar. No CS2 names — a convar is a Source2 concept.
+type ConvarRegisterFn = unsafe extern "C" fn(
+    *const std::os::raw::c_char, *const std::os::raw::c_char, u64, i32,
+    *const std::os::raw::c_char, *const std::os::raw::c_char, *const std::os::raw::c_char) -> i32;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -286,6 +292,8 @@ pub struct S2EngineOps {
     pub user_message_set_string: Option<UserMessageSetStringFn>,
     pub user_message_set_bool:   Option<UserMessageSetBoolFn>,
     pub user_message_send:       Option<UserMessageSendFn>,
+    // --- FakeConVar slice (APPENDED after user_message_send; order is the ABI; do not reorder above) ---
+    pub convar_register: Option<ConvarRegisterFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -1111,6 +1119,23 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
     getCvar: function (name) { return __s2_cvar_get(String(name)); },                 // "" if absent
     setCvar: function (name, value) { __s2_server_command(String(name) + " " + String(value)); },
+    // Register a plugin-owned ConVar (FakeConVar). Type-checked JS-side; the shim ORs FCVAR_RELEASE.
+    // Value reads reuse getCvar; writes reuse setCvar/console. Idempotent (reload-safe); the cvar and
+    // its value persist for the process lifetime (SourceMod parity).
+    registerCvar: function (name, opts) {
+      opts = opts || {};
+      var tmap = { bool: 0, int: 1, float: 2, string: 3 };
+      var type = tmap[String(opts.type == null ? "string" : opts.type)];
+      if (type === undefined) return false;
+      var def = opts.default;
+      var defStr = (type === 0) ? (def ? "1" : "0")
+                                : String(def == null ? (type === 3 ? "" : 0) : def);
+      return __s2_convar_register(String(name),
+        opts.help == null ? null : String(opts.help),
+        opts.flags == null ? 0 : +opts.flags, type, defStr,
+        opts.min == null ? null : String(opts.min),
+        opts.max == null ? null : String(opts.max)) === 1;
+    },
     get maxPlayers() { return __s2_server_max_clients(); },   // GetMaxClients(); 0 if unavailable
     get mapName() { return __s2_server_map_name(); },         // GetMapName(); "" if unavailable
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
@@ -3751,6 +3776,38 @@ fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mu
     }));
 }
 
+/// Native `__s2_convar_register(name, helpOrNull, flags, type, defaultStr, minOrNull, maxOrNull) -> i32`.
+/// Over the `convar_register` op. Degrades to 0 with no op; never throws (catch_unwind + safe default).
+fn s2_convar_register(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(func) = ops.and_then(|o| o.convar_register) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Ok(c_name) = std::ffi::CString::new(name) else { return };
+        // helpOrNull / minOrNull / maxOrNull: JS null/undefined -> C null pointer.
+        let opt_cstr = |scope: &mut v8::PinScope, v: v8::Local<v8::Value>| -> Option<std::ffi::CString> {
+            if v.is_null_or_undefined() { return None; }
+            std::ffi::CString::new(v.to_rust_string_lossy(scope)).ok()
+        };
+        let c_help = opt_cstr(scope, args.get(1));
+        let flags = args.get(2).number_value(scope).unwrap_or(0.0) as u64;
+        let ty = args.get(3).int32_value(scope).unwrap_or(-1);
+        let def = args.get(4).to_rust_string_lossy(scope);
+        let Ok(c_def) = std::ffi::CString::new(def) else { return };
+        let c_min = opt_cstr(scope, args.get(5));
+        let c_max = opt_cstr(scope, args.get(6));
+        let r = unsafe {
+            func(c_name.as_ptr(),
+                 c_help.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                 flags, ty, c_def.as_ptr(),
+                 c_min.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                 c_max.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()))
+        };
+        rv.set_int32(r);
+    }));
+}
+
 /// `__s2_pawn_commit_suicide(index, serial)` — kill a pawn via the sig-resolved CommitSuicide engine-op.
 /// A thin pass-through: the shim reconstructs + serial-gates the pawn from (index, serial). No-op without
 /// the op (unresolved signature) — the shim itself no-ops a stale ref. Engine-generic (a pawn is a
@@ -5207,6 +5264,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
     set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
+    set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
@@ -8521,6 +8579,7 @@ mod frame_tests {
             user_message_set_string: None,
             user_message_set_bool: None,
             user_message_send: None,
+            convar_register: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -9033,6 +9092,7 @@ mod frame_tests {
             user_message_set_string: None,
             user_message_set_bool: None,
             user_message_send: None,
+            convar_register: None,
         }
     }
 
@@ -9658,6 +9718,22 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_plugin_load('x'))"), "false");
         assert_eq!(eval_in_context_string("p", "JSON.stringify(__s2pkg_plugins.Plugins.list())"), "[]");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_plugins.Plugins.reload"), "function");
+        shutdown();
+    }
+
+    /// FakeConVar slice: Server.registerCvar degrades to false without the convar_register op, and an
+    /// unknown type string is rejected false JS-side (never reaches the op).
+    #[test]
+    fn register_cvar_degrades_false_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("pcv");
+        let out = eval_in_context_string("pcv", r#"
+            var a = __s2pkg_server.Server.registerCvar("s2_test_cvar", { type: "int", default: 42, min: 0, max: 100 });
+            var b = __s2pkg_server.Server.registerCvar("s2_bad", { type: "nope", default: 1 });
+            String(a === false && b === false)
+        "#);
+        assert_eq!(out, "true");
         shutdown();
     }
 
