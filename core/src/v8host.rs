@@ -185,6 +185,15 @@ type EntitySpawnKvFn = extern "C" fn(c_int, c_int, c_int,
 type EntityFindByClassFn =
     extern "C" fn(*const std::os::raw::c_char, *mut i32, *mut i32, i32) -> i32;
 
+// --- UserMessage send family (APPENDED after entity_find_by_class; order is the ABI). ENGINE-GENERIC:
+// a named protobuf message + scalar field sets by reflection cpp_type + a send to slots. No CS2 names.
+type UserMessageCreateFn    = extern "C" fn(*const std::os::raw::c_char) -> i32;
+type UserMessageSetIntFn    = extern "C" fn(*const std::os::raw::c_char, i64) -> i32;
+type UserMessageSetFloatFn  = extern "C" fn(*const std::os::raw::c_char, f64) -> i32;
+type UserMessageSetStringFn = extern "C" fn(*const std::os::raw::c_char, *const std::os::raw::c_char) -> i32;
+type UserMessageSetBoolFn   = extern "C" fn(*const std::os::raw::c_char, i32) -> i32;
+type UserMessageSendFn      = extern "C" fn(*const i32, i32) -> i32;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -270,6 +279,13 @@ pub struct S2EngineOps {
     pub entity_spawn_kv: Option<EntitySpawnKvFn>,
     // --- Game-rules + UserMessage slice (APPENDED after entity_spawn_kv; order is the ABI; do not reorder above) ---
     pub entity_find_by_class: Option<EntityFindByClassFn>,
+    // --- UserMessage send family (APPENDED after entity_find_by_class; order is the ABI; do not reorder above) ---
+    pub user_message_create:     Option<UserMessageCreateFn>,
+    pub user_message_set_int:    Option<UserMessageSetIntFn>,
+    pub user_message_set_float:  Option<UserMessageSetFloatFn>,
+    pub user_message_set_string: Option<UserMessageSetStringFn>,
+    pub user_message_set_bool:   Option<UserMessageSetBoolFn>,
+    pub user_message_send:       Option<UserMessageSendFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -1025,8 +1041,37 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     else if (t.kind === "exit") this._end(MenuCancelReason.Exit);
   };
   MenuSession.prototype.cancel = function () { if (!this._ended) this._end(MenuCancelReason.Exit); };
+  // --- General UserMessage builder (@s2script/usermessages): accumulate scalar fields, then flush
+  // create -> set* -> send in one synchronous burst (the shim holds a single build-then-send target,
+  // so there is no cross-message aliasing without an await between). Engine-generic — the message NAME
+  // is the caller's; core knows no CS2 message strings. ---
+  function UserMessage(name) { this._name = String(name); this._fields = []; }
+  UserMessage.prototype.setInt    = function (f, v) { this._fields.push([0, String(f), v]); return this; };
+  UserMessage.prototype.setFloat  = function (f, v) { this._fields.push([1, String(f), v]); return this; };
+  UserMessage.prototype.setString = function (f, v) { this._fields.push([2, String(f), String(v)]); return this; };
+  UserMessage.prototype.setBool   = function (f, v) { this._fields.push([3, String(f), v ? 1 : 0]); return this; };
+  UserMessage.prototype.set = function (f, v) {
+    if (typeof v === "boolean") return this.setBool(f, v);
+    if (typeof v === "string")  return this.setString(f, v);
+    if (typeof v === "number")  return Number.isInteger(v) ? this.setInt(f, v) : this.setFloat(f, v);
+    return this;
+  };
+  UserMessage.prototype._flush = function (slotsOrNull) {
+    if (__s2_user_message_create(this._name) !== 1) return false;
+    for (var i = 0; i < this._fields.length; i++) {
+      var fld = this._fields[i];
+      if (fld[0] === 0)      __s2_user_message_set_int(fld[1], fld[2]);
+      else if (fld[0] === 1) __s2_user_message_set_float(fld[1], fld[2]);
+      else if (fld[0] === 2) __s2_user_message_set_string(fld[1], fld[2]);
+      else                   __s2_user_message_set_bool(fld[1], fld[2]);
+    }
+    return __s2_user_message_send(slotsOrNull) === true;
+  };
+  UserMessage.prototype.send    = function (slots) { return this._flush(Array.isArray(slots) ? slots : [slots]); };
+  UserMessage.prototype.sendAll = function () { return this._flush(null); };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
+  globalThis.__s2pkg_usermessages = { UserMessage: UserMessage };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
   globalThis.__s2pkg_console    = { console: console };
@@ -4075,6 +4120,110 @@ fn s2_entity_find_by_class(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
     }));
 }
 
+/// Native `__s2_user_message_create(name) -> int` (1 ok / 0 fail). Over the `user_message_create` op
+/// (FindNetworkMessagePartial + AllocateMessage into the shim's single-target). Degrades to 0 with no
+/// op / a null-bearing name.
+fn s2_user_message_create(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let cn = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(f) = ops.and_then(|o| o.user_message_create) {
+            rv.set_int32(f(cn.as_ptr()));
+        }
+    }));
+}
+
+/// Native `__s2_user_message_set_int(field, value) -> int`. Reflection set by cpp_type (shim-side).
+/// Degrades to 0 with no op / a null-bearing field.
+fn s2_user_message_set_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        let field = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).integer_value(scope).unwrap_or(0);
+        let fc = match std::ffi::CString::new(field) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(f) = ops.and_then(|o| o.user_message_set_int) {
+            rv.set_int32(f(fc.as_ptr(), value));
+        }
+    }));
+}
+
+/// Native `__s2_user_message_set_float(field, value) -> int`. Reflection SetFloat/SetDouble. Degrades
+/// to 0 with no op / a null-bearing field.
+fn s2_user_message_set_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        let field = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).number_value(scope).unwrap_or(0.0);
+        let fc = match std::ffi::CString::new(field) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(f) = ops.and_then(|o| o.user_message_set_float) {
+            rv.set_int32(f(fc.as_ptr(), value));
+        }
+    }));
+}
+
+/// Native `__s2_user_message_set_string(field, value) -> int`. Reflection SetString. Degrades to 0
+/// with no op / a null-bearing field or value.
+fn s2_user_message_set_string(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        let field = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).to_rust_string_lossy(scope);
+        let fc = match std::ffi::CString::new(field) { Ok(c) => c, Err(_) => return };
+        let vc = match std::ffi::CString::new(value) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(f) = ops.and_then(|o| o.user_message_set_string) {
+            rv.set_int32(f(fc.as_ptr(), vc.as_ptr()));
+        }
+    }));
+}
+
+/// Native `__s2_user_message_set_bool(field, value) -> int`. Reflection SetBool. `value` is 0/1.
+/// Degrades to 0 with no op / a null-bearing field.
+fn s2_user_message_set_bool(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        let field = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+        let fc = match std::ffi::CString::new(field) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(f) = ops.and_then(|o| o.user_message_set_bool) {
+            rv.set_int32(f(fc.as_ptr(), value));
+        }
+    }));
+}
+
+/// Native `__s2_user_message_send(slotsArrayOrNull) -> boolean`. Over the `user_message_send` op.
+/// arg0 null/undefined -> broadcast (`func(null, -1)`); an array -> collect its ints into a `Vec<i32>`
+/// and pass `(ptr, len)`. Returns `true` iff the op returned 1 (delivered to >=1 real client).
+/// Degrades to `false` with no op.
+fn s2_user_message_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.user_message_send) else { return };
+        let arg0 = args.get(0);
+        if arg0.is_null_or_undefined() {
+            rv.set_bool(f(std::ptr::null(), -1) == 1);
+            return;
+        }
+        let slots_arr = match v8::Local::<v8::Array>::try_from(arg0) { Ok(a) => a, Err(_) => return };
+        let n = slots_arr.length();
+        let mut slots: Vec<i32> = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let s = match slots_arr.get_index(scope, i) {
+                Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
+                None => -1,
+            };
+            slots.push(s);
+        }
+        rv.set_bool(f(slots.as_ptr(), slots.len() as i32) == 1);
+    }));
+}
+
 /// Native `__s2_entity_spawn(index, serial) -> boolean`. Serial-gated `DispatchSpawn`. Degrades to
 /// `false` with no op / a stale ref.
 fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -5098,6 +5247,12 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Entity-creation lifecycle slice: createEntity + EntityRef.spawn/teleport/remove natives.
     set_native(scope, global_obj, "__s2_entity_create", s2_entity_create);
     set_native(scope, global_obj, "__s2_entity_find_by_class", s2_entity_find_by_class);
+    set_native(scope, global_obj, "__s2_user_message_create", s2_user_message_create);
+    set_native(scope, global_obj, "__s2_user_message_set_int", s2_user_message_set_int);
+    set_native(scope, global_obj, "__s2_user_message_set_float", s2_user_message_set_float);
+    set_native(scope, global_obj, "__s2_user_message_set_string", s2_user_message_set_string);
+    set_native(scope, global_obj, "__s2_user_message_set_bool", s2_user_message_set_bool);
+    set_native(scope, global_obj, "__s2_user_message_send", s2_user_message_send);
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
@@ -8360,6 +8515,12 @@ mod frame_tests {
             entity_fire_input: None,
             entity_spawn_kv: None,
             entity_find_by_class: None,
+            user_message_create: None,
+            user_message_set_int: None,
+            user_message_set_float: None,
+            user_message_set_string: None,
+            user_message_set_bool: None,
+            user_message_send: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -8547,6 +8708,23 @@ mod frame_tests {
         let out = eval_in_context_string("p", r#"
             const refs = __s2pkg_entity.Entity.findByClass("cs_gamerules");
             String(Array.isArray(refs) && refs.length === 0)
+        "#);
+        assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// UserMessage slice: the `UserMessage` builder degrades with no engine ops — `create` returns 0
+    /// so `send`/`sendAll` return `false`, the `set*` chain never throws, no crash.
+    #[test]
+    fn user_message_degrades_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const m = new __s2pkg_usermessages.UserMessage("CUserMessageFade");
+            m.setInt("duration", 1024).set("flags", 18).set("amplitude", 1.5);
+            // no ops installed -> create returns 0 -> send returns false, no throw
+            String(m.send([0]) === false && m.sendAll() === false)
         "#);
         assert_eq!(out, "true");
         shutdown();
@@ -8849,6 +9027,12 @@ mod frame_tests {
             entity_fire_input: None,
             entity_spawn_kv: None,
             entity_find_by_class: None,
+            user_message_create: None,
+            user_message_set_int: None,
+            user_message_set_float: None,
+            user_message_set_string: None,
+            user_message_set_bool: None,
+            user_message_send: None,
         }
     }
 

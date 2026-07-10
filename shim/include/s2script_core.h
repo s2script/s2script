@@ -178,6 +178,16 @@ typedef int (*s2_entity_spawn_kv_fn)(int index, int serial, int count,
  * CEntityIdentity::m_designerName == className, up to maxCount; returns the TOTAL match count. */
 typedef int (*s2_entity_find_by_class_fn)(const char* className, int* outIndices, int* outSerials, int maxCount);
 
+/* UserMessage send family — APPENDED after entity_find_by_class; order is the ABI. Generalize the
+ * SayText2 protobuf-reflection path: create a named message into a single shim-side target, set its
+ * scalar fields by reflection cpp_type, then send to the given slots (slotCount<0 = broadcast). */
+typedef int (*s2_user_message_create_fn)(const char* name);
+typedef int (*s2_user_message_set_int_fn)(const char* field, int64_t value);
+typedef int (*s2_user_message_set_float_fn)(const char* field, double value);
+typedef int (*s2_user_message_set_string_fn)(const char* field, const char* value);
+typedef int (*s2_user_message_set_bool_fn)(const char* field, int value);
+typedef int (*s2_user_message_send_fn)(const int* slots, int slotCount);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -259,6 +269,13 @@ typedef struct {
     s2_entity_spawn_kv_fn entity_spawn_kv;
     /* Game-rules + UserMessage slice — APPENDED after entity_spawn_kv; order is the ABI. */
     s2_entity_find_by_class_fn entity_find_by_class;
+    /* UserMessage send family — APPENDED after entity_find_by_class; order is the ABI. */
+    s2_user_message_create_fn     user_message_create;
+    s2_user_message_set_int_fn    user_message_set_int;
+    s2_user_message_set_float_fn  user_message_set_float;
+    s2_user_message_set_string_fn user_message_set_string;
+    s2_user_message_set_bool_fn   user_message_set_bool;
+    s2_user_message_send_fn       user_message_send;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

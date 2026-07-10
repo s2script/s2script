@@ -763,6 +763,115 @@ static void s2_client_print(int slot, const char* msg) {
 }
 
 // ---------------------------------------------------------------------------
+// General user messages (Game-rules + UserMessage slice) — generalize the SayText2
+// reflection path above to an arbitrary named protobuf user message + arbitrary scalar
+// fields set by reflection cpp_type, then PostEventAbstract to the given slots.
+//
+// A single build-then-send target (mirrors the 5D.3 s_currentEvent single-target model):
+// create -> set* -> send is one synchronous JS burst with no await between, so there is
+// no cross-message aliasing. Engine-generic — the message NAME is the caller's.
+//
+// LEAK-TODO (mirrors the 6.1c SayText2 note): ownership of pData after PostEventAbstract
+// is unconfirmed (no DeallocateMessage seen), so we do NOT free it — a double-free is worse
+// than a bounded per-send leak. create() also drops (does not free) any prior unsent message.
+// ---------------------------------------------------------------------------
+static INetworkMessageInternal* s_umInfo = nullptr;   // the message factory
+static CNetMessage*             s_umData = nullptr;    // the allocated CNetMessage
+static google::protobuf::Message* s_umMsg = nullptr;   // its protobuf Message view
+
+static int s2_user_message_create(const char* name) {
+    s_umInfo = nullptr; s_umData = nullptr; s_umMsg = nullptr;   // drop any prior unsent (bounded leak-TODO)
+    if (!name || !s_pNetworkMessages) return 0;
+    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
+    if (!info) return 0;
+    CNetMessage* data = info->AllocateMessage();
+    if (!data) return 0;
+    google::protobuf::Message* m = reinterpret_cast<google::protobuf::Message*>(data->AsProto());
+    if (!m) return 0;
+    s_umInfo = info; s_umData = data; s_umMsg = m;
+    return 1;
+}
+static int s2_user_message_set_int(const char* field, int64_t value) {
+    if (!s_umMsg || !field) return 0;
+    const google::protobuf::Descriptor* d = s_umMsg->GetDescriptor();
+    const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
+    if (!f) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    switch (f->cpp_type()) {
+        case FD::CPPTYPE_INT32:  r->SetInt32(s_umMsg, f, (int32_t)value);   break;
+        case FD::CPPTYPE_UINT32: r->SetUInt32(s_umMsg, f, (uint32_t)value); break;
+        case FD::CPPTYPE_INT64:  r->SetInt64(s_umMsg, f, (int64_t)value);   break;
+        case FD::CPPTYPE_UINT64: r->SetUInt64(s_umMsg, f, (uint64_t)value); break;
+        case FD::CPPTYPE_ENUM:   r->SetEnumValue(s_umMsg, f, (int)value);  break;
+        case FD::CPPTYPE_BOOL:   r->SetBool(s_umMsg, f, value != 0);        break;
+        case FD::CPPTYPE_FLOAT:  r->SetFloat(s_umMsg, f, (float)value);     break;
+        case FD::CPPTYPE_DOUBLE: r->SetDouble(s_umMsg, f, (double)value);   break;
+        default: return 0;
+    }
+    return 1;
+}
+static int s2_user_message_set_float(const char* field, double value) {
+    if (!s_umMsg || !field) return 0;
+    const google::protobuf::Descriptor* d = s_umMsg->GetDescriptor();
+    const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
+    if (!f) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    if (f->cpp_type() == FD::CPPTYPE_FLOAT)  { r->SetFloat(s_umMsg, f, (float)value); return 1; }
+    if (f->cpp_type() == FD::CPPTYPE_DOUBLE) { r->SetDouble(s_umMsg, f, value);       return 1; }
+    return 0;
+}
+static int s2_user_message_set_string(const char* field, const char* value) {
+    if (!s_umMsg || !field) return 0;
+    const google::protobuf::Descriptor* d = s_umMsg->GetDescriptor();
+    const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
+    if (!f) return 0;
+    if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) return 0;
+    r->SetString(s_umMsg, f, value ? value : "");
+    return 1;
+}
+static int s2_user_message_set_bool(const char* field, int value) {
+    if (!s_umMsg || !field) return 0;
+    const google::protobuf::Descriptor* d = s_umMsg->GetDescriptor();
+    const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
+    if (!f) return 0;
+    if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_BOOL) return 0;
+    r->SetBool(s_umMsg, f, value != 0);
+    return 1;
+}
+static int s2_user_message_send(const int* slots, int slotCount) {
+    if (!s_umMsg || !s_umInfo || !s_umData || !s_pGameEventSystem) {
+        s_umInfo = nullptr; s_umData = nullptr; s_umMsg = nullptr; return 0;
+    }
+    uint64 clients = 0;
+    if (slotCount < 0) {                                   // broadcast to all live non-bot slots
+        for (int s = 0; s < 64; ++s)
+            if (s_pEngine && s_pEngine->GetPlayerNetInfo(CPlayerSlot(s))) clients |= (1ull << (uint64)s);
+    } else if (slots) {
+        for (int i = 0; i < slotCount; ++i) {
+            int s = slots[i];
+            if (s < 0 || s >= 64) continue;
+            if (s_pEngine && !s_pEngine->GetPlayerNetInfo(CPlayerSlot(s))) continue;   // skip bots (would crash)
+            clients |= (1ull << (uint64)s);
+        }
+    }
+    int ok = 0;
+    if (clients != 0) {
+        s_pGameEventSystem->PostEventAbstract(-1, false, 64, &clients, s_umInfo, s_umData, 0, BUF_RELIABLE);
+        ok = 1;
+    }
+    s_umInfo = nullptr; s_umData = nullptr; s_umMsg = nullptr;   // clear the single target after send (leak-TODO: pData)
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 // Client SteamID64 engine-op (Slice 6.2).
 //
 // Returns the SteamID64 of the client in `slot` as a decimal string in a static buffer.
@@ -2294,6 +2403,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_spawn_kv = &Shim_EntitySpawnKv;
     // Game-rules + UserMessage slice — APPENDED after entity_spawn_kv; order MUST match S2EngineOps.
     ops.entity_find_by_class = &s2_entity_find_by_class;
+    // UserMessage send family — APPENDED after entity_find_by_class; order MUST match S2EngineOps.
+    ops.user_message_create     = &s2_user_message_create;
+    ops.user_message_set_int    = &s2_user_message_set_int;
+    ops.user_message_set_float  = &s2_user_message_set_float;
+    ops.user_message_set_string = &s2_user_message_set_string;
+    ops.user_message_set_bool   = &s2_user_message_set_bool;
+    ops.user_message_send       = &s2_user_message_send;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
