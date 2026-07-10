@@ -11,9 +11,13 @@ Turn `@s2script/zones` from a self-contained manager into a **platform**: publis
 
 Sub-slice 1 shipped the origin-polling detection spine; sub-slice 2 shipped DB-backed per-map zones + operator CRUD. The `OnZoneEnter/Leave/Stay(player, zoneName)` API was designed backend-agnostic from the start — this slice exposes it across the inter-plugin boundary using the Slice-4.5 interface model (`publishInterface` / `require` proxy; methods = natives, events = forwards; args + payloads cross by **structured copy**; a hard dep throws `InterfaceUnavailable` on producer-unload, an optional dep resolves to `Interface | null`; all auto-ledgered).
 
+## Naming constraint (found during design)
+
+`loader.rs:63` skips any `@s2script/*` dependency from interface wiring — `@s2script/*` is **reserved for prelude builtins** (resolved via `__s2require` → `__s2pkg_<name>`), so a plugin-*published* interface **cannot** use that scope (a consumer's `require("@s2script/zones")` would resolve to a non-existent builtin, never the producer proxy). Therefore the **published interface is named `zones`** (unscoped, charter-permitted), while the producer *plugin* keeps its `@s2script/zones` package identity. This is the first first-party base plugin to publish an interface; the convention: **base-plugin-published interfaces use a non-`@s2script` name** (unscoped or a community scope).
+
 ## Architecture
 
-### Producer — `plugins/zones` publishes `@s2script/zones@1.0.0`
+### Producer — `plugins/zones` (package `@s2script/zones`) publishes the interface `zones@1.0.0`
 
 At `onLoad` (after the DB opens), `handle = publishInterface("@s2script/zones", "1.0.0", impl)`. **Every method is synchronous and registry-backed** — a Promise can't cross the structured-copy wire, so mutating methods update the in-memory registry immediately and fire-and-forget the DB write (durability is async; the registry is the source of truth for detection + queries):
 

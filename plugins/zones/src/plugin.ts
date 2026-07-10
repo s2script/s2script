@@ -7,6 +7,7 @@ import { Database } from "@s2script/db";
 import { Server } from "@s2script/server";
 import { config } from "@s2script/config";
 import { OnGameFrame } from "@s2script/frame";
+import { publishInterface, PublishHandle } from "@s2script/interfaces";
 import { Player, Pawn } from "@s2script/cs2";
 
 interface Vec3 { x: number; y: number; z: number; }
@@ -15,6 +16,10 @@ interface Zone { name: string; min: Vec3; max: Vec3; inside: Set<number>; }
 let db: Database | null = null;
 let currentMap = "";
 const zones = new Map<string, Zone>();
+// Published inter-plugin interface `zones@1.0.0` — the detection loop emits enter/leave/stay through it.
+// (The interface is named `zones`, NOT `@s2script/zones`: @s2script/* is reserved for prelude builtins
+//  that resolve via __s2require, so a plugin-published interface must use a non-@s2script name.)
+let iface: PublishHandle | null = null;
 
 // Resolves once Database.open() + CREATE TABLE + the initial load have settled (success OR failure).
 // upsertZone awaits this so an sm_zone_add issued during the boot window (before the async DB opens)
@@ -76,11 +81,50 @@ export function onLoad(): void {
 
   Server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
 
-  // Detection poll (sub-slice-1 backend, generalized to N zones). ~8 Hz.
+  // Publish the inter-plugin interface: synchronous, registry-backed methods (a Promise can't cross the
+  // structured-copy wire, so mutating methods update the registry immediately + fire-and-forget the DB).
+  iface = publishInterface("zones", "1.0.0", {
+    createZone(name: string, min: Vec3, max: Vec3): boolean {
+      const nm = sanitizeName(name);
+      if (!nm || !min || !max) return false;
+      const box = normBox(min, max);
+      if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) return false;
+      const prev = zones.get(nm);
+      zones.set(nm, { name: nm, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>() });
+      upsertZone(nm, box).catch(() => {});   // durability, async (registry is already updated above)
+      return true;
+    },
+    deleteZone(name: string): boolean {
+      const nm = sanitizeName(name);
+      if (!zones.has(nm)) return false;
+      zones.delete(nm);
+      if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, nm]).catch(() => {});
+      return true;
+    },
+    getZones(): { name: string; min: Vec3; max: Vec3 }[] {
+      return Array.from(zones.values()).map((z) => ({ name: z.name, min: z.min, max: z.max }));
+    },
+    isInZone(slot: number, name: string): boolean {
+      const z = zones.get(sanitizeName(name));
+      return !!z && z.inside.has(slot);
+    },
+    zonesFor(slot: number): string[] {
+      const out: string[] = [];
+      for (const z of zones.values()) if (z.inside.has(slot)) out.push(z.name);
+      return out;
+    },
+  });
+  console.log("[zones] publishing zones@1.0.0");
+
+  // Detection poll (sub-slice-1 backend, generalized to N zones). ~8 Hz. Emits enter/leave/stay through
+  // the interface with a WIRE-SAFE payload { zone, slot, userId } (never a Player — its methods don't
+  // survive structured copy; consumers resolve via Player.fromSlot/fromUserId in their own context).
   let frame = 0;
   OnGameFrame.subscribe(() => {
-    if ((frame++ & 7) !== 0 || zones.size === 0) return;
+    if ((frame++ & 7) !== 0 || zones.size === 0 || !iface) return;
     const players = Player.all();
+    const uid = new Map<number, number>();
+    for (const p of players) uid.set(p.slot, p.userId);
     for (const z of zones.values()) {
       const cur = new Set<number>();
       for (const p of players) {
@@ -90,10 +134,12 @@ export function onLoad(): void {
         if (!o) continue;
         if (contains(z, o.x, o.y, o.z)) {
           cur.add(p.slot);
-          if (!z.inside.has(p.slot)) console.log(`[zones] ENTER ${z.name}: ${p.playerName} (slot ${p.slot})`);
+          const ev = { zone: z.name, slot: p.slot, userId: uid.get(p.slot) ?? -1 };
+          if (!z.inside.has(p.slot)) iface.emit("enter", ev);
+          iface.emit("stay", ev);
         }
       }
-      for (const s of z.inside) if (!cur.has(s)) console.log(`[zones] LEAVE ${z.name}: slot ${s}`);
+      for (const s of z.inside) if (!cur.has(s)) iface.emit("leave", { zone: z.name, slot: s, userId: uid.get(s) ?? -1 });
       z.inside = cur;
     }
   });
