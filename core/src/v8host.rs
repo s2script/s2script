@@ -175,6 +175,11 @@ type EntityReadHandleVecFn  = extern "C" fn(c_int, c_int, *const c_int, c_int, c
 /// (shim/include/s2script_core.h) for the argument shape.
 type EntityFireInputFn = extern "C" fn(c_int, c_int, *const c_char, *const c_char, c_int, c_int, c_int, c_int, f32) -> c_int;
 
+// --- EKV slice (APPENDED after entity_fire_input; order is the ABI). ENGINE-GENERIC: keys/types/
+// values are caller-supplied parallel arrays (no CS2 semantics in the C ABI itself).
+type EntitySpawnKvFn = extern "C" fn(c_int, c_int, c_int,
+    *const *const c_char, *const c_int, *const *const c_char) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -256,6 +261,8 @@ pub struct S2EngineOps {
     pub entity_read_handle_vector: Option<EntityReadHandleVecFn>,
     // --- Entity-I/O slice (APPENDED after entity_read_handle_vector; order is the ABI; do not reorder above) ---
     pub entity_fire_input: Option<EntityFireInputFn>,
+    // --- EKV slice (APPENDED after entity_fire_input; order is the ABI; do not reorder above) ---
+    pub entity_spawn_kv: Option<EntitySpawnKvFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -693,7 +700,38 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // --- Entity-creation lifecycle slice: spawn/teleport/remove over the entity_* engine ops. Kept as
   //     separate prototype assignments (not folded into the object literal above) to minimize the diff. ---
-  EntityRef.prototype.spawn = function () { return __s2_entity_spawn(this.index, this.serial); };
+  // EKV marshal: {key: string|number|boolean} -> parallel {keys, types, values} arrays.
+  // types: 0=string 1=int 2=float 3=bool; values stringified ("1"/"0" for bool). Inference:
+  // integer-in-int32 -> int, other finite number -> float. ANY bad entry (empty key, non-finite,
+  // unsupported value type, >256 keys) rejects the WHOLE map (null) — never a partial spawn.
+  function __s2_ekv_marshal(kv) {
+    var keys = [], types = [], values = [];
+    var names = Object.keys(kv);
+    if (names.length > 256) return null;
+    for (var i = 0; i < names.length; i++) {
+      var k = names[i];
+      if (!k) return null;
+      var v = kv[k], t = typeof v;
+      if (t === "string") { types.push(0); values.push(v); }
+      else if (t === "number") {
+        if (!isFinite(v)) return null;
+        if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) { types.push(1); values.push(String(v)); }
+        else { types.push(2); values.push(String(v)); }
+      }
+      else if (t === "boolean") { types.push(3); values.push(v ? "1" : "0"); }
+      else return null;
+      keys.push(k);
+    }
+    return { keys: keys, types: types, values: values };
+  }
+  EntityRef.prototype.spawn = function (keyvalues) {
+    if (keyvalues === undefined || keyvalues === null) return __s2_entity_spawn(this.index, this.serial);
+    if (typeof keyvalues !== "object") return false;
+    var m = __s2_ekv_marshal(keyvalues);
+    if (m === null) return false;
+    if (m.keys.length === 0) return __s2_entity_spawn(this.index, this.serial);
+    return __s2_entity_spawn_kv(this.index, this.serial, m.keys, m.types, m.values);
+  };
   EntityRef.prototype.teleport = function (origin, angles, velocity) {
     return __s2_entity_teleport(this.index, this.serial,
       origin ? [origin[0], origin[1], origin[2]] : null,
@@ -702,7 +740,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   EntityRef.prototype.remove = function () { return __s2_entity_remove(this.index, this.serial); };
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
-  function createEntity(className) { return __s2_entity_create(String(className)); }
+  // With keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is a LIVE,
+  // SPAWNED entity (on spawn failure the entity is removed and null returned).
+  function createEntity(className, keyvalues) {
+    var ref = __s2_entity_create(String(className));
+    if (!ref) return null;
+    if (keyvalues !== undefined && keyvalues !== null) {
+      // With kv: non-null result = a LIVE, SPAWNED entity. On spawn failure, remove the unspawned
+      // entity (hygiene — never strand a half-configured entity) and return null.
+      if (!ref.spawn(keyvalues)) { ref.remove(); return null; }
+    }
+    return ref;
+  }
   // Item slice: read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live serial-gated
   // EntityRefs. Each element is decoded + validated core-side; the raw pointer never crosses to JS.
   EntityRef.prototype.readHandleVector = function (ptrOffs, vectorOff, maxCount) {
@@ -4044,6 +4093,41 @@ fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
     }));
 }
 
+/// Native `__s2_entity_spawn_kv(index, serial, keys[], types[], values[]) -> boolean`. Over the
+/// `entity_spawn_kv` op (DispatchSpawn with a shim-built CEntityKeyValues). All three arrays must be
+/// same-length; keys/values are strings (interior NUL -> false), types are ints. Degrades to false
+/// with no op / stale serial / malformed args (every in-isolate test).
+fn s2_entity_spawn_kv(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let keys_arr = match v8::Local::<v8::Array>::try_from(args.get(2)) { Ok(a) => a, Err(_) => return };
+        let types_arr = match v8::Local::<v8::Array>::try_from(args.get(3)) { Ok(a) => a, Err(_) => return };
+        let vals_arr = match v8::Local::<v8::Array>::try_from(args.get(4)) { Ok(a) => a, Err(_) => return };
+        let n = keys_arr.length();
+        if types_arr.length() != n || vals_arr.length() != n { return; }
+        let mut keys_c: Vec<std::ffi::CString> = Vec::with_capacity(n as usize);
+        let mut vals_c: Vec<std::ffi::CString> = Vec::with_capacity(n as usize);
+        let mut types_v: Vec<c_int> = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let k = match keys_arr.get_index(scope, i) { Some(v) => v.to_rust_string_lossy(scope), None => return };
+            let val = match vals_arr.get_index(scope, i) { Some(v) => v.to_rust_string_lossy(scope), None => return };
+            let t = match types_arr.get_index(scope, i) { Some(v) => v.integer_value(scope).unwrap_or(-1) as i32, None => return };
+            if !(0..=3).contains(&t) { return; }
+            let kc = match std::ffi::CString::new(k) { Ok(c) => c, Err(_) => return };
+            let vc = match std::ffi::CString::new(val) { Ok(c) => c, Err(_) => return };
+            keys_c.push(kc); vals_c.push(vc); types_v.push(t);
+        }
+        let key_ptrs: Vec<*const std::os::raw::c_char> = keys_c.iter().map(|c| c.as_ptr()).collect();
+        let val_ptrs: Vec<*const std::os::raw::c_char> = vals_c.iter().map(|c| c.as_ptr()).collect();
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_spawn_kv) {
+            rv.set_bool(func(index, serial, n as c_int, key_ptrs.as_ptr(), types_v.as_ptr(), val_ptrs.as_ptr()) != 0);
+        }
+    }));
+}
+
 /// Native `__s2_output_subscribe(classname, output, handler)`. Subscribes a JS fn to `Entity.onOutput`
 /// (entity-I/O slice); owner-tracked in `OUTPUT_MUX` keyed `"<classname>\0<output>"`. The
 /// `FireOutputInternal` detour is installed unconditionally at shim Load, so no per-subscribe engine
@@ -4963,6 +5047,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Entity-I/O slice: fire inputs (AddEntityIOEvent) + Entity.onOutput subscribe/unsubscribe
     // (FireOutputInternal detour dispatch — installed at shim Load, see dispatch_output).
     set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);
+    set_native(scope, global_obj, "__s2_entity_spawn_kv", s2_entity_spawn_kv);
     set_native(scope, global_obj, "__s2_output_subscribe", s2_output_subscribe);
     set_native(scope, global_obj, "__s2_output_unsubscribe", s2_output_unsubscribe);
 }
@@ -8210,6 +8295,7 @@ mod frame_tests {
             remove_player_item: None,
             entity_read_handle_vector: None,
             entity_fire_input: None,
+            entity_spawn_kv: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -8402,6 +8488,89 @@ mod frame_tests {
         shutdown();
     }
 
+    /// EKV slice: `spawn(kv)` degrades to `false` with no `entity_spawn_kv` op; `createEntity(cls, kv)`
+    /// degrades to `null` with no `entity_create` op.
+    #[test]
+    fn entity_spawn_kv_degrades_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            const a = r.spawn({ health: 42 });                       // no op -> false
+            const b = __s2pkg_entity.createEntity("x", { a: 1 });    // no entity_create op -> null
+            [String(a), String(b)].join("|")
+        "#);
+        assert_eq!(out, "false|null");
+        shutdown();
+    }
+
+    /// EKV slice: marshal rejections return false BEFORE any op call (bad value type, empty key,
+    /// non-finite number); {} and omitted kv take the plain entity_spawn path.
+    #[test]
+    fn entity_spawn_kv_marshal_rejects_bad_input() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            [
+                String(r.spawn({ o: {} })),          // object value -> false
+                String(r.spawn({ "": 1 })),          // empty key -> false
+                String(r.spawn({ n: NaN })),         // non-finite -> false
+                String(r.spawn({ n: Infinity })),    // non-finite -> false
+                String(r.spawn({})),                 // empty map -> plain spawn path (no op -> false)
+                String(r.spawn())                    // omitted -> plain spawn path (no op -> false)
+            ].join(",")
+        "#);
+        assert_eq!(out, "false,false,false,false,false,false");
+        shutdown();
+    }
+
+    // Test-only capture buffer for the entity_spawn_kv marshal-capture test below (shared across
+    // this one test; safe because RUST_TEST_THREADS=1).
+    static EKV_CAPTURE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    // Fake entity_spawn_kv op: records "key:type:value" triples (joined "|") into EKV_CAPTURE and
+    // returns 1 (success) — proves the JS marshal produces the exact parallel arrays the shim expects.
+    extern "C" fn capture_spawn_kv(_index: c_int, _serial: c_int, count: c_int,
+        keys: *const *const c_char, types: *const c_int, values: *const *const c_char) -> c_int {
+        let n = count as usize;
+        let mut parts: Vec<String> = Vec::with_capacity(n);
+        unsafe {
+            for i in 0..n {
+                let k = CStr::from_ptr(*keys.add(i)).to_string_lossy().into_owned();
+                let t = *types.add(i);
+                let v = CStr::from_ptr(*values.add(i)).to_string_lossy().into_owned();
+                parts.push(format!("{}:{}:{}", k, t, v));
+            }
+        }
+        EKV_CAPTURE.lock().unwrap().push(parts.join("|"));
+        1
+    }
+
+    /// EKV slice: `{name:"bob", health:42, scale:1.5, enabled:true, big:3000000000}` crosses as types
+    /// `[string,int,float,bool,float]` with values `["bob","42","1.5","1","3000000000"]` (int32
+    /// overflow -> float tag), and the native returns `true` (fake op returns 1). Key ORDER is
+    /// `Object.keys` insertion order, deterministic.
+    #[test]
+    fn entity_spawn_kv_marshal_capture_matches_expected_arrays() {
+        EKV_CAPTURE.lock().unwrap().clear();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps { entity_spawn_kv: Some(capture_spawn_kv), ..mock_event_ops() }));
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            String(r.spawn({ name: "bob", health: 42, scale: 1.5, enabled: true, big: 3000000000 }))
+        "#);
+        assert_eq!(out, "true");
+        assert_eq!(
+            EKV_CAPTURE.lock().unwrap().last().unwrap().as_str(),
+            "name:0:bob|health:1:42|scale:2:1.5|enabled:3:1|big:2:3000000000"
+        );
+        shutdown();
+    }
+
     /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
     /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
     /// never a crash.
@@ -8568,6 +8737,7 @@ mod frame_tests {
             remove_player_item: None,
             entity_read_handle_vector: None,
             entity_fire_input: None,
+            entity_spawn_kv: None,
         }
     }
 

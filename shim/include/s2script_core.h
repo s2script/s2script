@@ -165,6 +165,14 @@ typedef int (*s2_entity_read_handle_vector_fn)(int index, int serial, const int*
 typedef int (*s2_entity_fire_input_fn)(int index, int serial, const char* input, const char* value,
                                        int actIdx, int actSerial, int callerIdx, int callerSerial, float delay);
 
+/* EKV slice — APPENDED after entity_fire_input; order is the ABI.
+ * entity_spawn_kv: DispatchSpawn a serial-gated entity with a CEntityKeyValues built shim-side from
+ * parallel arrays. types[i]: 0=string 1=int 2=float 3=bool; values are stringified ("1"/"0" for bool).
+ * The CEntityKeyValues lives entirely inside the call (build -> AddRef -> DispatchSpawn -> guarded
+ * Release) — no handle, no raw pointer to JS. Returns 1 ok / 0 fail. */
+typedef int (*s2_entity_spawn_kv_fn)(int index, int serial, int count,
+    const char* const* keys, const int* types, const char* const* values);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -242,6 +250,8 @@ typedef struct {
     s2_entity_read_handle_vector_fn entity_read_handle_vector;
     /* Entity-I/O slice — APPENDED after entity_read_handle_vector; order is the ABI. */
     s2_entity_fire_input_fn entity_fire_input;
+    /* EKV slice — APPENDED after entity_fire_input; order is the ABI. */
+    s2_entity_spawn_kv_fn entity_spawn_kv;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

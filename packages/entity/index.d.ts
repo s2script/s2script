@@ -81,8 +81,11 @@ export declare class EntityRef {
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */
   notifyStateChanged(offset: number): void;
-  /** DispatchSpawn this created entity (register/activate it). Returns false if stale/unresolved. */
-  spawn(): boolean;
+  /** DispatchSpawn this created entity. With keyvalues, the entity's own Spawn() parses them (the
+   *  SourceMod DispatchKeyValue / CSSharp DispatchSpawn(kv) mechanism). Returns false if stale,
+   *  unresolved, or the keyvalue map is rejected (non-finite number, unsupported value type, empty
+   *  key) — a rejection spawns NOTHING (never a partially-configured entity). */
+  spawn(keyvalues?: EntityKeyValueMap): boolean;
   /** Teleport this entity. origin/angles/velocity are [x,y,z] triples; any may be null. False if stale. */
   teleport(origin: number[] | null, angles?: number[] | null, velocity?: number[] | null): boolean;
   /** Remove (UTIL_Remove) this entity from the world. Returns false if stale/unresolved. */
@@ -99,10 +102,16 @@ export declare class EntityRef {
   acceptInput(input: string, value?: string, activator?: EntityRef, caller?: EntityRef, delay?: number): boolean;
 }
 
-/** Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null on
- *  failure. Call `.spawn()` after setting fields to register it. The created entity is game-world-owned
- *  (NOT auto-removed on plugin unload) — the plugin owns cleanup via `.remove()`. */
-export declare function createEntity(className: string): EntityRef | null;
+/** Keyvalues for a CEntityKeyValues-configured spawn. Inference: string -> SetString,
+ *  boolean -> SetBool, integer (int32) -> SetInt, other finite number -> SetFloat.
+ *  Keys are case-insensitive (hashed via MurmurHash2LowerCase, the engine's own keying). */
+export type EntityKeyValueMap = { [key: string]: string | number | boolean };
+
+/** Create a new entity by class name. WITHOUT keyvalues: create only — set fields, then call
+ *  `.spawn()`. WITH keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is
+ *  a LIVE, SPAWNED entity (on spawn failure the entity is removed and null returned). The created
+ *  entity is game-world-owned (NOT auto-removed on plugin unload) — the plugin owns cleanup. */
+export declare function createEntity(className: string, keyvalues?: EntityKeyValueMap): EntityRef | null;
 
 /** The payload delivered to an `Entity.onOutput` handler. */
 export interface OutputEvent {
