@@ -135,4 +135,6 @@ export interface OutputEvent {
  */
 export declare const Entity: {
   onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
+  /** Find every entity whose designer-name (class) exactly matches `className`. Returns serial-gated refs. */
+  findByClass(className: string): EntityRef[];
 };

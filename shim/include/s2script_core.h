@@ -173,6 +173,11 @@ typedef int (*s2_entity_fire_input_fn)(int index, int serial, const char* input,
 typedef int (*s2_entity_spawn_kv_fn)(int index, int serial, int count,
     const char* const* keys, const int* types, const char* const* values);
 
+/* Game-rules + UserMessage slice — APPENDED after entity_spawn_kv; order is the ABI.
+ * entity_find_by_class: fill outIndices/outSerials with the (index,serial) of every entity whose
+ * CEntityIdentity::m_designerName == className, up to maxCount; returns the TOTAL match count. */
+typedef int (*s2_entity_find_by_class_fn)(const char* className, int* outIndices, int* outSerials, int maxCount);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -252,6 +257,8 @@ typedef struct {
     s2_entity_fire_input_fn entity_fire_input;
     /* EKV slice — APPENDED after entity_fire_input; order is the ABI. */
     s2_entity_spawn_kv_fn entity_spawn_kv;
+    /* Game-rules + UserMessage slice — APPENDED after entity_spawn_kv; order is the ABI. */
+    s2_entity_find_by_class_fn entity_find_by_class;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

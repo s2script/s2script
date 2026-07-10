@@ -209,6 +209,40 @@ static void* s2_ent_by_index(int idx) {
 }
 
 // ---------------------------------------------------------------------------
+// Engine-op: find every entity whose designer-name (class) == className (exact,
+// case-sensitive — designer-names are canonical). Iterates the entity-identity
+// list (the s2_ent_by_index chunk walk), reads CEntityIdentity::m_designerName
+// (a CUtlSymbolLarge; String() is inline, utlsymbollarge.h), writes (index,serial)
+// for the first maxCount matches, and returns the TOTAL match count (so the caller
+// can detect truncation when returned > maxCount). Engine-generic.
+// C-ABI, called by the Rust core through the S2EngineOps table.
+// ---------------------------------------------------------------------------
+static int s2_entity_find_by_class(const char* className, int* outIndices, int* outSerials, int maxCount) {
+    if (!className || !outIndices || !outSerials) return 0;
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return 0;
+    int found = 0;
+    for (int idx = 0; idx < MAX_TOTAL_ENTITIES; ++idx) {
+        int chunk = idx / MAX_ENTITIES_IN_LIST;
+        int slot  = idx % MAX_ENTITIES_IN_LIST;
+        CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[chunk];
+        if (!chunk_base) continue;
+        CEntityIdentity* id = &chunk_base[slot];
+        if (id->m_flags & EF_IS_INVALID_EHANDLE) continue;
+        if (!id->m_pInstance) continue;
+        const char* dn = id->m_designerName.String();
+        if (!dn || strcmp(dn, className) != 0) continue;
+        if (found < maxCount) {
+            CEntityHandle h = id->GetRefEHandle();
+            outIndices[found] = h.GetEntryIndex();
+            outSerials[found] = h.GetSerialNumber();
+        }
+        ++found;
+    }
+    return found;
+}
+
+// ---------------------------------------------------------------------------
 // Engine-op: resolve a packed entity handle (u32) → CEntityInstance* or null.
 // Signature-free chunk walk (recon Q4): mirrors s2_ent_by_index but adds serial
 // validation via CEntityIdentity::GetRefEHandle() (inline, entityidentity.h:74).
@@ -2258,6 +2292,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_fire_input = &Shim_EntityFireInput;
     // EKV slice — APPENDED after entity_fire_input; order MUST match S2EngineOps.
     ops.entity_spawn_kv = &Shim_EntitySpawnKv;
+    // Game-rules + UserMessage slice — APPENDED after entity_spawn_kv; order MUST match S2EngineOps.
+    ops.entity_find_by_class = &s2_entity_find_by_class;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

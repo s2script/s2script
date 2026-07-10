@@ -180,6 +180,11 @@ type EntityFireInputFn = extern "C" fn(c_int, c_int, *const c_char, *const c_cha
 type EntitySpawnKvFn = extern "C" fn(c_int, c_int, c_int,
     *const *const c_char, *const c_int, *const *const c_char) -> c_int;
 
+// --- Game-rules + UserMessage slice (APPENDED after entity_spawn_kv; order is the ABI). ENGINE-GENERIC:
+// takes a designer-name string + out-buffers; no CS2 class names in the C ABI itself.
+type EntityFindByClassFn =
+    extern "C" fn(*const std::os::raw::c_char, *mut i32, *mut i32, i32) -> i32;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -263,6 +268,8 @@ pub struct S2EngineOps {
     pub entity_fire_input: Option<EntityFireInputFn>,
     // --- EKV slice (APPENDED after entity_fire_input; order is the ABI; do not reorder above) ---
     pub entity_spawn_kv: Option<EntitySpawnKvFn>,
+    // --- Game-rules + UserMessage slice (APPENDED after entity_spawn_kv; order is the ABI; do not reorder above) ---
+    pub entity_find_by_class: Option<EntityFindByClassFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -785,6 +792,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
   var Entity = {
     onOutput: function (classname, output, handler) { __s2_output_subscribe(String(classname), String(output), handler); },
+    // Find every entity whose designer-name (class) exactly matches className. Returns serial-gated
+    // EntityRefs (empty array on no-op/degrade). Broadly reusable (gamerules proxy, props, triggers...).
+    findByClass: function (className) {
+      return __s2_entity_find_by_class(String(className));
+    },
   };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
   // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
@@ -4031,6 +4043,38 @@ fn s2_entity_create(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
     }));
 }
 
+/// Native `__s2_entity_find_by_class(className) -> EntityRef[]`. Over the `entity_find_by_class` op
+/// (the shim iterates the entity-identity list, comparing each `CEntityIdentity::m_designerName`).
+/// Returns serial-gated EntityRefs — each (index, serial) is re-validated via `entity_resolve_ptr`
+/// (like `s2_entity_create`) before building the ref; the raw pointer never crosses to JS.
+/// Degrades to an empty array with no op / a null className. The out-buffer is bounded at 1024.
+fn s2_entity_find_by_class(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let empty = v8::Array::new(scope, 0);
+        rv.set(empty.into());
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(func) = ops.and_then(|o| o.entity_find_by_class) else { return };
+        const CAP: usize = 1024;
+        let mut idxs = vec![0i32; CAP];
+        let mut sers = vec![0i32; CAP];
+        let total = func(cname.as_ptr(), idxs.as_mut_ptr(), sers.as_mut_ptr(), CAP as i32);
+        let n = (total.max(0) as usize).min(CAP);
+        let arr = v8::Array::new(scope, 0);
+        let mut w: u32 = 0;
+        for i in 0..n {
+            let (index, serial) = (idxs[i], sers[i]);
+            if !entity_resolve_ptr(index, serial).is_null() {
+                let r = build_entity_ref(scope, index, serial);
+                arr.set_index(scope, w, r);
+                w += 1;
+            }
+        }
+        rv.set(arr.into());
+    }));
+}
+
 /// Native `__s2_entity_spawn(index, serial) -> boolean`. Serial-gated `DispatchSpawn`. Degrades to
 /// `false` with no op / a stale ref.
 fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -5053,6 +5097,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_trace", s2_trace);
     // Entity-creation lifecycle slice: createEntity + EntityRef.spawn/teleport/remove natives.
     set_native(scope, global_obj, "__s2_entity_create", s2_entity_create);
+    set_native(scope, global_obj, "__s2_entity_find_by_class", s2_entity_find_by_class);
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
@@ -8314,6 +8359,7 @@ mod frame_tests {
             entity_read_handle_vector: None,
             entity_fire_input: None,
             entity_spawn_kv: None,
+            entity_find_by_class: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -8488,6 +8534,21 @@ mod frame_tests {
             String(createEntity("env_beam"))
         "#);
         assert_eq!(out, "null");
+        shutdown();
+    }
+
+    /// Game-rules slice: `Entity.findByClass` degrades to an empty array with no `entity_find_by_class`
+    /// op (e.g. every in-isolate test) — never a crash.
+    #[test]
+    fn find_by_class_degrades_to_empty_array_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const refs = __s2pkg_entity.Entity.findByClass("cs_gamerules");
+            String(Array.isArray(refs) && refs.length === 0)
+        "#);
+        assert_eq!(out, "true");
         shutdown();
     }
 
@@ -8787,6 +8848,7 @@ mod frame_tests {
             entity_read_handle_vector: None,
             entity_fire_input: None,
             entity_spawn_kv: None,
+            entity_find_by_class: None,
         }
     }
 
