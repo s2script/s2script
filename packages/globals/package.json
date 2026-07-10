@@ -1,5 +1,12 @@
 {
   "name": "@s2script/globals",
   "version": "0.1.0",
-  "types": "globals.d.ts"
+  "types": "globals.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "globals.d.ts"
+  ],
+  "description": "Ambient globals (console) for s2script plugin typecheck. No runtime code."
 }

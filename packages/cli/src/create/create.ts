@@ -1,0 +1,356 @@
+import {
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+} from "node:fs";
+import { dirname, join, resolve, basename } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { isPackagesDir } from "../packages-resolve.ts";
+
+export type GameChoice = "cs2" | "none";
+export type TemplateChoice = "minimal";
+export type InstallChoice = "npm" | "pnpm" | "yarn" | "bun" | "none";
+
+export interface CreateOptions {
+  path?: string;
+  name?: string;
+  game?: GameChoice;
+  template?: TemplateChoice;
+  install?: InstallChoice;
+  noInstall?: boolean;
+  /** Skip interactive prompts; use defaults / provided flags. */
+  yes?: boolean;
+}
+
+export interface CreateResult {
+  dir: string;
+  name: string;
+  game: GameChoice;
+  installed: boolean;
+  skippedInstall: boolean;
+  packageManager?: InstallChoice;
+}
+
+function readCliVersion(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, "..", "package.json"), // dist/cli.js → packages/cli/package.json
+    join(here, "..", "..", "package.json"), // src/create → packages/cli/package.json
+  ];
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      const pkg = JSON.parse(readFileSync(p, "utf8")) as { name?: string; version?: string };
+      if (pkg.name === "@s2script/cli" && pkg.version) return pkg.version;
+    } catch {
+      /* try next */
+    }
+  }
+  return "0.1.0";
+}
+
+/** Locate monorepo packages/ when create runs from an in-tree CLI build. */
+function findLocalPackagesDir(): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, "..", ".."), // dist/cli.js → packages
+    join(here, "..", "..", ".."), // src/create → packages
+  ];
+  for (const c of candidates) {
+    if (isPackagesDir(c)) return resolve(c);
+  }
+  return undefined;
+}
+
+function defaultNameFromPath(dir: string): string {
+  const base = basename(resolve(dir));
+  const slug =
+    base
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase() || "plugin";
+  return `@plugin/${slug}`;
+}
+
+async function promptSelect(
+  rl: ReturnType<typeof createInterface>,
+  question: string,
+  choices: { value: string; label: string }[],
+  defaultValue: string,
+): Promise<string> {
+  console.log(question);
+  choices.forEach((c, i) => {
+    const mark = c.value === defaultValue ? "*" : " ";
+    console.log(`  ${mark} ${i + 1}) ${c.label}`);
+  });
+  const raw = (await rl.question(`  (default ${defaultValue}): `)).trim();
+  if (!raw) return defaultValue;
+  const asNum = Number(raw);
+  if (Number.isInteger(asNum) && asNum >= 1 && asNum <= choices.length) {
+    return choices[asNum - 1]!.value;
+  }
+  const hit = choices.find(
+    (c) => c.value === raw || c.label.toLowerCase() === raw.toLowerCase(),
+  );
+  return hit?.value ?? defaultValue;
+}
+
+async function promptText(
+  rl: ReturnType<typeof createInterface>,
+  question: string,
+  defaultValue: string,
+): Promise<string> {
+  const raw = (await rl.question(`${question} (${defaultValue}): `)).trim();
+  return raw || defaultValue;
+}
+
+function assertGame(v: string | undefined): GameChoice | undefined {
+  if (v === undefined) return undefined;
+  if (v === "cs2" || v === "none") return v;
+  throw new Error(`invalid --game ${JSON.stringify(v)} (expected cs2|none)`);
+}
+
+function assertInstall(v: string | undefined): InstallChoice | undefined {
+  if (v === undefined) return undefined;
+  if (v === "npm" || v === "pnpm" || v === "yarn" || v === "bun" || v === "none") return v;
+  throw new Error(`invalid --install ${JSON.stringify(v)} (expected npm|pnpm|yarn|bun|none)`);
+}
+
+/** Direct create deps + type-transitive packages needed for a clean typecheck. */
+function createPackageNames(game: GameChoice): string[] {
+  if (game === "cs2") {
+    // chat→events; cs2→entity/math/trace/events; trace→entity/math
+    return [
+      "cli",
+      "cs2",
+      "commands",
+      "chat",
+      "globals",
+      "events",
+      "entity",
+      "math",
+      "trace",
+    ];
+  }
+  return ["cli", "frame", "timers", "globals"];
+}
+
+function registryDevDeps(game: GameChoice, version: string): Record<string, string> {
+  const deps: Record<string, string> = {};
+  for (const n of createPackageNames(game)) {
+    deps[`@s2script/${n}`] = `^${version}`;
+  }
+  return deps;
+}
+
+function fileDevDeps(packagesDir: string, game: GameChoice): Record<string, string> | undefined {
+  const deps: Record<string, string> = {};
+  for (const n of createPackageNames(game)) {
+    const abs = join(packagesDir, n);
+    if (!existsSync(join(abs, "package.json"))) return undefined;
+    deps[`@s2script/${n}`] = `file:${abs}`;
+  }
+  return deps;
+}
+
+function pluginSource(game: GameChoice): string {
+  if (game === "cs2") {
+    return `import { Commands } from "@s2script/commands";
+import { Chat } from "@s2script/chat";
+
+export function onLoad(): void {
+  Commands.register("hello", (ctx) => {
+    ctx.reply("hello from s2script");
+    if (ctx.callerSlot >= 0) {
+      Chat.toSlot(ctx.callerSlot, "hello from s2script");
+    }
+  });
+}
+
+export function onUnload(): void {}
+`;
+  }
+  return `import { OnGameFrame } from "@s2script/frame";
+import { delay } from "@s2script/timers";
+
+export function onLoad(): void {
+  let n = 0;
+  OnGameFrame.subscribe(() => {
+    n += 1;
+  });
+  void delay(1000).then(() => {
+    console.log("s2script plugin alive; frames so far:", n);
+  });
+}
+
+export function onUnload(): void {}
+`;
+}
+
+function tsconfigJson(): string {
+  return (
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          moduleResolution: "bundler",
+          module: "ESNext",
+          target: "ES2020",
+          lib: ["ES2020"],
+          types: [],
+          skipLibCheck: true,
+        },
+        include: ["src", "node_modules/@s2script/globals/globals.d.ts"],
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
+function packageJsonContent(
+  name: string,
+  game: GameChoice,
+  version: string,
+  localPackagesDir: string | undefined,
+): string {
+  const fileDeps = localPackagesDir ? fileDevDeps(localPackagesDir, game) : undefined;
+  const devDependencies = fileDeps ?? registryDevDeps(game, version);
+  return (
+    JSON.stringify(
+      {
+        name,
+        version: "0.1.0",
+        private: true,
+        main: "src/plugin.ts",
+        scripts: {
+          build: "s2script build .",
+        },
+        devDependencies,
+        s2script: {
+          apiVersion: "1.x",
+        },
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
+function gitignore(): string {
+  return `node_modules/
+dist/
+*.s2sp
+.DS_Store
+`;
+}
+
+function runInstall(dir: string, pm: InstallChoice): void {
+  if (pm === "none") return;
+  const r = spawnSync(pm, ["install"], {
+    cwd: dir,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (r.error) throw r.error;
+  if (r.status !== 0) throw new Error(`${pm} install failed (exit ${r.status})`);
+}
+
+/**
+ * Scaffold a new plugin project. Interactive when stdin is a TTY and `--yes` is not set.
+ *
+ * When run from an in-tree CLI (monorepo packages/ present), devDependencies use
+ * `file:` links so install works before the first npm publish.
+ */
+export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResult> {
+  const targetPath = resolve(opts.path ?? ".");
+  const interactive = Boolean(input.isTTY && output.isTTY && !opts.yes);
+  let game = assertGame(opts.game);
+  let name = opts.name;
+  let install = opts.noInstall ? ("none" as InstallChoice) : assertInstall(opts.install);
+  const template: TemplateChoice = opts.template ?? "minimal";
+  if (template !== "minimal") {
+    throw new Error(`unknown template ${JSON.stringify(template)} (v1 supports: minimal)`);
+  }
+
+  if (existsSync(targetPath)) {
+    const kids = readdirSync(targetPath);
+    const meaningful = kids.filter((k) => k !== ".git");
+    if (meaningful.length) {
+      throw new Error(`target directory is not empty: ${targetPath}`);
+    }
+  }
+
+  if (interactive) {
+    const rl = createInterface({ input, output });
+    try {
+      if (!game) {
+        game = (await promptSelect(
+          rl,
+          "Which game?",
+          [
+            { value: "cs2", label: "Counter-Strike 2" },
+            { value: "none", label: "Engine-generic only (no game package)" },
+          ],
+          "cs2",
+        )) as GameChoice;
+      }
+      if (!name) {
+        name = await promptText(rl, "Plugin package name", defaultNameFromPath(targetPath));
+      }
+      if (!install) {
+        install = (await promptSelect(
+          rl,
+          "Install dependencies?",
+          [
+            { value: "npm", label: "npm" },
+            { value: "pnpm", label: "pnpm" },
+            { value: "yarn", label: "yarn" },
+            { value: "bun", label: "bun" },
+            { value: "none", label: "skip" },
+          ],
+          "npm",
+        )) as InstallChoice;
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  game = game ?? "cs2";
+  name = name ?? defaultNameFromPath(targetPath);
+  install = install ?? (opts.noInstall ? "none" : "npm");
+
+  const version = readCliVersion();
+  const localPackagesDir = findLocalPackagesDir();
+
+  mkdirSync(join(targetPath, "src"), { recursive: true });
+  writeFileSync(
+    join(targetPath, "package.json"),
+    packageJsonContent(name, game, version, localPackagesDir),
+  );
+  writeFileSync(join(targetPath, "tsconfig.json"), tsconfigJson());
+  writeFileSync(join(targetPath, "src", "plugin.ts"), pluginSource(game));
+  writeFileSync(join(targetPath, ".gitignore"), gitignore());
+
+  let installed = false;
+  if (install !== "none") {
+    runInstall(targetPath, install);
+    installed = true;
+  }
+
+  return {
+    dir: targetPath,
+    name,
+    game,
+    installed,
+    skippedInstall: install === "none",
+    packageManager: install,
+  };
+}

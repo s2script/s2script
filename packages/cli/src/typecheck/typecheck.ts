@@ -2,15 +2,22 @@ import ts from "typescript";
 import { readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { resolvePackagesDir } from "../packages-resolve.ts";
 
 export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
 export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; }
 
-/** Typecheck a plugin dir (full strict) against the shipped engine .d.ts under `packagesDir`.
+/** Typecheck a plugin dir (full strict) against the shipped engine .d.ts.
  *  @s2script/* -> packagesDir/<name>/index.d.ts; the global `console` -> packagesDir/globals/globals.d.ts;
- *  each declared pluginDependency -> an ambient `declare module "<dep>";` (any). Never emits. */
-export function typecheckPlugin(pluginDir: string, opts: { packagesDir: string }): TypecheckResult {
+ *  each declared pluginDependency -> an ambient `declare module "<dep>";` (any). Never emits.
+ *
+ *  `packagesDir` may be omitted — resolved via monorepo packages/, env, or the plugin's
+ *  node_modules/@s2script (see packages-resolve.ts). */
+export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string }): TypecheckResult {
   const absDir = resolve(pluginDir);
+  const packagesDir = opts?.packagesDir
+    ? resolve(opts.packagesDir)
+    : resolvePackagesDir({ pluginDir: absDir });
   const pkg = JSON.parse(readFileSync(join(absDir, "package.json"), "utf8"));
   const s2 = pkg.s2script ?? {};
   const entryRel = s2.main ?? pkg.main;
@@ -29,12 +36,12 @@ export function typecheckPlugin(pluginDir: string, opts: { packagesDir: string }
     target: ts.ScriptTarget.ES2020,
     lib: ["lib.es2020.d.ts"],
     types: [],
-    baseUrl: opts.packagesDir,
+    baseUrl: packagesDir,
     paths: { "@s2script/*": ["*/index.d.ts"] },
     skipLibCheck: true,
   };
 
-  const rootNames = [entry, join(opts.packagesDir, "globals", "globals.d.ts")];
+  const rootNames = [entry, join(packagesDir, "globals", "globals.d.ts")];
   const tmp = mkdtempSync(join(tmpdir(), "s2tc-"));
   try {
     if (deps.length) {

@@ -2,5 +2,11 @@
   "name": "@s2script/events",
   "version": "0.1.0",
   "types": "index.d.ts",
-  "description": "Type stubs for the injected @s2script/events game-event API. No runtime code."
+  "description": "Type stubs for the injected @s2script/events game-event API. No runtime code.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.d.ts"
+  ]
 }

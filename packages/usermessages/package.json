@@ -2,5 +2,11 @@
   "name": "@s2script/usermessages",
   "version": "0.1.0",
   "types": "index.d.ts",
-  "description": "Type stubs for the @s2script/usermessages injected API (general protobuf UserMessage sender). No runtime code."
+  "description": "Type stubs for the @s2script/usermessages injected API (general protobuf UserMessage sender). No runtime code.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.d.ts"
+  ]
 }

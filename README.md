@@ -6,6 +6,35 @@ s2script is a TypeScript plugin framework for Source 2 engine games (Counter-Str
 
 ---
 
+## Authoring a plugin (outside the monorepo)
+
+Scaffold a new TypeScript plugin, install the `@s2script/*` type packages + CLI, and build a `.s2sp`:
+
+```bash
+npx s2script create my-plugin
+cd my-plugin
+npm run build
+# → dist/<id>.s2sp  — drop into addons/s2script/plugins/ on a running server
+```
+
+`s2script create` asks which game (CS2 default, or engine-generic), writes `package.json` / `tsconfig.json` / `src/plugin.ts`, and installs deps. Non-interactive:
+
+```bash
+npx s2script create my-plugin --game cs2 --name @me/my-plugin --yes --install npm
+```
+
+`@s2script/*` packages on npm are **types-only** (plus `@s2script/cli` for `build` / `create`). Runtime APIs are injected by the server host — `s2script build` externalizes `@s2script/*` and never bundles them.
+
+Until the first npm publish, run create from this repo so deps use local `file:` links:
+
+```bash
+node packages/cli/dist/cli.js create /tmp/my-plugin --yes --install npm
+```
+
+Monorepo treadmill commands (`gen-schema` / `gen-events` / `gen-nav`) stay in-tree; plugin authors only need `create` and `build`.
+
+---
+
 ## Prerequisites
 
 - **clang / clang++** (any recent version; used by the CMake shim build)

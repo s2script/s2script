@@ -2,5 +2,11 @@
   "name": "@s2script/frame",
   "version": "0.1.0",
   "types": "index.d.ts",
-  "description": "Type stubs for the @s2script/frame injected API (OnGameFrame + frame subscription). No runtime code."
+  "description": "Type stubs for the @s2script/frame injected API (OnGameFrame + frame subscription). No runtime code.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.d.ts"
+  ]
 }

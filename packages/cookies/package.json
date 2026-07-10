@@ -1,1 +1,14 @@
-{ "name": "@s2script/cookies", "version": "0.1.0", "types": "index.d.ts" }
+{
+  "name": "@s2script/cookies",
+  "version": "0.1.0",
+  "types": "index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.d.ts"
+  ],
+  "dependencies": {
+    "@s2script/clients": "0.1.0"
+  }
+}

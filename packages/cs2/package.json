@@ -2,5 +2,21 @@
   "name": "@s2script/cs2",
   "version": "0.1.0",
   "types": "index.d.ts",
-  "description": "Type stubs for the @s2script/cs2 injected CS2 game API. No runtime code — the engine injects the implementation."
+  "description": "Type stubs for the @s2script/cs2 injected CS2 game API. No runtime code — the engine injects the implementation.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "csitem.generated.d.ts",
+    "events.generated.d.ts",
+    "index.d.ts",
+    "nav.generated.d.ts",
+    "schema.generated.d.ts"
+  ],
+  "dependencies": {
+    "@s2script/entity": "0.1.0",
+    "@s2script/math": "0.1.0",
+    "@s2script/trace": "0.1.0",
+    "@s2script/events": "0.1.0"
+  }
 }

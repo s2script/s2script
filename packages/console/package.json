@@ -2,5 +2,11 @@
   "name": "@s2script/console",
   "version": "0.1.0",
   "types": "index.d.ts",
-  "description": "Type stubs for the @s2script/console injected API (engine console). No runtime code."
+  "description": "Type stubs for the @s2script/console injected API (engine console). No runtime code.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.d.ts"
+  ]
 }
