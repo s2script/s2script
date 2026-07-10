@@ -703,16 +703,28 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // EKV marshal: {key: string|number|boolean} -> parallel {keys, types, values} arrays.
   // types: 0=string 1=int 2=float 3=bool; values stringified ("1"/"0" for bool). Inference:
   // integer-in-int32 -> int, other finite number -> float. ANY bad entry (empty key, non-finite,
-  // unsupported value type, >256 keys) rejects the WHOLE map (null) — never a partial spawn.
+  // unsupported value type, >256 keys, an over-length key/value string) rejects the WHOLE map
+  // (null) — never a partial spawn.
+  // EKV_MAX_STRING_LEN: CKV3Arena's CUtlMemoryBlockAllocator::AddPage() aborts the WHOLE process
+  // (a real Plat_FatalError -> our tier0-shimmed Plat_ExitProcess -> abort()) once a single
+  // string's backing allocation reaches its MaxPossiblePageSize() bound — which computes to
+  // exactly 2048 bytes from the SDK's MEMBLOCK_DEFAULT_PAGESIZE(0x800)/MEMBLOCK_MAX_TOTAL_PAGESIZE
+  // constants (confirmed live: 2000B keyvalue strings are fine, 2050B reliably aborts the server).
+  // Capped here well under that bound so an ordinary plugin bug (e.g. relaying chat/file/JSON
+  // content into a spawn keyvalue) fails closed instead of taking down the whole process.
+  var EKV_MAX_STRING_LEN = 1024;
   function __s2_ekv_marshal(kv) {
     var keys = [], types = [], values = [];
     var names = Object.keys(kv);
     if (names.length > 256) return null;
     for (var i = 0; i < names.length; i++) {
       var k = names[i];
-      if (!k) return null;
+      if (!k || k.length > EKV_MAX_STRING_LEN) return null;
       var v = kv[k], t = typeof v;
-      if (t === "string") { types.push(0); values.push(v); }
+      if (t === "string") {
+        if (v.length > EKV_MAX_STRING_LEN) return null;
+        types.push(0); values.push(v);
+      }
       else if (t === "number") {
         if (!isFinite(v)) return null;
         if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) { types.push(1); values.push(String(v)); }
@@ -8568,6 +8580,35 @@ mod frame_tests {
             EKV_CAPTURE.lock().unwrap().last().unwrap().as_str(),
             "name:0:bob|health:1:42|scale:2:1.5|enabled:3:1|big:2:3000000000"
         );
+        shutdown();
+    }
+
+    /// EKV slice (review fix): a string key OR value at/beyond EKV_MAX_STRING_LEN (1024) rejects
+    /// the WHOLE map (`spawn` returns `false`, no crash) BEFORE any op call — guards the real
+    /// live-confirmed abort in CKV3Arena's CUtlMemoryBlockAllocator::AddPage() at its ~2048-byte
+    /// MaxPossiblePageSize() bound (2000B keyvalue strings are fine; 2050B reliably aborted the
+    /// whole server process). Proven with the fake op wired: the capture buffer stays UNTOUCHED
+    /// for the oversized calls (the marshal rejected before reaching the native/op at all), while
+    /// a normal-length value in the same test still reaches it — isolating "rejected by marshal"
+    /// from "no op wired".
+    #[test]
+    fn entity_spawn_kv_marshal_rejects_oversized_strings() {
+        EKV_CAPTURE.lock().unwrap().clear();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps { entity_spawn_kv: Some(capture_spawn_kv), ..mock_event_ops() }));
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            const big = "x".repeat(2050);   // beyond the real ~2048-byte engine abort bound
+            const ok  = "x".repeat(100);    // comfortably under the cap
+            [
+                String(r.spawn({ message: big })),   // oversized VALUE -> false, never reaches the op
+                String(r.spawn({ [big]: 1 })),        // oversized KEY -> false, never reaches the op
+                String(r.spawn({ message: ok }))      // normal-length value -> reaches the fake op -> true
+            ].join(",")
+        "#);
+        assert_eq!(out, "false,false,true");
+        assert_eq!(EKV_CAPTURE.lock().unwrap().len(), 1, "only the normal-length spawn should have reached the op");
         shutdown();
     }
 
