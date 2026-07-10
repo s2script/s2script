@@ -25,13 +25,6 @@ add_library(s2script SHARED
     # CNavPhysicsInterface::TraceShape structs/call. Engine-generic (Source-2 physics).
     src/vtable.cpp
     src/trace.cpp
-    # EKV slice: compile the SDK's own CEntityKeyValues implementation into the shim (the CSSharp
-    # approach — its CMakeLists compiles exactly entity2/entitykeyvalues.cpp). keyvalues3.cpp uses
-    # plain libc malloc/free (verified), NOT g_pMemAlloc. ekv.cpp is the ONLY TU that includes
-    # entitykeyvalues.h; everything else sees void*.
-    src/ekv.cpp
-    ${HL2SDK}/entity2/entitykeyvalues.cpp
-    ${HL2SDK}/tier1/keyvalues3.cpp
 )
 
 target_include_directories(s2script PRIVATE
@@ -88,17 +81,6 @@ target_link_libraries(s2script PRIVATE
     ${HL2SDK}/lib/linux64/release/libprotobuf.a
 )
 target_include_directories(s2script PRIVATE include)
-
-# EKV slice: split the SDK TUs into per-function sections and GC unreachable ones at link time,
-# so never-called KV3 paths (ToString/CBufferString/CUtlBuffer serialization, V_StringTo* array
-# conversion, GetEHandle->FindFirstEntityHandleByName) drop their undefined symbol references.
-set_source_files_properties(
-    src/ekv.cpp
-    ${HL2SDK}/entity2/entitykeyvalues.cpp
-    ${HL2SDK}/tier1/keyvalues3.cpp
-    PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections"
-)
-target_link_options(s2script PRIVATE -Wl,--gc-sections)
 # Ensure the runtime can find libs2script_core.so next to the plugin.
 # Output as s2script.so (no lib prefix) to match Metamod's loader expectations.
 set_target_properties(s2script PROPERTIES
