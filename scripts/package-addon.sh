@@ -45,6 +45,9 @@ if [ -f games/cs2/js/pawn.js ]; then
     cat games/cs2/js/schema.generated.js games/cs2/js/nav.generated.js games/cs2/js/activity.js games/cs2/js/csitem.generated.js games/cs2/js/pawn.js > "$DIST/s2script/js/pawn.js"
 fi
 
+# --- Runtime dirs (plugins drop zone + writable configs/data) ---
+mkdir -p "$DIST/s2script/plugins" "$DIST/s2script/configs" "$DIST/s2script/data"
+
 # --- Metamod plugin registration VDF ---
 cp docker/s2script.vdf "$DIST/metamod/s2script.vdf"
 
