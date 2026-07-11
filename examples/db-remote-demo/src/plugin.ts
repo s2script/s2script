@@ -12,7 +12,10 @@ async function exercise(name: string, autoInc: string): Promise<void> {
     const db = await Database.open(name);
     await db.execute(`CREATE TABLE IF NOT EXISTS demo (id ${autoInc}, sid BIGINT, note TEXT)`);
     const before = frames;
-    await db.execute("INSERT INTO demo (sid, note) VALUES (?, ?)", ["76561199000000001", "hello from " + name]);
+    // sid is a BIGINT literal (not a bound string): Postgres is strictly typed and rejects a
+    // text-bound param into a BIGINT column (MySQL coerces; PG does not). Binding a big value into a
+    // PG bigint needs a number (precision-limited), a `?::bigint` cast, or — as here — a SQL literal.
+    await db.execute("INSERT INTO demo (sid, note) VALUES (76561199000000001, ?)", ["hello from " + name]);
     const rows = await db.query("SELECT sid, note FROM demo ORDER BY id DESC LIMIT 1");
     const sid = rows.length ? rows[0].sid : null;
     console.log(`[db-remote-demo] ${name}: rows=${rows.length} sid=${JSON.stringify(sid)} typeof=${typeof sid} frames+=${frames - before}`);

@@ -58,7 +58,8 @@ services:
       MYSQL_DATABASE: stats
       MYSQL_USER: cs2
       MYSQL_PASSWORD: s2pass
-    command: --default-authentication-plugin=caching_sha2_password
+    # NOTE: no --default-authentication-plugin flag — it was REMOVED in MySQL 8.4 (mysql:8 now pulls
+    # 8.4) and caching_sha2_password is already the default there; passing it aborts init.
   postgres:
     image: postgres:16
     container_name: s2script-postgres
