@@ -83,7 +83,7 @@ export function onLoad(): void {
 
   // Publish the inter-plugin interface: synchronous, registry-backed methods (a Promise can't cross the
   // structured-copy wire, so mutating methods update the registry immediately + fire-and-forget the DB).
-  iface = publishInterface("zones", "1.0.0", {
+  iface = publishInterface("@s2script/zones", "1.0.0", {
     createZone(name: string, min: Vec3, max: Vec3): boolean {
       const nm = sanitizeName(name);
       if (!nm || !min || !max) return false;
@@ -114,7 +114,7 @@ export function onLoad(): void {
       return out;
     },
   });
-  console.log("[zones] publishing zones@1.0.0");
+  console.log("[zones] publishing @s2script/zones@1.0.0");
 
   // Detection poll (sub-slice-1 backend, generalized to N zones). ~8 Hz. Emits enter/leave/stay through
   // the interface with a WIRE-SAFE payload { zone, slot, userId } (never a Player — its methods don't

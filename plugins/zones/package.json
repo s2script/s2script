@@ -1,5 +1,5 @@
 {
-  "name": "@s2script/zones-lib",
+  "name": "@s2script/zones",
   "version": "0.1.0",
   "main": "src/plugin.ts",
   "s2script": {
@@ -15,7 +15,7 @@
       "@s2script/cs2": "^1.0.0"
     },
     "publishes": {
-      "zones": "1.0.0"
+      "@s2script/zones": "1.0.0"
     }
   }
 }

@@ -54,17 +54,37 @@ fn api_version_compatible(api_version: &str) -> bool {
     matches!(parse_api_major(api_version), Some(m) if m == HOST_API_VERSION_MAJOR)
 }
 
+/// The first-party BUILTIN modules — resolved via `__s2require` (the prelude sets `__s2pkg_<name>`),
+/// NOT the inter-plugin interface registry. A dependency on one of these is skipped from the ledger.
+/// A first-party plugin that PUBLISHES an interface may use the `@s2script/*` scope too (e.g.
+/// `@s2script/zones`) — such names are NOT in this list, so they flow through as interface deps and
+/// resolve to the producer's proxy (the runtime `__s2_require` tries the builtin first, then the
+/// interface registry, so even a name mistakenly omitted here still resolves correctly).
+const BUILTIN_MODULES: &[&str] = &[
+    "@s2script/entity", "@s2script/frame", "@s2script/timers", "@s2script/console",
+    "@s2script/interfaces", "@s2script/config", "@s2script/commands", "@s2script/chat",
+    "@s2script/clients", "@s2script/cookies", "@s2script/admin", "@s2script/bans",
+    "@s2script/server", "@s2script/damage", "@s2script/db", "@s2script/http", "@s2script/ws",
+    "@s2script/menu", "@s2script/topmenu", "@s2script/votes", "@s2script/plugins",
+    "@s2script/trace", "@s2script/usermessages", "@s2script/math", "@s2script/events",
+    "@s2script/cs2",
+];
+
+fn is_builtin_module(name: &str) -> bool {
+    BUILTIN_MODULES.contains(&name)
+}
+
 /// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects,
-/// skipping the builtin packages (@s2script/* — entity/frame/timers/console/interfaces/cs2 and
-/// any future first-party module — resolve via __s2require, not the interface registry).
+/// skipping only the framework BUILTINS (resolved via __s2require). Non-builtin `@s2script/*` names
+/// (a first-party plugin's PUBLISHED interface, e.g. `@s2script/zones`) flow through as interface deps.
 fn imports_from_manifest(m: &Manifest) -> Vec<(String, String, crate::interfaces::Kind)> {
     let mut out = Vec::new();
     for (name, range) in &m.plugin_dependencies {
-        if name.starts_with("@s2script/") { continue; }
+        if is_builtin_module(name) { continue; }
         out.push((name.clone(), range.clone(), crate::interfaces::Kind::Hard));
     }
     for (name, range) in &m.optional_plugin_dependencies {
-        if name.starts_with("@s2script/") { continue; }
+        if is_builtin_module(name) { continue; }
         out.push((name.clone(), range.clone(), crate::interfaces::Kind::Optional));
     }
     out

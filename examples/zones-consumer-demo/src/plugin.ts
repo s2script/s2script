@@ -1,16 +1,16 @@
-// zones-consumer-demo — a SEPARATE plugin that consumes the `zones` inter-plugin interface
-// (published by @s2script/zones-lib). Proves zones are a platform: this plugin reacts to zone events
-// it doesn't own — logging enter/leave and HEALING players who stand in a zone named "heal".
+// zones-consumer-demo — a SEPARATE plugin that consumes the @s2script/zones inter-plugin interface
+// (published by the @s2script/zones plugin). Proves zones are a platform: this plugin reacts to zone
+// events it doesn't own — logging enter/leave and HEALING players who stand in a zone named "heal".
 //
 // LOAD-ORDER NOTE: the loader loads plugins alphabetically (no dependency order), so this @demo
 // consumer loads BEFORE the @s2script producer. A subscription registered while the producer is absent
-// does NOT receive later emits (on(...) doesn't throw, but doesn't wire either) — so we DEFER the
-// subscription until the producer is live, probing with a method call (which DOES throw while absent).
-import { on, getZones } from "zones";        // hard dep -> producer-backed proxy
+// does NOT wire — so we DEFER the subscription until the producer is live, probing with a method call
+// (getZones, which throws InterfaceUnavailable while the producer is absent, unlike on()).
+import { on, getZones } from "@s2script/zones";   // hard dep -> producer-backed proxy
+import type { ZoneEvent } from "@s2script/zones";
 import { OnGameFrame } from "@s2script/frame";
 import { Player } from "@s2script/cs2";
 
-type ZoneEvent = { zone: string; slot: number; userId: number };
 let subscribed = false;
 
 function subscribe(): void {
@@ -34,7 +34,7 @@ function subscribe(): void {
   });
 }
 
-// True once the `zones` producer is live (a method call no longer throws InterfaceUnavailable).
+// True once the @s2script/zones producer is live (a method call no longer throws InterfaceUnavailable).
 function tryConnect(): boolean {
   try { getZones(); } catch { return false; }   // producer not up yet
   subscribe();                                   // producer live -> on(...) wires now

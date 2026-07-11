@@ -11,7 +11,7 @@ cd "$ROOT"
 PACKAGES=(
   events entity math frame timers console interfaces config commands chat
   clients cookies admin bans server damage db http ws menu topmenu votes
-  plugins trace usermessages globals cs2 cli
+  plugins trace usermessages globals cs2 zones cli
 )
 
 for name in "${PACKAGES[@]}"; do
