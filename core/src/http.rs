@@ -72,6 +72,12 @@ where
     }
 }
 
+/// Enter the shared runtime's context (an RAII guard) so runtime-requiring constructors (e.g. a sqlx
+/// `connect_lazy_with`) can be called from the main thread without blocking. None if uninitialized.
+pub fn enter() -> Option<tokio::runtime::EnterGuard<'static>> {
+    ENGINE.get().map(|e| e.runtime.enter())
+}
+
 async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchResponse, String> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|e| e.to_string())?;
     let mut rb = client.request(method, &req.url).timeout(Duration::from_millis(req.timeout_ms));
