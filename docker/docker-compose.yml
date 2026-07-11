@@ -47,3 +47,22 @@ services:
 
       # gameinfo.gi patcher script (called manually after first CS2 download)
       - ./patch-gameinfo.sh:/patch-gameinfo.sh:ro
+
+  # Remote SQL driver live-gate sidecars (@s2script/db). Same default compose network as cs2,
+  # so cs2 reaches them by service name (mysql/postgres) — no custom network needed.
+  mysql:
+    image: mysql:8
+    container_name: s2script-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: s2root
+      MYSQL_DATABASE: stats
+      MYSQL_USER: cs2
+      MYSQL_PASSWORD: s2pass
+    command: --default-authentication-plugin=caching_sha2_password
+  postgres:
+    image: postgres:16
+    container_name: s2script-postgres
+    environment:
+      POSTGRES_DB: prefs
+      POSTGRES_USER: cs2
+      POSTGRES_PASSWORD: s2pass
