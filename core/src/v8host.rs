@@ -1708,43 +1708,81 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var s = __s2_menu_activeBySlot[client.slot];
     if (s) s._end(MenuCancelReason.Disconnect);
   });
-  // --- Slice DB Task 4: @s2script/db — Database.open/query/execute/close over the __s2_sqlite_*
-  //     natives (sync-behind-Promise this slice) + a Driver seam (SQLite is the built-in, dogfooded
-  //     reference driver; registerDriver lets a plugin add another later, e.g. MySQL, with no API
-  //     change). name -> config resolution is stubbed to local SQLite (a databases.cfg-style remap
-  //     is a follow-on, not this slice). ---
+  // --- @s2script/db — Database.open/query/execute/close over the built-in drivers. SQLite is
+  //     sync-behind-Promise (__s2_sqlite_*); mysql/postgres are async off-thread (__s2_db_remote_*).
+  //     Database.open resolves a name via databases.json (operator-owned; absent name -> sqlite). ---
   var __s2_db_drivers = {};
-  var __s2_sqliteDriver = {
+  // NOTE: exposed on `globalThis` (not a plain `var`) — this whole prelude runs inside one big
+  // enclosing IIFE (see the top-level `(function () { ... })()` above), so a `var` here would be
+  // function-scoped and invisible to `globalThis.__s2_db_config = ...` test-seeding; bare
+  // `__s2_db_config` references below still resolve to this same global property via the normal
+  // scope-chain fallthrough (identical to how `__s2_db_resolveConfig` is exposed as a test hook).
+  globalThis.__s2_db_config = {};   // name -> { driver, host, port, user, password, database } (from databases.json)
+  function __s2_db_loadConfig() {
+    var text = __s2_config_read_raw("databases");
+    if (text == null) {
+      __s2_config_write_raw("databases", '{\n  "_help": "connection name -> { driver: \\"mysql\\"|\\"postgres\\", host, port, user, password, database }. Names not listed here default to a local SQLite file. e.g. \\"stats\\": { \\"driver\\": \\"mysql\\", \\"host\\": \\"db\\", \\"port\\": 3306, \\"user\\": \\"cs2\\", \\"password\\": \\"...\\", \\"database\\": \\"stats\\" }"\n}\n');
+      return;
+    }
+    var obj; try { obj = JSON.parse(text); } catch (e) { console.log("[s2script] WARN: databases.json malformed — all connections default to sqlite"); return; }
+    if (!obj || typeof obj !== "object") return;
+    for (var name in obj) {
+      if (name === "_help" || !Object.prototype.hasOwnProperty.call(obj, name)) continue;
+      var c = obj[name];
+      if (c && typeof c === "object" && (c.driver === "mysql" || c.driver === "postgres")) __s2_db_config[name] = c;
+    }
+  }
+  function __s2_db_resolveConfig(connName) {
+    var c = __s2_db_config[connName];
+    if (c) { return { driver: c.driver, name: connName, host: c.host, port: c.port, user: c.user, password: c.password, database: c.database }; }
+    return { driver: "sqlite", name: connName };
+  }
+  globalThis.__s2_db_resolveConfig = __s2_db_resolveConfig;   // test hook
+
+  __s2_db_drivers["sqlite"] = {
     name: "sqlite",
     connect: function (config) {
       return __s2_sqlite_open(config.name).then(function (handle) {
-        return {
-          query:   function (sql, params) { return __s2_sqlite_query(handle, sql, params || []); },
-          execute: function (sql, params) { return __s2_sqlite_execute(handle, sql, params || []); },
-          close:   function () { return __s2_sqlite_close(handle); },
-        };
+        return { query: function (s, p) { return __s2_sqlite_query(handle, s, p || []); },
+                 execute: function (s, p) { return __s2_sqlite_execute(handle, s, p || []); },
+                 close: function () { return __s2_sqlite_close(handle); } };
       });
     },
   };
-  __s2_db_drivers["sqlite"] = __s2_sqliteDriver;
+  function __s2_makeRemoteDriver(driverName) {
+    return {
+      name: driverName,
+      connect: function (config) {
+        var handle = __s2_db_remote_connect(JSON.stringify(config));
+        if (!handle) return Promise.reject(new Error("could not open " + driverName + " connection '" + config.name + "'"));
+        return Promise.resolve({
+          query:   function (s, p) { return __s2_db_remote_query(handle, s, p || []); },
+          execute: function (s, p) { return __s2_db_remote_execute(handle, s, p || []); },
+          close:   function () { return __s2_db_remote_close(handle); },
+        });
+      },
+    };
+  }
+  __s2_db_drivers["mysql"] = __s2_makeRemoteDriver("mysql");
+  __s2_db_drivers["postgres"] = __s2_makeRemoteDriver("postgres");
+
+  __s2_db_loadConfig();
+
   var __s2_Database = {
     registerDriver: function (driver) { __s2_db_drivers[driver.name] = driver; },
     open: function (name) {
       var connName = name || "default";
-      // This slice: every name resolves to the local SQLite driver. (databases.cfg remap is a follow-on.)
-      var config = { driver: "sqlite", name: connName };
+      var config = __s2_db_resolveConfig(connName);
       var driver = __s2_db_drivers[config.driver];
       if (!driver) return Promise.reject(new Error("unknown db driver: " + config.driver));
       return driver.connect(config).then(function (conn) {
-        return {
-          query:   function (sql, params) { return conn.query(sql, params); },
-          execute: function (sql, params) { return conn.execute(sql, params); },
-          close:   function () { return conn.close(); },
-        };
+        return { query: function (s, p) { return conn.query(s, p); },
+                 execute: function (s, p) { return conn.execute(s, p); },
+                 close: function () { return conn.close(); } };
       });
     },
   };
-  globalThis.__s2pkg_db = { Database: __s2_Database };   // named export `Database` (matches the .d.ts)
+  globalThis.__s2pkg_db = { Database: __s2_Database };
   // --- @s2script/cookies: SM-parity cookies over the __s2_cookie_* host-global cache ---
   var __s2_cookie_defs = {};   // per-context registry: name -> Cookie (idempotent register)
   var __s2_Cookies = {
@@ -10977,6 +11015,32 @@ mod frame_tests {
         "#, "{}");
         frame_async_drain();
         assert_eq!(read_global_string("dbdrv", "__out"), "fake=yes name=whatever-name");
+        shutdown();
+    }
+
+    /// The remote-SQL-driver slice's Task 3: `Database.open` resolves a name via `databases.json`
+    /// (the config bridge) instead of always defaulting to SQLite. Seeds `__s2_db_config` directly
+    /// (bypassing the config bridge, which degrades to null in tests) + registers a fake `mysql`
+    /// driver to assert the configured name routes to it; also exercises the `__s2_db_resolveConfig`
+    /// test hook directly for the configured-vs-unconfigured cases.
+    #[test]
+    fn db_open_routes_by_config() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // seed the per-context config directly (bypass the config bridge, unavailable in tests) + a fake driver
+        eval_in_context("p", "\
+            globalThis.__s2_db_config = { stats: { driver:'mysql', name:'stats', host:'h' } };\
+            var seen=null;\
+            __s2pkg_db.Database.registerDriver({ name:'mysql', connect:function(c){ seen=c; return Promise.resolve({query:function(){},execute:function(){},close:function(){}});} });\
+            __s2pkg_db.Database.open('stats');\
+            globalThis.__test_seen_driver = seen ? seen.driver : 'none';\
+        ").unwrap();
+        assert_eq!(eval_in_context_string("p", "globalThis.__test_seen_driver"), "mysql");
+        // an UNconfigured name falls back to sqlite
+        assert_eq!(eval_in_context_string("p", "__s2_db_resolveConfig('whatever').driver"), "sqlite");
+        // a configured name resolves to its driver
+        assert_eq!(eval_in_context_string("p", "__s2_db_resolveConfig('stats').driver"), "mysql");
         shutdown();
     }
 
