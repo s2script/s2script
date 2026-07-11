@@ -88,24 +88,24 @@ git tag v0.1.1
 git push origin v0.1.1
 ```
 
-The [`release`](../.github/workflows/release.yml) workflow sniper-builds (GLIBC ≤ 2.31), builds base plugins, packages `s2script-cs2-linux-*.zip`, and uploads it to a GitHub Release for that tag. Base plugins declare `s2script.apiVersion` (today `"1.x"`); they are **not** published to npm.
+The [`release`](../.github/workflows/release.yml) workflow sniper-builds (GLIBC ≤ 2.31), builds base plugins **stamped to that tag’s version**, packages `s2script-cs2-linux-*.zip`, and uploads it to a GitHub Release. Base plugins declare `s2script.apiVersion` (today `"1.x"`); they are **not** published to npm. Plugin `.s2sp` manifests always match the zip tag (e.g. `v0.1.1` → every shipped plugin `version: "0.1.1"`).
 
 Local dry-run (after a sniper build):
 
 ```bash
 docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
   rust:bullseye bash /repo/scripts/build-sniper.sh
-bash scripts/build-base-plugins.sh
+VERSION=0.1.1 bash scripts/build-base-plugins.sh   # stamps plugins → 0.1.1
 bash scripts/package-release.sh 0.1.1
 # → dist/s2script-cs2-linux-0.1.1.zip
 ```
 
 ### npm packages (`@s2script/*` types + CLI)
 
-Versioning and publish are owned by [Changesets](https://github.com/changesets/changesets) ([`.changeset/`](../.changeset/), workflow [`changesets.yml`](../.github/workflows/changesets.yml)). CI publishes with **npm trusted publishing (OIDC)** — no `NPM_TOKEN` secret.
+Versioning and publish are owned by [Changesets](https://github.com/changesets/changesets) ([`.changeset/`](../.changeset/), workflow [`changesets.yml`](../.github/workflows/changesets.yml)). Packages version **independently** (only the ones you select in a changeset bump). CI publishes with **npm trusted publishing (OIDC)** — no `NPM_TOKEN` secret.
 
-1. On a PR that changes `packages/`, run `npm run changeset` and commit the generated file.
-2. Merge to `main` → CI opens a **Version Packages** PR (shared fixed version across all `@s2script/*` packages).
+1. On a PR that changes `packages/`, run `npm run changeset`, select the packages that changed, and commit the file.
+2. Merge to `main` → CI opens a **Version Packages** PR (only those packages + needed internal dep patches).
 3. Merge the version PR → CI runs `changeset publish` via OIDC (+ automatic provenance).
 
 #### One-time trusted-publishing bootstrap
