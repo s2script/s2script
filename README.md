@@ -42,7 +42,7 @@ npx s2script create my-plugin --game cs2 --name @me/my-plugin --yes --install np
 
 Monorepo treadmill commands (`gen-schema` / `gen-events` / `gen-nav`) stay in-tree; plugin authors only need `create` and `build`.
 
-**Maintainers — two release trains:** Changesets publishes `@s2script/*` to npm when `packages/` change (`npm run changeset` on the PR; see [`.changeset/README.md`](.changeset/README.md)). Publish uses **npm trusted publishing (OIDC)** from [`.github/workflows/changesets.yml`](.github/workflows/changesets.yml) — no `NPM_TOKEN`. Runtime zip + base plugins stay on `git tag v*` (see [`docs/INSTALL.md`](docs/INSTALL.md)). Plugin-only work needs no changeset; package-only work needs no tag.
+**Maintainers — two release trains:** Changesets publishes `@s2script/*` to npm **independently** when `packages/` change (`npm run changeset` — pick only the packages that changed; see [`.changeset/README.md`](.changeset/README.md)). Publish uses **npm trusted publishing (OIDC)** from [`.github/workflows/changesets.yml`](.github/workflows/changesets.yml) — no `NPM_TOKEN`. Runtime zip + base plugins stay on `git tag v*` and plugins are stamped to that tag version at build (see [`docs/INSTALL.md`](docs/INSTALL.md)). Plugin-only work needs no changeset; package-only work needs no tag.
 ---
 
 ## Prerequisites

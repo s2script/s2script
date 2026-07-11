@@ -4,6 +4,13 @@
 #
 # Usage (from repo root):
 #   scripts/build-base-plugins.sh
+#   VERSION=0.1.2 scripts/build-base-plugins.sh   # stamp plugin package.json
+#                                                 # versions to match a release tag
+#
+# When VERSION (or $1) is set — typically the GitHub Release tag without a
+# leading v — every plugins/*/package.json (and disabled/*/) is rewritten to
+# that version BEFORE build so the .s2sp manifest matches the runtime zip.
+# npm @s2script/* packages are independent (Changesets); plugins track the tag.
 #
 # Requires Node. Builds the local CLI first, then typechecks+bundles each plugin.
 # Emits: plugins/<name>/dist/*.s2sp
@@ -13,6 +20,26 @@ cd "$(dirname "$0")/.."
 if [ ! -d plugins ]; then
     echo "ERROR: plugins/ directory missing" >&2
     exit 1
+fi
+
+# Optional: stamp plugin versions to match a release tag (plugins track the zip).
+TAG_VERSION="${VERSION:-${1:-}}"
+TAG_VERSION="${TAG_VERSION#v}"
+if [ -n "$TAG_VERSION" ]; then
+    echo "=== stamp plugin versions → $TAG_VERSION ==="
+    for d in plugins/*/ disabled/*/; do
+        [ -f "$d/package.json" ] || continue
+        node -e '
+          const fs = require("fs");
+          const p = process.argv[1];
+          const ver = process.argv[2];
+          const j = JSON.parse(fs.readFileSync(p, "utf8"));
+          if (j.version === ver) process.exit(0);
+          j.version = ver;
+          fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          console.log("  " + j.name + " → " + ver);
+        ' "$d/package.json" "$TAG_VERSION"
+    done
 fi
 
 echo "=== build @s2script/cli ==="

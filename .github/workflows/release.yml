@@ -55,6 +55,10 @@ jobs:
         run: npm ci
 
       - name: Build base plugins
+        # Stamp every plugin package.json / .s2sp manifest to the release tag
+        # (plugins track the zip version; npm @s2script/* packages are independent).
+        env:
+          VERSION: ${{ github.ref_name }}
         run: bash scripts/build-base-plugins.sh
 
       - name: Install zip

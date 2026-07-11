@@ -65,7 +65,7 @@ existing_s2sp=(plugins/*/dist/*.s2sp)
 shopt -u nullglob
 if [ "${#existing_s2sp[@]}" -eq 0 ]; then
     echo "=== no built .s2sp found — running build-base-plugins.sh ==="
-    bash scripts/build-base-plugins.sh
+    VERSION="$VERSION" bash scripts/build-base-plugins.sh
 fi
 
 rm -rf "$STAGE"
