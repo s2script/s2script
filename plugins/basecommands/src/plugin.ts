@@ -20,7 +20,7 @@ export function onLoad(): void {
     const targetStr = ctx.arg(0);
     if (!targetStr) { ctx.reply("Usage: sm_kick <target> [reason]"); return; }
     const reason = ctx.argsFrom(1) || "Kicked by admin";
-    const targets = Player.target(targetStr, ctx.callerSlot);
+    const targets = Player.target(targetStr, ctx.callerSlot, true);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
     // Destructive-command safety (SM COMMAND_FILTER_NO_MULTI): an ambiguous NAME matching >1 player kicks
     // nobody — @all / #userid stay the explicit multi/precise selectors; an exact name still resolves to 1.

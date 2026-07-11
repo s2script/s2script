@@ -48,7 +48,7 @@ export function onLoad(): void {
     const minutes = ctx.argInt(1);
     const reason = ctx.argsFrom(2);
 
-    const targets = Player.target(target, ctx.callerSlot);
+    const targets = Player.target(target, ctx.callerSlot, true);
     if (targets.length === 0) {
       ctx.reply("[SM] No matching players.");
       return;

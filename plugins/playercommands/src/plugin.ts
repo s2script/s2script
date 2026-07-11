@@ -42,7 +42,7 @@ export function onLoad(): void {
     const targetStr = ctx.arg(0);
     if (!targetStr) { ctx.reply("Usage: sm_slap <target> [damage]"); return; }
     const damage = Math.max(0, ctx.argInt(1, 0));
-    const targets = Player.target(targetStr, ctx.callerSlot);
+    const targets = Player.target(targetStr, ctx.callerSlot, true);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
     let n = 0;
     for (const p of targets) if (slapPlayer(p, damage)) n++;
@@ -53,7 +53,7 @@ export function onLoad(): void {
   Commands.registerAdmin("sm_slay", ADMFLAG.SLAY, (ctx) => {
     const targetStr = ctx.arg(0);
     if (!targetStr) { ctx.reply("Usage: sm_slay <target>"); return; }
-    const targets = Player.target(targetStr, ctx.callerSlot);
+    const targets = Player.target(targetStr, ctx.callerSlot, true);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
     let n = 0;
     for (const p of targets) if (slayPlayer(p)) n++;
@@ -65,7 +65,7 @@ export function onLoad(): void {
     const targetStr = ctx.arg(0);
     const rawName = ctx.argsFrom(1).trim();
     if (!targetStr || !rawName) { ctx.reply("Usage: sm_rename <target> <newname>"); return; }
-    const targets = Player.target(targetStr, ctx.callerSlot);
+    const targets = Player.target(targetStr, ctx.callerSlot, true);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
     if (targets.length > 1) {
       ctx.reply("[SM] Ambiguous target — matched " + targets.length + " players. Use #userid or full name.");
