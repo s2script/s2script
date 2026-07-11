@@ -5512,6 +5512,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_sqlite_query", s2_sqlite_query);
     set_native(scope, global_obj, "__s2_sqlite_execute", s2_sqlite_execute);
     set_native(scope, global_obj, "__s2_sqlite_close", s2_sqlite_close);
+    // Remote SQL driver Task 2: the `__s2_db_remote_*` natives (MySQL/Postgres over sqldb.rs).
+    set_native(scope, global_obj, "__s2_db_remote_connect", s2_db_remote_connect);
+    set_native(scope, global_obj, "__s2_db_remote_query", s2_db_remote_query);
+    set_native(scope, global_obj, "__s2_db_remote_execute", s2_db_remote_execute);
+    set_native(scope, global_obj, "__s2_db_remote_close", s2_db_remote_close);
     // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
     set_native(scope, global_obj, "__s2_fetch", s2_fetch);
     // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
@@ -6525,9 +6530,26 @@ fn s2_sqlite_open(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+/// Build the JS `Row[]` (array of {col: value}) from a `QueryResult`. Shared by the sync SQLite
+/// path (`s2_sqlite_query`) and the async remote-resolve path (`resolve_db`). Delegates each cell
+/// to `db_value_to_v8` (`Int`/`Real` -> `Number`, `Text` -> `String`, `Null` -> `null`).
+fn query_result_to_js<'s>(scope: &mut v8::PinScope<'s, '_>, q: &crate::db::QueryResult) -> v8::Local<'s, v8::Value> {
+    let arr = v8::Array::new(scope, q.rows.len() as i32);
+    for (ri, row) in q.rows.iter().enumerate() {
+        let obj = v8::Object::new(scope);
+        for (ci, col) in q.columns.iter().enumerate() {
+            let key = v8::String::new(scope, col).unwrap();
+            let val = db_value_to_v8(scope, &row[ci]);
+            obj.set(scope, key.into(), val);
+        }
+        arr.set_index(scope, ri as u32, obj.into());
+    }
+    arr.into()
+}
+
 /// Native `__s2_sqlite_query(handle, sql, params) -> Promise<Row[]>`. Runs a parameterized SELECT
-/// synchronously and resolves an array of row objects keyed by column name (`db_value_to_v8`); an
-/// invalid handle or SQL error rejects the Promise.
+/// synchronously and resolves an array of row objects keyed by column name (`query_result_to_js`);
+/// an invalid handle or SQL error rejects the Promise.
 fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
@@ -6543,17 +6565,8 @@ fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         };
         match result {
             Ok(qr) => {
-                let arr = v8::Array::new(scope, qr.rows.len() as i32);
-                for (ri, row) in qr.rows.iter().enumerate() {
-                    let obj = v8::Object::new(scope);
-                    for (ci, col) in qr.columns.iter().enumerate() {
-                        let key = v8::String::new(scope, col).unwrap();
-                        let val = db_value_to_v8(scope, &row[ci]);
-                        obj.set(scope, key.into(), val);
-                    }
-                    arr.set_index(scope, ri as u32, obj.into());
-                }
-                resolver.resolve(scope, arr.into());
+                let result = query_result_to_js(scope, &qr);
+                resolver.resolve(scope, result);
             }
             Err(e) => {
                 let msg = v8::String::new(scope, &e).unwrap();
@@ -6618,6 +6631,215 @@ fn s2_sqlite_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         resolver.resolve(scope, undef.into());
         rv.set(promise.into());
     }));
+}
+
+// ---------------------------------------------------------------------------
+// Remote SQL driver Task 2: the `__s2_db_remote_*` natives — MySQL/Postgres over the
+// process-global tokio+sqlx runtime (core/src/sqldb.rs, Task 1). `connect` is synchronous (no I/O —
+// the pool connects lazily on first query); `query`/`execute` MIRROR `s2_fetch`'s
+// resolver/ledger(`record_job`)/RESOLVERS/PENDING_JOBS/refresh_detour block exactly (a `Job`
+// resource — teardown drops its `RESOLVERS` entry, and a completion for an unloaded/reloaded plugin
+// is DROPPED by the async-liveness guard in the drain step, never resolved) — the calling
+// (main/game) thread never blocks; the Promise resolves on a LATER `frame_async_drain` via
+// `resolve_db`. Note: the async remote-query/execute path reuses `js_params_to_db` (Task 3's
+// sqlite-params helper) rather than a separate `js_params_to_dbvalues` — both natives bind against
+// the SAME shared `crate::db::DbValue` sqldb.rs consumes, so a second byte-identical mapping would
+// be pure duplication.
+// ---------------------------------------------------------------------------
+
+/// Native `__s2_db_remote_connect(configJson) -> number`. Builds+registers a lazy MySQL/Postgres
+/// pool (`sqldb::connect`) and returns the opaque handle as a `Number` (0 on failure, never
+/// throws). Ledgers the handle against the CALLING plugin (`RemoteDbConn`) so an unclosed pool is
+/// dropped at teardown. MIRRORS `s2_sqlite_open`'s ledger block (synchronous, not Promise-returning
+/// — `connect` does no I/O, so there's nothing to await).
+fn s2_db_remote_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let cfg = args.get(0).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_default();
+        match crate::sqldb::connect(&cfg, &owner) {
+            Ok(handle) => {
+                // Ledger the connection against the CALLING plugin (teardown authority) — a
+                // non-plugin/unknown owner (the shared HOST context) is a safe no-op.
+                if let Some((ref oid, _)) = resolver_owner_tag(scope) {
+                    REGISTRY.with(|r| {
+                        if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                            l.record_remote_db_conn(handle);
+                        }
+                    });
+                }
+                rv.set(v8::Number::new(scope, handle as f64).into());
+            }
+            Err(_e) => rv.set(v8::Number::new(scope, 0.0).into()),
+        }
+    }));
+}
+
+/// Native `__s2_db_remote_query(handle, sql, params) -> Promise<Row[]>`. Resolves the owner-scoped
+/// pool for `handle` (a wrong/absent handle is "invalid db handle", never probeable), then spawns
+/// the SELECT on the shared tokio+sqlx runtime; the Promise resolves later via `resolve_db` with the
+/// row array (`query_result_to_js`). An invalid handle rejects the Promise IMMEDIATELY and
+/// synchronously — no `RESOLVERS` entry / `PENDING_JOBS` increment / ledger entry is ever made for
+/// that early-reject path (there is no pending job to track or tear down).
+fn s2_db_remote_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
+        let sql = args.get(1).to_rust_string_lossy(scope);
+        let params = js_params_to_db(scope, args.get(2));
+        let owner = current_plugin(scope).unwrap_or_default();
+
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+
+        let pool = match crate::sqldb::get_pool(handle, &owner) {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = v8::String::new(scope, &e).unwrap();
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
+                rv.set(promise.into());
+                return;
+            }
+        };
+
+        let id = next_async_id();
+        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
+        let job_owner = resolver_owner_tag(scope);
+        // Ledger this async job against the CALLING plugin (teardown authority) — a non-plugin/
+        // unknown owner is a safe no-op; no borrow held across a JS call.
+        if let Some((ref oid, _)) = job_owner {
+            REGISTRY.with(|r| {
+                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                    l.record_job(id);
+                }
+            });
+        }
+        RESOLVERS.with(|m| {
+            m.borrow_mut()
+                .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+        });
+        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        crate::sqldb::spawn_query(id, pool, sql, params);
+        refresh_detour();
+        rv.set(promise.into());
+    }));
+}
+
+/// Native `__s2_db_remote_execute(handle, sql, params) -> Promise<{changes, lastInsertId}>`. Same
+/// shape as `s2_db_remote_query` (owner-scoped pool resolve + early-reject-on-invalid-handle, then
+/// the `s2_fetch`-mirrored resolver/ledger/RESOLVERS/PENDING_JOBS/refresh_detour block), but spawns
+/// an INSERT/UPDATE/DELETE/DDL statement (`spawn_execute`); the Promise resolves later via
+/// `resolve_db` with `{changes, lastInsertId}`.
+fn s2_db_remote_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
+        let sql = args.get(1).to_rust_string_lossy(scope);
+        let params = js_params_to_db(scope, args.get(2));
+        let owner = current_plugin(scope).unwrap_or_default();
+
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+
+        let pool = match crate::sqldb::get_pool(handle, &owner) {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = v8::String::new(scope, &e).unwrap();
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
+                rv.set(promise.into());
+                return;
+            }
+        };
+
+        let id = next_async_id();
+        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
+        let job_owner = resolver_owner_tag(scope);
+        // Ledger this async job against the CALLING plugin (teardown authority) — a non-plugin/
+        // unknown owner is a safe no-op; no borrow held across a JS call.
+        if let Some((ref oid, _)) = job_owner {
+            REGISTRY.with(|r| {
+                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                    l.record_job(id);
+                }
+            });
+        }
+        RESOLVERS.with(|m| {
+            m.borrow_mut()
+                .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+        });
+        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        crate::sqldb::spawn_execute(id, pool, sql, params);
+        refresh_detour();
+        rv.set(promise.into());
+    }));
+}
+
+/// Native `__s2_db_remote_close(handle) -> Promise<void>`. MIRRORS `s2_sqlite_close`: closes the
+/// pool (a harmless no-op if already closed / never open, regardless of the `sqldb::close`
+/// bool-return) and always resolves `undefined` — teardown may later close the same handle again
+/// (idempotent), so `close()` never rejects.
+fn s2_db_remote_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1);
+        let owner = current_plugin(scope).unwrap_or_default();
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        if handle >= 0 {
+            crate::sqldb::close(handle as u64, &owner);
+        }
+        let undef = v8::undefined(scope);
+        resolver.resolve(scope, undef.into());
+        rv.set(promise.into());
+    }));
+}
+
+/// Resolve (or drop, on the async-liveness guard) a completed remote DB query/execute job in its
+/// OWNING plugin's context — MIRRORS `resolve_fetch`'s owner-liveness + context-clone +
+/// HandleScope/ContextScope preamble exactly (the use-after-free killer: never resolve into a
+/// disposed/replaced context), but resolves with the row array (`query_result_to_js`) or the
+/// `{changes, lastInsertId}` object on `Ok`, or rejects with an `Error` on `Err` (a SQL/connection
+/// failure surfaced by `sqldb::run_query`/`run_execute`).
+fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::sqldb::DbOutcome, String>) {
+    let g_ctx = match &entry.owner {
+        Some((id, generation)) => {
+            if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
+                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
+            }
+            match PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) {
+                Some(g) => g,
+                None => return, // context gone (defensive) → drop
+            }
+        }
+        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
+    };
+
+    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+    let hs = &mut hs;
+    let ctx_local = v8::Local::new(hs, &g_ctx);
+    let scope = &mut v8::ContextScope::new(hs, ctx_local);
+    let resolver = v8::Local::new(scope, &entry.resolver);
+
+    match result {
+        Ok(crate::sqldb::DbOutcome::Query(qr)) => {
+            let v = query_result_to_js(scope, &qr);
+            resolver.resolve(scope, v);
+        }
+        Ok(crate::sqldb::DbOutcome::Exec(er)) => {
+            let obj = v8::Object::new(scope);
+            let k1 = v8::String::new(scope, "changes").unwrap();
+            let v1 = v8::Number::new(scope, er.changes as f64);
+            let k2 = v8::String::new(scope, "lastInsertId").unwrap();
+            let v2 = v8::Number::new(scope, er.last_insert_id as f64);
+            obj.set(scope, k1.into(), v1.into());
+            obj.set(scope, k2.into(), v2.into());
+            resolver.resolve(scope, obj.into());
+        }
+        Err(e) => {
+            let msg = v8::String::new(scope, &e).unwrap_or_else(|| v8::String::new(scope, "db error").unwrap());
+            let ex = v8::Exception::error(scope, msg);
+            resolver.reject(scope, ex);
+        }
+    }
 }
 
 /// Load a built plugin bundle `plugin_js` under plugin id `id` (the spike-PROVEN CJS wrapper).
@@ -7202,6 +7424,13 @@ pub(crate) fn frame_async_drain() {
             PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
             resolve_fetch(host, &entry, c.result);
         }
+        // Remote SQL completions (core/src/sqldb.rs). Mirrors the http loop: pop a completion, remove
+        // its RESOLVERS entry, decrement PENDING_JOBS, resolve/reject (or DROP on the liveness guard).
+        while let Some(c) = crate::sqldb::try_recv_completed() {
+            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&c.id)) else { continue };
+            PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
+            resolve_db(host, &entry, c.result);
+        }
         // Route completed ws signals (WebSocket Task 2, over core/src/ws.rs's tokio+tungstenite
         // engine). ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect
         // Promise INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then`
@@ -7464,6 +7693,12 @@ pub(crate) fn unload_plugin(id: &str) {
                     // an already-removed conn_id is a harmless no-op inside ws::drop_conn). This also
                     // covers the ConnectFailed case (the drain step already called drop_conn once).
                     crate::ws::drop_conn(conn_id);
+                }
+                plugin::Resource::RemoteDbConn(h) => {
+                    // Late/never close() — teardown drops the pool now (idempotent; a wrong/absent
+                    // handle is a harmless no-op inside sqldb::close). Passes the unloading plugin's
+                    // own id (it owns every handle in its ledger).
+                    crate::sqldb::close(h, id);
                 }
             }
         }

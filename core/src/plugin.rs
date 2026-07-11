@@ -28,6 +28,9 @@ pub enum Resource {
     /// An open WebSocket connection id (opaque, from `ws::connect`). Teardown closes it (regardless
     /// of owner — the ledger owns the id) even if the plugin never calls `close()` itself.
     WsConn(u64),
+    /// An open remote-SQL (MySQL/Postgres) pool handle (opaque, from `sqldb::connect`). Teardown
+    /// drops the pool even if the plugin never calls `close()` itself.
+    RemoteDbConn(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +107,11 @@ impl PluginLedger {
     /// Record an open WebSocket connection id against this plugin (teardown authority, ws Task 2).
     pub fn record_ws_conn(&mut self, id: u64) {
         self.order.push(Resource::WsConn(id));
+    }
+
+    /// Record an open remote-SQL pool handle against this plugin (teardown authority, remote-db Task 2).
+    pub fn record_remote_db_conn(&mut self, handle: u64) {
+        self.order.push(Resource::RemoteDbConn(handle));
     }
 
     /// Resources in REVERSE acquisition order — last-acquired torn down first.
