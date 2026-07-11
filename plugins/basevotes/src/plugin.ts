@@ -47,7 +47,7 @@ export function onLoad(): void {
   Commands.registerAdmin("sm_votekick", ADMFLAG.VOTE, (ctx) => {
     const targetStr = ctx.arg(0);
     if (!targetStr) { ctx.reply("Usage: sm_votekick <target>"); return; }
-    const targets = Player.target(targetStr, ctx.callerSlot);
+    const targets = Player.target(targetStr, ctx.callerSlot, true);
     if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
     if (targets.length > 1) { ctx.reply("[SM] Ambiguous target."); return; }
     const p = targets[0];

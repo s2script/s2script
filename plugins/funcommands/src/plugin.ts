@@ -21,13 +21,15 @@ const NONE = 0;
 
 // Resolve the target, apply `fn` to each live pawn, and reply with the count. With no target argument,
 // defaults to the caller (self) — SM behavior — unless run from the console, which must name a target.
-function forEachPawn(ctx: CommandContext, usage: string, verb: string, fn: (p: Player, pw: Pawn) => void): void {
+// Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
+// caller); filterImmunity=false for a reversal/benign command (no filter — e.g. un-freezing).
+function forEachPawn(ctx: CommandContext, usage: string, verb: string, fn: (p: Player, pw: Pawn) => void, filterImmunity: boolean): void {
   let pattern = ctx.arg(0);
   if (!pattern) {
     if (ctx.callerSlot < 0) { ctx.reply("[SM] Usage: " + usage); return; } // console must name a target
     pattern = "@me"; // in-game with no arg → self
   }
-  const targets = Player.target(pattern, ctx.callerSlot);
+  const targets = Player.target(pattern, ctx.callerSlot, filterImmunity);
   if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
   let n = 0;
   for (const p of targets) {
@@ -44,7 +46,7 @@ export function onLoad(): void {
     forEachPawn(ctx, "sm_gravity <target> [factor]", "Set gravity for", (_p, pw) => {
       pw.gravityScale = factor;
       pw.actualGravityScale = factor;
-    });
+    }, true);
   });
 
   // sm_blind <target> [seconds] — full black-screen fade (CUserMessageFade) via the generic
@@ -54,14 +56,14 @@ export function onLoad(): void {
     const durMs = (secs > 0 ? secs : 2) * 1000;
     forEachPawn(ctx, "sm_blind <target> [seconds]", "Blinded", (p, _pw) => {
       Fade.blind(p.slot, durMs);
-    });
+    }, true);
   });
 
   // sm_noclip <target> — toggle noclip (WALK <-> NOCLIP).
   Commands.registerAdmin("sm_noclip", ADMFLAG.SLAY, (ctx) => {
     forEachPawn(ctx, "sm_noclip <target>", "Toggled noclip for", (_p, pw) => {
       pw.moveType = pw.moveType === NOCLIP ? WALK : NOCLIP;
-    });
+    }, true);
   });
 
   // sm_freeze <target> [seconds] — freeze in place; auto-unfreeze after [seconds] (0 = until sm_unfreeze).
@@ -76,14 +78,14 @@ export function onLoad(): void {
           if (q && q.pawn) q.pawn.moveType = WALK;
         });
       }
-    });
+    }, true);
   });
 
   // sm_unfreeze <target> — restore movement.
   Commands.registerAdmin("sm_unfreeze", ADMFLAG.SLAY, (ctx) => {
     forEachPawn(ctx, "sm_unfreeze <target>", "Unfroze", (_p, pw) => {
       pw.moveType = WALK;
-    });
+    }, false);
   });
 
   console.log("[funcommands] onLoad — gravity/noclip/freeze/unfreeze/blind registered (burn/beacon deferred)");

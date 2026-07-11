@@ -19,9 +19,11 @@ import { TopMenu } from "@s2script/topmenu";
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
 const muted = new Set<string>();  // SteamIDs — voice mute requested (best-effort)
 
-function forTargets(pat: string, callerSlot: number, reply: (m: string) => void, verb: string, usage: string, act: (p: Player) => void): void {
+// Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
+// caller); filterImmunity=false for a reversal command (un-gag/un-mute/un-silence — no filter).
+function forTargets(pat: string, callerSlot: number, reply: (m: string) => void, verb: string, usage: string, act: (p: Player) => void, filterImmunity: boolean): void {
   if (!pat) { reply("Usage: " + usage); return; }
-  const targets = Player.target(pat, callerSlot);
+  const targets = Player.target(pat, callerSlot, filterImmunity);
   if (targets.length === 0) { reply("[SM] No matching players."); return; }
   for (const p of targets) act(p);
   reply("[SM] " + verb + " " + targets.length + " player" + (targets.length === 1 ? "" : "s") + ".");
@@ -50,17 +52,17 @@ export function onLoad(): void {
   });
 
   Commands.registerAdmin("sm_gag", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Gagged", "sm_gag <target>", (p) => setGag(p, true)));
+    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Gagged", "sm_gag <target>", (p) => setGag(p, true), true));
   Commands.registerAdmin("sm_ungag", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Ungagged", "sm_ungag <target>", (p) => setGag(p, false)));
+    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Ungagged", "sm_ungag <target>", (p) => setGag(p, false), false));
   Commands.registerAdmin("sm_mute", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Muted", "sm_mute <target>", (p) => setMute(p, true)));
+    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Muted", "sm_mute <target>", (p) => setMute(p, true), true));
   Commands.registerAdmin("sm_unmute", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Unmuted", "sm_unmute <target>", (p) => setMute(p, false)));
+    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Unmuted", "sm_unmute <target>", (p) => setMute(p, false), false));
   Commands.registerAdmin("sm_silence", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Silenced", "sm_silence <target>", (p) => { setGag(p, true); setMute(p, true); }));
+    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Silenced", "sm_silence <target>", (p) => { setGag(p, true); setMute(p, true); }, true));
   Commands.registerAdmin("sm_unsilence", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Unsilenced", "sm_unsilence <target>", (p) => { setGag(p, false); setMute(p, false); }));
+    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Unsilenced", "sm_unsilence <target>", (p) => { setGag(p, false); setMute(p, false); }, false));
 
   // adminmenu — Gag proof item, same ADMFLAG as sm_gag, via pickPlayer + the shared setGag routine.
   TopMenu.addItem("Player Commands", { id: "basecomm:gag", name: "Gag", flags: ADMFLAG.CHAT,
