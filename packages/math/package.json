@@ -1,6 +1,6 @@
 {
   "name": "@s2script/math",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "types": "index.d.ts",
   "description": "Type stubs for the @s2script/math injected value types (Vector, QAngle). No runtime code.",
   "publishConfig": {

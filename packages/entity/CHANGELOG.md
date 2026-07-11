@@ -1,0 +1,9 @@
+# @s2script/entity
+
+## 0.1.1
+
+### Patch Changes
+
+- 5fcc41f: Initial public npm release of the `@s2script/*` types packages and CLI (Changesets pipeline).
+- Updated dependencies [5fcc41f]
+  - @s2script/events@0.1.1
