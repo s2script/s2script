@@ -21,6 +21,8 @@ const NONE = 0;
 
 // Resolve the target, apply `fn` to each live pawn, and reply with the count. With no target argument,
 // defaults to the caller (self) — SM behavior — unless run from the console, which must name a target.
+// Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
+// caller); filterImmunity=false for a reversal/benign command (no filter — e.g. un-freezing).
 function forEachPawn(ctx: CommandContext, usage: string, verb: string, fn: (p: Player, pw: Pawn) => void, filterImmunity: boolean): void {
   let pattern = ctx.arg(0);
   if (!pattern) {

@@ -51,7 +51,7 @@ export function onLoad(): void {
   });
 
   Commands.registerAdmin("sm_voteslay", ADMFLAG.VOTE, ctx => {
-    const targets = Player.target(ctx.arg(0), ctx.callerSlot);
+    const targets = Player.target(ctx.arg(0), ctx.callerSlot, true);
     if (targets.length === 0) { ctx.reply("No matching players"); return; }
     if (targets.length > 1) { ctx.reply("Multiple players match — be specific"); return; }
     const uid = targets[0].userId;

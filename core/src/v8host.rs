@@ -1518,8 +1518,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     getGroup: function (name) {
       var g = __s2_groups[String(name)];
-      return g ? { name: String(name), flags: g.flags, immunity: g.immunity, overrides: g.overrides } : null;
+      // Shallow-copy overrides (like `groups`' .slice() above) so a caller can't mutate this
+      // context's group registry through the returned object.
+      return g ? { name: String(name), flags: g.flags, immunity: g.immunity, overrides: Object.assign({}, g.overrides) } : null;
     },
+    // NOTE: reload() clears + re-reads the SHARED core cache (admin flags/immunity/overrides), so
+    // ENFORCEMENT (hasFlags/canTarget/__s2_admin_check) refreshes everywhere immediately. But the
+    // per-context JS group registries (__s2_groups/__s2_adminGroups below) are only re-parsed in THIS
+    // context — another already-loaded context's `.groups` / `getGroup` DISPLAY metadata can be stale
+    // until that context reloads (e.g. on its own next file-watch reload). Enforcement is unaffected.
     reload: function () { __s2_admin_clear_file(); __s2_admin_reloadAll(true); },
   };
 
@@ -1532,6 +1539,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
 
   // Parse the registries in EVERY context (cheap, idempotent — makes getGroup / AdminInfo.groups work
   // everywhere); push the resolved admins + overrides into the shared core cache ONCE (first context).
+  // See the reload/staleness note on Admin.reload above: a later reload() in one context does not
+  // re-run this per-context parse in every OTHER already-loaded context.
   __s2_admin_reloadAll(!__s2_admin_mark_loaded());
 
   // Override-aware gating hook. A "public" override (flag "") grants ANYONE — even a non-admin; a flag

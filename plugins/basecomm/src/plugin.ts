@@ -19,6 +19,8 @@ import { TopMenu } from "@s2script/topmenu";
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
 const muted = new Set<string>();  // SteamIDs — voice mute requested (best-effort)
 
+// Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
+// caller); filterImmunity=false for a reversal command (un-gag/un-mute/un-silence — no filter).
 function forTargets(pat: string, callerSlot: number, reply: (m: string) => void, verb: string, usage: string, act: (p: Player) => void, filterImmunity: boolean): void {
   if (!pat) { reply("Usage: " + usage); return; }
   const targets = Player.target(pat, callerSlot, filterImmunity);
