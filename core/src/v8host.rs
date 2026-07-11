@@ -1361,65 +1361,186 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     list: function () { try { return JSON.parse(__s2_commands_list()); } catch (e) { return []; } },
   };
   globalThis.__s2pkg_commands = { Commands: __s2_commands };   // named export `Commands`
-  // --- Slice 6.2 Task 2: admin module (engine-generic; no CS2/game symbol; ADMFLAG + Admin API + file load) ---
+  // --- admin module (engine-generic; ADMFLAG + Admin API + group/immunity/override resolution) ---
   var __s2_ADMFLAG = {
     RESERVATION: 1<<0, GENERIC: 1<<1, KICK: 1<<2, BAN: 1<<3, UNBAN: 1<<4, SLAY: 1<<5, CHANGEMAP: 1<<6,
     CONVARS: 1<<7, CONFIG: 1<<8, CHAT: 1<<9, VOTE: 1<<10, PASSWORD: 1<<11, RCON: 1<<12, CHEATS: 1<<13, ROOT: 1<<14,
   };
   function __s2_hasFlags(flags, req) { return ((flags & __s2_ADMFLAG.ROOT) !== 0) || ((flags & req) === req); }
-  function __s2_adminInfo(steamId, flags) {
-    if (!flags) return null;
-    return { steamId: String(steamId), flags: flags | 0, hasFlags: function (req) { return __s2_hasFlags(flags | 0, req | 0); } };
+
+  // ---- flag-token parsing (a name, a single SM letter, or a compact letter-string) ----
+  function __s2_flag_letterBit(ch) {
+    if (ch === "z" || ch === "Z") return __s2_ADMFLAG.ROOT;
+    var i = String(ch).charCodeAt(0) - 97;                 // 'a'
+    return (i >= 0 && i <= 13) ? (1 << i) : 0;
   }
-  // Parse admins.json ({ "<steamid64>": ["kick","ban"] }) into the file tier. Unknown flag name → skip+WARN.
-  function __s2_admin_parseFile(text) {
+  function __s2_flag_token(tok) {                           // name OR single letter -> bit (0 = unknown)
+    var up = String(tok).toUpperCase();
+    if (__s2_ADMFLAG[up] != null) return __s2_ADMFLAG[up];
+    var s = String(tok);
+    return (s.length === 1) ? __s2_flag_letterBit(s) : 0;
+  }
+  function __s2_parseFlags(value) {                         // array of tokens | a name | a letter-string -> mask
+    var mask = 0;
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i++) {
+        var b = __s2_flag_token(value[i]);
+        if (b) mask |= b; else if (String(value[i]).length) console.log("[s2script] WARN: unknown admin flag '" + value[i] + "' — skipped");
+      }
+    } else if (typeof value === "string") {
+      var up = value.toUpperCase();
+      if (__s2_ADMFLAG[up] != null) return __s2_ADMFLAG[up];   // the whole string is a flag name
+      for (var j = 0; j < value.length; j++) {
+        var c = value.charAt(j), lb = __s2_flag_letterBit(c);
+        if (lb) mask |= lb; else console.log("[s2script] WARN: unknown admin flag letter '" + c + "' — skipped");
+      }
+    }
+    return mask;
+  }
+  function __s2_parseOverrideToken(v) {                     // "" -> public; else a required mask
+    if (v === "" || v == null) return { public: true, mask: 0 };
+    return { public: false, mask: __s2_parseFlags(v) };
+  }
+
+  // ---- registries (per-context; populated from the files at prelude time) ----
+  var __s2_groups = {};        // name -> { flags, immunity, overrides: {cmd:{public,mask}} }
+  var __s2_adminGroups = {};   // sid  -> [groupName]
+
+  function __s2_admin_parseGroups(text) {
+    __s2_groups = {};
+    var obj; try { obj = JSON.parse(text); } catch (e) { console.log("[s2script] WARN: admin_groups.json malformed — ignored"); return; }
+    if (!obj || typeof obj !== "object") return;
+    for (var name in obj) {
+      if (name === "_help" || !Object.prototype.hasOwnProperty.call(obj, name)) continue;
+      var g = obj[name]; if (!g || typeof g !== "object") continue;
+      var ov = {};
+      if (g.overrides && typeof g.overrides === "object")
+        for (var cmd in g.overrides) if (Object.prototype.hasOwnProperty.call(g.overrides, cmd)) ov[cmd] = __s2_parseOverrideToken(g.overrides[cmd]);
+      __s2_groups[name] = { flags: __s2_parseFlags(g.flags), immunity: (typeof g.immunity === "number") ? (g.immunity | 0) : 0, overrides: ov };
+    }
+  }
+
+  function __s2_admin_resolveEntry(entry) {                 // -> { mask, immunity, groups:[], overrides:{cmd:{public,mask}} }
+    var mask = 0, immunity = 0, groups = [], overrides = {};
+    if (Array.isArray(entry)) {
+      mask = __s2_parseFlags(entry);
+    } else if (entry && typeof entry === "object") {
+      if (entry.flags != null) mask |= __s2_parseFlags(entry.flags);
+      if (typeof entry.immunity === "number") immunity = Math.max(immunity, entry.immunity | 0);
+      if (Array.isArray(entry.groups)) for (var i = 0; i < entry.groups.length; i++) {
+        var gn = entry.groups[i], g = __s2_groups[gn];
+        if (!g) { console.log("[s2script] WARN: admins.json references unknown group '" + gn + "' — skipped"); continue; }
+        mask |= g.flags; immunity = Math.max(immunity, g.immunity); groups.push(gn);
+        for (var c in g.overrides) if (Object.prototype.hasOwnProperty.call(g.overrides, c)) overrides[c] = g.overrides[c];
+      }
+    }
+    return { mask: mask, immunity: immunity, groups: groups, overrides: overrides };
+  }
+
+  function __s2_admin_parseAdmins(text, pushCore) {
+    __s2_adminGroups = {};
     var obj; try { obj = JSON.parse(text); } catch (e) { console.log("[s2script] WARN: admins.json malformed — ignored"); return; }
     if (!obj || typeof obj !== "object") return;
     for (var sid in obj) {
-      if (!Object.prototype.hasOwnProperty.call(obj, sid)) continue;
-      var names = obj[sid]; if (!Array.isArray(names)) continue;
-      var mask = 0;
-      for (var i = 0; i < names.length; i++) {
-        var key = String(names[i]).toUpperCase();
-        if (__s2_ADMFLAG[key] != null) mask |= __s2_ADMFLAG[key];
-        else console.log("[s2script] WARN: admins.json '" + sid + "': unknown flag '" + names[i] + "' — skipped");
+      if (sid === "_help" || !Object.prototype.hasOwnProperty.call(obj, sid)) continue;
+      var r = __s2_admin_resolveEntry(obj[sid]);
+      __s2_adminGroups[String(sid)] = r.groups;
+      if (pushCore) {
+        __s2_admin_set(String(sid), r.mask, r.immunity, false);
+        for (var cmd in r.overrides) if (Object.prototype.hasOwnProperty.call(r.overrides, cmd)) {
+          var ov = r.overrides[cmd]; __s2_admin_add_override(String(sid), cmd, ov.mask | 0, !!ov.public);
+        }
       }
-      __s2_admin_set(String(sid), mask, 0, false);
     }
   }
-  function __s2_admin_load() {
-    var text = __s2_config_read_raw("admins");
-    if (text == null) {
-      // A VALID-JSON self-documenting template — the "_help" key is not a SteamID (its value is a string,
-      // not an array), so parseFile skips it; and it round-trips through JSON.parse cleanly on the next
-      // restart (a //-commented template would fail JSON.parse and log a spurious "malformed" WARN).
-      __s2_config_write_raw("admins", '{\n  "_help": "SteamID64 -> flag names. e.g. \\"76561199000000001\\": [\\"kick\\", \\"ban\\"]. Flags: reservation generic kick ban unban slay changemap convars config chat vote password rcon cheats root"\n}\n');
-      text = "{}";
+
+  function __s2_admin_parseOverrides(text) {                // global admin_overrides.json (pushCore path only)
+    var obj; try { obj = JSON.parse(text); } catch (e) { console.log("[s2script] WARN: admin_overrides.json malformed — ignored"); return; }
+    if (!obj || typeof obj !== "object") return;
+    for (var cmd in obj) {
+      if (cmd === "_help" || !Object.prototype.hasOwnProperty.call(obj, cmd)) continue;
+      var ov = __s2_parseOverrideToken(obj[cmd]); __s2_admin_set_global_override(cmd, ov.mask | 0, !!ov.public);
     }
-    __s2_admin_parseFile(text);
+  }
+
+  var __s2_GROUPS_TEMPLATE = '{\n  "_help": "Group name -> { flags, immunity, overrides }. flags: SM letters (\\"bcdefg\\") or names ([\\"kick\\",\\"ban\\"]); immunity: integer; overrides: { command: flag | \\"\\" for anyone }. e.g. \\"Full Admins\\": { \\"flags\\": \\"bcdefgjk\\", \\"immunity\\": 50 }"\n}\n';
+  var __s2_ADMINS_TEMPLATE = '{\n  "_help": "SteamID64 -> [\\"flag\\",...] (flags only), or { groups:[\\"Group\\"], flags:[...], immunity:N }. Flags: reservation generic kick ban unban slay changemap convars config chat vote password rcon cheats root (or SM letters a-n,z)."\n}\n';
+  var __s2_OVERRIDES_TEMPLATE = '{\n  "_help": "command -> required flag (name or SM letter), or \\"\\" for everyone. e.g. \\"sm_slap\\": \\"generic\\", \\"sm_who\\": \\"\\""\n}\n';
+  function __s2_admin_readOrTemplate(name, template) {
+    var t = __s2_config_read_raw(name);
+    if (t == null) { __s2_config_write_raw(name, template); return "{}"; }
+    return t;
+  }
+  function __s2_admin_reloadAll(pushCore) {
+    __s2_admin_parseGroups(__s2_admin_readOrTemplate("admin_groups", __s2_GROUPS_TEMPLATE));
+    __s2_admin_parseAdmins(__s2_admin_readOrTemplate("admins", __s2_ADMINS_TEMPLATE), pushCore);
+    if (pushCore) __s2_admin_parseOverrides(__s2_admin_readOrTemplate("admin_overrides", __s2_OVERRIDES_TEMPLATE));
+  }
+
+  // ---- AdminInfo + the Admin API ----
+  function __s2_adminInfo(steamId, flags, immunity) {
+    return {
+      steamId: String(steamId), flags: flags | 0, immunity: immunity | 0,
+      groups: (__s2_adminGroups[String(steamId)] || []).slice(),
+      hasFlags: function (req) { return __s2_hasFlags(flags | 0, req | 0); },
+    };
+  }
+  function __s2_canTargetImm(callerSlot, callerImm, targetImm) {   // the pure immunity comparison (test hook)
+    if ((callerSlot | 0) < 0) return true;                        // server console / rcon = infinite
+    if ((targetImm | 0) <= 0) return true;                        // non-immune target
+    return (callerImm | 0) >= (targetImm | 0);                    // SM default: equal can target
   }
   var __s2_admin = {
-    add: function (steamId, flags) { __s2_admin_set(String(steamId), flags | 0, 0, true); },
+    add: function (steamId, flags, immunity) { __s2_admin_set(String(steamId), flags | 0, immunity | 0, true); },
     remove: function (steamId) { __s2_admin_remove(String(steamId), true); },
-    get: function (steamId) { return __s2_adminInfo(steamId, __s2_admin_get(String(steamId))); },
+    get: function (steamId) {
+      var sid = String(steamId), m = __s2_admin_get(sid), im = __s2_admin_get_immunity(sid);
+      if (!m && !im) return null;
+      return __s2_adminInfo(sid, m, im);
+    },
     forSlot: function (slot) {
       var sid = __s2_client_steamid(slot | 0);
-      // Hardening: a bot / mid-auth / unauthenticated client reads SteamID "0" (GetClientXUID=0). Never
-      // resolve "0"/empty to an admin, even if a misconfigured admins.json has a "0" key — else every bot
-      // and unauthenticated player would be granted those flags at once (a whole-branch review finding).
-      if (sid === "0" || !sid) return null;
-      return __s2_adminInfo(sid, __s2_admin_get(sid));
+      if (sid === "0" || !sid) return null;                        // bot / mid-auth -> never an admin
+      return __s2_admin.get(sid);
     },
-    reload: function () { __s2_admin_clear_file(); __s2_admin_load(); },
+    canTarget: function (callerSlot, targetSlot) {
+      var t = __s2_admin.forSlot(targetSlot | 0), ti = t ? t.immunity : 0;
+      var c = __s2_admin.forSlot(callerSlot | 0), ci = c ? c.immunity : 0;
+      return __s2_canTargetImm(callerSlot | 0, ci, ti);
+    },
+    getGroup: function (name) {
+      var g = __s2_groups[String(name)];
+      return g ? { name: String(name), flags: g.flags, immunity: g.immunity, overrides: g.overrides } : null;
+    },
+    reload: function () { __s2_admin_clear_file(); __s2_admin_reloadAll(true); },
   };
-  // Expose parseFile on globalThis so plugins (and tests) can call it directly.
-  globalThis.__s2_admin_parseFile = __s2_admin_parseFile;
-  // One-shot file load (first plugin to import @s2script/admin triggers this), then install the check hook.
-  if (!__s2_admin_mark_loaded()) { __s2_admin_load(); }
-  globalThis.__s2_admin_check = function (slot, requiredMask) {
-    var a = __s2_admin.forSlot(slot | 0); return a ? a.hasFlags(requiredMask | 0) : false;
+
+  // test hooks (safe to expose; pure helpers)
+  globalThis.__s2_admin_parseFlags = __s2_parseFlags;
+  globalThis.__s2_admin_parseGroups = __s2_admin_parseGroups;
+  globalThis.__s2_admin_parseAdmins = __s2_admin_parseAdmins;
+  globalThis.__s2_admin_resolveEntry = __s2_admin_resolveEntry;
+  globalThis.__s2_canTargetImm = __s2_canTargetImm;
+
+  // Parse the registries in EVERY context (cheap, idempotent — makes getGroup / AdminInfo.groups work
+  // everywhere); push the resolved admins + overrides into the shared core cache ONCE (first context).
+  __s2_admin_reloadAll(!__s2_admin_mark_loaded());
+
+  // Override-aware gating hook. A "public" override (flag "") grants ANYONE — even a non-admin; a flag
+  // override changes the requirement; else the command's default mask. (registerAdmin already lets
+  // callerSlot<0 / console through as root before reaching here.)
+  globalThis.__s2_admin_check = function (slot, requiredMask, cmdName) {
+    var sid = __s2_client_steamid(slot | 0);
+    var ov = cmdName ? __s2_admin_override(sid || "", String(cmdName)) : "";
+    if (ov === "public") return true;
+    var a = __s2_admin.forSlot(slot | 0);
+    if (!a) return false;
+    if (ov !== "") return a.hasFlags(parseInt(ov, 10) | 0);
+    return a.hasFlags(requiredMask | 0);
   };
-  globalThis.__s2pkg_admin = { ADMFLAG: __s2_ADMFLAG, Admin: __s2_admin };   // named exports ADMFLAG + Admin
+  // Immunity targeting hook (consumed by the CS2 Player.target immunity filter, without importing this module).
+  globalThis.__s2_admin_can_target = function (cs, ts) { return __s2_admin.canTarget(cs | 0, ts | 0); };
+  globalThis.__s2pkg_admin = { ADMFLAG: __s2_ADMFLAG, Admin: __s2_admin };
   // --- Slice 6.18: bans module (engine-generic; SteamID64 ban store + bans.json persistence via the config bridge) ---
   // Parse bans.json ({ "<steamid64>": { until:<unix|0>, reason:"<str>" } }) into BAN_CACHE. `_help`/non-object
   // entries are skipped. Malformed JSON → silent skip (degrade-never-crash; the file may be hand-edited).
@@ -9952,7 +10073,7 @@ mod frame_tests {
     }
 
     /// Slice 6.2 Task 2: `@s2script/admin` prelude module — ADMFLAG constants, Admin.add/get/hasFlags,
-    /// root-implies-all, non-admin→null, __s2_admin_check hook, parseFile name→bit mapping.
+    /// root-implies-all, non-admin→null, __s2_admin_check hook, parseAdmins name→bit mapping.
     #[test]
     fn admin_module_flags_api_and_hook() {
         LOG.lock().unwrap().clear();
@@ -9976,9 +10097,63 @@ mod frame_tests {
         eval_in_context("p", "__s2_admin_set('0', __s2pkg_admin.ADMFLAG.ROOT, 0, true);").unwrap();
         assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false"); // "0" never an admin
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.forSlot(0))"), "null");
-        // parseFile: name→bit mapping (file-tier path).
-        eval_in_context("p", r#"__s2_admin_parseFile('{"888":["kick"]}');"#).unwrap();
+        // parseAdmins (renamed from parseFile in the admin-groups slice): name→bit mapping (file-tier path).
+        eval_in_context("p", r#"__s2_admin_parseAdmins('{"888":["kick"]}', true);"#).unwrap();
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('888').hasFlags(__s2pkg_admin.ADMFLAG.KICK))"), "true");
+        shutdown();
+    }
+
+    /// Admin-groups slice Task 2: the flag-token parser — a compact SM letter-string, an array of names,
+    /// a whole-string name, and the 'z'→ROOT letter.
+    #[test]
+    fn admin_flag_parser() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('bcdefg'))"), "126"); // bits 1..6
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags(['kick','ban']))"), "12"); // KICK|BAN
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('kick'))"), "4");   // whole string = a name
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('z'))"), "16384");  // ROOT
+        shutdown();
+    }
+
+    /// Admin-groups slice Task 2: group resolution — an admin's own flags/immunity merge with their
+    /// groups' (group flags OR'd in, immunity MAX'd), an unknown group is skipped+WARNed but the admin's
+    /// own flags survive, and the full parseGroups→parseAdmins(pushCore) pipeline lands in the core cache.
+    #[test]
+    fn admin_group_resolution() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_admin_parseGroups('{\"G\":{\"flags\":\"cd\",\"immunity\":50}}');").unwrap();
+        // own immunity 10 loses to group 50; flags = own(none) ∪ group(KICK|BAN)=12; groups=['G']
+        assert_eq!(eval_in_context_string("p",
+            "(function(){var r=__s2_admin_resolveEntry({groups:['G'],immunity:10}); return r.mask+'/'+r.immunity+'/'+r.groups.join(',');})()"),
+            "12/50/G");
+        // unknown group skipped, own flags kept
+        assert_eq!(eval_in_context_string("p",
+            "(function(){var r=__s2_admin_resolveEntry({groups:['Nope'],flags:['slay']}); return r.mask+'/'+r.groups.length;})()"),
+            "32/0");
+        // full push: parseGroups then parseAdmins(pushCore) -> Admin.get reads immunity + groups from core+registry
+        eval_in_context("p", "__s2_admin_parseAdmins('{\"111\":{\"groups\":[\"G\"],\"immunity\":5}}', true);").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('111').immunity)"), "50");
+        assert_eq!(eval_in_context_string("p", "__s2pkg_admin.Admin.get('111').groups.join(',')"), "G");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('nobody'))"), "null");
+        shutdown();
+    }
+
+    /// Admin-groups slice Task 2: the pure immunity-comparison hook consumed by Player.target's filter —
+    /// console is infinite, a non-immune target is always fair game, and equal immunity can target.
+    #[test]
+    fn admin_can_target_immunity() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(-1, 0, 100))"), "true");  // console infinite
+        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 0, 0))"), "true");      // non-immune target
+        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 50, 100))"), "false");  // punch up blocked
+        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 100, 50))"), "true");   // punch down
+        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 50, 50))"), "true");    // equal can target
         shutdown();
     }
 
