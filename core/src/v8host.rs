@@ -1320,7 +1320,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
             console.log("[s2script] WARN: registerAdmin('" + name + "') used without @s2script/admin — denying non-server callers"); }
           ctx.reply("[SM] You do not have access to this command."); return;
         }
-        if (check(ctx.callerSlot, flags | 0)) { handler(ctx); }
+        if (check(ctx.callerSlot, flags | 0, name)) { handler(ctx); }
         else { ctx.reply("[SM] You do not have access to this command."); }
       }, flags | 0);   // the ADMFLAG mask this command requires
     },

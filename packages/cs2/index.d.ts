@@ -114,7 +114,7 @@ export declare const Player: {
   /** Every connected player regardless of pawn (the pawnless enumeration). Complements `all()`. */
   allConnected(): Player[];
   /** Resolve a SourceMod target string to matching connected players. `#userid`/name/`@all`/`@me`; empty on no match. `callerSlot < 0` = server console (no `@me`). */
-  target(pattern: string, callerSlot: number): Player[];
+  target(pattern: string, callerSlot: number, filterImmunity?: boolean): Player[];
 };
 
 import type { GameEvent, HookResultValue } from "@s2script/events";

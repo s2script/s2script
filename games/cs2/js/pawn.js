@@ -103,34 +103,44 @@
     return ok;
   };
 
-  // Player.target(pattern, callerSlot) -> Player[] — SourceMod target-string resolution (core set).
+  // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
   //   "#<userid>" -> that player; "@all" -> allConnected; "@me" -> the caller (empty from console);
   //   otherwise a case-insensitive name match (exact wins, else all partials). Empty on no match.
-  Player.target = function (pattern, callerSlot) {
+  //   filterImmunity (default false): drop targets the caller can't act on (admin immunity); used by
+  //   the destructive base commands. Degrades to no-filter if @s2script/admin isn't loaded.
+  Player.target = function (pattern, callerSlot, filterImmunity) {
     if (typeof pattern !== "string" || pattern.length === 0) return [];
-    if (pattern === "@all") return Player.allConnected();
-    if (pattern === "@me") {
+    var res;
+    if (pattern === "@all") {
+      res = Player.allConnected();
+    } else if (pattern === "@me") {
       if (typeof callerSlot !== "number" || callerSlot < 0) return [];
-      var me = Player._fromSlotUnchecked(callerSlot);   // pawnless-safe, at parity with @all (target the caller alive or dead)
-      return me ? [me] : [];
-    }
-    if (pattern.charAt(0) === "#") {
+      var me = Player._fromSlotUnchecked(callerSlot);
+      res = me ? [me] : [];
+    } else if (pattern.charAt(0) === "#") {
       var uid = parseInt(pattern.slice(1), 10);
       if (isNaN(uid)) return [];
       var p = Player.fromUserId(uid);
-      return p ? [p] : [];
+      res = p ? [p] : [];
+    } else {
+      var needle = pattern.toLowerCase();
+      var conn = Player.allConnected();
+      var exact = [], partial = [];
+      for (var i = 0; i < conn.length; i++) {
+        var nm = conn[i].playerName;
+        if (typeof nm !== "string") continue;
+        var low = nm.toLowerCase();
+        if (low === needle) exact.push(conn[i]);
+        else if (low.indexOf(needle) !== -1) partial.push(conn[i]);
+      }
+      res = exact.length ? exact : partial;
     }
-    var needle = pattern.toLowerCase();
-    var conn = Player.allConnected();
-    var exact = [], partial = [];
-    for (var i = 0; i < conn.length; i++) {
-      var nm = conn[i].playerName;
-      if (typeof nm !== "string") continue;
-      var low = nm.toLowerCase();
-      if (low === needle) exact.push(conn[i]);
-      else if (low.indexOf(needle) !== -1) partial.push(conn[i]);
+    if (filterImmunity && typeof globalThis.__s2_admin_can_target === "function") {
+      var ct = globalThis.__s2_admin_can_target, out = [];
+      for (var k = 0; k < res.length; k++) if (ct(callerSlot | 0, res[k].slot)) out.push(res[k]);
+      return out;
     }
-    return exact.length ? exact : partial;
+    return res;
   };
 
   // pawn.origin / pawn.angles -> compat aliases delegating to the generated sceneNode wrapper.
