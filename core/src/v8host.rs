@@ -534,6 +534,19 @@ thread_local! {
     /// always injected, like every @s2script/* module — not per plugin).
     static ADMIN_FILE_LOADED: std::cell::Cell<bool> = std::cell::Cell::new(false);
 
+    /// Slice admin-groups: per-tier immunity levels (mirrors ADMIN_FILE/ADMIN_RUNTIME). get = max(file, runtime).
+    static ADMIN_FILE_IMMUNITY:    std::cell::RefCell<std::collections::HashMap<String, i32>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    static ADMIN_RUNTIME_IMMUNITY: std::cell::RefCell<std::collections::HashMap<String, i32>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Per-admin command overrides (file tier only — the resolver merges an admin's groups' override
+    /// blocks). sid -> cmd -> (required_mask, is_public). is_public true => anyone (flag "").
+    static ADMIN_OVERRIDES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String, (u64, bool)>>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Global command overrides (admin_overrides.json). cmd -> (required_mask, is_public).
+    static ADMIN_GLOBAL_OVERRIDES: std::cell::RefCell<std::collections::HashMap<String, (u64, bool)>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+
     /// Slice 6.18: the host-global ban cache — SteamID64 → (until_unix, reason). `until == 0` = permanent;
     /// else the unix-second expiry. Host-global in core (not plugin-local JS) so it is visible across all
     /// plugin contexts (like the admin cache). Populated by JS via the `__s2_ban_*` natives (loaded from
@@ -1371,7 +1384,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         if (__s2_ADMFLAG[key] != null) mask |= __s2_ADMFLAG[key];
         else console.log("[s2script] WARN: admins.json '" + sid + "': unknown flag '" + names[i] + "' — skipped");
       }
-      __s2_admin_set(String(sid), mask, false);
+      __s2_admin_set(String(sid), mask, 0, false);
     }
   }
   function __s2_admin_load() {
@@ -1386,7 +1399,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     __s2_admin_parseFile(text);
   }
   var __s2_admin = {
-    add: function (steamId, flags) { __s2_admin_set(String(steamId), flags | 0, true); },
+    add: function (steamId, flags) { __s2_admin_set(String(steamId), flags | 0, 0, true); },
     remove: function (steamId) { __s2_admin_remove(String(steamId), true); },
     get: function (steamId) { return __s2_adminInfo(steamId, __s2_admin_get(String(steamId))); },
     forSlot: function (slot) {
@@ -5299,6 +5312,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
 
     set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
     set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
+    set_native(scope, global_obj, "__s2_admin_get_immunity", s2_admin_get_immunity);
+    set_native(scope, global_obj, "__s2_admin_add_override", s2_admin_add_override);
+    set_native(scope, global_obj, "__s2_admin_set_global_override", s2_admin_set_global_override);
+    set_native(scope, global_obj, "__s2_admin_override", s2_admin_override);
     set_native(scope, global_obj, "__s2_admin_remove", s2_admin_remove);
     set_native(scope, global_obj, "__s2_admin_clear_file", s2_admin_clear_file);
     set_native(scope, global_obj, "__s2_admin_mark_loaded", s2_admin_mark_loaded);
@@ -5744,17 +5761,21 @@ fn s2_client_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
 
 // --- Slice 6.2: admin cache natives + client_steamid ---
 
-/// `__s2_admin_set(steamid, flags, runtime)` — set/overwrite a SteamID's flags in the file(false)/runtime(true) tier.
+/// `__s2_admin_set(steamid, flags, immunity, runtime)` — set/overwrite a SteamID's flags + immunity in
+/// the file(false)/runtime(true) tier.
 fn s2_admin_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
+        if args.length() < 4 { return; }
         let sid = args.get(0).to_rust_string_lossy(scope);
         let flags = args.get(1).number_value(scope).unwrap_or(0.0) as u64;
-        let runtime = args.get(2).boolean_value(scope);
+        let immunity = args.get(2).number_value(scope).unwrap_or(0.0) as i32;
+        let runtime = args.get(3).boolean_value(scope);
         if runtime {
-            ADMIN_RUNTIME.with(|m| { m.borrow_mut().insert(sid, flags); });
+            ADMIN_RUNTIME.with(|m| { m.borrow_mut().insert(sid.clone(), flags); });
+            ADMIN_RUNTIME_IMMUNITY.with(|m| { m.borrow_mut().insert(sid, immunity); });
         } else {
-            ADMIN_FILE.with(|m| { m.borrow_mut().insert(sid, flags); });
+            ADMIN_FILE.with(|m| { m.borrow_mut().insert(sid.clone(), flags); });
+            ADMIN_FILE_IMMUNITY.with(|m| { m.borrow_mut().insert(sid, immunity); });
         }
     }));
 }
@@ -5770,6 +5791,60 @@ fn s2_admin_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, m
     }));
 }
 
+/// `__s2_admin_get_immunity(steamid) -> number` — max immunity across both tiers (0 = none).
+fn s2_admin_get_immunity(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { rv.set_double(0.0); return; }
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let f = ADMIN_FILE_IMMUNITY.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
+        let r = ADMIN_RUNTIME_IMMUNITY.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
+        rv.set_double(f.max(r) as f64);
+    }));
+}
+
+/// `__s2_admin_add_override(steamid, cmd, mask, isPublic)` — a per-admin (file-tier) command override.
+fn s2_admin_add_override(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 4 { return; }
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let cmd = args.get(1).to_rust_string_lossy(scope);
+        let mask = args.get(2).number_value(scope).unwrap_or(0.0) as u64;
+        let is_public = args.get(3).boolean_value(scope);
+        ADMIN_OVERRIDES.with(|m| {
+            m.borrow_mut().entry(sid).or_default().insert(cmd, (mask, is_public));
+        });
+    }));
+}
+
+/// `__s2_admin_set_global_override(cmd, mask, isPublic)` — a global (file-tier) command override.
+fn s2_admin_set_global_override(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let cmd = args.get(0).to_rust_string_lossy(scope);
+        let mask = args.get(1).number_value(scope).unwrap_or(0.0) as u64;
+        let is_public = args.get(2).boolean_value(scope);
+        ADMIN_GLOBAL_OVERRIDES.with(|m| { m.borrow_mut().insert(cmd, (mask, is_public)); });
+    }));
+}
+
+/// `__s2_admin_override(steamid, cmd) -> string` — "" (none) / "public" / decimal mask. Per-admin beats global.
+fn s2_admin_override(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { let s = v8::String::new(scope, "").unwrap(); rv.set(s.into()); return; }
+        let sid = args.get(0).to_rust_string_lossy(scope);
+        let cmd = args.get(1).to_rust_string_lossy(scope);
+        let hit = ADMIN_OVERRIDES.with(|m| m.borrow().get(&sid).and_then(|c| c.get(&cmd).copied()))
+            .or_else(|| ADMIN_GLOBAL_OVERRIDES.with(|m| m.borrow().get(&cmd).copied()));
+        let out = match hit {
+            None => String::new(),
+            Some((_, true)) => "public".to_string(),
+            Some((mask, false)) => mask.to_string(),
+        };
+        let s = v8::String::new(scope, &out).unwrap();
+        rv.set(s.into());
+    }));
+}
+
 /// `__s2_admin_remove(steamid, runtime)` — remove from a tier.
 fn s2_admin_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -5778,16 +5853,22 @@ fn s2_admin_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         let runtime = args.get(1).boolean_value(scope);
         if runtime {
             ADMIN_RUNTIME.with(|m| { m.borrow_mut().remove(&sid); });
+            ADMIN_RUNTIME_IMMUNITY.with(|m| { m.borrow_mut().remove(&sid); });
         } else {
             ADMIN_FILE.with(|m| { m.borrow_mut().remove(&sid); });
+            ADMIN_FILE_IMMUNITY.with(|m| { m.borrow_mut().remove(&sid); });
         }
     }));
 }
 
-/// `__s2_admin_clear_file()` — wipe the file tier (Admin.reload re-reads into it).
+/// `__s2_admin_clear_file()` — wipe the file tier (Admin.reload re-reads into it), plus the file-tier
+/// immunity map, per-admin overrides, and global overrides (all file-tier-sourced).
 fn s2_admin_clear_file(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ADMIN_FILE.with(|m| m.borrow_mut().clear());
+        ADMIN_FILE_IMMUNITY.with(|m| m.borrow_mut().clear());
+        ADMIN_OVERRIDES.with(|m| m.borrow_mut().clear());
+        ADMIN_GLOBAL_OVERRIDES.with(|m| m.borrow_mut().clear());
     }));
 }
 
@@ -9757,7 +9838,7 @@ mod frame_tests {
         init(logger).unwrap();
         create_plugin_context("p");
         // set file + runtime tiers; get unions them.
-        eval_in_context("p", "__s2_admin_set('111', 4, false); __s2_admin_set('111', 1, true);").unwrap(); // file KICK(4) + runtime RESERVATION(1)
+        eval_in_context("p", "__s2_admin_set('111', 4, 0, false); __s2_admin_set('111', 1, 0, true);").unwrap(); // file KICK(4) + runtime RESERVATION(1)
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "5"); // 4|1
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('999'))"), "0"); // absent
         // remove runtime tier only → file remains.
@@ -9813,6 +9894,33 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Admin-groups slice Task 1: per-tier immunity (max across tiers) + command overrides (per-admin
+    /// beats global; "public" sentinel) + clear_file wiping file immunity/overrides while runtime survives.
+    #[test]
+    fn admin_immunity_and_overrides() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // immunity: max across tiers
+        eval_in_context("p", "__s2_admin_set('222', 4, 30, false); __s2_admin_set('222', 8, 70, true);").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('222'))"), "12");        // 4|8
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get_immunity('222'))"), "70"); // max(30,70)
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get_immunity('999'))"), "0");  // absent
+        // overrides: per-admin beats global; public sentinel
+        eval_in_context("p", "__s2_admin_set_global_override('sm_x', 2, false); __s2_admin_add_override('222','sm_x',4,false);").unwrap();
+        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','sm_x')"), "4");    // per-admin wins
+        assert_eq!(eval_in_context_string("p", "__s2_admin_override('other','sm_x')"), "2");  // falls to global
+        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','nope')"), "");     // no override
+        eval_in_context("p", "__s2_admin_set_global_override('sm_pub', 0, true);").unwrap();
+        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','sm_pub')"), "public");
+        // clear_file wipes file immunity + overrides + global overrides; runtime immunity survives
+        eval_in_context("p", "__s2_admin_clear_file();").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get_immunity('222'))"), "70"); // runtime kept
+        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','sm_x')"), "");
+        assert_eq!(eval_in_context_string("p", "__s2_admin_override('other','sm_x')"), "");
+        shutdown();
+    }
+
     /// FakeConVar slice: Server.registerCvar degrades to false without the convar_register op, and an
     /// unknown type string is rejected false JS-side (never reaches the op).
     #[test]
@@ -9865,7 +9973,7 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(typeof globalThis.__s2_admin_check)"), "function");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false");
         // Hardening: even a misconfigured "0" admin entry must NOT grant a bot/unauth (steamid "0") — forSlot guards it.
-        eval_in_context("p", "__s2_admin_set('0', __s2pkg_admin.ADMFLAG.ROOT, true);").unwrap();
+        eval_in_context("p", "__s2_admin_set('0', __s2pkg_admin.ADMFLAG.ROOT, 0, true);").unwrap();
         assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false"); // "0" never an admin
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.forSlot(0))"), "null");
         // parseFile: name→bit mapping (file-tier path).
