@@ -1,12 +1,21 @@
 {
   "name": "@s2script/nextmap",
   "version": "0.1.0",
+  "private": true,
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x",
     "config": {
-      "nextmap_change_delay": { "type": "int", "default": 5, "description": "Seconds to wait after announcing the map change before running changelevel." },
-      "nextmap_use_timelimit": { "type": "bool", "default": true, "description": "Whether to auto-change the map when mp_timelimit elapses (in addition to mp_maxrounds)." }
+      "nextmap_change_delay": {
+        "type": "int",
+        "default": 5,
+        "description": "Seconds to wait after announcing the map change before running changelevel."
+      },
+      "nextmap_use_timelimit": {
+        "type": "bool",
+        "default": true,
+        "description": "Whether to auto-change the map when mp_timelimit elapses (in addition to mp_maxrounds)."
+      }
     }
   }
 }

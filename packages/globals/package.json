@@ -8,5 +8,9 @@
   "files": [
     "globals.d.ts"
   ],
-  "description": "Ambient globals (console) for s2script plugin typecheck. No runtime code."
+  "description": "Ambient globals (console) for s2script plugin typecheck. No runtime code.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GabeHirakawa/s2script.git"
+  }
 }

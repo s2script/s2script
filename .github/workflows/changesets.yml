@@ -1,0 +1,60 @@
+name: changesets
+
+# Version + publish @s2script/* packages under packages/ to npm via
+# npm trusted publishing (OIDC) — no long-lived NPM_TOKEN.
+# Independent of the v* GitHub Release zip (release.yml) — plugin-only
+# updates do not need a changeset; package-only updates do not need a tag.
+#
+# Prerequisite (one-time, per package on npmjs.com): configure a Trusted
+# Publisher → GitHub Actions → GabeHirakawa / s2script / changesets.yml
+# (packages must already exist on npm — see docs/INSTALL.md bootstrap).
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: changesets-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Required for npm OIDC trusted publishing (short-lived identity token)
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Changesets needs full history for changelogs / base comparison
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted publishing needs Node >= 22.14 and npm >= 11.5.1
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Ensure npm supports OIDC trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install
+        run: npm ci
+
+      - name: Create release PR or publish
+        uses: changesets/action@v1
+        with:
+          version: npm run version-packages
+          publish: npm run release
+          title: "chore: version packages"
+          commit: "chore: version packages"
+          createGithubReleases: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Intentionally no NPM_TOKEN / NODE_AUTH_TOKEN — publish uses OIDC.
+          # changesets/action detects ACTIONS_ID_TOKEN_* and skips writing an
+          # auth .npmrc so npm CLI can use trusted publishing.

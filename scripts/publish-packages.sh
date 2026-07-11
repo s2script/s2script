@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
-# Publish all @s2script/* packages under packages/ to npm (public).
-# Requires: npm login with publish rights on the @s2script org, and a prior
-# version bump. Dry-run with: DRY_RUN=1 scripts/publish-packages.sh
+# DEPRECATED as the primary publish path — prefer Changesets + OIDC
+# (.github/workflows/changesets.yml). This script is a local dry-run /
+# emergency classic-token fallback only.
+#
+# Maintainer flow (normal):
+#   1. On a PR that changes packages/:  npm run changeset
+#   2. Merge → CI opens a Version Packages PR
+#   3. Merge the version PR → CI runs `changeset publish` via OIDC
+#
+# Bootstrap (one-time, before OIDC works): packages must exist on npm and
+# each needs a Trusted Publisher → GabeHirakawa/s2script/changesets.yml.
+# See scripts/bootstrap-npm-trusted-publishing.sh and docs/INSTALL.md.
+#
+# Prefer: DRY_RUN=1 scripts/publish-packages.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+echo "note: prefer Changesets + OIDC trusted publishing on main. Continuing as fallback…" >&2
+
+if [ ! -d node_modules ]; then
+  npm install --no-fund --no-audit
+fi
 ( cd packages/cli && npm run build )
 
 PACKAGES=(

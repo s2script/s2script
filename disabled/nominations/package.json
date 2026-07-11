@@ -1,11 +1,16 @@
 {
   "name": "@s2script/nominations",
   "version": "0.1.0",
+  "private": true,
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x",
     "config": {
-      "map_cooldown": { "type": "int", "default": 5, "description": "Distinct maps that must play before a map is nominatable again." }
+      "map_cooldown": {
+        "type": "int",
+        "default": 5,
+        "description": "Distinct maps that must play before a map is nominatable again."
+      }
     }
   }
 }

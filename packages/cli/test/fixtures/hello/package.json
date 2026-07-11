@@ -4,5 +4,6 @@
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x"
-  }
+  },
+  "private": true
 }

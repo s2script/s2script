@@ -1,12 +1,21 @@
 {
   "name": "@s2script/antiflood",
   "version": "0.1.0",
+  "private": true,
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x",
     "config": {
-      "flood_time": { "type": "float", "default": 0.75, "description": "Min seconds between messages before flood credit accrues; 0 disables antiflood." },
-      "max_tokens": { "type": "int", "default": 3, "description": "Flood tokens (fast messages) before a message is blocked." }
+      "flood_time": {
+        "type": "float",
+        "default": 0.75,
+        "description": "Min seconds between messages before flood credit accrues; 0 disables antiflood."
+      },
+      "max_tokens": {
+        "type": "int",
+        "default": 3,
+        "description": "Flood tokens (fast messages) before a message is blocked."
+      }
     }
   }
 }

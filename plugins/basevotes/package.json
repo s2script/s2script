@@ -1,12 +1,21 @@
 {
   "name": "@s2script/basevotes",
   "version": "0.1.0",
+  "private": true,
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x",
     "config": {
-      "vote_duration": { "type": "int", "default": 20, "description": "Seconds a vote stays open." },
-      "show_live_tally": { "type": "bool", "default": true, "description": "Show the live center-screen tally during a vote (false = chat-only, the SM way)." }
+      "vote_duration": {
+        "type": "int",
+        "default": 20,
+        "description": "Seconds a vote stays open."
+      },
+      "show_live_tally": {
+        "type": "bool",
+        "default": true,
+        "description": "Show the live center-screen tally during a vote (false = chat-only, the SM way)."
+      }
     }
   }
 }

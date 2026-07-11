@@ -18,5 +18,9 @@
     "@s2script/math": "0.1.0",
     "@s2script/trace": "0.1.0",
     "@s2script/events": "0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GabeHirakawa/s2script.git"
   }
 }

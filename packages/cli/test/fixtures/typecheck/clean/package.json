@@ -1,2 +1,12 @@
-{ "name": "@fix/clean", "version": "1.0.0", "main": "src/plugin.ts",
-  "s2script": { "apiVersion": "1.x", "pluginDependencies": { "@other/dep": "^1.0.0" } } }
+{
+  "name": "@fix/clean",
+  "version": "1.0.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "apiVersion": "1.x",
+    "pluginDependencies": {
+      "@other/dep": "^1.0.0"
+    }
+  },
+  "private": true
+}

@@ -1,0 +1,23 @@
+{
+  "name": "s2script",
+  "private": true,
+  "description": "s2script monorepo — npm workspaces cover packages/* only (types + CLI). Base plugins ship in the runtime zip and are not published to npm.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.5"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GabeHirakawa/s2script.git"
+  }
+}

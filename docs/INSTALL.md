@@ -79,12 +79,16 @@ Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismat
 
 ## Publishing a release (maintainers)
 
+There are **two independent release trains**. Do not couple them — plugin-only updates need a zip tag; package-only updates need a changeset.
+
+### Runtime zip (binaries + base plugins)
+
 ```bash
 git tag v0.1.1
 git push origin v0.1.1
 ```
 
-The [`release`](../.github/workflows/release.yml) workflow sniper-builds (GLIBC ≤ 2.31), builds base plugins, packages `s2script-cs2-linux-*.zip`, and uploads it to a GitHub Release for that tag.
+The [`release`](../.github/workflows/release.yml) workflow sniper-builds (GLIBC ≤ 2.31), builds base plugins, packages `s2script-cs2-linux-*.zip`, and uploads it to a GitHub Release for that tag. Base plugins declare `s2script.apiVersion` (today `"1.x"`); they are **not** published to npm.
 
 Local dry-run (after a sniper build):
 
@@ -95,3 +99,33 @@ bash scripts/build-base-plugins.sh
 bash scripts/package-release.sh 0.1.1
 # → dist/s2script-cs2-linux-0.1.1.zip
 ```
+
+### npm packages (`@s2script/*` types + CLI)
+
+Versioning and publish are owned by [Changesets](https://github.com/changesets/changesets) ([`.changeset/`](../.changeset/), workflow [`changesets.yml`](../.github/workflows/changesets.yml)). CI publishes with **npm trusted publishing (OIDC)** — no `NPM_TOKEN` secret.
+
+1. On a PR that changes `packages/`, run `npm run changeset` and commit the generated file.
+2. Merge to `main` → CI opens a **Version Packages** PR (shared fixed version across all `@s2script/*` packages).
+3. Merge the version PR → CI runs `changeset publish` via OIDC (+ automatic provenance).
+
+#### One-time trusted-publishing bootstrap
+
+You do **not** need to click through 29 package settings pages. Use the CLI loop (npm’s own [`npm trust`](https://docs.npmjs.com/cli/v11/commands/npm-trust/)):
+
+```bash
+npm install -g npm@latest          # need >= 11.15 for `npm trust`
+npm login                          # interactive 2FA (bypass-2FA tokens won't work for trust)
+scripts/bootstrap-npm-trusted-publishing.sh          # dry-run plan
+scripts/bootstrap-npm-trusted-publishing.sh --apply  # publish any missing + trust all
+```
+
+On the **first** 2FA browser prompt during `--apply`, enable “skip 2FA for the next 5 minutes” so the rest of the loop is unattended.
+
+What `--apply` does for every public `packages/*` package:
+
+1. Classic-publishes any name that doesn’t exist yet (today usually just `@s2script/zones`)
+2. Runs `npm trust github <pkg> --repo GabeHirakawa/s2script --file changesets.yml --allow-publish --yes`
+
+Optional hardening afterward: package **Publishing access** → “Require two-factor authentication and disallow tokens” (OIDC still works; revoke leftover automation tokens).
+
+After that, version-PR merges publish without secrets. Emergency local fallback: `DRY_RUN=1 scripts/publish-packages.sh` (classic token login — prefer OIDC CI).

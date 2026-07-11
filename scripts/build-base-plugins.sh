@@ -16,13 +16,11 @@ if [ ! -d plugins ]; then
 fi
 
 echo "=== build @s2script/cli ==="
-(
-    cd packages/cli
-    if [ ! -d node_modules ]; then
-        npm install --no-fund --no-audit
-    fi
-    npm run build
-)
+# Workspaces hoist deps to the repo root (package.json workspaces: packages/*).
+if [ ! -d node_modules ]; then
+    npm install --no-fund --no-audit
+fi
+( cd packages/cli && npm run build )
 
 CLI="node packages/cli/dist/cli.js"
 fail=0

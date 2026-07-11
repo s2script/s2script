@@ -1,1 +1,9 @@
-{ "name": "@s2script/basechat", "version": "0.1.0", "main": "src/plugin.ts", "s2script": { "apiVersion": "1.x" } }
+{
+  "name": "@s2script/basechat",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "apiVersion": "1.x"
+  }
+}

@@ -1,12 +1,21 @@
 {
   "name": "@s2script/funvotes",
   "version": "0.1.0",
+  "private": true,
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x",
     "config": {
-      "funvote_duration": { "type": "int", "default": 20, "description": "Seconds a funvote (AllTalk/FriendlyFire/Gravity/Slay) stays open." },
-      "funvote_show_tally": { "type": "bool", "default": true, "description": "Show the live center-screen tally during a funvote." }
+      "funvote_duration": {
+        "type": "int",
+        "default": 20,
+        "description": "Seconds a funvote (AllTalk/FriendlyFire/Gravity/Slay) stays open."
+      },
+      "funvote_show_tally": {
+        "type": "bool",
+        "default": true,
+        "description": "Show the live center-screen tally during a funvote."
+      }
     }
   }
 }

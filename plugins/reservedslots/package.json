@@ -1,11 +1,16 @@
 {
   "name": "@s2script/reservedslots",
   "version": "0.1.0",
+  "private": true,
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x",
     "config": {
-      "reserved_slots": { "type": "int", "default": 0, "description": "Slots kept free for players with the reservation admin flag; 0 disables reserved slots." }
+      "reserved_slots": {
+        "type": "int",
+        "default": 0,
+        "description": "Slots kept free for players with the reservation admin flag; 0 disables reserved slots."
+      }
     }
   }
 }

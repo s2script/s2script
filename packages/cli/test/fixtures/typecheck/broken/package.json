@@ -1,1 +1,9 @@
-{ "name": "@fix/broken", "version": "1.0.0", "main": "src/plugin.ts", "s2script": { "apiVersion": "1.x" } }
+{
+  "name": "@fix/broken",
+  "version": "1.0.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "apiVersion": "1.x"
+  },
+  "private": true
+}

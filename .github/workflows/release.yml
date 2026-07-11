@@ -49,6 +49,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+
+      - name: Install JS deps
+        run: npm ci
 
       - name: Build base plugins
         run: bash scripts/build-base-plugins.sh

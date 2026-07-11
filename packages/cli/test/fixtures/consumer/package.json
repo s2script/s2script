@@ -4,7 +4,12 @@
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x",
-    "pluginDependencies": { "@demo/greeter": "^1.0.0" },
-    "optionalPluginDependencies": { "@demo/extra": "^1.0.0" }
-  }
+    "pluginDependencies": {
+      "@demo/greeter": "^1.0.0"
+    },
+    "optionalPluginDependencies": {
+      "@demo/extra": "^1.0.0"
+    }
+  },
+  "private": true
 }

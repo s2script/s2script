@@ -9,6 +9,7 @@ docker/metamod/
 examples/**/dist/
 plugins/**/dist/
 packages/**/dist/
+node_modules/
 packages/**/node_modules/
 **/*.s2sp
 

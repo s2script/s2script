@@ -40,14 +40,9 @@ npx s2script create my-plugin --game cs2 --name @me/my-plugin --yes --install np
 
 `@s2script/*` packages on npm are **types-only** (plus `@s2script/cli` for `build` / `create`). Runtime APIs are injected by the server host — `s2script build` externalizes `@s2script/*` and never bundles them.
 
-Until the first npm publish, run create from this repo so deps use local `file:` links:
-
-```bash
-node packages/cli/dist/cli.js create /tmp/my-plugin --yes --install npm
-```
-
 Monorepo treadmill commands (`gen-schema` / `gen-events` / `gen-nav`) stay in-tree; plugin authors only need `create` and `build`.
 
+**Maintainers — two release trains:** Changesets publishes `@s2script/*` to npm when `packages/` change (`npm run changeset` on the PR; see [`.changeset/README.md`](.changeset/README.md)). Publish uses **npm trusted publishing (OIDC)** from [`.github/workflows/changesets.yml`](.github/workflows/changesets.yml) — no `NPM_TOKEN`. Runtime zip + base plugins stay on `git tag v*` (see [`docs/INSTALL.md`](docs/INSTALL.md)). Plugin-only work needs no changeset; package-only work needs no tag.
 ---
 
 ## Prerequisites

@@ -1,6 +1,7 @@
 {
   "name": "@s2script/funcommands",
   "version": "0.1.0",
+  "private": true,
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x"
