@@ -1397,9 +1397,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     }
     return mask;
   }
-  function __s2_parseOverrideToken(v) {                     // "" -> public; else a required mask
+  function __s2_parseOverrideToken(v) {                     // "" -> public; unknown token -> null (skip); else a mask
     if (v === "" || v == null) return { public: true, mask: 0 };
-    return { public: false, mask: __s2_parseFlags(v) };
+    var m = __s2_parseFlags(v);
+    if (!m) return null;                                     // no flag resolved -> invalid override, skip
+    return { public: false, mask: m };
   }
 
   // ---- registries (per-context; populated from the files at prelude time) ----
@@ -1415,7 +1417,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var g = obj[name]; if (!g || typeof g !== "object") continue;
       var ov = {};
       if (g.overrides && typeof g.overrides === "object")
-        for (var cmd in g.overrides) if (Object.prototype.hasOwnProperty.call(g.overrides, cmd)) ov[cmd] = __s2_parseOverrideToken(g.overrides[cmd]);
+        for (var cmd in g.overrides) if (Object.prototype.hasOwnProperty.call(g.overrides, cmd)) {
+          var ot = __s2_parseOverrideToken(g.overrides[cmd]);
+          if (ot) ov[cmd] = ot;
+          else console.log("[s2script] WARN: group '" + name + "' override '" + cmd + "': unknown flag '" + g.overrides[cmd] + "' — skipped");
+        }
       __s2_groups[name] = { flags: __s2_parseFlags(g.flags), immunity: (typeof g.immunity === "number") ? (g.immunity | 0) : 0, overrides: ov };
     }
   }
@@ -1459,7 +1465,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     if (!obj || typeof obj !== "object") return;
     for (var cmd in obj) {
       if (cmd === "_help" || !Object.prototype.hasOwnProperty.call(obj, cmd)) continue;
-      var ov = __s2_parseOverrideToken(obj[cmd]); __s2_admin_set_global_override(cmd, ov.mask | 0, !!ov.public);
+      var ov = __s2_parseOverrideToken(obj[cmd]);
+      if (ov) __s2_admin_set_global_override(cmd, ov.mask | 0, !!ov.public);
+      else console.log("[s2script] WARN: admin_overrides.json '" + cmd + "': unknown flag '" + obj[cmd] + "' — skipped");
     }
   }
 
@@ -1584,7 +1592,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     list: function () { return JSON.parse(__s2_ban_list()); },
     reload: function () { __s2_ban_clear(); __s2_ban_load(); },
   };
-  // Expose parseFile on globalThis so plugins (and tests) can call it directly (mirrors __s2_admin_parseFile).
+  // Expose parseFile on globalThis so plugins (and tests) can call it directly (mirrors how the admin module exposes its parser hooks).
   globalThis.__s2_ban_parseFile = __s2_ban_parseFile;
   // One-shot file load (first plugin to import @s2script/bans triggers this).
   if (!__s2_ban_mark_loaded()) { __s2_ban_load(); }
@@ -10139,6 +10147,10 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('111').immunity)"), "50");
         assert_eq!(eval_in_context_string("p", "__s2pkg_admin.Admin.get('111').groups.join(',')"), "G");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('nobody'))"), "null");
+        // an override with an unknown flag token is SKIPPED (not installed as a weakening mask-0)
+        eval_in_context("p", "__s2_admin_parseGroups('{\"H\":{\"flags\":\"c\",\"overrides\":{\"sm_x\":\"q\",\"sm_y\":\"d\"}}}');").unwrap();
+        assert_eq!(eval_in_context_string("p",
+            "Object.keys(__s2_admin_resolveEntry({groups:['H']}).overrides).sort().join(',')"), "sm_y");
         shutdown();
     }
 
