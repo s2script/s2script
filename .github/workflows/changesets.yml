@@ -12,6 +12,15 @@ on:
   push:
     branches:
       - main
+    # Only run the version/publish pipeline when there is version-relevant work:
+    # a new changeset (a feature PR merge -> opens the "version packages" PR) or a
+    # package bump (the "version packages" PR merge -> publishes). A push that touches
+    # neither (docs, core, a base plugin, a non-packages slice) has nothing to publish —
+    # running `changeset publish` there just re-attempts already-published versions and
+    # fails with "cannot publish over the previously published versions".
+    paths:
+      - 'packages/**'
+      - '.changeset/**'
 
 concurrency:
   group: changesets-${{ github.ref }}
