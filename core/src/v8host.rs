@@ -1132,6 +1132,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     });
   }
   function __s2_tr_parse(text) { try { var o = JSON.parse(text); return (o && typeof o === "object") ? o : {}; } catch (e) { console.log("[s2script] WARN: translations file malformed — ignored"); return {}; } }
+  function __s2_tr_merge(dst, src) {   // copy own enumerable keys, skipping __proto__ (no by-ref share, no proto pollution)
+    for (var k in src) if (Object.prototype.hasOwnProperty.call(src, k) && k !== "__proto__") dst[k] = src[k];
+    return dst;
+  }
   function __s2_tr_langMap(name, code) {                     // the lazily-read (+cached) map for a code ("" = root override)
     var r = __s2_tr_reg[name]; if (!r) return null;
     if (Object.prototype.hasOwnProperty.call(r.langs, code)) return r.langs[code];   // cached (map or null)
@@ -1143,9 +1147,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_translations = {
     load: function (name, seed) {
       name = String(name);
-      __s2_tr_reg[name] = { def: (seed && typeof seed === "object") ? seed : {}, langs: {} };
+      var def = __s2_tr_merge({}, (seed && typeof seed === "object") ? seed : {});   // fresh copy, not the caller's ref
+      __s2_tr_reg[name] = { def: def, langs: {} };
       var root = __s2_translations_read("", name);           // OPTIONAL root override of the seed
-      if (root != null) { var o = __s2_tr_parse(root); for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) __s2_tr_reg[name].def[k] = o[k]; }
+      if (root != null) __s2_tr_merge(def, __s2_tr_parse(root));                     // root file overrides seed keys
     },
     setDefaultLanguage: function (code) { __s2_tr_default = String(code || ""); },
     translate: function (slot, key) {
