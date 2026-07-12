@@ -13,6 +13,7 @@ mod ffi;
 mod http;
 mod loader;
 mod multiplexer;
+mod net;
 mod schema;
 mod schema_catalog;
 mod sqldb;
