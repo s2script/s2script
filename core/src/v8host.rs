@@ -1354,7 +1354,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         if (s < 0) { console.log(String(m)); return; }
         var msg = String(m);
         globalThis.__s2pkg_timers.nextFrame().then(function () { globalThis.__s2pkg_chat.Chat.toSlot(s, msg); });
-      }
+      },
+      // Localized reply: translate `key` for the CALLER's language, then reply (SM's %t on the reply path).
+      // Soft-deps @s2script/translations — degrades to the key if translations isn't loaded.
+      replyT: function (key) {
+        var t = globalThis.__s2pkg_translations;
+        if (!t) { this.reply(String(key)); return; }
+        this.reply(t.Translations.translate.apply(t.Translations, [s, key].concat([].slice.call(arguments, 1))));
+      },
     };
   }
   // Slice 6.11: a per-context registry of wrapped dispatch fns (name -> function(slot, argString)), so a
@@ -10353,6 +10360,23 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Only')"), "Only-EN"); // de miss -> seed
         // an unknown key -> the key itself
         assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Nope')"), "Nope");
+        shutdown();
+    }
+
+    /// Translations slice: `ctx.replyT` (in `@s2script/commands`) translates the key for the caller's
+    /// language before replying. A console caller (slot -1) replies via `console.log`, captured in `LOG`.
+    #[test]
+    fn ctx_replyt_localizes() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "\
+            __s2pkg_translations.Translations.load('c', { Kicked: 'Kicked {1}' });\
+            __s2pkg_commands.Commands.register('sm_x', function (ctx) { ctx.replyT('Kicked', 'Bob'); });\
+        ").unwrap();
+        // invoke the command with a console caller (slot -1) via the dispatch registry
+        eval_in_context("p", "__s2pkg_commands.Commands.dispatch('sm_x', -1, '');").unwrap();
+        assert!(LOG.lock().unwrap().iter().any(|l| l.contains("Kicked Bob")), "replyT should have logged the translated string");
         shutdown();
     }
 

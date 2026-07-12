@@ -18,6 +18,9 @@ export interface CommandContext {
   argsFrom(n: number): string;
   /** reply to the caller: server console → server print; a player → their chat. */
   reply(message: string): void;
+  /** reply to the caller, translated for THEIR language (SM's `%t` on the reply path). Soft-deps
+   * `@s2script/translations` — degrades to the raw `key` if it isn't loaded. */
+  replyT(key: string, ...args: (string | number)[]): void;
 }
 /** A parsed chat trigger: which command + args, and whether it was the silent (`/`) trigger. */
 export interface ChatTrigger {
