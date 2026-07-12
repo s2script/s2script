@@ -1872,6 +1872,31 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       },
     },
   };
+  // --- @s2script/net: raw TCP + UDP client sockets over __s2_net_* (mirrors __s2pkg_ws, binary payloads) ---
+  globalThis.__s2pkg_net = {
+    Net: {
+      connectTcp: function (host, port) {
+        return __s2_net_tcp_connect(String(host), port | 0).then(function (id) {
+          return {
+            onData:  function (h) { __s2_net_on(id, "data", function (b) { h(b); }); },
+            onClose: function (h) { __s2_net_on(id, "close", function () { h(); }); },
+            onError: function (h) { __s2_net_on(id, "error", function (e) { h(e); }); },
+            send:    function (data) { __s2_net_send(id, data); },
+            close:   function () { __s2_net_close(id); },
+          };
+        });
+      },
+      udp: function () {
+        return __s2_net_udp_bind().then(function (id) {
+          return {
+            onMessage: function (h) { __s2_net_on(id, "message", function (from, b) { h(from, b); }); },
+            sendTo:    function (host, port, data) { __s2_net_send_to(id, String(host), port | 0, data); },
+            close:     function () { __s2_net_close(id); },
+          };
+        });
+      },
+    },
+  };
   // --- @s2script/votes: chat-ballot voting (revote) + an optional live center tally (a render seam). ---
   var __s2_vote_state = null;             // the single active vote, or null (the per-context lock)
   var __s2_vote_tallyRenderer = null;     // { show(slot, tally), clear(slot) } — CS2 registers it
