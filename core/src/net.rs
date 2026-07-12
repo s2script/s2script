@@ -110,6 +110,8 @@ pub fn close(conn_id: u64, owner: &str) -> bool {
     let map = engine().conns.lock().unwrap();
     match map.get(&conn_id) { Some(c) if c.owner == owner => c.cmd_tx.send(NetCommand::Close).is_ok(), _ => false }
 }
+/// Ownership check for `__s2_net_on` (mirrors the owner guard in `send`/`close`) — a subscribe on a
+/// conn this plugin doesn't own must no-op.
 pub fn is_owner(conn_id: u64, owner: &str) -> bool {
     matches!(engine().conns.lock().unwrap().get(&conn_id), Some(c) if c.owner == owner)
 }
@@ -152,6 +154,7 @@ mod tests {
         match sig.kind { NetSignalKind::Data(b) => assert_eq!(b, b"hello"), _ => unreachable!() }
         assert!(!send(1, "pB", b"x".to_vec())); // wrong owner denied
         close(1, "p");
+        drain_until(|s| matches!(s.kind, NetSignalKind::Closed));
         drop_conn(1);
         assert!(!is_owner(1, "p"));
     }

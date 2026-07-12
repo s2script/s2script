@@ -2613,6 +2613,16 @@ fn js_bytes_arg(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<u8> 
 /// `ArrayBuffer` that V8 owns (the backing store's deleter frees the Vec). No raw pointer / borrowed
 /// slice crosses into JS. Returns `null` if the typed-array construction fails (defensive).
 fn bytes_to_uint8array<'s>(scope: &mut v8::PinScope<'s, '_>, bytes: &[u8]) -> v8::Local<'s, v8::Value> {
+    if bytes.is_empty() {
+        // A zero-length UDP datagram is a reachable input (net.rs recv_from -> Ok((0, from))
+        // -> Datagram { data: vec![] }); build a fresh 0-length Uint8Array rather than routing
+        // an empty Vec through new_backing_store_from_bytes.
+        let ab = v8::ArrayBuffer::new(scope, 0);
+        return match v8::Uint8Array::new(scope, ab, 0, 0) {
+            Some(u) => u.into(),
+            None => v8::null(scope).into(),
+        };
+    }
     let store = v8::ArrayBuffer::new_backing_store_from_bytes(bytes.to_vec()).make_shared();
     let ab = v8::ArrayBuffer::with_backing_store(scope, &store);
     let len = bytes.len();
@@ -12035,6 +12045,64 @@ mod frame_tests {
         }
         assert!(resolved, "net connect promise never settled on a drain");
         assert_eq!(read_global_string("netbad", "__out"), "rejected:true");
+        shutdown();
+    }
+
+    /// A tiny local UDP echo server on an ephemeral port (mirrors `spawn_local_tcp_echo_server`, but
+    /// over a `std::net::UdpSocket` independent of the tokio runtime driving the CLIENT side). Reads
+    /// ONE datagram of any length (including zero) and echoes the same bytes straight back.
+    fn spawn_local_udp_echo_server() -> u16 {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            if let Ok((n, from)) = socket.recv_from(&mut buf) {
+                let _ = socket.send_to(&buf[..n], from);
+            }
+        });
+        port
+    }
+
+    /// Final-review Fix 1: a zero-length UDP datagram is a REACHABLE input (`net.rs`'s `recv_from`
+    /// returns `Ok((0, from))` for an empty datagram -> `Datagram { data: vec![] }`), and it is the
+    /// only net-new code path `bytes_to_uint8array` didn't exercise before this fix. Sends an empty
+    /// `Uint8Array` to a local UDP echo server, which echoes 0 bytes back; asserts the "message"
+    /// handler receives a REAL `Uint8Array` (not null/undefined) with `.length === 0` — driving
+    /// `bytes_to_uint8array(&[])`'s fresh-`ArrayBuffer::new(scope, 0)` path end to end.
+    #[test]
+    fn net_udp_empty_datagram_round_trips_as_zero_length_uint8array() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_udp_echo_server();
+        load_plugin_js(
+            "netudp",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            __s2_net_udp_bind().then(function (id) {{
+                __s2_net_on(id, "message", function (from, bytes) {{
+                    globalThis.__out = "isArr=" + (bytes instanceof Uint8Array) + ":len=" + bytes.length;
+                }});
+                __s2_net_send_to(id, "127.0.0.1", {port}, new Uint8Array(0));
+            }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_net_events();
+            if read_global_string("netudp", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "net udp empty-datagram message event never arrived on a drain");
+        assert_eq!(read_global_string("netudp", "__out"), "isArr=true:len=0");
         shutdown();
     }
 
