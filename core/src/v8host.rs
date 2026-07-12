@@ -200,6 +200,10 @@ type ConvarRegisterFn = unsafe extern "C" fn(
     *const std::os::raw::c_char, *const std::os::raw::c_char, u64, i32,
     *const std::os::raw::c_char, *const std::os::raw::c_char, *const std::os::raw::c_char) -> i32;
 
+// --- Translations slice (APPENDED after convar_register; order is the ABI). ENGINE-GENERIC. ---
+type TranslationsReadFn = extern "C" fn(lang: *const c_char, name: *const c_char) -> *const c_char;
+pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -294,6 +298,9 @@ pub struct S2EngineOps {
     pub user_message_send:       Option<UserMessageSendFn>,
     // --- FakeConVar slice (APPENDED after user_message_send; order is the ABI; do not reorder above) ---
     pub convar_register: Option<ConvarRegisterFn>,
+    // --- Translations slice (APPENDED after convar_register; order is the ABI; do not reorder above) ---
+    pub translations_read: Option<TranslationsReadFn>,
+    pub client_language:   Option<ClientLanguageFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -4949,6 +4956,41 @@ fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+/// Native `__s2_client_language(slot) -> string | null`. Mirrors `s2_client_name` exactly, calling
+/// `client_language` (the client's `cl_language` cvar) instead.
+fn s2_client_language(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.client_language else { return };
+        let ptr = func(slot);
+        if ptr.is_null() { return; }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_translations_read(lang, name) -> string | null`. Mirrors `s2_client_name`'s
+/// call/copy pattern but takes two string args and calls `translations_read`.
+fn s2_translations_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 2 { return; }
+        let lang = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.translations_read else { return };
+        let c_lang = std::ffi::CString::new(lang).unwrap_or_default();
+        let c_name = std::ffi::CString::new(name).unwrap_or_default();
+        let ptr = func(c_lang.as_ptr(), c_name.as_ptr());
+        if ptr.is_null() { return; }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Slice 5D.3: event write/fire natives (pre-subscribe/unsubscribe + setters + create/fire).
 // ---------------------------------------------------------------------------
@@ -5462,6 +5504,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_client_signon", s2_client_signon);
     set_native(scope, global_obj, "__s2_client_name", s2_client_name);
     set_native(scope, global_obj, "__s2_client_find_by_userid", s2_client_find_by_userid);
+    // Translations slice: root/language phrase-file read + the client's cl_language cvar.
+    set_native(scope, global_obj, "__s2_translations_read", s2_translations_read);
+    set_native(scope, global_obj, "__s2_client_language", s2_client_language);
     // Event write/fire (Slice 5D.3): pre-subscribe/unsubscribe + setters + create/fire.
     set_native(scope, global_obj, "__s2_event_subscribe_pre", s2_event_subscribe_pre);
     set_native(scope, global_obj, "__s2_event_unsubscribe_pre", s2_event_unsubscribe_pre);
@@ -9162,6 +9207,8 @@ mod frame_tests {
             user_message_set_bool: None,
             user_message_send: None,
             convar_register: None,
+            translations_read: None,
+            client_language: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -9675,6 +9722,8 @@ mod frame_tests {
             user_message_set_bool: None,
             user_message_send: None,
             convar_register: None,
+            translations_read: None,
+            client_language: None,
         }
     }
 
@@ -10192,6 +10241,21 @@ mod frame_tests {
         // address returns "" (empty string, NOT null) without the op.
         assert_eq!(eval_in_context_string("p", "__s2_client_address(0)"), "");
         assert_eq!(eval_in_context_string("p", "typeof __s2_client_address(0)"), "string");
+        shutdown();
+    }
+
+    /// Translations slice: `__s2_translations_read`/`__s2_client_language` degrade cleanly with no
+    /// engine ops wired — translations_read returns null (both a root-file and a per-language read),
+    /// client_language returns null (no crash).
+    #[test]
+    fn translations_natives_degrade_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // no ENGINE_OPS installed in tests -> read returns null, client_language returns null/"".
+        assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('', 'x'))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('de', 'x'))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_language(0))"), "null");
         shutdown();
     }
 

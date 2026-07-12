@@ -197,6 +197,13 @@ typedef int (*s2_user_message_send_fn)(const int* slots, int slotCount);
 typedef int (*s2_convar_register_fn)(const char* name, const char* help, uint64_t flags, int type,
                                      const char* defaultValue, const char* minValue, const char* maxValue);
 
+/* Translations slice — APPENDED after convar_register; order is the ABI.
+ * translations_read(lang,name): content of translations/[<lang>/]<name>.phrases.json, or null.
+ * lang=="" -> the root file. Both segments sanitized; ".." refused. Valid until the next call. */
+typedef const char* (*s2_translations_read_fn)(const char* lang, const char* name);
+/* client_language(slot): the client's cl_language ("english"/"german"/...), or null. */
+typedef const char* (*s2_client_language_fn)(int slot);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -287,6 +294,9 @@ typedef struct {
     s2_user_message_send_fn       user_message_send;
     /* FakeConVar (clientlist-fakeconvar-onmapstart slice) — APPENDED after user_message_send; order is the ABI. */
     s2_convar_register_fn convar_register;
+    /* Translations slice — APPENDED after convar_register; order is the ABI. */
+    s2_translations_read_fn  translations_read;
+    s2_client_language_fn    client_language;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
