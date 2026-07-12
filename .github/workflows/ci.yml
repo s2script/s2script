@@ -15,3 +15,20 @@ jobs:
         run: |
           cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release
           cmake --build build/shim -j
+
+  # Guards against package-lock.json drifting out of sync with the workspace
+  # package.json files — e.g. a new packages/* added (or a version bumped)
+  # without regenerating the lockfile. This runs the SAME `npm ci` the
+  # changesets release pipeline (changesets.yml) runs on main, so drift fails
+  # HERE on the PR instead of after merge, where it silently breaks the release
+  # workflow. Same Node/npm as changesets.yml so the two can never disagree.
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: npm ci (package-lock.json in sync)
+        run: npm ci

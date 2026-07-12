@@ -21,6 +21,12 @@ on:
     paths:
       - 'packages/**'
       - '.changeset/**'
+  # Manual recovery lever: re-run the version/publish pipeline on demand. Needed
+  # when a push that carried an unconsumed changeset failed before changesets ran
+  # (e.g. an out-of-sync package-lock.json broke the `npm ci` step) — the paths
+  # filter won't re-fire on the fixup commit, so dispatch it here to open the
+  # pending "version packages" PR once main is healthy again.
+  workflow_dispatch: {}
 
 concurrency:
   group: changesets-${{ github.ref }}
