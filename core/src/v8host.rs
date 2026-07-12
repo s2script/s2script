@@ -200,6 +200,10 @@ type ConvarRegisterFn = unsafe extern "C" fn(
     *const std::os::raw::c_char, *const std::os::raw::c_char, u64, i32,
     *const std::os::raw::c_char, *const std::os::raw::c_char, *const std::os::raw::c_char) -> i32;
 
+// --- Translations slice (APPENDED after convar_register; order is the ABI). ENGINE-GENERIC. ---
+type TranslationsReadFn = extern "C" fn(lang: *const c_char, name: *const c_char) -> *const c_char;
+pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -294,6 +298,9 @@ pub struct S2EngineOps {
     pub user_message_send:       Option<UserMessageSendFn>,
     // --- FakeConVar slice (APPENDED after user_message_send; order is the ABI; do not reorder above) ---
     pub convar_register: Option<ConvarRegisterFn>,
+    // --- Translations slice (APPENDED after convar_register; order is the ABI; do not reorder above) ---
+    pub translations_read: Option<TranslationsReadFn>,
+    pub client_language:   Option<ClientLanguageFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -1130,6 +1137,65 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_interfaces = interfaces;
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
   globalThis.__s2pkg_config     = { config: __s2_config };   // named export `config` (matches the .d.ts: import { config } from "@s2script/config")
+  // --- @s2script/translations — SM-style i18n. Phrases: a flat key->text map; the plugin's `seed` is the
+  //     in-memory English default; translations/<code>/<name>.phrases.json (read lazily) overrides per language;
+  //     an optional root translations/<name>.phrases.json overrides the seed. Fully engine-generic. ---
+  var __s2_tr_reg = Object.create(null);   // name -> { def: {k:text}, langs: { code: {k:text}|null } }  (null = tried+absent)
+  var __s2_tr_default = "";          // server/console default language code ("" = root/English)
+  // Steam cl_language -> folder code ("" = root/English). Unmapped -> "" (default).
+  var __s2_TR_CODES = Object.assign(Object.create(null), { english:"", german:"de", russian:"ru", french:"fr", spanish:"es", latam:"es",
+    schinese:"zh", tchinese:"zh", portuguese:"pt", brazilian:"pt", polish:"pl", italian:"it", dutch:"nl",
+    swedish:"sv", danish:"da", finnish:"fi", norwegian:"no", czech:"cs", hungarian:"hu", turkish:"tr",
+    japanese:"ja", koreana:"ko", thai:"th", ukrainian:"uk", bulgarian:"bg", greek:"el", romanian:"ro" });
+  function __s2_tr_langCode(clLang) {
+    var v = __s2_TR_CODES[String(clLang || "").toLowerCase()];
+    return (typeof v === "string") ? v : "";   // non-string (e.g. a "__proto__" chain read) -> default
+  }
+  function __s2_tr_format(text, args) {
+    return String(text).replace(/\{(\d+)\}/g, function (_m, n) {
+      var i = (parseInt(n, 10) | 0) - 1;
+      return (args && i >= 0 && i < args.length && args[i] != null) ? String(args[i]) : "";
+    });
+  }
+  function __s2_tr_parse(text) { try { var o = JSON.parse(text); return (o && typeof o === "object") ? o : {}; } catch (e) { console.log("[s2script] WARN: translations file malformed — ignored"); return {}; } }
+  function __s2_tr_merge(dst, src) {   // copy own enumerable keys, skipping __proto__ (no by-ref share, no proto pollution)
+    for (var k in src) if (Object.prototype.hasOwnProperty.call(src, k) && k !== "__proto__") dst[k] = src[k];
+    return dst;
+  }
+  function __s2_tr_langMap(name, code) {                     // the lazily-read (+cached) map for a code ("" = root override)
+    var r = __s2_tr_reg[name]; if (!r) return null;
+    if (Object.prototype.hasOwnProperty.call(r.langs, code)) return r.langs[code];   // cached (map or null)
+    var text = __s2_translations_read(code, name);           // null if absent/no-op
+    var map = (text == null) ? null : __s2_tr_parse(text);
+    r.langs[code] = map;
+    return map;
+  }
+  var __s2_translations = {
+    load: function (name, seed) {
+      name = String(name);
+      var def = __s2_tr_merge({}, (seed && typeof seed === "object") ? seed : {});   // fresh copy, not the caller's ref
+      __s2_tr_reg[name] = { def: def, langs: {} };
+      var root = __s2_translations_read("", name);           // OPTIONAL root override of the seed
+      if (root != null) __s2_tr_merge(def, __s2_tr_parse(root));                     // root file overrides seed keys
+    },
+    setDefaultLanguage: function (code) { __s2_tr_default = String(code || ""); },
+    translate: function (slot, key) {
+      var args = [].slice.call(arguments, 2);
+      key = String(key);
+      var code = ((slot | 0) < 0) ? __s2_tr_default : __s2_tr_langCode(__s2_client_language(slot | 0));
+      // search EVERY loaded phrase set: the code's lang map (if not root) -> the default/seed -> the key.
+      for (var name in __s2_tr_reg) {
+        if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, name)) continue;
+        if (code) { var lm = __s2_tr_langMap(name, code); if (lm && lm[key] != null) return __s2_tr_format(lm[key], args); }
+        var d = __s2_tr_reg[name].def; if (d[key] != null) return __s2_tr_format(d[key], args);
+      }
+      return key;                                            // ultimate fallback
+    },
+  };
+  globalThis.__s2_tr_format = __s2_tr_format;                 // test hooks (pure)
+  globalThis.__s2_tr_langCode = __s2_tr_langCode;
+  globalThis.__s2_tr_injectLang = function (name, code, obj) { if (__s2_tr_reg[name]) __s2_tr_reg[name].langs[code] = obj; };  // test hook (bypasses the file read)
+  globalThis.__s2pkg_translations = { Translations: __s2_translations };
   globalThis.__s2pkg_menu       = { Menu: Menu, MenuStyle: MenuStyle, MenuCancelReason: MenuCancelReason };
   // --- adminmenu framework: the TopMenu registry (categories/items owned by the registering plugin;
   // onSelect is dispatched to the OWNER's context post-drain — see __s2_topmenu_select). ---
@@ -1314,7 +1380,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         if (s < 0) { console.log(String(m)); return; }
         var msg = String(m);
         globalThis.__s2pkg_timers.nextFrame().then(function () { globalThis.__s2pkg_chat.Chat.toSlot(s, msg); });
-      }
+      },
+      // Localized reply: translate `key` for the CALLER's language, then reply (SM's %t on the reply path).
+      // Soft-deps @s2script/translations — degrades to the key if translations isn't loaded.
+      replyT: function (key) {
+        var t = globalThis.__s2pkg_translations;
+        if (!t) { this.reply(String(key)); return; }
+        this.reply(t.Translations.translate.apply(t.Translations, [s, key].concat([].slice.call(arguments, 1))));
+      },
     };
   }
   // Slice 6.11: a per-context registry of wrapped dispatch fns (name -> function(slot, argString)), so a
@@ -5320,6 +5393,41 @@ fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+/// Native `__s2_client_language(slot) -> string | null`. Mirrors `s2_client_name` exactly, calling
+/// `client_language` (the client's `cl_language` cvar) instead.
+fn s2_client_language(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.client_language else { return };
+        let ptr = func(slot);
+        if ptr.is_null() { return; }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_translations_read(lang, name) -> string | null`. Mirrors `s2_client_name`'s
+/// call/copy pattern but takes two string args and calls `translations_read`.
+fn s2_translations_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 2 { return; }
+        let lang = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.translations_read else { return };
+        let c_lang = std::ffi::CString::new(lang).unwrap_or_default();
+        let c_name = std::ffi::CString::new(name).unwrap_or_default();
+        let ptr = func(c_lang.as_ptr(), c_name.as_ptr());
+        if ptr.is_null() { return; }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Slice 5D.3: event write/fire natives (pre-subscribe/unsubscribe + setters + create/fire).
 // ---------------------------------------------------------------------------
@@ -5833,6 +5941,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_client_signon", s2_client_signon);
     set_native(scope, global_obj, "__s2_client_name", s2_client_name);
     set_native(scope, global_obj, "__s2_client_find_by_userid", s2_client_find_by_userid);
+    // Translations slice: root/language phrase-file read + the client's cl_language cvar.
+    set_native(scope, global_obj, "__s2_translations_read", s2_translations_read);
+    set_native(scope, global_obj, "__s2_client_language", s2_client_language);
     // Event write/fire (Slice 5D.3): pre-subscribe/unsubscribe + setters + create/fire.
     set_native(scope, global_obj, "__s2_event_subscribe_pre", s2_event_subscribe_pre);
     set_native(scope, global_obj, "__s2_event_unsubscribe_pre", s2_event_unsubscribe_pre);
@@ -9591,6 +9702,8 @@ mod frame_tests {
             user_message_set_bool: None,
             user_message_send: None,
             convar_register: None,
+            translations_read: None,
+            client_language: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10104,6 +10217,8 @@ mod frame_tests {
             user_message_set_bool: None,
             user_message_send: None,
             convar_register: None,
+            translations_read: None,
+            client_language: None,
         }
     }
 
@@ -10621,6 +10736,76 @@ mod frame_tests {
         // address returns "" (empty string, NOT null) without the op.
         assert_eq!(eval_in_context_string("p", "__s2_client_address(0)"), "");
         assert_eq!(eval_in_context_string("p", "typeof __s2_client_address(0)"), "string");
+        shutdown();
+    }
+
+    /// Translations slice: `__s2_translations_read`/`__s2_client_language` degrade cleanly with no
+    /// engine ops wired — translations_read returns null (both a root-file and a per-language read),
+    /// client_language returns null (no crash).
+    #[test]
+    fn translations_natives_degrade_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // no ENGINE_OPS installed in tests -> read returns null, client_language returns null/"".
+        assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('', 'x'))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('de', 'x'))"), "null");
+        assert_eq!(eval_in_context_string("p", "String(__s2_client_language(0))"), "null");
+        shutdown();
+    }
+
+    /// Translations slice: the pure formatting/lang-code test hooks (`__s2_tr_format`/`__s2_tr_langCode`).
+    #[test]
+    fn translations_format_and_langcode() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // positional {1}/{2}; missing {3} -> empty; no args -> literal text
+        assert_eq!(eval_in_context_string("p", "__s2_tr_format('Slapped {1} for {2}', ['Bob','5'])"), "Slapped Bob for 5");
+        assert_eq!(eval_in_context_string("p", "__s2_tr_format('a {3} b', ['x'])"), "a  b");
+        assert_eq!(eval_in_context_string("p", "__s2_tr_format('plain', [])"), "plain");
+        // cl_language -> folder code
+        assert_eq!(eval_in_context_string("p", "__s2_tr_langCode('german')"), "de");
+        assert_eq!(eval_in_context_string("p", "__s2_tr_langCode('english')"), "");   // root
+        assert_eq!(eval_in_context_string("p", "__s2_tr_langCode('klingon')"), "");   // unknown -> default(root)
+        shutdown();
+    }
+
+    /// Translations slice: the registry fallback chain — lang -> default(seed) -> key.
+    #[test]
+    fn translations_fallback_chain() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "\
+            __s2pkg_translations.Translations.load('t', { Hi: 'Hi {1}', Only: 'Only-EN' });\
+            __s2_tr_injectLang('t', 'de', { Hi: 'Hallo {1}' });\
+        ").unwrap();
+        // slot<0 default(root/en): seed
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Hi','Bob')"), "Hi Bob");
+        // default language de -> the injected de map; a key missing in de falls back to the seed
+        eval_in_context("p", "__s2pkg_translations.Translations.setDefaultLanguage('de');").unwrap();
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Hi','Bob')"), "Hallo Bob");
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Only')"), "Only-EN"); // de miss -> seed
+        // an unknown key -> the key itself
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Nope')"), "Nope");
+        shutdown();
+    }
+
+    /// Translations slice: `ctx.replyT` (in `@s2script/commands`) translates the key for the caller's
+    /// language before replying. A console caller (slot -1) replies via `console.log`, captured in `LOG`.
+    #[test]
+    fn ctx_replyt_localizes() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "\
+            __s2pkg_translations.Translations.load('c', { Kicked: 'Kicked {1}' });\
+            __s2pkg_commands.Commands.register('sm_x', function (ctx) { ctx.replyT('Kicked', 'Bob'); });\
+        ").unwrap();
+        // invoke the command with a console caller (slot -1) via the dispatch registry
+        eval_in_context("p", "__s2pkg_commands.Commands.dispatch('sm_x', -1, '');").unwrap();
+        assert!(LOG.lock().unwrap().iter().any(|l| l.contains("Kicked Bob")), "replyT should have logged the translated string");
         shutdown();
     }
 

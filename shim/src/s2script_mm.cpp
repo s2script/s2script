@@ -1472,6 +1472,46 @@ static int s2_config_write_file(const char* name, const char* content) {
 }
 
 // ---------------------------------------------------------------------------
+// Translations slice: read addons/s2script/translations/[<lang>/]<name>.phrases.json.
+// TranslationsPath: mirror ConfigFilePath's walk + sanitize (non-[A-Za-z0-9._-] -> '_',
+// neutralizing '/'); refuses a segment containing ".." or empty name.
+// ---------------------------------------------------------------------------
+static std::string TranslationsPath(const char* lang, const char* name) {
+    if (!name || !*name) return "";
+    auto bad = [](const char* s) { return !s ? false : std::string(s).find("..") != std::string::npos; };
+    if (bad(lang) || bad(name)) return "";
+    auto sani = [](const char* p) { std::string o; for (; p && *p; ++p) { char c = *p;
+        o += ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='.'||c=='_'||c=='-') ? c : '_'; } return o; };
+    std::string safeLang = lang ? sani(lang) : "";
+    std::string safeName = sani(name);
+    Dl_info info;
+    std::string root;
+    if (dladdr(reinterpret_cast<void*>(&TranslationsPath), &info) && info.dli_fname) {
+        char buf[4096]; snprintf(buf, sizeof buf, "%s", info.dli_fname);
+        std::string dir = dirname(buf); snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);             snprintf(buf, sizeof buf, "%s", dir.c_str());
+        dir = dirname(buf);
+        root = dir + "/translations/";
+    } else {
+        root = "addons/s2script/translations/";
+    }
+    if (!safeLang.empty()) root += safeLang + "/";
+    return root + safeName + ".phrases.json";
+}
+static std::string s_translationsReadBuf;
+static const char* s2_translations_read(const char* lang, const char* name) {
+    std::string path = TranslationsPath(lang, name);
+    if (path.empty()) return nullptr;
+    std::ifstream f(path); if (!f) return nullptr;
+    std::stringstream ss; ss << f.rdbuf(); s_translationsReadBuf = ss.str();
+    return s_translationsReadBuf.c_str();
+}
+static const char* s2_client_language(int slot) {
+    if (!s_pEngine || !s2_client_valid(slot)) return nullptr;
+    return s_pEngine->GetClientConVarValue(CPlayerSlot(slot), "cl_language");
+}
+
+// ---------------------------------------------------------------------------
 // db_data_dir (Slice DB): absolute path to addons/s2script/data, created if absent. Resolved
 // relative to the plugin .so via dladdr (mirrors ConfigPath's dirname ×3 walk to the addon root),
 // sibling of the configs/ dir.
@@ -2517,6 +2557,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.user_message_send       = &s2_user_message_send;
     // FakeConVar slice — APPENDED after user_message_send; order MUST match S2EngineOps.
     ops.convar_register         = &s2_convar_register;
+    // Translations slice — APPENDED after convar_register; order MUST match S2EngineOps.
+    ops.translations_read = &s2_translations_read;
+    ops.client_language   = &s2_client_language;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
