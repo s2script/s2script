@@ -15,5 +15,6 @@ mod loader;
 mod multiplexer;
 mod schema;
 mod schema_catalog;
+mod sqldb;
 mod v8host;
 mod ws;

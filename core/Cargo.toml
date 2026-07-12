@@ -34,3 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # from http.rs. rustls-only (no system OpenSSL dependency), matching the reqwest TLS choice.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# Engine-generic remote SQL subsystem (core/src/sqldb.rs): MySQL + Postgres over the shared tokio
+# runtime from http.rs. rustls + ring + webpki-roots (matches reqwest/tungstenite — no aws-lc-rs, no
+# system OpenSSL). Runtime queries only (no `macros` feature, which needs a compile-time DATABASE_URL).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "mysql", "postgres"] }
