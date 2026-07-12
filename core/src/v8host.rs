@@ -1111,6 +1111,60 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_interfaces = interfaces;
   globalThis.__s2pkg_events     = { GameEvent: GameEvent, Events: Events, HookResult: globalThis.HookResult };
   globalThis.__s2pkg_config     = { config: __s2_config };   // named export `config` (matches the .d.ts: import { config } from "@s2script/config")
+  // --- @s2script/translations — SM-style i18n. Phrases: a flat key->text map; the plugin's `seed` is the
+  //     in-memory English default; translations/<code>/<name>.phrases.json (read lazily) overrides per language;
+  //     an optional root translations/<name>.phrases.json overrides the seed. Fully engine-generic. ---
+  var __s2_tr_reg = {};              // name -> { def: {k:text}, langs: { code: {k:text}|null } }  (null = tried+absent)
+  var __s2_tr_default = "";          // server/console default language code ("" = root/English)
+  // Steam cl_language -> folder code ("" = root/English). Unmapped -> "" (default).
+  var __s2_TR_CODES = { english:"", german:"de", russian:"ru", french:"fr", spanish:"es", latam:"es",
+    schinese:"zh", tchinese:"zh", portuguese:"pt", brazilian:"pt", polish:"pl", italian:"it", dutch:"nl",
+    swedish:"sv", danish:"da", finnish:"fi", norwegian:"no", czech:"cs", hungarian:"hu", turkish:"tr",
+    japanese:"ja", koreana:"ko", thai:"th", ukrainian:"uk", bulgarian:"bg", greek:"el", romanian:"ro" };
+  function __s2_tr_langCode(clLang) {
+    var v = __s2_TR_CODES[String(clLang || "").toLowerCase()];
+    return v == null ? "" : v;
+  }
+  function __s2_tr_format(text, args) {
+    return String(text).replace(/\{(\d+)\}/g, function (_m, n) {
+      var i = (parseInt(n, 10) | 0) - 1;
+      return (args && i >= 0 && i < args.length && args[i] != null) ? String(args[i]) : "";
+    });
+  }
+  function __s2_tr_parse(text) { try { var o = JSON.parse(text); return (o && typeof o === "object") ? o : {}; } catch (e) { console.log("[s2script] WARN: translations file malformed — ignored"); return {}; } }
+  function __s2_tr_langMap(name, code) {                     // the lazily-read (+cached) map for a code ("" = root override)
+    var r = __s2_tr_reg[name]; if (!r) return null;
+    if (Object.prototype.hasOwnProperty.call(r.langs, code)) return r.langs[code];   // cached (map or null)
+    var text = __s2_translations_read(code, name);           // null if absent/no-op
+    var map = (text == null) ? null : __s2_tr_parse(text);
+    r.langs[code] = map;
+    return map;
+  }
+  var __s2_translations = {
+    load: function (name, seed) {
+      name = String(name);
+      __s2_tr_reg[name] = { def: (seed && typeof seed === "object") ? seed : {}, langs: {} };
+      var root = __s2_translations_read("", name);           // OPTIONAL root override of the seed
+      if (root != null) { var o = __s2_tr_parse(root); for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) __s2_tr_reg[name].def[k] = o[k]; }
+    },
+    setDefaultLanguage: function (code) { __s2_tr_default = String(code || ""); },
+    translate: function (slot, key) {
+      var args = [].slice.call(arguments, 2);
+      key = String(key);
+      var code = ((slot | 0) < 0) ? __s2_tr_default : __s2_tr_langCode(__s2_client_language(slot | 0));
+      // search EVERY loaded phrase set: the code's lang map (if not root) -> the default/seed -> the key.
+      for (var name in __s2_tr_reg) {
+        if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, name)) continue;
+        if (code) { var lm = __s2_tr_langMap(name, code); if (lm && lm[key] != null) return __s2_tr_format(lm[key], args); }
+        var d = __s2_tr_reg[name].def; if (d[key] != null) return __s2_tr_format(d[key], args);
+      }
+      return key;                                            // ultimate fallback
+    },
+  };
+  globalThis.__s2_tr_format = __s2_tr_format;                 // test hooks (pure)
+  globalThis.__s2_tr_langCode = __s2_tr_langCode;
+  globalThis.__s2_tr_injectLang = function (name, code, obj) { if (__s2_tr_reg[name]) __s2_tr_reg[name].langs[code] = obj; };  // test hook (bypasses the file read)
+  globalThis.__s2pkg_translations = { Translations: __s2_translations };
   globalThis.__s2pkg_menu       = { Menu: Menu, MenuStyle: MenuStyle, MenuCancelReason: MenuCancelReason };
   // --- adminmenu framework: the TopMenu registry (categories/items owned by the registering plugin;
   // onSelect is dispatched to the OWNER's context post-drain — see __s2_topmenu_select). ---
@@ -10256,6 +10310,44 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('', 'x'))"), "null");
         assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('de', 'x'))"), "null");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_language(0))"), "null");
+        shutdown();
+    }
+
+    /// Translations slice: the pure formatting/lang-code test hooks (`__s2_tr_format`/`__s2_tr_langCode`).
+    #[test]
+    fn translations_format_and_langcode() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // positional {1}/{2}; missing {3} -> empty; no args -> literal text
+        assert_eq!(eval_in_context_string("p", "__s2_tr_format('Slapped {1} for {2}', ['Bob','5'])"), "Slapped Bob for 5");
+        assert_eq!(eval_in_context_string("p", "__s2_tr_format('a {3} b', ['x'])"), "a  b");
+        assert_eq!(eval_in_context_string("p", "__s2_tr_format('plain', [])"), "plain");
+        // cl_language -> folder code
+        assert_eq!(eval_in_context_string("p", "__s2_tr_langCode('german')"), "de");
+        assert_eq!(eval_in_context_string("p", "__s2_tr_langCode('english')"), "");   // root
+        assert_eq!(eval_in_context_string("p", "__s2_tr_langCode('klingon')"), "");   // unknown -> default(root)
+        shutdown();
+    }
+
+    /// Translations slice: the registry fallback chain — lang -> default(seed) -> key.
+    #[test]
+    fn translations_fallback_chain() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "\
+            __s2pkg_translations.Translations.load('t', { Hi: 'Hi {1}', Only: 'Only-EN' });\
+            __s2_tr_injectLang('t', 'de', { Hi: 'Hallo {1}' });\
+        ").unwrap();
+        // slot<0 default(root/en): seed
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Hi','Bob')"), "Hi Bob");
+        // default language de -> the injected de map; a key missing in de falls back to the seed
+        eval_in_context("p", "__s2pkg_translations.Translations.setDefaultLanguage('de');").unwrap();
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Hi','Bob')"), "Hallo Bob");
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Only')"), "Only-EN"); // de miss -> seed
+        // an unknown key -> the key itself
+        assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Nope')"), "Nope");
         shutdown();
     }
 
