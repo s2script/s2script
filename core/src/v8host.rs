@@ -1114,16 +1114,16 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // --- @s2script/translations — SM-style i18n. Phrases: a flat key->text map; the plugin's `seed` is the
   //     in-memory English default; translations/<code>/<name>.phrases.json (read lazily) overrides per language;
   //     an optional root translations/<name>.phrases.json overrides the seed. Fully engine-generic. ---
-  var __s2_tr_reg = {};              // name -> { def: {k:text}, langs: { code: {k:text}|null } }  (null = tried+absent)
+  var __s2_tr_reg = Object.create(null);   // name -> { def: {k:text}, langs: { code: {k:text}|null } }  (null = tried+absent)
   var __s2_tr_default = "";          // server/console default language code ("" = root/English)
   // Steam cl_language -> folder code ("" = root/English). Unmapped -> "" (default).
-  var __s2_TR_CODES = { english:"", german:"de", russian:"ru", french:"fr", spanish:"es", latam:"es",
+  var __s2_TR_CODES = Object.assign(Object.create(null), { english:"", german:"de", russian:"ru", french:"fr", spanish:"es", latam:"es",
     schinese:"zh", tchinese:"zh", portuguese:"pt", brazilian:"pt", polish:"pl", italian:"it", dutch:"nl",
     swedish:"sv", danish:"da", finnish:"fi", norwegian:"no", czech:"cs", hungarian:"hu", turkish:"tr",
-    japanese:"ja", koreana:"ko", thai:"th", ukrainian:"uk", bulgarian:"bg", greek:"el", romanian:"ro" };
+    japanese:"ja", koreana:"ko", thai:"th", ukrainian:"uk", bulgarian:"bg", greek:"el", romanian:"ro" });
   function __s2_tr_langCode(clLang) {
     var v = __s2_TR_CODES[String(clLang || "").toLowerCase()];
-    return v == null ? "" : v;
+    return (typeof v === "string") ? v : "";   // non-string (e.g. a "__proto__" chain read) -> default
   }
   function __s2_tr_format(text, args) {
     return String(text).replace(/\{(\d+)\}/g, function (_m, n) {
