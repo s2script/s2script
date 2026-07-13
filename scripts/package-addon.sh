@@ -42,7 +42,10 @@ if [ -f games/cs2/js/pawn.js ]; then
     # activity.js sets globalThis.__s2_activity before pawn.js reads it.
     # csitem.generated.js sets globalThis.__s2pkg_cs2.CsItem; pawn.js's IIFE MERGES into
     # (not overwrites) globalThis.__s2pkg_cs2, so CsItem survives regardless of order.
-    cat games/cs2/js/schema.generated.js games/cs2/js/nav.generated.js games/cs2/js/activity.js games/cs2/js/csitem.generated.js games/cs2/js/pawn.js > "$DIST/s2script/js/pawn.js"
+    # weapon.js MUST run after schema.generated.js (needs __s2pkg_cs2_schema) and before pawn.js
+    # (whose acquisition getters reference globalThis.__s2pkg_cs2.Weapon); it MERGES into
+    # globalThis.__s2pkg_cs2 like csitem.generated.js, so exact position among the others doesn't matter.
+    cat games/cs2/js/schema.generated.js games/cs2/js/nav.generated.js games/cs2/js/activity.js games/cs2/js/csitem.generated.js games/cs2/js/weapon.js games/cs2/js/pawn.js > "$DIST/s2script/js/pawn.js"
 fi
 
 # --- Runtime dirs (plugins drop zone + writable configs/data) ---

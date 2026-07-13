@@ -15,6 +15,8 @@ import type { SceneNode, WeaponServices, MovementServices, AimPunchServices } fr
 export { GameEvent } from "@s2script/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
+export type { Weapon } from "./weapon";
+export { Weapon } from "./weapon";
 
 /**
  * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the serial-gated ref.
