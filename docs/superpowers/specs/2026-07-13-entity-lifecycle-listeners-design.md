@@ -183,6 +183,11 @@ delivered `EntityRef` is the same serial-gated handle used everywhere; reads are
   lifecycle unaffected, never a crash). Same trap + guard as `dispatch_output`/`Events.fire` (see
   [[js-dispatch-isolate-borrow-reentrancy]]). This is by design; the demo's `sm_entlisten` deliberately
   demonstrates it (its self-spawn is NOT logged), and the `"*"` loggers show the engine-driven case.
+  **Cross-plugin corollary (inherent to the single-isolate architecture):** because the skip is keyed
+  on the shared `HOST` borrow, plugin B's `onCreate("*")` will *not* observe an entity that plugin A
+  creates synchronously inside a handler — the same family as the "`Events.fire` can't re-dispatch to
+  JS subscribers" limitation. Plugin authors must not rely on observing another plugin's synchronous
+  entity creation; engine-driven lifecycle is always observed.
 - **Volume:** with ≥1 subscriber, every create/spawn/delete costs one FFI call + a className marshal
   + a HashMap lookup; JS is entered only for a matching class key. A map load bursts ~2000 entities
   (a one-time cost); per-round projectiles/effects are dozens. Acceptable. Zero cost with no

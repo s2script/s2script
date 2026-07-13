@@ -33,15 +33,17 @@ Entity.onSpawn("*", (e, cls) => { if (++nSpawn <= 15) console.log("[entlisten] *
 Entity.onDelete("*", (_e, cls) => { if (++nDelete <= 15) console.log("[entlisten] * onDelete: " + cls); });
 
 Commands.register("sm_entlisten", (ctx) => {
-  // Demonstrates the re-entrancy limit (see the header note): the create/spawn/remove below run under
-  // the command's isolate borrow, so their lifecycle callbacks are SKIPPED, not logged. This is by
-  // design — engine-driven lifecycle (the "*" loggers) is the real use case.
+  // Demonstrates the re-entrancy limit (see the header note): createEntity + spawn run SYNCHRONOUSLY
+  // under the command's isolate borrow, so their onCreate/onSpawn callbacks are gracefully SKIPPED
+  // (never a crash). remove() defers deletion to end-of-frame, so whether onDelete fires is
+  // engine-timing-dependent — don't rely on this path. Engine-driven lifecycle (the "*" loggers,
+  // e.g. via a round restart) is the reliable, intended use case.
   const relay = createEntity("logic_relay");
   if (!relay) { ctx.reply("[entlisten] createEntity failed"); return; }
   relay.spawn();
   relay.remove();
-  ctx.reply("[entlisten] self-spawned+removed a logic_relay (re-entrant → intentionally NOT logged); " +
-    "trigger a round restart / bot lifecycle to see the '*' loggers fire for engine-driven entities");
+  ctx.reply("[entlisten] self-spawned+removed a logic_relay (onCreate/onSpawn re-entrancy-skipped by " +
+    "design); trigger a round restart / bot lifecycle to see the '*' loggers fire for engine-driven entities");
 });
 
 export function onLoad(): void {
