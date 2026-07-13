@@ -1,6 +1,13 @@
-// @s2script/zones — sub-slice 2: DB-backed, per-map, coordinate-defined zones with JSON export/import
-// and operator CRUD, driving the sub-slice-1 origin-polling detection (ENTER/LEAVE per named zone).
-// The inter-plugin event interface (publishInterface) is sub-slice 3; here the events are logged.
+// @s2script/zones — DB-backed, per-map, coordinate-defined zones with JSON export/import, operator CRUD,
+// and a published inter-plugin interface (`@s2script/zones@1.0.0`, emits enter/leave/stay).
+//
+// DETECTION BACKEND: REAL ENGINE TRIGGERS. Each zone is a runtime `trigger_multiple` whose collision is an
+// arbitrary box built from the zone bounds (createEntity -> SetModel registers the touch aggregate ->
+// SetSolid(SOLID_BBOX) reshapes it to the box). The engine's own touch system fires OnStartTouch/OnEndTouch,
+// which we hook via Entity.onOutput -> enter/leave. This replaces the previous ~8Hz origin-polling backend:
+// engine-accurate edges, no per-frame position math, and it can see non-player entities too. A tiny poll
+// remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
+// engine-maintained inside-set).
 import { Commands } from "@s2script/commands";
 import { ADMFLAG } from "@s2script/admin";
 import { Database } from "@s2script/db";
@@ -8,22 +15,23 @@ import { Server } from "@s2script/server";
 import { config } from "@s2script/config";
 import { OnGameFrame } from "@s2script/frame";
 import { publishInterface, PublishHandle } from "@s2script/interfaces";
-import { Player, Pawn } from "@s2script/cs2";
+import { Entity } from "@s2script/entity";
+import { Player, Pawn, TriggerZone, TriggerZoneHandle } from "@s2script/cs2";
 
 interface Vec3 { x: number; y: number; z: number; }
-interface Zone { name: string; min: Vec3; max: Vec3; inside: Set<number>; }
+interface Zone { name: string; min: Vec3; max: Vec3; inside: Set<number>; trigger: TriggerZoneHandle | null; }
 
 let db: Database | null = null;
 let currentMap = "";
 const zones = new Map<string, Zone>();
-// Published inter-plugin interface `zones@1.0.0` — the detection loop emits enter/leave/stay through it.
-// (The interface is named `zones`, NOT `@s2script/zones`: @s2script/* is reserved for prelude builtins
-//  that resolve via __s2require, so a plugin-published interface must use a non-@s2script name.)
 let iface: PublishHandle | null = null;
 
+// Zones whose trigger still needs to be (re)created. createEntity is unsafe at onMapStart (the entity
+// system isn't live yet — it crashes), so we NEVER create a trigger inline: we queue the zone here and
+// build it on the next OnGameFrame, when the map is fully live. loadMap + upsertZone both queue.
+const pendingTriggers = new Set<string>();
+
 // Resolves once Database.open() + CREATE TABLE + the initial load have settled (success OR failure).
-// upsertZone awaits this so an sm_zone_add issued during the boot window (before the async DB opens)
-// still persists to the DB instead of silently landing registry-only and vanishing on restart.
 let dbReadyResolve: () => void = () => {};
 const dbReady: Promise<void> = new Promise<void>((r) => { dbReadyResolve = r; });
 
@@ -35,11 +43,34 @@ function normBox(a: Vec3, b: Vec3): { min: Vec3; max: Vec3 } {
     max: { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y), z: Math.max(a.z, b.z) },
   };
 }
-function contains(z: Zone, x: number, y: number, zc: number): boolean {
-  return x >= z.min.x && x <= z.max.x && y >= z.min.y && y <= z.max.y && zc >= z.min.z && zc <= z.max.z;
+
+// --- trigger lifecycle ---------------------------------------------------------------------------------
+function removeTrigger(z: Zone): void {
+  if (z.trigger) { try { z.trigger.remove(); } catch { /* stale/already-gone */ } z.trigger = null; }
+  z.inside.clear();
+}
+function buildTrigger(z: Zone): void {
+  removeTrigger(z);
+  z.trigger = TriggerZone.create(z.min, z.max);   // arbitrary engine box; fires OnStartTouch/OnEndTouch
+}
+function clearAllTriggers(): void { for (const z of zones.values()) removeTrigger(z); pendingTriggers.clear(); }
+
+// Map an OnStartTouch/OnEndTouch back to a zone (by the firing trigger entity) and a player (by the
+// touching pawn entity). Both are looked up by live entity index — no stored raw pointers.
+function zoneByTriggerIndex(idx: number): Zone | null {
+  for (const z of zones.values()) if (z.trigger && z.trigger.ref.index === idx) return z;
+  return null;
+}
+function playerByPawnIndex(idx: number): { slot: number; userId: number } | null {
+  for (const p of Player.all()) {
+    const pw = p.pawn;
+    if (pw && pw.ref.index === idx) return { slot: p.slot, userId: p.userId };
+  }
+  return null;
 }
 
 async function loadMap(map: string): Promise<void> {
+  clearAllTriggers();
   currentMap = map;
   zones.clear();
   if (!db) return;
@@ -51,17 +82,29 @@ async function loadMap(map: string): Promise<void> {
       min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
       max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
       inside: new Set<number>(),
+      trigger: null,
     });
+    pendingTriggers.add(name);   // build on the next frame (entity system live)
   }
   console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
 }
 
 async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }): Promise<void> {
-  await dbReady;   // guarantee the DB is open (or failed) + the initial load ran, before we mutate
-  zones.set(name, { name, min: box.min, max: box.max, inside: new Set<number>() });
+  await dbReady;   // guarantee the DB is open (or failed) before we mutate
+  const prev = zones.get(name);
+  zones.set(name, { name, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+  pendingTriggers.add(name);   // (re)build the trigger on the next frame
   if (db) await db.execute(
     "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z]);
+}
+
+function dropZone(name: string): void {
+  const z = zones.get(name);
+  if (z) removeTrigger(z);
+  zones.delete(name);
+  pendingTriggers.delete(name);
+  if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
 }
 
 export function onLoad(): void {
@@ -71,18 +114,16 @@ export function onLoad(): void {
       await db.execute(
         "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, PRIMARY KEY (map, name))");
       await loadMap(Server.mapName);
-      console.log("[zones] onLoad — DB ready");
+      console.log("[zones] onLoad — DB ready (real-trigger backend)");
     } catch (e) {
       console.log(`[zones] init error (zones will not persist): ${e}`);
     } finally {
-      dbReadyResolve();   // unblock upsertZone regardless (on failure, db stays null -> registry-only)
+      dbReadyResolve();
     }
   })();
 
   Server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
 
-  // Publish the inter-plugin interface: synchronous, registry-backed methods (a Promise can't cross the
-  // structured-copy wire, so mutating methods update the registry immediately + fire-and-forget the DB).
   iface = publishInterface("@s2script/zones", "1.0.0", {
     createZone(name: string, min: Vec3, max: Vec3): boolean {
       const nm = sanitizeName(name);
@@ -90,15 +131,15 @@ export function onLoad(): void {
       const box = normBox(min, max);
       if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) return false;
       const prev = zones.get(nm);
-      zones.set(nm, { name: nm, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>() });
-      upsertZone(nm, box).catch(() => {});   // durability, async (registry is already updated above)
+      zones.set(nm, { name: nm, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+      pendingTriggers.add(nm);
+      upsertZone(nm, box).catch(() => {});   // durability, async (registry already updated)
       return true;
     },
     deleteZone(name: string): boolean {
       const nm = sanitizeName(name);
       if (!zones.has(nm)) return false;
-      zones.delete(nm);
-      if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, nm]).catch(() => {});
+      dropZone(nm);
       return true;
     },
     getZones(): { name: string; min: Vec3; max: Vec3 }[] {
@@ -116,32 +157,44 @@ export function onLoad(): void {
   });
   console.log("[zones] publishing @s2script/zones@1.0.0");
 
-  // Detection poll (sub-slice-1 backend, generalized to N zones). ~8 Hz. Emits enter/leave/stay through
-  // the interface with a WIRE-SAFE payload { zone, slot, userId } (never a Player — its methods don't
-  // survive structured copy; consumers resolve via Player.fromSlot/fromUserId in their own context).
+  // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. Entity.onOutput fires for
+  // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.
+  Entity.onOutput("trigger_multiple", "OnStartTouch", (ev) => {
+    if (!ev.caller || !ev.activator || !iface) return;
+    const z = zoneByTriggerIndex(ev.caller.index);
+    if (!z) return;
+    const who = playerByPawnIndex(ev.activator.index);
+    if (!who || z.inside.has(who.slot)) return;
+    z.inside.add(who.slot);
+    iface.emit("enter", { zone: z.name, slot: who.slot, userId: who.userId });
+  });
+  Entity.onOutput("trigger_multiple", "OnEndTouch", (ev) => {
+    if (!ev.caller || !ev.activator || !iface) return;
+    const z = zoneByTriggerIndex(ev.caller.index);
+    if (!z) return;
+    const who = playerByPawnIndex(ev.activator.index);
+    if (!who || !z.inside.has(who.slot)) return;
+    z.inside.delete(who.slot);
+    iface.emit("leave", { zone: z.name, slot: who.slot, userId: who.userId });
+  });
+
+  // Per-frame: (1) build any queued triggers now that the entity system is live; (2) a light STAY re-emit
+  // for players the engine reports as currently inside (no position tests — just the engine-maintained set).
   let frame = 0;
   OnGameFrame.subscribe(() => {
-    if ((frame++ & 7) !== 0 || zones.size === 0 || !iface) return;
-    const players = Player.all();
-    const uid = new Map<number, number>();
-    for (const p of players) uid.set(p.slot, p.userId);
-    for (const z of zones.values()) {
-      const cur = new Set<number>();
-      for (const p of players) {
-        const pw = p.pawn;
-        if (!pw) continue;
-        const o = pw.origin;
-        if (!o) continue;
-        if (contains(z, o.x, o.y, o.z)) {
-          cur.add(p.slot);
-          const ev = { zone: z.name, slot: p.slot, userId: uid.get(p.slot) ?? -1 };
-          if (!z.inside.has(p.slot)) iface.emit("enter", ev);
-          iface.emit("stay", ev);
-        }
-      }
-      for (const s of z.inside) if (!cur.has(s)) iface.emit("leave", { zone: z.name, slot: s, userId: uid.get(s) ?? -1 });
-      z.inside = cur;
+    if (pendingTriggers.size > 0) {
+      for (const name of pendingTriggers) { const z = zones.get(name); if (z) buildTrigger(z); }
+      pendingTriggers.clear();
     }
+    if ((frame++ & 7) !== 0 || !iface) return;
+    let any = false;
+    for (const z of zones.values()) if (z.inside.size > 0) { any = true; break; }
+    if (!any) return;
+    const uid = new Map<number, number>();
+    for (const p of Player.all()) uid.set(p.slot, p.userId);
+    for (const z of zones.values())
+      for (const slot of z.inside)
+        iface.emit("stay", { zone: z.name, slot, userId: uid.get(slot) ?? -1 });
   });
 
   // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size] (in-game, box around you)
@@ -171,15 +224,14 @@ export function onLoad(): void {
   Commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (ctx) => {
     const name = sanitizeName(ctx.args[0] || "");
     if (!name || !zones.has(name)) { ctx.reply(`No zone '${name}' on this map.`); return; }
-    zones.delete(name);
-    if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
+    dropZone(name);
     ctx.reply(`Zone '${name}' deleted.`);
   });
 
   Commands.registerAdmin("sm_zone_list", ADMFLAG.GENERIC, (ctx) => {
     ctx.reply(`Zones on ${currentMap}: ${zones.size}`);
     for (const z of zones.values())
-      ctx.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) inside=${z.inside.size}`);
+      ctx.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
   });
 
   Commands.registerAdmin("sm_zone_export", ADMFLAG.GENERIC, (ctx) => {
@@ -195,17 +247,23 @@ export function onLoad(): void {
     let parsed: Record<string, { min: number[]; max: number[] }>;
     try { parsed = JSON.parse(raw); } catch { ctx.reply("Zones file is not valid JSON."); return; }
     let n = 0;
-    const pending: Promise<void>[] = [];
+    const pend: Promise<void>[] = [];
     for (const key of Object.keys(parsed)) {
       const name = sanitizeName(key);
       const e = parsed[key];
       if (!name || !e || !Array.isArray(e.min) || !Array.isArray(e.max) || e.min.length < 3 || e.max.length < 3) continue;
       const box = normBox({ x: e.min[0], y: e.min[1], z: e.min[2] }, { x: e.max[0], y: e.max[1], z: e.max[2] });
-      pending.push(upsertZone(name, box));
+      pend.push(upsertZone(name, box));
       n++;
     }
-    Promise.all(pending).then(() => ctx.reply(`Imported ${n} zone(s).`)).catch((err) => ctx.reply(`Import error: ${err}`));
+    Promise.all(pend).then(() => ctx.reply(`Imported ${n} zone(s).`)).catch((err) => ctx.reply(`Import error: ${err}`));
   });
 
-  console.log("[zones] onLoad — commands registered (origin-polling backend)");
+  console.log("[zones] onLoad — commands registered (real-trigger backend)");
+}
+
+// Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
+// (created entities are game-world-owned, not auto-ledgered). onLoad rebuilds them from the DB.
+export function onUnload(): void {
+  clearAllTriggers();
 }

@@ -204,6 +204,19 @@ typedef const char* (*s2_translations_read_fn)(const char* lang, const char* nam
 /* client_language(slot): the client's cl_language ("english"/"german"/...), or null. */
 typedef const char* (*s2_client_language_fn)(int slot);
 
+/* collision_activate: register a serial-gated entity's collision bounds in the spatial partition
+ * (zones real-trigger slice). A raw schema-write bbox on a runtime-created trigger_multiple never
+ * fires touch until the entity joins the collision partition; this runs the CCollisionProperty
+ * registration path (CollisionMarkPartitionDirty ± the init sequence Task 1 proves). Returns 1 if
+ * the call was made, 0 if unresolved/stale (degrade-never-crash). ENGINE-GENERIC. */
+typedef int (*s2_collision_activate_fn)(int index, int serial);
+
+/* entity_set_model: CBaseEntity::SetModel(const char*) on a serial-gated entity (zones real-trigger
+ * slice). Gives a runtime entity a model + its collision — a trigger_multiple needs a model to build
+ * the physics volume that fires touch (map triggers get it via InitTrigger->SetModel(GetModelName());
+ * a runtime entity's model name is empty). Returns 1 on success, 0 if unresolved/stale. ENGINE-GENERIC. */
+typedef int (*s2_entity_set_model_fn)(int index, int serial, const char* modelName);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -297,6 +310,10 @@ typedef struct {
     /* Translations slice — APPENDED after convar_register; order is the ABI. */
     s2_translations_read_fn  translations_read;
     s2_client_language_fn    client_language;
+    /* Zones real-trigger slice — APPENDED after client_language (the struct tail); order is the ABI. */
+    s2_collision_activate_fn collision_activate;
+    /* Zones real-trigger slice — APPENDED after collision_activate; order is the ABI. */
+    s2_entity_set_model_fn entity_set_model;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

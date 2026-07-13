@@ -603,6 +603,64 @@
     }
   };
 
+  // TriggerZone — a runtime trigger_multiple with a programmatic AABB (zones real-trigger backend).
+  // create -> configure collision schema -> spawn -> teleport -> Enable/activateCollision -> setModel ->
+  // Enable/activateCollision (the arbitrary-box recipe: the post-spawn setModel builds the physics
+  // aggregate and activateCollision(=SetCollisionBounds+SetSolid(BBOX)) reshapes it to the box, so the
+  // trigger fires OnStartTouch/OnEndTouch). Detection is the caller's (Entity.onOutput on those outputs).
+  // Non-solid (players pass through). Game-world-owned; the caller owns remove().
+  function collOffset(field) {
+    var base = __s2_schema_offset("CBaseModelEntity", "m_Collision");   // embedded CCollisionProperty
+    var rel  = __s2_schema_offset("CCollisionProperty", field);
+    return (base >= 0 && rel >= 0) ? (base + rel) : -1;
+  }
+  function writeVecAt(ref, off, x, y, z) {
+    if (off < 0) return false;
+    var ok = ref.writeFloat32(off, +x) && ref.writeFloat32(off + 4, +y) && ref.writeFloat32(off + 8, +z);
+    if (ok) ref.notifyStateChanged(off);
+    return !!ok;
+  }
+  var TriggerZone = {
+    // min/max = world-space corners ({x,y,z}). opts (optional): { model?, spawnflags? }.
+    // The model is REQUIRED for the recipe to fire touch — any string works (SetModel builds an
+    // error-model aggregate that SetSolid reshapes to the box); defaults to "models/error.vmdl".
+    create: function (min, max, opts) {
+      opts = opts || {};
+      var ent = globalThis.__s2pkg_entity;
+      var cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2, cz = (min.z + max.z) / 2;
+      var hx = Math.abs(max.x - min.x) / 2, hy = Math.abs(max.y - min.y) / 2, hz = Math.abs(max.z - min.z) / 2;
+      var sf = opts.spawnflags != null ? opts.spawnflags : 1;   // spawnflags (default 1 = clients)
+      var SOLID_VPHYSICS = 6, COLLISION_GROUP_WEAPON = 14;      // players pass through weapons
+      var model = opts.model || "models/error.vmdl";
+      var ref = ent.createEntity("trigger_multiple");
+      if (!ref) return null;
+      // Clear EF_IN_STAGING_LIST(0x4) before DispatchSpawn: a staged entity spawns without proper touch
+      // integration, so touch never fires. CEntityIdentity::m_flags via m_pEntity(@0x10) -> m_flags(@48).
+      var preSpawnFlags = ref.readInt32Via([16], 48);
+      if (preSpawnFlags !== null) ref.writeInt32Via([16], 48, preSpawnFlags & ~4);
+      var sfOff = __s2_schema_offset("CBaseEntity", "m_spawnflags"); if (sfOff >= 0) { ref.writeUInt32(sfOff, sf >>> 0); ref.notifyStateChanged(sfOff); }
+      var stOff = collOffset("m_nSolidType");    if (stOff >= 0) { ref.writeUInt8(stOff, SOLID_VPHYSICS); ref.notifyStateChanged(stOff); }
+      var fsOff = collOffset("m_usSolidFlags");   if (fsOff >= 0) { ref.writeUInt8(fsOff, 0); ref.notifyStateChanged(fsOff); }
+      var cgOff = collOffset("m_CollisionGroup"); if (cgOff >= 0) { ref.writeUInt8(cgOff, COLLISION_GROUP_WEAPON); ref.notifyStateChanged(cgOff); }
+      // m_vecMins/Maxs are OBB bounds RELATIVE TO ORIGIN — with the origin teleported to the box CENTER,
+      // the bounds must be LOCAL ±half (giving world bounds center±half).
+      writeVecAt(ref, collOffset("m_vecMins"), -hx, -hy, -hz);
+      writeVecAt(ref, collOffset("m_vecMaxs"),  hx,  hy,  hz);
+      var dOff = __s2_schema_offset("CBaseTrigger", "m_bDisabled"); if (dOff >= 0) { ref.writeBool(dOff, false); ref.notifyStateChanged(dOff); }
+      ref.spawn();                     // DispatchSpawn
+      ref.teleport([cx, cy, cz]);      // then teleport to the box center
+      ref.acceptInput("Enable");       // arm the trigger
+      ref.activateCollision();         // register in the spatial partition
+      // The post-spawn SetModel builds the physics aggregate (partition registration alone never fires
+      // touch); re-Enable + re-activate after, exactly like the proven path. Do NOT write solid/bounds
+      // after SetModel — any such write destroys the model aggregate and touch stops firing.
+      ref.setModel(model);
+      ref.acceptInput("Enable");
+      ref.activateCollision();
+      return { ref: ref, center: { x: cx, y: cy, z: cz }, remove: function () { return ref.remove(); } };
+    }
+  };
+
   // GameRules — read CCSGameRules via the cs_gamerules proxy's m_pGameRules pointer.
   // Serial-gated at the proxy root (readVia); offsets live-resolved per access (self-healing across map
   // changes — the proxy dies and re-resolves). All getters read null if the proxy is gone.
@@ -678,5 +736,5 @@
 
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone });
 })();

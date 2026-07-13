@@ -249,6 +249,77 @@
         "pattern": "55 48 89 E5 41 57 49 89 FF 41 56 41 55 41 54 49 89 D4 53 48 89 F3 48 83 EC ? 48 8D 05",
         "resolve": "direct"
       }
+    },
+    // Zones real-trigger slice: CBaseEntity::SetModel(const char* modelName) — gives an entity a model
+    // (resolves the name via modelinfo [vtbl+0x68], then tail-calls the real SetModel with the model).
+    // A runtime trigger_multiple needs a model to build the physics volume that fires touch. Fresh
+    // CSSharp gamedata (CBaseModelEntity_SetModel) for build 2000873; the sig matched two identical
+    // wrappers, so the lea displacement is pinned to select the first. Validated UNIQUE @ 2026-07-12
+    // in the pinned libserver.so (@0x15d9cc0).
+    "SetModel": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 08 48 8D 05 3D ED 28 01 48 8B 38 48 8B 07 FF 50 68 48 89 DF 48 8B 5D F8 C9 48 89 C6 E9",
+        "resolve": "direct"
+      }
+    },
+    // Zones real-trigger slice: CCollisionProperty::MarkPartitionHandleDirty(this) — enqueues a CBaseEntity
+    // into the dirty spatial-partition list so the engine creates the collision partition handle for a
+    // RUNTIME-created trigger_multiple (a raw schema-write bbox never registers otherwise — the parked
+    // sub-slice-1 finding). rdi = CCollisionProperty* (= entity + live schemaOffset(CBaseModelEntity,m_Collision),
+    // observed 0x8c8). Identity (self-resolved @0x17e91e0, 2026-07-11): mov rdi,[rdi+8] (m_pOuter); mov
+    // eax,[rdi+0x6f4] (m_iEFlags); SOLE caller of AddEntity@0x17e6280 which packs CEntityHandles into the .bss
+    // dirty-list singleton @0x284f780 (drained per-frame by ParallelUpdateSurroundingBoundsForDirtyEntities).
+    // NOTE: CS2 schema entity classes carry NO C++ RTTI (the name lives in the SchemaSystem type table, not an
+    // Itanium type_info), so this was anchored via ModSharp's SetSolid/SetCollisionBounds sigs, NOT a vtable
+    // index. A DIRECT prologue pattern (match offset == fn start); the trailing jcc rel32 disp is wildcarded.
+    // Validated UNIQUE (1 match) in the pinned libserver.so. Per-update the prologue/offsets move (treadmill).
+    "CollisionMarkPartitionDirty": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 83 EC 18 48 8B 7F 08 8B 87 F4 06 00 00 F6 C4 80 0F 85 ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
+    // Zones real-trigger slice: CCollisionProperty::UpdatePartition(this) @0x17e6710 — the IMMEDIATE
+    // partition-handle create/destroy (manages the handle at this+0xb0 via the spatial-partition interface;
+    // gated on m_nSolidType at this+0x5b). rdi = CCollisionProperty*. collision_activate calls this right after
+    // MarkPartitionHandleDirty so the trigger is touch-testable THIS frame instead of waiting for the deferred
+    // per-frame drain (recipe A+B; safe alongside A — the drain's re-process is idempotent). A DIRECT prologue
+    // pattern. Validated UNIQUE (1 match) in the pinned libserver.so.
+    "CollisionUpdatePartition": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 28 48 8B B7 B0 00 00 00 48 85 F6 74 1E",
+        "resolve": "direct"
+      }
+    },
+    // ModSharp recipe (zones real-trigger, non-solid fix): the REAL engine setters. CCollisionProperty::
+    // SetSolid(SolidType) rebuilds the Rubikon collision SHAPE honoring the solid flags (early-returns on
+    // an unchanged type — the shim forces a SOLID_NONE transition). CBaseModelEntity::SetCollisionBounds
+    // (a this-adjusting thunk) sets bounds + surround. Sigs cross-validated UNIQUE vs the pinned
+    // libserver.so; hinted by ModSharp git118 gamedata, self-validated per the RE doctrine.
+    // RE-ENABLED (2026-07-13): the box-from-bounds path. CCollisionProperty::SetSolid rebuilds the Rubikon
+    // collision SHAPE from the current bounds honoring the solid flags (ModSharp sig, validated UNIQUE @
+    // 0x17f3bd0 on build 2000873 — was NOT stale, just deliberately disabled earlier). The jmp displacement
+    // is wildcarded (treadmill-robust). Paired with SetCollisionBounds, this builds an ARBITRARY box trigger
+    // from m_vecMins/Maxs — no model needed (Shim_CollisionActivate: SetCollisionBounds -> SetSolid(BBOX) ->
+    // SetSolid(NONE) for pass-through-but-trigger).
+    "CollisionSetSolid": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "40 38 77 5B 74 ? 40 0F B6 F6 E9 ? ? ? ? 90",
+        "resolve": "direct"
+      }
+    },
+    // CBaseModelEntity::SetCollisionBounds(&mins,&maxs) — a thunk (add rdi,imm; jmp real). ModSharp sig,
+    // validated UNIQUE @ 0xf7d600 on build 2000873.
+    "SetCollisionBounds": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 81 C7 ? ? ? ? E9 ? ? ? ? CC CC CC CC 55 48 8D 15",
+        "resolve": "direct"
+      }
     }
   }
 }
