@@ -1,5 +1,12 @@
 # @s2script/trace
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [4e69d7d]
+  - @s2script/entity@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes
