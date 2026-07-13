@@ -1,5 +1,5 @@
 // @s2script/zones — DB-backed, per-map, coordinate-defined zones with JSON export/import, operator CRUD,
-// and a published inter-plugin interface (`@s2script/zones@1.0.0`, emits enter/leave/stay).
+// and a published inter-plugin interface (`@s2script/zones@0.1.0`, emits enter/leave/stay).
 //
 // DETECTION BACKEND: REAL ENGINE TRIGGERS. Each zone is a runtime `trigger_multiple` whose collision is an
 // arbitrary box built from the zone bounds (createEntity -> SetModel registers the touch aggregate ->
@@ -124,7 +124,7 @@ export function onLoad(): void {
 
   Server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
 
-  iface = publishInterface("@s2script/zones", "1.0.0", {
+  iface = publishInterface("@s2script/zones", "0.1.0", {
     createZone(name: string, min: Vec3, max: Vec3): boolean {
       const nm = sanitizeName(name);
       if (!nm || !min || !max) return false;
@@ -155,7 +155,7 @@ export function onLoad(): void {
       return out;
     },
   });
-  console.log("[zones] publishing @s2script/zones@1.0.0");
+  console.log("[zones] publishing @s2script/zones@0.1.0");
 
   // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. Entity.onOutput fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.

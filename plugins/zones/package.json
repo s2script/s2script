@@ -6,17 +6,19 @@
   "s2script": {
     "apiVersion": "1.x",
     "pluginDependencies": {
-      "@s2script/commands": "^1.0.0",
-      "@s2script/admin": "^1.0.0",
-      "@s2script/db": "^1.0.0",
-      "@s2script/server": "^1.0.0",
-      "@s2script/config": "^1.0.0",
-      "@s2script/frame": "^1.0.0",
-      "@s2script/interfaces": "^1.0.0",
-      "@s2script/cs2": "^1.0.0"
+      "@s2script/commands": "^0.1.0",
+      "@s2script/admin": "^0.2.0",
+      "@s2script/db": "^0.1.0",
+      "@s2script/server": "^0.1.0",
+      "@s2script/config": "^0.1.0",
+      "@s2script/frame": "^0.1.0",
+      "@s2script/interfaces": "^0.1.0",
+      "@s2script/cs2": "^0.3.0",
+      "@s2script/entity": "^0.2.0",
+      "@s2script/math": "^0.1.0"
     },
     "publishes": {
-      "@s2script/zones": "1.0.0"
+      "@s2script/zones": "0.1.0"
     }
   }
 }
