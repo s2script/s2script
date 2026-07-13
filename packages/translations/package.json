@@ -1,6 +1,6 @@
 {
   "name": "@s2script/translations",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "types": "index.d.ts",
   "publishConfig": {
     "access": "public"
