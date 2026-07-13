@@ -59,8 +59,20 @@ jobs:
           # registry.npmjs.org and changesets/action manages the OIDC .npmrc,
           # so trusted publishing works without it.
 
-      - name: Ensure npm supports OIDC trusted publishing
-        run: npm install -g npm@latest
+      - name: Pin npm 11 (OIDC needs >= 11.5.1; npm 12 is release-breaking)
+        # DO NOT use npm@latest — it is now 12.x, with two regressions that break
+        # this release:
+        #   1. Under the concurrent `npm info --json` burst that `changeset publish`
+        #      fires for every workspace package, npm 12 returns output WITHOUT the
+        #      `.versions` array, so changesets treats every already-published
+        #      package as unpublished and re-publishes it -> "cannot publish over
+        #      the previously published versions" -> the whole release fails.
+        #      Reproduced on node 22: npm 11 = 0 misfires, npm 12 = 31/31. (A single
+        #      sequential `npm info` is fine on npm 12; only the burst regresses.)
+        #   2. npm 12 breaks provenance generation (sigstore under libnpmpublish,
+        #      npm/cli#9722).
+        # shadcn-svelte pins npm@11 for the same reasons.
+        run: npm install -g npm@11
 
       - name: Install
         run: npm ci
