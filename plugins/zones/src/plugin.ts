@@ -18,6 +18,7 @@ import { publishInterface, PublishHandle } from "@s2script/interfaces";
 import { Entity } from "@s2script/entity";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
 import { Vector } from "@s2script/math";
+import { Chat } from "@s2script/chat";
 
 interface Vec3 { x: number; y: number; z: number; }
 interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set<number>; trigger: TriggerZoneHandle | null; }
@@ -87,6 +88,27 @@ function hideZone(name: string): void {
 }
 function clearAllBeams(): void { for (const name of Array.from(shown.keys())) hideZone(name); }
 
+// --- in-game E-to-mark editor --------------------------------------------------------------------------
+// sm_zone_edit <name> starts a session: press E at two opposite corners (a live rubber-band box tracks the
+// walking position between the two presses). Rising-edge button polling (the menu system's technique), one
+// session per slot, 60s TTL. Cleanup: clearAllEdits() on map change + onUnload (removes the preview beams).
+const IN_USE = 32;   // in_buttons.h (E)
+interface EditSession { name: string; cornerA: Vec3 | null; prevMask: number; expiresAt: number; preview: BeamHandle[]; }
+const edits = new Map<number, EditSession>();   // keyed by 0-based player slot
+
+function clearPreview(s: EditSession): void {
+  for (const b of s.preview) { try { b.remove(); } catch { /* stale/already-gone */ } }
+  s.preview = [];
+}
+function cancelEdit(slot: number, notice?: string): void {
+  const s = edits.get(slot);
+  if (!s) return;
+  clearPreview(s);
+  edits.delete(slot);
+  if (notice) Chat.toSlot(slot, notice);
+}
+function clearAllEdits(): void { for (const slot of Array.from(edits.keys())) cancelEdit(slot); }
+
 // --- trigger lifecycle ---------------------------------------------------------------------------------
 function removeTrigger(z: Zone): void {
   if (z.trigger) { try { z.trigger.remove(); } catch { /* stale/already-gone */ } z.trigger = null; }
@@ -114,6 +136,7 @@ function playerByPawnIndex(idx: number): { slot: number; userId: number } | null
 
 async function loadMap(map: string): Promise<void> {
   clearAllBeams();
+  clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
   clearAllTriggers();
   currentMap = map;
   zones.clear();
@@ -261,6 +284,56 @@ export function onLoad(): void {
         iface.emit("stay", { zone: z.name, slot, userId: uid.get(slot) ?? -1 });
   });
 
+  // Dedicated editor poll: rising-edge E detection + a live rubber-band preview. A SECOND subscription that
+  // early-returns when no session is active (so it costs nothing when nobody is editing).
+  OnGameFrame.subscribe(() => {
+    if (edits.size === 0) return;
+    const now = Date.now();
+    for (const [slot, s] of edits) {
+      if (now >= s.expiresAt) { cancelEdit(slot, "[zones] Edit session timed out."); continue; }
+      const pw = Pawn.forSlot(slot);
+      if (!pw) { cancelEdit(slot, "[zones] Edit session cancelled (no pawn)."); continue; }
+      const mask = pw.buttons;                     // 0 if unreadable — a momentary 0 can re-arm the edge; acceptable
+      const pressed = mask & ~s.prevMask;
+      s.prevMask = mask;
+      const origin = pw.origin;
+      // Live rubber-band: corner A set, corner B pending -> retarget the 12 preview beams to the walking box.
+      if (s.cornerA && s.preview.length === 12 && origin) {
+        const box = normBox(s.cornerA, origin);
+        const edges = box12(box.min, box.max);
+        for (let i = 0; i < 12; i++)
+          s.preview[i].update(new Vector(edges[i].a.x, edges[i].a.y, edges[i].a.z), new Vector(edges[i].b.x, edges[i].b.y, edges[i].b.z));
+      }
+      if (!(pressed & IN_USE)) continue;
+      if (!origin) { Chat.toSlot(slot, "[zones] No position — try again."); continue; }   // don't consume the press
+      if (!s.cornerA) {
+        // 1st press: pin corner A (a COPY — origin is a snapshot but never alias it) + create the preview collapsed at A.
+        s.cornerA = { x: origin.x, y: origin.y, z: origin.z };
+        for (const e of box12(s.cornerA, s.cornerA)) {
+          const b = Beam.draw(new Vector(e.a.x, e.a.y, e.a.z), new Vector(e.b.x, e.b.y, e.b.z), { color: [255, 165, 0, 255], width: 2 });
+          if (b) s.preview.push(b);
+        }
+        Chat.toSlot(slot, "[zones] Corner 1 set — walk to the opposite corner and press E.");
+      } else {
+        // 2nd press: normalize, reject zero-volume (keep the session), else save + swap preview for a timed showZone.
+        const box = normBox(s.cornerA, { x: origin.x, y: origin.y, z: origin.z });
+        if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) {
+          Chat.toSlot(slot, "[zones] Zero-volume box — move further from corner 1 and press E again.");
+          continue;
+        }
+        const name = s.name;
+        cancelEdit(slot);   // end the session + remove the preview BEFORE the async save
+        upsertZone(name, box)
+          .then(() => {
+            const z = zones.get(name);
+            if (z) showZone(z, 10);   // timed confirmation wireframe of the SAVED box
+            Chat.toSlot(slot, `[zones] Zone '${name}' saved.`);
+          })
+          .catch((e) => Chat.toSlot(slot, `[zones] Save failed: ${e}`));
+      }
+    }
+  });
+
   // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size] (in-game, box around you)
   Commands.registerAdmin("sm_zone_add", ADMFLAG.GENERIC, (ctx) => {
     const name = sanitizeName(ctx.args[0] || "");
@@ -283,6 +356,24 @@ export function onLoad(): void {
     upsertZone(name, b)
       .then(() => ctx.reply(`Zone '${name}' saved (${b.min.x.toFixed(0)},${b.min.y.toFixed(0)},${b.min.z.toFixed(0)})-(${b.max.x.toFixed(0)},${b.max.y.toFixed(0)},${b.max.z.toFixed(0)})`))
       .catch((e) => ctx.reply(`Save failed: ${e}`));
+  });
+
+  // sm_zone_edit <name> — in-game: press E at two opposite corners; a live rubber-band box tracks between.
+  Commands.registerAdmin("sm_zone_edit", ADMFLAG.GENERIC, (ctx) => {
+    if (ctx.callerSlot < 0) { ctx.reply("sm_zone_edit is in-game only (it marks corners at your position)."); return; }
+    const raw = ctx.args[0] || "";
+    if (!raw || raw === "cancel") {
+      if (edits.has(ctx.callerSlot)) { cancelEdit(ctx.callerSlot); ctx.reply("Zone edit cancelled."); }
+      else ctx.reply("Usage: sm_zone_edit <name>  |  sm_zone_edit cancel");
+      return;
+    }
+    const name = sanitizeName(raw);
+    if (!name) { ctx.reply("Invalid zone name."); return; }
+    const pw = Pawn.forSlot(ctx.callerSlot);
+    if (!pw || !pw.origin) { ctx.reply("No position — spawn in first."); return; }
+    cancelEdit(ctx.callerSlot);   // replace any prior session (and remove its preview)
+    edits.set(ctx.callerSlot, { name, cornerA: null, prevMask: pw.buttons, expiresAt: Date.now() + 60_000, preview: [] });
+    ctx.reply(`Editing zone '${name}': walk to a corner and press E; press E again at the opposite corner. (60s timeout; sm_zone_edit cancel to abort)`);
   });
 
   Commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (ctx) => {
@@ -366,5 +457,6 @@ export function onLoad(): void {
 // (created entities are game-world-owned, not auto-ledgered). onLoad rebuilds them from the DB.
 export function onUnload(): void {
   clearAllBeams();
+  clearAllEdits();
   clearAllTriggers();
 }

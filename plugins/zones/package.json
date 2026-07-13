@@ -8,6 +8,7 @@
     "pluginDependencies": {
       "@s2script/commands": "^0.1.0",
       "@s2script/admin": "^0.2.0",
+      "@s2script/chat": "^0.1.0",
       "@s2script/db": "^0.1.0",
       "@s2script/server": "^0.1.0",
       "@s2script/config": "^0.1.0",
