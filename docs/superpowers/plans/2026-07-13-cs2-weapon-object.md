@@ -568,7 +568,7 @@ function livePawns(): Array<{ slot: number; pawn: NonNullable<ReturnType<typeof 
 Commands.register("sm_wpn", (ctx) => {
   for (const { slot, pawn } of livePawns()) {
     const w = pawn.activeWeapon;
-    const active = w ? "def=" + w.itemDefinitionIndex + " clip1=" + w.clip1 + " paint=" + w.paintKit : "none";
+    const active = w ? "ref#" + w.ref.index + " clip1=" + w.clip1 + "/" + w.clip2 + " paint=" + w.paintKit : "none";
     ctx.reply("[wpn] slot=" + slot + " active=" + active + " count=" + pawn.weapons.length);
   }
 });
