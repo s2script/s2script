@@ -114,6 +114,19 @@ pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) {
     });
 }
 
+/// Shim → core: an IEntityListener callback (create/spawn/delete) with the entity's packed
+/// CEntityHandle (ToInt()) + class name. Notify-only: dispatches to the `Entity.on{Create,Spawn,Delete}`
+/// JS subscribers. `catch_unwind`-wrapped; null/invalid-UTF-8 degrade to a no-op.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class_name: *const c_char, handle: c_int) {
+    let _ = catch_unwind(|| {
+        if kind.is_null() || class_name.is_null() { return; }
+        let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return };
+        let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return };
+        v8host::dispatch_entity_event(kind_str, class_str, handle as i32);
+    });
+}
+
 /// Shim → core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
 /// (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
 /// (a pre-hook returned Handled/Stop), else 0.
