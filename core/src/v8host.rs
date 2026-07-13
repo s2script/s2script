@@ -9619,6 +9619,36 @@ mod frame_tests {
     thread_local! { static ENTITY_INSTALL_CALLS: std::cell::Cell<i32> = std::cell::Cell::new(0); }
     extern "C" fn capture_entity_install() -> c_int { ENTITY_INSTALL_CALLS.with(|c| c.set(c.get() + 1)); 1 }
 
+    // --- Fake resolvable-entity plumbing for the live-EntityRef dispatch test ---
+    // A leaked (test-only, tiny) entity whose identity-pointer field (offset 0x10 = ENT_IDENTITY_PTR_OFFSET)
+    // points to a leaked identity whose handle field (offset 0x10 = ENT_IDENTITY_HANDLE_OFFSET) encodes
+    // (idx, serial). #[repr(C)] + a 0x10-byte pad prefix gives natural alignment for read_ptr/read_u32's
+    // direct derefs. `fake_ent_by_index` returns the entity for the armed index; leaking keeps the raw
+    // pointers valid for the extern "C" callback (a real CEntityInstance is likewise long-lived).
+    #[repr(C)]
+    struct FakeIdent { pad: [u8; 0x10], handle: u32 }
+    #[repr(C)]
+    struct FakeEnt { pad: [u8; 0x10], ident: *const u8 }
+    thread_local! {
+        static FAKE_ENT_INDEX: std::cell::Cell<i32> = std::cell::Cell::new(-1);
+        static FAKE_ENT_PTR: std::cell::Cell<*const u8> = std::cell::Cell::new(std::ptr::null());
+    }
+    extern "C" fn fake_ent_by_index(idx: c_int) -> *mut std::os::raw::c_void {
+        if idx == FAKE_ENT_INDEX.with(|c| c.get()) { FAKE_ENT_PTR.with(|c| c.get()) as *mut std::os::raw::c_void }
+        else { std::ptr::null_mut() }
+    }
+    /// Leak a fake entity+identity that `entity_resolve_ptr(idx, serial)` resolves for `handle`, arm
+    /// `fake_ent_by_index` for its index, and return the decoded (idx, serial). Derived via the public
+    /// `decode_handle` so it stays correct regardless of `HANDLE_ENTRY_BITS`.
+    fn arm_fake_entity(handle: u32) -> (i32, i32) {
+        let (idx, serial) = crate::entity::decode_handle(handle);
+        let ident: &'static FakeIdent = Box::leak(Box::new(FakeIdent { pad: [0; 0x10], handle }));
+        let ent: &'static FakeEnt = Box::leak(Box::new(FakeEnt { pad: [0; 0x10], ident: ident as *const FakeIdent as *const u8 }));
+        FAKE_ENT_INDEX.with(|c| c.set(idx));
+        FAKE_ENT_PTR.with(|c| c.set(ent as *const FakeEnt as *const u8));
+        (idx, serial)
+    }
+
     /// dispatch_entity_event delivers to the matching kind+class subscriber AND the "*" wildcard, with
     /// (entity, className). With no engine ops entity_resolve_ptr degrades to null, so the entity arg is
     /// null (also forced by handle=-1) and we assert on the className arg. Mirrors map_start_dispatch.
@@ -9671,6 +9701,33 @@ mod frame_tests {
         assert_eq!(ENTITY_INSTALL_CALLS.with(|c| c.get()), 1, "install on first subscribe");
         eval_in_context_string("pel3", r#"__s2pkg_entity.Entity.onDelete("b", function(){}); "ok""#);
         assert_eq!(ENTITY_INSTALL_CALLS.with(|c| c.get()), 1, "no second install");
+        shutdown();
+    }
+
+    /// dispatch_entity_event delivers a LIVE (non-null, serial-gated) EntityRef when the handle resolves:
+    /// with a fake `ent_by_index` wired, the "no entity" (-1 / resolve-null) path is bypassed, so
+    /// `build_entity_ref` runs and the handler receives an EntityRef whose `isValid()===true` and whose
+    /// index/serial match the handle. Exercises the non-null branch the other three tests (handle=-1)
+    /// never hit; complements the live gate (which observed `valid=true`).
+    #[test]
+    fn entity_event_dispatch_delivers_live_entityref() {
+        let _ = init(dummy_logger());
+        let handle: u32 = 0x0001_8005;                       // decodes to a live (idx>0, serial>0)
+        let (idx, serial) = arm_fake_entity(handle);
+        assert!(idx > 0 && serial > 0, "chosen handle must decode to a live (idx>0, serial>0), got ({idx},{serial})");
+        set_engine_ops(Some(S2EngineOps { ent_by_index: Some(fake_ent_by_index), ..mock_event_ops() }));
+        create_plugin_context("pel4");
+        eval_in_context_string("pel4", r#"
+            globalThis.__got = "none";
+            __s2pkg_entity.Entity.onSpawn("weapon_ak47", function (e, cls) {
+                globalThis.__got = (e === null) ? "null"
+                    : ("live:" + cls + ":" + e.isValid() + ":" + e.index + ":" + e.serial);
+            });
+            "ok"
+        "#);
+        dispatch_entity_event("spawn", "weapon_ak47", handle as i32);
+        assert_eq!(eval_in_context_string("pel4", "globalThis.__got"),
+                   format!("live:weapon_ak47:true:{idx}:{serial}"));
         shutdown();
     }
 

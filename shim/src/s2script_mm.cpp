@@ -2886,6 +2886,16 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
     if (s_wantEntityListener && s_pRemoveListenerEntity) {
         CGameEntitySystem* es = GetEntitySystem();
         if (es) s_pRemoveListenerEntity(es, S2_GetEntityListener());
+    } else if (s_wantEntityListener && s_pAddListenerEntity && !s_pRemoveListenerEntity) {
+        // We registered the listener (AddListenerEntity resolved) but CANNOT unregister it
+        // (RemoveListenerEntity signature is unresolved/stale on this build). The listener object is
+        // about to be freed with the .so, so the next engine-driven entity create/spawn/delete would
+        // call a dangling vtable -> SIGSEGV. We cannot safely remove it, so at least tell the operator
+        // loudly (the boot GAMEDATA VALIDATION gate also flags the stale RemoveListenerEntity sig).
+        META_CONPRINTF("[s2script] WARN: entity listener registered but RemoveListenerEntity is "
+                       "unresolved on this build -- a DANGLING listener remains; do NOT hot-unload "
+                       "s2script until the RemoveListenerEntity signature is regenerated (regenerate "
+                       "gamedata for this CS2 build).\n");
     }
 
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
