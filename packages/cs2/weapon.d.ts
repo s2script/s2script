@@ -8,7 +8,7 @@ import type { Pawn } from "./index";
 
 /**
  * A CS2 weapon entity (CCSWeaponBase). All generated field accessors (clip1, clip2, fallbackPaintKit,
- * itemDefinitionIndex, ownerEntity, inherited health/teamNum/...) are read+write; a stale weapon reads null.
+ * ownerEntity, inherited health/teamNum/...) are read+write; a stale weapon reads null.
  */
 export interface Weapon extends CCSWeaponBase {
   /** The backing entity ref (escape hatch to the raw EntityRef surface). */
