@@ -28,6 +28,9 @@ let currentMap = "";
 const zones = new Map<string, Zone>();
 let iface: PublishHandle | null = null;
 
+function emitCreated(z: Zone): void { if (iface) iface.emit("created", { zone: z.name, min: z.min, max: z.max, tags: z.tags }); }
+function emitDeleted(name: string): void { if (iface) iface.emit("deleted", { zone: name }); }
+
 // Zones whose trigger still needs to be (re)created. createEntity is unsafe at onMapStart (the entity
 // system isn't live yet — it crashes), so we NEVER create a trigger inline: we queue the zone here and
 // build it on the next OnGameFrame, when the map is fully live. loadMap + upsertZone both queue.
@@ -139,6 +142,7 @@ async function loadMap(map: string): Promise<void> {
   clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
   clearAllTriggers();
   currentMap = map;
+  for (const name of zones.keys()) emitDeleted(name);   // map change: the old map's zones are cleared
   zones.clear();
   if (!db) return;
   const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
@@ -153,6 +157,7 @@ async function loadMap(map: string): Promise<void> {
       trigger: null,
     });
     pendingTriggers.add(name);   // build on the next frame (entity system live)
+    emitCreated(zones.get(name)!);
   }
   console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
 }
@@ -163,6 +168,7 @@ async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: st
   const t = tags !== undefined ? tags : (prev ? prev.tags : []);
   zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
   pendingTriggers.add(name);   // (re)build the trigger on the next frame
+  emitCreated(zones.get(name)!);
   if (db) await db.execute(
     "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, t.join(",")]);
@@ -172,6 +178,7 @@ function dropZone(name: string): void {
   const z = zones.get(name);
   if (z) removeTrigger(z);
   zones.delete(name);
+  emitDeleted(name);
   pendingTriggers.delete(name);
   hideZone(name);
   if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
