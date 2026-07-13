@@ -16,7 +16,8 @@ import { config } from "@s2script/config";
 import { OnGameFrame } from "@s2script/frame";
 import { publishInterface, PublishHandle } from "@s2script/interfaces";
 import { Entity } from "@s2script/entity";
-import { Player, Pawn, TriggerZone, TriggerZoneHandle } from "@s2script/cs2";
+import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
+import { Vector } from "@s2script/math";
 
 interface Vec3 { x: number; y: number; z: number; }
 interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set<number>; trigger: TriggerZoneHandle | null; }
@@ -53,6 +54,39 @@ function normBox(a: Vec3, b: Vec3): { min: Vec3; max: Vec3 } {
   };
 }
 
+// --- beam wireframe viz --------------------------------------------------------------------------------
+interface ShownEntry { beams: BeamHandle[]; expiresAt: number; }   // expiresAt: wall-clock ms; 0 = persistent
+const shown = new Map<string, ShownEntry>();
+
+// The 12 edges of the AABB [min,max]: 8 corners -> 4 bottom + 4 top + 4 vertical.
+function box12(min: Vec3, max: Vec3): { a: Vec3; b: Vec3 }[] {
+  const c: Vec3[] = [
+    { x: min.x, y: min.y, z: min.z }, { x: max.x, y: min.y, z: min.z },
+    { x: max.x, y: max.y, z: min.z }, { x: min.x, y: max.y, z: min.z },
+    { x: min.x, y: min.y, z: max.z }, { x: max.x, y: min.y, z: max.z },
+    { x: max.x, y: max.y, z: max.z }, { x: min.x, y: max.y, z: max.z },
+  ];
+  const e: [number, number][] = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  return e.map(([i, j]) => ({ a: c[i], b: c[j] }));
+}
+
+function showZone(z: Zone, seconds: number): void {
+  hideZone(z.name);   // never stack two beam sets for one zone
+  const beams: BeamHandle[] = [];
+  for (const e of box12(z.min, z.max)) {
+    const b = Beam.draw(new Vector(e.a.x, e.a.y, e.a.z), new Vector(e.b.x, e.b.y, e.b.z), { color: [0, 255, 0, 255], width: 2 });
+    if (b) beams.push(b);
+  }
+  shown.set(z.name, { beams, expiresAt: seconds > 0 ? Date.now() + seconds * 1000 : 0 });
+}
+function hideZone(name: string): void {
+  const entry = shown.get(name);
+  if (!entry) return;
+  for (const b of entry.beams) { try { b.remove(); } catch { /* stale/already-gone */ } }
+  shown.delete(name);
+}
+function clearAllBeams(): void { for (const name of Array.from(shown.keys())) hideZone(name); }
+
 // --- trigger lifecycle ---------------------------------------------------------------------------------
 function removeTrigger(z: Zone): void {
   if (z.trigger) { try { z.trigger.remove(); } catch { /* stale/already-gone */ } z.trigger = null; }
@@ -79,6 +113,7 @@ function playerByPawnIndex(idx: number): { slot: number; userId: number } | null
 }
 
 async function loadMap(map: string): Promise<void> {
+  clearAllBeams();
   clearAllTriggers();
   currentMap = map;
   zones.clear();
@@ -115,6 +150,7 @@ function dropZone(name: string): void {
   if (z) removeTrigger(z);
   zones.delete(name);
   pendingTriggers.delete(name);
+  hideZone(name);
   if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
 }
 
@@ -206,6 +242,10 @@ export function onLoad(): void {
   // for players the engine reports as currently inside (no position tests — just the engine-maintained set).
   let frame = 0;
   OnGameFrame.subscribe(() => {
+    if (shown.size > 0) {
+      const now = Date.now();
+      for (const [name, entry] of shown) if (entry.expiresAt > 0 && now >= entry.expiresAt) hideZone(name);
+    }
     if (pendingTriggers.size > 0) {
       for (const name of pendingTriggers) { const z = zones.get(name); if (z) buildTrigger(z); }
       pendingTriggers.clear();
@@ -296,11 +336,35 @@ export function onLoad(): void {
     Promise.all(pend).then(() => ctx.reply(`Imported ${n} zone(s).`)).catch((err) => ctx.reply(`Import error: ${err}`));
   });
 
+  Commands.registerAdmin("sm_zone_show", ADMFLAG.GENERIC, (ctx) => {
+    const arg = ctx.args[0] || "";
+    if (!arg) { ctx.reply("Usage: sm_zone_show <name|all> [seconds] (default 30; 0 = persistent)"); return; }
+    const seconds = ctx.args.length > 1 ? Math.max(0, ctx.argFloat(1, 30)) : 30;
+    if (arg === "all") {
+      for (const z of zones.values()) showZone(z, seconds);
+      ctx.reply(`Showing ${zones.size} zone(s)` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+      return;
+    }
+    const z = zones.get(sanitizeName(arg));
+    if (!z) { ctx.reply(`No zone '${sanitizeName(arg)}' on this map.`); return; }
+    showZone(z, seconds);
+    ctx.reply(`Showing '${z.name}'` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+  });
+  Commands.registerAdmin("sm_zone_hide", ADMFLAG.GENERIC, (ctx) => {
+    const arg = ctx.args[0] || "all";
+    if (arg === "all") { const n = shown.size; clearAllBeams(); ctx.reply(`Hid ${n} zone(s).`); return; }
+    const name = sanitizeName(arg);
+    if (!shown.has(name)) { ctx.reply(`Zone '${name}' is not shown.`); return; }
+    hideZone(name);
+    ctx.reply(`Hid '${name}'.`);
+  });
+
   console.log("[zones] onLoad — commands registered (real-trigger backend)");
 }
 
 // Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
 // (created entities are game-world-owned, not auto-ledgered). onLoad rebuilds them from the DB.
 export function onUnload(): void {
+  clearAllBeams();
   clearAllTriggers();
 }
