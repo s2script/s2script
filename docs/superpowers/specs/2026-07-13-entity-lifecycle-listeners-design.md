@@ -174,9 +174,15 @@ delivered `EntityRef` is the same serial-gated handle used everywhere; reads are
 - **`onCreate` timing:** the entity is allocated + its identity/handle assigned (so `GetRefEHandle`
   is valid) but not spawned; fields are default. Documented — steer readers to `onSpawn`.
 - **`onDelete` timing:** fires during teardown; the entity is still readable synchronously. Documented.
-- **Re-entrancy:** a handler that `createEntity`/`remove`s synchronously re-enters `dispatch_entity_event`
-  while `HOST` is borrowed → `try_borrow_mut` skips the nested JS re-dispatch (engine-side lifecycle
-  unaffected). Same trap + guard as `dispatch_output`/`Events.fire`.
+- **Re-entrancy (LIVE-GATE-CONFIRMED behavior):** the listener fires for **engine-driven** lifecycle —
+  the common/intended case (map + round entities, weapons, grenades, projectiles, ragdolls) — because
+  those spawns/deletions happen outside any JS borrow. But when a plugin **synchronously**
+  `createEntity`/`spawn`/`remove`s from *within a JS handler* (a command, a timer, an event handler —
+  which already holds `HOST.borrow_mut()`), the engine's `OnEntityCreated`/`Spawned`/`Deleted` re-enter
+  `dispatch_entity_event` → `try_borrow_mut` fails → the callback is gracefully **skipped** (engine-side
+  lifecycle unaffected, never a crash). Same trap + guard as `dispatch_output`/`Events.fire` (see
+  [[js-dispatch-isolate-borrow-reentrancy]]). This is by design; the demo's `sm_entlisten` deliberately
+  demonstrates it (its self-spawn is NOT logged), and the `"*"` loggers show the engine-driven case.
 - **Volume:** with ≥1 subscriber, every create/spawn/delete costs one FFI call + a className marshal
   + a HashMap lookup; JS is entered only for a matching class key. A map load bursts ~2000 entities
   (a one-time cost); per-round projectiles/effects are dozens. Acceptable. Zero cost with no
@@ -204,12 +210,15 @@ delivered `EntityRef` is the same serial-gated handle used everywhere; reads are
 **Live gate (Docker CS2, de_inferno, `bot_quota 2`, rcon):**
 - Boot: GAMEDATA VALIDATION count is +2 (both `AddListenerEntity`/`RemoveListenerEntity` sigs resolve
   UNIQUE + `.text`-validated). No `[s2script]` errors.
-- A demo plugin: `Entity.onSpawn("*", e => log(e.className))` (global) + an **exact-class** filtered
-  sub, e.g. `Entity.onSpawn("logic_relay", …)` (matching is exact-className-or-`"*"` — no glob).
-  Trigger: `createEntity("logic_relay")` + spawn (self-contained, mirrors `sm_iotest`), and/or give a
-  bot a weapon (`pawn.giveNamedItem`) and observe `weapon_*` classes via the global sub. Expect: the
-  create/spawn fires with a **valid `EntityRef`** + the correct `className`; `onDelete` fires on
-  `remove()`.
+- A demo plugin: `"*"` loggers for all three kinds (`Entity.onCreate/onSpawn/onDelete("*", …)`, capped)
+  + exact-class `"logic_relay"` subs (matching is exact-className-or-`"*"` — no glob). **Proof is via
+  ENGINE-driven lifecycle** (not a JS self-spawn — that's re-entrancy-skipped, see Safety): a round
+  restart (`mp_restartgame 1`) makes the engine create/spawn/delete a burst of real entities. Expect:
+  `* onCreate`/`* onDelete` fire (e.g. `func_nav_blocker`, `prop_dynamic`, `weapon_knife`), and
+  `* onSpawn: <class> valid=true` fires with a **live serial-gated `EntityRef`**. (LIVE-GATE RESULT
+  2026-07-13, de_inferno: exactly this — GAMEDATA 20→**22 ok, 0 FAILED**; `AddListenerEntity`/
+  `RemoveListenerEntity` both resolved UNIQUE; onCreate/onSpawn/onDelete all fired; `valid=true`;
+  RestartCount=0.)
 - `RestartCount=0`, server ticking, no panic/abort.
 
 **Human-client deferral (mechanism-proven, not e2e — the standing ceiling):** real bullet/grenade
