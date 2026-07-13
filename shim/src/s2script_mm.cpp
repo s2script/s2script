@@ -1748,6 +1748,83 @@ static int Shim_EntityRemove(int index, int serial) {
     return 1;
 }
 
+// setmodel: CBaseEntity::SetModel(const char* modelName) via a validated byte-sig. Gives a runtime
+// entity a model (and its collision) — a trigger_multiple needs this for a physics volume that fires
+// touch (map triggers get it via InitTrigger->SetModel(GetModelName()); a runtime entity's model name
+// is empty, so its InitTrigger SetModel("") builds nothing). Returns 1 on success, 0 if unresolved/stale.
+using SetModelFn = void (*)(CEntityInstance* self, const char* modelName);
+static SetModelFn s_pSetModel = nullptr;
+
+static int Shim_EntitySetModel(int index, int serial, const char* modelName) {
+    if (!s_pSetModel || !modelName) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pSetModel(ent, modelName);
+    return 1;
+}
+
+// collision_activate: register a serial-gated entity's collision with the spatial partition so a
+// runtime-created trigger_multiple fires touch (zones real-trigger slice; Task-1 RE). Reaches the
+// entity's EMBEDDED CCollisionProperty via the schema m_Collision offset resolved once at Load
+// (s_collisionPropOffset — observed 0x8c8, resolved live). Recipe A+B (Task-1 finding): call
+// MarkPartitionHandleDirty(collProp) (enqueues into the dirty spatial-partition list) THEN
+// UpdatePartition(collProp) (creates the handle IMMEDIATELY this frame, not on the deferred drain).
+// Both are single-arg (rdi = CCollisionProperty*). Returns 1 if the calls were made, 0 if
+// unresolved/stale. Escalation (SetSolid worker / CollisionRulesChanged) is documented in gamedata
+// if A+B proves insufficient at the live gate.
+using CollProbeFn = void (*)(void* collisionProperty);   // MarkPartitionHandleDirty / UpdatePartition — both (this)
+static CollProbeFn s_pCollMarkDirty       = nullptr;
+static CollProbeFn s_pCollUpdatePartition = nullptr;
+static int         s_collisionPropOffset  = -1;   // schema m_Collision offset (CBaseModelEntity); -1 = unresolved
+static int         s_collisionRulesChangedVtblIndex = -1;   // OUTER entity vtable index; -1 = unresolved
+// ModSharp recipe: the REAL engine setters (resolved by validated byte-sig). SetSolid(CCollisionProperty*,
+// SolidType) rebuilds the Rubikon collision SHAPE honoring the current solid flags (the step raw schema
+// writes + CollisionRulesChanged omit — which is why a raw-written FSOLID_NOT_SOLID box stayed solid).
+// SetCollisionBounds(CBaseModelEntity*, &mins, &maxs) sets bounds + recomputes surrounding bounds. Both
+// take the OUTER entity / collprop as `this` per ModSharp's Sharp.Shared ICollisionProperty API.
+struct S2Vec3 { float x, y, z; };
+using SetSolidFn           = void (*)(void* collProp, int solidType);
+using SetCollisionBoundsFn = void (*)(void* entity, const void* mins, const void* maxs);
+static SetSolidFn           s_pSetSolid           = nullptr;
+static SetCollisionBoundsFn s_pSetCollisionBounds = nullptr;
+static int s_collMinsOff = -1, s_collMaxsOff = -1, s_collSolidTypeOff = -1;   // absolute offsets on the entity
+static int Shim_CollisionActivate(int index, int serial) {
+    if (s_collisionPropOffset < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    void* collProp = reinterpret_cast<uint8_t*>(ent) + s_collisionPropOffset;  // embedded, not a ptr deref
+    // ModSharp path: call the real setters. SetCollisionBounds first (bounds + surround), then SetSolid
+    // (builds the shape + does MarkPartitionHandleDirty+UpdatePartition+CollisionRulesChanged itself — the
+    // worker we derived index 185 from). This is what makes an FSOLID_NOT_SOLID box a real non-solid
+    // trigger, not a solid blocker.
+    if (s_pSetSolid && s_pSetCollisionBounds && s_collMinsOff >= 0 && s_collMaxsOff >= 0 && s_collSolidTypeOff >= 0) {
+        S2Vec3 mins = *reinterpret_cast<S2Vec3*>(reinterpret_cast<uint8_t*>(ent) + s_collMinsOff);
+        S2Vec3 maxs = *reinterpret_cast<S2Vec3*>(reinterpret_cast<uint8_t*>(ent) + s_collMaxsOff);
+        int solidType = *(reinterpret_cast<uint8_t*>(ent) + s_collSolidTypeOff);
+        constexpr int SOLID_BBOX = 2;
+        s_pSetCollisionBounds(ent, &mins, &maxs);
+        // Build the collision SHAPE as SOLID_BBOX from the (schema-written) bounds. SetSolid early-returns
+        // on an unchanged type (disasm: `cmp [rdi+0x5b], sil; je ret`), so only call it when the type differs.
+        // Then STOP — pass-through (a player walking THROUGH the trigger while touch still fires) comes from
+        // the collision GROUP (COLLISION_GROUP_WEAPON=14) set by the JS recipe, NOT from a SOLID_NONE
+        // downgrade. The old SOLID_NONE transition here DELETED the collision entirely (no touch), so it is
+        // removed.
+        if (solidType != SOLID_BBOX) s_pSetSolid(collProp, SOLID_BBOX);
+        return 1;
+    }
+    // Fallback (recipe A+B+D) if the setters didn't resolve: MarkPartitionHandleDirty + UpdatePartition +
+    // CollisionRulesChanged. Registers the partition handle but does NOT rebuild the shape (stays solid).
+    if (!s_pCollMarkDirty) return 0;
+    s_pCollMarkDirty(collProp);
+    if (s_pCollUpdatePartition) s_pCollUpdatePartition(collProp);   // immediate handle create (recipe B)
+    if (s_collisionRulesChangedVtblIndex >= 0) {
+        void** vtbl = *reinterpret_cast<void***>(ent);
+        void* fn = vtbl[s_collisionRulesChangedVtblIndex];
+        if (IsAddressInServerText(fn)) reinterpret_cast<void (*)(void*)>(fn)(ent);
+    }
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Item / weapon manipulation slice (Task 2): GiveNamedItem / RemovePlayerItem are self-validated
 // DIRECT byte signatures (resolved below, in Load()), re-confirmed unique + ABI-checked by disasm
@@ -2317,6 +2394,85 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pDispatchSpawn));
                 }   // dsOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Zones real-trigger slice: resolve CBaseEntity::SetModel (DIRECT sig, fresh CSSharp
+            // gamedata for build 2000873). Absent/unresolved -> s_pSetModel null -> the entity_set_model
+            // op no-ops (setModel -> false). Gives a runtime trigger a model -> physics volume -> touch.
+            auto smit = sigs.find("SetModel");
+            if (smit == sigs.end()) {
+                GamedataResult("SetModel", false, "signature absent from gamedata");
+            } else {
+                int64_t smOff = ResolveSigValidated("SetModel", smit->second);
+                ModText smmt = FindModuleText(smit->second.module.c_str());
+                if (smOff != s2sig::kFail && smmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pSetModel = reinterpret_cast<SetModelFn>(const_cast<uint8_t*>(smmt.text) + smOff);
+                    META_CONPRINTF("[s2script] SetModel resolved @%p (EntityRef.setModel)\n",
+                                   reinterpret_cast<void*>(s_pSetModel));
+                }
+            }
+            // Zones real-trigger slice: resolve CCollisionProperty::MarkPartitionHandleDirty +
+            // UpdatePartition (both DIRECT sigs) + the embedded m_Collision offset. Degrade-never-crash:
+            // MarkPartitionHandleDirty unresolved -> op no-ops; UpdatePartition unresolved -> recipe A only.
+            s_collisionPropOffset = s2_schema_offset("CBaseModelEntity", "m_Collision");
+            auto cmdit = sigs.find("CollisionMarkPartitionDirty");
+            if (cmdit == sigs.end()) {
+                GamedataResult("CollisionMarkPartitionDirty", false, "signature absent from gamedata");
+            } else {
+                int64_t cmdOff = ResolveSigValidated("CollisionMarkPartitionDirty", cmdit->second);
+                ModText cmdmt = FindModuleText(cmdit->second.module.c_str());
+                if (cmdOff != s2sig::kFail && cmdmt.text) {
+                    s_pCollMarkDirty = reinterpret_cast<CollProbeFn>(const_cast<uint8_t*>(cmdmt.text) + cmdOff);
+                    META_CONPRINTF("[s2script] CollisionMarkPartitionDirty resolved @%p (collision_activate)\n",
+                                   reinterpret_cast<void*>(s_pCollMarkDirty));
+                }
+            }
+            auto cupit = sigs.find("CollisionUpdatePartition");
+            if (cupit == sigs.end()) {
+                GamedataResult("CollisionUpdatePartition", false, "signature absent from gamedata");
+            } else {
+                int64_t cupOff = ResolveSigValidated("CollisionUpdatePartition", cupit->second);
+                ModText cupmt = FindModuleText(cupit->second.module.c_str());
+                if (cupOff != s2sig::kFail && cupmt.text) {
+                    s_pCollUpdatePartition = reinterpret_cast<CollProbeFn>(const_cast<uint8_t*>(cupmt.text) + cupOff);
+                    META_CONPRINTF("[s2script] CollisionUpdatePartition resolved @%p (collision_activate)\n",
+                                   reinterpret_cast<void*>(s_pCollUpdatePartition));
+                }
+            }
+            // ModSharp recipe: the REAL engine setters CCollisionProperty::SetSolid (rebuilds the Rubikon
+            // shape honoring solid flags) + CBaseModelEntity::SetCollisionBounds (bounds + surround). Both
+            // DIRECT sigs (validated unique vs the pinned libserver.so). Absent -> Shim_CollisionActivate
+            // falls back to the A+B+D partition-only path (registers touch but stays solid).
+            if (s_collisionPropOffset >= 0) {
+                int mo = s2_schema_offset("CCollisionProperty", "m_vecMins");
+                int xo = s2_schema_offset("CCollisionProperty", "m_vecMaxs");
+                int so = s2_schema_offset("CCollisionProperty", "m_nSolidType");
+                s_collMinsOff      = (mo >= 0) ? s_collisionPropOffset + mo : -1;
+                s_collMaxsOff      = (xo >= 0) ? s_collisionPropOffset + xo : -1;
+                s_collSolidTypeOff = (so >= 0) ? s_collisionPropOffset + so : -1;
+            }
+            auto ssit = sigs.find("CollisionSetSolid");
+            if (ssit == sigs.end()) {
+                GamedataResult("CollisionSetSolid", false, "signature absent from gamedata");
+            } else {
+                int64_t ssOff = ResolveSigValidated("CollisionSetSolid", ssit->second);
+                ModText ssmt = FindModuleText(ssit->second.module.c_str());
+                if (ssOff != s2sig::kFail && ssmt.text) {
+                    s_pSetSolid = reinterpret_cast<SetSolidFn>(const_cast<uint8_t*>(ssmt.text) + ssOff);
+                    META_CONPRINTF("[s2script] CollisionSetSolid resolved @%p (collision_activate/ModSharp)\n",
+                                   reinterpret_cast<void*>(s_pSetSolid));
+                }
+            }
+            auto scbit = sigs.find("SetCollisionBounds");
+            if (scbit == sigs.end()) {
+                GamedataResult("SetCollisionBounds", false, "signature absent from gamedata");
+            } else {
+                int64_t scbOff = ResolveSigValidated("SetCollisionBounds", scbit->second);
+                ModText scbmt = FindModuleText(scbit->second.module.c_str());
+                if (scbOff != s2sig::kFail && scbmt.text) {
+                    s_pSetCollisionBounds = reinterpret_cast<SetCollisionBoundsFn>(const_cast<uint8_t*>(scbmt.text) + scbOff);
+                    META_CONPRINTF("[s2script] SetCollisionBounds resolved @%p (collision_activate/ModSharp)\n",
+                                   reinterpret_cast<void*>(s_pSetCollisionBounds));
+                }
+            }
             auto urit = sigs.find("UtilRemove");
             if (urit == sigs.end()) {
                 GamedataResult("UtilRemove", false, "signature absent from gamedata");
@@ -2560,6 +2716,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Translations slice — APPENDED after convar_register; order MUST match S2EngineOps.
     ops.translations_read = &s2_translations_read;
     ops.client_language   = &s2_client_language;
+    // Zones real-trigger slice — APPENDED after client_language; order MUST match S2EngineOps.
+    ops.collision_activate = &Shim_CollisionActivate;
+    // Zones real-trigger slice — APPENDED after collision_activate; order MUST match S2EngineOps.
+    ops.entity_set_model = &Shim_EntitySetModel;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

@@ -67,6 +67,9 @@ export declare class EntityRef {
   /** Follow a pointer chain (each an offset), then read a scalar at `finalOff`. null if the root is stale or any
    *  hop is null. `readHandleVia` decodes a handle field → a serial-gated EntityRef; vectors use readFloatsChain. */
   readInt32Via(pathOffs: number[], finalOff: number): number | null;
+  /** Write an int32 at the end of a pointer chain (each hop deref'd, serial-gated at the root). Returns
+   *  false on a stale ref or a null hop. Used to clear a flag on a pointer-referenced sub-object. */
+  writeInt32Via(pathOffs: number[], finalOff: number, value: number): boolean;
   readInt8Via(pathOffs: number[], finalOff: number): number | null;
   readInt16Via(pathOffs: number[], finalOff: number): number | null;
   readUInt8Via(pathOffs: number[], finalOff: number): number | null;
@@ -90,6 +93,13 @@ export declare class EntityRef {
   teleport(origin: number[] | null, angles?: number[] | null, velocity?: number[] | null): boolean;
   /** Remove (UTIL_Remove) this entity from the world. Returns false if stale/unresolved. */
   remove(): boolean;
+  /** Register this entity's collision bounds in the spatial partition (zones real-trigger backend).
+   *  A runtime-created trigger_multiple needs this to fire touch; false if the op is unavailable. */
+  activateCollision(): boolean;
+  /** Give this entity a model (and its collision) via `CBaseEntity::SetModel`. A runtime
+   *  `trigger_multiple` needs a model to build the physics volume that fires touch. Returns false
+   *  if the op is unavailable or the ref is stale. */
+  setModel(name: string): boolean;
   /** Read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live serial-gated EntityRefs.
    *  Follows the pointer chain, reads count@+0 / elements@+8, caps at maxCount. [] if stale/unresolved. */
   readHandleVector(ptrOffs: number[], vectorOff: number, maxCount?: number): EntityRef[];

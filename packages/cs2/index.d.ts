@@ -215,3 +215,11 @@ export declare const Shake: {
 };
 /** Best-effort hint text (TextMsg-family). Returns false if the message/fields don't resolve. */
 export declare const HintText: { to(slot: number, text: string): boolean };
+
+export interface ZoneBox { x: number; y: number; z: number; }
+export interface TriggerZoneHandle { ref: EntityRef; center: ZoneBox; remove(): boolean; }
+export declare const TriggerZone: {
+  /** Create a runtime engine trigger_multiple whose touch volume is the arbitrary box [min,max].
+   *  Fires OnStartTouch/OnEndTouch (hook via Entity.onOutput). Non-solid (pass-through). */
+  create(min: ZoneBox, max: ZoneBox, opts?: { model?: string; spawnflags?: number }): TriggerZoneHandle | null;
+};

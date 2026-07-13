@@ -204,6 +204,11 @@ type ConvarRegisterFn = unsafe extern "C" fn(
 type TranslationsReadFn = extern "C" fn(lang: *const c_char, name: *const c_char) -> *const c_char;
 pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
 
+// --- Zones real-trigger slice (APPENDED after client_language; order is the ABI). ENGINE-GENERIC:
+// takes the (index, serial) pair already used by every other serial-gated entity op.
+type CollisionActivateFn = extern "C" fn(c_int, c_int) -> c_int;
+type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -301,6 +306,10 @@ pub struct S2EngineOps {
     // --- Translations slice (APPENDED after convar_register; order is the ABI; do not reorder above) ---
     pub translations_read: Option<TranslationsReadFn>,
     pub client_language:   Option<ClientLanguageFn>,
+    // --- Zones real-trigger slice (APPENDED after client_language; order is the ABI; do not reorder above) ---
+    pub collision_activate: Option<CollisionActivateFn>,
+    // --- Zones real-trigger slice (APPENDED after collision_activate; order is the ABI; do not reorder above) ---
+    pub entity_set_model: Option<EntitySetModelFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -759,6 +768,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.serial, o, count); },
     readFloatsChain: function (chain, finalOff, count) { return __s2_ent_ref_read_floats_chain(this.index, this.serial, chain, finalOff, count); },
     readInt32Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I32); },
+    writeInt32Via: function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.serial, c, o, K.I32, v); },
     readInt8Via:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I8); },
     readInt16Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I16); },
     readUInt8Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U8); },
@@ -833,6 +843,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       velocity ? [velocity[0], velocity[1], velocity[2]] : null);
   };
   EntityRef.prototype.remove = function () { return __s2_entity_remove(this.index, this.serial); };
+  // Zones real-trigger slice: register this entity's collision bounds in the spatial partition so a
+  // runtime-created trigger fires touch. Serial-gated; returns false if the op is unavailable/stale.
+  EntityRef.prototype.activateCollision = function () { return __s2_collision_activate(this.index, this.serial); };
+  // Zones real-trigger slice: give this entity a model (and its collision) via CBaseEntity::SetModel.
+  // A runtime trigger_multiple needs a model to build the physics volume that fires touch.
+  EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.serial, String(name)); };
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
   // With keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is a LIVE,
   // SPAWNED entity (on spawn failure the entity is removed and null returned).
@@ -3321,6 +3337,39 @@ fn s2_ent_ref_read_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
+/// Native `__s2_ent_ref_write_chain(index, serial, pathOffs[], finalOff, kind, value) -> bool`.
+/// Serial-gated at the root; follows the pointer chain (each hop null-checked, raw ptrs never cross to
+/// JS), then writes `value` at `finalOff`. Mirrors `s2_ent_ref_read_chain`. Used to clear a flag on a
+/// pointer-referenced sub-object (e.g. CEntityIdentity::m_flags via m_pEntity). i32/u32/u8 only.
+fn s2_ent_ref_write_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
+        let kind = args.get(4).integer_value(scope).unwrap_or(0);
+        if final_off < 0 { return; }
+        let Ok(path) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
+        let ent = entity_resolve_ptr(index, serial);
+        if ent.is_null() { return; }
+        let mut p = ent as *const u8;
+        for i in 0..path.length() {
+            let off = path.get_index(scope, i).and_then(|v| v.integer_value(scope)).unwrap_or(-1) as i32;
+            if off < 0 { return; }
+            p = crate::entity::read_ptr(p, off);
+            if p.is_null() { return; }
+        }
+        let base = p as *mut u8;
+        match kind {
+            KIND_I32 => crate::entity::write_i32(base, final_off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
+            KIND_U32 => crate::entity::write_u32(base, final_off, args.get(5).integer_value(scope).unwrap_or(0) as u32),
+            KIND_U8  => crate::entity::write_u8(base, final_off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
+            _ => return,
+        }
+        rv.set_bool(true);
+    }));
+}
+
 /// Native `__s2_ent_ref_state_changed(index, serial, offset)`.
 /// Resolves (index, serial) then calls `ent_state_changed` engine-op. No-op on stale ref / no ops.
 fn s2_ent_ref_state_changed(
@@ -4991,6 +5040,37 @@ fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
     }));
 }
 
+/// Native `__s2_collision_activate(index, serial) -> boolean`. Serial-gated; over the
+/// `collision_activate` op (CCollisionProperty partition registration). Degrades to `false` with no
+/// op / a stale ref. Never throws.
+fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.collision_activate) { rv.set_bool(func(index, serial) != 0); }
+    }));
+}
+
+/// Native `__s2_ent_set_model(index, serial, modelName) -> boolean`. Serial-gated; over the
+/// `entity_set_model` op (`CBaseEntity::SetModel`, sig-resolved shim-side). Gives a runtime entity a
+/// model + its collision — a runtime `trigger_multiple` needs this for a physics volume that fires
+/// touch. Degrades to `false` with no op / a stale ref / a NUL in the name. Never throws.
+fn s2_ent_set_model(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let name = args.get(2).to_rust_string_lossy(scope);
+        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
+        let ops = ENGINE_OPS.with(|o| o.get());
+        if let Some(func) = ops.and_then(|o| o.entity_set_model) {
+            rv.set_bool(func(index, serial, cname.as_ptr()) != 0);
+        }
+    }));
+}
+
 /// Native `__s2_entity_teleport(index, serial, originArr|null, anglesArr|null, velArr|null) -> boolean`.
 /// Each array arg is independently optional (a non-3-element/non-array value degrades to a null pointer
 /// for that component, matching the shim's nullable `Vector*`/`QAngle*`/`Vector*` ABI). Degrades to
@@ -5908,6 +5988,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats_chain", s2_ent_ref_read_floats_chain);
     set_native(scope, global_obj, "__s2_ent_ref_read_chain", s2_ent_ref_read_chain);
+    set_native(scope, global_obj, "__s2_ent_ref_write_chain", s2_ent_ref_write_chain);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     // ConCommand registration.
@@ -6066,6 +6147,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_user_message_set_bool", s2_user_message_set_bool);
     set_native(scope, global_obj, "__s2_user_message_send", s2_user_message_send);
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
+    set_native(scope, global_obj, "__s2_collision_activate", s2_collision_activate);
+    set_native(scope, global_obj, "__s2_ent_set_model", s2_ent_set_model);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
     // Item slice: give/vcall/remove-item natives + the readHandleVector native (wrapped as an
@@ -9704,6 +9787,8 @@ mod frame_tests {
             convar_register: None,
             translations_read: None,
             client_language: None,
+            collision_activate: None,
+            entity_set_model: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10219,6 +10304,8 @@ mod frame_tests {
             convar_register: None,
             translations_read: None,
             client_language: None,
+            collision_activate: None,
+            entity_set_model: None,
         }
     }
 
