@@ -112,6 +112,21 @@ function cancelEdit(slot: number, notice?: string): void {
 }
 function clearAllEdits(): void { for (const slot of Array.from(edits.keys())) cancelEdit(slot); }
 
+// Start (or restart) an interactive E-mark session for `slot` on zone `name`. Precondition: the caller is
+// in-game (callerSlot >= 0 — both callers check this). Returns false if the player has no in-world position
+// (the caller replies the error). On success: cancels any prior session, seeds prevMask with the CURRENT
+// button mask (so a held E on entry doesn't fire a corner), and prompts the player — "Creating" for a new
+// name, "Editing" for an existing one. Shared by sm_zone_edit and sm_zone_add's bare in-game form.
+function startMarking(slot: number, name: string): boolean {
+  const pw = Pawn.forSlot(slot);
+  if (!pw || !pw.origin) return false;
+  cancelEdit(slot);   // replace any prior session (and remove its preview)
+  const verb = zones.has(name) ? "Editing" : "Creating";
+  edits.set(slot, { name, cornerA: null, prevMask: pw.buttons, expiresAt: Date.now() + 60_000, preview: [] });
+  Chat.toSlot(slot, `[zones] ${verb} zone '${name}': walk to a corner and press E; press E again at the opposite corner. (60s timeout; sm_zone_edit cancel to abort)`);
+  return true;
+}
+
 // --- trigger lifecycle ---------------------------------------------------------------------------------
 function removeTrigger(z: Zone): void {
   if (z.trigger) { try { z.trigger.remove(); } catch { /* stale/already-gone */ } z.trigger = null; }
@@ -341,21 +356,27 @@ export function onLoad(): void {
     }
   });
 
-  // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size] (in-game, box around you)
+  // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)
   Commands.registerAdmin("sm_zone_add", ADMFLAG.GENERIC, (ctx) => {
     const name = sanitizeName(ctx.args[0] || "");
-    if (!name) { ctx.reply("Usage: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size] (in-game)"); return; }
+    if (!name) { ctx.reply("Usage: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)"); return; }
     let box: { min: Vec3; max: Vec3 } | null = null;
     if (ctx.args.length >= 7) {
       const n = ctx.args.slice(1, 7).map((s) => parseFloat(s));
       if (n.some((v) => !isFinite(v))) { ctx.reply("Invalid coordinates."); return; }
       box = normBox({ x: n[0], y: n[1], z: n[2] }, { x: n[3], y: n[4], z: n[5] });
+    } else if (ctx.args.length === 1) {
+      // Bare in-game form: start the interactive E-mark session (same as sm_zone_edit).
+      if (ctx.callerSlot < 0) { ctx.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
+      if (!startMarking(ctx.callerSlot, name)) ctx.reply("No position — spawn in first, or give explicit coords.");
+      return;
     } else {
+      // name + size (2..6 args): box around you (in-game). length is 2..6 here, so args[1] (the size) always exists.
       if (ctx.callerSlot < 0) { ctx.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
       const pw = Pawn.forSlot(ctx.callerSlot);
       const o = pw ? pw.origin : null;
       if (!o) { ctx.reply("No position — spawn in first, or give explicit coords."); return; }
-      const size = ctx.args.length > 1 ? Math.abs(parseFloat(ctx.args[1])) || 128 : 128;
+      const size = Math.abs(parseFloat(ctx.args[1])) || 128;
       box = normBox({ x: o.x - size, y: o.y - size, z: o.z - size }, { x: o.x + size, y: o.y + size, z: o.z + size });
     }
     if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { ctx.reply("Zero-volume zone rejected."); return; }
@@ -376,11 +397,7 @@ export function onLoad(): void {
     }
     const name = sanitizeName(raw);
     if (!name) { ctx.reply("Invalid zone name."); return; }
-    const pw = Pawn.forSlot(ctx.callerSlot);
-    if (!pw || !pw.origin) { ctx.reply("No position — spawn in first."); return; }
-    cancelEdit(ctx.callerSlot);   // replace any prior session (and remove its preview)
-    edits.set(ctx.callerSlot, { name, cornerA: null, prevMask: pw.buttons, expiresAt: Date.now() + 60_000, preview: [] });
-    ctx.reply(`Editing zone '${name}': walk to a corner and press E; press E again at the opposite corner. (60s timeout; sm_zone_edit cancel to abort)`);
+    if (!startMarking(ctx.callerSlot, name)) ctx.reply("No position — spawn in first.");
   });
 
   Commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (ctx) => {

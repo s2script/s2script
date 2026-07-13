@@ -579,6 +579,8 @@ EOF
 
 de_inferno/de_dust2, `bot_quota 4`, rcon, per the spec's Testing section: boot logs `@s2script/zones@0.1.0`; tags survive a restart (migration + round-trip); `sm_zone_show t 0` / `sm_zone_show all 5` / `sm_zone_hide all` / frame expiry run crash-free; `sm_zone_edit e` arms + `cancel` clears; `sm_zone_add`/`sm_zone_delete` produce the consumer demo's `CREATED`/`DELETED` lines. Human-client deferrals: seeing the wireframe; walking corners with the live rubber-band preview.
 
+**T7 (post-live-gate follow-up):** `sm_zone_add <name>` bare in-game form starts the E-mark session via a shared `startMarking(slot, name)` helper (extracted from `sm_zone_edit`); "Creating"/"Editing" verb is name-driven.
+
 ## Self-Review
 
 - **Spec coverage:** versioning fix (T1 — manifest, code strings, consumer carets; `build-base-plugins.sh` untouched) · interface types + changeset minor (T2) · tags: migration/preservation/`sm_zone_tag`/`sm_zone_list [tag]`/export-import/`getZonesByTag`/`setZoneTags` (T3) · viz: `box12`/`showZone`/`hideZone`/`clearAllBeams`/commands/expiry/cleanup (T4) · editor: sessions/seeded rising edge/rubber-band `update()`/TTL/cancel/save→`showZone` (T5) · `created`/`deleted` on all spec'd paths + consumer proof + verification (T6). Every spec section maps to a task.

@@ -61,6 +61,7 @@ Single file, `plugins/zones/src/plugin.ts`, organized into clearly-commented sec
     - **1st press:** `cornerA = origin`; create the 12 preview beams (start collapsed at A; the per-frame preview then tracks the box). Reply "Corner 1 set."
     - **2nd press:** `box = normBox(cornerA, origin)`; reject zero-volume; `upsertZone(name, box)` (persist + emit `created`); remove preview beams; `showZone` the saved box (timed preview); reply "Zone '<name>' saved."; end the session.
 - **Documented caveat:** an E press also fires the game's own `+use` (door/pickup) — inherent to no-detour button polling; acceptable for an editor.
+- **`sm_zone_add` bare in-game form (post-live-gate addendum):** `sm_zone_add <name>` with no coords/size, run in-game, now starts the SAME E-mark session (a shared `startMarking(slot, name)` helper) instead of the old fixed-128-box default. Dispatch: `>=7` args → typed coords; `name`+`size` (2..6 args) → box-around-you; `name` only, in-game → E-mark session ("Creating" for a new name, "Editing" for an existing); `name` only, console (`callerSlot < 0`) → the "give explicit coords" error. `sm_zone_edit <name>` calls the same helper.
 
 ### Unit 3 — Tags (`sm_zone_tag` + interface queryability)
 
