@@ -12,6 +12,9 @@ set(AMTL   ${MMS}/third_party/amtl)
 
 add_library(s2script SHARED
     src/s2script_mm.cpp
+    # Entity lifecycle listeners slice: the isolated IEntityListener TU (mirrors ekv.cpp's isolation
+    # discipline — the only new TU that includes entity2/entitysystem.h for the listener interface).
+    src/entity_listener.cpp
     src/gamedata.cpp
     src/sigscan.cpp
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
