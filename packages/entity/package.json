@@ -1,6 +1,6 @@
 {
   "name": "@s2script/entity",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "types": "index.d.ts",
   "description": "Type stubs for the @s2script/entity injected API (serial-gated EntityRef). No runtime code.",
   "publishConfig": {

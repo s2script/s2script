@@ -1,6 +1,6 @@
 {
   "name": "@s2script/trace",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "types": "index.d.ts",
   "description": "Type stubs for the @s2script/trace injected ray-tracing API (Trace.line/ray/hull -> TraceHit). No runtime code.",
   "publishConfig": {
@@ -11,7 +11,7 @@
   ],
   "dependencies": {
     "@s2script/math": "0.1.1",
-    "@s2script/entity": "0.1.1"
+    "@s2script/entity": "0.2.0"
   },
   "repository": {
     "type": "git",
