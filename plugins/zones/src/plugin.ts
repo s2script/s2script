@@ -19,7 +19,7 @@ import { Entity } from "@s2script/entity";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle } from "@s2script/cs2";
 
 interface Vec3 { x: number; y: number; z: number; }
-interface Zone { name: string; min: Vec3; max: Vec3; inside: Set<number>; trigger: TriggerZoneHandle | null; }
+interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set<number>; trigger: TriggerZoneHandle | null; }
 
 let db: Database | null = null;
 let currentMap = "";
@@ -36,6 +36,15 @@ let dbReadyResolve: () => void = () => {};
 const dbReady: Promise<void> = new Promise<void>((r) => { dbReadyResolve = r; });
 
 function sanitizeName(n: string): string { return (n || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64); }
+function sanitizeTag(t: string): string { return (t || "").toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 32); }
+function parseTags(v: unknown): string[] {
+  return String(v ?? "").split(",").map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
+}
+function zonesByTag(tag: string): Zone[] {
+  const t = sanitizeTag(tag);
+  if (!t) return [];
+  return Array.from(zones.values()).filter((z) => z.tags.includes(t));
+}
 function zonesFile(map: string): string { return "zones-" + sanitizeName(map) + ".json"; }
 function normBox(a: Vec3, b: Vec3): { min: Vec3; max: Vec3 } {
   return {
@@ -74,13 +83,14 @@ async function loadMap(map: string): Promise<void> {
   currentMap = map;
   zones.clear();
   if (!db) return;
-  const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ FROM zones WHERE map = ?", [map]);
+  const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
   for (const r of rows) {
     const name = String(r.name);
     zones.set(name, {
       name,
       min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
       max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
+      tags: parseTags(r.tags),
       inside: new Set<number>(),
       trigger: null,
     });
@@ -89,14 +99,15 @@ async function loadMap(map: string): Promise<void> {
   console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
 }
 
-async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }): Promise<void> {
+async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: string[]): Promise<void> {
   await dbReady;   // guarantee the DB is open (or failed) before we mutate
   const prev = zones.get(name);
-  zones.set(name, { name, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+  const t = tags !== undefined ? tags : (prev ? prev.tags : []);
+  zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
   pendingTriggers.add(name);   // (re)build the trigger on the next frame
   if (db) await db.execute(
-    "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z]);
+    "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, t.join(",")]);
 }
 
 function dropZone(name: string): void {
@@ -112,7 +123,8 @@ export function onLoad(): void {
     try {
       db = await Database.open("zones");
       await db.execute(
-        "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, PRIMARY KEY (map, name))");
+        "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, tags TEXT, PRIMARY KEY (map, name))");
+      try { await db.execute("ALTER TABLE zones ADD COLUMN tags TEXT"); } catch { /* duplicate column name — already migrated */ }
       await loadMap(Server.mapName);
       console.log("[zones] onLoad — DB ready (real-trigger backend)");
     } catch (e) {
@@ -131,7 +143,7 @@ export function onLoad(): void {
       const box = normBox(min, max);
       if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) return false;
       const prev = zones.get(nm);
-      zones.set(nm, { name: nm, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+      zones.set(nm, { name: nm, min: box.min, max: box.max, tags: prev ? prev.tags : [], inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
       pendingTriggers.add(nm);
       upsertZone(nm, box).catch(() => {});   // durability, async (registry already updated)
       return true;
@@ -142,8 +154,8 @@ export function onLoad(): void {
       dropZone(nm);
       return true;
     },
-    getZones(): { name: string; min: Vec3; max: Vec3 }[] {
-      return Array.from(zones.values()).map((z) => ({ name: z.name, min: z.min, max: z.max }));
+    getZones(): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
+      return Array.from(zones.values()).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
     },
     isInZone(slot: number, name: string): boolean {
       const z = zones.get(sanitizeName(name));
@@ -153,6 +165,18 @@ export function onLoad(): void {
       const out: string[] = [];
       for (const z of zones.values()) if (z.inside.has(slot)) out.push(z.name);
       return out;
+    },
+    getZonesByTag(tag: string): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
+      return zonesByTag(String(tag ?? "")).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
+    },
+    setZoneTags(name: string, tags: string[]): boolean {
+      const nm = sanitizeName(name);
+      const z = zones.get(nm);
+      if (!z || !Array.isArray(tags)) return false;
+      const t = tags.map((x) => sanitizeTag(String(x))).filter((x) => x.length > 0);
+      z.tags = t;
+      if (db) db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [t.join(","), currentMap, nm]).catch(() => {});
+      return true;
     },
   });
   console.log("[zones] publishing @s2script/zones@0.1.0");
@@ -228,15 +252,27 @@ export function onLoad(): void {
     ctx.reply(`Zone '${name}' deleted.`);
   });
 
+  Commands.registerAdmin("sm_zone_tag", ADMFLAG.GENERIC, (ctx) => {
+    const name = sanitizeName(ctx.args[0] || "");
+    const z = zones.get(name);
+    if (!name || !z) { ctx.reply(`No zone '${name}' on this map. Usage: sm_zone_tag <name> [tag...] (no tags = clear)`); return; }
+    const tags = ctx.args.slice(1).map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
+    z.tags = tags;
+    if (db) db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [tags.join(","), currentMap, name]).catch(() => {});
+    ctx.reply(tags.length > 0 ? `Zone '${name}' tags: ${tags.join(", ")}` : `Zone '${name}' tags cleared.`);
+  });
+
   Commands.registerAdmin("sm_zone_list", ADMFLAG.GENERIC, (ctx) => {
-    ctx.reply(`Zones on ${currentMap}: ${zones.size}`);
-    for (const z of zones.values())
-      ctx.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
+    const filter = ctx.args.length > 0 ? sanitizeTag(ctx.args[0]) : "";
+    const list = filter ? zonesByTag(filter) : Array.from(zones.values());
+    ctx.reply(filter ? `Zones on ${currentMap} tagged '${filter}': ${list.length}` : `Zones on ${currentMap}: ${list.length}`);
+    for (const z of list)
+      ctx.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) tags=[${z.tags.join(",")}] inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
   });
 
   Commands.registerAdmin("sm_zone_export", ADMFLAG.GENERIC, (ctx) => {
-    const out: Record<string, { min: number[]; max: number[] }> = {};
-    for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z] };
+    const out: Record<string, { min: number[]; max: number[]; tags: string[] }> = {};
+    for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z], tags: z.tags };
     config.writeFile(zonesFile(currentMap), JSON.stringify(out, null, 2));
     ctx.reply(`Exported ${zones.size} zone(s) to ${zonesFile(currentMap)}.`);
   });
@@ -244,7 +280,7 @@ export function onLoad(): void {
   Commands.registerAdmin("sm_zone_import", ADMFLAG.GENERIC, (ctx) => {
     const raw = config.readFile(zonesFile(currentMap));
     if (!raw) { ctx.reply(`No zones file for ${currentMap}.`); return; }
-    let parsed: Record<string, { min: number[]; max: number[] }>;
+    let parsed: Record<string, { min: number[]; max: number[]; tags?: string[] }>;
     try { parsed = JSON.parse(raw); } catch { ctx.reply("Zones file is not valid JSON."); return; }
     let n = 0;
     const pend: Promise<void>[] = [];
@@ -253,7 +289,8 @@ export function onLoad(): void {
       const e = parsed[key];
       if (!name || !e || !Array.isArray(e.min) || !Array.isArray(e.max) || e.min.length < 3 || e.max.length < 3) continue;
       const box = normBox({ x: e.min[0], y: e.min[1], z: e.min[2] }, { x: e.max[0], y: e.max[1], z: e.max[2] });
-      pend.push(upsertZone(name, box));
+      const tags = Array.isArray(e.tags) ? e.tags.map((t) => sanitizeTag(String(t))).filter((t) => t.length > 0) : undefined;
+      pend.push(upsertZone(name, box, tags));
       n++;
     }
     Promise.all(pend).then(() => ctx.reply(`Imported ${n} zone(s).`)).catch((err) => ctx.reply(`Import error: ${err}`));
