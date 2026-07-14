@@ -7713,7 +7713,7 @@ fn s2_db_remote_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 /// disposed/replaced context), but resolves with the row array (`query_result_to_js`) or the
 /// `{changes, lastInsertId}` object on `Ok`, or rejects with an `Error` on `Err` (a SQL/connection
 /// failure surfaced by `sqldb::run_query`/`run_execute`).
-fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::sqldb::DbOutcome, String>) {
+fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::db::DbOutcome, String>) {
     let g_ctx = match &entry.owner {
         Some((id, generation)) => {
             if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
@@ -7735,11 +7735,11 @@ fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::sqld
     let resolver = v8::Local::new(scope, &entry.resolver);
 
     match result {
-        Ok(crate::sqldb::DbOutcome::Query(qr)) => {
+        Ok(crate::db::DbOutcome::Query(qr)) => {
             let v = query_result_to_js(scope, &qr);
             resolver.resolve(scope, v);
         }
-        Ok(crate::sqldb::DbOutcome::Exec(er)) => {
+        Ok(crate::db::DbOutcome::Exec(er)) => {
             let obj = v8::Object::new(scope);
             let k1 = v8::String::new(scope, "changes").unwrap();
             let v1 = v8::Number::new(scope, er.changes as f64);
@@ -8348,7 +8348,7 @@ pub(crate) fn frame_async_drain() {
         }
         // Remote SQL completions (core/src/sqldb.rs). Mirrors the http loop: pop a completion, remove
         // its RESOLVERS entry, decrement PENDING_JOBS, resolve/reject (or DROP on the liveness guard).
-        while let Some(c) = crate::sqldb::try_recv_completed() {
+        while let Some(c) = crate::db::try_recv_completed() {
             let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&c.id)) else { continue };
             PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
             resolve_db(host, &entry, c.result);

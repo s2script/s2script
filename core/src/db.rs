@@ -5,6 +5,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Mutex, OnceLock};
 use rusqlite::Connection;
 
 /// A SQLite value in either direction (params in, results out). Booleans collapse to `Int(0|1)`
@@ -13,6 +15,21 @@ pub enum DbValue { Null, Int(i64), Real(f64), Text(String) }
 
 pub struct QueryResult { pub columns: Vec<String>, pub rows: Vec<Vec<DbValue>> }
 pub struct ExecResult { pub changes: i64, pub last_insert_id: i64 }
+
+/// A completed off-thread DB job (SQLite actor OR the remote sqlx tasks in sqldb.rs). Both backends
+/// send here; `v8host::frame_async_drain` polls `try_recv_completed()` and resolves via `resolve_db`.
+pub(crate) enum DbOutcome { Query(QueryResult), Exec(ExecResult) }
+pub(crate) struct DbCompletion { pub id: u64, pub result: Result<DbOutcome, String> }
+
+// Process-global completion channel (mirrors http.rs::ENGINE). Actor threads / tokio tasks send;
+// the frame drain (main thread) polls. Shared by BOTH db.rs (SQLite) and sqldb.rs (MySQL/Postgres).
+struct Chan { tx: Sender<DbCompletion>, rx: Mutex<Receiver<DbCompletion>> }
+static CHAN: OnceLock<Chan> = OnceLock::new();
+fn chan() -> &'static Chan { CHAN.get_or_init(|| { let (tx, rx) = channel(); Chan { tx, rx: Mutex::new(rx) } }) }
+/// A cloned sender for producers (the SQLite actor loop in this module; sqldb.rs's tokio tasks).
+pub(crate) fn completion_tx() -> Sender<DbCompletion> { chan().tx.clone() }
+/// Pop one completion, or None. Called on the main thread by the frame drain.
+pub(crate) fn try_recv_completed() -> Option<DbCompletion> { chan().rx.lock().ok()?.try_recv().ok() }
 
 thread_local! {
     // handle -> (connection, owner plugin id). The owner scopes access: a handle is a small
