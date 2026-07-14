@@ -223,7 +223,7 @@ type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
 type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 
 // --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI). ENGINE-GENERIC:
-// lazily installs the (Task 3, shim-side) ProcessUsercmds detour; takes no CS2 names. Task 2 owns ONLY
+// lazily installs the (Task 3, shim-side) per-tick input-processing detour; takes no CS2 names. Task 2 owns ONLY
 // this one field (the subscribe native's lazy-install call site needs it to compile); Task 3 appends
 // the remaining usercmd_read/write/read_buttons/write_buttons/clear_subtick fields after this one.
 type UsercmdHookInstallFn = extern "C" fn() -> c_int;
@@ -598,7 +598,7 @@ thread_local! {
 
     /// Usercmd primitive Task 2: `UserCmd.onRun(handler)` subscriber mux, keyed by the constant "onRun"
     /// (usercmd has no name dimension, like `DAMAGE_MUX`'s "onPre"). Dispatch is SYNCHRONOUS (the
-    /// Task-3 `ProcessUsercmds` detour blocks on it, mirrors `DAMAGE_MUX`/`OUTPUT_MUX`) so a handler's
+    /// Task-3 per-tick input-processing detour blocks on it, mirrors `DAMAGE_MUX`/`OUTPUT_MUX`) so a handler's
     /// returned `HookResult` can block the original input for that tick. The detour installs LAZILY on
     /// the first-ever subscribe (via the `usercmd_hook_install` engine op — see `s2_usercmd_subscribe`),
     /// mirroring `ENTITY_MUX`'s `entity_listener_install` trigger. `remove_by_owner` on unload; reset on
@@ -4590,7 +4590,7 @@ fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 /// `__s2_usercmd_subscribe(handler)` — subscribe a JS fn to `UserCmd.onRun` (usercmd primitive Task 2).
 /// Owner-tracked, fixed mux key "onRun" (usercmd has no name dimension, like `s2_damage_subscribe`'s
 /// "onPre"). On the FIRST-EVER subscribe (the mux was empty), calls the (Task 3) `usercmd_hook_install`
-/// engine op so the shim lazily installs its `ProcessUsercmds` detour — mirrors `s2_entity_listener_on`'s
+/// engine op so the shim lazily installs its per-tick input-processing detour — mirrors `s2_entity_listener_on`'s
 /// lazy-install trigger (zero overhead when no plugin subscribes). Degrade-never-crash: no op → the
 /// subscribe still records, the engine just never delivers.
 fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
@@ -8703,7 +8703,7 @@ pub(crate) fn unload_plugin(id: &str) {
     // stays registered for the process lifetime (removed in the shim's Unload), so no per-plugin
     // hook-removal is needed.
     ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // Drop the plugin's UserCmd.onRun subscriptions (usercmd primitive). The ProcessUsercmds detour
+    // Drop the plugin's UserCmd.onRun subscriptions (usercmd primitive). The per-tick input-processing detour
     // stays installed for the process lifetime once lazily installed (removed in the shim's Unload),
     // so no per-plugin hook-removal request is needed.
     USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(id));

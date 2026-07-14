@@ -159,7 +159,7 @@ pub extern "C" fn s2script_core_dispatch_damage() {
     let _ = catch_unwind(|| v8host::dispatch_damage());
 }
 
-/// Usercmd primitive Task 2/3: called by the (Task 3) `ProcessUsercmds` detour, once per player per
+/// Usercmd primitive Task 2/3: called by the (Task 3) shim's per-tick input-processing detour, once per player per
 /// batched tick, with the firing player's `slot`. Runs the `UserCmd.onRun` subscribers SYNCHRONOUSLY
 /// over the shim's current `CUserCmd` (read/modified in place via the Task-3 `usercmd_read`/`_write`
 /// ops) and returns the collapsed `HookResult` (0 Continue .. 3 Stop) — the shim skips/blocks the
