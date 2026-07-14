@@ -7,7 +7,7 @@
 // does NOT wire — so we DEFER the subscription until the producer is live, probing with a method call
 // (getZones, which throws InterfaceUnavailable while the producer is absent, unlike on()).
 import { on, getZones } from "@s2script/zones";   // hard dep -> producer-backed proxy
-import type { ZoneEvent } from "@s2script/zones";
+import type { ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "@s2script/zones";
 import { OnGameFrame } from "@s2script/frame";
 import { Player } from "@s2script/cs2";
 
@@ -32,6 +32,10 @@ function subscribe(): void {
       if (nh % 20 === 0 || nh === 100) console.log(`[zones-consumer] healed slot ${p.slot} -> ${nh}`);
     }
   });
+  on("created", (p: ZoneCreatedEvent) => {
+    console.log(`[zones-consumer] CREATED ${p.zone} tags=[${p.tags.join(",")}] min=(${p.min.x.toFixed(0)},${p.min.y.toFixed(0)},${p.min.z.toFixed(0)}) max=(${p.max.x.toFixed(0)},${p.max.y.toFixed(0)},${p.max.z.toFixed(0)})`);
+  });
+  on("deleted", (p: ZoneDeletedEvent) => { console.log(`[zones-consumer] DELETED ${p.zone}`); });
 }
 
 // True once the @s2script/zones producer is live (a method call no longer throws InterfaceUnavailable).
