@@ -68,6 +68,16 @@ public:
     void Hook_StartupServer(const GameSessionConfiguration_t& config, ISource2WorldSession* session,
                             const char* unk);
 
+    // Precache hook (Sound slice) — a MANUAL SourceHook on CGameRulesGameSystem::OnPrecacheResource
+    // (vtable index from gamedata; the instance factory-list-resolved). Stashes the live
+    // IResourceManifest* for the sound_precache_add op, dispatches Sound.onPrecache, clears the
+    // stash. The manifest arg is void* (opaque engine type; META_NO_HL2SDK discipline).
+    void Hook_OnPrecacheResource(void* pManifest);
+    // Idempotent installer: resolves the CGameRulesGameSystem instance off the factory list and
+    // installs the manual hook. Called at Load and retried from Hook_StartupServer each map start
+    // until installed (the factory/instance may not exist at Load).
+    bool TryInstallPrecacheHook();
+
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
     ISource2GameClients* m_gameClients = nullptr;
@@ -76,6 +86,7 @@ public:
     bool m_clientCmdHookInstalled = false;
     bool m_clientLifecycleHooksInstalled = false;  // @s2script/clients: the six notify lifecycle hooks
     bool m_startupServerHookInstalled = false;     // OnMapStart: the StartupServer POST hook
+    bool m_precacheHookInstalled = false;          // Sound slice: the OnPrecacheResource manual hook
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }

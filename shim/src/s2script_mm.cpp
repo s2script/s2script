@@ -114,6 +114,13 @@ class GameSessionConfiguration_t {};
 // mechanism (mm_plugin.cpp:82), verbatim. POST hook only. Signature confirmed against OUR iserver.h:221.
 SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*);
 
+// Precache manual hook (Sound slice) — the FIRST manual SourceHook in the shim: CGameRulesGameSystem
+// is not an SDK-declared interface, so OnPrecacheResource is hooked by VTABLE POSITION (declared
+// index 0 here; SH_MANUALHOOK_RECONFIGURE applies the gamedata index at install time). Signature:
+// void OnPrecacheResource(CGameRulesGameSystem* this, IResourceManifest* pManifest) — the arg is
+// carried as void* (the manifest type stays opaque; only its vtable slot 0 is called).
+SH_DECL_MANUALHOOK1_void(GameRules_OnPrecacheResource, 0, 0, 0, void*);
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -1788,11 +1795,43 @@ private:
     CPlayerBitVec m_Recipients;
 };
 
-// s2_sound_precache_add is defined with the precache hook (Task 5 — the sound slice's second task);
-// forward-declared here so the ops.sound_precache_add assignment in Load() below compiles. Until that
-// task lands the shim does NOT link — acceptable, the shim only compiles at the sniper build (after
-// all sound tasks). Flagged in this task's commit message.
-static int s2_sound_precache_add(const char* path);
+// ---------------------------------------------------------------------------
+// Sound slice — precache. CS2 builds the session resource manifest at map load; custom resources
+// are added by hooking the EXISTING CGameRulesGameSystem's OnPrecacheResource(IResourceManifest*)
+// (a manual SourceHook at the gamedata vtable index — the ModSharp mechanism, decompile-confirmed;
+// NOT a new game-system registration, CSSharp's heavier fallback). The instance is found by
+// walking the game-system factory list from the sig-resolved sm_pFirst storage
+// ("GameSystemFactoryList"): node layout vtbl@0 / m_pNext@8 / m_pName@16 / m_pInstance@24
+// (Task-5 offline RE, disasm-confirmed against the pinned build-2000873 libserver.so — see the
+// gamedata "GameSystemFactoryList" comment: the CBaseGameSystemFactory ctor @0xec6b60 sets
+// vtbl@0 / m_pName@16(rsi) / m_pNext@8, and the derived factory vtable's accessor slot reads
+// m_pInstance at [this+0x18]=+24). Degrade-never-crash: any unresolved step leaves the hook
+// uninstalled (onPrecache never fires; emit unaffected). The manifest pointer is stashed ONLY for
+// the synchronous duration of the hook dispatch — it never crosses to JS.
+// ---------------------------------------------------------------------------
+struct S2GsFactoryNode {                  // minimal CBaseGameSystemFactory view (offsets RE-confirmed)
+    void**           vtbl;                // +0
+    S2GsFactoryNode* m_pNext;             // +8
+    const char*      m_pName;             // +16
+    void*            m_pInstance;         // +24 (the static factory's instance slot)
+};
+static S2GsFactoryNode** s_ppGameSystemFactoryList = nullptr;  // sig-resolved &sm_pFirst storage
+static void* s_pGameRulesGameSystem = nullptr;                 // the hooked instance (for removal)
+static void* s_currentPrecacheManifest = nullptr;              // live ONLY during the hook dispatch
+static int   s_precacheVtblIdx = -1;                           // gamedata offsets entry
+
+// The sound_precache_add op. Block-scoped: valid only while the hook stash is live.
+// IResourceManifest::AddResource(const char*) is vtable slot 0 (ModSharp decompile-confirmed:
+// mov (%rdi),%rdi; mov (%rdi),%rax; mov (%rax),%rax; jmp *%rax). .text-guarded per call.
+static int s2_sound_precache_add(const char* path) {
+    if (!s_currentPrecacheManifest || !path || !path[0]) return 0;
+    void** vtbl = *reinterpret_cast<void***>(s_currentPrecacheManifest);
+    if (!vtbl) return 0;
+    void* fn = vtbl[0];
+    if (!IsAddressInServerText(fn)) return 0;
+    reinterpret_cast<void (*)(void*, const char*)>(fn)(s_currentPrecacheManifest, path);
+    return 1;
+}
 
 // CBaseEntity::EmitSound — the CSSharp static prototype (entity_manager.h:257), CHOSEN because the
 // Task-2 offline RE step DISPROVED the ModSharp member overload on our binary: that member wrapper
@@ -2538,6 +2577,27 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pEmitSound));
                 }   // esOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Sound slice: resolve the game-system factory-list head storage (precache hook).
+            // lea-disp: the unique match starts at a `mov rax,[rip+disp]` that loads sm_pFirst (the
+            // Task-5 offline RE anchored it at a UNIQUE read site @0xef0cf0 in the game-system
+            // registration machinery — the CBaseGameSystemFactory ctor's own load collides with a
+            // second global-list ctor, so a read site was chosen; both resolve the SAME sm_pFirst
+            // storage @0x2727c68). The resolved DATA address is the head-pointer storage (one deref
+            // = the first factory node). Unresolved -> s_ppGameSystemFactoryList stays null ->
+            // TryInstallPrecacheHook no-ops (onPrecache never fires; emit unaffected).
+            auto gflit = sigs.find("GameSystemFactoryList");
+            if (gflit == sigs.end()) {
+                GamedataResult("GameSystemFactoryList", false, "signature absent from gamedata");
+            } else {
+                int64_t gflOff = ResolveSigValidated("GameSystemFactoryList", gflit->second);
+                ModText gflmt = FindModuleText(gflit->second.module.c_str());
+                if (gflOff != s2sig::kFail && gflmt.text) {
+                    s_ppGameSystemFactoryList = reinterpret_cast<S2GsFactoryNode**>(
+                        const_cast<uint8_t*>(gflmt.text) + gflOff);
+                    META_CONPRINTF("[s2script] GameSystemFactoryList resolved @%p (precache)\n",
+                                   (void*)s_ppGameSystemFactoryList);
+                }   // gflOff == kFail: ResolveSigValidated already recorded the reason
+            }
             // Zones real-trigger slice: resolve CCollisionProperty::MarkPartitionHandleDirty +
             // UpdatePartition (both DIRECT sigs) + the embedded m_Collision offset. Degrade-never-crash:
             // MarkPartitionHandleDirty unresolved -> op no-ops; UpdatePartition unresolved -> recipe A only.
@@ -2691,6 +2751,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             // needed" — the real safety check is per-call, not this presence check.
             s_teleportVtblIndex = pick("CBaseEntity_Teleport");
             GamedataResult("CBaseEntity_Teleport", s_teleportVtblIndex >= 0, "offset (vtable index) key absent from gamedata");
+            // Sound slice: the OnPrecacheResource vtable index (a HINT — TryInstallPrecacheHook
+            // .text-validates vtbl[idx] before hooking; see the gamedata comment).
+            s_precacheVtblIdx = pick("CGameRulesGameSystem_OnPrecacheResource");
+            GamedataResult("CGameRulesGameSystem_OnPrecacheResource", s_precacheVtblIdx >= 0,
+                           "offset (vtable index) key absent from gamedata");
             // clientlist-fakeconvar-onmapstart slice: the six 5D.2 engine-identity offsets
             // (NetworkServerService.gameServer / NetworkGameServer.clientCount+clientElems /
             // ServerSideClient.name+signon+userId) are RETIRED — the client ops now use typed SDK
@@ -2742,6 +2807,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
         // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
         META_CONPRINTF("[s2script] EKV self-test: %s\n", S2EKV_SelfTest() ? "OK" : "FAILED (kv-spawn degraded)");
+
+        // Sound slice: install the precache hook now if the factory list is already populated;
+        // otherwise Hook_StartupServer retries each map start (idempotent).
+        TryInstallPrecacheHook();
     }
     // --- end interface acquisition ---
 
@@ -2960,6 +3029,16 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_startupServerHookInstalled = false;
     }
 
+    // Remove the OnPrecacheResource manual hook (Sound slice). The "poison" arm of
+    // TryInstallPrecacheHook sets m_precacheHookInstalled WITHOUT s_pGameRulesGameSystem, so the
+    // s_pGameRulesGameSystem guard correctly no-ops removal in that case.
+    if (m_precacheHookInstalled && s_pGameRulesGameSystem) {
+        SH_REMOVE_MANUALHOOK(GameRules_OnPrecacheResource, s_pGameRulesGameSystem,
+                             SH_MEMBER(this, &S2ScriptPlugin::Hook_OnPrecacheResource), false);
+        m_precacheHookInstalled = false;
+        s_pGameRulesGameSystem = nullptr;
+    }
+
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
     s2detour::RemoveAll();
 
@@ -3105,6 +3184,64 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     const char* map = gs ? gs->GetMapName() : nullptr;
     META_CONPRINTF("[s2script] map start: %s (maxClients=%d)\n",
                    map ? map : "<null>", gs ? gs->GetMaxClients() : -1);
+    // Sound slice: lazy precache-hook retry — the CGameRulesGameSystem factory/instance may not
+    // exist at Load; each map startup is another chance (no-op once installed/poisoned). Timing
+    // note: whether THIS map's manifest build follows StartupServer is engine-ordering; if the
+    // Load-time install missed, the hook may only catch the NEXT map change — an accepted degrade.
+    TryInstallPrecacheHook();
     s2script_core_dispatch_map_start(map ? map : "");
     RETURN_META(MRES_IGNORED);
+}
+
+// The manifest is an argument — live for exactly this call. Stash -> dispatch (core fans out to
+// the Sound.onPrecache subscribers, whose ctx.add() -> s2_sound_precache_add -> AddResource on the
+// stash) -> clear. PRE hook (the game's own precache adds run after ours via the original; the
+// manifest accepts adds either side — PRE mirrors ModSharp).
+void S2ScriptPlugin::Hook_OnPrecacheResource(void* pManifest) {
+    s_currentPrecacheManifest = pManifest;
+    s2script_core_dispatch_precache();
+    s_currentPrecacheManifest = nullptr;
+    RETURN_META(MRES_IGNORED);
+}
+
+bool S2ScriptPlugin::TryInstallPrecacheHook() {
+    if (m_precacheHookInstalled) return true;
+    if (!s_ppGameSystemFactoryList || s_precacheVtblIdx < 0) return false;
+    S2GsFactoryNode* node = *s_ppGameSystemFactoryList;
+    void* inst = nullptr;
+    for (int guard = 0; node && guard < 1024; node = node->m_pNext, guard++) {
+        if (node->m_pName && strcmp(node->m_pName, "CGameRulesGameSystem") == 0) {
+            inst = node->m_pInstance;
+            break;
+        }
+    }
+    if (!inst) {
+        // One-time diagnostic: dump the registered factory names so a renamed factory is a
+        // data/name fix from the boot log, not a debugging session. (Bounded; names are engine
+        // string literals.)
+        static bool s_dumpedFactories = false;
+        if (!s_dumpedFactories && *s_ppGameSystemFactoryList) {
+            s_dumpedFactories = true;
+            META_CONPRINTF("[s2script] precache: CGameRulesGameSystem factory not found; registered factories:\n");
+            S2GsFactoryNode* n = *s_ppGameSystemFactoryList;
+            for (int i = 0; n && i < 64; n = n->m_pNext, i++)
+                META_CONPRINTF("[s2script]   factory[%d] = %s\n", i, n->m_pName ? n->m_pName : "<null>");
+        }
+        return false;   // not registered yet — the StartupServer retry gets another chance
+    }
+    void** vtbl = *reinterpret_cast<void***>(inst);
+    if (!vtbl || !IsAddressInServerText(vtbl[s_precacheVtblIdx])) {
+        META_CONPRINTF("[s2script] WARN: precache — OnPrecacheResource vtable[%d] out of libserver .text; hook OFF\n",
+                       s_precacheVtblIdx);
+        m_precacheHookInstalled = true;   // poison: don't retry into a bad vtable every map start
+        return false;
+    }
+    SH_MANUALHOOK_RECONFIGURE(GameRules_OnPrecacheResource, s_precacheVtblIdx, 0, 0);
+    SH_ADD_MANUALHOOK(GameRules_OnPrecacheResource, inst,
+                      SH_MEMBER(this, &S2ScriptPlugin::Hook_OnPrecacheResource), false);   // PRE
+    s_pGameRulesGameSystem = inst;
+    m_precacheHookInstalled = true;
+    META_CONPRINTF("[s2script] precache hook installed (CGameRulesGameSystem @%p, vtbl idx %d)\n",
+                   inst, s_precacheVtblIdx);
+    return true;
 }

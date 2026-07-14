@@ -70,7 +70,20 @@
     // this build's vtable slot 27, which reads a Vector* arg and computes a throw velocity —
     // unconfirmed, not wired). Values kept as given for now; Task 4/5 own the go/no-go call.
     "CCSPlayer_ItemServices_RemoveWeapons":          { "linuxsteamrt64": 25 },
-    "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 }
+    "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 },
+    // Sound slice: CGameRulesGameSystem::OnPrecacheResource's vtable INDEX (not a byte offset) —
+    // the precache manual-hook position. Borrowed from the ModSharp gamedata (linux AND windows
+    // both 7 — a strong cross-platform signal) — per the RE doctrine a borrowed index is a HINT.
+    // CONFIRMED offline (Task-5 RE) against the pinned build-2000873 libserver.so: the
+    // CGameRulesGameSystem instance vtable (@0x24c9d68, resolved via RELA from the RTTI name
+    // "20CGameRulesGameSystem" @0x83cef0 — the same vtable CreateGameSystem installs) slot[7]
+    // @0x18d48e0 takes the manifest as its 2nd arg (rsi) and registers a batch of hardcoded
+    // resource strings (ParticleEffect / GlassImpact / Impact / gunshotsplash / TracerSound /
+    // BloodImpact / …), i.e. it IS the precache-resource handler (not GameInit/GameShutdown).
+    // TryInstallPrecacheHook additionally validates the resolved vtbl[idx] lands inside
+    // libserver.so's own .text range BEFORE hooking; a stale/wrong index leaves the hook
+    // uninstalled (onPrecache never fires), never a crash.
+    "CGameRulesGameSystem_OnPrecacheResource": { "linuxsteamrt64": 7 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
@@ -344,6 +357,30 @@
         "module": "libserver.so",
         "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 48 89 D8 48 8B 5D ? C9 C3 CC CC CC CC CC CC 48 B8",
         "resolve": "direct"
+      }
+    },
+    // CBaseGameSystemFactory::sm_pFirst — the game-system factory-list head storage (Sound slice:
+    // precache). Task-5 offline RE against the pinned build-2000873 libserver.so:
+    //   - The CBaseGameSystemFactory ctor @0xec6b60 (ModSharp's UTIL_GetGameSystemFactory hint,
+    //     RTTI "22CBaseGameSystemFactory") sets vtbl@0 / m_pName@16(rsi) / m_pNext@8 and inserts
+    //     itself into sm_pFirst @0x2727c68 (.bss). m_pInstance@24 confirmed via the derived factory
+    //     vtable (CGameSystemReallocatingFactory<CGameRulesGameSystem>) accessor slot that reads
+    //     [this+0x18].
+    //   - The ctor's own sm_pFirst load collides with a SECOND global-list ctor under the fixed
+    //     lea-disp dispOff=3 anchor (2 matches with the disp wildcarded), so the pattern is anchored
+    //     instead at a UNIQUE READ site of sm_pFirst @0xef0cf0 in the game-system registration
+    //     machinery (distinctive `31 C9 31 F6 45 31 C0 49 89 D9 66 89 75 B0 BA 01 00 00 00` idiom).
+    //     It starts AT the `mov rax,[rip+disp]` that loads sm_pFirst (fixed lea-disp resolve is
+    //     dispOff=3/instrLen=7), resolving to the DATA address 0x2727c68 that holds the head-node
+    //     pointer (one deref -> the first factory node: vtbl@0, m_pNext@8, m_pName@16, m_pInstance@24).
+    // Validated UNIQUE offline (1 match) + by the boot gate. Unresolved -> the precache hook is never
+    // installed (onPrecache never fires; emit unaffected). If it drifts on an update, re-anchor on any
+    // unique rip-relative ref to CBaseGameSystemFactory::sm_pFirst (the ctor @+14, or a machinery read).
+    "GameSystemFactoryList": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8B 05 ? ? ? ? 31 C9 31 F6 45 31 C0 49 89 D9 66 89 75 B0 BA 01 00 00 00",
+        "resolve": "lea-disp"
       }
     }
   }
