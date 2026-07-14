@@ -212,6 +212,9 @@ type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char)
 // --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI).
 type EntityListenerInstallFn = extern "C" fn() -> c_int;
 
+// --- entity_name slice (APPENDED after entity_listener_install; order is the ABI).
+type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -315,6 +318,8 @@ pub struct S2EngineOps {
     pub entity_set_model: Option<EntitySetModelFn>,
     // --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI; do not reorder above) ---
     pub entity_listener_install: Option<EntityListenerInstallFn>,
+    // --- entity_name slice (APPENDED after entity_listener_install; order is the ABI; do not reorder above) ---
+    pub entity_name: Option<EntityNameFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -864,6 +869,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Zones real-trigger slice: give this entity a model (and its collision) via CBaseEntity::SetModel.
   // A runtime trigger_multiple needs a model to build the physics volume that fires touch.
   EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.serial, String(name)); };
+  // Targetname (CEntityIdentity::m_name) — e.g. a map trigger's "map_start". null if stale; "" if unnamed.
+  Object.defineProperty(EntityRef.prototype, "name", {
+    get: function () { var n = __s2_entity_name(this.index, this.serial); return n == null ? null : n; }
+  });
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
   // With keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is a LIVE,
   // SPAWNED entity (on spawn failure the entity is removed and null returned).
@@ -5595,6 +5604,23 @@ fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+/// Native `__s2_entity_name(index, serial) -> string | null`. Reads CEntityIdentity::m_name via the
+/// `entity_name` op; copies the C string now. null = stale/invalid/no-ops; "" = entity has no targetname.
+fn s2_entity_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 2 { return; }
+        let index  = args.get(0).int32_value(scope).unwrap_or(-1);
+        let serial = args.get(1).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.entity_name else { return };
+        let ptr = func(index, serial);
+        if ptr.is_null() { return; }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
 /// Native `__s2_client_language(slot) -> string | null`. Mirrors `s2_client_name` exactly, calling
 /// `client_language` (the client's `cl_language` cvar) instead.
 fn s2_client_language(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -6289,6 +6315,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // IEntityListener is lazily installed shim-side on the first subscribe via entity_listener_install).
     set_native(scope, global_obj, "__s2_entity_listener_on", s2_entity_listener_on);
     set_native(scope, global_obj, "__s2_entity_listener_off", s2_entity_listener_off);
+    // entity_name slice: EntityRef.name reads CEntityIdentity::m_name (sibling of entity_find_by_class's
+    // m_designerName read on the same identity).
+    set_native(scope, global_obj, "__s2_entity_name", s2_entity_name);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -10060,6 +10089,7 @@ mod frame_tests {
             collision_activate: None,
             entity_set_model: None,
             entity_listener_install: None,
+            entity_name: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10249,6 +10279,22 @@ mod frame_tests {
             String(Array.isArray(refs) && refs.length === 0)
         "#);
         assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// entity_name slice: `EntityRef.name` (and the raw `__s2_entity_name` native) degrade to `null`
+    /// with no `entity_name` op (e.g. every in-isolate test) — never a crash.
+    #[test]
+    fn entity_name_degrades_to_null_without_ops() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS are installed in-isolate -> the op is absent -> both paths return null.
+        let out = eval_std("en1", r#"
+            var EntityRef = globalThis.__s2pkg_entity.EntityRef;
+            var direct = __s2_entity_name(5, 7);
+            var viaRef = new EntityRef(5, 7).name;
+            JSON.stringify({ direct: direct, viaRef: viaRef });
+        "#);
+        assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);
         shutdown();
     }
 
@@ -10578,6 +10624,7 @@ mod frame_tests {
             collision_activate: None,
             entity_set_model: None,
             entity_listener_install: None,
+            entity_name: None,
         }
     }
 
