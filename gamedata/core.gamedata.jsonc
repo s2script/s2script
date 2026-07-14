@@ -320,6 +320,31 @@
         "pattern": "48 81 C7 ? ? ? ? E9 ? ? ? ? CC CC CC CC 55 48 8D 15",
         "resolve": "direct"
       }
+    },
+    // CBaseEntity::EmitSound (Sound slice): the engine's soundevent-emit entry (Sound.emit /
+    // pawn.emitSound). RE FINDING (offline disasm of the pinned build-2000873 libserver.so):
+    // the two reference frameworks' emit patterns BOTH converge on ONE core function @ 0x1a476c0
+    // (which xrefs the string "EmitSoundByHandle" @ 0x9160ba, and reads m_nForceGuid at struct
+    // offset 32 + tests m_nFlags bit 0x10 at offset 42 — the EmitSound_t layout). CSSharp's pattern
+    // (below) resolves UNIQUE to a thin thunk @ 0x1a48e30 that forwards (rsi/rdx/rcx) straight to
+    // that core fn — this IS CSSharp's live-proven CBaseEntity_EmitSoundFilter target. ModSharp's
+    // member-overload pattern resolves UNIQUE to a DIFFERENT wrapper @ 0x1a48ee0 that takes volume
+    // as a float-BY-VALUE in xmm0 (NOT the plan's `const float*`), reorders args, and internally
+    // BUILDS the same EmitSound_t (storing the xmm0 float at struct offset 20 = m_flVolume — proving
+    // that arg IS volume, not classic-Source duration) before calling 0x1a476c0. DECISION: Variant B
+    // (the CSSharp static prototype SndOpEventGuid_t EmitSound(CRecipientFilter&, CEntityIndex,
+    // const EmitSound_t&); rdi=sret, rsi=filter, edx=ent-index, rcx=&params) — the member overload's
+    // `const float*` prototype was DISPROVEN (volume is by-value), so Variant B's EmitSound_t path is
+    // authoritative for volume. A DIRECT prologue pattern (match offset == function start), validated
+    // UNIQUE offline (1 match) + by the boot gate. If it drifts on an update, re-locate via the string
+    // refs: "EmitSoundByHandle", "public.distance_volume_mapping_curve",
+    // "Playing sound on non-networked entity %s".
+    "EmitSound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 48 89 D8 48 8B 5D ? C9 C3 CC CC CC CC CC CC 48 B8",
+        "resolve": "direct"
+      }
     }
   }
 }

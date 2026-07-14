@@ -11,6 +11,7 @@
 #include <eiface.h>
 #include <playerslot.h>   // CPlayerSlot — IVEngineServer2::ClientPrintf target (Slice 6.1b)
 #include <inetchannel.h>  // NetChannelBufType_t / BUF_RELIABLE (Slice 6.1c PostEventAbstract)
+#include <irecipientfilter.h>   // Sound slice: the modern 4-method IRecipientFilter + CPlayerBitVec
 #include <inetchannelinfo.h>  // INetChannelInfo::GetAddress — client_address (ban-reason sub-project 2)
 #include <networksystem/netmessage.h>            // CNetMessage::AsProto (Slice 6.1c)
 #include <google/protobuf/message.h>             // Message/Reflection (Slice 6.1c SayText2 reflection)
@@ -1763,6 +1764,115 @@ static int Shim_EntitySetModel(int index, int serial, const char* modelName) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Sound slice — emit (see docs/superpowers/specs/2026-07-13-sound-emitsound-precache-design.md).
+// A minimal modern recipient filter over the SDK's 4-method IRecipientFilter
+// (public/irecipientfilter.h), ported from CSSharp's recipientfilters.h: a slot-indexed
+// CPlayerBitVec, bounded 0..63. Reliable buffer, never an init message, no predicted slot.
+// ---------------------------------------------------------------------------
+class S2RecipientFilter : public IRecipientFilter {
+public:
+    S2RecipientFilter() { m_Recipients.ClearAll(); }
+    ~S2RecipientFilter() override {}
+    NetChannelBufType_t GetNetworkBufType() const override { return BUF_RELIABLE; }
+    bool IsInitMessage() const override { return false; }
+    const CPlayerBitVec& GetRecipients() const override { return m_Recipients; }
+    CPlayerSlot GetPredictedPlayerSlot() const override { return CPlayerSlot(-1); }
+    void AddRecipient(int slot) { if (slot >= 0 && slot < 64) m_Recipients.Set(slot); }
+    int Count() const {
+        int n = 0;
+        for (int s = 0; s < 64; s++) if (m_Recipients.IsBitSet(s)) n++;
+        return n;
+    }
+private:
+    CPlayerBitVec m_Recipients;
+};
+
+// s2_sound_precache_add is defined with the precache hook (Task 5 — the sound slice's second task);
+// forward-declared here so the ops.sound_precache_add assignment in Load() below compiles. Until that
+// task lands the shim does NOT link — acceptable, the shim only compiles at the sniper build (after
+// all sound tasks). Flagged in this task's commit message.
+static int s2_sound_precache_add(const char* path);
+
+// CBaseEntity::EmitSound — the CSSharp static prototype (entity_manager.h:257), CHOSEN because the
+// Task-2 offline RE step DISPROVED the ModSharp member overload on our binary: that member wrapper
+// (@0x1a48ee0) takes volume as a float BY VALUE in xmm0 (not the plan's `const float*`), reorders its
+// args, and internally builds this very EmitSound_t (storing the xmm0 float at struct offset 20 =
+// m_flVolume) before tail-calling the same core fn CSSharp's key resolves to (@0x1a476c0, which xrefs
+// "EmitSoundByHandle" and reads m_nForceGuid@32 / m_nFlags-bit-0x10@42 out of the EmitSound_t — every
+// field offset below RE-confirmed from that core fn + the member wrapper's stack stores). The committed
+// "EmitSound" sig resolves UNIQUE to CSSharp's thin thunk @0x1a48e30, which forwards (rsi=filter,
+// edx=ent-index, rcx=&params) straight to that core fn. EmitSound_t is a byte-exact port of CSSharp's
+// (entity_manager.h:221, live-proven by CSSharp on this engine); the ctor defaults are CSSharp's
+// verbatim (m_nSourceSoundscape 0, m_nPitch PITCH_NORM=100). SndOpEventGuid_t is 24 bytes
+// (CSSharp entity_manager.h:250) -> SysV sret: rdi=sret, rsi=filter, edx=ent index, rcx=params.
+typedef uint32 SoundEventGuid_t;
+struct EmitSound_t {
+    const char*      m_pSoundName        = nullptr;
+    Vector           m_vecOrigin         = Vector(0.0f, 0.0f, 0.0f);   // 3D positional deferred — zeroed
+    float            m_flVolume          = 1.0f;
+    float            m_flSoundTime       = 0.0f;
+    CEntityIndex     m_nSpeakerEntity    = CEntityIndex(-1);
+    SoundEventGuid_t m_nForceGuid        = 0;
+    CEntityIndex     m_nSourceSoundscape = CEntityIndex(0);
+    uint16           m_nPitch            = 100;   // PITCH_NORM; dead in the engine (CSSharp comment)
+    uint8            m_nFlags            = 0;      // 0 = attach to the entity index
+};
+struct SndOpEventGuid_t {
+    uint32 m_nGuid;
+    uint64 m_hStackHash;
+    uint64 pad;   // CSSharp: "size might be incorrect" — harmless for an out-value we only read m_nGuid from
+};
+typedef SndOpEventGuid_t (*EmitSoundFn_t)(S2RecipientFilter& filter, CEntityIndex ent,
+                                          const EmitSound_t& params);
+static EmitSoundFn_t s_pEmitSound = nullptr;   // sig-resolved in Load(); null -> op no-ops
+
+// The sound_emit op. Degrade-never-crash — return 0 WITHOUT calling the engine ONLY when: unresolved
+// sig / out-of-.text fn / !soundName / stale-or-null source entity / the CALLER requested no
+// recipients (slotCount <= 0 || !slots). An all-bot-skipped filter (Count()==0 after the loop) is
+// NOT a degrade — build it and CALL the engine anyway: a PVS/PAS filter excluding everyone is a
+// normal, safe engine path (plays to nobody, no netchannel touched), more correct than a "failed" 0
+// for a bot-only target, and it exercises the resolved fn + its 24-byte sret ABI + prototype on a
+// bots-only live gate. entSerial >= 0 -> serial-gated via ResolveEntityBySerial (the
+// pawn_commit_suicide pattern); entSerial < 0 -> the sentinel: entIndex used directly (worldspawn /
+// global 2D emit from index 0). Recipient bot-skip: a fake client has no netchannel — it can't hear
+// the sound AND a null-netchannel send is the client_print / user_message_send crash surface, so each
+// requested slot is admitted only if GetPlayerNetInfo(slot) != null. Volume clamped into [0,1]
+// (NaN/out-of-range -> 1.0). NOTE (Variant B): the engine call takes the ENTITY INDEX, not the
+// pointer; the serial-gate is kept anyway (resolve `ent`, return 0 if stale) so a dead EntityRef
+// still degrades to 0 — the resolved pointer is simply unused past the gate.
+static int s2_sound_emit(const char* soundName, int entIndex, int entSerial,
+                         const int* slots, int slotCount, float volume) {
+    if (!s_pEmitSound || !soundName || !soundName[0]) return 0;
+    if (!IsAddressInServerText(reinterpret_cast<void*>(s_pEmitSound))) return 0;
+    if (!slots || slotCount <= 0) return 0;                    // CALLER requested no recipients -> no-op
+    void* ent = nullptr;
+    if (entSerial >= 0) {
+        ent = ResolveEntityBySerial(entIndex, entSerial);
+    } else {
+        ent = s2_ent_by_index(entIndex);
+    }
+    if (!ent) return 0;                                        // stale/free slot -> no-op
+    S2RecipientFilter filter;
+    for (int i = 0; i < slotCount; i++) {
+        int slot = slots[i];
+        if (slot < 0 || slot >= 64) continue;
+        if (!s_pEngine || !s_pEngine->GetPlayerNetInfo(CPlayerSlot(slot))) continue;   // bot-skip
+        filter.AddRecipient(slot);
+    }
+    // An all-bot-skipped filter (Count()==0) is NOT a degrade — call the engine anyway (plays to
+    // nobody, no netchannel touched). This also exercises the resolved fn on a bots-only live gate.
+    float vol = volume;
+    if (!(vol >= 0.0f) || vol > 1.0f) vol = 1.0f;               // !(>=0) also catches NaN
+    EmitSound_t params;
+    params.m_pSoundName = soundName;
+    params.m_flVolume   = vol;
+    SndOpEventGuid_t guid = s_pEmitSound(filter, CEntityIndex(entIndex), params);
+    META_CONPRINTF("[s2script] EmitSound '%s' recipients=%d -> guid=%u\n",
+                   soundName, filter.Count(), guid.m_nGuid);
+    return static_cast<int>(guid.m_nGuid);
+}
+
 // collision_activate: register a serial-gated entity's collision with the spatial partition so a
 // runtime-created trigger_multiple fires touch (zones real-trigger slice; Task-1 RE). Reaches the
 // entity's EMBEDDED CCollisionProperty via the schema m_Collision offset resolved once at Load
@@ -2409,6 +2519,25 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pSetModel));
                 }
             }
+            // Sound slice: resolve CBaseEntity::EmitSound (soundevent emit; Sound.emit /
+            // pawn.emitSound). A DIRECT prologue signature self-validated UNIQUE on OUR libserver.so
+            // (the Task-2 offline RE step disproved the ModSharp member prototype — volume is by-value,
+            // not a const float* — so the committed sig + Variant B EmitSound_t call shape are the
+            // RE finding; see the gamedata "EmitSound" comment). The unique match is CSSharp's thunk
+            // that forwards to the core EmitSound. Unresolved -> s_pEmitSound stays null -> sound_emit
+            // no-ops (degrade-never-crash).
+            auto esit = sigs.find("EmitSound");
+            if (esit == sigs.end()) {
+                GamedataResult("EmitSound", false, "signature absent from gamedata");
+            } else {
+                int64_t esOff = ResolveSigValidated("EmitSound", esit->second);
+                ModText esmt = FindModuleText(esit->second.module.c_str());
+                if (esOff != s2sig::kFail && esmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pEmitSound = reinterpret_cast<EmitSoundFn_t>(const_cast<uint8_t*>(esmt.text) + esOff);
+                    META_CONPRINTF("[s2script] EmitSound resolved @%p (Sound.emit)\n",
+                                   reinterpret_cast<void*>(s_pEmitSound));
+                }   // esOff == kFail: ResolveSigValidated already recorded the reason
+            }
             // Zones real-trigger slice: resolve CCollisionProperty::MarkPartitionHandleDirty +
             // UpdatePartition (both DIRECT sigs) + the embedded m_Collision offset. Degrade-never-crash:
             // MarkPartitionHandleDirty unresolved -> op no-ops; UpdatePartition unresolved -> recipe A only.
@@ -2720,6 +2849,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.collision_activate = &Shim_CollisionActivate;
     // Zones real-trigger slice — APPENDED after collision_activate; order MUST match S2EngineOps.
     ops.entity_set_model = &Shim_EntitySetModel;
+    // Sound slice — APPENDED after entity_set_model; order MUST match S2EngineOps.
+    // s2_sound_precache_add is forward-declared above (its body lands with the precache hook, Task 5);
+    // the shim does not link until then — intentional (only the sniper build compiles the shim).
+    ops.sound_emit         = &s2_sound_emit;
+    ops.sound_precache_add = &s2_sound_precache_add;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
