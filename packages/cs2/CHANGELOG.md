@@ -1,5 +1,23 @@
 # @s2script/cs2
 
+## 0.4.0
+
+### Minor Changes
+
+- a3e5cc4: Add a CS2 `Weapon` entity object + player fire control.
+
+  `@s2script/cs2` gains `Weapon` — an `EntityRef`-backed, serial-gated wrapper over `CCSWeaponBase` (`clip1`/`clip2`/`paintKit`/`owner`/`setAmmo`/`remove`, plus `Weapon.fromEntity`/`findAll`) — and new `Pawn` members: `activeWeapon` and `weapons` (now `Weapon`s), `giveNamedItem` (→ `Weapon`), `disarm`, and player fire control `blockFiring`/`allowFiring`/`nextAttack`.
+
+  `@s2script/entity` gains `EntityRef.writeFloat32Via` and `writeBoolVia` — the write mirror of the `read*Via` pointer-chain accessors, over the `__s2_ent_ref_write_chain` core native.
+
+### Patch Changes
+
+- Updated dependencies [a3e5cc4]
+- Updated dependencies [bb6b8fb]
+- Updated dependencies [9bdf2bb]
+  - @s2script/entity@0.3.0
+  - @s2script/trace@0.1.3
+
 ## 0.3.0
 
 ### Minor Changes
