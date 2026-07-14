@@ -791,6 +791,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     readBoolVia:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.BOOL); },
     readUInt64Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U64); },
     readInt64Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I64); },
+    writeFloat32Via:function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.serial, c, o, K.F32, v); },
+    writeBoolVia:   function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.serial, c, o, K.BOOL, v); },
     readHandleVia: function (c, o) { var h = __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U32);
       if (h === null) return null; var d = __s2_handle_decode(h >>> 0); var ref = new EntityRef(d[0], d[1]);
       return ref.isValid() ? ref : null; },   // mirror readHandle: an empty/stale handle -> null (not a dead ref)
@@ -3356,10 +3358,12 @@ fn s2_ent_ref_read_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
-/// Native `__s2_ent_ref_write_chain(index, serial, pathOffs[], finalOff, kind, value) -> bool`.
-/// Serial-gated at the root; follows the pointer chain (each hop null-checked, raw ptrs never cross to
-/// JS), then writes `value` at `finalOff`. Mirrors `s2_ent_ref_read_chain`. Used to clear a flag on a
-/// pointer-referenced sub-object (e.g. CEntityIdentity::m_flags via m_pEntity). i32/u32/u8 only.
+/// Native `__s2_ent_ref_write_chain(index, serial, pathOffs, finalOff, kind, value) -> boolean`.
+/// Write mirror of `s2_ent_ref_read_chain`: serial-gates the root, derefs each i32 offset in `pathOffs`
+/// (each hop null-checked; raw intermediate pointers never cross to JS), then writes a SCALAR of `kind`
+/// at `finalOff`. Returns false on a stale ref, an unresolved hop, a bad `finalOff`, or an unknown/64-bit
+/// kind. Does NOT call notifyStateChanged (the caller decides). The final ptr is only ever written in-core.
+/// Callers: the CS2 fire gate (m_flNextAttack, F32) + flag-clearing on a pointer sub-object (i32/u32/u8).
 fn s2_ent_ref_write_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
@@ -3378,12 +3382,18 @@ fn s2_ent_ref_write_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
             p = crate::entity::read_ptr(p, off);
             if p.is_null() { return; }
         }
-        let base = p as *mut u8;
+        let dst = p as *mut u8;
+        let off = final_off;
         match kind {
-            KIND_I32 => crate::entity::write_i32(base, final_off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
-            KIND_U32 => crate::entity::write_u32(base, final_off, args.get(5).integer_value(scope).unwrap_or(0) as u32),
-            KIND_U8  => crate::entity::write_u8(base, final_off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
-            _ => return,
+            KIND_I32  => crate::entity::write_i32(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
+            KIND_F32  => crate::entity::write_f32(dst, off, args.get(5).number_value(scope).unwrap_or(0.0) as f32),
+            KIND_BOOL => crate::entity::write_bool(dst, off, args.get(5).boolean_value(scope)),
+            KIND_I8   => crate::entity::write_i8(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
+            KIND_I16  => crate::entity::write_i16(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
+            KIND_U8   => crate::entity::write_u8(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
+            KIND_U16  => crate::entity::write_u16(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
+            KIND_U32  => crate::entity::write_u32(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as u32),
+            _ => return,   // unknown / 64-bit kind → false (already set)
         }
         rv.set_bool(true);
     }));
@@ -9856,6 +9866,25 @@ mod frame_tests {
         // the EntityRef via-methods degrade:
         assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readInt32Via([48],200))"#), "null");
         assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1,7).readHandleVia([48],200))"#), "null");
+        shutdown();
+    }
+
+    /// The write-chain native degrades safely on every bad input (no live entity in the test isolate).
+    #[test]
+    fn ent_ref_write_chain_degrades_safely() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // stale/absent root ref (index 1, serial 7) → false
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, [0], 8, 2, 1.5))"), "false");
+        // finalOff < 0 → false
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, [0], -1, 2, 1.5))"), "false");
+        // non-array path arg → false
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, 5, 8, 2, 1.5))"), "false");
+        // unknown kind (99) → false
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, [0], 8, 99, 1.5))"), "false");
+        // the prelude wrapper forwards + degrades to false on a stale ref
+        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1, 7).writeFloat32Via([0], 8, 1.5))"#), "false");
         shutdown();
     }
 
