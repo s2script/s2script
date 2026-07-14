@@ -5,8 +5,8 @@
   "s2script": {
     "apiVersion": "1.x",
     "pluginDependencies": {
-      "@s2script/cs2": "^1.0.0",
-      "@s2script/zones": "^1.0.0"
+      "@s2script/cs2": "^0.3.0",
+      "@s2script/zones": "^0.1.0"
     }
   }
 }

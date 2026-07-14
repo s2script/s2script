@@ -156,6 +156,23 @@ static CGameEntitySystem* GetEntitySystem() {
 // without itself needing s_pGameResourceService/s_gameEntitySystemOffset (file-scope statics here).
 CGameEntitySystem* S2_EntitySystemBridge() { return GetEntitySystem(); }
 
+// Entity lifecycle listeners slice: the isolated entity_listener.cpp TU owns the IEntityListener; we
+// register/unregister it here via the sig-resolved (this, IEntityListener*) member fns. void* keeps
+// entitysystem.h out of this TU.
+extern "C" void* S2_GetEntityListener();
+using AddRemoveListenerFn = void (*)(void* gameEntitySystem, void* listener);
+static AddRemoveListenerFn s_pAddListenerEntity    = nullptr;   // sig-resolved in Load
+static AddRemoveListenerFn s_pRemoveListenerEntity = nullptr;   // sig-resolved in Load (best-effort)
+static bool               s_wantEntityListener     = false;     // set true by the install op
+
+// Idempotent register: AddListenerEntity guards Find, so re-asserting each map (StartupServer) is safe
+// whether the entity system persists across a changelevel or is recreated with a fresh listener list.
+static void EnsureEntityListenerRegistered() {
+    if (!s_wantEntityListener || !s_pAddListenerEntity) return;
+    CGameEntitySystem* es = GetEntitySystem();     // fresh; null before the first map
+    if (es) s_pAddListenerEntity(es, S2_GetEntityListener());
+}
+
 // ---------------------------------------------------------------------------
 // Engine-op: resolve a schema field's flattened byte offset within a class via
 // the live SchemaSystem (recon Q1).  C-ABI, called by the Rust core through the
@@ -260,6 +277,29 @@ static int s2_entity_find_by_class(const char* className, int* outIndices, int* 
         ++found;
     }
     return found;
+}
+
+// ---------------------------------------------------------------------------
+// Engine-op: read an entity's targetname (CEntityIdentity::m_name, a CUtlSymbolLarge;
+// String() inline, utlsymbollarge.h). Serial-gated: resolves the identity at `index`,
+// validates the captured `serial` via GetRefEHandle(), returns m_name.String() ("" if
+// unnamed) or nullptr if stale/invalid/removed. Sibling of s2_entity_find_by_class
+// (which reads m_designerName on the same identity). Engine-generic.
+// C-ABI, called by the Rust core through the S2EngineOps table.
+// ---------------------------------------------------------------------------
+static const char* s2_entity_name(int index, int serial) {
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return nullptr;
+    if (index < 0 || index >= MAX_TOTAL_ENTITIES) return nullptr;
+    int chunk = index / MAX_ENTITIES_IN_LIST;
+    int slot  = index % MAX_ENTITIES_IN_LIST;
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[chunk];
+    if (!chunk_base) return nullptr;
+    CEntityIdentity* id = &chunk_base[slot];
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return nullptr;
+    if (!id->m_pInstance) return nullptr;
+    if (id->GetRefEHandle().GetSerialNumber() != serial) return nullptr;  // stale slot reuse
+    return id->m_name.String();  // "" if the entity has no targetname
 }
 
 // ---------------------------------------------------------------------------
@@ -2007,6 +2047,15 @@ static int s2_sound_emit(const char* soundName, int entIndex, int entSerial,
     return static_cast<int>(guid.m_nGuid);
 }
 
+// entity_listener_install: called by core on the first-ever JS entity-lifecycle subscribe. Set the
+// want-flag + register now (if the entity system exists); the StartupServer POST hook re-asserts each
+// map. Returns 1 if the AddListenerEntity signature resolved, else 0 (degrade — subscribe delivers nothing).
+static int Shim_EntityListenerInstall() {
+    s_wantEntityListener = true;
+    EnsureEntityListenerRegistered();
+    return s_pAddListenerEntity ? 1 : 0;
+}
+
 // collision_activate: register a serial-gated entity's collision with the spatial partition so a
 // runtime-created trigger_multiple fires touch (zones real-trigger slice; Task-1 RE). Reaches the
 // entity's EMBEDDED CCollisionProperty via the schema m_Collision offset resolved once at Load
@@ -2835,6 +2884,33 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     }
                 }   // foiOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Entity lifecycle listeners slice: resolve CGameEntitySystem::AddListenerEntity (register an
+            // IEntityListener) + RemoveListenerEntity (best-effort Unload cleanup). Both validated UNIQUE +
+            // .text via ResolveSigValidated. Unresolved -> entity_listener_install no-ops / Unload skips remove.
+            auto aleit = sigs.find("AddListenerEntity");
+            if (aleit == sigs.end()) {
+                GamedataResult("AddListenerEntity", false, "signature absent from gamedata");
+            } else {
+                int64_t aleOff = ResolveSigValidated("AddListenerEntity", aleit->second);
+                ModText alemt = FindModuleText(aleit->second.module.c_str());
+                if (aleOff != s2sig::kFail && alemt.text) {
+                    s_pAddListenerEntity = reinterpret_cast<AddRemoveListenerFn>(const_cast<uint8_t*>(alemt.text) + aleOff);
+                    META_CONPRINTF("[s2script] AddListenerEntity resolved @%p (entity lifecycle listeners)\n",
+                                   reinterpret_cast<void*>(s_pAddListenerEntity));
+                }
+            }
+            auto rleit = sigs.find("RemoveListenerEntity");
+            if (rleit == sigs.end()) {
+                GamedataResult("RemoveListenerEntity", false, "signature absent from gamedata");
+            } else {
+                int64_t rleOff = ResolveSigValidated("RemoveListenerEntity", rleit->second);
+                ModText rlemt = FindModuleText(rleit->second.module.c_str());
+                if (rleOff != s2sig::kFail && rlemt.text) {
+                    s_pRemoveListenerEntity = reinterpret_cast<AddRemoveListenerFn>(const_cast<uint8_t*>(rlemt.text) + rleOff);
+                    META_CONPRINTF("[s2script] RemoveListenerEntity resolved @%p (entity lifecycle listeners)\n",
+                                   reinterpret_cast<void*>(s_pRemoveListenerEntity));
+                }
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
@@ -3017,7 +3093,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.collision_activate = &Shim_CollisionActivate;
     // Zones real-trigger slice — APPENDED after collision_activate; order MUST match S2EngineOps.
     ops.entity_set_model = &Shim_EntitySetModel;
-    // Sound slice — APPENDED after entity_set_model; order MUST match S2EngineOps.
+    // Entity lifecycle listeners slice — APPENDED after entity_set_model; order MUST match S2EngineOps.
+    ops.entity_listener_install = &Shim_EntityListenerInstall;
+    // entity_name slice — APPENDED after entity_listener_install; order MUST match S2EngineOps.
+    ops.entity_name = &s2_entity_name;
+    // Sound slice — APPENDED after entity_name; order MUST match S2EngineOps.
     // Both op fns are defined above: s2_sound_emit with the emit block, s2_sound_precache_add with the
     // precache vtable-hook block (which also defines Detour_OnPrecacheResource / InstallPrecacheHook).
     ops.sound_emit         = &s2_sound_emit;
@@ -3143,6 +3223,23 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         s_precacheHookInstalled = false;
         s_pGameRulesVtable = nullptr;
         s_origOnPrecacheResource = nullptr;
+    }
+
+    // Entity lifecycle listeners slice: unregister the IEntityListener so a dangling vtable call can't
+    // happen if s2script is unloaded while the entity system lives. Best-effort (unresolved sig -> skip).
+    if (s_wantEntityListener && s_pRemoveListenerEntity) {
+        CGameEntitySystem* es = GetEntitySystem();
+        if (es) s_pRemoveListenerEntity(es, S2_GetEntityListener());
+    } else if (s_wantEntityListener && s_pAddListenerEntity && !s_pRemoveListenerEntity) {
+        // We registered the listener (AddListenerEntity resolved) but CANNOT unregister it
+        // (RemoveListenerEntity signature is unresolved/stale on this build). The listener object is
+        // about to be freed with the .so, so the next engine-driven entity create/spawn/delete would
+        // call a dangling vtable -> SIGSEGV. We cannot safely remove it, so at least tell the operator
+        // loudly (the boot GAMEDATA VALIDATION gate also flags the stale RemoveListenerEntity sig).
+        META_CONPRINTF("[s2script] WARN: entity listener registered but RemoveListenerEntity is "
+                       "unresolved on this build -- a DANGLING listener remains; do NOT hot-unload "
+                       "s2script until the RemoveListenerEntity signature is regenerated (regenerate "
+                       "gamedata for this CS2 build).\n");
     }
 
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
@@ -3293,6 +3390,7 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     // (Sound slice precache: no retry needed here — the OnPrecacheResource hook is a class-vtable swap
     // installed once at Load, since the class vtable is static data present from module load.)
     s2script_core_dispatch_map_start(map ? map : "");
+    EnsureEntityListenerRegistered();   // re-assert the IEntityListener each map (idempotent Find-guard)
     RETURN_META(MRES_IGNORED);
 }
 

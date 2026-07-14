@@ -209,7 +209,13 @@ pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
 type CollisionActivateFn = extern "C" fn(c_int, c_int) -> c_int;
 type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
 
-// --- Sound slice (APPENDED after entity_set_model; order is the ABI). ENGINE-GENERIC: a soundevent
+// --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI).
+type EntityListenerInstallFn = extern "C" fn() -> c_int;
+
+// --- entity_name slice (APPENDED after entity_listener_install; order is the ABI).
+type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
+
+// --- Sound slice (APPENDED after entity_name; order is the ABI). ENGINE-GENERIC: a soundevent
 // NAME + a recipient slot set + a resource path are Source2-generic; no CS2 names in the C ABI.
 type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
 type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
@@ -315,7 +321,11 @@ pub struct S2EngineOps {
     pub collision_activate: Option<CollisionActivateFn>,
     // --- Zones real-trigger slice (APPENDED after collision_activate; order is the ABI; do not reorder above) ---
     pub entity_set_model: Option<EntitySetModelFn>,
-    // --- Sound slice (APPENDED after entity_set_model; order is the ABI; do not reorder above) ---
+    // --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI; do not reorder above) ---
+    pub entity_listener_install: Option<EntityListenerInstallFn>,
+    // --- entity_name slice (APPENDED after entity_listener_install; order is the ABI; do not reorder above) ---
+    pub entity_name: Option<EntityNameFn>,
+    // --- Sound slice (APPENDED after entity_name; order is the ABI; do not reorder above) ---
     pub sound_emit: Option<SoundEmitFn>,
     pub sound_precache_add: Option<SoundPrecacheAddFn>,
 }
@@ -570,6 +580,14 @@ thread_local! {
     /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
     static OUTPUT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// Entity lifecycle listeners slice: `Entity.onCreate/onSpawn/onDelete(className, handler)` mux,
+    /// keyed `"<kind>\0<className>"` (kind = "create"/"spawn"/"delete"; className "*" = all). Notify-only,
+    /// dispatched SYNCHRONOUSLY from the shim's IEntityListener callback (it fires from the engine's entity
+    /// path, not under our own borrow; the try_borrow_mut guard covers a handler that synchronously
+    /// creates/removes an entity). `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
+    static ENTITY_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
@@ -865,6 +883,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Zones real-trigger slice: give this entity a model (and its collision) via CBaseEntity::SetModel.
   // A runtime trigger_multiple needs a model to build the physics volume that fires touch.
   EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.serial, String(name)); };
+  // Targetname (CEntityIdentity::m_name) — e.g. a map trigger's "map_start". null if stale; "" if unnamed.
+  Object.defineProperty(EntityRef.prototype, "name", {
+    get: function () { var n = __s2_entity_name(this.index, this.serial); return n == null ? null : n; }
+  });
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
   // With keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is a LIVE,
   // SPAWNED entity (on spawn failure the entity is removed and null returned).
@@ -899,6 +921,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
   var Entity = {
     onOutput: function (classname, output, handler) { __s2_output_subscribe(String(classname), String(output), handler); },
+    // Entity lifecycle listeners: fire when the engine creates/spawns/deletes an entity of `className`
+    // ("*" = all). The handler gets (entity, className): `entity` is a serial-gated EntityRef (may be
+    // null for a barely-constructed onCreate / a dying onDelete); `className` is always valid.
+    onCreate: function (className, handler) { __s2_entity_listener_on("create", String(className), handler); },
+    onSpawn:  function (className, handler) { __s2_entity_listener_on("spawn",  String(className), handler); },
+    onDelete: function (className, handler) { __s2_entity_listener_on("delete", String(className), handler); },
     // Find every entity whose designer-name (class) exactly matches className. Returns serial-gated
     // EntityRefs (empty array on no-op/degrade). Broadly reusable (gamerules proxy, props, triggers...).
     findByClass: function (className) {
@@ -3786,7 +3814,6 @@ pub(crate) fn dispatch_precache() {
     HOST.with(|h| {
         let Ok(mut borrow) = h.try_borrow_mut() else { return };
         let Some(host) = borrow.as_mut() else { return };
-
         for (owner, generation, handler_g) in &snap {
             if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
             let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
@@ -3796,7 +3823,6 @@ pub(crate) fn dispatch_precache() {
             let hs = &mut hs;
             let ctx_local = v8::Local::new(hs, &g_ctx);
             let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
             let mut tc_storage = v8::TryCatch::new(scope);
             let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
             let tc = &mut tc;
@@ -3808,6 +3834,60 @@ pub(crate) fn dispatch_precache() {
                     .map(|e| e.to_rust_string_lossy(&*tc))
                     .unwrap_or_else(|| "handler threw".into());
                 log_warn(&format!("WARN: dispatch_precache: handler '{}': {}", owner, msg));
+            }
+        }
+    });
+}
+
+/// Deliver an entity lifecycle event to the `Entity.on{Create,Spawn,Delete}` subscribers. Called from
+/// ffi.rs's `s2script_core_dispatch_entity_event` (the shim's IEntityListener callback). `kind` is
+/// "create"/"spawn"/"delete"; the mux is keyed `"<kind>\0<className>"` with a `"<kind>\0*"` wildcard.
+/// Notify-only. Mirrors `dispatch_client_event`: snapshot (release the mux borrow), `try_borrow_mut`
+/// re-entrancy guard, per-sub `is_live` + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw.
+/// The entity crosses as a packed handle → a serial-gated EntityRef (null if stale/free — the exact-(-1)
+/// + resolve-null discipline of `dispatch_output`); className is passed as a 2nd arg (always valid).
+pub(crate) fn dispatch_entity_event(kind: &str, class_name: &str, handle: i32) {
+    // Phase 1: snapshot the exact-class key + the "<kind>\0*" wildcard (skip the wild when class == "*",
+    // else the same key would be snapshotted twice).
+    let exact = format!("{}\0{}", kind, class_name);
+    let mut snap = ENTITY_MUX.with(|m| m.borrow().snapshot(&exact));
+    if class_name != "*" {
+        let wild = format!("{}\0*", kind);
+        snap.extend(ENTITY_MUX.with(|m| m.borrow().snapshot(&wild)));
+    }
+    if snap.is_empty() { return; }
+
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+        for (owner, generation, handler_g) in &snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let entity_val: v8::Local<v8::Value> = if handle == -1 {
+                v8::null(tc).into()
+            } else {
+                let (idx, ser) = crate::entity::decode_handle(handle as u32);
+                if entity_resolve_ptr(idx, ser).is_null() { v8::null(tc).into() } else { build_entity_ref(tc, idx, ser) }
+            };
+            let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
+                Some(s) => s.into(),
+                None => v8::undefined(tc).into(),
+            };
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            if func.call(tc, recv, &[entity_val, class_val]).is_none() {
+                let msg = tc.exception().map(|e| e.to_rust_string_lossy(&*tc)).unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_entity_event('{}','{}'): handler '{}': {}", kind, class_name, owner, msg));
             }
         }
     });
@@ -5368,6 +5448,45 @@ fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
+/// Native `__s2_entity_listener_on(kind, className, handler)`. Subscribes a JS fn to the entity
+/// lifecycle mux (entity-listeners slice), keyed `"<kind>\0<className>"`. On the FIRST-EVER subscribe
+/// (the mux was empty), calls the `entity_listener_install` engine op so the shim lazily registers its
+/// IEntityListener (zero cost when no plugin subscribes). Degrade-never-crash: no op → the subscribe
+/// still records, the engine just never delivers.
+fn s2_entity_listener_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let kind = args.get(0).to_rust_string_lossy(scope);
+        let class_name = args.get(1).to_rust_string_lossy(scope);
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let key = format!("{}\0{}", kind, class_name);
+        let first_ever = ENTITY_MUX.with(|m| m.borrow().is_empty());
+        ENTITY_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
+        if first_ever {
+            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.entity_listener_install) {
+                let _ = func();
+            }
+        }
+    }));
+}
+
+/// Native `__s2_entity_listener_off(kind, className)`. Drops the CURRENT plugin's subs for the exact
+/// `"<kind>\0<className>"` key (best-effort, mirrors `s2_output_unsubscribe`). The IEntityListener stays
+/// installed (unload/reload cleanup runs via `remove_by_owner`); this is available as a primitive.
+fn s2_entity_listener_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let kind = args.get(0).to_rust_string_lossy(scope);
+        let class_name = args.get(1).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let key = format!("{}\0{}", kind, class_name);
+        ENTITY_MUX.with(|m| { m.borrow_mut().remove_by_owner_on(&key, &owner); });
+    }));
+}
+
 /// Native `__s2_give_named_item(index, serial, subObjOffset, name) -> EntityRef | null`. Over the
 /// `give_named_item` engine op (`GiveNamedItem`, sig-resolved shim-side, called on the pawn's
 /// ItemServices sub-object at `subObjOffset` — a schema offset resolved JS-side, opaque here). The
@@ -5627,6 +5746,23 @@ fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(func) = ops.client_name else { return };
         let ptr = func(slot);
+        if ptr.is_null() { return; }
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_entity_name(index, serial) -> string | null`. Reads CEntityIdentity::m_name via the
+/// `entity_name` op; copies the C string now. null = stale/invalid/no-ops; "" = entity has no targetname.
+fn s2_entity_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 2 { return; }
+        let index  = args.get(0).int32_value(scope).unwrap_or(-1);
+        let serial = args.get(1).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.entity_name else { return };
+        let ptr = func(index, serial);
         if ptr.is_null() { return; }
         let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
         if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
@@ -6327,6 +6463,13 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_spawn_kv", s2_entity_spawn_kv);
     set_native(scope, global_obj, "__s2_output_subscribe", s2_output_subscribe);
     set_native(scope, global_obj, "__s2_output_unsubscribe", s2_output_unsubscribe);
+    // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete subscribe/unsubscribe (the
+    // IEntityListener is lazily installed shim-side on the first subscribe via entity_listener_install).
+    set_native(scope, global_obj, "__s2_entity_listener_on", s2_entity_listener_on);
+    set_native(scope, global_obj, "__s2_entity_listener_off", s2_entity_listener_off);
+    // entity_name slice: EntityRef.name reads CEntityIdentity::m_name (sibling of entity_find_by_class's
+    // m_designerName read on the same identity).
+    set_native(scope, global_obj, "__s2_entity_name", s2_entity_name);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -8040,6 +8183,8 @@ pub fn shutdown() {
     NET_EVENT_PENDING.with(|q| q.borrow_mut().clear());
     // Reset the Entity.onOutput mux (entity-I/O slice) so a re-init starts clean.
     OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the entity-lifecycle mux (entity-listeners slice) so a re-init starts clean.
+    ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -8382,6 +8527,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // detour stays installed for the process lifetime (removed in the shim's Unload), so no per-plugin
     // hook-removal request is needed.
     OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // Drop the plugin's entity-lifecycle subscriptions (entity-listeners slice). The IEntityListener
+    // stays registered for the process lifetime (removed in the shim's Unload), so no per-plugin
+    // hook-removal is needed.
+    ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -9681,6 +9830,125 @@ mod frame_tests {
         shutdown();
     }
 
+    // ---------------------------------------------------------------------------
+    // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete
+    // ---------------------------------------------------------------------------
+
+    thread_local! { static ENTITY_INSTALL_CALLS: std::cell::Cell<i32> = std::cell::Cell::new(0); }
+    extern "C" fn capture_entity_install() -> c_int { ENTITY_INSTALL_CALLS.with(|c| c.set(c.get() + 1)); 1 }
+
+    // --- Fake resolvable-entity plumbing for the live-EntityRef dispatch test ---
+    // A leaked (test-only, tiny) entity whose identity-pointer field (offset 0x10 = ENT_IDENTITY_PTR_OFFSET)
+    // points to a leaked identity whose handle field (offset 0x10 = ENT_IDENTITY_HANDLE_OFFSET) encodes
+    // (idx, serial). #[repr(C)] + a 0x10-byte pad prefix gives natural alignment for read_ptr/read_u32's
+    // direct derefs. `fake_ent_by_index` returns the entity for the armed index; leaking keeps the raw
+    // pointers valid for the extern "C" callback (a real CEntityInstance is likewise long-lived).
+    #[repr(C)]
+    struct FakeIdent { pad: [u8; 0x10], handle: u32 }
+    #[repr(C)]
+    struct FakeEnt { pad: [u8; 0x10], ident: *const u8 }
+    thread_local! {
+        static FAKE_ENT_INDEX: std::cell::Cell<i32> = std::cell::Cell::new(-1);
+        static FAKE_ENT_PTR: std::cell::Cell<*const u8> = std::cell::Cell::new(std::ptr::null());
+    }
+    extern "C" fn fake_ent_by_index(idx: c_int) -> *mut std::os::raw::c_void {
+        if idx == FAKE_ENT_INDEX.with(|c| c.get()) { FAKE_ENT_PTR.with(|c| c.get()) as *mut std::os::raw::c_void }
+        else { std::ptr::null_mut() }
+    }
+    /// Leak a fake entity+identity that `entity_resolve_ptr(idx, serial)` resolves for `handle`, arm
+    /// `fake_ent_by_index` for its index, and return the decoded (idx, serial). Derived via the public
+    /// `decode_handle` so it stays correct regardless of `HANDLE_ENTRY_BITS`.
+    fn arm_fake_entity(handle: u32) -> (i32, i32) {
+        let (idx, serial) = crate::entity::decode_handle(handle);
+        let ident: &'static FakeIdent = Box::leak(Box::new(FakeIdent { pad: [0; 0x10], handle }));
+        let ent: &'static FakeEnt = Box::leak(Box::new(FakeEnt { pad: [0; 0x10], ident: ident as *const FakeIdent as *const u8 }));
+        FAKE_ENT_INDEX.with(|c| c.set(idx));
+        FAKE_ENT_PTR.with(|c| c.set(ent as *const FakeEnt as *const u8));
+        (idx, serial)
+    }
+
+    /// dispatch_entity_event delivers to the matching kind+class subscriber AND the "*" wildcard, with
+    /// (entity, className). With no engine ops entity_resolve_ptr degrades to null, so the entity arg is
+    /// null (also forced by handle=-1) and we assert on the className arg. Mirrors map_start_dispatch.
+    #[test]
+    fn entity_event_dispatch_delivers_class_to_matching_subscriber() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("pel");
+        eval_in_context_string("pel", r#"
+            globalThis.__hits = [];
+            var E = __s2pkg_entity.Entity;
+            E.onSpawn("weapon_ak47", function (e, cls) { globalThis.__hits.push("exact:" + cls + ":" + (e === null)); });
+            E.onSpawn("*",           function (e, cls) { globalThis.__hits.push("star:"  + cls + ":" + (e === null)); });
+            E.onCreate("weapon_ak47", function (e, cls) { globalThis.__hits.push("create:" + cls); });
+            "ok"
+        "#);
+        dispatch_entity_event("spawn", "weapon_ak47", -1);   // hits the exact + the "*" spawn subs, NOT the create sub
+        assert_eq!(eval_in_context_string("pel", "globalThis.__hits.slice().sort().join('|')"),
+                   "exact:weapon_ak47:true|star:weapon_ak47:true");
+        shutdown();
+    }
+
+    /// kind separation: a "spawn" subscriber does NOT fire on a "delete"/"create" dispatch.
+    #[test]
+    fn entity_event_dispatch_respects_kind() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("pel2");
+        eval_in_context_string("pel2", r#"
+            globalThis.__n = 0;
+            __s2pkg_entity.Entity.onSpawn("*", function () { globalThis.__n++; });
+            "ok"
+        "#);
+        dispatch_entity_event("delete", "prop_physics", -1);
+        dispatch_entity_event("create", "prop_physics", -1);
+        assert_eq!(eval_in_context_string("pel2", "String(globalThis.__n)"), "0", "spawn sub must not fire on delete/create");
+        dispatch_entity_event("spawn", "prop_physics", -1);
+        assert_eq!(eval_in_context_string("pel2", "String(globalThis.__n)"), "1");
+        shutdown();
+    }
+
+    /// First-ever subscribe calls entity_listener_install exactly once; a second subscribe does not.
+    #[test]
+    fn entity_listener_install_called_once_on_first_subscribe() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps { entity_listener_install: Some(capture_entity_install), ..mock_event_ops() }));
+        ENTITY_INSTALL_CALLS.with(|c| c.set(0));
+        create_plugin_context("pel3");
+        eval_in_context_string("pel3", r#"__s2pkg_entity.Entity.onSpawn("a", function(){}); "ok""#);
+        assert_eq!(ENTITY_INSTALL_CALLS.with(|c| c.get()), 1, "install on first subscribe");
+        eval_in_context_string("pel3", r#"__s2pkg_entity.Entity.onDelete("b", function(){}); "ok""#);
+        assert_eq!(ENTITY_INSTALL_CALLS.with(|c| c.get()), 1, "no second install");
+        shutdown();
+    }
+
+    /// dispatch_entity_event delivers a LIVE (non-null, serial-gated) EntityRef when the handle resolves:
+    /// with a fake `ent_by_index` wired, the "no entity" (-1 / resolve-null) path is bypassed, so
+    /// `build_entity_ref` runs and the handler receives an EntityRef whose `isValid()===true` and whose
+    /// index/serial match the handle. Exercises the non-null branch the other three tests (handle=-1)
+    /// never hit; complements the live gate (which observed `valid=true`).
+    #[test]
+    fn entity_event_dispatch_delivers_live_entityref() {
+        let _ = init(dummy_logger());
+        let handle: u32 = 0x0001_8005;                       // decodes to a live (idx>0, serial>0)
+        let (idx, serial) = arm_fake_entity(handle);
+        assert!(idx > 0 && serial > 0, "chosen handle must decode to a live (idx>0, serial>0), got ({idx},{serial})");
+        set_engine_ops(Some(S2EngineOps { ent_by_index: Some(fake_ent_by_index), ..mock_event_ops() }));
+        create_plugin_context("pel4");
+        eval_in_context_string("pel4", r#"
+            globalThis.__got = "none";
+            __s2pkg_entity.Entity.onSpawn("weapon_ak47", function (e, cls) {
+                globalThis.__got = (e === null) ? "null"
+                    : ("live:" + cls + ":" + e.isValid() + ":" + e.index + ":" + e.serial);
+            });
+            "ok"
+        "#);
+        dispatch_entity_event("spawn", "weapon_ak47", handle as i32);
+        assert_eq!(eval_in_context_string("pel4", "globalThis.__got"),
+                   format!("live:weapon_ak47:true:{idx}:{serial}"));
+        shutdown();
+    }
+
     /// Slice 5A Task 4: `EntityRef` from `@s2script/entity` degrades safely when no engine-ops table
     /// is wired — `isValid` returns false, `readInt32` returns null, `writeInt32` returns false.
     /// This is the failing test: EntityRef must be exported by the prelude (Step 3 makes it pass).
@@ -9999,6 +10267,8 @@ mod frame_tests {
             client_language: None,
             collision_activate: None,
             entity_set_model: None,
+            entity_listener_install: None,
+            entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
         }));
@@ -10190,6 +10460,22 @@ mod frame_tests {
             String(Array.isArray(refs) && refs.length === 0)
         "#);
         assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// entity_name slice: `EntityRef.name` (and the raw `__s2_entity_name` native) degrade to `null`
+    /// with no `entity_name` op (e.g. every in-isolate test) — never a crash.
+    #[test]
+    fn entity_name_degrades_to_null_without_ops() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS are installed in-isolate -> the op is absent -> both paths return null.
+        let out = eval_std("en1", r#"
+            var EntityRef = globalThis.__s2pkg_entity.EntityRef;
+            var direct = __s2_entity_name(5, 7);
+            var viaRef = new EntityRef(5, 7).name;
+            JSON.stringify({ direct: direct, viaRef: viaRef });
+        "#);
+        assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);
         shutdown();
     }
 
@@ -10613,6 +10899,8 @@ mod frame_tests {
             client_language: None,
             collision_activate: None,
             entity_set_model: None,
+            entity_listener_install: None,
+            entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
         }

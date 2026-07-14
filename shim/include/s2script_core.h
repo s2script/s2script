@@ -217,7 +217,20 @@ typedef int (*s2_collision_activate_fn)(int index, int serial);
  * a runtime entity's model name is empty). Returns 1 on success, 0 if unresolved/stale. ENGINE-GENERIC. */
 typedef int (*s2_entity_set_model_fn)(int index, int serial, const char* modelName);
 
-/* Sound slice — APPENDED after entity_set_model; order is the ABI.
+/* Entity lifecycle listeners slice — APPENDED after entity_set_model; order is the ABI.
+ * entity_listener_install: lazily register the IEntityListener on CGameEntitySystem on the
+ * first-ever JS entity-lifecycle subscribe. Idempotent (AddListenerEntity guards Find) + re-asserted
+ * each map by the StartupServer POST hook. Returns 1 if installed/queued, 0 if the AddListenerEntity
+ * signature is unresolved (degrade — subscribe delivers nothing). */
+typedef int (*s2_entity_listener_install_fn)(void);
+
+/* entity_name: read an entity's targetname (CEntityIdentity::m_name, a CUtlSymbolLarge; String() is
+ * inline). Serial-gated (index,serial). Returns the name ("" if the entity has no targetname), valid
+ * during the call — the core copies immediately — or NULL if stale/invalid. ENGINE-GENERIC.
+ * Zones/surftimer slice. */
+typedef const char* (*s2_entity_name_fn)(int index, int serial);
+
+/* Sound slice — APPENDED after entity_name (the ABI tail); order is the ABI.
  * sound_emit: play a named CS2 SoundEvent from a serial-gated source entity to a slot set.
  * Sig-resolved CBaseEntity::EmitSound (preferred member overload (name, volume*, IRecipientFilter*);
  * the CSSharp EmitSound_t static path as fallback — see the 2026-07-13 sound spec). soundName = the
@@ -331,7 +344,11 @@ typedef struct {
     s2_collision_activate_fn collision_activate;
     /* Zones real-trigger slice — APPENDED after collision_activate; order is the ABI. */
     s2_entity_set_model_fn entity_set_model;
-    /* Sound slice — APPENDED after entity_set_model (the struct tail); order is the ABI. */
+    /* Entity lifecycle listeners slice — APPENDED after entity_set_model; order is the ABI. */
+    s2_entity_listener_install_fn entity_listener_install;
+    /* entity_name slice — APPENDED after entity_listener_install; order is the ABI; do not reorder above. */
+    s2_entity_name_fn entity_name;
+    /* Sound slice — APPENDED after entity_name (the struct tail); order is the ABI. */
     s2_sound_emit_fn         sound_emit;
     s2_sound_precache_add_fn sound_precache_add;
 } S2EngineOps;
@@ -366,6 +383,9 @@ void s2script_core_dispatch_client_event(const char* name, int slot);
  * live map name (clientlist-fakeconvar-onmapstart slice). Notify-only: runs the JS Server.onMapStart
  * subscribers. catch_unwind-wrapped; a null pointer degrades to "" (never panic across the boundary). */
 void s2script_core_dispatch_map_start(const char* map);
+/* Shim -> core: an IEntityListener callback (create/spawn/delete) reports an entity by its packed
+ * CEntityHandle (ToInt()) + class name. Notify-only; core builds a serial-gated EntityRef. */
+void s2script_core_dispatch_entity_event(const char* kind, const char* className, int handle);
 /* Shim -> core: the CGameRulesGameSystem::OnPrecacheResource manual hook reports the session
  * resource-manifest build (Sound slice). The shim stashes the live IResourceManifest* around this
  * call so the sound_precache_add op can AddResource into it; the stash is cleared when this

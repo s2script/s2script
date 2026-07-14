@@ -1,5 +1,5 @@
 // @s2script/zones — DB-backed, per-map, coordinate-defined zones with JSON export/import, operator CRUD,
-// and a published inter-plugin interface (`@s2script/zones@1.0.0`, emits enter/leave/stay).
+// and a published inter-plugin interface (`@s2script/zones@0.1.0`, emits enter/leave/stay).
 //
 // DETECTION BACKEND: REAL ENGINE TRIGGERS. Each zone is a runtime `trigger_multiple` whose collision is an
 // arbitrary box built from the zone bounds (createEntity -> SetModel registers the touch aggregate ->
@@ -16,15 +16,20 @@ import { config } from "@s2script/config";
 import { OnGameFrame } from "@s2script/frame";
 import { publishInterface, PublishHandle } from "@s2script/interfaces";
 import { Entity } from "@s2script/entity";
-import { Player, Pawn, TriggerZone, TriggerZoneHandle } from "@s2script/cs2";
+import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
+import { Vector } from "@s2script/math";
+import { Chat } from "@s2script/chat";
 
 interface Vec3 { x: number; y: number; z: number; }
-interface Zone { name: string; min: Vec3; max: Vec3; inside: Set<number>; trigger: TriggerZoneHandle | null; }
+interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set<number>; trigger: TriggerZoneHandle | null; }
 
 let db: Database | null = null;
 let currentMap = "";
 const zones = new Map<string, Zone>();
 let iface: PublishHandle | null = null;
+
+function emitCreated(z: Zone): void { if (iface) iface.emit("created", { zone: z.name, min: z.min, max: z.max, tags: z.tags }); }
+function emitDeleted(name: string): void { if (iface) iface.emit("deleted", { zone: name }); }
 
 // Zones whose trigger still needs to be (re)created. createEntity is unsafe at onMapStart (the entity
 // system isn't live yet — it crashes), so we NEVER create a trigger inline: we queue the zone here and
@@ -36,12 +41,90 @@ let dbReadyResolve: () => void = () => {};
 const dbReady: Promise<void> = new Promise<void>((r) => { dbReadyResolve = r; });
 
 function sanitizeName(n: string): string { return (n || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64); }
+function sanitizeTag(t: string): string { return (t || "").toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 32); }
+function parseTags(v: unknown): string[] {
+  return String(v ?? "").split(",").map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
+}
+function zonesByTag(tag: string): Zone[] {
+  const t = sanitizeTag(tag);
+  if (!t) return [];
+  return Array.from(zones.values()).filter((z) => z.tags.includes(t));
+}
 function zonesFile(map: string): string { return "zones-" + sanitizeName(map) + ".json"; }
 function normBox(a: Vec3, b: Vec3): { min: Vec3; max: Vec3 } {
   return {
     min: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: Math.min(a.z, b.z) },
     max: { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y), z: Math.max(a.z, b.z) },
   };
+}
+
+// --- beam wireframe viz --------------------------------------------------------------------------------
+interface ShownEntry { beams: BeamHandle[]; expiresAt: number; }   // expiresAt: wall-clock ms; 0 = persistent
+const shown = new Map<string, ShownEntry>();
+
+// The 12 edges of the AABB [min,max]: 8 corners -> 4 bottom + 4 top + 4 vertical.
+function box12(min: Vec3, max: Vec3): { a: Vec3; b: Vec3 }[] {
+  const c: Vec3[] = [
+    { x: min.x, y: min.y, z: min.z }, { x: max.x, y: min.y, z: min.z },
+    { x: max.x, y: max.y, z: min.z }, { x: min.x, y: max.y, z: min.z },
+    { x: min.x, y: min.y, z: max.z }, { x: max.x, y: min.y, z: max.z },
+    { x: max.x, y: max.y, z: max.z }, { x: min.x, y: max.y, z: max.z },
+  ];
+  const e: [number, number][] = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  return e.map(([i, j]) => ({ a: c[i], b: c[j] }));
+}
+
+function showZone(z: Zone, seconds: number): void {
+  hideZone(z.name);   // never stack two beam sets for one zone
+  const beams: BeamHandle[] = [];
+  for (const e of box12(z.min, z.max)) {
+    const b = Beam.draw(new Vector(e.a.x, e.a.y, e.a.z), new Vector(e.b.x, e.b.y, e.b.z), { color: [0, 255, 0, 255], width: 2 });
+    if (b) beams.push(b);
+  }
+  shown.set(z.name, { beams, expiresAt: seconds > 0 ? Date.now() + seconds * 1000 : 0 });
+}
+function hideZone(name: string): void {
+  const entry = shown.get(name);
+  if (!entry) return;
+  for (const b of entry.beams) { try { b.remove(); } catch { /* stale/already-gone */ } }
+  shown.delete(name);
+}
+function clearAllBeams(): void { for (const name of Array.from(shown.keys())) hideZone(name); }
+
+// --- in-game E-to-mark editor --------------------------------------------------------------------------
+// sm_zone_edit <name> starts a session: press E at two opposite corners (a live rubber-band box tracks the
+// walking position between the two presses). Rising-edge button polling (the menu system's technique), one
+// session per slot, 60s TTL. Cleanup: clearAllEdits() on map change + onUnload (removes the preview beams).
+const IN_USE = 32;   // in_buttons.h (E)
+interface EditSession { name: string; cornerA: Vec3 | null; prevMask: number; expiresAt: number; preview: BeamHandle[]; }
+const edits = new Map<number, EditSession>();   // keyed by 0-based player slot
+
+function clearPreview(s: EditSession): void {
+  for (const b of s.preview) { try { b.remove(); } catch { /* stale/already-gone */ } }
+  s.preview = [];
+}
+function cancelEdit(slot: number, notice?: string): void {
+  const s = edits.get(slot);
+  if (!s) return;
+  clearPreview(s);
+  edits.delete(slot);
+  if (notice) Chat.toSlot(slot, notice);
+}
+function clearAllEdits(): void { for (const slot of Array.from(edits.keys())) cancelEdit(slot); }
+
+// Start (or restart) an interactive E-mark session for `slot` on zone `name`. Precondition: the caller is
+// in-game (callerSlot >= 0 — both callers check this). Returns false if the player has no in-world position
+// (the caller replies the error). On success: cancels any prior session, seeds prevMask with the CURRENT
+// button mask (so a held E on entry doesn't fire a corner), and prompts the player — "Creating" for a new
+// name, "Editing" for an existing one. Shared by sm_zone_edit and sm_zone_add's bare in-game form.
+function startMarking(slot: number, name: string): boolean {
+  const pw = Pawn.forSlot(slot);
+  if (!pw || !pw.origin) return false;
+  cancelEdit(slot);   // replace any prior session (and remove its preview)
+  const verb = zones.has(name) ? "Editing" : "Creating";
+  edits.set(slot, { name, cornerA: null, prevMask: pw.buttons, expiresAt: Date.now() + 60_000, preview: [] });
+  Chat.toSlot(slot, `[zones] ${verb} zone '${name}': walk to a corner and press E; press E again at the opposite corner. (60s timeout; sm_zone_edit cancel to abort)`);
+  return true;
 }
 
 // --- trigger lifecycle ---------------------------------------------------------------------------------
@@ -70,40 +153,49 @@ function playerByPawnIndex(idx: number): { slot: number; userId: number } | null
 }
 
 async function loadMap(map: string): Promise<void> {
+  clearAllBeams();
+  clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
   clearAllTriggers();
   currentMap = map;
+  for (const name of zones.keys()) emitDeleted(name);   // map change: the old map's zones are cleared
   zones.clear();
   if (!db) return;
-  const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ FROM zones WHERE map = ?", [map]);
+  const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
   for (const r of rows) {
     const name = String(r.name);
     zones.set(name, {
       name,
       min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
       max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
+      tags: parseTags(r.tags),
       inside: new Set<number>(),
       trigger: null,
     });
     pendingTriggers.add(name);   // build on the next frame (entity system live)
+    emitCreated(zones.get(name)!);
   }
   console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
 }
 
-async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }): Promise<void> {
+async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: string[]): Promise<void> {
   await dbReady;   // guarantee the DB is open (or failed) before we mutate
   const prev = zones.get(name);
-  zones.set(name, { name, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+  const t = tags !== undefined ? tags : (prev ? prev.tags : []);
+  zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
   pendingTriggers.add(name);   // (re)build the trigger on the next frame
+  emitCreated(zones.get(name)!);
   if (db) await db.execute(
-    "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z]);
+    "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, t.join(",")]);
 }
 
 function dropZone(name: string): void {
   const z = zones.get(name);
   if (z) removeTrigger(z);
   zones.delete(name);
+  emitDeleted(name);
   pendingTriggers.delete(name);
+  hideZone(name);
   if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
 }
 
@@ -112,7 +204,8 @@ export function onLoad(): void {
     try {
       db = await Database.open("zones");
       await db.execute(
-        "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, PRIMARY KEY (map, name))");
+        "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, tags TEXT, PRIMARY KEY (map, name))");
+      try { await db.execute("ALTER TABLE zones ADD COLUMN tags TEXT"); } catch { /* duplicate column name — already migrated */ }
       await loadMap(Server.mapName);
       console.log("[zones] onLoad — DB ready (real-trigger backend)");
     } catch (e) {
@@ -124,14 +217,14 @@ export function onLoad(): void {
 
   Server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
 
-  iface = publishInterface("@s2script/zones", "1.0.0", {
+  iface = publishInterface("@s2script/zones", "0.1.0", {
     createZone(name: string, min: Vec3, max: Vec3): boolean {
       const nm = sanitizeName(name);
       if (!nm || !min || !max) return false;
       const box = normBox(min, max);
       if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) return false;
       const prev = zones.get(nm);
-      zones.set(nm, { name: nm, min: box.min, max: box.max, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+      zones.set(nm, { name: nm, min: box.min, max: box.max, tags: prev ? prev.tags : [], inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
       pendingTriggers.add(nm);
       upsertZone(nm, box).catch(() => {});   // durability, async (registry already updated)
       return true;
@@ -142,8 +235,8 @@ export function onLoad(): void {
       dropZone(nm);
       return true;
     },
-    getZones(): { name: string; min: Vec3; max: Vec3 }[] {
-      return Array.from(zones.values()).map((z) => ({ name: z.name, min: z.min, max: z.max }));
+    getZones(): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
+      return Array.from(zones.values()).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
     },
     isInZone(slot: number, name: string): boolean {
       const z = zones.get(sanitizeName(name));
@@ -154,8 +247,20 @@ export function onLoad(): void {
       for (const z of zones.values()) if (z.inside.has(slot)) out.push(z.name);
       return out;
     },
+    getZonesByTag(tag: string): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
+      return zonesByTag(String(tag ?? "")).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
+    },
+    setZoneTags(name: string, tags: string[]): boolean {
+      const nm = sanitizeName(name);
+      const z = zones.get(nm);
+      if (!z || !Array.isArray(tags)) return false;
+      const t = tags.map((x) => sanitizeTag(String(x))).filter((x) => x.length > 0);
+      z.tags = t;
+      if (db) db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [t.join(","), currentMap, nm]).catch(() => {});
+      return true;
+    },
   });
-  console.log("[zones] publishing @s2script/zones@1.0.0");
+  console.log("[zones] publishing @s2script/zones@0.1.0");
 
   // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. Entity.onOutput fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.
@@ -182,6 +287,10 @@ export function onLoad(): void {
   // for players the engine reports as currently inside (no position tests — just the engine-maintained set).
   let frame = 0;
   OnGameFrame.subscribe(() => {
+    if (shown.size > 0) {
+      const now = Date.now();
+      for (const [name, entry] of shown) if (entry.expiresAt > 0 && now >= entry.expiresAt) hideZone(name);
+    }
     if (pendingTriggers.size > 0) {
       for (const name of pendingTriggers) { const z = zones.get(name); if (z) buildTrigger(z); }
       pendingTriggers.clear();
@@ -197,21 +306,77 @@ export function onLoad(): void {
         iface.emit("stay", { zone: z.name, slot, userId: uid.get(slot) ?? -1 });
   });
 
-  // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size] (in-game, box around you)
+  // Dedicated editor poll: rising-edge E detection + a live rubber-band preview. A SECOND subscription that
+  // early-returns when no session is active (so it costs nothing when nobody is editing).
+  OnGameFrame.subscribe(() => {
+    if (edits.size === 0) return;
+    const now = Date.now();
+    for (const [slot, s] of edits) {
+      if (now >= s.expiresAt) { cancelEdit(slot, "[zones] Edit session timed out."); continue; }
+      const pw = Pawn.forSlot(slot);
+      if (!pw) { cancelEdit(slot, "[zones] Edit session cancelled (no pawn)."); continue; }
+      const mask = pw.buttons;                     // 0 if unreadable — a momentary 0 can re-arm the edge; acceptable
+      const pressed = mask & ~s.prevMask;
+      s.prevMask = mask;
+      const origin = pw.origin;
+      // Live rubber-band: corner A set, corner B pending -> retarget the 12 preview beams to the walking box.
+      if (s.cornerA && s.preview.length === 12 && origin) {
+        const box = normBox(s.cornerA, origin);
+        const edges = box12(box.min, box.max);
+        for (let i = 0; i < 12; i++)
+          s.preview[i].update(new Vector(edges[i].a.x, edges[i].a.y, edges[i].a.z), new Vector(edges[i].b.x, edges[i].b.y, edges[i].b.z));
+      }
+      if (!(pressed & IN_USE)) continue;
+      if (!origin) { Chat.toSlot(slot, "[zones] No position — try again."); continue; }   // don't consume the press
+      if (!s.cornerA) {
+        // 1st press: pin corner A (a COPY — origin is a snapshot but never alias it) + create the preview collapsed at A.
+        s.cornerA = { x: origin.x, y: origin.y, z: origin.z };
+        for (const e of box12(s.cornerA, s.cornerA)) {
+          const b = Beam.draw(new Vector(e.a.x, e.a.y, e.a.z), new Vector(e.b.x, e.b.y, e.b.z), { color: [255, 165, 0, 255], width: 2 });
+          if (b) s.preview.push(b);
+        }
+        Chat.toSlot(slot, "[zones] Corner 1 set — walk to the opposite corner and press E.");
+      } else {
+        // 2nd press: normalize, reject zero-volume (keep the session), else save + swap preview for a timed showZone.
+        const box = normBox(s.cornerA, { x: origin.x, y: origin.y, z: origin.z });
+        if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) {
+          Chat.toSlot(slot, "[zones] Zero-volume box — move further from corner 1 and press E again.");
+          continue;
+        }
+        const name = s.name;
+        cancelEdit(slot);   // end the session + remove the preview BEFORE the async save
+        upsertZone(name, box)
+          .then(() => {
+            const z = zones.get(name);
+            if (z) showZone(z, 10);   // timed confirmation wireframe of the SAVED box
+            Chat.toSlot(slot, `[zones] Zone '${name}' saved.`);
+          })
+          .catch((e) => Chat.toSlot(slot, `[zones] Save failed: ${e}`));
+      }
+    }
+  });
+
+  // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)
   Commands.registerAdmin("sm_zone_add", ADMFLAG.GENERIC, (ctx) => {
     const name = sanitizeName(ctx.args[0] || "");
-    if (!name) { ctx.reply("Usage: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size] (in-game)"); return; }
+    if (!name) { ctx.reply("Usage: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)"); return; }
     let box: { min: Vec3; max: Vec3 } | null = null;
     if (ctx.args.length >= 7) {
       const n = ctx.args.slice(1, 7).map((s) => parseFloat(s));
       if (n.some((v) => !isFinite(v))) { ctx.reply("Invalid coordinates."); return; }
       box = normBox({ x: n[0], y: n[1], z: n[2] }, { x: n[3], y: n[4], z: n[5] });
+    } else if (ctx.args.length === 1) {
+      // Bare in-game form: start the interactive E-mark session (same as sm_zone_edit).
+      if (ctx.callerSlot < 0) { ctx.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
+      if (!startMarking(ctx.callerSlot, name)) ctx.reply("No position — spawn in first, or give explicit coords.");
+      return;
     } else {
+      // name + size (2..6 args): box around you (in-game). length is 2..6 here, so args[1] (the size) always exists.
       if (ctx.callerSlot < 0) { ctx.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
       const pw = Pawn.forSlot(ctx.callerSlot);
       const o = pw ? pw.origin : null;
       if (!o) { ctx.reply("No position — spawn in first, or give explicit coords."); return; }
-      const size = ctx.args.length > 1 ? Math.abs(parseFloat(ctx.args[1])) || 128 : 128;
+      const size = Math.abs(parseFloat(ctx.args[1])) || 128;
       box = normBox({ x: o.x - size, y: o.y - size, z: o.z - size }, { x: o.x + size, y: o.y + size, z: o.z + size });
     }
     if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { ctx.reply("Zero-volume zone rejected."); return; }
@@ -221,6 +386,20 @@ export function onLoad(): void {
       .catch((e) => ctx.reply(`Save failed: ${e}`));
   });
 
+  // sm_zone_edit <name> — in-game: press E at two opposite corners; a live rubber-band box tracks between.
+  Commands.registerAdmin("sm_zone_edit", ADMFLAG.GENERIC, (ctx) => {
+    if (ctx.callerSlot < 0) { ctx.reply("sm_zone_edit is in-game only (it marks corners at your position)."); return; }
+    const raw = ctx.args[0] || "";
+    if (!raw || raw === "cancel") {
+      if (edits.has(ctx.callerSlot)) { cancelEdit(ctx.callerSlot); ctx.reply("Zone edit cancelled."); }
+      else ctx.reply("Usage: sm_zone_edit <name>  |  sm_zone_edit cancel");
+      return;
+    }
+    const name = sanitizeName(raw);
+    if (!name) { ctx.reply("Invalid zone name."); return; }
+    if (!startMarking(ctx.callerSlot, name)) ctx.reply("No position — spawn in first.");
+  });
+
   Commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (ctx) => {
     const name = sanitizeName(ctx.args[0] || "");
     if (!name || !zones.has(name)) { ctx.reply(`No zone '${name}' on this map.`); return; }
@@ -228,15 +407,27 @@ export function onLoad(): void {
     ctx.reply(`Zone '${name}' deleted.`);
   });
 
+  Commands.registerAdmin("sm_zone_tag", ADMFLAG.GENERIC, (ctx) => {
+    const name = sanitizeName(ctx.args[0] || "");
+    const z = zones.get(name);
+    if (!name || !z) { ctx.reply(`No zone '${name}' on this map. Usage: sm_zone_tag <name> [tag...] (no tags = clear)`); return; }
+    const tags = ctx.args.slice(1).map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
+    z.tags = tags;
+    if (db) db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [tags.join(","), currentMap, name]).catch(() => {});
+    ctx.reply(tags.length > 0 ? `Zone '${name}' tags: ${tags.join(", ")}` : `Zone '${name}' tags cleared.`);
+  });
+
   Commands.registerAdmin("sm_zone_list", ADMFLAG.GENERIC, (ctx) => {
-    ctx.reply(`Zones on ${currentMap}: ${zones.size}`);
-    for (const z of zones.values())
-      ctx.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
+    const filter = ctx.args.length > 0 ? sanitizeTag(ctx.args[0]) : "";
+    const list = filter ? zonesByTag(filter) : Array.from(zones.values());
+    ctx.reply(filter ? `Zones on ${currentMap} tagged '${filter}': ${list.length}` : `Zones on ${currentMap}: ${list.length}`);
+    for (const z of list)
+      ctx.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) tags=[${z.tags.join(",")}] inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
   });
 
   Commands.registerAdmin("sm_zone_export", ADMFLAG.GENERIC, (ctx) => {
-    const out: Record<string, { min: number[]; max: number[] }> = {};
-    for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z] };
+    const out: Record<string, { min: number[]; max: number[]; tags: string[] }> = {};
+    for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z], tags: z.tags };
     config.writeFile(zonesFile(currentMap), JSON.stringify(out, null, 2));
     ctx.reply(`Exported ${zones.size} zone(s) to ${zonesFile(currentMap)}.`);
   });
@@ -244,7 +435,7 @@ export function onLoad(): void {
   Commands.registerAdmin("sm_zone_import", ADMFLAG.GENERIC, (ctx) => {
     const raw = config.readFile(zonesFile(currentMap));
     if (!raw) { ctx.reply(`No zones file for ${currentMap}.`); return; }
-    let parsed: Record<string, { min: number[]; max: number[] }>;
+    let parsed: Record<string, { min: number[]; max: number[]; tags?: string[] }>;
     try { parsed = JSON.parse(raw); } catch { ctx.reply("Zones file is not valid JSON."); return; }
     let n = 0;
     const pend: Promise<void>[] = [];
@@ -253,10 +444,34 @@ export function onLoad(): void {
       const e = parsed[key];
       if (!name || !e || !Array.isArray(e.min) || !Array.isArray(e.max) || e.min.length < 3 || e.max.length < 3) continue;
       const box = normBox({ x: e.min[0], y: e.min[1], z: e.min[2] }, { x: e.max[0], y: e.max[1], z: e.max[2] });
-      pend.push(upsertZone(name, box));
+      const tags = Array.isArray(e.tags) ? e.tags.map((t) => sanitizeTag(String(t))).filter((t) => t.length > 0) : undefined;
+      pend.push(upsertZone(name, box, tags));
       n++;
     }
     Promise.all(pend).then(() => ctx.reply(`Imported ${n} zone(s).`)).catch((err) => ctx.reply(`Import error: ${err}`));
+  });
+
+  Commands.registerAdmin("sm_zone_show", ADMFLAG.GENERIC, (ctx) => {
+    const arg = ctx.args[0] || "";
+    if (!arg) { ctx.reply("Usage: sm_zone_show <name|all> [seconds] (default 30; 0 = persistent)"); return; }
+    const seconds = ctx.args.length > 1 ? Math.max(0, ctx.argFloat(1, 30)) : 30;
+    if (arg === "all") {
+      for (const z of zones.values()) showZone(z, seconds);
+      ctx.reply(`Showing ${zones.size} zone(s)` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+      return;
+    }
+    const z = zones.get(sanitizeName(arg));
+    if (!z) { ctx.reply(`No zone '${sanitizeName(arg)}' on this map.`); return; }
+    showZone(z, seconds);
+    ctx.reply(`Showing '${z.name}'` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+  });
+  Commands.registerAdmin("sm_zone_hide", ADMFLAG.GENERIC, (ctx) => {
+    const arg = ctx.args[0] || "all";
+    if (arg === "all") { const n = shown.size; clearAllBeams(); ctx.reply(`Hid ${n} zone(s).`); return; }
+    const name = sanitizeName(arg);
+    if (!shown.has(name)) { ctx.reply(`Zone '${name}' is not shown.`); return; }
+    hideZone(name);
+    ctx.reply(`Hid '${name}'.`);
   });
 
   console.log("[zones] onLoad — commands registered (real-trigger backend)");
@@ -265,5 +480,7 @@ export function onLoad(): void {
 // Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
 // (created entities are game-world-owned, not auto-ledgered). onLoad rebuilds them from the DB.
 export function onUnload(): void {
+  clearAllBeams();
+  clearAllEdits();
   clearAllTriggers();
 }

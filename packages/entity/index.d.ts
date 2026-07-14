@@ -12,6 +12,9 @@ import type { HookResultValue } from "@s2script/events";
 export declare class EntityRef {
   readonly index: number;
   readonly serial: number;
+  /** This entity's targetname (`CEntityIdentity::m_name`) — e.g. a map trigger's `"map_start"`. `""` if
+   *  the entity has no targetname; `null` if the ref is stale/invalid. */
+  readonly name: string | null;
   constructor(index: number, serial: number);
   /** True iff the slot's current serial still matches the captured serial. */
   isValid(): boolean;
@@ -151,6 +154,23 @@ export interface OutputEvent {
  */
 export declare const Entity: {
   onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
+  /**
+   * Fire when the engine CREATES an entity of `className` (`"*"` = all) — earliest hook; the entity is
+   * barely constructed, schema fields may be zero/default. The handler receives the serial-gated
+   * `entity` (may be `null`) plus its `className`. Prefer `onSpawn` to read fields.
+   */
+  onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /**
+   * Fire after the engine SPAWNS an entity of `className` (`"*"` = all) — `Spawn()` has run, so schema
+   * fields/keyvalues are populated. The useful hook for reading state.
+   */
+  onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /**
+   * Fire as the engine DELETES an entity of `className` (`"*"` = all). The entity is still readable
+   * during the synchronous handler; a stashed ref reads `null` once the slot is freed (serial gate),
+   * never garbage.
+   */
+  onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns serial-gated refs. */
   findByClass(className: string): EntityRef[];
 };
