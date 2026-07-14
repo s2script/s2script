@@ -904,6 +904,29 @@ EOF
 
 ## Task 5: Precache shim — factory-list resolve, the manual `OnPrecacheResource` hook, `sound_precache_add`
 
+> **⚠️ MECHANISM AMENDED (post-implementation, reviewer Critical #1/#2 + Task-5 offline RE on the
+> pinned build-2000873 `libserver.so`). The factory-list-walk + manual-`SH_ADD_HOOK` design below
+> (Steps 1–8's "resolve the instance off the factory node, then `SH_ADD_MANUALHOOK`") is
+> NOT IMPLEMENTABLE on this binary and was replaced by a CLASS-VTABLE SLOT SWAP.** The shipped
+> mechanism (see the amended spec's "Precache — mechanism" + `shim/src/s2script_mm.cpp`'s
+> `InstallPrecacheHook` / `Detour_OnPrecacheResource` / `WriteVtableSlot`):
+> - **No factory walk / no live instance.** `CGameRulesGameSystem`'s factory is a
+>   `CGameSystemReallocatingFactory` (slot 8 `IsReallocating`→1, slot 9 `GetStaticGameSystem`→nullptr);
+>   `+0x18` = `m_ppGlobalPointer`, statically zeroed (`movq $0x0, 0x2867798` @`0x18edbb0`) and never
+>   re-pointed → the node **cannot** yield the instance (the `m_pInstance@24` premise was a misread
+>   hint). The factory is also registered as **`"GameRulesGameSystem"`** (no leading `C`).
+> - **No inline detour.** `OnPrecacheResource`'s prologue @`0x18d48e0` starts rip-relative
+>   (`mov [rip+disp],rdi`) → `s2detour` refuses it.
+> - **No `SH_ADD_HOOK` needed.** Resolve the class vtable by RTTI
+>   (`s2vtable::GetVTableByName("libserver.so","CGameRulesGameSystem")` → `0x24c9d68`), read gamedata
+>   index 7 (a validated HINT), `.text`-validate `vtbl[7]` (`0x18d48e0`), `mprotect` the RELRO page and
+>   swap the slot to a free handler (saving the original to chain). No instance, survives per-map
+>   instance realloc, installs ONCE at `Load` (class vtable is static data — **no StartupServer retry**),
+>   restored on `Unload`. gamedata drops the `GameSystemFactoryList` signature (kept only as a
+>   documented dead-end note); the `CGameRulesGameSystem_OnPrecacheResource` vtable INDEX offset stays.
+>   Steps 3/5/7/8's manual-hook/`S2GsFactoryNode`/retry/`SH_REMOVE_MANUALHOOK` are superseded; Step 4's
+>   header member decls are removed (the handler + installer are file-static free functions).
+
 **Files:**
 - Modify: `gamedata/core.gamedata.jsonc` (`GameSystemFactoryList` signature; `CGameRulesGameSystem_OnPrecacheResource` offsets entry after `CCSPlayer_ItemServices_DropActivePlayerWeapon`)
 - Modify: `shim/src/s2script_mm.cpp` (manual-hook decl near the SH_DECLs `:114`; statics + `s2_sound_precache_add` + `Hook_OnPrecacheResource` + `TryInstallPrecacheHook`; `Load()` sig resolution + offsets pick + install call; the `Hook_StartupServer` lazy retry `:2969`; the Unload removal beside `:2823`)

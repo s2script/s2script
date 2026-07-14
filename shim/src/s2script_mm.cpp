@@ -51,6 +51,8 @@
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <link.h>       // dl_iterate_phdr, ElfW
+#include <sys/mman.h>   // mprotect — Sound slice: patch the CGameRulesGameSystem vtable slot (precache)
+#include <unistd.h>     // sysconf(_SC_PAGESIZE) — the mprotect page span
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
@@ -113,13 +115,6 @@ class GameSessionConfiguration_t {};
 // INetworkServerService::StartupServer (clientlist-fakeconvar-onmapstart slice) — the CSSharp OnMapStart
 // mechanism (mm_plugin.cpp:82), verbatim. POST hook only. Signature confirmed against OUR iserver.h:221.
 SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*);
-
-// Precache manual hook (Sound slice) — the FIRST manual SourceHook in the shim: CGameRulesGameSystem
-// is not an SDK-declared interface, so OnPrecacheResource is hooked by VTABLE POSITION (declared
-// index 0 here; SH_MANUALHOOK_RECONFIGURE applies the gamedata index at install time). Signature:
-// void OnPrecacheResource(CGameRulesGameSystem* this, IResourceManifest* pManifest) — the arg is
-// carried as void* (the manifest type stays opaque; only its vtable slot 0 is called).
-SH_DECL_MANUALHOOK1_void(GameRules_OnPrecacheResource, 0, 0, 0, void*);
 
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
@@ -1796,29 +1791,45 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Sound slice — precache. CS2 builds the session resource manifest at map load; custom resources
-// are added by hooking the EXISTING CGameRulesGameSystem's OnPrecacheResource(IResourceManifest*)
-// (a manual SourceHook at the gamedata vtable index — the ModSharp mechanism, decompile-confirmed;
-// NOT a new game-system registration, CSSharp's heavier fallback). The instance is found by
-// walking the game-system factory list from the sig-resolved sm_pFirst storage
-// ("GameSystemFactoryList"): node layout vtbl@0 / m_pNext@8 / m_pName@16 / m_pInstance@24
-// (Task-5 offline RE, disasm-confirmed against the pinned build-2000873 libserver.so — see the
-// gamedata "GameSystemFactoryList" comment: the CBaseGameSystemFactory ctor @0xec6b60 sets
-// vtbl@0 / m_pName@16(rsi) / m_pNext@8, and the derived factory vtable's accessor slot reads
-// m_pInstance at [this+0x18]=+24). Degrade-never-crash: any unresolved step leaves the hook
-// uninstalled (onPrecache never fires; emit unaffected). The manifest pointer is stashed ONLY for
-// the synchronous duration of the hook dispatch — it never crosses to JS.
+// Sound slice — precache. CS2 builds the session resource manifest at map load; custom resources are
+// added by intercepting the EXISTING CGameRulesGameSystem's OnPrecacheResource(IResourceManifest*)
+// (NOT a new game-system registration — CSSharp's heavier fallback).
+//
+// MECHANISM: a VTABLE-SLOT HOOK of the shared CGameRulesGameSystem CLASS vtable (resolved by RTTI via
+// s2vtable::GetVTableByName, the trace-slice self-resolve; gamedata carries only the vtable INDEX, a
+// validated HINT). We swap slot[idx] (OnPrecacheResource) to our free handler and save the original.
+// This was chosen over the two options the reviewer offered AFTER the offline RE ruled them out on the
+// pinned build-2000873 libserver.so:
+//   (1) NOT a factory-list walk to the live instance. The plan's premise — the game-system factory
+//       node yields the instance at node+24 — is FALSE here: CGameRulesGameSystem's factory is a
+//       CGameSystemReallocatingFactory (RTTI "30CGameSystemReallocatingFactoryI20CGameRulesGameSystemS0_E"
+//       @ factory-vtable 0x24c9f88; slot 8 IsReallocating -> `mov $1;ret`, slot 9 GetStaticGameSystem
+//       -> `xor eax;ret` = nullptr). +0x18 is m_ppGlobalPointer (U**), which the single construction
+//       site zeroes statically (`movq $0x0, 0x2867798` @0x18edbb0) and nothing in .text ever
+//       re-points; SetGlobalPtr writes THROUGH it (`mov rax,[rdi+0x18]; test; je; mov rsi,(rax)`) so
+//       it no-ops forever. The factory therefore never holds the live instance. (The factory is also
+//       registered as "GameRulesGameSystem" — NO leading 'C' — @0x90f33e; the C-name strcmp could
+//       never have matched anyway.)
+//   (2) NOT an inline detour (s2detour) of the slot function body. OnPrecacheResource's prologue
+//       @0x18d48e0 STARTS with a RIP-relative `mov [rip+0xf92e79],rdi` — s2detour::Install refuses to
+//       relocate any rip-relative stolen instruction (detour.cpp), so it can never patch this fn.
+//   (3) NOT a per-instance manual SourceHook: the reallocating factory recreates the instance per map,
+//       which would drop an instance-scoped hook. The shared CLASS-vtable patch has none of these
+//       problems — no live instance needed, no prologue relocation, and it SURVIVES instance
+//       reallocation (a new instance uses the same already-patched class vtable). The class vtable is
+//       static data present at module load, so the hook installs ONCE in Load() (no lazy retry).
+// IResourceManifest::AddResource(const char*) is vtable slot 0 (disasm-confirmed) — the
+// sound_precache_add op calls it on the stashed manifest. Degrade-never-crash: any unresolved/
+// out-of-.text/mprotect step leaves the slot untouched (onPrecache never fires; emit unaffected).
+// The manifest pointer is stashed ONLY for the synchronous duration of the hook dispatch — it never
+// crosses to JS.
 // ---------------------------------------------------------------------------
-struct S2GsFactoryNode {                  // minimal CBaseGameSystemFactory view (offsets RE-confirmed)
-    void**           vtbl;                // +0
-    S2GsFactoryNode* m_pNext;             // +8
-    const char*      m_pName;             // +16
-    void*            m_pInstance;         // +24 (the static factory's instance slot)
-};
-static S2GsFactoryNode** s_ppGameSystemFactoryList = nullptr;  // sig-resolved &sm_pFirst storage
-static void* s_pGameRulesGameSystem = nullptr;                 // the hooked instance (for removal)
-static void* s_currentPrecacheManifest = nullptr;              // live ONLY during the hook dispatch
-static int   s_precacheVtblIdx = -1;                           // gamedata offsets entry
+typedef void (*OnPrecacheResourceFn_t)(void* thisptr, void* pManifest);
+static OnPrecacheResourceFn_t s_origOnPrecacheResource = nullptr;   // saved original slot value (for un-hook + chaining)
+static void** s_pGameRulesVtable   = nullptr;                       // the shared CGameRulesGameSystem class vtable (for restore)
+static void*  s_currentPrecacheManifest = nullptr;                  // live ONLY during the hook dispatch
+static int    s_precacheVtblIdx    = -1;                            // gamedata offsets entry (vtable index; a HINT)
+static bool   s_precacheHookInstalled = false;                      // the vtable slot is swapped to our handler
 
 // The sound_precache_add op. Block-scoped: valid only while the hook stash is live.
 // IResourceManifest::AddResource(const char*) is vtable slot 0 (ModSharp decompile-confirmed:
@@ -1831,6 +1842,66 @@ static int s2_sound_precache_add(const char* path) {
     if (!IsAddressInServerText(fn)) return 0;
     reinterpret_cast<void (*)(void*, const char*)>(fn)(s_currentPrecacheManifest, path);
     return 1;
+}
+
+// The OnPrecacheResource replacement (virtual dispatch delivers the SysV register args here:
+// rdi=this instance, rsi=manifest). Stash the manifest for the block-scoped sound_precache_add op,
+// dispatch to the Sound.onPrecache subscribers, clear, then CHAIN to the original slot (so the game's
+// own resource precache still runs). A free function — this is a vtable-slot swap, not a member hook.
+static void Detour_OnPrecacheResource(void* thisptr, void* pManifest) {
+    s_currentPrecacheManifest = pManifest;
+    s2script_core_dispatch_precache();
+    s_currentPrecacheManifest = nullptr;
+    if (s_origOnPrecacheResource) s_origOnPrecacheResource(thisptr, pManifest);
+}
+
+// Overwrite one class-vtable slot (Sound slice — precache). The CGameRulesGameSystem class vtable
+// lives in libserver.so's .data.rel.ro (made read-only by RELRO after load), so mprotect the page(s)
+// spanning the slot to R/W around the single pointer write, then restore R-only (best-effort). Returns
+// false (nothing written) on mprotect failure. Reused for install (-> our handler) and Unload (-> the
+// saved original).
+static bool WriteVtableSlot(void** vt, int idx, void* fn) {
+    void** slot = &vt[idx];
+    long pg = sysconf(_SC_PAGESIZE);
+    if (pg <= 0) return false;
+    uintptr_t a = reinterpret_cast<uintptr_t>(slot);
+    uintptr_t pageStart = a & ~static_cast<uintptr_t>(pg - 1);
+    size_t span = (a + sizeof(void*)) - pageStart;
+    if (mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ | PROT_WRITE) != 0) return false;
+    *slot = fn;
+    mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ);   // best-effort restore
+    return true;
+}
+
+// Install the OnPrecacheResource class-vtable hook (called ONCE from Load; see the block comment for
+// the mechanism rationale). RTTI-resolved vtable + the gamedata vtable INDEX (a HINT), the resolved
+// slot fn .text-validated before we touch it. Degrade-never-crash: any failure logs + leaves the slot
+// untouched (the hook off; onPrecache never fires; emit unaffected). s_precacheVtblIdx is filled from
+// the offsets block earlier in Load; its key-existence is reported to the gamedata banner there.
+static void InstallPrecacheHook() {
+    if (s_precacheHookInstalled) return;
+    if (s_precacheVtblIdx < 0) return;   // the offsets-block GamedataResult already recorded the absent key
+    void** vt = s2vtable::GetVTableByName("libserver.so", "CGameRulesGameSystem");
+    if (!vt) {
+        META_CONPRINTF("[s2script] WARN: precache — CGameRulesGameSystem RTTI vtable not found; onPrecache OFF\n");
+        return;
+    }
+    void* slotFn = vt[s_precacheVtblIdx];
+    if (!IsAddressInServerText(slotFn)) {   // a stale/wrong index could point anywhere
+        META_CONPRINTF("[s2script] WARN: precache — OnPrecacheResource vtbl[%d]=%p out of libserver .text; onPrecache OFF\n",
+                       s_precacheVtblIdx, slotFn);
+        return;
+    }
+    s_origOnPrecacheResource = reinterpret_cast<OnPrecacheResourceFn_t>(slotFn);
+    if (!WriteVtableSlot(vt, s_precacheVtblIdx, reinterpret_cast<void*>(&Detour_OnPrecacheResource))) {
+        META_CONPRINTF("[s2script] WARN: precache — vtable slot mprotect/write failed; onPrecache OFF\n");
+        s_origOnPrecacheResource = nullptr;
+        return;
+    }
+    s_pGameRulesVtable = vt;
+    s_precacheHookInstalled = true;
+    META_CONPRINTF("[s2script] precache hook installed (CGameRulesGameSystem vtable @%p, slot %d, orig=%p)\n",
+                   reinterpret_cast<void*>(vt), s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource));
 }
 
 // CBaseEntity::EmitSound — the CSSharp static prototype (entity_manager.h:257), CHOSEN because the
@@ -2577,27 +2648,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pEmitSound));
                 }   // esOff == kFail: ResolveSigValidated already recorded the reason
             }
-            // Sound slice: resolve the game-system factory-list head storage (precache hook).
-            // lea-disp: the unique match starts at a `mov rax,[rip+disp]` that loads sm_pFirst (the
-            // Task-5 offline RE anchored it at a UNIQUE read site @0xef0cf0 in the game-system
-            // registration machinery — the CBaseGameSystemFactory ctor's own load collides with a
-            // second global-list ctor, so a read site was chosen; both resolve the SAME sm_pFirst
-            // storage @0x2727c68). The resolved DATA address is the head-pointer storage (one deref
-            // = the first factory node). Unresolved -> s_ppGameSystemFactoryList stays null ->
-            // TryInstallPrecacheHook no-ops (onPrecache never fires; emit unaffected).
-            auto gflit = sigs.find("GameSystemFactoryList");
-            if (gflit == sigs.end()) {
-                GamedataResult("GameSystemFactoryList", false, "signature absent from gamedata");
-            } else {
-                int64_t gflOff = ResolveSigValidated("GameSystemFactoryList", gflit->second);
-                ModText gflmt = FindModuleText(gflit->second.module.c_str());
-                if (gflOff != s2sig::kFail && gflmt.text) {
-                    s_ppGameSystemFactoryList = reinterpret_cast<S2GsFactoryNode**>(
-                        const_cast<uint8_t*>(gflmt.text) + gflOff);
-                    META_CONPRINTF("[s2script] GameSystemFactoryList resolved @%p (precache)\n",
-                                   (void*)s_ppGameSystemFactoryList);
-                }   // gflOff == kFail: ResolveSigValidated already recorded the reason
-            }
+            // (Sound slice precache: no signature here — the OnPrecacheResource hook is a CLASS-vtable
+            // swap resolved by RTTI (s2vtable::GetVTableByName) at InstallPrecacheHook time, not a
+            // sig-resolved factory-list walk. The abandoned "GameSystemFactoryList" signature +
+            // instance-from-factory premise are documented at InstallPrecacheHook / in gamedata.)
             // Zones real-trigger slice: resolve CCollisionProperty::MarkPartitionHandleDirty +
             // UpdatePartition (both DIRECT sigs) + the embedded m_Collision offset. Degrade-never-crash:
             // MarkPartitionHandleDirty unresolved -> op no-ops; UpdatePartition unresolved -> recipe A only.
@@ -2751,8 +2805,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             // needed" — the real safety check is per-call, not this presence check.
             s_teleportVtblIndex = pick("CBaseEntity_Teleport");
             GamedataResult("CBaseEntity_Teleport", s_teleportVtblIndex >= 0, "offset (vtable index) key absent from gamedata");
-            // Sound slice: the OnPrecacheResource vtable index (a HINT — TryInstallPrecacheHook
-            // .text-validates vtbl[idx] before hooking; see the gamedata comment).
+            // Sound slice: the OnPrecacheResource vtable index (a HINT — InstallPrecacheHook resolves
+            // the CGameRulesGameSystem class vtable by RTTI then .text-validates vtbl[idx] before
+            // swapping the slot; see the InstallPrecacheHook / gamedata comment).
             s_precacheVtblIdx = pick("CGameRulesGameSystem_OnPrecacheResource");
             GamedataResult("CGameRulesGameSystem_OnPrecacheResource", s_precacheVtblIdx >= 0,
                            "offset (vtable index) key absent from gamedata");
@@ -2802,15 +2857,16 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 }
             }
         }
+        // Sound slice: install the precache hook (a CGameRulesGameSystem class-vtable swap resolved by
+        // RTTI, like the trace block above). The class vtable is static data present at module load, so
+        // this installs ONCE here — no lazy StartupServer retry. Before GamedataBanner so its warn (if
+        // the RTTI vtable is missing) prints alongside the rest of the gamedata report.
+        InstallPrecacheHook();
         GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
 
         // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
         // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
         META_CONPRINTF("[s2script] EKV self-test: %s\n", S2EKV_SelfTest() ? "OK" : "FAILED (kv-spawn degraded)");
-
-        // Sound slice: install the precache hook now if the factory list is already populated;
-        // otherwise Hook_StartupServer retries each map start (idempotent).
-        TryInstallPrecacheHook();
     }
     // --- end interface acquisition ---
 
@@ -2919,8 +2975,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Zones real-trigger slice — APPENDED after collision_activate; order MUST match S2EngineOps.
     ops.entity_set_model = &Shim_EntitySetModel;
     // Sound slice — APPENDED after entity_set_model; order MUST match S2EngineOps.
-    // s2_sound_precache_add is forward-declared above (its body lands with the precache hook, Task 5);
-    // the shim does not link until then — intentional (only the sniper build compiles the shim).
+    // Both op fns are defined above: s2_sound_emit with the emit block, s2_sound_precache_add with the
+    // precache vtable-hook block (which also defines Detour_OnPrecacheResource / InstallPrecacheHook).
     ops.sound_emit         = &s2_sound_emit;
     ops.sound_precache_add = &s2_sound_precache_add;
 
@@ -3029,14 +3085,15 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_startupServerHookInstalled = false;
     }
 
-    // Remove the OnPrecacheResource manual hook (Sound slice). The "poison" arm of
-    // TryInstallPrecacheHook sets m_precacheHookInstalled WITHOUT s_pGameRulesGameSystem, so the
-    // s_pGameRulesGameSystem guard correctly no-ops removal in that case.
-    if (m_precacheHookInstalled && s_pGameRulesGameSystem) {
-        SH_REMOVE_MANUALHOOK(GameRules_OnPrecacheResource, s_pGameRulesGameSystem,
-                             SH_MEMBER(this, &S2ScriptPlugin::Hook_OnPrecacheResource), false);
-        m_precacheHookInstalled = false;
-        s_pGameRulesGameSystem = nullptr;
+    // Restore the OnPrecacheResource class-vtable slot (Sound slice — precache vtable hook): write the
+    // saved original back before core teardown so the game's own precache path is intact if the shim is
+    // reloaded. Guarded on the install flag + the saved vtable/original so a never-installed (or
+    // failed-install) hook no-ops cleanly.
+    if (s_precacheHookInstalled && s_pGameRulesVtable && s_origOnPrecacheResource && s_precacheVtblIdx >= 0) {
+        WriteVtableSlot(s_pGameRulesVtable, s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource));
+        s_precacheHookInstalled = false;
+        s_pGameRulesVtable = nullptr;
+        s_origOnPrecacheResource = nullptr;
     }
 
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
@@ -3184,64 +3241,12 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     const char* map = gs ? gs->GetMapName() : nullptr;
     META_CONPRINTF("[s2script] map start: %s (maxClients=%d)\n",
                    map ? map : "<null>", gs ? gs->GetMaxClients() : -1);
-    // Sound slice: lazy precache-hook retry — the CGameRulesGameSystem factory/instance may not
-    // exist at Load; each map startup is another chance (no-op once installed/poisoned). Timing
-    // note: whether THIS map's manifest build follows StartupServer is engine-ordering; if the
-    // Load-time install missed, the hook may only catch the NEXT map change — an accepted degrade.
-    TryInstallPrecacheHook();
+    // (Sound slice precache: no retry needed here — the OnPrecacheResource hook is a class-vtable swap
+    // installed once at Load, since the class vtable is static data present from module load.)
     s2script_core_dispatch_map_start(map ? map : "");
     RETURN_META(MRES_IGNORED);
 }
 
-// The manifest is an argument — live for exactly this call. Stash -> dispatch (core fans out to
-// the Sound.onPrecache subscribers, whose ctx.add() -> s2_sound_precache_add -> AddResource on the
-// stash) -> clear. PRE hook (the game's own precache adds run after ours via the original; the
-// manifest accepts adds either side — PRE mirrors ModSharp).
-void S2ScriptPlugin::Hook_OnPrecacheResource(void* pManifest) {
-    s_currentPrecacheManifest = pManifest;
-    s2script_core_dispatch_precache();
-    s_currentPrecacheManifest = nullptr;
-    RETURN_META(MRES_IGNORED);
-}
-
-bool S2ScriptPlugin::TryInstallPrecacheHook() {
-    if (m_precacheHookInstalled) return true;
-    if (!s_ppGameSystemFactoryList || s_precacheVtblIdx < 0) return false;
-    S2GsFactoryNode* node = *s_ppGameSystemFactoryList;
-    void* inst = nullptr;
-    for (int guard = 0; node && guard < 1024; node = node->m_pNext, guard++) {
-        if (node->m_pName && strcmp(node->m_pName, "CGameRulesGameSystem") == 0) {
-            inst = node->m_pInstance;
-            break;
-        }
-    }
-    if (!inst) {
-        // One-time diagnostic: dump the registered factory names so a renamed factory is a
-        // data/name fix from the boot log, not a debugging session. (Bounded; names are engine
-        // string literals.)
-        static bool s_dumpedFactories = false;
-        if (!s_dumpedFactories && *s_ppGameSystemFactoryList) {
-            s_dumpedFactories = true;
-            META_CONPRINTF("[s2script] precache: CGameRulesGameSystem factory not found; registered factories:\n");
-            S2GsFactoryNode* n = *s_ppGameSystemFactoryList;
-            for (int i = 0; n && i < 64; n = n->m_pNext, i++)
-                META_CONPRINTF("[s2script]   factory[%d] = %s\n", i, n->m_pName ? n->m_pName : "<null>");
-        }
-        return false;   // not registered yet — the StartupServer retry gets another chance
-    }
-    void** vtbl = *reinterpret_cast<void***>(inst);
-    if (!vtbl || !IsAddressInServerText(vtbl[s_precacheVtblIdx])) {
-        META_CONPRINTF("[s2script] WARN: precache — OnPrecacheResource vtable[%d] out of libserver .text; hook OFF\n",
-                       s_precacheVtblIdx);
-        m_precacheHookInstalled = true;   // poison: don't retry into a bad vtable every map start
-        return false;
-    }
-    SH_MANUALHOOK_RECONFIGURE(GameRules_OnPrecacheResource, s_precacheVtblIdx, 0, 0);
-    SH_ADD_MANUALHOOK(GameRules_OnPrecacheResource, inst,
-                      SH_MEMBER(this, &S2ScriptPlugin::Hook_OnPrecacheResource), false);   // PRE
-    s_pGameRulesGameSystem = inst;
-    m_precacheHookInstalled = true;
-    META_CONPRINTF("[s2script] precache hook installed (CGameRulesGameSystem @%p, vtbl idx %d)\n",
-                   inst, s_precacheVtblIdx);
-    return true;
-}
+// (Sound slice precache: the hook handler + installer are FREE functions — Detour_OnPrecacheResource /
+// WriteVtableSlot / InstallPrecacheHook — defined up with the precache statics block, because this is
+// a class-vtable slot swap, not a member SourceHook. See that block for the mechanism rationale.)

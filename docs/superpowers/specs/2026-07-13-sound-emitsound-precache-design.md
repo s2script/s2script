@@ -186,27 +186,50 @@ the Rust `S2EngineOps` mirror, and BOTH in-isolate test op-structs.
 
 ## Precache — mechanism
 
-CS2 precaches custom resources when the session resource manifest is built at map load. The
-mechanism is **confirmed** (ModSharp decompile): a **vtable hook of the existing
-`CGameRulesGameSystem`** — no new game-system registration. This fits s2script's SourceHook toolkit
-(we already `SH_ADD_HOOK` resolved vtables for ClientConnect / FireEvent / Host_Say / StartupServer).
+CS2 precaches custom resources when the session resource manifest is built at map load. The target
+is the EXISTING `CGameRulesGameSystem::OnPrecacheResource(IResourceManifest*)` — no new game-system
+registration.
 
-- **Resolve the `CGameRulesGameSystem` instance** via the game-system factory list —
-  `UTIL_GetGameSystemFactory` + `GameSystemFactory::m_FactoryList` (i.e. `CBaseGameSystemFactory::sm_ppFirst`),
-  sig-resolved + gate-validated. Walk the factory list for the `CGameRulesGameSystem` factory → its
-  `m_pInstance` (guard "is derived from IGameSystem", per ModSharp's own reject-check). The instance
-  may not exist until a map/gamerules is live → resolve + hook at the right time (at `Load` if the
-  factory list is populated, else lazily; the plan's precache phase settles the timing).
-- **`SH_ADD_HOOK` its `OnPrecacheResource` (vtable index 7)** — signature
-  `void OnPrecacheResource(CGameRulesGameSystem* this, IResourceManifest* pManifest)`. In the hook we
-  stash `pManifest`, fire `PRECACHE_MUX`, then clear the stash. `IResourceManifest::AddResource(const char*)`
-  is at **vtable slot 0** (disasm-confirmed) — the `sound_precache_add` op calls it on the stashed
+> **Mechanism amendment (Task-5 offline RE + reviewer's Critical #2, verified on the pinned
+> build-2000873 `libserver.so`).** The original plan hooked this via *the live instance* (walk the
+> game-system factory list → its `m_pInstance` → a manual `SH_ADD_HOOK`). That is **not implementable
+> on this binary** and was replaced by a **class-vtable slot swap**:
+> - **The factory cannot yield the instance.** `CGameRulesGameSystem`'s factory is a
+>   `CGameSystemReallocatingFactory<CGameRulesGameSystem>` (factory vtable `0x24c9f88`; slot 8
+>   `IsReallocating` → `mov $1;ret`, slot 9 `GetStaticGameSystem` → `xor eax;ret` = **nullptr**). The
+>   `+0x18` field is `m_ppGlobalPointer`, **statically zeroed** at the sole construction site
+>   (`movq $0x0, 0x2867798` @`0x18edbb0`) and never re-pointed — so `m_pInstance@24` was a *misread
+>   hint*, and the factory holds no live instance. (The factory is also registered as
+>   `"GameRulesGameSystem"` — **no leading `C`** — @`0x90f33e`, so the `"CGameRulesGameSystem"` strcmp
+>   in the walk could never match either.)
+> - **An inline detour can't patch the slot body.** `OnPrecacheResource`'s prologue @`0x18d48e0`
+>   *starts* with a rip-relative `mov [rip+0xf92e79],rdi`, and the shim's inline-detour engine
+>   (`s2detour`) refuses to relocate any rip-relative stolen instruction.
+> - **A per-instance manual `SH_ADD_HOOK` is fragile** — the *reallocating* factory recreates the
+>   instance per map, dropping an instance-scoped hook.
+>
+> **The grounded mechanism: swap the shared CLASS vtable slot.** Resolve the `CGameRulesGameSystem`
+> class vtable by RTTI — `s2vtable::GetVTableByName("libserver.so", "CGameRulesGameSystem")` → the
+> primary vtable `0x24c9d68` (offset-to-top 0, behind RTTI name `"20CGameRulesGameSystem"` @`0x83cef0`)
+> — read the gamedata vtable **index** (`CGameRulesGameSystem_OnPrecacheResource` = 7, a validated
+> HINT), `.text`-validate the resolved slot fn (`0x18d48e0`), then `mprotect` the RELRO page and
+> **overwrite `vtbl[7]` with our free handler**, saving the original to chain. This is the same
+> RTTI self-resolve the trace slice uses (`GetVTableByName` + a gamedata index), needs **no live
+> instance / no factory walk / no SourceHook / no prologue relocation**, and — because it patches the
+> shared class vtable — **survives the factory's per-map instance realloc**. The class vtable is
+> static data present at module load, so it installs **once at `Load`** (no lazy retry). On `Unload`
+> we write the saved original back.
+
+- **The hook handler** (a free `void(void* this, void* manifest)` receiving the SysV register args)
+  stashes `pManifest`, fires `PRECACHE_MUX`, clears the stash, then **chains to the saved original**
+  (so the game's own resource precache still runs). `IResourceManifest::AddResource(const char*)` is
+  at **vtable slot 0** (disasm-confirmed) — the `sound_precache_add` op calls it on the stashed
   pointer. Note: the manifest is `IResourceManifest*`, NOT `IEntityResourceManifest*` (the latter is
   the entity-level `CBaseEntity::Precache(CEntityPrecacheContext*)` path — a different mechanism we do
   not use).
 - **Fallback (footnote only, not planned):** CSSharp registers its own game system
   (`IGameSystem_InitAllSystems_pFirst` + a static factory) to catch `BuildGameSessionManifest`.
-  Heavier; used only if the confirmed vtable hook fails to resolve on our binary.
+  Heavier; used only if the class-vtable swap fails to resolve on our binary.
 
 ### Core notify-mux + op + API
 

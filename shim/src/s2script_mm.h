@@ -68,15 +68,11 @@ public:
     void Hook_StartupServer(const GameSessionConfiguration_t& config, ISource2WorldSession* session,
                             const char* unk);
 
-    // Precache hook (Sound slice) — a MANUAL SourceHook on CGameRulesGameSystem::OnPrecacheResource
-    // (vtable index from gamedata; the instance factory-list-resolved). Stashes the live
-    // IResourceManifest* for the sound_precache_add op, dispatches Sound.onPrecache, clears the
-    // stash. The manifest arg is void* (opaque engine type; META_NO_HL2SDK discipline).
-    void Hook_OnPrecacheResource(void* pManifest);
-    // Idempotent installer: resolves the CGameRulesGameSystem instance off the factory list and
-    // installs the manual hook. Called at Load and retried from Hook_StartupServer each map start
-    // until installed (the factory/instance may not exist at Load).
-    bool TryInstallPrecacheHook();
+    // (Sound slice precache: NO member hook — OnPrecacheResource is intercepted by a class-vtable slot
+    // swap (s2vtable::GetVTableByName + s2detour-free WriteVtableSlot) whose handler + installer are
+    // file-static free functions in s2script_mm.cpp. No live instance, no SourceHook needed; see the
+    // precache block comment there for why the factory-walk / inline-detour / manual-hook options were
+    // ruled out on the pinned binary.)
 
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
@@ -86,7 +82,8 @@ public:
     bool m_clientCmdHookInstalled = false;
     bool m_clientLifecycleHooksInstalled = false;  // @s2script/clients: the six notify lifecycle hooks
     bool m_startupServerHookInstalled = false;     // OnMapStart: the StartupServer POST hook
-    bool m_precacheHookInstalled = false;          // Sound slice: the OnPrecacheResource manual hook
+    // (Sound slice precache install state — s_precacheHookInstalled — is a file-static in the .cpp,
+    // since the hook is a class-vtable swap driven by free functions, not a member SourceHook.)
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }
