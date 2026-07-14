@@ -11,31 +11,31 @@ export interface CBaseEntity extends CEntityInstance {
   lastNetworkChange: number | null;
   health: number | null;
   maxHealth: number | null;
-  readonly lifeState: number | null;
+  lifeState: number | null;
   damageAccumulator: number | null;
   takesDamage: boolean | null;
-  readonly waterTouch: number | null;
-  readonly slimeTouch: number | null;
+  waterTouch: number | null;
+  slimeTouch: number | null;
   restoreInHierarchy: boolean | null;
   readonly damageFilter: EntityRef | null;
   moveDoneTime: number | null;
   animTime: number | null;
   simulationTime: number | null;
   clientSideRagdoll: boolean | null;
-  readonly ubInterpolationFrame: number | null;
+  ubInterpolationFrame: number | null;
   readonly prevVPhysicsUpdatePos: Vector | null;
-  readonly teamNum: number | null;
+  teamNum: number | null;
   sentToClients: number | null;
   speed: number | null;
-  readonly spawnflags: number | null;
+  spawnflags: number | null;
   simulationTick: number | null;
-  readonly flags: number | null;
+  flags: number | null;
   readonly absVelocity: Vector | null;
   readonly baseVelocity: Vector | null;
   pushEnumCount: number | null;
   readonly effectEntity: EntityRef | null;
   readonly ownerEntity: EntityRef | null;
-  readonly effects: number | null;
+  effects: number | null;
   readonly groundEntity: EntityRef | null;
   groundBodyIndex: number | null;
   friction: number | null;
@@ -48,7 +48,7 @@ export interface CBaseEntity extends CEntityInstance {
   actualGravityScale: number | null;
   gravityActuallyDisabled: boolean | null;
   disableLowViolence: boolean | null;
-  readonly waterType: number | null;
+  waterType: number | null;
   eFlags: number | null;
   initialTeamNum: number | null;
   readonly angVelocity: QAngle | null;
@@ -78,12 +78,12 @@ export interface CBaseModelEntity extends CBaseEntity {
   fadeMaxDist: number | null;
   fadeScale: number | null;
   shadowStrength: number | null;
-  readonly objectCulling: number | null;
+  objectCulling: number | null;
 }
 
 export interface CBasePlayerController extends CBaseEntity {
   readonly inButtonsWhichAreToggles: string | null;
-  readonly tickBase: number | null;
+  tickBase: number | null;
   readonly pawn: EntityRef | null;
   knownTeamMismatch: boolean | null;
   readonly splitOwner: EntityRef | null;
@@ -100,7 +100,7 @@ export interface CBasePlayerController extends CBaseEntity {
   hasAnySteadyStateEnts: boolean | null;
   readonly steamID: string | null;
   noClipEnabled: boolean | null;
-  readonly desiredFOV: number | null;
+  desiredFOV: number | null;
 }
 
 export interface CBaseAnimGraph extends CBaseModelEntity {
@@ -114,10 +114,10 @@ export interface CBaseAnimGraph extends CBaseModelEntity {
 }
 
 export interface CCSPlayerController extends CBasePlayerController {
-  readonly ping: number | null;
+  ping: number | null;
   hasCommunicationAbuseMute: boolean | null;
-  readonly uiCommunicationMuteFlags: number | null;
-  readonly pendingTeamNum: number | null;
+  uiCommunicationMuteFlags: number | null;
+  pendingTeamNum: number | null;
   compTeammateColor: number | null;
   everPlayedOnTeam: boolean | null;
   attemptedToGetColor: boolean | null;
@@ -133,18 +133,18 @@ export interface CCSPlayerController extends CBasePlayerController {
   readonly playerDominatingMe: string | null;
   competitiveRanking: number | null;
   competitiveWins: number | null;
-  readonly competitiveRankType: number | null;
+  competitiveRankType: number | null;
   competitiveRankingPredicted_Win: number | null;
   competitiveRankingPredicted_Loss: number | null;
   competitiveRankingPredicted_Tie: number | null;
   endMatchNextMapVote: number | null;
-  readonly activeQuestId: number | null;
-  readonly rtActiveMissionPeriod: number | null;
-  readonly playerTvControlFlags: number | null;
+  activeQuestId: number | null;
+  rtActiveMissionPeriod: number | null;
+  playerTvControlFlags: number | null;
   draftIndex: number | null;
-  readonly msQueuedModeDisconnectionTimestamp: number | null;
-  readonly uiAbandonRecordedReason: number | null;
-  readonly networkDisconnectionReason: number | null;
+  msQueuedModeDisconnectionTimestamp: number | null;
+  uiAbandonRecordedReason: number | null;
+  networkDisconnectionReason: number | null;
   cannotBeKicked: boolean | null;
   everFullyConnected: boolean | null;
   abandonAllowsSurrender: boolean | null;
@@ -161,11 +161,11 @@ export interface CCSPlayerController extends CBasePlayerController {
   readonly observerPawn: EntityRef | null;
   desiredObserverMode: number | null;
   pawnIsAlive: boolean | null;
-  readonly pawnHealth: number | null;
+  pawnHealth: number | null;
   pawnArmor: number | null;
   pawnHasDefuser: boolean | null;
   pawnHasHelmet: boolean | null;
-  readonly pawnCharacterDefIndex: number | null;
+  pawnCharacterDefIndex: number | null;
   pawnLifetimeStart: number | null;
   pawnLifetimeEnd: number | null;
   pawnBotDifficulty: number | null;
@@ -173,8 +173,8 @@ export interface CCSPlayerController extends CBasePlayerController {
   score: number | null;
   roundScore: number | null;
   roundsWon: number | null;
-  readonly firstKill: number | null;
-  readonly killCount: number | null;
+  firstKill: number | null;
+  killCount: number | null;
   mvpNoMusic: boolean | null;
   mvpReason: number | null;
   musicKitID: number | null;
@@ -189,8 +189,8 @@ export interface CCSPlayerController extends CBasePlayerController {
   gaveTeamDamageWarning: boolean | null;
   gaveTeamDamageWarningThisRound: boolean | null;
   readonly dblLastReceivedPacketPlatFloatTime: number | null;
-  readonly suspiciousHitCount: number | null;
-  readonly nonSuspiciousHitStreak: number | null;
+  suspiciousHitCount: number | null;
+  nonSuspiciousHitStreak: number | null;
   fireBulletsSeedSynchronized: boolean | null;
 }
 
@@ -199,12 +199,12 @@ export interface CBaseCombatCharacter extends CBaseAnimGraph {
   impactEnergyScale: number | null;
   applyStressDamage: boolean | null;
   deathEventsDispatched: boolean | null;
-  readonly navHullIdx: number | null;
+  navHullIdx: number | null;
 }
 
 export interface CEconEntity extends CBaseAnimGraph {
-  readonly originalOwnerXuidLow: number | null;
-  readonly originalOwnerXuidHigh: number | null;
+  originalOwnerXuidLow: number | null;
+  originalOwnerXuidHigh: number | null;
   fallbackPaintKit: number | null;
   fallbackSeed: number | null;
   fallbackWear: number | null;
@@ -216,7 +216,7 @@ export interface CEconEntity extends CBaseAnimGraph {
 export interface CBasePlayerPawn extends CBaseCombatCharacter {
   readonly v_angle: QAngle | null;
   readonly v_anglePrevious: QAngle | null;
-  readonly hideHUD: number | null;
+  hideHUD: number | null;
   initHUD: boolean | null;
   readonly controller: EntityRef | null;
   readonly defaultController: EntityRef | null;
@@ -282,7 +282,7 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
 }
 
 export interface CCSPlayerPawn extends CCSPlayerPawnBase {
-  readonly characterDefIndex: number | null;
+  characterDefIndex: number | null;
   hasFemaleVoice: boolean | null;
   readonly lastPlaceName: string | null;
   inHostageResetZone: boolean | null;
@@ -307,7 +307,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   readonly ragdollDamageWeaponName: string | null;
   ragdollDamageHeadshot: boolean | null;
   readonly ragdollServerOrigin: Vector | null;
-  readonly econGlovesChanged: number | null;
+  econGlovesChanged: number | null;
   readonly deathEyeAngles: QAngle | null;
   leftHanded: boolean | null;
   viewmodelOffsetX: number | null;
@@ -318,7 +318,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   lastGivenDefuserTime: number | null;
   lastGivenBombTime: number | null;
   dealtDamageToEnemyMostRecentTimestamp: number | null;
-  readonly displayHistoryBits: number | null;
+  displayHistoryBits: number | null;
   lastAttackedTeammate: number | null;
   resetArmorNextSpawn: boolean | null;
   spotRules: number | null;
@@ -342,9 +342,9 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   lastPickupPriority: number | null;
   lastPickupPriorityTime: number | null;
   armorValue: number | null;
-  readonly currentEquipmentValue: number | null;
-  readonly roundStartEquipmentValue: number | null;
-  readonly freezetimeEndEquipmentValue: number | null;
+  currentEquipmentValue: number | null;
+  roundStartEquipmentValue: number | null;
+  freezetimeEndEquipmentValue: number | null;
   lastWeaponFireUsercmd: number | null;
   isSpawning: boolean | null;
   deathFlags: number | null;
