@@ -1,5 +1,14 @@
 # @s2script/damage
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [a3e5cc4]
+- Updated dependencies [bb6b8fb]
+- Updated dependencies [9bdf2bb]
+  - @s2script/entity@0.3.0
+
 ## 0.1.2
 
 ### Patch Changes
