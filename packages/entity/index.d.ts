@@ -12,6 +12,9 @@ import type { HookResultValue } from "@s2script/events";
 export declare class EntityRef {
   readonly index: number;
   readonly serial: number;
+  /** This entity's targetname (`CEntityIdentity::m_name`) — e.g. a map trigger's `"map_start"`. `""` if
+   *  the entity has no targetname; `null` if the ref is stale/invalid. */
+  readonly name: string | null;
   constructor(index: number, serial: number);
   /** True iff the slot's current serial still matches the captured serial. */
   isValid(): boolean;

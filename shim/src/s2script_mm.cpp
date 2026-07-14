@@ -277,6 +277,29 @@ static int s2_entity_find_by_class(const char* className, int* outIndices, int* 
 }
 
 // ---------------------------------------------------------------------------
+// Engine-op: read an entity's targetname (CEntityIdentity::m_name, a CUtlSymbolLarge;
+// String() inline, utlsymbollarge.h). Serial-gated: resolves the identity at `index`,
+// validates the captured `serial` via GetRefEHandle(), returns m_name.String() ("" if
+// unnamed) or nullptr if stale/invalid/removed. Sibling of s2_entity_find_by_class
+// (which reads m_designerName on the same identity). Engine-generic.
+// C-ABI, called by the Rust core through the S2EngineOps table.
+// ---------------------------------------------------------------------------
+static const char* s2_entity_name(int index, int serial) {
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return nullptr;
+    if (index < 0 || index >= MAX_TOTAL_ENTITIES) return nullptr;
+    int chunk = index / MAX_ENTITIES_IN_LIST;
+    int slot  = index % MAX_ENTITIES_IN_LIST;
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[chunk];
+    if (!chunk_base) return nullptr;
+    CEntityIdentity* id = &chunk_base[slot];
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return nullptr;
+    if (!id->m_pInstance) return nullptr;
+    if (id->GetRefEHandle().GetSerialNumber() != serial) return nullptr;  // stale slot reuse
+    return id->m_name.String();  // "" if the entity has no targetname
+}
+
+// ---------------------------------------------------------------------------
 // Engine-op: resolve a packed entity handle (u32) → CEntityInstance* or null.
 // Signature-free chunk walk (recon Q4): mirrors s2_ent_by_index but adds serial
 // validation via CEntityIdentity::GetRefEHandle() (inline, entityidentity.h:74).
@@ -2775,6 +2798,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_set_model = &Shim_EntitySetModel;
     // Entity lifecycle listeners slice — APPENDED after entity_set_model; order MUST match S2EngineOps.
     ops.entity_listener_install = &Shim_EntityListenerInstall;
+    // entity_name slice — APPENDED after entity_listener_install; order MUST match S2EngineOps.
+    ops.entity_name = &s2_entity_name;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

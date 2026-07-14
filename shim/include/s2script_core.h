@@ -224,6 +224,12 @@ typedef int (*s2_entity_set_model_fn)(int index, int serial, const char* modelNa
  * signature is unresolved (degrade — subscribe delivers nothing). */
 typedef int (*s2_entity_listener_install_fn)(void);
 
+/* entity_name: read an entity's targetname (CEntityIdentity::m_name, a CUtlSymbolLarge; String() is
+ * inline). Serial-gated (index,serial). Returns the name ("" if the entity has no targetname), valid
+ * during the call — the core copies immediately — or NULL if stale/invalid. ENGINE-GENERIC.
+ * Zones/surftimer slice. */
+typedef const char* (*s2_entity_name_fn)(int index, int serial);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -323,6 +329,8 @@ typedef struct {
     s2_entity_set_model_fn entity_set_model;
     /* Entity lifecycle listeners slice — APPENDED after entity_set_model; order is the ABI. */
     s2_entity_listener_install_fn entity_listener_install;
+    /* entity_name slice — APPENDED after entity_listener_install; order is the ABI; do not reorder above. */
+    s2_entity_name_fn entity_name;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
