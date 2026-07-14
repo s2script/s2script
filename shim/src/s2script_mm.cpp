@@ -1818,29 +1818,50 @@ private:
 //       problems — no live instance needed, no prologue relocation, and it SURVIVES instance
 //       reallocation (a new instance uses the same already-patched class vtable). The class vtable is
 //       static data present at module load, so the hook installs ONCE in Load() (no lazy retry).
-// IResourceManifest::AddResource(const char*) is vtable slot 0 (disasm-confirmed) — the
-// sound_precache_add op calls it on the stashed manifest. Degrade-never-crash: any unresolved/
-// out-of-.text/mprotect step leaves the slot untouched (onPrecache never fires; emit unaffected).
-// The manifest pointer is stashed ONLY for the synchronous duration of the hook dispatch — it never
-// crosses to JS.
+// ADDING A RESOURCE (sound_precache_add) — review C1 fix. The borrowed ModSharp fact
+// "manifest->vtable[0](manifest, path)" (a 2-arg call at slot 0 of the passed pManifest) was
+// DISPROVEN against OUR pinned build-2000873 libserver.so. Offline disasm of THIS build's
+// OnPrecacheResource (the hooked slot[7] @0x18d48e0) and its byte-identical clone @0x18ce700 shows
+// the engine adds each of its default resource strings ("ParticleEffect"/"ParticleEffectStop"/
+// "GlassImpact"/"Impact"/"player"/…) by calling a helper @0x19eca40 with the resource string in rdi.
+// That helper adds NOT to the passed pManifest but to a GLOBAL manifest singleton g=*0x284f348, via
+//     g->vtable[8](g, /*int*/1, /*const char* */path, /*int*/0)
+// — a 4-arg call at SLOT 8 (offset 0x40). The old code was therefore wrong on THREE counts (wrong
+// object: pManifest vs the global; wrong slot: 0 vs 8; wrong arg count: 2 vs 4), and worse, slot 0
+// is the Itanium complete-object destructor — the old `pManifest->vtable[0](pManifest, path)` would
+// have DESTRUCTED the live manifest mid-precache -> server crash/corruption at map load. FIX: call
+// the engine's own helper verbatim (sig-resolved as "PrecacheAddResource"; it self-resolves the
+// global + issues the correct vtable[8] args, so we make NO assumption about the global's offset,
+// the vtable index, or pManifest's identity). s_currentPrecacheManifest is now purely a WINDOW GATE:
+// it is non-null ONLY for the synchronous duration of the hook dispatch — exactly the window the
+// engine's global precache manifest is populated (the original slot[7] reads that global there with
+// no null-guard). We never INVOKE the stashed pManifest; it never crosses to JS. Degrade-never-crash:
+// helper unresolved / outside the window / out-of-.text -> the add no-ops (returns 0), never a crash.
 // ---------------------------------------------------------------------------
 typedef void (*OnPrecacheResourceFn_t)(void* thisptr, void* pManifest);
 static OnPrecacheResourceFn_t s_origOnPrecacheResource = nullptr;   // saved original slot value (for un-hook + chaining)
 static void** s_pGameRulesVtable   = nullptr;                       // the shared CGameRulesGameSystem class vtable (for restore)
-static void*  s_currentPrecacheManifest = nullptr;                  // live ONLY during the hook dispatch
+static void*  s_currentPrecacheManifest = nullptr;                  // WINDOW GATE: non-null ONLY during the hook dispatch
 static int    s_precacheVtblIdx    = -1;                            // gamedata offsets entry (vtable index; a HINT)
 static bool   s_precacheHookInstalled = false;                      // the vtable slot is swapped to our handler
 
-// The sound_precache_add op. Block-scoped: valid only while the hook stash is live.
-// IResourceManifest::AddResource(const char*) is vtable slot 0 (ModSharp decompile-confirmed:
-// mov (%rdi),%rdi; mov (%rdi),%rax; mov (%rax),%rax; jmp *%rax). .text-guarded per call.
+// The engine's own "add one resource string to the current precache manifest" helper (@0x19eca40 on
+// the pinned build-2000873 libserver.so): a single-arg `void add(const char* path)` that internally
+// resolves the global manifest singleton and issues g->vtable[8](g, 1, path, 0). Sig-resolved in
+// Load() ("PrecacheAddResource"); null -> the op no-ops (degrade-never-crash).
+typedef void (*PrecacheAddResourceFn_t)(const char* path);
+static PrecacheAddResourceFn_t s_pPrecacheAddResource = nullptr;
+
+// The sound_precache_add op. Returns the TRUE outcome: 1 ONLY if the engine helper was actually
+// invoked against a validated (.text) target inside the live precache window; 0 otherwise. We NEVER
+// touch the passed pManifest's vtable (see the block comment — the engine adds via a global helper,
+// and slot 0 of the manifest is its destructor).
 static int s2_sound_precache_add(const char* path) {
-    if (!s_currentPrecacheManifest || !path || !path[0]) return 0;
-    void** vtbl = *reinterpret_cast<void***>(s_currentPrecacheManifest);
-    if (!vtbl) return 0;
-    void* fn = vtbl[0];
-    if (!IsAddressInServerText(fn)) return 0;
-    reinterpret_cast<void (*)(void*, const char*)>(fn)(s_currentPrecacheManifest, path);
+    if (!s_currentPrecacheManifest) return 0;                                    // outside the precache window
+    if (!path || !path[0]) return 0;
+    if (!s_pPrecacheAddResource) return 0;                                       // sig unresolved -> safe no-op
+    if (!IsAddressInServerText(reinterpret_cast<void*>(s_pPrecacheAddResource))) return 0;
+    s_pPrecacheAddResource(path);
     return 1;
 }
 
@@ -1867,6 +1888,9 @@ static bool WriteVtableSlot(void** vt, int idx, void* fn) {
     uintptr_t a = reinterpret_cast<uintptr_t>(slot);
     uintptr_t pageStart = a & ~static_cast<uintptr_t>(pg - 1);
     size_t span = (a + sizeof(void*)) - pageStart;
+    // The mprotect(RW) / pointer-write / mprotect(R) sequence below is NOT atomic, but it is safe here:
+    // both callers (InstallPrecacheHook in Load(), the restore in Unload()) and the game systems that
+    // dispatch through this vtable run on the main game thread only — there is no concurrent reader.
     if (mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ | PROT_WRITE) != 0) return false;
     *slot = fn;
     mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ);   // best-effort restore
@@ -2648,7 +2672,26 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pEmitSound));
                 }   // esOff == kFail: ResolveSigValidated already recorded the reason
             }
-            // (Sound slice precache: no signature here — the OnPrecacheResource hook is a CLASS-vtable
+            // Sound slice (precache ADD — review C1): resolve the engine's own "add one resource string
+            // to the current precache manifest" helper (@0x19eca40 on build 2000873). The precache HOOK
+            // stays a CLASS-vtable swap resolved by RTTI at InstallPrecacheHook time (below); only the
+            // ADD is a signature, because the borrowed "manifest->vtable[0]" fact was disproven on our
+            // binary (see the s2_sound_precache_add block comment + the "PrecacheAddResource" gamedata
+            // sig). Unresolved -> s_pPrecacheAddResource stays null -> sound_precache_add no-ops.
+            auto parit = sigs.find("PrecacheAddResource");
+            if (parit == sigs.end()) {
+                GamedataResult("PrecacheAddResource", false, "signature absent from gamedata");
+            } else {
+                int64_t parOff = ResolveSigValidated("PrecacheAddResource", parit->second);
+                ModText parmt = FindModuleText(parit->second.module.c_str());
+                if (parOff != s2sig::kFail && parmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pPrecacheAddResource = reinterpret_cast<PrecacheAddResourceFn_t>(
+                        const_cast<uint8_t*>(parmt.text) + parOff);
+                    META_CONPRINTF("[s2script] PrecacheAddResource resolved @%p (Sound.precache add)\n",
+                                   reinterpret_cast<void*>(s_pPrecacheAddResource));
+                }   // parOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // (Sound slice precache HOOK: no signature here — the OnPrecacheResource hook is a CLASS-vtable
             // swap resolved by RTTI (s2vtable::GetVTableByName) at InstallPrecacheHook time, not a
             // sig-resolved factory-list walk. The abandoned "GameSystemFactoryList" signature +
             // instance-from-factory premise are documented at InstallPrecacheHook / in gamedata.)
@@ -3090,7 +3133,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
     // reloaded. Guarded on the install flag + the saved vtable/original so a never-installed (or
     // failed-install) hook no-ops cleanly.
     if (s_precacheHookInstalled && s_pGameRulesVtable && s_origOnPrecacheResource && s_precacheVtblIdx >= 0) {
-        WriteVtableSlot(s_pGameRulesVtable, s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource));
+        // WARN loudly if the restore write fails: a failed restore leaves vtable[idx] pointing at our
+        // Detour_OnPrecacheResource, which is about to be unmapped -> the next precache would jump into
+        // freed memory and crash. Nothing we can do to recover here, but the log names the hazard.
+        if (!WriteVtableSlot(s_pGameRulesVtable, s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource))) {
+            META_CONPRINTF("[s2script] WARN: precache — vtable slot restore write FAILED; slot still points at the "
+                           "detour being unloaded (next precache may crash)\n");
+        }
         s_precacheHookInstalled = false;
         s_pGameRulesVtable = nullptr;
         s_origOnPrecacheResource = nullptr;

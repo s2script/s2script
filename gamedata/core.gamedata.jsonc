@@ -365,6 +365,32 @@
         "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 48 89 D8 48 8B 5D ? C9 C3 CC CC CC CC CC CC 48 B8",
         "resolve": "direct"
       }
+    },
+    // CBaseEntity precache — "add one resource string to the current precache manifest" helper
+    // (Sound slice, review C1). RE FINDING (offline disasm of the pinned build-2000873 libserver.so,
+    // VALIDATED against OUR binary — the borrowed ModSharp "manifest->vtable[0](manifest, path)" fact
+    // was CONTRADICTED here and was UNSAFE): CGameRulesGameSystem::OnPrecacheResource (the hooked
+    // vtable slot[7] @0x18d48e0) and its byte-identical clone @0x18ce700 add each of the game's own
+    // default resources ("ParticleEffect"/"ParticleEffectStop"/"GlassImpact"/"Impact"/"player"/…) by
+    // calling THIS helper @0x19eca40 with the resource string in rdi. The helper adds NOT to the passed
+    // pManifest but to a GLOBAL manifest singleton g=*0x284f348, via
+    //     g->vtable[8](g, /*int*/1, /*const char* path*/, /*int*/0)
+    // — a 4-arg call at SLOT 8 (offset 0x40), NOT the 2-arg SLOT 0 the old code used (and slot 0 is the
+    // Itanium complete-object DESTRUCTOR, so the old call risked destructing the live manifest at map
+    // load -> crash). We therefore call the engine's helper verbatim; it self-resolves the global + the
+    // correct vtable[8] args, so we make no assumption about the global offset, the vtable index, or
+    // pManifest's identity. A DIRECT prologue pattern (the leading `lea rax,[rip+disp]`'s 4 disp bytes
+    // wildcarded), self-validated UNIQUE (1 match) on build 2000873. Distinctive body:
+    //   mov rdx,rdi; xor ecx,ecx; mov esi,1; mov rdi,[glob]; mov rax,[rdi]; mov rax,[rax+0x40]; jmp rax.
+    // Unresolved/moved -> s_pPrecacheAddResource null -> sound_precache_add no-ops (degrade-never-crash).
+    // If it drifts on an update, re-locate via OnPrecacheResource (slot[7]) which calls it ~11× with the
+    // literal resource-name strings above.
+    "PrecacheAddResource": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8D 05 ? ? ? ? 48 89 FA 31 C9 BE 01 00 00 00 48 8B 38 48 8B 07 48 8B 40 40 FF E0",
+        "resolve": "direct"
+      }
     }
     // (Sound slice precache: there is NO factory-list signature. The abandoned "GameSystemFactoryList"
     // sig-scan + walk-the-factory-node-for-the-instance premise was DISPROVEN offline on the pinned
