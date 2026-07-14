@@ -217,6 +217,13 @@ typedef int (*s2_collision_activate_fn)(int index, int serial);
  * a runtime entity's model name is empty). Returns 1 on success, 0 if unresolved/stale. ENGINE-GENERIC. */
 typedef int (*s2_entity_set_model_fn)(int index, int serial, const char* modelName);
 
+/* Entity lifecycle listeners slice — APPENDED after entity_set_model; order is the ABI.
+ * entity_listener_install: lazily register the IEntityListener on CGameEntitySystem on the
+ * first-ever JS entity-lifecycle subscribe. Idempotent (AddListenerEntity guards Find) + re-asserted
+ * each map by the StartupServer POST hook. Returns 1 if installed/queued, 0 if the AddListenerEntity
+ * signature is unresolved (degrade — subscribe delivers nothing). */
+typedef int (*s2_entity_listener_install_fn)(void);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -314,6 +321,8 @@ typedef struct {
     s2_collision_activate_fn collision_activate;
     /* Zones real-trigger slice — APPENDED after collision_activate; order is the ABI. */
     s2_entity_set_model_fn entity_set_model;
+    /* Entity lifecycle listeners slice — APPENDED after entity_set_model; order is the ABI. */
+    s2_entity_listener_install_fn entity_listener_install;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -346,6 +355,9 @@ void s2script_core_dispatch_client_event(const char* name, int slot);
  * live map name (clientlist-fakeconvar-onmapstart slice). Notify-only: runs the JS Server.onMapStart
  * subscribers. catch_unwind-wrapped; a null pointer degrades to "" (never panic across the boundary). */
 void s2script_core_dispatch_map_start(const char* map);
+/* Shim -> core: an IEntityListener callback (create/spawn/delete) reports an entity by its packed
+ * CEntityHandle (ToInt()) + class name. Notify-only; core builds a serial-gated EntityRef. */
+void s2script_core_dispatch_entity_event(const char* kind, const char* className, int handle);
 /* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
  * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
  * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->

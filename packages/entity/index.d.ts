@@ -80,6 +80,12 @@ export declare class EntityRef {
   readUInt64Via(pathOffs: number[], finalOff: number): bigint | null;
   readInt64Via(pathOffs: number[], finalOff: number): bigint | null;
   readHandleVia(pathOffs: number[], finalOff: number): EntityRef | null;
+  /** Write a scalar through a pointer chain (write mirror of `read*Via`). Serial-gated at the root;
+   *  returns false on a stale ref, an unresolved hop, or a bad offset/kind. Does NOT notifyStateChanged —
+   *  the caller decides (many sub-object fields, e.g. the fire gate, are server-authoritative).
+   *  (`writeInt32Via` is declared above alongside `readInt32Via`.) */
+  writeFloat32Via(pathOffs: number[], finalOff: number, value: number): boolean;
+  writeBoolVia(pathOffs: number[], finalOff: number, value: boolean): boolean;
   /** Read a `CEntityHandle` at `offset`, decode it, and return a live `EntityRef` — or null if stale/invalid. */
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */
@@ -145,6 +151,23 @@ export interface OutputEvent {
  */
 export declare const Entity: {
   onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
+  /**
+   * Fire when the engine CREATES an entity of `className` (`"*"` = all) — earliest hook; the entity is
+   * barely constructed, schema fields may be zero/default. The handler receives the serial-gated
+   * `entity` (may be `null`) plus its `className`. Prefer `onSpawn` to read fields.
+   */
+  onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /**
+   * Fire after the engine SPAWNS an entity of `className` (`"*"` = all) — `Spawn()` has run, so schema
+   * fields/keyvalues are populated. The useful hook for reading state.
+   */
+  onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /**
+   * Fire as the engine DELETES an entity of `className` (`"*"` = all). The entity is still readable
+   * during the synchronous handler; a stashed ref reads `null` once the slot is freed (serial gate),
+   * never garbage.
+   */
+  onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns serial-gated refs. */
   findByClass(className: string): EntityRef[];
 };
