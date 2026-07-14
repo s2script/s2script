@@ -168,6 +168,26 @@
         "resolve": "direct"
       }
     },
+    // CCSPlayerController::ChangeTeam(int team) — the standard team-change (incl. Spectator=1); moves the
+    // player immediately (the poor-sharptimer/CSSharp `!spec` path). Backs Player.changeTeam / .spectate.
+    // SELF-RESOLVED against OUR libserver.so, NOT a borrowed constant: the live gate proved CSSharp's
+    // SwitchTeam SIGNATURE is the WRONG function (it queues a deferred m_bSwitchTeamsOnNextRoundReset,
+    // no immediate move) AND CSSharp's ChangeTeam vtable OFFSET (linux 101) is version-WRONG here (slot 101
+    // is a `ret` stub; ChangeTeam is slot 102 on this build — the CommitSuicide-index drift again). The
+    // real function was located by xref'ing the unique log format string `"...ChangeTeam() CTMDBG , team
+    // %d, req team %d willSwitch %d..."` (@0x986f28) to its sole referencing function (@vaddr 0x1524770 =
+    // CCSPlayerController vtable slot 102, RTTI-walk-confirmed). A DIRECT prologue pattern that MASKS the
+    // volatile frame size + the m_iTeamNum field offset (`movzx r14d,[rdi+?]`) and keeps the stable
+    // `cmp esi, r14d` (req-team vs current-team) — which also confirms the ABI `(this /*rdi*/, int team
+    // /*esi*/)`. Validated UNIQUE (exactly 1 match) in the pinned libserver.so PF_X range; the boot gate
+    // re-validates it and SCREAMS if the prologue moves on the update treadmill.
+    "ChangeTeam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 83 EC ? 44 0F B6 B7 ? ? ? ? 44 39 F6",
+        "resolve": "direct"
+      }
+    },
     // GetLegacyGameEventListener(int slot) -> IGameEventListener2* : the CS2 engine helper that returns a
     // client's per-client legacy game-event listener (a frameless leaf that loads a global array base,
     // bounds-checks the slot, and indexes it). event_fire_to_client (SourceMod FireToClient parity) calls

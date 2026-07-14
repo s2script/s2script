@@ -1181,6 +1181,34 @@ static void s2_pawn_commit_suicide(int idx, int serial) {
 }
 
 // ---------------------------------------------------------------------------
+// player_change_team (changeteam slice) — move a player's CONTROLLER between teams via
+// CCSPlayerController::ChangeTeam(int team), sig-resolved on OUR libserver.so (s_pChangeTeam, loaded in
+// Load). ChangeTeam (the poor-sharptimer/CSSharp `!spec` path) moves the player IMMEDIATELY — unlike
+// SwitchTeam, which the live gate proved queues a deferred switch (no move). The signature self-resolves
+// the real function (CSSharp's vtable OFFSET 101 is a `ret` stub here; ChangeTeam is slot 102 — the
+// CommitSuicide-index drift), so it is NOT a borrowed index. GUARDED identically to pawn_commit_suicide:
+// the controller is reconstructed from (idx, serial) + serial-gated (s2_deref_handle → null if stale), and
+// the resolved fn ptr must point into libserver's .text (reuses s_serverText/s_serverTextSize) — a
+// null/out-of-range ptr or a stale ref degrades to a logged no-op, never a crash. `team` is bounded to
+// 0..3 (Unassigned/Spec/T/CT). ABI: void CCSPlayerController::ChangeTeam(this /*rdi*/, int team /*esi*/).
+// ---------------------------------------------------------------------------
+typedef void (*ChangeTeam_t)(void* thisptr, int team);
+static ChangeTeam_t s_pChangeTeam = nullptr;             // sig-resolved fn ptr (loaded in Load)
+static void s2_player_change_team(int idx, int serial, int team) {
+    if (!s_pChangeTeam) return;                          // signature unresolved -> no-op
+    if (team < 0 || team > 3) return;                    // Unassigned/Spectator/T/CT only
+    CEntityHandle h(idx, serial);
+    void* controller = s2_deref_handle(static_cast<unsigned int>(h.ToInt()));  // null if stale/free slot
+    if (!controller) return;
+    const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pChangeTeam);
+    if (!s_serverText || f < s_serverText || f >= s_serverText + s_serverTextSize) {
+        META_CONPRINTF("[s2script] ChangeTeam fn %p out of libserver .text — no-op\n", (const void*)f);
+        return;
+    }
+    s_pChangeTeam(controller, team);
+}
+
+// ---------------------------------------------------------------------------
 // Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
 // (s_currentDamageInfo, set by the DispatchTraceAttack detour) at a schema-resolved byte offset.
 // Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
@@ -2643,6 +2671,25 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pCommitSuicide), (const void*)s_serverText, s_serverTextSize);
                 }   // csOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // changeteam slice: resolve CCSPlayerController::ChangeTeam (Player.changeTeam / .spectate). A
+            // DIRECT prologue signature self-resolved on OUR libserver.so (the real function, located via the
+            // CTMDBG log-string xref — NOT CSSharp's SwitchTeam sig [deferred switch] nor its ChangeTeam vtable
+            // OFFSET [slot 101 is a ret stub here; ChangeTeam is slot 102 — index drift]). Also (re)sets
+            // s_serverText so the call-site .text guard holds even if the CommitSuicide sig failed.
+            // Degrade-never-crash: unresolved -> change_team no-op.
+            auto stit = sigs.find("ChangeTeam");
+            if (stit == sigs.end()) {
+                GamedataResult("ChangeTeam", false, "signature absent from gamedata");
+            } else {
+                int64_t stOff = ResolveSigValidated("ChangeTeam", stit->second);
+                ModText stmt = FindModuleText(stit->second.module.c_str());
+                if (stOff != s2sig::kFail && stmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pChangeTeam = reinterpret_cast<ChangeTeam_t>(const_cast<uint8_t*>(stmt.text) + stOff);
+                    s_serverText = stmt.text; s_serverTextSize = stmt.size;   // .text range for the call guard
+                    META_CONPRINTF("[s2script] ChangeTeam resolved @%p (Player.changeTeam; libserver .text=%p+%zu)\n",
+                                   reinterpret_cast<void*>(s_pChangeTeam), (const void*)s_serverText, s_serverTextSize);
+                }   // stOff == kFail: ResolveSigValidated already recorded the reason
+            }
             // Slice menu: resolve GetLegacyGameEventListener (per-client event fire; Events.fireToClient).
             // A DIRECT prologue signature self-resolved on OUR libserver.so (CSSharp reaches the per-client
             // listener via this engine function, NOT a CServerSideClient cast). Unresolved ->
@@ -3102,6 +3149,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // precache vtable-hook block (which also defines Detour_OnPrecacheResource / InstallPrecacheHook).
     ops.sound_emit         = &s2_sound_emit;
     ops.sound_precache_add = &s2_sound_precache_add;
+    // changeteam slice — APPENDED after sound_precache_add; order MUST match S2EngineOps.
+    ops.player_change_team = &s2_player_change_team;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

@@ -246,6 +246,10 @@ typedef int (*s2_sound_emit_fn)(const char* soundName, int entIndex, int entSeri
  * pointer is live only then; block-scoped like a game event). Returns 1 on add, 0 if no active
  * manifest / unresolved. ENGINE-GENERIC. */
 typedef int (*s2_sound_precache_add_fn)(const char* path);
+/* player_change_team: move a player's controller (idx,serial → serial-gated CCSPlayerController*) to
+ * `team` (Spectator=1/T=2/CT=3) via the sig-resolved CCSPlayerController::ChangeTeam. No-op if the
+ * signature is unresolved or the ref is stale. APPENDED after sound_precache_add; order is the ABI. */
+typedef void (*s2_player_change_team_fn)(int idx, int serial, int team);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -351,6 +355,8 @@ typedef struct {
     /* Sound slice — APPENDED after entity_name (the struct tail); order is the ABI. */
     s2_sound_emit_fn         sound_emit;
     s2_sound_precache_add_fn sound_precache_add;
+    /* changeteam slice — APPENDED after sound_precache_add; order is the ABI; do not reorder above. */
+    s2_player_change_team_fn player_change_team;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

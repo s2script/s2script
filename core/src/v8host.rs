@@ -219,6 +219,8 @@ type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
 // NAME + a recipient slot set + a resource path are Source2-generic; no CS2 names in the C ABI.
 type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
 type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
+// --- changeteam slice (APPENDED after sound_precache_add; order is the ABI). (idx, serial, team).
+type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -328,6 +330,8 @@ pub struct S2EngineOps {
     // --- Sound slice (APPENDED after entity_name; order is the ABI; do not reorder above) ---
     pub sound_emit: Option<SoundEmitFn>,
     pub sound_precache_add: Option<SoundPrecacheAddFn>,
+    // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI; do not reorder above) ---
+    pub player_change_team: Option<PlayerChangeTeamFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -4765,6 +4769,22 @@ fn s2_pawn_commit_suicide(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
+/// `__s2_player_change_team(index, serial, team)` — move a player's controller between teams via the
+/// sig-resolved ChangeTeam engine-op. A thin pass-through: the shim reconstructs + serial-gates the
+/// controller from (index, serial) and bounds-checks `team` (0..3). No-op without the op (unresolved
+/// signature) or on a stale ref. Engine-generic here (only the resolving signature is game-specific).
+fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.player_change_team else { return };
+        f(index, serial, team);
+    }));
+}
+
 /// `__s2_plugins_list() -> string` — JSON array of `{id, loaded}` for `sm plugins list` / `Plugins.list()`.
 fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -6388,6 +6408,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
+    set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
@@ -10287,6 +10308,7 @@ mod frame_tests {
             entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
+            player_change_team: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10492,6 +10514,20 @@ mod frame_tests {
             JSON.stringify({ direct: direct, viaRef: viaRef });
         "#);
         assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);
+        shutdown();
+    }
+
+    /// changeteam slice: `__s2_player_change_team` (and `Player.changeTeam`/`.spectate`) no-op with no
+    /// `player_change_team` op (unresolved signature / every in-isolate test) — never a crash.
+    #[test]
+    fn player_change_team_degrades_without_op() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
+        let out = eval_std("pct1", r#"
+            var r = __s2_player_change_team(5, 7, 1);
+            String(r === undefined);
+        "#);
+        assert_eq!(out, "true");
         shutdown();
     }
 
@@ -10919,6 +10955,7 @@ mod frame_tests {
             entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
+            player_change_team: None,
         }
     }
 
