@@ -29,7 +29,11 @@ export const READ: Record<AccessorKind, string> = {
   u64: "readUInt64", i64: "readInt64", f64: "readFloat64", str: "readString",
   vector: "readFloats", qangle: "readFloats",
 };
-export const WRITE: Partial<Record<AccessorKind, string>> = { f32: "writeFloat32", bool: "writeBool", i32: "writeInt32" };
+export const WRITE: Partial<Record<AccessorKind, string>> = {
+  f32: "writeFloat32", bool: "writeBool",
+  i8: "writeInt8", i16: "writeInt16", i32: "writeInt32",
+  u8: "writeUInt8", u16: "writeUInt16", u32: "writeUInt32",
+};
 export const TSTYPE: Record<AccessorKind, string> = {
   f32: "number | null", bool: "boolean | null", i8: "number | null", i16: "number | null",
   i32: "number | null", u8: "number | null", u16: "number | null", u32: "number | null", handle: "EntityRef | null",
@@ -40,9 +44,9 @@ export const TSTYPE: Record<AccessorKind, string> = {
 // atomic subtype → (kind, writable). Only genuine scalars; everything else falls through to skip.
 const ATOMIC: Record<string, { k: AccessorKind; w: boolean }> = {
   float32: { k: "f32", w: true }, bool: { k: "bool", w: true },
-  int8: { k: "i8", w: false }, int16: { k: "i16", w: false }, int32: { k: "i32", w: true },
-  uint8: { k: "u8", w: false }, uint16: { k: "u16", w: false }, uint32: { k: "u32", w: false },
-  uint64: { k: "u64", w: false }, int64: { k: "i64", w: false }, float64: { k: "f64", w: false },
+  int8: { k: "i8", w: true }, int16: { k: "i16", w: true }, int32: { k: "i32", w: true },
+  uint8: { k: "u8", w: true }, uint16: { k: "u16", w: true }, uint32: { k: "u32", w: true },
+  uint64: { k: "u64", w: false }, int64: { k: "i64", w: false }, float64: { k: "f64", w: false },   // no narrow 64-bit writers
 };
 
 // atomic vector-type name → kind (only the fixed-3-float types this slice; 2D/4D/Color/Quaternion deferred).
