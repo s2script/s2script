@@ -87,9 +87,12 @@ jobs:
           createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Attach build provenance (a signed supply-chain attestation) to each
-          # publish. Requires id-token: write (granted above) + npm >= 9.5.
-          NPM_CONFIG_PROVENANCE: "true"
+          # NO provenance. npm provenance requires a PUBLIC source repo; this repo
+          # is private, so forcing it 422s at publish ("Unsupported GitHub Actions
+          # source repository visibility: private"). Trusted publishing (OIDC) auth
+          # still works via id-token: write — npm just skips provenance on a private
+          # repo (its default). Re-add NPM_CONFIG_PROVENANCE: "true" only if the repo
+          # goes public.
           # Intentionally no NPM_TOKEN / NODE_AUTH_TOKEN — publish uses OIDC.
           # changesets/action detects ACTIONS_ID_TOKEN_* and skips writing an
           # auth .npmrc so npm CLI can use trusted publishing.
