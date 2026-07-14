@@ -197,6 +197,16 @@
     return ref ? new Weapon(ref) : null;
   };
 
+  // pawn.emitSound(name, opts?) — play a named CS2 SoundEvent from this pawn (its serial-gated
+  // EntityRef is the source entity; a stale ref emits nothing -> 0). opts = { recipients?: slots[],
+  // volume?: [0,1] } — same as Sound.emit minus entity. Returns the engine sound GUID or 0.
+  Pawn.prototype.emitSound = function (name, opts) {
+    var pkg = globalThis.__s2pkg_sound;
+    if (!pkg || !pkg.Sound) return 0;
+    var o = opts || {};
+    return pkg.Sound.emit(name, { entity: this.ref, recipients: o.recipients, volume: o.volume });
+  };
+
   // pawn.activeWeapon — the currently-deployed weapon (m_hActiveWeapon on WeaponServices), as a Weapon.
   // null if unresolved / none / stale.
   Object.defineProperty(Pawn.prototype, "activeWeapon", {
@@ -786,7 +796,17 @@
     }
   };
 
+  // A small curated set of known-good BUILT-IN CS2 soundevents (convenience + the sound-demo).
+  // CS2 soundevent names live exclusively HERE (the game layer), never in core/src. The audible
+  // verify is a human-client test (bots have no audio) — tune/extend these names at that gate.
+  var Sounds = {
+    Ping:       "UI.PlayerPing",
+    PingUrgent: "UI.PlayerPingUrgent",
+    Ak47Shot:   "Weapon_AK47.Single",
+    DeagleShot: "Weapon_DEagle.Single",
+  };
+
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
 })();
