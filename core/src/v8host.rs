@@ -1394,8 +1394,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
   globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
   // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
-  //     CBaseUserCmdPB/CMsgQAngle/CInButtonStatePB (usercmd.proto) are Source2-shared -> engine-generic,
-  //     lives in core. Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)
+  //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
+  //     Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)
   //     matches the Task-3 shim ops exactly; only the shim maps it onto CS2's protobuf nesting — no
   //     CS2/protobuf name appears here. Cmd is ONE shared object (MF-3, the DamageInfo precedent does
   //     NOT apply — dispatch_usercmd fetches this exact singleton, not a per-handler `new Cmd()`); its
