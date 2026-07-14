@@ -229,7 +229,7 @@ type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 type UsercmdHookInstallFn = extern "C" fn() -> c_int;
 // --- Usercmd primitive slice, Task 3 (APPENDED after usercmd_hook_install; order is the ABI).
 // ENGINE-GENERIC numeric field enum (0 fwd,1 side,2 up,3 pitch,4 yaw,5 roll,6 impulse); the shim alone
-// maps it onto the Source2-shared usercmd.proto CBaseUserCmdPB/CMsgQAngle/CInButtonStatePB nesting.
+// maps it onto the Source2-shared usercmd.proto numeric fields (the engine-generic enum).
 type UsercmdReadFn         = extern "C" fn(c_int) -> f64;
 type UsercmdWriteFn        = extern "C" fn(c_int, f64);
 type UsercmdReadButtonsFn  = extern "C" fn() -> u64;
@@ -4658,7 +4658,7 @@ fn s2_usercmd_write(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
 }
 
 /// `__s2_usercmd_read_buttons() -> bigint` — the current usercmd's pressed-button mask
-/// (`base.buttons_pb.buttonstate1`, a 64-bit value; usercmd primitive Task 3). Degrades to `0n` with no
+/// (a 64-bit button-state value; usercmd primitive Task 3). Degrades to `0n` with no
 /// op / out of dispatch (never `undefined` — `buttons` is always a `bigint` per the spec).
 fn s2_usercmd_read_buttons(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4685,10 +4685,10 @@ fn s2_usercmd_write_buttons(scope: &mut v8::PinScope, args: v8::FunctionCallback
     }));
 }
 
-/// `__s2_usercmd_clear_subtick()` — drop the current usercmd's `subtick_moves` (usercmd primitive Task
+/// `__s2_usercmd_clear_subtick()` — drop the current usercmd's subtick moves (usercmd primitive Task
 /// 3). Exposed as an OPTIONAL helper (`Cmd.clearSubtickMoves()`) — the spike verdict found a coarse
 /// `forwardMove`/`sideMove`/`upMove` write alone already takes effect, so the write ops never call this
-/// automatically. No-op with no op / out of dispatch / no `subtick_moves` on this build.
+/// automatically. No-op with no op / out of dispatch / no subtick moves on this build.
 fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
