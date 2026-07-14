@@ -745,14 +745,23 @@
     matchWaitingForResume: grBool("m_bMatchWaitingForResume"),
     hasMatchStarted:       grBool("m_bHasMatchStarted")
   });
-  var GameRules = {
-    get: function () {
-      var ent = globalThis.__s2pkg_entity;
-      var refs = ent && ent.Entity ? ent.Entity.findByClass("cs_gamerules") : null;
-      if (!refs || refs.length === 0) return null;
-      return new GameRulesView(refs[0]);
-    }
-  };
+  var GameRules = (function () {
+    // Cache the resolved cs_gamerules proxy (ModSharp/Swiftly cache the gamerules pointer likewise).
+    // Serial-gated: on a map change the proxy dies -> isValid() false -> re-scan. Turns get() from an
+    // O(N) findByClass scan (~19us) into a single serial check on the hot path (~0.4us).
+    var cachedRef = null, cachedView = null;
+    return {
+      get: function () {
+        if (cachedRef && cachedRef.isValid()) return cachedView;
+        var ent = globalThis.__s2pkg_entity;
+        var refs = ent && ent.Entity ? ent.Entity.findByClass("cs_gamerules") : null;
+        if (!refs || refs.length === 0) { cachedRef = null; cachedView = null; return null; }
+        cachedRef = refs[0];
+        cachedView = new GameRulesView(cachedRef);
+        return cachedView;
+      }
+    };
+  })();
 
   // CS2 user-message sugar over the generic @s2script/usermessages builder.
   var FFADE_IN = 1, FFADE_OUT = 2, FFADE_MODULATE = 4, FFADE_STAYOUT = 8, FFADE_PURGE = 16;
