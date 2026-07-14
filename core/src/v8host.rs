@@ -222,6 +222,12 @@ type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
 // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI). (idx, serial, team).
 type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 
+// --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI). ENGINE-GENERIC:
+// lazily installs the (Task 3, shim-side) ProcessUsercmds detour; takes no CS2 names. Task 2 owns ONLY
+// this one field (the subscribe native's lazy-install call site needs it to compile); Task 3 appends
+// the remaining usercmd_read/write/read_buttons/write_buttons/clear_subtick fields after this one.
+type UsercmdHookInstallFn = extern "C" fn() -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -332,6 +338,10 @@ pub struct S2EngineOps {
     pub sound_precache_add: Option<SoundPrecacheAddFn>,
     // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI; do not reorder above) ---
     pub player_change_team: Option<PlayerChangeTeamFn>,
+    // --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI; do not reorder
+    // above). Task 2 adds ONLY this field; Task 3 appends usercmd_read/write/read_buttons/
+    // write_buttons/clear_subtick after it (do not double-add usercmd_hook_install).
+    pub usercmd_hook_install: Option<UsercmdHookInstallFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -584,6 +594,16 @@ thread_local! {
     /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
     static OUTPUT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// Usercmd primitive Task 2: `UserCmd.onRun(handler)` subscriber mux, keyed by the constant "onRun"
+    /// (usercmd has no name dimension, like `DAMAGE_MUX`'s "onPre"). Dispatch is SYNCHRONOUS (the
+    /// Task-3 `ProcessUsercmds` detour blocks on it, mirrors `DAMAGE_MUX`/`OUTPUT_MUX`) so a handler's
+    /// returned `HookResult` can block the original input for that tick. The detour installs LAZILY on
+    /// the first-ever subscribe (via the `usercmd_hook_install` engine op — see `s2_usercmd_subscribe`),
+    /// mirroring `ENTITY_MUX`'s `entity_listener_install` trigger. `remove_by_owner` on unload; reset on
+    /// shutdown so a re-init starts empty.
+    static USERCMD_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// Entity lifecycle listeners slice: `Entity.onCreate/onSpawn/onDelete(className, handler)` mux,
@@ -4567,6 +4587,29 @@ fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
     }));
 }
 
+/// `__s2_usercmd_subscribe(handler)` — subscribe a JS fn to `UserCmd.onRun` (usercmd primitive Task 2).
+/// Owner-tracked, fixed mux key "onRun" (usercmd has no name dimension, like `s2_damage_subscribe`'s
+/// "onPre"). On the FIRST-EVER subscribe (the mux was empty), calls the (Task 3) `usercmd_hook_install`
+/// engine op so the shim lazily installs its `ProcessUsercmds` detour — mirrors `s2_entity_listener_on`'s
+/// lazy-install trigger (zero overhead when no plugin subscribes). Degrade-never-crash: no op → the
+/// subscribe still records, the engine just never delivers.
+fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let first_ever = USERCMD_MUX.with(|m| m.borrow().is_empty());
+        USERCMD_MUX.with(|m| { m.borrow_mut().subscribe("onRun", owner, generation, handler_g); });
+        if first_ever {
+            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usercmd_hook_install) {
+                let _ = func();
+            }
+        }
+    }));
+}
+
 /// `__s2_chat_on_message(handler)` — subscribe a JS fn to raw player chat (Slice 6.13b). Owner-tracked;
 /// the Host_Say detour is installed at Load, so no per-subscribe engine registration is needed. The
 /// handler receives `(slot, text, teamonly)` at dispatch and may return a HookResult to suppress the
@@ -6093,6 +6136,94 @@ pub(crate) fn dispatch_damage() {
     });
 }
 
+/// Usercmd primitive Task 2: run the `UserCmd.onRun` subscribers over the current tick's input (the
+/// Task-3 shim detour sets the current `s_currentUserCmd` before calling this, and reads the
+/// possibly-modified fields back after). Mirrors `dispatch_damage`'s snapshot + `try_borrow_mut`
+/// re-entrancy guard, but (a) takes the firing player's `slot`, (b) fetches the prelude's SINGLETON
+/// `Cmd` object (MF-3 — one shared accessor object over `globalThis.__s2pkg_usercmd.Cmd`, NOT a
+/// per-handler `new Cmd()` — the DamageInfo precedent doesn't apply here) + builds a block-scoped
+/// `{slot}` ctx, and (c) collapses each handler's returned int into a `HookResult` via `run_chain`
+/// (mirrors `dispatch_output`/`dispatch_game_event_pre`, NOT `dispatch_damage` which is void) — the
+/// Task-3 detour supersedes (blocks) the original input for that tick when the result is >= Handled.
+/// Degrades to `undefined` if `@s2script/usercmd` never registered its prelude (Cmd absent) so a
+/// handler still runs rather than being skipped.
+pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
+    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
+    // Phase 1: snapshot — release the USERCMD_MUX borrow before entering any context.
+    let snap0 = USERCMD_MUX.with(|m| m.borrow().snapshot("onRun"));
+    if snap0.is_empty() { return 0; }
+    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
+        .into_iter().enumerate()
+        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
+        .collect();
+
+    let outcome = HOST.with(|h| {
+        // Re-entrancy guard: mirrors dispatch_damage/dispatch_output — a nested dispatch (e.g. a
+        // handler that somehow re-enters this path) skips gracefully (Continue) rather than
+        // double-borrow (would panic). The engine-side tick still proceeds unmodified.
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        let Some(host) = borrow.as_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else { return Ok(HookResult::Continue); };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Fetch the prelude's SINGLETON Cmd: globalThis.__s2pkg_usercmd.Cmd (Task 4 registers
+            // it; degrade to `undefined` if the module never loaded in this context).
+            let cmd_arg: Option<v8::Local<v8::Value>> = (|| {
+                let global = ctx_local.global(tc);
+                let pkg_key = v8::String::new(tc, "__s2pkg_usercmd")?;
+                let pkg = global.get(tc, pkg_key.into())?;
+                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+                let cmd_key = v8::String::new(tc, "Cmd")?;
+                pkg.get(tc, cmd_key.into())
+            })();
+            let cmd_val: v8::Local<v8::Value> = cmd_arg.unwrap_or_else(|| v8::undefined(tc).into());
+
+            // Build the block-scoped ctx = { slot }.
+            let ctx_obj = v8::Object::new(tc);
+            if let Some(k) = v8::String::new(tc, "slot") {
+                let v = v8::Integer::new(tc, slot);
+                ctx_obj.set(tc, k.into(), v.into());
+            }
+            let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
+
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            match func.call(tc, recv, &[cmd_val, ctx_val]) {
+                None => {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: dispatch_usercmd: handler '{}': {}", owner, msg));
+                    Err(())
+                }
+                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
+                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                    0 => HookResult::Continue, 1 => HookResult::Changed,
+                    2 => HookResult::Handled, 3 => HookResult::Stop,
+                    _ => HookResult::Continue,                     // out-of-range → Continue
+                }),
+            }
+        })
+    });
+    outcome.result as i32
+}
+
 /// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
 /// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
@@ -6409,6 +6540,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
+    // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
+    set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
@@ -8222,6 +8355,8 @@ pub fn shutdown() {
     OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the entity-lifecycle mux (entity-listeners slice) so a re-init starts clean.
     ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the UserCmd.onRun mux (usercmd primitive) so a re-init starts clean.
+    USERCMD_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -8568,6 +8703,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // stays registered for the process lifetime (removed in the shim's Unload), so no per-plugin
     // hook-removal is needed.
     ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // Drop the plugin's UserCmd.onRun subscriptions (usercmd primitive). The ProcessUsercmds detour
+    // stays installed for the process lifetime once lazily installed (removed in the shim's Unload),
+    // so no per-plugin hook-removal request is needed.
+    USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -10309,6 +10448,7 @@ mod frame_tests {
             sound_emit: None,
             sound_precache_add: None,
             player_change_team: None,
+            usercmd_hook_install: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10956,6 +11096,7 @@ mod frame_tests {
             sound_emit: None,
             sound_precache_add: None,
             player_change_team: None,
+            usercmd_hook_install: None,
         }
     }
 
@@ -11722,6 +11863,37 @@ mod frame_tests {
         dispatch_damage();
         assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgFired)"), "1", "the onPre handler ran");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgVal)"), "0", "info.damage reads 0 without an engine op");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 2 (MF-3): `__s2_usercmd_subscribe` registers a RAW handler into
+    /// `USERCMD_MUX` under "onRun" (no `UserCmd.onRun` wrapper exists yet — that's Task 4), and
+    /// `dispatch_usercmd(slot)` invokes it with `(cmd, ctx)` where `ctx.slot` is the firing slot,
+    /// collapsing the handler's returned int into a `HookResult` (2 = Handled here).
+    #[test]
+    fn usercmd_dispatch_runs_subscriber_and_collapses_hookresult() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context(
+            "p",
+            "globalThis.__capturedSlot = -999; \
+             __s2_usercmd_subscribe(function (cmd, ctx) { globalThis.__capturedSlot = ctx.slot; return 2; });",
+        )
+        .unwrap();
+        assert_eq!(dispatch_usercmd(3), 2, "the handler's returned HookResult (Handled) collapses through");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__capturedSlot)"), "3", "ctx.slot === the dispatched slot");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 2: with no subscribers at all, `dispatch_usercmd` returns Continue (0)
+    /// and does not throw/panic.
+    #[test]
+    fn usercmd_dispatch_no_subs_returns_continue() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(dispatch_usercmd(5), 0, "no subscribers -> Continue");
         shutdown();
     }
 

@@ -159,6 +159,20 @@ pub extern "C" fn s2script_core_dispatch_damage() {
     let _ = catch_unwind(|| v8host::dispatch_damage());
 }
 
+/// Usercmd primitive Task 2/3: called by the (Task 3) `ProcessUsercmds` detour, once per player per
+/// batched tick, with the firing player's `slot`. Runs the `UserCmd.onRun` subscribers SYNCHRONOUSLY
+/// over the shim's current `CUserCmd` (read/modified in place via the Task-3 `usercmd_read`/`_write`
+/// ops) and returns the collapsed `HookResult` (0 Continue .. 3 Stop) — the shim skips/blocks the
+/// original input for that cmd when the result is >= Handled (2), mirroring
+/// `s2script_core_dispatch_output`'s supersede convention.
+///
+/// `catch_unwind`-wrapped and FAIL-OPEN (-> 0 Continue on a panic): a core bug must never block a
+/// player's input it didn't mean to (mirrors `s2script_core_dispatch_output`'s fail-open shape).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
+    catch_unwind(|| v8host::dispatch_usercmd(slot)).unwrap_or(0)
+}
+
 /// Shim → core: called by the `FireOutputInternal` detour (entity-I/O slice) with the firing entity's
 /// classname, the output name, packed activator/caller `CEntityHandle` ints (-1 = none), the output's
 /// value as a string, and the delay. Runs the matching `Entity.onOutput` subscribers SYNCHRONOUSLY and
