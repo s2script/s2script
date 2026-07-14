@@ -1799,6 +1799,38 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     else { __s2_pendingKicks[this.slot] = { reason: r, delay: d }; }              // still connecting → deliver at onActive
   };
   globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
+  // --- @s2script/sound — engine-generic sound (Sound slice). A soundevent NAME, a recipient slot
+  //     set, and a precache resource path are Source2-generic; CS2 soundevent names live in the
+  //     game layer (games/cs2/js/pawn.js `Sounds`), never here.
+  //     emit: no entity -> worldspawn (index 0, serial sentinel -1 = no serial gate) = a global/2D
+  //     sound; no recipients -> every valid client slot (bot slots are additionally skipped
+  //     shim-side — no netchannel). Returns the engine SndOpEventGuid (nonzero) or 0.
+  //     onPrecache: handler(ctx) gets a BLOCK-SCOPED PrecacheContext — ctx.add(path) is valid only
+  //     during the dispatch (the shim's manifest stash is live only then; a stashed ctx used after
+  //     the handler returns is a no-op false). Fires at map load / mapchange. ---
+  var __s2_sound = {
+    emit: function (name, opts) {
+      opts = opts || {};
+      var idx = 0, serial = -1;                    // worldspawn / global-2D default
+      var e = opts.entity;
+      if (e && typeof e.index === "number" && typeof e.serial === "number") {
+        idx = e.index | 0; serial = e.serial | 0;
+      }
+      var slots = opts.recipients;
+      if (!Array.isArray(slots)) {
+        slots = [];
+        for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
+      }
+      var vol = (opts.volume == null) ? 1.0 : +opts.volume;
+      return __s2_sound_emit(String(name), idx, serial, slots, vol);
+    },
+    onPrecache: function (h) {
+      __s2_precache_subscribe(function () {
+        h({ add: function (p) { return __s2_sound_precache_add(String(p)); } });
+      });
+    },
+  };
+  globalThis.__s2pkg_sound = { Sound: __s2_sound };   // named export `Sound`
   // --- Menu primitive Task 2: chat renderer (registers against @s2script/menu's registerRenderer seam)
   //     + disconnect-close lifecycle. Placed here (not immediately after the Task 1 model) because both
   //     blocks below make IMMEDIATE top-level calls into __s2pkg_menu / __s2pkg_chat / __s2pkg_clients
@@ -10336,6 +10368,69 @@ mod frame_tests {
         assert_eq!(calls[0].2, 99);
         assert_eq!(calls[0].3, vec![3, 5]);
         assert!((calls[0].4 - 0.5).abs() < 1e-6);
+        shutdown();
+    }
+
+    /// @s2script/sound module surface (defaults): no entity -> worldspawn (0, -1); no recipients ->
+    /// the all-valid-clients enumeration (client_valid is None under mock_event_ops -> empty ->
+    /// the op still receives slotCount 0); volume defaults 1.0.
+    #[test]
+    fn sound_module_emit_defaults() {
+        let _ = init(dummy_logger());
+        SOUND_EMIT_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
+        create_plugin_context("psd");
+        let out = eval_in_context_string("psd",
+            "String(__s2pkg_sound.Sound.emit('Weapon_AK47.Single'))");
+        assert_eq!(out, "7");
+        let calls = SOUND_EMIT_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, 0);                 // worldspawn index
+        assert_eq!(calls[0].2, -1);                // the no-serial-check sentinel
+        assert_eq!(calls[0].3, Vec::<i32>::new()); // no valid clients under the mock ops
+        assert!((calls[0].4 - 1.0).abs() < 1e-6);  // default volume
+        shutdown();
+    }
+
+    /// @s2script/sound module surface (explicit opts): entity {index,serial} -> (idx, serial);
+    /// recipients passed through; volume passed through. And the module resolves via require.
+    #[test]
+    fn sound_module_emit_explicit_opts() {
+        let _ = init(dummy_logger());
+        SOUND_EMIT_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
+        load_plugin_js("psx", r#"
+            const { Sound } = require("@s2script/sound");
+            globalThis.__g = Sound.emit("UI.PlayerPing",
+                { entity: { index: 42, serial: 99 }, recipients: [3, 5], volume: 0.5 });
+        "#, "{}");
+        assert_eq!(eval_in_context_string("psx", "String(globalThis.__g)"), "7");
+        let calls = SOUND_EMIT_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "UI.PlayerPing");
+        assert_eq!(calls[0].1, 42);
+        assert_eq!(calls[0].2, 99);
+        assert_eq!(calls[0].3, vec![3, 5]);
+        assert!((calls[0].4 - 0.5).abs() < 1e-6);
+        shutdown();
+    }
+
+    /// Sound.onPrecache wraps the raw subscribe: the handler receives a ctx whose add() hits the
+    /// (absent) op and returns false; the ctx is freshly built per dispatch.
+    #[test]
+    fn sound_module_onprecache_builds_ctx() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("ppx");
+        eval_in_context_string("ppx", r#"
+            globalThis.__ctxAdd = null;
+            __s2pkg_sound.Sound.onPrecache(function (ctx) {
+                globalThis.__ctxAdd = ctx.add("soundevents/y.vsndevts");
+            });
+            "ok"
+        "#);
+        dispatch_precache();
+        assert_eq!(eval_in_context_string("ppx", "String(globalThis.__ctxAdd)"), "false");
         shutdown();
     }
 

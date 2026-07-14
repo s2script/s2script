@@ -67,7 +67,7 @@ const BUILTIN_MODULES: &[&str] = &[
     "@s2script/server", "@s2script/damage", "@s2script/db", "@s2script/http", "@s2script/ws",
     "@s2script/menu", "@s2script/topmenu", "@s2script/votes", "@s2script/plugins",
     "@s2script/trace", "@s2script/usermessages", "@s2script/math", "@s2script/events",
-    "@s2script/cs2",
+    "@s2script/cs2", "@s2script/sound",
 ];
 
 fn is_builtin_module(name: &str) -> bool {
