@@ -68,6 +68,12 @@ public:
     void Hook_StartupServer(const GameSessionConfiguration_t& config, ISource2WorldSession* session,
                             const char* unk);
 
+    // (Sound slice precache: NO member hook — OnPrecacheResource is intercepted by a class-vtable slot
+    // swap (s2vtable::GetVTableByName + s2detour-free WriteVtableSlot) whose handler + installer are
+    // file-static free functions in s2script_mm.cpp. No live instance, no SourceHook needed; see the
+    // precache block comment there for why the factory-walk / inline-detour / manual-hook options were
+    // ruled out on the pinned binary.)
+
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
     ISource2GameClients* m_gameClients = nullptr;
@@ -76,6 +82,8 @@ public:
     bool m_clientCmdHookInstalled = false;
     bool m_clientLifecycleHooksInstalled = false;  // @s2script/clients: the six notify lifecycle hooks
     bool m_startupServerHookInstalled = false;     // OnMapStart: the StartupServer POST hook
+    // (Sound slice precache install state — s_precacheHookInstalled — is a file-static in the .cpp,
+    // since the hook is a class-vtable swap driven by free functions, not a member SourceHook.)
 
     // Plugin info
     const char* GetAuthor() override      { return "s2script"; }

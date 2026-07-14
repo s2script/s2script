@@ -215,6 +215,11 @@ type EntityListenerInstallFn = extern "C" fn() -> c_int;
 // --- entity_name slice (APPENDED after entity_listener_install; order is the ABI).
 type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
 
+// --- Sound slice (APPENDED after entity_name; order is the ABI). ENGINE-GENERIC: a soundevent
+// NAME + a recipient slot set + a resource path are Source2-generic; no CS2 names in the C ABI.
+type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
+type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -320,6 +325,9 @@ pub struct S2EngineOps {
     pub entity_listener_install: Option<EntityListenerInstallFn>,
     // --- entity_name slice (APPENDED after entity_listener_install; order is the ABI; do not reorder above) ---
     pub entity_name: Option<EntityNameFn>,
+    // --- Sound slice (APPENDED after entity_name; order is the ABI; do not reorder above) ---
+    pub sound_emit: Option<SoundEmitFn>,
+    pub sound_precache_add: Option<SoundPrecacheAddFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -519,6 +527,12 @@ thread_local! {
     /// Map-start subscribers (clientlist-fakeconvar-onmapstart slice). Fixed key "" (map-start has
     /// no name dimension, like CHAT_MSG_SUBS); notify-only.
     static MAP_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// Precache subscribers (Sound slice). Fixed key "" (a precache-manifest build has no name
+    /// dimension, like MAP_MUX); notify-only. The stored handler is the PRELUDE's wrapper closure —
+    /// it constructs the block-scoped PrecacheContext and calls the plugin's handler.
+    static PRECACHE_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// clientprefs Task 4: `Cookies.onCached` subscriber mux, keyed by the constant "" (no name
@@ -1813,6 +1827,38 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     else { __s2_pendingKicks[this.slot] = { reason: r, delay: d }; }              // still connecting → deliver at onActive
   };
   globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
+  // --- @s2script/sound — engine-generic sound (Sound slice). A soundevent NAME, a recipient slot
+  //     set, and a precache resource path are Source2-generic; CS2 soundevent names live in the
+  //     game layer (games/cs2/js/pawn.js `Sounds`), never here.
+  //     emit: no entity -> worldspawn (index 0, serial sentinel -1 = no serial gate) = a global/2D
+  //     sound; no recipients -> every valid client slot (bot slots are additionally skipped
+  //     shim-side — no netchannel). Returns the engine SndOpEventGuid (nonzero) or 0.
+  //     onPrecache: handler(ctx) gets a BLOCK-SCOPED PrecacheContext — ctx.add(path) is valid only
+  //     during the dispatch (the shim's manifest stash is live only then; a stashed ctx used after
+  //     the handler returns is a no-op false). Fires at map load / mapchange. ---
+  var __s2_sound = {
+    emit: function (name, opts) {
+      opts = opts || {};
+      var idx = 0, serial = -1;                    // worldspawn / global-2D default
+      var e = opts.entity;
+      if (e && typeof e.index === "number" && typeof e.serial === "number") {
+        idx = e.index | 0; serial = e.serial | 0;
+      }
+      var slots = opts.recipients;
+      if (!Array.isArray(slots)) {
+        slots = [];
+        for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
+      }
+      var vol = (opts.volume == null) ? 1.0 : +opts.volume;
+      return __s2_sound_emit(String(name), idx, serial, slots, vol);
+    },
+    onPrecache: function (h) {
+      __s2_precache_subscribe(function () {
+        h({ add: function (p) { return __s2_sound_precache_add(String(p)); } });
+      });
+    },
+  };
+  globalThis.__s2pkg_sound = { Sound: __s2_sound };   // named export `Sound`
   // --- Menu primitive Task 2: chat renderer (registers against @s2script/menu's registerRenderer seam)
   //     + disconnect-close lifecycle. Placed here (not immediately after the Task 1 model) because both
   //     blocks below make IMMEDIATE top-level calls into __s2pkg_menu / __s2pkg_chat / __s2pkg_clients
@@ -3752,6 +3798,47 @@ pub(crate) fn dispatch_map_start(map: &str) {
     });
 }
 
+/// Deliver a precache-manifest-build notification to the `Sound.onPrecache` subscribers. Called
+/// from ffi.rs's `s2script_core_dispatch_precache` (the shim's CGameRulesGameSystem::
+/// OnPrecacheResource MANUAL hook, which stashes the live IResourceManifest* around this call so
+/// the `sound_precache_add` op can AddResource into it — block-scoped: the stash is cleared when
+/// the hook returns, so a handler must use its PrecacheContext synchronously). Mirrors
+/// `dispatch_map_start` verbatim: snapshot (release the mux borrow), `try_borrow_mut` re-entrancy
+/// guard, per-subscriber `is_live` + context clone + HandleScope/ContextScope/TryCatch +
+/// WARN-on-throw. Notify-only — each handler is called with NO args (the prelude wrapper builds
+/// the PrecacheContext) and its return is ignored.
+pub(crate) fn dispatch_precache() {
+    let snap = PRECACHE_MUX.with(|m| m.borrow().snapshot(""));
+    if snap.is_empty() { return; }
+
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+        for (owner, generation, handler_g) in &snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let func = v8::Local::new(tc, handler_g);
+            if func.call(tc, recv, &[]).is_none() {
+                let msg = tc.exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_precache: handler '{}': {}", owner, msg));
+            }
+        }
+    });
+}
+
 /// Deliver an entity lifecycle event to the `Entity.on{Create,Spawn,Delete}` subscribers. Called from
 /// ffi.rs's `s2script_core_dispatch_entity_event` (the shim's IEntityListener callback). `kind` is
 /// "create"/"spawn"/"delete"; the mux is keyed `"<kind>\0<className>"` with a `"<kind>\0*"` wildcard.
@@ -4522,6 +4609,21 @@ fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
+/// `__s2_precache_subscribe(handler)` — subscribe a JS fn to the precache-manifest-build event.
+/// Owner-tracked (mirrors `__s2_map_start_subscribe`); fixed mux key "". The handler is called
+/// with no args during `dispatch_precache`; the `@s2script/sound` prelude wrapper constructs the
+/// block-scoped PrecacheContext.
+fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        PRECACHE_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+    }));
+}
+
 /// `__s2_cookie_on_cached(handler)` — subscribe a JS fn to `Cookies.onCached` (clientprefs Task 4).
 /// Owner-tracked (mirrors `__s2_client_subscribe`); fixed mux key "" (cookies-cached has no name
 /// dimension, like `Chat.onMessage`). The handler receives the raw `slot` at dispatch; the
@@ -5160,6 +5262,52 @@ fn s2_ent_set_model(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
         if let Some(func) = ops.and_then(|o| o.entity_set_model) {
             rv.set_bool(func(index, serial, cname.as_ptr()) != 0);
         }
+    }));
+}
+
+/// Native `__s2_sound_emit(soundName, entIndex, entSerial, slotsArray, volume) -> number`. Over the
+/// `sound_emit` op. Reads the JS slot array into a `Vec<i32>` (mirrors `__s2_user_message_send`); a
+/// non-array slots arg -> an empty set (the op returns 0 — caller requested no recipients). An
+/// all-bot-skipped non-empty request still calls the engine shim-side (plays to nobody). Returns the
+/// SndOpEventGuid as a uint32 number, 0 = failed. Degrades to 0 with no op; never throws.
+fn s2_sound_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_uint32(0);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_emit) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Ok(c_name) = std::ffi::CString::new(name) else { return };
+        let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+        let ent_serial = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let mut slots: Vec<i32> = Vec::new();
+        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(3)) {
+            let n = arr.length();
+            slots.reserve(n as usize);
+            for i in 0..n {
+                let s = match arr.get_index(scope, i) {
+                    Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
+                    None => -1,
+                };
+                slots.push(s);
+            }
+        }
+        let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
+        let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume);
+        rv.set_uint32(guid as u32);
+    }));
+}
+
+/// Native `__s2_sound_precache_add(path) -> boolean`. Over the `sound_precache_add` op — valid only
+/// during a precache-hook dispatch (block-scoped; the shim's manifest stash is null otherwise).
+/// Degrades to `false` with no op / no active manifest / a NUL in the path. Never throws.
+fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_precache_add) else { return };
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let Ok(c_path) = std::ffi::CString::new(path) else { return };
+        rv.set_bool(f(c_path.as_ptr()) == 1);
     }));
 }
 
@@ -6194,6 +6342,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_client_subscribe", s2_client_subscribe);
     // Map-start subscriber (clientlist-fakeconvar-onmapstart slice): register a Server.onMapStart handler.
     set_native(scope, global_obj, "__s2_map_start_subscribe", s2_map_start_subscribe);
+    // Precache subscriber (Sound slice): register a Sound.onPrecache handler.
+    set_native(scope, global_obj, "__s2_precache_subscribe", s2_precache_subscribe);
 
     set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
     set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
@@ -6297,6 +6447,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_collision_activate", s2_collision_activate);
     set_native(scope, global_obj, "__s2_ent_set_model", s2_ent_set_model);
+    set_native(scope, global_obj, "__s2_sound_emit", s2_sound_emit);
+    set_native(scope, global_obj, "__s2_sound_precache_add", s2_sound_precache_add);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
     // Item slice: give/vcall/remove-item natives + the readHandleVector native (wrapped as an
@@ -8018,6 +8170,8 @@ pub fn shutdown() {
     CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the map-start mux (clientlist-fakeconvar-onmapstart slice) so a re-init starts clean.
     MAP_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the precache mux (Sound slice) so a re-init starts clean.
+    PRECACHE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the Cookies.onCached mux + pending queue (clientprefs Task 4) so a re-init starts clean.
     COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear());
@@ -8354,6 +8508,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // slice). The StartupServer hook is installed for the process lifetime (removed in the shim's
     // Unload), so no per-plugin hook-removal request is needed.
     MAP_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c'') Drop the plugin's Sound.onPrecache subscriptions (Sound slice). The
+    // OnPrecacheResource hook is installed for the process lifetime (removed in the shim's Unload),
+    // so no per-plugin hook-removal request is needed.
+    PRECACHE_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c'') Drop the plugin's Cookies.onCached subscriptions (clientprefs Task 4). No engine-level
     // hook to remove (the fan-out is a pure post-frame JS dispatch, no shim involvement).
     COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
@@ -9651,6 +9809,27 @@ mod frame_tests {
         shutdown();
     }
 
+    /// dispatch_precache runs a Sound.onPrecache-level subscriber (raw __s2_precache_subscribe —
+    /// the module wrapper is Task-4-tested); the block-scoped add degrades false with no op.
+    #[test]
+    fn precache_dispatch_runs_subscriber() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("ppc");
+        eval_in_context_string("ppc", r#"
+            globalThis.__fired = 0; globalThis.__addResult = null;
+            __s2_precache_subscribe(function () {
+                globalThis.__fired++;
+                globalThis.__addResult = __s2_sound_precache_add("soundevents/x.vsndevts");
+            });
+            "ok"
+        "#);
+        dispatch_precache();
+        assert_eq!(eval_in_context_string("ppc", "String(globalThis.__fired)"), "1");
+        assert_eq!(eval_in_context_string("ppc", "String(globalThis.__addResult)"), "false");
+        shutdown();
+    }
+
     // ---------------------------------------------------------------------------
     // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete
     // ---------------------------------------------------------------------------
@@ -10090,6 +10269,8 @@ mod frame_tests {
             entity_set_model: None,
             entity_listener_install: None,
             entity_name: None,
+            sound_emit: None,
+            sound_precache_add: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10444,6 +10625,101 @@ mod frame_tests {
         shutdown();
     }
 
+    static SOUND_EMIT_CALLS: std::sync::Mutex<Vec<(String, i32, i32, Vec<i32>, f32)>> =
+        std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_emit(name: *const c_char, ent_index: c_int, ent_serial: c_int,
+                                  slots: *const c_int, slot_count: c_int, volume: f32) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
+                else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
+        SOUND_EMIT_CALLS.lock().unwrap().push((n, ent_index, ent_serial, s, volume));
+        7   // a fake nonzero guid
+    }
+
+    /// __s2_sound_emit marshals (name, entIndex, entSerial, slots[], volume) into the op and
+    /// returns its guid (struct-update over mock_event_ops, the entity_spawn_kv capture precedent).
+    #[test]
+    fn sound_emit_marshals_args_to_op() {
+        let _ = init(dummy_logger());
+        SOUND_EMIT_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
+        create_plugin_context("psm");
+        let out = eval_in_context_string("psm",
+            "String(__s2_sound_emit('Weapon_AK47.Single', 42, 99, [3, 5], 0.5))");
+        assert_eq!(out, "7");
+        let calls = SOUND_EMIT_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "Weapon_AK47.Single");
+        assert_eq!(calls[0].1, 42);
+        assert_eq!(calls[0].2, 99);
+        assert_eq!(calls[0].3, vec![3, 5]);
+        assert!((calls[0].4 - 0.5).abs() < 1e-6);
+        shutdown();
+    }
+
+    /// @s2script/sound module surface (defaults): no entity -> worldspawn (0, -1); no recipients ->
+    /// the all-valid-clients enumeration (client_valid is None under mock_event_ops -> empty ->
+    /// the op still receives slotCount 0); volume defaults 1.0.
+    #[test]
+    fn sound_module_emit_defaults() {
+        let _ = init(dummy_logger());
+        SOUND_EMIT_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
+        create_plugin_context("psd");
+        let out = eval_in_context_string("psd",
+            "String(__s2pkg_sound.Sound.emit('Weapon_AK47.Single'))");
+        assert_eq!(out, "7");
+        let calls = SOUND_EMIT_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, 0);                 // worldspawn index
+        assert_eq!(calls[0].2, -1);                // the no-serial-check sentinel
+        assert_eq!(calls[0].3, Vec::<i32>::new()); // no valid clients under the mock ops
+        assert!((calls[0].4 - 1.0).abs() < 1e-6);  // default volume
+        shutdown();
+    }
+
+    /// @s2script/sound module surface (explicit opts): entity {index,serial} -> (idx, serial);
+    /// recipients passed through; volume passed through. And the module resolves via require.
+    #[test]
+    fn sound_module_emit_explicit_opts() {
+        let _ = init(dummy_logger());
+        SOUND_EMIT_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
+        load_plugin_js("psx", r#"
+            const { Sound } = require("@s2script/sound");
+            globalThis.__g = Sound.emit("UI.PlayerPing",
+                { entity: { index: 42, serial: 99 }, recipients: [3, 5], volume: 0.5 });
+        "#, "{}");
+        assert_eq!(eval_in_context_string("psx", "String(globalThis.__g)"), "7");
+        let calls = SOUND_EMIT_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "UI.PlayerPing");
+        assert_eq!(calls[0].1, 42);
+        assert_eq!(calls[0].2, 99);
+        assert_eq!(calls[0].3, vec![3, 5]);
+        assert!((calls[0].4 - 0.5).abs() < 1e-6);
+        shutdown();
+    }
+
+    /// Sound.onPrecache wraps the raw subscribe: the handler receives a ctx whose add() hits the
+    /// (absent) op and returns false; the ctx is freshly built per dispatch.
+    #[test]
+    fn sound_module_onprecache_builds_ctx() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("ppx");
+        eval_in_context_string("ppx", r#"
+            globalThis.__ctxAdd = null;
+            __s2pkg_sound.Sound.onPrecache(function (ctx) {
+                globalThis.__ctxAdd = ctx.add("soundevents/y.vsndevts");
+            });
+            "ok"
+        "#);
+        dispatch_precache();
+        assert_eq!(eval_in_context_string("ppx", "String(globalThis.__ctxAdd)"), "false");
+        shutdown();
+    }
+
     /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
     /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
     /// never a crash.
@@ -10625,6 +10901,8 @@ mod frame_tests {
             entity_set_model: None,
             entity_listener_install: None,
             entity_name: None,
+            sound_emit: None,
+            sound_precache_add: None,
         }
     }
 
@@ -11363,6 +11641,20 @@ mod frame_tests {
             String(a === false && b === false)
         "#);
         assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// Both sound natives degrade with no ops table: emit -> 0, precache-add -> false. Raw-native
+    /// level (the @s2script/sound module surface is Task-4-tested).
+    #[test]
+    fn sound_natives_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("psnd");
+        assert_eq!(eval_in_context_string("psnd",
+            "String(__s2_sound_emit('Weapon_AK47.Single', 0, -1, [0, 1], 1.0))"), "0");
+        assert_eq!(eval_in_context_string("psnd",
+            "String(__s2_sound_precache_add('soundevents/test.vsndevts'))"), "false");
         shutdown();
     }
 

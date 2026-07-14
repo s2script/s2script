@@ -70,7 +70,27 @@
     // this build's vtable slot 27, which reads a Vector* arg and computes a throw velocity —
     // unconfirmed, not wired). Values kept as given for now; Task 4/5 own the go/no-go call.
     "CCSPlayer_ItemServices_RemoveWeapons":          { "linuxsteamrt64": 25 },
-    "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 }
+    "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 },
+    // Sound slice: CGameRulesGameSystem::OnPrecacheResource's vtable INDEX (not a byte offset) —
+    // the precache manual-hook position. Borrowed from the ModSharp gamedata (linux AND windows
+    // both 7 — a strong cross-platform signal) — per the RE doctrine a borrowed index is a HINT.
+    // CONFIRMED offline (Task-5 RE) against the pinned build-2000873 libserver.so: the
+    // CGameRulesGameSystem::OnPrecacheResource vtable INDEX (not a byte offset) — the precache hook
+    // position. The shim resolves the CGameRulesGameSystem CLASS vtable by RTTI at runtime
+    // (s2vtable::GetVTableByName "CGameRulesGameSystem" -> @0x24c9d68, the primary vtable [offset-to-top
+    // 0] behind the RTTI name "20CGameRulesGameSystem" @0x83cef0) and SWAPS slot[7] (@0x18d48e0) to our
+    // handler (InstallPrecacheHook / WriteVtableSlot), saving the original to chain. slot[7] takes the
+    // manifest as its 2nd arg (rsi) and registers a batch of hardcoded resource strings (ParticleEffect
+    // / GlassImpact / Impact / gunshotsplash / TracerSound / BloodImpact / …) — i.e. it IS the
+    // precache-resource handler (not GameInit/GameShutdown). Per the RE doctrine a borrowed index is a
+    // HINT: InstallPrecacheHook validates the resolved vtbl[idx] lands inside libserver.so's own .text
+    // range BEFORE the swap; a stale/wrong index leaves the slot untouched (onPrecache never fires),
+    // never a crash. (Class-vtable swap, NOT the plan's factory-walk-to-instance + manual SourceHook:
+    // the reallocating factory can't yield the instance [see the removed GameSystemFactoryList note in
+    // `signatures`], AND the slot's own prologue @0x18d48e0 starts with a rip-relative
+    // `mov [rip+disp],rdi` that the inline-detour engine refuses — so a shared-class-vtable slot swap
+    // is the only grounded mechanism, and it also survives the factory's per-map instance realloc.)
+    "CGameRulesGameSystem_OnPrecacheResource": { "linuxsteamrt64": 7 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
@@ -321,6 +341,57 @@
         "resolve": "direct"
       }
     },
+    // CBaseEntity::EmitSound (Sound slice): the engine's soundevent-emit entry (Sound.emit /
+    // pawn.emitSound). RE FINDING (offline disasm of the pinned build-2000873 libserver.so):
+    // the two reference frameworks' emit patterns BOTH converge on ONE core function @ 0x1a476c0
+    // (which xrefs the string "EmitSoundByHandle" @ 0x9160ba, and reads m_nForceGuid at struct
+    // offset 32 + tests m_nFlags bit 0x10 at offset 42 — the EmitSound_t layout). CSSharp's pattern
+    // (below) resolves UNIQUE to a thin thunk @ 0x1a48e30 that forwards (rsi/rdx/rcx) straight to
+    // that core fn — this IS CSSharp's live-proven CBaseEntity_EmitSoundFilter target. ModSharp's
+    // member-overload pattern resolves UNIQUE to a DIFFERENT wrapper @ 0x1a48ee0 that takes volume
+    // as a float-BY-VALUE in xmm0 (NOT the plan's `const float*`), reorders args, and internally
+    // BUILDS the same EmitSound_t (storing the xmm0 float at struct offset 20 = m_flVolume — proving
+    // that arg IS volume, not classic-Source duration) before calling 0x1a476c0. DECISION: Variant B
+    // (the CSSharp static prototype SndOpEventGuid_t EmitSound(CRecipientFilter&, CEntityIndex,
+    // const EmitSound_t&); rdi=sret, rsi=filter, edx=ent-index, rcx=&params) — the member overload's
+    // `const float*` prototype was DISPROVEN (volume is by-value), so Variant B's EmitSound_t path is
+    // authoritative for volume. A DIRECT prologue pattern (match offset == function start), validated
+    // UNIQUE offline (1 match) + by the boot gate. If it drifts on an update, re-locate via the string
+    // refs: "EmitSoundByHandle", "public.distance_volume_mapping_curve",
+    // "Playing sound on non-networked entity %s".
+    "EmitSound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 48 89 D8 48 8B 5D ? C9 C3 CC CC CC CC CC CC 48 B8",
+        "resolve": "direct"
+      }
+    },
+    // CBaseEntity precache — "add one resource string to the current precache manifest" helper
+    // (Sound slice, review C1). RE FINDING (offline disasm of the pinned build-2000873 libserver.so,
+    // VALIDATED against OUR binary — the borrowed ModSharp "manifest->vtable[0](manifest, path)" fact
+    // was CONTRADICTED here and was UNSAFE): CGameRulesGameSystem::OnPrecacheResource (the hooked
+    // vtable slot[7] @0x18d48e0) and its byte-identical clone @0x18ce700 add each of the game's own
+    // default resources ("ParticleEffect"/"ParticleEffectStop"/"GlassImpact"/"Impact"/"player"/…) by
+    // calling THIS helper @0x19eca40 with the resource string in rdi. The helper adds NOT to the passed
+    // pManifest but to a GLOBAL manifest singleton g=*0x284f348, via
+    //     g->vtable[8](g, /*int*/1, /*const char* path*/, /*int*/0)
+    // — a 4-arg call at SLOT 8 (offset 0x40), NOT the 2-arg SLOT 0 the old code used (and slot 0 is the
+    // Itanium complete-object DESTRUCTOR, so the old call risked destructing the live manifest at map
+    // load -> crash). We therefore call the engine's helper verbatim; it self-resolves the global + the
+    // correct vtable[8] args, so we make no assumption about the global offset, the vtable index, or
+    // pManifest's identity. A DIRECT prologue pattern (the leading `lea rax,[rip+disp]`'s 4 disp bytes
+    // wildcarded), self-validated UNIQUE (1 match) on build 2000873. Distinctive body:
+    //   mov rdx,rdi; xor ecx,ecx; mov esi,1; mov rdi,[glob]; mov rax,[rdi]; mov rax,[rax+0x40]; jmp rax.
+    // Unresolved/moved -> s_pPrecacheAddResource null -> sound_precache_add no-ops (degrade-never-crash).
+    // If it drifts on an update, re-locate via OnPrecacheResource (slot[7]) which calls it ~11× with the
+    // literal resource-name strings above.
+    "PrecacheAddResource": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8D 05 ? ? ? ? 48 89 FA 31 C9 BE 01 00 00 00 48 8B 38 48 8B 07 48 8B 40 40 FF E0",
+        "resolve": "direct"
+      }
+    },
     // Entity lifecycle listeners slice: CGameEntitySystem::AddListenerEntity / RemoveListenerEntity —
     // register/unregister an IEntityListener (the CSSharp/ModSharp mechanism for OnEntityCreated/Spawned/
     // Deleted). DIRECT prologue signatures borrowed as a HINT from the ModSharp git118 gamedata, per the
@@ -342,5 +413,15 @@
         "resolve": "direct"
       }
     }
+    // (Sound slice precache: there is NO factory-list signature. The abandoned "GameSystemFactoryList"
+    // sig-scan + walk-the-factory-node-for-the-instance premise was DISPROVEN offline on the pinned
+    // build-2000873 libserver.so: CGameRulesGameSystem's factory is a
+    // CGameSystemReallocatingFactory<CGameRulesGameSystem> (factory vtable 0x24c9f88; slot 8
+    // IsReallocating -> `mov $1;ret`, slot 9 GetStaticGameSystem -> `xor eax;ret` = nullptr), and its
+    // +0x18 is m_ppGlobalPointer — statically zeroed at the sole construction site
+    // (`movq $0x0, 0x2867798` @0x18edbb0) and never re-pointed, so it can NEVER yield the live
+    // instance. (The factory is also registered as "GameRulesGameSystem" — no leading 'C' — @0x90f33e.)
+    // Precache is instead a CLASS-vtable slot swap resolved by RTTI at runtime — see the
+    // CGameRulesGameSystem_OnPrecacheResource offsets comment above.)
   }
 }

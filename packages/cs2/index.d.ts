@@ -78,6 +78,9 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
    * unreadable (stale ref). `distance` defaults to 8192.
    */
   aimTrace(opts?: { distance?: number; mask?: number; ignoreEntity?: EntityRef }): TraceHit | null;
+  /** Play a named CS2 SoundEvent from this pawn (the serial-gated source entity; a stale ref emits
+   *  nothing). Returns the engine sound GUID (nonzero) or 0. Bot recipients are always skipped. */
+  emitSound(name: string, opts?: { recipients?: number[]; volume?: number }): number;
 }
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */
@@ -227,4 +230,12 @@ export declare const TriggerZone: {
   /** Create a runtime engine trigger_multiple whose touch volume is the arbitrary box [min,max].
    *  Fires OnStartTouch/OnEndTouch (hook via Entity.onOutput). Non-solid (pass-through). */
   create(min: ZoneBox, max: ZoneBox, opts?: { model?: string; spawnflags?: number }): TriggerZoneHandle | null;
+};
+
+/** Curated built-in CS2 soundevent names (see @s2script/sound `Sound.emit` / `Pawn.emitSound`). */
+export declare const Sounds: {
+  readonly Ping: string;
+  readonly PingUrgent: string;
+  readonly Ak47Shot: string;
+  readonly DeagleShot: string;
 };

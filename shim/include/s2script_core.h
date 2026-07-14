@@ -230,6 +230,23 @@ typedef int (*s2_entity_listener_install_fn)(void);
  * Zones/surftimer slice. */
 typedef const char* (*s2_entity_name_fn)(int index, int serial);
 
+/* Sound slice — APPENDED after entity_name (the ABI tail); order is the ABI.
+ * sound_emit: play a named CS2 SoundEvent from a serial-gated source entity to a slot set.
+ * Sig-resolved CBaseEntity::EmitSound (preferred member overload (name, volume*, IRecipientFilter*);
+ * the CSSharp EmitSound_t static path as fallback — see the 2026-07-13 sound spec). soundName = the
+ * soundevent name (the engine resolves name->hash). entSerial < 0 = emit from entIndex with NO serial
+ * check (worldspawn / global 2D). slots[0..slotCount) = recipient slots (bot slots are skipped — no
+ * netchannel). volume in [0,1]. Returns the SndOpEventGuid (nonzero uint32 as int) or 0 (unresolved
+ * sig / stale entity / caller requested no recipients (slotCount <= 0)). An all-bot-skipped filter
+ * still CALLS the engine (plays to nobody), not a degrade. ENGINE-GENERIC. */
+typedef int (*s2_sound_emit_fn)(const char* soundName, int entIndex, int entSerial,
+                                const int* slots, int slotCount, float volume);
+/* sound_precache_add: add a resource path (e.g. "soundevents/mypack.vsndevts") to the session
+ * resource manifest currently being built. Valid ONLY during a precache-hook dispatch (the manifest
+ * pointer is live only then; block-scoped like a game event). Returns 1 on add, 0 if no active
+ * manifest / unresolved. ENGINE-GENERIC. */
+typedef int (*s2_sound_precache_add_fn)(const char* path);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -331,6 +348,9 @@ typedef struct {
     s2_entity_listener_install_fn entity_listener_install;
     /* entity_name slice — APPENDED after entity_listener_install; order is the ABI; do not reorder above. */
     s2_entity_name_fn entity_name;
+    /* Sound slice — APPENDED after entity_name (the struct tail); order is the ABI. */
+    s2_sound_emit_fn         sound_emit;
+    s2_sound_precache_add_fn sound_precache_add;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -366,6 +386,12 @@ void s2script_core_dispatch_map_start(const char* map);
 /* Shim -> core: an IEntityListener callback (create/spawn/delete) reports an entity by its packed
  * CEntityHandle (ToInt()) + class name. Notify-only; core builds a serial-gated EntityRef. */
 void s2script_core_dispatch_entity_event(const char* kind, const char* className, int handle);
+/* Shim -> core: the CGameRulesGameSystem::OnPrecacheResource manual hook reports the session
+ * resource-manifest build (Sound slice). The shim stashes the live IResourceManifest* around this
+ * call so the sound_precache_add op can AddResource into it; the stash is cleared when this
+ * returns (block-scoped — a handler must use its PrecacheContext synchronously). Notify-only:
+ * runs the JS Sound.onPrecache subscribers. */
+void s2script_core_dispatch_precache(void);
 /* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
  * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
  * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->
