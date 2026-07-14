@@ -35,7 +35,7 @@ So the RE risk is not "can this be done" (Swiftly proves yes) — it is narrowed
 
 ## 4. Architecture & boundary (charter)
 
-- **Engine-generic (core):** `CBaseUserCmdPB` and its fields come from the Source2-shared `usercmd.proto`; a "player's per-tick input" is a Source2 concept. So the `USERCMD_MUX`, `dispatch_usercmd`, the field get/set-**by-name** ops (mirroring the usermessage `set_int`/`set_float`/`set_bool` ops — value + field name, no CS2 identifiers), and the `@s2script/usercmd` module are all engine-generic. The module's field names (`forwardMove` ↔ `forwardmove`, etc.) map to `CBaseUserCmdPB` protobuf field names, which are Source2-shared.
+- **Engine-generic (core):** `CBaseUserCmdPB` and its fields come from the Source2-shared `usercmd.proto`; a "player's per-tick input" is a Source2 concept. So the `USERCMD_MUX`, `dispatch_usercmd`, the field get/set ops, and the `@s2script/usercmd` module are all engine-generic. **The ops key on a NUMERIC field enum** (`0 forwardMove, 1 sideMove, 2 upMove, 3 pitch, 4 yaw, 5 roll, 6 impulse`, plus `buttons`/`clearSubtick`) passed as a plain `int` — NOT a CS2/protobuf field string (unlike the usermessage `set_int(field_name,…)` ops). No CS2 identifier crosses the C ABI; the SHIM alone maps the enum to the `CBaseUserCmdPB`/`CMsgQAngle`/`CInButtonStatePB` nesting. The engine-generic guarantee rests on the fact that **these 7 fields, in this order, are Source2-universal** (`usercmd.proto`), not on protobuf names appearing in core (they never do). This is the entity-`kind`-dispatch precedent, and it's better for a per-tick hot path than string lookups.
 - **CS2-only (shim):** the hook *function* `CCSPlayerController::ProcessUsercmds` and the `CUserCmd` offset/stride are CS2 facts → they live in the shim + gamedata, never in `core/src`. `CUserCmd`/`CSGOUserCmdPB` are CS2 engine types → shim-only.
 - Both boundary gates (`check-core-boundary.sh` + the shim-owns-CS2 rule) stay green: the core diff contains no CS2 type names or field strings baked in; the JS field-name → protobuf-field-name mapping is in the engine-generic module because the names are Source2-shared.
 
@@ -55,7 +55,10 @@ export const UserCmd: {
 export interface Cmd {
   // Movement (CBaseUserCmdPB scalars) — get and SET.
   forwardMove: number;   // +forward / -back
-  sideMove: number;      // +right / -left  (protobuf `leftmove`, sign documented)
+  sideMove: number;      // +right / -left. NEGATED from the raw protobuf `leftmove` (which is +LEFT):
+                         //   the shim's field-1 read AND write flip the sign so sideMove is +right
+                         //   (SourceMod convention). Getting the sign wrong silently inverts the headline
+                         //   sideways/half-sideways surf styles, so it is gate-checked (D→>0, A→<0).
   upMove: number;        // +up / -down
   impulse: number;
   // The pressed-button mask (CInButtonStatePB.buttonstate1) — get and SET.
@@ -78,7 +81,9 @@ CS2 movement is refined by `subtick_moves` (per-press analog deltas). The open q
 3. Forces one modify (`forwardMove = 0`, or force an `IN_JUMP` button) and observes the effect on a live human client.
 4. Determines whether `clearSubtickMoves()` is required for a coarse modify to take — and validates `sizeof(CUserCmd)` (the array stride) against a second-cmd read.
 
-The shipped API only promises fields the spike proves controllable. If the subtick interaction is unavoidable, `clearSubtickMoves()` (or automatic subtick-clear on any movement write) is part of the contract; if coarse writes suffice, it stays an optional helper.
+The shipped API only promises fields the spike proves controllable. **Post-spike, commit to ONE subtick design and state it identically in this §6, in the plan's Task 3 (the write op), and in Task 4 (the `Cmd` API) — do not leave both framings live:** either **(A)** every movement write (`s2_usercmd_write` fields 0/1/2) AUTO-clears `subtick_moves`, or **(B)** the plugin opts in via `clearSubtickMoves()`. The spike's verdict picks A or B; if coarse writes alone suffice, `clearSubtickMoves()` remains an exposed-but-optional helper.
+
+Offline stride seed (SHOULD-FIX 1): rather than live-bisecting `sizeof(CUserCmd)` (each wrong guess is a virtual call through a bad pointer → a crash on a human-joined server), derive `sizeof(CSGOUserCmdPB)` once by `protoc`-compiling the vendored `usercmd.proto`/`cs_usercmd.proto` in a SCRATCH (never-committed) build against the vendored protobuf 3.21.8, and use the live cmd[1] read only to CONFIRM.
 
 ## 7. Safety & degrade-never-crash
 
