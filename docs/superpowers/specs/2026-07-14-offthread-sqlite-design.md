@@ -180,8 +180,22 @@ does at `records.ts:20`).
 - No `http.rs` change, no shim, no engine op, no ABI change → **core-only sniper rebuild**. No
   `packages/*` change → local-merge slice (no changeset).
 
+## Ordering note (post-implementation clarification)
+
+FIFO is **per connection**, not per file. Two *connections* to the same file (e.g. nominations +
+rockthevote both `open("mapvote")`) run on independent actor threads with no cross-connection
+ordering — a write on one is not guaranteed visible to a subsequent read on the other within a
+frame. This is inherent to off-threading, matches the remote sqlx model, and cross-plugin
+shared-file access was never ordered under SourceMod either. `busy_timeout=5000` keeps a concurrent
+write-write from erroring; callers that need cross-connection ordering must coordinate at the app
+level (or share one connection).
+
 ## Deferred (do NOT build ahead)
 
 - Fully off-thread open (open inside the actor; resolve `Database.open` on open-completion).
 - Transactions (a pinned-session BEGIN/COMMIT on the actor), blobs, streaming/large results.
 - Unifying SQLite onto sqlx-sqlite (the alternative not taken).
+- `shutdown()` hygiene: clear/`Shutdown` any stragglers left in `db::CONNS` on isolate re-init,
+  symmetric with the other `thread_local` clears. Only reachable for a connection opened from a
+  non-plugin context (owner `""`, un-ledgered — a dev/eval path, never a real plugin), so it does
+  not leak in production; fold in as a follow-up.
