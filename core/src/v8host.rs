@@ -1393,6 +1393,35 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   });
   var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
   globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
+  // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
+  //     CBaseUserCmdPB/CMsgQAngle/CInButtonStatePB (usercmd.proto) are Source2-shared -> engine-generic,
+  //     lives in core. Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)
+  //     matches the Task-3 shim ops exactly; only the shim maps it onto CS2's protobuf nesting — no
+  //     CS2/protobuf name appears here. Cmd is ONE shared object (MF-3, the DamageInfo precedent does
+  //     NOT apply — dispatch_usercmd fetches this exact singleton, not a per-handler `new Cmd()`); its
+  //     accessors read/write the CURRENT usercmd via the natives and are valid only during dispatch. ---
+  var Cmd = {
+    get forwardMove() { return __s2_usercmd_read(0); },
+    set forwardMove(v) { __s2_usercmd_write(0, +v); },
+    get sideMove() { return __s2_usercmd_read(1); },
+    set sideMove(v) { __s2_usercmd_write(1, +v); },
+    get upMove() { return __s2_usercmd_read(2); },
+    set upMove(v) { __s2_usercmd_write(2, +v); },
+    get impulse() { return __s2_usercmd_read(6); },
+    set impulse(v) { __s2_usercmd_write(6, +v); },
+    // 64-bit pressed-button mask — a real bigint end-to-end (never a decimal string), per spec.
+    get buttons() { return __s2_usercmd_read_buttons(); },
+    set buttons(v) { __s2_usercmd_write_buttons(v); },
+    // Fields 3/4/5 (pitch/yaw/roll), read/written as one QAngle {x,y,z}.
+    get viewAngles() { return new QAngle(__s2_usercmd_read(3), __s2_usercmd_read(4), __s2_usercmd_read(5)); },
+    set viewAngles(a) { __s2_usercmd_write(3, +a.x); __s2_usercmd_write(4, +a.y); __s2_usercmd_write(5, +a.z); },
+    clearSubtickMoves: function () { __s2_usercmd_clear_subtick(); },
+  };
+  var UserCmd = { onRun: function (handler) { __s2_usercmd_subscribe(handler); } };
+  // Cmd is exposed on the package object (NOT as a plugin-facing named export — it's a type-only
+  // interface in index.d.ts) purely so dispatch_usercmd (core-side) can fetch this exact singleton
+  // via globalThis.__s2pkg_usercmd.Cmd each dispatch.
+  globalThis.__s2pkg_usercmd = { UserCmd: UserCmd, HookResult: globalThis.HookResult, Cmd: Cmd };
   // --- Ray-trace slice: @s2script/trace (Trace.line/ray/hull -> TraceHit, TraceMask). ENGINE-GENERIC
   //     (Source-2 physics) — over the single __s2_trace native (the trace_shape engine op). ---
   (function () {
@@ -12021,6 +12050,56 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read_buttons())"), "0", "read_buttons degrades to 0n");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write_buttons(5n))"), "undefined", "write_buttons no-throws");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_clear_subtick())"), "undefined", "clear_subtick no-throws");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 4: the `@s2script/usercmd` prelude module wires — `__s2pkg_usercmd` exposes
+    /// `UserCmd`/`HookResult`; `UserCmd.onRun` is a function that forwards straight to
+    /// `__s2_usercmd_subscribe` (proven separately by `usercmd_dispatch_runs_subscriber_and_collapses_hookresult`,
+    /// which subscribes via the raw native); and the SINGLETON `Cmd` object's accessors read/write
+    /// through the (here op-less, degrading) natives — `forwardMove`/`sideMove`/`upMove`/`impulse` read
+    /// `0` and accept a set with no throw, `buttons` reads a real `0n` bigint and accepts a bigint set,
+    /// `viewAngles` reads a `QAngle`-shaped `{x:0,y:0,z:0}` (fields 3/4/5) and a set writes all three
+    /// via three separate `__s2_usercmd_write` calls, and `clearSubtickMoves()` doesn't throw.
+    #[test]
+    fn usercmd_module_cmd_singleton_and_userrun_wiring() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_usercmd.UserCmd.onRun"), "function");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_usercmd.HookResult.Handled)"), "2");
+        let cmd = "__s2pkg_usercmd.Cmd";
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.forwardMove)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.sideMove)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.upMove)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.impulse)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("typeof {cmd}.buttons")), "bigint");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.buttons)")), "0");
+        assert_eq!(
+            eval_in_context_string("p", &format!("JSON.stringify({{x:{cmd}.viewAngles.x, y:{cmd}.viewAngles.y, z:{cmd}.viewAngles.z}})")),
+            "{\"x\":0,\"y\":0,\"z\":0}",
+        );
+        // Sets no-throw (degrade-never-crash) — a plain numeric set, a bigint set, and a viewAngles
+        // object set (exercises all three underlying __s2_usercmd_write calls).
+        assert_eq!(eval_in_context_string("p", &format!("(function(){{ {cmd}.forwardMove = 1; {cmd}.sideMove = -1; {cmd}.upMove = 0.5; {cmd}.impulse = 100; {cmd}.buttons = 5n; {cmd}.viewAngles = {{x:1,y:2,z:3}}; {cmd}.clearSubtickMoves(); return \"ok\"; }}())")), "ok");
+        // End-to-end through UserCmd.onRun + dispatch_usercmd: the handler must receive the REAL Cmd
+        // singleton object (typeof "object" with a working forwardMove/buttons property), not
+        // `undefined` — this is the exact wiring a missing `Cmd` key on `__s2pkg_usercmd` would silently
+        // break (dispatch_usercmd degrades to passing `undefined` when the lookup fails).
+        eval_in_context(
+            "p",
+            "globalThis.__cmdType = null; globalThis.__cmdIsSingleton = false; \
+             __s2pkg_usercmd.UserCmd.onRun(function (cmd, ctx) { \
+               globalThis.__cmdType = typeof cmd; \
+               globalThis.__cmdIsSingleton = (cmd === __s2pkg_usercmd.Cmd); \
+               globalThis.__cmdForward = String(cmd.forwardMove); \
+             });",
+        )
+        .unwrap();
+        assert_eq!(dispatch_usercmd(9), 0, "no Handled/Stop returned -> Continue");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__cmdType)"), "object", "handler received an object, not undefined");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__cmdIsSingleton)"), "true", "handler received the exact Cmd singleton (MF-3)");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__cmdForward)"), "0", "cmd.forwardMove readable inside the handler");
         shutdown();
     }
 
