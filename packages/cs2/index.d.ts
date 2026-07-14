@@ -111,6 +111,14 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   kick(reason?: string): void;
   /** Overwrite the player's display name (m_iszPlayerName); returns false if stale/unresolved. */
   setName(name: string): boolean;
+  /**
+   * Move this player's controller to `team` (Spectator=1, Terrorist=2, CounterTerrorist=3) via the
+   * sig-resolved CCSPlayerController::ChangeTeam. Serial-gated; a no-op if the ref is stale or the
+   * signature is unresolved. `team` is bounded to 0..3 engine-side.
+   */
+  changeTeam(team: number): void;
+  /** Move this player to the Spectator team (= `changeTeam(1)`). */
+  spectate(): void;
 }
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */
