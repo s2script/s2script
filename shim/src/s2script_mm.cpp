@@ -1449,8 +1449,20 @@ static void s2_usercmd_clear_subtick() {
 // schema Pawn.forSlot(slot) read of the SAME player) before this is trusted in production.
 static int DeriveUsercmdSlot(void* thisptr) {
     if (!thisptr) return -1;
+    // this+0x7c0 holds the firing PAWN's entity handle (the game decodes it via `shr $9 & 0x3f` [chunk]
+    // + `& 0x1ff` [slot-in-chunk] to look the pawn up in the entity system). The LIVE GATE (2026-07-14,
+    // Task 5) proved `(idx>>9)&0x3f` is the entity-system CHUNK, NOT the player slot (a slot-0 human read
+    // slot=1). Correct path: resolve the pawn -> read m_hController -> the CONTROLLER's entity index - 1
+    // IS the 0-based player slot (controllers are entities 1..64). Degrades to -1 on any miss.
     uint16_t raw = *reinterpret_cast<const uint16_t*>(reinterpret_cast<const char*>(thisptr) + 0x7c0);
-    return static_cast<int>((raw >> 9) & 0x3f);
+    void* pawn = s2_ent_by_index(static_cast<int>(raw & 0x7fff));   // low 15 bits = the pawn's entity index
+    if (!pawn) return -1;
+    int off = s2_schema_offset("CBasePlayerPawn", "m_hController");
+    if (off < 0) return -1;
+    uint32 hController = *reinterpret_cast<const uint32*>(reinterpret_cast<const char*>(pawn) + off);
+    int ci = CEntityHandle(hController).GetEntryIndex();            // controller entity index, or -1
+    int slot = ci - 1;
+    return (slot >= 0 && slot < 64) ? slot : -1;
 }
 
 // The production ProcessUsercmds detour. For each in-flight CUserCmd, points s_currentUserCmd at its
