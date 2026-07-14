@@ -366,6 +366,12 @@ void s2script_core_dispatch_client_event(const char* name, int slot);
  * live map name (clientlist-fakeconvar-onmapstart slice). Notify-only: runs the JS Server.onMapStart
  * subscribers. catch_unwind-wrapped; a null pointer degrades to "" (never panic across the boundary). */
 void s2script_core_dispatch_map_start(const char* map);
+/* Shim -> core: the CGameRulesGameSystem::OnPrecacheResource manual hook reports the session
+ * resource-manifest build (Sound slice). The shim stashes the live IResourceManifest* around this
+ * call so the sound_precache_add op can AddResource into it; the stash is cleared when this
+ * returns (block-scoped — a handler must use its PrecacheContext synchronously). Notify-only:
+ * runs the JS Sound.onPrecache subscribers. */
+void s2script_core_dispatch_precache(void);
 /* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
  * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
  * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->

@@ -519,6 +519,12 @@ thread_local! {
     static MAP_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
+    /// Precache subscribers (Sound slice). Fixed key "" (a precache-manifest build has no name
+    /// dimension, like MAP_MUX); notify-only. The stored handler is the PRELUDE's wrapper closure —
+    /// it constructs the block-scoped PrecacheContext and calls the plugin's handler.
+    static PRECACHE_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
     /// clientprefs Task 4: `Cookies.onCached` subscriber mux, keyed by the constant "" (no name
     /// dimension — a single un-keyed list, like `CHAT_MSG_SUBS`). Fanned out post-frame by
     /// `dispatch_pending_cookie_cached` (called from `ffi.rs` AFTER `frame_async_drain()` returns, so
@@ -3732,6 +3738,49 @@ pub(crate) fn dispatch_map_start(map: &str) {
     });
 }
 
+/// Deliver a precache-manifest-build notification to the `Sound.onPrecache` subscribers. Called
+/// from ffi.rs's `s2script_core_dispatch_precache` (the shim's CGameRulesGameSystem::
+/// OnPrecacheResource MANUAL hook, which stashes the live IResourceManifest* around this call so
+/// the `sound_precache_add` op can AddResource into it — block-scoped: the stash is cleared when
+/// the hook returns, so a handler must use its PrecacheContext synchronously). Mirrors
+/// `dispatch_map_start` verbatim: snapshot (release the mux borrow), `try_borrow_mut` re-entrancy
+/// guard, per-subscriber `is_live` + context clone + HandleScope/ContextScope/TryCatch +
+/// WARN-on-throw. Notify-only — each handler is called with NO args (the prelude wrapper builds
+/// the PrecacheContext) and its return is ignored.
+pub(crate) fn dispatch_precache() {
+    let snap = PRECACHE_MUX.with(|m| m.borrow().snapshot(""));
+    if snap.is_empty() { return; }
+
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, generation, handler_g) in &snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let func = v8::Local::new(tc, handler_g);
+            if func.call(tc, recv, &[]).is_none() {
+                let msg = tc.exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_precache: handler '{}': {}", owner, msg));
+            }
+        }
+    });
+}
+
 /// Drain `COOKIE_CACHED_PENDING` and fan each queued slot out to the `Cookies.onCached` subscribers
 /// (clientprefs Task 4). Called from `ffi.rs`'s Post-frame branch AFTER `frame_async_drain()` returns
 /// (HOST is free — no re-entrancy risk from the plugin's own async cookie-load work). Mirrors
@@ -4445,6 +4494,21 @@ fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         MAP_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+    }));
+}
+
+/// `__s2_precache_subscribe(handler)` — subscribe a JS fn to the precache-manifest-build event.
+/// Owner-tracked (mirrors `__s2_map_start_subscribe`); fixed mux key "". The handler is called
+/// with no args during `dispatch_precache`; the `@s2script/sound` prelude wrapper constructs the
+/// block-scoped PrecacheContext.
+fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        PRECACHE_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
     }));
 }
 
@@ -6110,6 +6174,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_client_subscribe", s2_client_subscribe);
     // Map-start subscriber (clientlist-fakeconvar-onmapstart slice): register a Server.onMapStart handler.
     set_native(scope, global_obj, "__s2_map_start_subscribe", s2_map_start_subscribe);
+    // Precache subscriber (Sound slice): register a Sound.onPrecache handler.
+    set_native(scope, global_obj, "__s2_precache_subscribe", s2_precache_subscribe);
 
     set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
     set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
@@ -7929,6 +7995,8 @@ pub fn shutdown() {
     CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the map-start mux (clientlist-fakeconvar-onmapstart slice) so a re-init starts clean.
     MAP_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the precache mux (Sound slice) so a re-init starts clean.
+    PRECACHE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the Cookies.onCached mux + pending queue (clientprefs Task 4) so a re-init starts clean.
     COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear());
@@ -8263,6 +8331,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // slice). The StartupServer hook is installed for the process lifetime (removed in the shim's
     // Unload), so no per-plugin hook-removal request is needed.
     MAP_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // (a2c'') Drop the plugin's Sound.onPrecache subscriptions (Sound slice). The
+    // OnPrecacheResource hook is installed for the process lifetime (removed in the shim's Unload),
+    // so no per-plugin hook-removal request is needed.
+    PRECACHE_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c'') Drop the plugin's Cookies.onCached subscriptions (clientprefs Task 4). No engine-level
     // hook to remove (the fan-out is a pure post-frame JS dispatch, no shim involvement).
     COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
@@ -9553,6 +9625,27 @@ mod frame_tests {
         "#);
         dispatch_map_start("de_test");
         assert_eq!(eval_in_context_string("pms", "globalThis.__map"), "de_test");
+        shutdown();
+    }
+
+    /// dispatch_precache runs a Sound.onPrecache-level subscriber (raw __s2_precache_subscribe —
+    /// the module wrapper is Task-4-tested); the block-scoped add degrades false with no op.
+    #[test]
+    fn precache_dispatch_runs_subscriber() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("ppc");
+        eval_in_context_string("ppc", r#"
+            globalThis.__fired = 0; globalThis.__addResult = null;
+            __s2_precache_subscribe(function () {
+                globalThis.__fired++;
+                globalThis.__addResult = __s2_sound_precache_add("soundevents/x.vsndevts");
+            });
+            "ok"
+        "#);
+        dispatch_precache();
+        assert_eq!(eval_in_context_string("ppc", "String(globalThis.__fired)"), "1");
+        assert_eq!(eval_in_context_string("ppc", "String(globalThis.__addResult)"), "false");
         shutdown();
     }
 

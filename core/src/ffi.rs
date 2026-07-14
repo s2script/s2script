@@ -114,6 +114,18 @@ pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) {
     });
 }
 
+/// Shim → core: the CGameRulesGameSystem::OnPrecacheResource manual hook reports that the session
+/// resource manifest is being built (Sound slice). The live IResourceManifest* is stashed
+/// shim-side around this call for the `sound_precache_add` op (block-scoped — cleared when the
+/// hook returns). Notify-only: dispatches to the `Sound.onPrecache` JS subscribers.
+/// `catch_unwind`-wrapped (never panic across the FFI boundary).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_precache() {
+    let _ = catch_unwind(|| {
+        v8host::dispatch_precache();
+    });
+}
+
 /// Shim → core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
 /// (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
 /// (a pre-hook returned Handled/Stop), else 0.
