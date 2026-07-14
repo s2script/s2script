@@ -15,6 +15,7 @@ import type { SceneNode, WeaponServices, MovementServices, AimPunchServices } fr
 export { GameEvent } from "@s2script/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
+export { Weapon } from "./weapon";
 
 /**
  * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the serial-gated ref.
@@ -46,26 +47,30 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly buttons: number;
   /** Kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale). */
   slay(): void;
-  /** Give this pawn a named item/weapon (e.g. CsItem.AK47 or a raw "weapon_*" string). Returns the
-   *  created weapon's EntityRef, or null if unresolved/failed/stale. */
-  giveNamedItem(name: string): EntityRef | null;
+  /** Give this pawn a named item/weapon (e.g. CsItem.AK47 or a raw "weapon_*" string). Returns the created
+   *  Weapon, or null if unresolved/failed/stale. */
+  giveNamedItem(name: string): Weapon | null;
+  /** The currently-deployed weapon (m_hActiveWeapon), or null if none/stale. */
+  readonly activeWeapon: Weapon | null;
   /** This pawn's held weapons (m_hMyWeapons, a CUtlVector<CHandle>). Empty if stale/unresolved/none. */
-  readonly weapons: EntityRef[];
-  /**
-   * Remove ALL this pawn's weapons: enumerate `weapons` (m_hMyWeapons), then unequip each
-   * (`removeWeapon`/RemovePlayerItem) + destroy its entity (`EntityRef.remove`/UTIL_Remove).
-   * Composed from working primitives — no vtable path. Returns true iff every weapon was unequipped.
-   * Live-proven (strip 3→0 on bots).
-   */
+  readonly weapons: Weapon[];
+  /** Remove ONE weapon (unequip via RemovePlayerItem + destroy via UTIL_Remove). false if absent/stale. */
+  removeWeapon(weapon: Weapon): boolean;
+  /** Remove ALL held weapons (folds over Weapon.remove). true iff every one removed. */
   stripWeapons(): boolean;
-  /**
-   * Drop the currently-active weapon. DEFERRED — always returns `false`, same reason as
-   * `stripWeapons` (the borrowed `DropActivePlayerWeapon` vtable index resolves to the wrong function).
-   */
+  /** Alias of stripWeapons — destroy all held weapons. */
+  disarm(): boolean;
+  /** DEFERRED (always false): a true drop spawns a world pickup, not composable from remove(); needs the
+   *  DropActivePlayerWeapon signature-resolve. */
   dropActiveWeapon(): boolean;
-  /** Remove one specific weapon from this pawn (a proper unequip via RemovePlayerItem, a sig-resolved
-   *  direct call). False if either the pawn or the weapon ref is stale/absent. */
-  removeWeapon(weapon: EntityRef): boolean;
+  /** The current fire gate (m_flNextAttack, seconds), or null if unresolved/stale. Read companion to blockFiring. */
+  readonly nextAttack: number | null;
+  /** Block ALL weapon fire for `seconds` (default effectively-indefinite) by writing m_flNextAttack. The
+   *  gate is server-authoritative and time-based: a durable block needs a large value or a per-frame refresh.
+   *  Returns false if unresolved/stale. */
+  blockFiring(seconds?: number): boolean;
+  /** Clear a fire block (m_flNextAttack = now). Returns false if unresolved/stale. */
+  allowFiring(): boolean;
   /**
    * Ray-trace from this pawn's eyes along its view angles — "what is this player looking at".
    * Eye = the body world origin + a standing view-offset (~64u); direction = `eyeAngles`. Ignores

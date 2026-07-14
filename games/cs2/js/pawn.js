@@ -8,6 +8,7 @@
   var math = __s2require("@s2script/math");
   var Vector = math.Vector, QAngle = math.QAngle;
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
+  var Weapon = globalThis.__s2pkg_cs2.Weapon;   // set by weapon.js (concatenated before this file)
 
   function Pawn(ref) { this.ref = ref; }
   if (schema) schema.applyAccessors(Pawn.prototype, "CCSPlayerPawn");   // health, friction, controller, ...
@@ -187,49 +188,58 @@
   // walks the base-class chain (schema_find_field in the shim), so passing "CCSPlayer_WeaponServices"
   // still resolves m_hMyWeapons even though it's declared on the base CPlayer_WeaponServices.
 
-  // pawn.giveNamedItem(name) — give this pawn a weapon/item by classname (CsItem.AK47 or a raw
-  // "weapon_*" string). Returns the created weapon's EntityRef, or null if the ItemServices pointer
-  // is unresolved / GiveNamedItem failed / the ref is stale.
+  // pawn.giveNamedItem(name) — give this pawn a weapon/item by classname (CsItem.AK47 or a raw "weapon_*"
+  // string). Returns the created Weapon, or null if the ItemServices ptr is unresolved / failed / stale.
   Pawn.prototype.giveNamedItem = function (name) {
     var off = __s2_schema_offset("CBasePlayerPawn", "m_pItemServices");
     if (off < 0) return null;
-    return __s2_give_named_item(this.ref.index, this.ref.serial, off, String(name));
+    var ref = __s2_give_named_item(this.ref.index, this.ref.serial, off, String(name));
+    return ref ? new Weapon(ref) : null;
   };
 
-  // pawn.weapons — this pawn's held weapons (m_hMyWeapons, a CUtlVector<CHandle> on the
-  // WeaponServices sub-object), each decoded + serial-gated into a live EntityRef. [] if the
-  // WeaponServices/vector offsets are unresolved, the pointer chain is unresolved, or the ref is stale.
+  // pawn.activeWeapon — the currently-deployed weapon (m_hActiveWeapon on WeaponServices), as a Weapon.
+  // null if unresolved / none / stale.
+  Object.defineProperty(Pawn.prototype, "activeWeapon", {
+    get: function () {
+      var ws = this.weaponServices;               // nav wrapper (may be null)
+      var h = ws ? ws.activeWeapon : null;        // -> EntityRef | null
+      return h ? new Weapon(h) : null;
+    },
+    enumerable: true, configurable: true,
+  });
+
+  // pawn.weapons — this pawn's held weapons (m_hMyWeapons, a CUtlVector<CHandle> on the WeaponServices
+  // sub-object), each decoded + serial-gated into a live Weapon. [] if offsets/chain unresolved / stale.
   Object.defineProperty(Pawn.prototype, "weapons", {
     get: function () {
       var wsOff = __s2_schema_offset("CBasePlayerPawn", "m_pWeaponServices");
       var vecOff = __s2_schema_offset("CCSPlayer_WeaponServices", "m_hMyWeapons");
       if (wsOff < 0 || vecOff < 0) return [];
-      return this.ref.readHandleVector([wsOff], vecOff, 64);
+      var refs = this.ref.readHandleVector([wsOff], vecOff, 64);
+      var out = [];
+      for (var i = 0; i < refs.length; i++) out.push(new Weapon(refs[i]));
+      return out;
     },
     enumerable: true, configurable: true,
   });
 
-  // pawn.removeWeapon(weapon) — a proper unequip of one specific weapon (RemovePlayerItem, a
-  // sig-resolved direct call — NOT the vtable path below). False if either ref is stale/absent.
+  // pawn.removeWeapon(weapon) — remove ONE Weapon (delegates to the Weapon.remove atom: unequip via
+  // RemovePlayerItem + destroy via UTIL_Remove). false if the weapon is absent/stale.
   Pawn.prototype.removeWeapon = function (weapon) {
-    if (!weapon) return false;
-    return __s2_remove_player_item(this.ref.index, this.ref.serial, weapon.index, weapon.serial);
+    return weapon ? weapon.remove() : false;
   };
 
-  // pawn.stripWeapons() — remove ALL weapons by COMPOSING the working primitives (no vtable path):
-  // enumerate m_hMyWeapons (readHandleVector) → removeWeapon each (RemovePlayerItem unequips it from
-  // the player's inventory) → w.remove() (UTIL_Remove destroys the weapon entity). `ws` is a snapshot
-  // (each EntityRef is independent + serial-gated), so mutating m_hMyWeapons mid-loop is safe; a
-  // remove() on an already-gone entity is a serial-gated no-op. Returns true iff every weapon unequipped.
+  // pawn.stripWeapons() / pawn.disarm() — remove ALL held weapons by folding over Weapon.remove(). `ws` is
+  // a snapshot (each Weapon is independent + serial-gated), so mutating m_hMyWeapons mid-loop is safe.
+  // Returns true iff every weapon removed.
   Pawn.prototype.stripWeapons = function () {
     var ws = this.weapons;
     var ok = true;
-    for (var i = 0; i < ws.length; i++) {
-      if (!this.removeWeapon(ws[i])) ok = false;
-      ws[i].remove();
-    }
+    for (var i = 0; i < ws.length; i++) { if (!ws[i].remove()) ok = false; }
     return ok;
   };
+  Pawn.prototype.disarm = function () { return this.stripWeapons(); };   // destroy-all alias
+
   // pawn.dropActiveWeapon() — still DEFERRED (always false). A true DROP spawns the weapon as a world
   // pickup, which CANNOT be composed from removeWeapon/remove (those DESTROY the weapon); it needs the
   // real CCSPlayer_ItemServices::DropActivePlayerWeapon function. Task 2's live disasm spike found the
@@ -238,6 +248,48 @@
   // `const char* name` (an unsafe read, violating degrade-never-crash). Stays UNWIRED until the correct
   // function is self-resolved by SIGNATURE (a follow-up RE spike — NOT a borrowed vtable index).
   Pawn.prototype.dropActiveWeapon = function () { return false; };
+
+  // --- Player fire control: the effective "can't fire" gate is m_flNextAttack (a GameTime_t, seconds) on
+  // the CCSPlayer_WeaponServices SUB-OBJECT, reached via the m_pWeaponServices pointer. Written through the
+  // write-chain primitive (writeFloat32Via). The fire check is server-authoritative, so the raw write blocks
+  // the shot — no notifyStateChanged needed. It's a time gate the engine advances past: a durable block is a
+  // large `seconds` or a per-OnGameFrame refresh (the caller's policy).
+  function fireGateOffsets() {
+    var wsOff = __s2_schema_offset("CBasePlayerPawn", "m_pWeaponServices");
+    var naOff = __s2_schema_offset("CCSPlayer_WeaponServices", "m_flNextAttack");
+    return (wsOff < 0 || naOff < 0) ? null : { ws: wsOff, na: naOff };
+  }
+  function nowGameTime() {
+    var Server = __s2require("@s2script/server").Server;
+    var t = Server ? Server.gameTime : 0;
+    return (typeof t === "number") ? t : 0;
+  }
+
+  // pawn.nextAttack — the current m_flNextAttack (seconds), or null if unresolved/stale. Read companion to
+  // blockFiring (verifies the write landed).
+  Object.defineProperty(Pawn.prototype, "nextAttack", {
+    get: function () {
+      var o = fireGateOffsets();
+      return o ? this.ref.readFloat32Via([o.ws], o.na) : null;
+    },
+    enumerable: true, configurable: true,
+  });
+
+  // pawn.blockFiring(seconds?) — block ALL weapon fire for `seconds` (default ~effectively-indefinite).
+  // Writes m_flNextAttack = gameTime + seconds. Returns false if unresolved/stale.
+  Pawn.prototype.blockFiring = function (seconds) {
+    var o = fireGateOffsets();
+    if (!o) return false;
+    var dur = (typeof seconds === "number" && isFinite(seconds)) ? seconds : 1e9;
+    return this.ref.writeFloat32Via([o.ws], o.na, nowGameTime() + dur);
+  };
+
+  // pawn.allowFiring() — clear the block (m_flNextAttack = now). Returns false if unresolved/stale.
+  Pawn.prototype.allowFiring = function () {
+    var o = fireGateOffsets();
+    if (!o) return false;
+    return this.ref.writeFloat32Via([o.ws], o.na, nowGameTime());
+  };
 
   // pawn.moveType — the pawn's MoveType_t (a uint8 enum → not codegen'd, so hand-written). GET reads
   // m_MoveType (null on a stale ref). SET writes BOTH m_MoveType AND m_nActualMoveType (CS2 uses the
