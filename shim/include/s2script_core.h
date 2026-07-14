@@ -217,6 +217,23 @@ typedef int (*s2_collision_activate_fn)(int index, int serial);
  * a runtime entity's model name is empty). Returns 1 on success, 0 if unresolved/stale. ENGINE-GENERIC. */
 typedef int (*s2_entity_set_model_fn)(int index, int serial, const char* modelName);
 
+/* Sound slice — APPENDED after entity_set_model; order is the ABI.
+ * sound_emit: play a named CS2 SoundEvent from a serial-gated source entity to a slot set.
+ * Sig-resolved CBaseEntity::EmitSound (preferred member overload (name, volume*, IRecipientFilter*);
+ * the CSSharp EmitSound_t static path as fallback — see the 2026-07-13 sound spec). soundName = the
+ * soundevent name (the engine resolves name->hash). entSerial < 0 = emit from entIndex with NO serial
+ * check (worldspawn / global 2D). slots[0..slotCount) = recipient slots (bot slots are skipped — no
+ * netchannel). volume in [0,1]. Returns the SndOpEventGuid (nonzero uint32 as int) or 0 (unresolved
+ * sig / stale entity / caller requested no recipients (slotCount <= 0)). An all-bot-skipped filter
+ * still CALLS the engine (plays to nobody), not a degrade. ENGINE-GENERIC. */
+typedef int (*s2_sound_emit_fn)(const char* soundName, int entIndex, int entSerial,
+                                const int* slots, int slotCount, float volume);
+/* sound_precache_add: add a resource path (e.g. "soundevents/mypack.vsndevts") to the session
+ * resource manifest currently being built. Valid ONLY during a precache-hook dispatch (the manifest
+ * pointer is live only then; block-scoped like a game event). Returns 1 on add, 0 if no active
+ * manifest / unresolved. ENGINE-GENERIC. */
+typedef int (*s2_sound_precache_add_fn)(const char* path);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -314,6 +331,9 @@ typedef struct {
     s2_collision_activate_fn collision_activate;
     /* Zones real-trigger slice — APPENDED after collision_activate; order is the ABI. */
     s2_entity_set_model_fn entity_set_model;
+    /* Sound slice — APPENDED after entity_set_model (the struct tail); order is the ABI. */
+    s2_sound_emit_fn         sound_emit;
+    s2_sound_precache_add_fn sound_precache_add;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

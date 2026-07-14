@@ -209,6 +209,11 @@ pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
 type CollisionActivateFn = extern "C" fn(c_int, c_int) -> c_int;
 type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
 
+// --- Sound slice (APPENDED after entity_set_model; order is the ABI). ENGINE-GENERIC: a soundevent
+// NAME + a recipient slot set + a resource path are Source2-generic; no CS2 names in the C ABI.
+type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
+type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -310,6 +315,9 @@ pub struct S2EngineOps {
     pub collision_activate: Option<CollisionActivateFn>,
     // --- Zones real-trigger slice (APPENDED after collision_activate; order is the ABI; do not reorder above) ---
     pub entity_set_model: Option<EntitySetModelFn>,
+    // --- Sound slice (APPENDED after entity_set_model; order is the ABI; do not reorder above) ---
+    pub sound_emit: Option<SoundEmitFn>,
+    pub sound_precache_add: Option<SoundPrecacheAddFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -5081,6 +5089,52 @@ fn s2_ent_set_model(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
     }));
 }
 
+/// Native `__s2_sound_emit(soundName, entIndex, entSerial, slotsArray, volume) -> number`. Over the
+/// `sound_emit` op. Reads the JS slot array into a `Vec<i32>` (mirrors `__s2_user_message_send`); a
+/// non-array slots arg -> an empty set (the op returns 0 — caller requested no recipients). An
+/// all-bot-skipped non-empty request still calls the engine shim-side (plays to nobody). Returns the
+/// SndOpEventGuid as a uint32 number, 0 = failed. Degrades to 0 with no op; never throws.
+fn s2_sound_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_uint32(0);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_emit) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Ok(c_name) = std::ffi::CString::new(name) else { return };
+        let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+        let ent_serial = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        let mut slots: Vec<i32> = Vec::new();
+        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(3)) {
+            let n = arr.length();
+            slots.reserve(n as usize);
+            for i in 0..n {
+                let s = match arr.get_index(scope, i) {
+                    Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
+                    None => -1,
+                };
+                slots.push(s);
+            }
+        }
+        let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
+        let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume);
+        rv.set_uint32(guid as u32);
+    }));
+}
+
+/// Native `__s2_sound_precache_add(path) -> boolean`. Over the `sound_precache_add` op — valid only
+/// during a precache-hook dispatch (block-scoped; the shim's manifest stash is null otherwise).
+/// Degrades to `false` with no op / no active manifest / a NUL in the path. Never throws.
+fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_precache_add) else { return };
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let Ok(c_path) = std::ffi::CString::new(path) else { return };
+        rv.set_bool(f(c_path.as_ptr()) == 1);
+    }));
+}
+
 /// Native `__s2_entity_teleport(index, serial, originArr|null, anglesArr|null, velArr|null) -> boolean`.
 /// Each array arg is independently optional (a non-3-element/non-array value degrades to a null pointer
 /// for that component, matching the shim's nullable `Vector*`/`QAngle*`/`Vector*` ABI). Degrades to
@@ -6159,6 +6213,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_collision_activate", s2_collision_activate);
     set_native(scope, global_obj, "__s2_ent_set_model", s2_ent_set_model);
+    set_native(scope, global_obj, "__s2_sound_emit", s2_sound_emit);
+    set_native(scope, global_obj, "__s2_sound_precache_add", s2_sound_precache_add);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
     // Item slice: give/vcall/remove-item natives + the readHandleVector native (wrapped as an
@@ -9818,6 +9874,8 @@ mod frame_tests {
             client_language: None,
             collision_activate: None,
             entity_set_model: None,
+            sound_emit: None,
+            sound_precache_add: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10156,6 +10214,38 @@ mod frame_tests {
         shutdown();
     }
 
+    static SOUND_EMIT_CALLS: std::sync::Mutex<Vec<(String, i32, i32, Vec<i32>, f32)>> =
+        std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_emit(name: *const c_char, ent_index: c_int, ent_serial: c_int,
+                                  slots: *const c_int, slot_count: c_int, volume: f32) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
+                else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
+        SOUND_EMIT_CALLS.lock().unwrap().push((n, ent_index, ent_serial, s, volume));
+        7   // a fake nonzero guid
+    }
+
+    /// __s2_sound_emit marshals (name, entIndex, entSerial, slots[], volume) into the op and
+    /// returns its guid (struct-update over mock_event_ops, the entity_spawn_kv capture precedent).
+    #[test]
+    fn sound_emit_marshals_args_to_op() {
+        let _ = init(dummy_logger());
+        SOUND_EMIT_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
+        create_plugin_context("psm");
+        let out = eval_in_context_string("psm",
+            "String(__s2_sound_emit('Weapon_AK47.Single', 42, 99, [3, 5], 0.5))");
+        assert_eq!(out, "7");
+        let calls = SOUND_EMIT_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "Weapon_AK47.Single");
+        assert_eq!(calls[0].1, 42);
+        assert_eq!(calls[0].2, 99);
+        assert_eq!(calls[0].3, vec![3, 5]);
+        assert!((calls[0].4 - 0.5).abs() < 1e-6);
+        shutdown();
+    }
+
     /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
     /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
     /// never a crash.
@@ -10335,6 +10425,8 @@ mod frame_tests {
             client_language: None,
             collision_activate: None,
             entity_set_model: None,
+            sound_emit: None,
+            sound_precache_add: None,
         }
     }
 
@@ -11073,6 +11165,20 @@ mod frame_tests {
             String(a === false && b === false)
         "#);
         assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// Both sound natives degrade with no ops table: emit -> 0, precache-add -> false. Raw-native
+    /// level (the @s2script/sound module surface is Task-4-tested).
+    #[test]
+    fn sound_natives_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("psnd");
+        assert_eq!(eval_in_context_string("psnd",
+            "String(__s2_sound_emit('Weapon_AK47.Single', 0, -1, [0, 1], 1.0))"), "0");
+        assert_eq!(eval_in_context_string("psnd",
+            "String(__s2_sound_precache_add('soundevents/test.vsndevts'))"), "false");
         shutdown();
     }
 
