@@ -1209,6 +1209,294 @@ static void s2_player_change_team(int idx, int serial, int team) {
 }
 
 // ---------------------------------------------------------------------------
+// Usercmd primitive (per-tick input read/modify/block; SM OnPlayerRunCmd parity) — detours
+// CCSPlayer_MovementServices::ProcessUsercmds (self-resolved sig "ProcessUsercmds"; batch ABI + return
+// type + CUserCmd stride confirmed by an offline disassembly spike, 2026-07-14 — see
+// docs/superpowers/plans/2026-07-14-usercmd-primitive.md). Each CUserCmd (stride S2_USERCMD_STRIDE)
+// wraps a CSGOUserCmdPB protobuf at +0x10; ALL read/modify happens by protobuf reflection over the
+// shim-side s_currentUserCmd (block-scoped: valid ONLY during a usercmd dispatch, mirrors
+// s_currentDamageInfo/s_currentEvent — the raw Message* NEVER crosses to JS). ENGINE-GENERIC numeric
+// field enum (0 fwd,1 side,2 up,3 pitch,4 yaw,5 roll,6 impulse) maps to the Source2-shared
+// usercmd.proto CBaseUserCmdPB/CMsgQAngle/CInButtonStatePB nesting HERE (shim-only — core never sees a
+// protobuf field name or a CS2 type name). LAZILY installed: the signature is resolved at Load into
+// s_pProcessUsercmdsAddr (NOT yet detoured); Shim_UsercmdHookInstall (the usercmd_hook_install op)
+// performs s2detour::Install idempotently on the FIRST-EVER UserCmd.onRun subscribe (core calls it —
+// see s2_usercmd_subscribe), so there is zero overhead until a plugin actually wants per-tick input.
+// s2detour::RemoveAll() (already called in Unload()) restores this detour's prologue along with every
+// other installed one — no usercmd-specific teardown code needed.
+// ---------------------------------------------------------------------------
+typedef int (*ProcessUsercmds_t)(void* thisptr, void* cmds, int numcmds, bool paused, float margin);
+static void*             s_pProcessUsercmdsAddr    = nullptr;   // sig-resolved address (Load) — NOT yet installed
+static ProcessUsercmds_t g_origProcessUsercmds     = nullptr;   // the trampoline, set once s2detour::Install succeeds
+static bool              s_usercmdHookInstalled    = false;
+static google::protobuf::Message* s_currentUserCmd = nullptr;   // the in-flight CSGOUserCmdPB; block-scoped
+
+static constexpr int S2_USERCMD_STRIDE = 0x90;   // sizeof(CUserCmd); spike-confirmed (Task 1, 2026-07-14)
+// SUBTICK VERDICT (live human spike, 2026-07-14): a coarse forwardmove=0 write ALONE (no subtick clear)
+// stopped the player — subtick_moves do NOT override the coarse fields. So neutralizing a BLOCKED cmd
+// (zeroing forwardMove/sideMove/upMove/buttons) is already a full stop without an extra subtick clear;
+// kept as a named, disableable constant (rather than deleting the call site outright) in case a future
+// finding narrows a case where it IS needed. The write ops themselves (s2_usercmd_write) NEVER
+// auto-clear subtick regardless of this flag — clearSubtickMoves() stays an explicit opt-in helper.
+static constexpr bool S2_SUBTICK_CLEAR_ON_BLOCK = false;
+
+// Cached FieldDescriptor*s for CSGOUserCmdPB's "base" (CBaseUserCmdPB) submessage + its nested fields.
+// Resolved ONCE from the first live s_currentUserCmd's descriptor (a function-local static — a C++
+// "magic static", thread-safe single-init; the game drives this detour from one thread). protobuf
+// FieldDescriptor*s are stable for the process lifetime (the descriptor POOL is a compiled-in
+// singleton keyed by type), so caching is always safe: a null entry here (Valve renamed/removed the
+// field) stays a permanent, harmless no-op/0 (never re-resolved, never UB). This is a
+// per-tick-PER-PLAYER hot path (unlike the rare usermessage path), so caching matters.
+struct UsercmdFieldCache {
+    const google::protobuf::FieldDescriptor* baseF         = nullptr;
+    const google::protobuf::FieldDescriptor* fwdF          = nullptr;
+    const google::protobuf::FieldDescriptor* leftF         = nullptr;   // raw field; NEGATED at the read/write boundary (MF-2)
+    const google::protobuf::FieldDescriptor* upF           = nullptr;
+    const google::protobuf::FieldDescriptor* impulseF      = nullptr;
+    const google::protobuf::FieldDescriptor* viewAnglesF   = nullptr;
+    const google::protobuf::FieldDescriptor* vaXF          = nullptr;
+    const google::protobuf::FieldDescriptor* vaYF          = nullptr;
+    const google::protobuf::FieldDescriptor* vaZF          = nullptr;
+    const google::protobuf::FieldDescriptor* buttonsPbF    = nullptr;
+    const google::protobuf::FieldDescriptor* buttonState1F = nullptr;
+    const google::protobuf::FieldDescriptor* subtickMovesF = nullptr;
+};
+
+static const UsercmdFieldCache& GetUsercmdFieldCache() {
+    static UsercmdFieldCache s_cache;
+    static bool s_inited = false;
+    if (s_inited || !s_currentUserCmd) return s_cache;   // no live cmd yet -> stay uninited, retry later
+    const auto* d = s_currentUserCmd->GetDescriptor();
+    if (!d) return s_cache;                              // stay uninited -> retry on a later call
+    using FD = google::protobuf::FieldDescriptor;
+    s_cache.baseF = d->FindFieldByName("base");
+    if (s_cache.baseF && s_cache.baseF->cpp_type() == FD::CPPTYPE_MESSAGE) {
+        const auto* baseD = s_cache.baseF->message_type();
+        if (baseD) {
+            s_cache.fwdF          = baseD->FindFieldByName("forwardmove");
+            s_cache.leftF         = baseD->FindFieldByName("leftmove");
+            s_cache.upF           = baseD->FindFieldByName("upmove");
+            s_cache.impulseF      = baseD->FindFieldByName("impulse");
+            s_cache.viewAnglesF   = baseD->FindFieldByName("viewangles");
+            s_cache.buttonsPbF    = baseD->FindFieldByName("buttons_pb");
+            s_cache.subtickMovesF = baseD->FindFieldByName("subtick_moves");
+            if (s_cache.viewAnglesF && s_cache.viewAnglesF->cpp_type() == FD::CPPTYPE_MESSAGE) {
+                const auto* vaD = s_cache.viewAnglesF->message_type();
+                if (vaD) {
+                    s_cache.vaXF = vaD->FindFieldByName("x");
+                    s_cache.vaYF = vaD->FindFieldByName("y");
+                    s_cache.vaZF = vaD->FindFieldByName("z");
+                }
+            }
+            if (s_cache.buttonsPbF && s_cache.buttonsPbF->cpp_type() == FD::CPPTYPE_MESSAGE) {
+                const auto* bD = s_cache.buttonsPbF->message_type();
+                if (bD) s_cache.buttonState1F = bD->FindFieldByName("buttonstate1");
+            }
+        }
+    }
+    s_inited = true;
+    return s_cache;
+}
+
+// s2_usercmd_read(field) -> double. field: 0 forwardMove,1 sideMove(=-leftmove, MF-2),2 upMove,
+// 3 pitch,4 yaw,5 roll,6 impulse. GetMessage() ONLY (a read must never allocate / set has-bits).
+// Every FieldDescriptor* is null-guarded + cpp_type()-validated before use. 0.0 on any guard failure.
+static double s2_usercmd_read(int field) {
+    if (!s_currentUserCmd) return 0.0;
+    const auto& c = GetUsercmdFieldCache();
+    if (!c.baseF) return 0.0;
+    const auto* r = s_currentUserCmd->GetReflection();
+    if (!r) return 0.0;
+    const auto& base = r->GetMessage(*s_currentUserCmd, c.baseF);
+    const auto* br = base.GetReflection();
+    if (!br) return 0.0;
+    using FD = google::protobuf::FieldDescriptor;
+    switch (field) {
+        case 0:   // forwardMove
+            if (!c.fwdF || c.fwdF->cpp_type() != FD::CPPTYPE_FLOAT) return 0.0;
+            return static_cast<double>(br->GetFloat(base, c.fwdF));
+        case 1:   // sideMove = -leftmove (MF-2: leftmove is +LEFT; sideMove is +RIGHT)
+            if (!c.leftF || c.leftF->cpp_type() != FD::CPPTYPE_FLOAT) return 0.0;
+            return -static_cast<double>(br->GetFloat(base, c.leftF));
+        case 2:   // upMove
+            if (!c.upF || c.upF->cpp_type() != FD::CPPTYPE_FLOAT) return 0.0;
+            return static_cast<double>(br->GetFloat(base, c.upF));
+        case 3: case 4: case 5: {   // pitch/yaw/roll via viewangles (CMsgQAngle)
+            if (!c.viewAnglesF) return 0.0;
+            const auto& va = br->GetMessage(base, c.viewAnglesF);
+            const auto* var = va.GetReflection();
+            if (!var) return 0.0;
+            const auto* f = (field == 3) ? c.vaXF : (field == 4) ? c.vaYF : c.vaZF;
+            if (!f || f->cpp_type() != FD::CPPTYPE_FLOAT) return 0.0;
+            return static_cast<double>(var->GetFloat(va, f));
+        }
+        case 6:   // impulse
+            if (!c.impulseF || c.impulseF->cpp_type() != FD::CPPTYPE_INT32) return 0.0;
+            return static_cast<double>(br->GetInt32(base, c.impulseF));
+        default:
+            return 0.0;   // out-of-range field -> no-op (the native is plugin-reachable with any int)
+    }
+}
+
+// s2_usercmd_write(field, value) — same navigation via MutableMessage() (writes only). Every Set* is
+// is_repeated()/cpp_type()-guarded (an is_repeated scalar Set* is a protobuf GOOGLE_LOG(FATAL) process
+// abort). field 1 writes leftmove = -value (MF-2). NO auto-subtick-clear — the spike verdict found a
+// coarse write alone takes effect; callers wanting a clear call usercmd_clear_subtick explicitly.
+static void s2_usercmd_write(int field, double value) {
+    if (!s_currentUserCmd) return;
+    const auto& c = GetUsercmdFieldCache();
+    if (!c.baseF) return;
+    const auto* r = s_currentUserCmd->GetReflection();
+    if (!r) return;
+    auto* base = r->MutableMessage(s_currentUserCmd, c.baseF);
+    if (!base) return;
+    const auto* br = base->GetReflection();
+    if (!br) return;
+    using FD = google::protobuf::FieldDescriptor;
+    switch (field) {
+        case 0:
+            if (!c.fwdF || c.fwdF->is_repeated() || c.fwdF->cpp_type() != FD::CPPTYPE_FLOAT) return;
+            br->SetFloat(base, c.fwdF, static_cast<float>(value));
+            return;
+        case 1:
+            if (!c.leftF || c.leftF->is_repeated() || c.leftF->cpp_type() != FD::CPPTYPE_FLOAT) return;
+            br->SetFloat(base, c.leftF, static_cast<float>(-value));   // MF-2
+            return;
+        case 2:
+            if (!c.upF || c.upF->is_repeated() || c.upF->cpp_type() != FD::CPPTYPE_FLOAT) return;
+            br->SetFloat(base, c.upF, static_cast<float>(value));
+            return;
+        case 3: case 4: case 5: {
+            if (!c.viewAnglesF) return;
+            auto* va = br->MutableMessage(base, c.viewAnglesF);
+            if (!va) return;
+            const auto* var = va->GetReflection();
+            if (!var) return;
+            const auto* f = (field == 3) ? c.vaXF : (field == 4) ? c.vaYF : c.vaZF;
+            if (!f || f->is_repeated() || f->cpp_type() != FD::CPPTYPE_FLOAT) return;
+            var->SetFloat(va, f, static_cast<float>(value));
+            return;
+        }
+        case 6:
+            if (!c.impulseF || c.impulseF->is_repeated() || c.impulseF->cpp_type() != FD::CPPTYPE_INT32) return;
+            br->SetInt32(base, c.impulseF, static_cast<int32_t>(value));
+            return;
+        default:
+            return;
+    }
+}
+
+// s2_usercmd_read_buttons() -> the current usercmd's pressed-button mask (base.buttons_pb.buttonstate1,
+// a uint64). GetMessage() ONLY. 0 on any guard failure.
+static uint64_t s2_usercmd_read_buttons() {
+    if (!s_currentUserCmd) return 0;
+    const auto& c = GetUsercmdFieldCache();
+    if (!c.baseF || !c.buttonsPbF || !c.buttonState1F) return 0;
+    if (c.buttonState1F->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_UINT64) return 0;
+    const auto* r = s_currentUserCmd->GetReflection();
+    if (!r) return 0;
+    const auto& base = r->GetMessage(*s_currentUserCmd, c.baseF);
+    const auto* br = base.GetReflection();
+    if (!br) return 0;
+    const auto& btn = br->GetMessage(base, c.buttonsPbF);
+    const auto* btnR = btn.GetReflection();
+    if (!btnR) return 0;
+    return btnR->GetUInt64(btn, c.buttonState1F);
+}
+
+// s2_usercmd_write_buttons(mask) — overwrite base.buttons_pb.buttonstate1. is_repeated()/cpp_type()
+// guarded. No-op on any guard failure.
+static void s2_usercmd_write_buttons(uint64_t mask) {
+    if (!s_currentUserCmd) return;
+    const auto& c = GetUsercmdFieldCache();
+    if (!c.baseF || !c.buttonsPbF || !c.buttonState1F) return;
+    if (c.buttonState1F->is_repeated() ||
+        c.buttonState1F->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_UINT64) return;
+    const auto* r = s_currentUserCmd->GetReflection();
+    if (!r) return;
+    auto* base = r->MutableMessage(s_currentUserCmd, c.baseF);
+    if (!base) return;
+    const auto* br = base->GetReflection();
+    if (!br) return;
+    auto* btn = br->MutableMessage(base, c.buttonsPbF);
+    if (!btn) return;
+    const auto* btnR = btn->GetReflection();
+    if (!btnR) return;
+    btnR->SetUInt64(btn, c.buttonState1F, mask);
+}
+
+// s2_usercmd_clear_subtick() — drop base.subtick_moves (an OPTIONAL helper; see S2_SUBTICK_CLEAR_ON_BLOCK
+// above — the write ops never call this automatically).
+static void s2_usercmd_clear_subtick() {
+    if (!s_currentUserCmd) return;
+    const auto& c = GetUsercmdFieldCache();
+    if (!c.baseF || !c.subtickMovesF) return;
+    const auto* r = s_currentUserCmd->GetReflection();
+    if (!r) return;
+    auto* base = r->MutableMessage(s_currentUserCmd, c.baseF);
+    if (!base) return;
+    const auto* br = base->GetReflection();
+    if (!br) return;
+    br->ClearField(base, c.subtickMovesF);
+}
+
+// Derive the firing player's controller SLOT from the detour's `this`. Spike-derived (2026-07-14,
+// disassembly of the resolved ProcessUsercmds on OUR libserver.so — see
+// docs/superpowers/plans/2026-07-14-usercmd-primitive.md, Step 1b / "LIVE VERIFICATION"): a packed
+// 16-bit value at `this+0x7c0` yields a 6-bit slot field via `movzwl; shr $9; and $0x3f`. UNVERIFIED
+// against a running human-joined server in THIS task (no live gate here — a shim/core-only task); the
+// live gate (Task 5) cross-checks the logged slot against the tester's known slot (and against a
+// schema Pawn.forSlot(slot) read of the SAME player) before this is trusted in production.
+static int DeriveUsercmdSlot(void* thisptr) {
+    if (!thisptr) return -1;
+    uint16_t raw = *reinterpret_cast<const uint16_t*>(reinterpret_cast<const char*>(thisptr) + 0x7c0);
+    return static_cast<int>((raw >> 9) & 0x3f);
+}
+
+// The production ProcessUsercmds detour. For each in-flight CUserCmd, points s_currentUserCmd at its
+// embedded CSGOUserCmdPB (block-scoped — cleared right after dispatch) and runs the JS UserCmd.onRun
+// subscribers via the core mux. A collapsed HookResult >= Handled (2) NEUTRALIZES that one cmd (zeroes
+// movement + buttons) — server-authoritative: the original trampoline is ALWAYS still called with the
+// (possibly modified/neutralized) cmds, never skipped, since a usercmd is data the engine must still
+// process (unlike a suppressed event/output, there is no "the original call" to skip here).
+static int Detour_ProcessUsercmds(void* thisptr, void* cmds, int numcmds, bool paused, float margin) {
+    int slot = DeriveUsercmdSlot(thisptr);
+    if (cmds && numcmds > 0) {
+        for (int i = 0; i < numcmds; i++) {
+            s_currentUserCmd = reinterpret_cast<google::protobuf::Message*>(
+                reinterpret_cast<char*>(cmds) + static_cast<size_t>(i) * S2_USERCMD_STRIDE + 0x10);
+            int res = s2script_core_dispatch_usercmd(slot);   // JS reads/modifies s_currentUserCmd in place
+            if (res >= 2) {   // Handled|Stop -> neutralize this cmd
+                s2_usercmd_write(0, 0.0);
+                s2_usercmd_write(1, 0.0);
+                s2_usercmd_write(2, 0.0);
+                s2_usercmd_write_buttons(0);
+                if (S2_SUBTICK_CLEAR_ON_BLOCK) s2_usercmd_clear_subtick();
+            }
+            s_currentUserCmd = nullptr;
+        }
+    }
+    return g_origProcessUsercmds ? g_origProcessUsercmds(thisptr, cmds, numcmds, paused, margin) : 0;
+}
+
+// usercmd_hook_install: called by core on the FIRST-EVER UserCmd.onRun subscribe (lazy — zero overhead
+// until a plugin actually wants per-tick input). Idempotent (a 2nd+ call is a no-op success once
+// installed). Returns 1 iff the detour is (now, or already) installed, else 0 (unresolved signature on
+// this build -> UserCmd.onRun degrades to a silent no-op, never a crash).
+static int Shim_UsercmdHookInstall() {
+    if (s_usercmdHookInstalled) return 1;
+    if (!s_pProcessUsercmdsAddr) return 0;   // ProcessUsercmds signature unresolved on this build
+    if (s2detour::Install(s_pProcessUsercmdsAddr, reinterpret_cast<void*>(&Detour_ProcessUsercmds),
+                          reinterpret_cast<void**>(&g_origProcessUsercmds))) {
+        s_usercmdHookInstalled = true;
+        META_CONPRINTF("[s2script] ProcessUsercmds hooked @%p (UserCmd.onRun, lazy-installed)\n", s_pProcessUsercmdsAddr);
+        return 1;
+    }
+    META_CONPRINTF("[s2script] WARN: ProcessUsercmds detour install failed — UserCmd.onRun off\n");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
 // (s_currentDamageInfo, set by the DispatchTraceAttack detour) at a schema-resolved byte offset.
 // Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
@@ -2958,6 +3246,24 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pRemoveListenerEntity));
                 }
             }
+            // Usercmd primitive: resolve CCSPlayer_MovementServices::ProcessUsercmds (the per-tick input
+            // entry) into s_pProcessUsercmdsAddr — a DIRECT prologue signature self-validated on OUR
+            // libserver.so. Degrade-never-crash: unresolved leaves s_pProcessUsercmdsAddr null ->
+            // Shim_UsercmdHookInstall (usercmd_hook_install) no-ops -> UserCmd.onRun never fires.
+            // LAZY: the detour is NOT installed here — only resolved into an address; s2detour::Install
+            // runs later, once, on the first UserCmd.onRun subscribe (see Shim_UsercmdHookInstall).
+            auto puit = sigs.find("ProcessUsercmds");
+            if (puit == sigs.end()) {
+                GamedataResult("ProcessUsercmds", false, "signature absent from gamedata");
+            } else {
+                int64_t puOff = ResolveSigValidated("ProcessUsercmds", puit->second);
+                ModText pumt = FindModuleText(puit->second.module.c_str());
+                if (puOff != s2sig::kFail && pumt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pProcessUsercmdsAddr = const_cast<uint8_t*>(pumt.text) + puOff;
+                    META_CONPRINTF("[s2script] ProcessUsercmds resolved @%p (UserCmd.onRun; lazy install)\n",
+                                   s_pProcessUsercmdsAddr);
+                }   // puOff == kFail: ResolveSigValidated already recorded the reason
+            }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
@@ -3151,6 +3457,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.sound_precache_add = &s2_sound_precache_add;
     // changeteam slice — APPENDED after sound_precache_add; order MUST match S2EngineOps.
     ops.player_change_team = &s2_player_change_team;
+    // Usercmd primitive — APPENDED after player_change_team; order MUST match S2EngineOps.
+    ops.usercmd_hook_install  = &Shim_UsercmdHookInstall;
+    ops.usercmd_read          = &s2_usercmd_read;
+    ops.usercmd_write         = &s2_usercmd_write;
+    ops.usercmd_read_buttons  = &s2_usercmd_read_buttons;
+    ops.usercmd_write_buttons = &s2_usercmd_write_buttons;
+    ops.usercmd_clear_subtick = &s2_usercmd_clear_subtick;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -3292,6 +3605,9 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
     }
 
     // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
+    // s2detour tracks every installed patch in one process-global list (shim/src/detour.cpp), so this
+    // ALSO restores the ProcessUsercmds detour (usercmd primitive) if it was ever lazily installed —
+    // no usercmd-specific teardown code is needed here.
     s2detour::RemoveAll();
 
     // Unregister the game-event listener before core shutdown (Slice 5D.1).

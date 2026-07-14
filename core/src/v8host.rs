@@ -227,6 +227,14 @@ type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 // this one field (the subscribe native's lazy-install call site needs it to compile); Task 3 appends
 // the remaining usercmd_read/write/read_buttons/write_buttons/clear_subtick fields after this one.
 type UsercmdHookInstallFn = extern "C" fn() -> c_int;
+// --- Usercmd primitive slice, Task 3 (APPENDED after usercmd_hook_install; order is the ABI).
+// ENGINE-GENERIC numeric field enum (0 fwd,1 side,2 up,3 pitch,4 yaw,5 roll,6 impulse); the shim alone
+// maps it onto the Source2-shared usercmd.proto CBaseUserCmdPB/CMsgQAngle/CInButtonStatePB nesting.
+type UsercmdReadFn         = extern "C" fn(c_int) -> f64;
+type UsercmdWriteFn        = extern "C" fn(c_int, f64);
+type UsercmdReadButtonsFn  = extern "C" fn() -> u64;
+type UsercmdWriteButtonsFn = extern "C" fn(u64);
+type UsercmdClearSubtickFn = extern "C" fn();
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -342,6 +350,13 @@ pub struct S2EngineOps {
     // above). Task 2 adds ONLY this field; Task 3 appends usercmd_read/write/read_buttons/
     // write_buttons/clear_subtick after it (do not double-add usercmd_hook_install).
     pub usercmd_hook_install: Option<UsercmdHookInstallFn>,
+    // --- Usercmd primitive slice, Task 3 (APPENDED after usercmd_hook_install; order is the ABI; do
+    // not reorder above) ---
+    pub usercmd_read:           Option<UsercmdReadFn>,
+    pub usercmd_write:          Option<UsercmdWriteFn>,
+    pub usercmd_read_buttons:   Option<UsercmdReadButtonsFn>,
+    pub usercmd_write_buttons:  Option<UsercmdWriteButtonsFn>,
+    pub usercmd_clear_subtick:  Option<UsercmdClearSubtickFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -4610,6 +4625,78 @@ fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
     }));
 }
 
+/// `__s2_usercmd_read(field) -> number` — read a scalar/angle/impulse field of the CURRENT usercmd
+/// (usercmd primitive Task 3). `field`: 0 forwardMove, 1 sideMove, 2 upMove, 3 pitch, 4 yaw, 5 roll, 6
+/// impulse (the ENGINE-GENERIC numeric enum — the shim alone maps it onto the Source2-shared
+/// usercmd.proto nesting). Valid only during a `UserCmd.onRun` dispatch (the shim's `s_currentUserCmd`
+/// is block-scoped, mirrors `s_currentDamageInfo`). Degrades to `0` with no op / out of dispatch.
+fn s2_usercmd_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 1 { return; }
+        let field = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_read else { return };
+        rv.set_double(func(field));
+    }));
+}
+
+/// `__s2_usercmd_write(field, value)` — write a scalar/angle/impulse field of the CURRENT usercmd
+/// (usercmd primitive Task 3). Same `field` enum as `__s2_usercmd_read`. No-op with no op / out of
+/// dispatch; the shim guards `is_repeated()`/`cpp_type()` before any protobuf `Set*` (an `is_repeated`
+/// scalar `Set*` aborts the whole process). No auto-subtick-clear (the spike verdict: a coarse write
+/// alone takes effect) — see `__s2_usercmd_clear_subtick` for the separate opt-in helper.
+fn s2_usercmd_write(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let field = args.get(0).int32_value(scope).unwrap_or(-1);
+        let value = args.get(1).number_value(scope).unwrap_or(0.0);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_write else { return };
+        func(field, value);
+    }));
+}
+
+/// `__s2_usercmd_read_buttons() -> bigint` — the current usercmd's pressed-button mask
+/// (`base.buttons_pb.buttonstate1`, a 64-bit value; usercmd primitive Task 3). Degrades to `0n` with no
+/// op / out of dispatch (never `undefined` — `buttons` is always a `bigint` per the spec).
+fn s2_usercmd_read_buttons(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let value: u64 = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let func = ops.usercmd_read_buttons?;
+            Some(func())
+        })().unwrap_or(0);
+        let bi = v8::BigInt::new_from_u64(scope, value);
+        rv.set(bi.into());
+    }));
+}
+
+/// `__s2_usercmd_write_buttons(mask)` — overwrite the current usercmd's pressed-button mask (usercmd
+/// primitive Task 3). `mask` is a JS `bigint` (any numeric-representable value is coerced via
+/// `to_big_int`; a non-bigint/non-numeric argument degrades to `0`). No-op with no op / out of dispatch.
+fn s2_usercmd_write_buttons(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let mask = args.get(0).to_big_int(scope).map(|bi| bi.u64_value().0).unwrap_or(0);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_write_buttons else { return };
+        func(mask);
+    }));
+}
+
+/// `__s2_usercmd_clear_subtick()` — drop the current usercmd's `subtick_moves` (usercmd primitive Task
+/// 3). Exposed as an OPTIONAL helper (`Cmd.clearSubtickMoves()`) — the spike verdict found a coarse
+/// `forwardMove`/`sideMove`/`upMove` write alone already takes effect, so the write ops never call this
+/// automatically. No-op with no op / out of dispatch / no `subtick_moves` on this build.
+fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_clear_subtick else { return };
+        func();
+    }));
+}
+
 /// `__s2_chat_on_message(handler)` — subscribe a JS fn to raw player chat (Slice 6.13b). Owner-tracked;
 /// the Host_Say detour is installed at Load, so no per-subscribe engine registration is needed. The
 /// handler receives `(slot, text, teamonly)` at dispatch and may return a HookResult to suppress the
@@ -6542,6 +6629,13 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
+    // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
+    // in the prelude's singleton Cmd accessor object).
+    set_native(scope, global_obj, "__s2_usercmd_read", s2_usercmd_read);
+    set_native(scope, global_obj, "__s2_usercmd_write", s2_usercmd_write);
+    set_native(scope, global_obj, "__s2_usercmd_read_buttons", s2_usercmd_read_buttons);
+    set_native(scope, global_obj, "__s2_usercmd_write_buttons", s2_usercmd_write_buttons);
+    set_native(scope, global_obj, "__s2_usercmd_clear_subtick", s2_usercmd_clear_subtick);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
@@ -10449,6 +10543,11 @@ mod frame_tests {
             sound_precache_add: None,
             player_change_team: None,
             usercmd_hook_install: None,
+            usercmd_read: None,
+            usercmd_write: None,
+            usercmd_read_buttons: None,
+            usercmd_write_buttons: None,
+            usercmd_clear_subtick: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -11097,6 +11196,11 @@ mod frame_tests {
             sound_precache_add: None,
             player_change_team: None,
             usercmd_hook_install: None,
+            usercmd_read: None,
+            usercmd_write: None,
+            usercmd_read_buttons: None,
+            usercmd_write_buttons: None,
+            usercmd_clear_subtick: None,
         }
     }
 
@@ -11894,6 +11998,29 @@ mod frame_tests {
         init(logger).unwrap();
         create_plugin_context("p");
         assert_eq!(dispatch_usercmd(5), 0, "no subscribers -> Continue");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 3 (Step 6, degrade-never-crash): with NO engine ops installed at all,
+    /// every accessor native degrades to a safe default rather than throwing/panicking —
+    /// `__s2_usercmd_read` reads `0`, `__s2_usercmd_write`/`__s2_usercmd_write_buttons`/
+    /// `__s2_usercmd_clear_subtick` are silent no-ops (return `undefined`), and
+    /// `__s2_usercmd_read_buttons` reads `0n` — a `bigint`, never `undefined` (the spec's `buttons:
+    /// bigint` contract holds even out of dispatch / with no op). `__s2_usercmd_subscribe` itself
+    /// already registers cleanly without a `usercmd_hook_install` op present, proven by the two
+    /// dispatch tests directly above (both run under this exact no-ops condition) — `UserCmd.onRun`
+    /// (the Task 4 JS wrapper around this same native) has nothing more to degrade.
+    #[test]
+    fn usercmd_accessors_degrade_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read(0))"), "0", "read degrades to 0");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write(0, 1.0))"), "undefined", "write no-throws");
+        assert_eq!(eval_in_context_string("p", "typeof __s2_usercmd_read_buttons()"), "bigint", "buttons stays a bigint, never undefined");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read_buttons())"), "0", "read_buttons degrades to 0n");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write_buttons(5n))"), "undefined", "write_buttons no-throws");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_clear_subtick())"), "undefined", "clear_subtick no-throws");
         shutdown();
     }
 
