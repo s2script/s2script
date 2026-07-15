@@ -222,6 +222,20 @@ type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
 // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI). (idx, serial, team).
 type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 
+// --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI). ENGINE-GENERIC:
+// lazily installs the (Task 3, shim-side) per-tick input-processing detour; takes no CS2 names. Task 2 owns ONLY
+// this one field (the subscribe native's lazy-install call site needs it to compile); Task 3 appends
+// the remaining usercmd_read/write/read_buttons/write_buttons/clear_subtick fields after this one.
+type UsercmdHookInstallFn = extern "C" fn() -> c_int;
+// --- Usercmd primitive slice, Task 3 (APPENDED after usercmd_hook_install; order is the ABI).
+// ENGINE-GENERIC numeric field enum (0 fwd,1 side,2 up,3 pitch,4 yaw,5 roll,6 impulse); the shim alone
+// maps it onto the Source2-shared usercmd.proto numeric fields (the engine-generic enum).
+type UsercmdReadFn         = extern "C" fn(c_int) -> f64;
+type UsercmdWriteFn        = extern "C" fn(c_int, f64);
+type UsercmdReadButtonsFn  = extern "C" fn() -> u64;
+type UsercmdWriteButtonsFn = extern "C" fn(u64);
+type UsercmdClearSubtickFn = extern "C" fn();
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -332,6 +346,17 @@ pub struct S2EngineOps {
     pub sound_precache_add: Option<SoundPrecacheAddFn>,
     // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI; do not reorder above) ---
     pub player_change_team: Option<PlayerChangeTeamFn>,
+    // --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI; do not reorder
+    // above). Task 2 adds ONLY this field; Task 3 appends usercmd_read/write/read_buttons/
+    // write_buttons/clear_subtick after it (do not double-add usercmd_hook_install).
+    pub usercmd_hook_install: Option<UsercmdHookInstallFn>,
+    // --- Usercmd primitive slice, Task 3 (APPENDED after usercmd_hook_install; order is the ABI; do
+    // not reorder above) ---
+    pub usercmd_read:           Option<UsercmdReadFn>,
+    pub usercmd_write:          Option<UsercmdWriteFn>,
+    pub usercmd_read_buttons:   Option<UsercmdReadButtonsFn>,
+    pub usercmd_write_buttons:  Option<UsercmdWriteButtonsFn>,
+    pub usercmd_clear_subtick:  Option<UsercmdClearSubtickFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -584,6 +609,16 @@ thread_local! {
     /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
     static OUTPUT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// Usercmd primitive Task 2: `UserCmd.onRun(handler)` subscriber mux, keyed by the constant "onRun"
+    /// (usercmd has no name dimension, like `DAMAGE_MUX`'s "onPre"). Dispatch is SYNCHRONOUS (the
+    /// Task-3 per-tick input-processing detour blocks on it, mirrors `DAMAGE_MUX`/`OUTPUT_MUX`) so a handler's
+    /// returned `HookResult` can block the original input for that tick. The detour installs LAZILY on
+    /// the first-ever subscribe (via the `usercmd_hook_install` engine op — see `s2_usercmd_subscribe`),
+    /// mirroring `ENTITY_MUX`'s `entity_listener_install` trigger. `remove_by_owner` on unload; reset on
+    /// shutdown so a re-init starts empty.
+    static USERCMD_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// Entity lifecycle listeners slice: `Entity.onCreate/onSpawn/onDelete(className, handler)` mux,
@@ -1358,6 +1393,35 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   });
   var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
   globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
+  // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
+  //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
+  //     Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)
+  //     matches the Task-3 shim ops exactly; only the shim maps it onto CS2's protobuf nesting — no
+  //     CS2/protobuf name appears here. Cmd is ONE shared object (MF-3, the DamageInfo precedent does
+  //     NOT apply — dispatch_usercmd fetches this exact singleton, not a per-handler `new Cmd()`); its
+  //     accessors read/write the CURRENT usercmd via the natives and are valid only during dispatch. ---
+  var Cmd = {
+    get forwardMove() { return __s2_usercmd_read(0); },
+    set forwardMove(v) { __s2_usercmd_write(0, +v); },
+    get sideMove() { return __s2_usercmd_read(1); },
+    set sideMove(v) { __s2_usercmd_write(1, +v); },
+    get upMove() { return __s2_usercmd_read(2); },
+    set upMove(v) { __s2_usercmd_write(2, +v); },
+    get impulse() { return __s2_usercmd_read(6); },
+    set impulse(v) { __s2_usercmd_write(6, +v); },
+    // 64-bit pressed-button mask — a real bigint end-to-end (never a decimal string), per spec.
+    get buttons() { return __s2_usercmd_read_buttons(); },
+    set buttons(v) { __s2_usercmd_write_buttons(v); },
+    // Fields 3/4/5 (pitch/yaw/roll), read/written as one QAngle {x,y,z}.
+    get viewAngles() { return new QAngle(__s2_usercmd_read(3), __s2_usercmd_read(4), __s2_usercmd_read(5)); },
+    set viewAngles(a) { __s2_usercmd_write(3, +a.x); __s2_usercmd_write(4, +a.y); __s2_usercmd_write(5, +a.z); },
+    clearSubtickMoves: function () { __s2_usercmd_clear_subtick(); },
+  };
+  var UserCmd = { onRun: function (handler) { __s2_usercmd_subscribe(handler); } };
+  // Cmd is exposed on the package object (NOT as a plugin-facing named export — it's a type-only
+  // interface in index.d.ts) purely so dispatch_usercmd (core-side) can fetch this exact singleton
+  // via globalThis.__s2pkg_usercmd.Cmd each dispatch.
+  globalThis.__s2pkg_usercmd = { UserCmd: UserCmd, HookResult: globalThis.HookResult, Cmd: Cmd };
   // --- Ray-trace slice: @s2script/trace (Trace.line/ray/hull -> TraceHit, TraceMask). ENGINE-GENERIC
   //     (Source-2 physics) — over the single __s2_trace native (the trace_shape engine op). ---
   (function () {
@@ -4611,6 +4675,101 @@ fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
     }));
 }
 
+/// `__s2_usercmd_subscribe(handler)` — subscribe a JS fn to `UserCmd.onRun` (usercmd primitive Task 2).
+/// Owner-tracked, fixed mux key "onRun" (usercmd has no name dimension, like `s2_damage_subscribe`'s
+/// "onPre"). On the FIRST-EVER subscribe (the mux was empty), calls the (Task 3) `usercmd_hook_install`
+/// engine op so the shim lazily installs its per-tick input-processing detour — mirrors `s2_entity_listener_on`'s
+/// lazy-install trigger (zero overhead when no plugin subscribes). Degrade-never-crash: no op → the
+/// subscribe still records, the engine just never delivers.
+fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let first_ever = USERCMD_MUX.with(|m| m.borrow().is_empty());
+        USERCMD_MUX.with(|m| { m.borrow_mut().subscribe("onRun", owner, generation, handler_g); });
+        if first_ever {
+            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usercmd_hook_install) {
+                let _ = func();
+            }
+        }
+    }));
+}
+
+/// `__s2_usercmd_read(field) -> number` — read a scalar/angle/impulse field of the CURRENT usercmd
+/// (usercmd primitive Task 3). `field`: 0 forwardMove, 1 sideMove, 2 upMove, 3 pitch, 4 yaw, 5 roll, 6
+/// impulse (the ENGINE-GENERIC numeric enum — the shim alone maps it onto the Source2-shared
+/// usercmd.proto nesting). Valid only during a `UserCmd.onRun` dispatch (the shim's `s_currentUserCmd`
+/// is block-scoped, mirrors `s_currentDamageInfo`). Degrades to `0` with no op / out of dispatch.
+fn s2_usercmd_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 1 { return; }
+        let field = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_read else { return };
+        rv.set_double(func(field));
+    }));
+}
+
+/// `__s2_usercmd_write(field, value)` — write a scalar/angle/impulse field of the CURRENT usercmd
+/// (usercmd primitive Task 3). Same `field` enum as `__s2_usercmd_read`. No-op with no op / out of
+/// dispatch; the shim guards `is_repeated()`/`cpp_type()` before any protobuf `Set*` (an `is_repeated`
+/// scalar `Set*` aborts the whole process). No auto-subtick-clear (the spike verdict: a coarse write
+/// alone takes effect) — see `__s2_usercmd_clear_subtick` for the separate opt-in helper.
+fn s2_usercmd_write(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let field = args.get(0).int32_value(scope).unwrap_or(-1);
+        let value = args.get(1).number_value(scope).unwrap_or(0.0);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_write else { return };
+        func(field, value);
+    }));
+}
+
+/// `__s2_usercmd_read_buttons() -> bigint` — the current usercmd's pressed-button mask
+/// (a 64-bit button-state value; usercmd primitive Task 3). Degrades to `0n` with no
+/// op / out of dispatch (never `undefined` — `buttons` is always a `bigint` per the spec).
+fn s2_usercmd_read_buttons(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let value: u64 = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let func = ops.usercmd_read_buttons?;
+            Some(func())
+        })().unwrap_or(0);
+        let bi = v8::BigInt::new_from_u64(scope, value);
+        rv.set(bi.into());
+    }));
+}
+
+/// `__s2_usercmd_write_buttons(mask)` — overwrite the current usercmd's pressed-button mask (usercmd
+/// primitive Task 3). `mask` is a JS `bigint` (any numeric-representable value is coerced via
+/// `to_big_int`; a non-bigint/non-numeric argument degrades to `0`). No-op with no op / out of dispatch.
+fn s2_usercmd_write_buttons(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let mask = args.get(0).to_big_int(scope).map(|bi| bi.u64_value().0).unwrap_or(0);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_write_buttons else { return };
+        func(mask);
+    }));
+}
+
+/// `__s2_usercmd_clear_subtick()` — drop the current usercmd's subtick moves (usercmd primitive Task
+/// 3). Exposed as an OPTIONAL helper (`Cmd.clearSubtickMoves()`) — the spike verdict found a coarse
+/// `forwardMove`/`sideMove`/`upMove` write alone already takes effect, so the write ops never call this
+/// automatically. No-op with no op / out of dispatch / no subtick moves on this build.
+fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.usercmd_clear_subtick else { return };
+        func();
+    }));
+}
+
 /// `__s2_chat_on_message(handler)` — subscribe a JS fn to raw player chat (Slice 6.13b). Owner-tracked;
 /// the Host_Say detour is installed at Load, so no per-subscribe engine registration is needed. The
 /// handler receives `(slot, text, teamonly)` at dispatch and may return a HookResult to suppress the
@@ -6137,6 +6296,94 @@ pub(crate) fn dispatch_damage() {
     });
 }
 
+/// Usercmd primitive Task 2: run the `UserCmd.onRun` subscribers over the current tick's input (the
+/// Task-3 shim detour sets the current `s_currentUserCmd` before calling this, and reads the
+/// possibly-modified fields back after). Mirrors `dispatch_damage`'s snapshot + `try_borrow_mut`
+/// re-entrancy guard, but (a) takes the firing player's `slot`, (b) fetches the prelude's SINGLETON
+/// `Cmd` object (MF-3 — one shared accessor object over `globalThis.__s2pkg_usercmd.Cmd`, NOT a
+/// per-handler `new Cmd()` — the DamageInfo precedent doesn't apply here) + builds a block-scoped
+/// `{slot}` ctx, and (c) collapses each handler's returned int into a `HookResult` via `run_chain`
+/// (mirrors `dispatch_output`/`dispatch_game_event_pre`, NOT `dispatch_damage` which is void) — the
+/// Task-3 detour supersedes (blocks) the original input for that tick when the result is >= Handled.
+/// Degrades to `undefined` if `@s2script/usercmd` never registered its prelude (Cmd absent) so a
+/// handler still runs rather than being skipped.
+pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
+    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
+    // Phase 1: snapshot — release the USERCMD_MUX borrow before entering any context.
+    let snap0 = USERCMD_MUX.with(|m| m.borrow().snapshot("onRun"));
+    if snap0.is_empty() { return 0; }
+    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
+        .into_iter().enumerate()
+        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
+        .collect();
+
+    let outcome = HOST.with(|h| {
+        // Re-entrancy guard: mirrors dispatch_damage/dispatch_output — a nested dispatch (e.g. a
+        // handler that somehow re-enters this path) skips gracefully (Continue) rather than
+        // double-borrow (would panic). The engine-side tick still proceeds unmodified.
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        let Some(host) = borrow.as_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else { return Ok(HookResult::Continue); };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Fetch the prelude's SINGLETON Cmd: globalThis.__s2pkg_usercmd.Cmd (Task 4 registers
+            // it; degrade to `undefined` if the module never loaded in this context).
+            let cmd_arg: Option<v8::Local<v8::Value>> = (|| {
+                let global = ctx_local.global(tc);
+                let pkg_key = v8::String::new(tc, "__s2pkg_usercmd")?;
+                let pkg = global.get(tc, pkg_key.into())?;
+                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+                let cmd_key = v8::String::new(tc, "Cmd")?;
+                pkg.get(tc, cmd_key.into())
+            })();
+            let cmd_val: v8::Local<v8::Value> = cmd_arg.unwrap_or_else(|| v8::undefined(tc).into());
+
+            // Build the block-scoped ctx = { slot }.
+            let ctx_obj = v8::Object::new(tc);
+            if let Some(k) = v8::String::new(tc, "slot") {
+                let v = v8::Integer::new(tc, slot);
+                ctx_obj.set(tc, k.into(), v.into());
+            }
+            let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
+
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            match func.call(tc, recv, &[cmd_val, ctx_val]) {
+                None => {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: dispatch_usercmd: handler '{}': {}", owner, msg));
+                    Err(())
+                }
+                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
+                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                    0 => HookResult::Continue, 1 => HookResult::Changed,
+                    2 => HookResult::Handled, 3 => HookResult::Stop,
+                    _ => HookResult::Continue,                     // out-of-range → Continue
+                }),
+            }
+        })
+    });
+    outcome.result as i32
+}
+
 /// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
 /// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
@@ -6457,6 +6704,15 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
+    // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
+    set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
+    // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
+    // in the prelude's singleton Cmd accessor object).
+    set_native(scope, global_obj, "__s2_usercmd_read", s2_usercmd_read);
+    set_native(scope, global_obj, "__s2_usercmd_write", s2_usercmd_write);
+    set_native(scope, global_obj, "__s2_usercmd_read_buttons", s2_usercmd_read_buttons);
+    set_native(scope, global_obj, "__s2_usercmd_write_buttons", s2_usercmd_write_buttons);
+    set_native(scope, global_obj, "__s2_usercmd_clear_subtick", s2_usercmd_clear_subtick);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
@@ -8270,6 +8526,8 @@ pub fn shutdown() {
     OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the entity-lifecycle mux (entity-listeners slice) so a re-init starts clean.
     ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the UserCmd.onRun mux (usercmd primitive) so a re-init starts clean.
+    USERCMD_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -8616,6 +8874,10 @@ pub(crate) fn unload_plugin(id: &str) {
     // stays registered for the process lifetime (removed in the shim's Unload), so no per-plugin
     // hook-removal is needed.
     ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // Drop the plugin's UserCmd.onRun subscriptions (usercmd primitive). The per-tick input-processing detour
+    // stays installed for the process lifetime once lazily installed (removed in the shim's Unload),
+    // so no per-plugin hook-removal request is needed.
+    USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -10357,6 +10619,12 @@ mod frame_tests {
             sound_emit: None,
             sound_precache_add: None,
             player_change_team: None,
+            usercmd_hook_install: None,
+            usercmd_read: None,
+            usercmd_write: None,
+            usercmd_read_buttons: None,
+            usercmd_write_buttons: None,
+            usercmd_clear_subtick: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -11004,6 +11272,12 @@ mod frame_tests {
             sound_emit: None,
             sound_precache_add: None,
             player_change_team: None,
+            usercmd_hook_install: None,
+            usercmd_read: None,
+            usercmd_write: None,
+            usercmd_read_buttons: None,
+            usercmd_write_buttons: None,
+            usercmd_clear_subtick: None,
         }
     }
 
@@ -11770,6 +12044,110 @@ mod frame_tests {
         dispatch_damage();
         assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgFired)"), "1", "the onPre handler ran");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgVal)"), "0", "info.damage reads 0 without an engine op");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 2 (MF-3): `__s2_usercmd_subscribe` registers a RAW handler into
+    /// `USERCMD_MUX` under "onRun" (no `UserCmd.onRun` wrapper exists yet — that's Task 4), and
+    /// `dispatch_usercmd(slot)` invokes it with `(cmd, ctx)` where `ctx.slot` is the firing slot,
+    /// collapsing the handler's returned int into a `HookResult` (2 = Handled here).
+    #[test]
+    fn usercmd_dispatch_runs_subscriber_and_collapses_hookresult() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context(
+            "p",
+            "globalThis.__capturedSlot = -999; \
+             __s2_usercmd_subscribe(function (cmd, ctx) { globalThis.__capturedSlot = ctx.slot; return 2; });",
+        )
+        .unwrap();
+        assert_eq!(dispatch_usercmd(3), 2, "the handler's returned HookResult (Handled) collapses through");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__capturedSlot)"), "3", "ctx.slot === the dispatched slot");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 2: with no subscribers at all, `dispatch_usercmd` returns Continue (0)
+    /// and does not throw/panic.
+    #[test]
+    fn usercmd_dispatch_no_subs_returns_continue() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(dispatch_usercmd(5), 0, "no subscribers -> Continue");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 3 (Step 6, degrade-never-crash): with NO engine ops installed at all,
+    /// every accessor native degrades to a safe default rather than throwing/panicking —
+    /// `__s2_usercmd_read` reads `0`, `__s2_usercmd_write`/`__s2_usercmd_write_buttons`/
+    /// `__s2_usercmd_clear_subtick` are silent no-ops (return `undefined`), and
+    /// `__s2_usercmd_read_buttons` reads `0n` — a `bigint`, never `undefined` (the spec's `buttons:
+    /// bigint` contract holds even out of dispatch / with no op). `__s2_usercmd_subscribe` itself
+    /// already registers cleanly without a `usercmd_hook_install` op present, proven by the two
+    /// dispatch tests directly above (both run under this exact no-ops condition) — `UserCmd.onRun`
+    /// (the Task 4 JS wrapper around this same native) has nothing more to degrade.
+    #[test]
+    fn usercmd_accessors_degrade_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read(0))"), "0", "read degrades to 0");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write(0, 1.0))"), "undefined", "write no-throws");
+        assert_eq!(eval_in_context_string("p", "typeof __s2_usercmd_read_buttons()"), "bigint", "buttons stays a bigint, never undefined");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read_buttons())"), "0", "read_buttons degrades to 0n");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write_buttons(5n))"), "undefined", "write_buttons no-throws");
+        assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_clear_subtick())"), "undefined", "clear_subtick no-throws");
+        shutdown();
+    }
+
+    /// Usercmd primitive Task 4: the `@s2script/usercmd` prelude module wires — `__s2pkg_usercmd` exposes
+    /// `UserCmd`/`HookResult`; `UserCmd.onRun` is a function that forwards straight to
+    /// `__s2_usercmd_subscribe` (proven separately by `usercmd_dispatch_runs_subscriber_and_collapses_hookresult`,
+    /// which subscribes via the raw native); and the SINGLETON `Cmd` object's accessors read/write
+    /// through the (here op-less, degrading) natives — `forwardMove`/`sideMove`/`upMove`/`impulse` read
+    /// `0` and accept a set with no throw, `buttons` reads a real `0n` bigint and accepts a bigint set,
+    /// `viewAngles` reads a `QAngle`-shaped `{x:0,y:0,z:0}` (fields 3/4/5) and a set writes all three
+    /// via three separate `__s2_usercmd_write` calls, and `clearSubtickMoves()` doesn't throw.
+    #[test]
+    fn usercmd_module_cmd_singleton_and_userrun_wiring() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_usercmd.UserCmd.onRun"), "function");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_usercmd.HookResult.Handled)"), "2");
+        let cmd = "__s2pkg_usercmd.Cmd";
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.forwardMove)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.sideMove)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.upMove)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.impulse)")), "0");
+        assert_eq!(eval_in_context_string("p", &format!("typeof {cmd}.buttons")), "bigint");
+        assert_eq!(eval_in_context_string("p", &format!("String({cmd}.buttons)")), "0");
+        assert_eq!(
+            eval_in_context_string("p", &format!("JSON.stringify({{x:{cmd}.viewAngles.x, y:{cmd}.viewAngles.y, z:{cmd}.viewAngles.z}})")),
+            "{\"x\":0,\"y\":0,\"z\":0}",
+        );
+        // Sets no-throw (degrade-never-crash) — a plain numeric set, a bigint set, and a viewAngles
+        // object set (exercises all three underlying __s2_usercmd_write calls).
+        assert_eq!(eval_in_context_string("p", &format!("(function(){{ {cmd}.forwardMove = 1; {cmd}.sideMove = -1; {cmd}.upMove = 0.5; {cmd}.impulse = 100; {cmd}.buttons = 5n; {cmd}.viewAngles = {{x:1,y:2,z:3}}; {cmd}.clearSubtickMoves(); return \"ok\"; }}())")), "ok");
+        // End-to-end through UserCmd.onRun + dispatch_usercmd: the handler must receive the REAL Cmd
+        // singleton object (typeof "object" with a working forwardMove/buttons property), not
+        // `undefined` — this is the exact wiring a missing `Cmd` key on `__s2pkg_usercmd` would silently
+        // break (dispatch_usercmd degrades to passing `undefined` when the lookup fails).
+        eval_in_context(
+            "p",
+            "globalThis.__cmdType = null; globalThis.__cmdIsSingleton = false; \
+             __s2pkg_usercmd.UserCmd.onRun(function (cmd, ctx) { \
+               globalThis.__cmdType = typeof cmd; \
+               globalThis.__cmdIsSingleton = (cmd === __s2pkg_usercmd.Cmd); \
+               globalThis.__cmdForward = String(cmd.forwardMove); \
+             });",
+        )
+        .unwrap();
+        assert_eq!(dispatch_usercmd(9), 0, "no Handled/Stop returned -> Continue");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__cmdType)"), "object", "handler received an object, not undefined");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__cmdIsSingleton)"), "true", "handler received the exact Cmd singleton (MF-3)");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__cmdForward)"), "0", "cmd.forwardMove readable inside the handler");
         shutdown();
     }
 

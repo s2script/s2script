@@ -251,6 +251,15 @@ typedef int (*s2_sound_precache_add_fn)(const char* path);
  * signature is unresolved or the ref is stale. APPENDED after sound_precache_add; order is the ABI. */
 typedef void (*s2_player_change_team_fn)(int idx, int serial, int team);
 
+/* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
+ * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
+typedef int   (*s2_usercmd_hook_install_fn)(void);              /* lazily install the ProcessUsercmds detour; 1 ok / 0 unresolved */
+typedef double(*s2_usercmd_read_fn)(int field);                 /* field: 0 fwd,1 side(raw leftmove NEGATED->+right),2 up,3 pitch,4 yaw,5 roll,6 impulse */
+typedef void  (*s2_usercmd_write_fn)(int field, double value);
+typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_pb.buttonstate1 */
+typedef void  (*s2_usercmd_write_buttons_fn)(uint64_t mask);
+typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.subtick_moves */
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -357,6 +366,13 @@ typedef struct {
     s2_sound_precache_add_fn sound_precache_add;
     /* changeteam slice — APPENDED after sound_precache_add; order is the ABI; do not reorder above. */
     s2_player_change_team_fn player_change_team;
+    /* usercmd slice — APPENDED after player_change_team; order is the ABI; do not reorder above. */
+    s2_usercmd_hook_install_fn  usercmd_hook_install;
+    s2_usercmd_read_fn          usercmd_read;
+    s2_usercmd_write_fn         usercmd_write;
+    s2_usercmd_read_buttons_fn  usercmd_read_buttons;
+    s2_usercmd_write_buttons_fn usercmd_write_buttons;
+    s2_usercmd_clear_subtick_fn usercmd_clear_subtick;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -425,6 +441,15 @@ int s2script_core_dispatch_output(const char* classname, const char* output, int
  * (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
  * (a pre-hook returned Handled/Stop), else 0. */
 int s2script_core_dispatch_game_event_pre(const char* name);
+/* Shim -> core: called by the ProcessUsercmds detour once per in-flight CUserCmd (usercmd primitive).
+ * slot = the firing player's controller slot (derived shim-side from the detour's `this`). The shim
+ * sets s_currentUserCmd (the live CSGOUserCmdPB message) BEFORE calling this and clears it after —
+ * the JS UserCmd.onRun subscribers read/modify the live message in place via the usercmd_read/write/
+ * read_buttons/write_buttons/clear_subtick ops during this call. Returns the collapsed HookResult (0
+ * Continue .. 3 Stop); the caller neutralizes (zeroes) the cmd's movement/buttons when >= 2 (Handled)
+ * and always still calls the original trampoline (server-authoritative — a suppressed cmd is a ZEROED
+ * cmd, not a skipped call). catch_unwind -> 0 (fail-open: a core bug must never corrupt player input). */
+int s2script_core_dispatch_usercmd(int slot);
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);

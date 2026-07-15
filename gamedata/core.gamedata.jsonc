@@ -168,6 +168,26 @@
         "resolve": "direct"
       }
     },
+    // Usercmd primitive: CCSPlayer_MovementServices::ProcessUsercmds(this, CUserCmd* cmds, int numcmds,
+    // bool paused, float margin) — the per-tick input-processing entry (SM OnPlayerRunCmd parity). Hint
+    // pattern sourced from Swiftly's gamedata (CCSPlayer_MovementServices_ProcessUserCmd); an offline
+    // disassembly spike (2026-07-14, Task 1) statically DISAMBIGUATED the identity/ABI before any live
+    // array-walk (Fable review MF-1: Swiftly's hint names the single-cmd variant, but the resolved
+    // function on OUR libserver.so is confirmed a BATCH fn — it saves numcmds, loops an array, and its
+    // epilogue leaves a 32-bit int in eax) — so the batch-ABI premise HOLDS on this build. Confirmed ABI:
+    // (this /*rdi*/, CUserCmd* cmds /*rsi*/, int numcmds /*edx*/, bool paused /*ecx*/, float margin
+    // /*xmm0*/) -> int. The CUserCmd array stride (sizeof(CUserCmd)=0x90, the CSGOUserCmdPB protobuf at
+    // +0x10) was derived offline from the loop's `add $0x90,%r12` and confirmed live (numcmds 1-3,
+    // cmd[1] parses as a valid CSGOUserCmdPB). A DIRECT prologue pattern (match offset == function
+    // start). Validated UNIQUE (2026-07-14) in the pinned libserver.so @ vaddr 0x1622030. Per-update the
+    // prologue/offset move each patch (the treadmill); see docs/superpowers/plans/2026-07-14-usercmd-primitive.md.
+    "ProcessUsercmds": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 83 EC ? 89 4D",
+        "resolve": "direct"
+      }
+    },
     // CCSPlayerController::ChangeTeam(int team) — the standard team-change (incl. Spectator=1); moves the
     // player immediately (the poor-sharptimer/CSSharp `!spec` path). Backs Player.changeTeam / .spectate.
     // SELF-RESOLVED against OUR libserver.so, NOT a borrowed constant: the live gate proved CSSharp's
