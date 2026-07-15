@@ -1,0 +1,51 @@
+# Per-worktree live-gate instance — one CS2 server per git worktree, sharing the single
+# ~74 G install via a btrfs reflink clone. See:
+#   docs/superpowers/specs/2026-07-15-multi-instance-live-gate-design.md
+#
+# Do NOT run this by hand. scripts/gate.sh resolves every path to an absolute one and writes
+# .gate/gate.env; the `:?` guards below turn a bare `docker compose -f … up` into a loud
+# error rather than a silently wrong mount.
+#
+# The primary folder keeps docker-compose.yml (container s2script-cs2, port 27015) unchanged.
+services:
+  cs2:
+    image: joedwards32/cs2
+    container_name: ${GATE_NAME:?gate.sh must set GATE_NAME (run scripts/gate.sh up)}
+    stdin_open: true
+    tty: true
+    environment:
+      CS2_SERVERNAME: "${GATE_NAME}"
+      CS2_LAN: "1"
+      CS2_RCONPW: "s2script"
+      # 1:1 with the host port — Source 2 serves game traffic, A2S queries and RCON on this
+      # one number, so a 1:1 map keeps the advertised port identical to the reachable one.
+      CS2_PORT: "${GATE_PORT:?gate.sh must set GATE_PORT}"
+      CS2_MAXPLAYERS: "${GATE_MAXPLAYERS:-12}"
+      CS2_GAMETYPE: "0"
+      CS2_GAMEMODE: "1"
+      CS2_STARTMAP: "${GATE_STARTMAP:-de_inferno}"
+      # Off by default (production default). A damage-hook gate sets GATE_DAMAGE_SELFTEST=1.
+      S2_DAMAGE_SELFTEST: "${GATE_DAMAGE_SELFTEST:-0}"
+      SRCDS_TOKEN: ""
+    ports:
+      - "${GATE_PORT}:${GATE_PORT}/udp"
+      - "${GATE_PORT}:${GATE_PORT}/tcp"
+    volumes:
+      # This instance's private reflink clone of the install (gate.sh makes it: 0.5s, 0 disk).
+      - ${GATE_CS2_DATA:?gate.sh must set GATE_CS2_DATA}:/home/steam/cs2-dedicated
+
+      # The addon under test. Defaults to this worktree's dist/addons/s2script; --addons or
+      # --s2script repoint it. :ro blocks CONTAINER writes; the host still drops .s2sp files in.
+      - ${GATE_S2SCRIPT_DIR:?gate.sh must set GATE_S2SCRIPT_DIR}:/home/steam/cs2-dedicated/game/csgo/addons/s2script:ro
+
+      # Nested RW mounts over the :ro addon (Docker resolves by longest target path): the shim
+      # auto-generates configs/<id>.json and @s2script/db creates data/<name>.sqlite at runtime.
+      - ${GATE_S2SCRIPT_DIR}/configs:/home/steam/cs2-dedicated/game/csgo/addons/s2script/configs
+      - ${GATE_S2SCRIPT_DIR}/data:/home/steam/cs2-dedicated/game/csgo/addons/s2script/data
+
+      # Metamod:Source. Cloned per instance rather than shared :ro — MM writes metamod-fatal.log.
+      - ${GATE_METAMOD_DIR:?gate.sh must set GATE_METAMOD_DIR}:/home/steam/cs2-dedicated/game/csgo/addons/metamod
+
+      # gameinfo.gi patcher + the boot hook that runs it automatically (see docker/pre.sh).
+      - ./patch-gameinfo.sh:/patch-gameinfo.sh:ro
+      - ./pre.sh:/home/steam/cs2-dedicated/pre.sh:ro
