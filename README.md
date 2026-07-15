@@ -216,12 +216,17 @@ docker compose -f docker/docker-compose.yml up -d
 docker logs -f s2script-cs2    # watch for "Starting CS2 Dedicated Server"
 ```
 
-**Step 2 — Patch `gameinfo.gi`** (run once after first download):
+**Step 2 — Patch `gameinfo.gi`** (optional/diagnostic — see note below):
 ```bash
 docker exec s2script-cs2 /patch-gameinfo.sh
 ```
 
 This inserts `Game    csgo/addons/metamod` as the first SearchPath entry. The script is idempotent.
+
+> **This step is no longer required.** `docker/pre.sh` now runs `patch-gameinfo.sh` automatically on
+> every boot — the image's `entry.sh` sources `pre.sh` after its steamcmd update and before the
+> server starts, so even a first boot self-patches. The command above still works and stays useful
+> for a manual/diagnostic run (e.g. to confirm the patch landed), since it's idempotent.
 
 **Step 3 — Restart so the engine re-reads `gameinfo.gi`:**
 ```bash
@@ -306,7 +311,10 @@ Any *linked worktree* can run its own server at the same time, sharing the one ~
 `gate.sh up` reflink-clones `docker/cs2-data` into the worktree's gitignored `.gate/` — 0.5s and
 zero real disk, because /home is btrfs. Each instance therefore has a *full independent* install,
 which is why two servers never corrupt each other. (`du` will report ~74 G per clone; that is
-reflinked extents counted per-file. `df` is the truth.)
+reflinked extents counted per-file. `df` is the truth. One exception to "zero real disk": if an
+instance's steamcmd fails twice on boot, the image wipes `steamapps` and re-downloads ~74 G into
+that clone's real disk — it's contained to that one instance, the shared base is untouched, and the
+fix is `scripts/gate.sh destroy`.)
 
 To point a gate at an addon build other than the worktree's own:
 
@@ -318,6 +326,16 @@ follow it, and an instance's own boot would update its clone in place (costing t
 disk). So the rule is: **update the primary, then `gate.sh destroy` + `gate.sh up` each instance**
 — re-cloning is 0.5s, in-place updating is not. `gameinfo.gi` re-patching is now automatic on every
 boot (`docker/pre.sh`), so the old manual `docker exec … /patch-gameinfo.sh` step is gone.
+
+**Optional knobs.** `gate.sh` doesn't write these to `gate.env` — set them in the OS environment,
+which takes precedence over `--env-file`:
+
+    GATE_MAXPLAYERS=<n>          # default 12
+    GATE_STARTMAP=<map>          # default de_inferno
+    GATE_DAMAGE_SELFTEST=1       # default 0 — NOTE: diverges from the primary's default of 1
+
+e.g. `GATE_DAMAGE_SELFTEST=1 scripts/gate.sh up`. That last divergence matters: a damage-hook gate
+author who expects the primary's synthetic self-test to just fire will be surprised when it doesn't.
 
 ---
 
@@ -1503,8 +1521,9 @@ auto-regenerated signatures/offsets.
 
 > **Live-gate deploy note.** `scripts/package-addon.sh` `rm -rf`s the bind-mounted `dist/addons/s2script`, which
 > detaches the container's mount — `docker compose -f docker/docker-compose.yml restart cs2` re-binds it AND
-> preserves the `gameinfo.gi` Metamod patch. Avoid `--force-recreate` (it resets `gameinfo.gi`; if used, re-run
-> `docker exec s2script-cs2 /patch-gameinfo.sh` then restart).
+> preserves the `gameinfo.gi` Metamod patch. A `--force-recreate` resets `gameinfo.gi`, but this is now
+> automatic too: a recreate re-runs the image's `entry.sh`, which sources `docker/pre.sh` and re-patches
+> `gameinfo.gi` on its own — no manual re-run needed.
 
 ---
 
