@@ -9,6 +9,7 @@
 // from the HL2SDK.  The stub sdk_stubs/network_connection.pb.h satisfies the
 // one missing generated include that eiface.h unconditionally pulls in.
 #include <eiface.h>
+#include <iservernetworkable.h>  // CCheckTransmitInfo (m_pTransmitEntity @0) — checktransmit slice
 #include <playerslot.h>   // CPlayerSlot — IVEngineServer2::ClientPrintf target (Slice 6.1b)
 #include <inetchannel.h>  // NetChannelBufType_t / BUF_RELIABLE (Slice 6.1c PostEventAbstract)
 #include <irecipientfilter.h>   // Sound slice: the modern 4-method IRecipientFilter + CPlayerBitVec
@@ -61,12 +62,14 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
+#include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
 #include <fstream>
 #include <sstream>
 #include <filesystem>
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>   // the CheckTransmit rule table (checktransmit slice)
 #include <unordered_set>
 #include <vector>
 
@@ -116,6 +119,16 @@ class GameSessionConfiguration_t {};
 // mechanism (mm_plugin.cpp:82), verbatim. POST hook only. Signature confirmed against OUR iserver.h:221.
 SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*);
 
+// ISource2GameEntities::CheckTransmit (checktransmit slice) — per-client entity visibility. POST
+// hook: the game has filled each client's transmit bitvec; we clear bits per the core-pushed rule
+// table. Signature verbatim from OUR eiface.h:500 (7 args; the two CBitVec<16384>& are complete
+// via bitvec.h, which eiface.h includes; Entity2Networkable_t stays an incomplete pointee — fine,
+// SourceHook only sizeof's the pointer). SwiftlyS2 hooks this with the identical declared
+// signature (their entrypoint.cpp:74) — corroboration; the vtable index comes from OUR pinned
+// hl2sdk at compile time, exactly like the seven ISource2GameClients hooks.
+SH_DECL_HOOK7_void(ISource2GameEntities, CheckTransmit, SH_NOATTRIB, 0, CCheckTransmitInfo**, int,
+                   CBitVec<16384>&, CBitVec<16384>&, const Entity2Networkable_t**, const uint16*, int);
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -141,6 +154,28 @@ static ISchemaSystem* s_pSchemaSystem = nullptr;
 // ---------------------------------------------------------------------------
 static void* s_pGameResourceService   = nullptr;
 static int   s_gameEntitySystemOffset = -1;
+
+// ---------------------------------------------------------------------------
+// CheckTransmit (checktransmit slice) — the per-entity visibility rule table + layout validation.
+// Rules are pushed by the core (transmit_set/transmit_clear ops; AND-merged per entity across
+// plugins core-side); the POST hook applies them to each client's transmit bitvec with ZERO JS in
+// the hot path. The one non-SDK layout fact (which client an info is for) is a gamedata offset
+// validated at FIRST FIRE (the info structs exist only inside a live snapshot build, so boot-time
+// validation is impossible): fail-closed — no bit is touched until validation passes; a
+// persistent failure disables the descriptor with a named gamedata FAIL (degrade, never crash).
+// ---------------------------------------------------------------------------
+struct TransmitEntry { int serial; uint64_t mask; };
+static std::unordered_map<int, TransmitEntry> s_transmitTable;   // entindex -> merged rule
+static const size_t kTransmitTableCap = 4096;
+static int  s_ctiClientOff = -1;   // CCheckTransmitInfo which-client int32 (gamedata; hint +576)
+// Layout state: 0 = pending (observe only), 1 = validated, -1 = FAILED (descriptor disabled).
+static int  s_transmitLayoutState = 0;
+static bool s_transmitClientIsEntIndex = false;  // +off semantics: false = slot, true = entindex (slot+1)
+static int  s_transmitValidateAttempts = 0;
+static const int kTransmitValidateMaxAttempts = 512;  // snapshots to keep trying before FAILED
+// Stats out[5]: snapshots, entries (read live), bitsCleared, nsLast, nsMax.
+static uint64_t s_transmitSnapshots = 0, s_transmitBitsCleared = 0;
+static uint64_t s_transmitNsLast = 0, s_transmitNsMax = 0;
 
 /// Read CGameEntitySystem* fresh from the IGameResourceService* on each call.
 /// Returns nullptr when the service pointer or offset is not yet available,
@@ -2032,6 +2067,30 @@ static CEntityInstance* ResolveEntityBySerial(int index, int serial) {
     return static_cast<CEntityInstance*>(s2_deref_handle(static_cast<unsigned int>(h.ToInt())));
 }
 
+// transmit_set op: upsert the AND-merged visibility mask for (index, serial). Serial-gated at
+// registration — a stale ref never enters the table. Returns 0 when the entity is stale, the
+// table is at cap, the hook isn't installed, or the first-fire layout validation FAILED.
+static int s2_transmit_set(int index, int serial, unsigned long long mask) {
+    if (!g_S2ScriptPlugin.m_checkTransmitHookInstalled || s_transmitLayoutState < 0) return 0;
+    if (index < 0 || serial < 0) return 0;
+    if (!ResolveEntityBySerial(index, serial)) return 0;
+    auto it = s_transmitTable.find(index);
+    if (it == s_transmitTable.end() && s_transmitTable.size() >= kTransmitTableCap) return 0;
+    s_transmitTable[index] = TransmitEntry{serial, static_cast<uint64_t>(mask)};
+    return 1;
+}
+static int s2_transmit_clear(int index) {
+    return s_transmitTable.erase(index) > 0 ? 1 : 0;
+}
+static void s2_transmit_stats(unsigned long long* out) {
+    if (!out) return;
+    out[0] = s_transmitSnapshots;
+    out[1] = static_cast<unsigned long long>(s_transmitTable.size());
+    out[2] = s_transmitBitsCleared;
+    out[3] = s_transmitNsLast;
+    out[4] = s_transmitNsMax;
+}
+
 // Validate a resolved (vtable-slot / signature) fn pointer lands inside libserver.so's own
 // executable range — Rule 2 parity with ResolveSigValidated / the TraceShape vtable-index check.
 // A borrowed/stale index could point anywhere; this stops a wrong-but-in-range call before it
@@ -2724,6 +2783,47 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             } else {
                 m_gameClients = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameClients (%s) — console commands off\n", verStr);
+            }
+        }
+
+        // Acquire ISource2GameEntities + install the CheckTransmit POST hook (checktransmit
+        // slice): per-client entity visibility filtering. A sibling of the Source2GameClients
+        // acquisition — same serverFactory, same degrade-never-crash. The hook only OBSERVES
+        // until the first-fire layout validation passes (see Hook_CheckTransmit).
+        {
+            auto it = versions.find("Source2GameEntities");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : INTERFACEVERSION_SERVERGAMEENTS;
+            int ret = 0;
+            m_gameEntities = serverFactory
+                ? reinterpret_cast<ISource2GameEntities*>(serverFactory(verStr, &ret)) : nullptr;
+            std::string ctiErr;
+            auto ctiOffsets = LoadOffsets(GamedataPath(), "linuxsteamrt64", ctiErr);
+            auto cit = ctiOffsets.find("CheckTransmitInfo_clientEntityIndex");
+            s_ctiClientOff = (ctiErr.empty() && cit != ctiOffsets.end() && cit->second >= 0)
+                                 ? cit->second : -1;
+            GamedataResult("CheckTransmitInfo_clientEntityIndex", s_ctiClientOff >= 0,
+                           "offset key absent from gamedata");
+            // Reset the per-Load hook state (a shim reload starts a fresh validation cycle).
+            s_transmitTable.clear();
+            s_transmitLayoutState = 0;
+            s_transmitValidateAttempts = 0;
+            s_transmitSnapshots = 0; s_transmitBitsCleared = 0;
+            s_transmitNsLast = 0; s_transmitNsMax = 0;
+            if (m_gameEntities && ret == 0 && s_ctiClientOff >= 0) {
+                META_CONPRINTF("[s2script] interface OK: Source2GameEntities (%s)\n", verStr);
+                SH_ADD_HOOK(ISource2GameEntities, CheckTransmit, m_gameEntities,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_CheckTransmit), true);
+                m_checkTransmitHookInstalled = true;
+                META_CONPRINTF("[s2script] CheckTransmit hook installed (entity visibility; "
+                               "layout validates on first fire)\n");
+            } else if (!m_gameEntities || ret != 0) {
+                m_gameEntities = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameEntities (%s) — "
+                               "transmit filtering off\n", verStr);
+            } else {
+                META_CONPRINTF("[s2script] WARN: CheckTransmitInfo offset not in gamedata — "
+                               "transmit filtering off\n");
             }
         }
 
@@ -3474,6 +3574,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.usercmd_read_buttons  = &s2_usercmd_read_buttons;
     ops.usercmd_write_buttons = &s2_usercmd_write_buttons;
     ops.usercmd_clear_subtick = &s2_usercmd_clear_subtick;
+    // checktransmit slice — APPENDED after usercmd_clear_subtick; order MUST match S2EngineOps.
+    ops.transmit_set   = &s2_transmit_set;
+    ops.transmit_clear = &s2_transmit_clear;
+    ops.transmit_stats = &s2_transmit_stats;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -3571,6 +3675,14 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
         m_clientLifecycleHooksInstalled = false;
     }
+
+    // Remove the CheckTransmit POST hook (checktransmit slice) + drop the rule table.
+    if (m_checkTransmitHookInstalled && m_gameEntities) {
+        SH_REMOVE_HOOK(ISource2GameEntities, CheckTransmit, m_gameEntities,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_CheckTransmit), true);
+        m_checkTransmitHookInstalled = false;
+    }
+    s_transmitTable.clear();
 
     // Remove the StartupServer map-start POST hook (clientlist-fakeconvar-onmapstart slice).
     if (m_startupServerHookInstalled && s_pNetworkServerService) {
@@ -3766,6 +3878,90 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     // installed once at Load, since the class vtable is static data present from module load.)
     s2script_core_dispatch_map_start(map ? map : "");
     EnsureEntityListenerRegistered();   // re-assert the IEntityListener each map (idempotent Find-guard)
+    RETURN_META(MRES_IGNORED);
+}
+
+// First-fire layout validation (re-strategy Rule 2 for call-context-only facts). Decides the
+// semantics of the which-client int32 at s_ctiClientOff (slot vs entindex=slot+1 — CSSharp and
+// Swiftly disagree) by checking which interpretation maps EVERY info to a connected slot
+// (s_trackedSignon, maintained by the client lifecycle hooks). With a single connected client the
+// answer is unambiguous: v==0 is impossible in entindex mode (entindex 0 = worldspawn); v==1 with
+// slot 1 empty is impossible in slot mode. Also sanity-checks m_pTransmitEntity (offset 0, the
+// one field hl2sdk DOES guarantee): non-null and worldspawn bit 0 set. Returns 1 = validated
+// (mode cached), 0 = undecidable this snapshot (stay pending), -1 = hard mismatch.
+static int TransmitValidateLayout(CCheckTransmitInfo** ppInfoList, int nInfoCount) {
+    if (nInfoCount <= 0) return 0;
+    bool slotModeOk = true, entIndexModeOk = true;
+    for (int i = 0; i < nInfoCount; i++) {
+        const uint8_t* raw = reinterpret_cast<const uint8_t*>(ppInfoList[i]);
+        if (!raw) return -1;
+        const CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
+        if (!bv || !bv->IsBitSet(0)) return -1;     // worldspawn must always transmit
+        int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
+        if (v < 0 || v > 64) return -1;
+        bool vSlotOk = (v >= 0 && v < kMaxClientSlots && s_trackedSignon[v] != kSignonNone);
+        bool vEntOk  = (v >= 1 && (v - 1) < kMaxClientSlots && s_trackedSignon[v - 1] != kSignonNone);
+        slotModeOk     = slotModeOk && vSlotOk;
+        entIndexModeOk = entIndexModeOk && vEntOk;
+    }
+    if (slotModeOk == entIndexModeOk) return 0;     // both or neither -> retry next snapshot
+    s_transmitClientIsEntIndex = entIndexModeOk;
+    return 1;
+}
+
+void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
+                                        CBitVec<16384>&, CBitVec<16384>&,
+                                        const Entity2Networkable_t**, const uint16*, int) {
+    s_transmitSnapshots++;
+    if (!ppInfoList || nInfoCount <= 0) RETURN_META(MRES_IGNORED);
+    if (s_transmitLayoutState == 0) {               // fail-closed gate: observe-only until validated
+        int r = TransmitValidateLayout(ppInfoList, nInfoCount);
+        if (r == 1) {
+            s_transmitLayoutState = 1;
+            META_CONPRINTF("[s2script] transmit: CheckTransmitInfo layout VALIDATED (client int @%d = %s)\n",
+                           s_ctiClientOff, s_transmitClientIsEntIndex ? "entindex (slot+1)" : "slot");
+        } else if (r == -1 || ++s_transmitValidateAttempts >= kTransmitValidateMaxAttempts) {
+            s_transmitLayoutState = -1;
+            s_transmitTable.clear();
+            META_CONPRINTF("[s2script]   gamedata FAIL  CheckTransmitInfo_clientEntityIndex — first-fire "
+                           "validation %s (offset %d wrong for this build? re-derive; see "
+                           "docs/re-strategy.md); transmit filtering DISABLED\n",
+                           (r == -1) ? "MISMATCH" : "UNDECIDABLE", s_ctiClientOff);
+        }
+        RETURN_META(MRES_IGNORED);                  // never mutate on the validating snapshot
+    }
+    if (s_transmitLayoutState != 1 || s_transmitTable.empty()) RETURN_META(MRES_IGNORED);
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    // Entries outer, infos inner: serial-gate each entry ONCE per snapshot (a single lookup — no
+    // TOCTOU window inside the snapshot), then apply to every client's bitvec. A failed resolve
+    // means the entity is gone FOREVER (serials never come back), so the entry is evicted —
+    // the table is self-cleaning across deaths and map changes.
+    for (auto it = s_transmitTable.begin(); it != s_transmitTable.end(); ) {
+        if (!ResolveEntityBySerial(it->first, it->second.serial)) {
+            it = s_transmitTable.erase(it);
+            continue;
+        }
+        const int      entIndex = it->first;
+        const uint64_t mask     = it->second.mask;
+        for (int i = 0; i < nInfoCount; i++) {
+            uint8_t* raw = reinterpret_cast<uint8_t*>(ppInfoList[i]);
+            if (!raw) continue;
+            int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
+            int slot = s_transmitClientIsEntIndex ? (v - 1) : v;
+            if (slot < 0 || slot >= 64) continue;
+            if ((mask >> slot) & 1ull) continue;    // visible to this viewer — leave the bit alone
+            CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
+            if (bv && bv->IsBitSet(entIndex)) { bv->Clear(entIndex); s_transmitBitsCleared++; }
+        }
+        ++it;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull
+                + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+    s_transmitNsLast = ns;
+    if (ns > s_transmitNsMax) s_transmitNsMax = ns;
     RETURN_META(MRES_IGNORED);
 }
 
