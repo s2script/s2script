@@ -117,9 +117,9 @@ gate_up() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --addons)   [ $# -ge 2 ] || die "--addons needs a directory"
-                  addons_dir="$(cd -- "$2" >/dev/null && pwd)" || die "--addons: no such directory: $2"; shift 2 ;;
+                  addons_dir="$(CDPATH= cd -- "$2" >/dev/null && pwd)" || die "--addons: no such directory: $2"; shift 2 ;;
       --s2script) [ $# -ge 2 ] || die "--s2script needs a directory"
-                  s2_dir="$(cd -- "$2" >/dev/null && pwd)" || die "--s2script: no such directory: $2"; shift 2 ;;
+                  s2_dir="$(CDPATH= cd -- "$2" >/dev/null && pwd)" || die "--s2script: no such directory: $2"; shift 2 ;;
       *) die "unknown option: $1 (try: up [--addons <dir> | --s2script <dir>])" ;;
     esac
   done
@@ -152,14 +152,9 @@ gate_up() {
        otherwise create it root-owned and the container (uid 1000) could not write it"
     [ -w "$s2/$sub" ] || die "$s2/$sub is not writable by you (uid $(id -u)); the container runs as uid 1000"
   done
-  # mm defaults to $GATE_DIR/metamod, which does not exist until gate_clone runs — only warn
-  # when the dir actually exists (post-clone re-run) or the user explicitly pointed us at one
-  # via --addons; otherwise a fresh worktree's first `up` would warn spuriously.
-  if [ -d "$mm" ] || [ -n "$addons_dir" ]; then
-    [ -d "$mm/bin" ] || say "WARN: $mm has no bin/ — Metamod will not load (is this really a metamod dir?)"
-  fi
 
   gate_clone
+  [ -d "$mm/bin" ] || say "WARN: $mm has no bin/ — Metamod will not load (is this really a metamod dir?)"
 
   # Claim a port under a lock so two worktrees cannot race onto the same one. A port already
   # recorded in gate.env is reused if still free, so an instance keeps its port across up/down.
