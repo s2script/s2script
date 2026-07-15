@@ -1440,13 +1440,11 @@ static void s2_usercmd_clear_subtick() {
     br->ClearField(base, c.subtickMovesF);
 }
 
-// Derive the firing player's controller SLOT from the detour's `this`. Spike-derived (2026-07-14,
-// disassembly of the resolved ProcessUsercmds on OUR libserver.so — see
-// docs/superpowers/plans/2026-07-14-usercmd-primitive.md, Step 1b / "LIVE VERIFICATION"): a packed
-// 16-bit value at `this+0x7c0` yields a 6-bit slot field via `movzwl; shr $9; and $0x3f`. UNVERIFIED
-// against a running human-joined server in THIS task (no live gate here — a shim/core-only task); the
-// live gate (Task 5) cross-checks the logged slot against the tester's known slot (and against a
-// schema Pawn.forSlot(slot) read of the SAME player) before this is trusted in production.
+// Derive the firing player's SLOT from the detour's `this`. `this+0x7c0` holds the firing PAWN's
+// entity handle (spike-derived from disassembly of the resolved ProcessUsercmds on OUR libserver.so —
+// docs/superpowers/plans/2026-07-14-usercmd-primitive.md, Step 1b). LIVE-VERIFIED against a human-joined
+// server (Task 5, 2026-07-14): the logged slot matches the tester's known slot and a schema
+// Pawn.forSlot(slot) read of the SAME player. The recipe is documented inline below.
 static int DeriveUsercmdSlot(void* thisptr) {
     if (!thisptr) return -1;
     // this+0x7c0 holds the firing PAWN's entity handle (the game decodes it via `shr $9 & 0x3f` [chunk]
