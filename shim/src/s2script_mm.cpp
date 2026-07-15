@@ -161,8 +161,12 @@ static int   s_gameEntitySystemOffset = -1;
 // plugins core-side); the POST hook applies them to each client's transmit bitvec with ZERO JS in
 // the hot path. The one non-SDK layout fact (which client an info is for) is a gamedata offset
 // validated at FIRST FIRE (the info structs exist only inside a live snapshot build, so boot-time
-// validation is impossible): fail-closed — no bit is touched until validation passes; a
-// persistent failure disables the descriptor with a named gamedata FAIL (degrade, never crash).
+// validation is impossible): fail-closed — no bit is touched until validation passes. Validation
+// decides by EXCLUSIVE WITNESSES (see TransmitValidateLayout): -1/hard-fail ONLY on a range
+// violation (garbage read = wrong offset); odd-but-legitimate infos are non-evidence, skipped;
+// snapshots with NO tracked clients don't burn the attempt budget (a late-loaded shim stays
+// pending until a connect provides data). A persistent failure disables the descriptor with a
+// named gamedata FAIL (degrade, never crash).
 // ---------------------------------------------------------------------------
 struct TransmitEntry { int serial; uint64_t mask; };
 static std::unordered_map<int, TransmitEntry> s_transmitTable;   // entindex -> merged rule
@@ -172,7 +176,7 @@ static int  s_ctiClientOff = -1;   // CCheckTransmitInfo which-client int32 (gam
 static int  s_transmitLayoutState = 0;
 static bool s_transmitClientIsEntIndex = false;  // +off semantics: false = slot, true = entindex (slot+1)
 static int  s_transmitValidateAttempts = 0;
-static const int kTransmitValidateMaxAttempts = 512;  // snapshots to keep trying before FAILED
+static const int kTransmitValidateMaxAttempts = 512;  // EVIDENCING snapshots before FAILED (tracked-client snapshots only)
 // Stats out[5]: snapshots, entries (read live), bitsCleared, nsLast, nsMax.
 static uint64_t s_transmitSnapshots = 0, s_transmitBitsCleared = 0;
 static uint64_t s_transmitNsLast = 0, s_transmitNsMax = 0;
@@ -2073,6 +2077,7 @@ static CEntityInstance* ResolveEntityBySerial(int index, int serial) {
 static int s2_transmit_set(int index, int serial, unsigned long long mask) {
     if (!g_S2ScriptPlugin.m_checkTransmitHookInstalled || s_transmitLayoutState < 0) return 0;
     if (index < 0 || serial < 0) return 0;
+    if (index >= MAX_EDICTS) return 0;   // not a networkable edict; the bit index would be OOB on m_pTransmitEntity
     if (!ResolveEntityBySerial(index, serial)) return 0;
     auto it = s_transmitTable.find(index);
     if (it == s_transmitTable.end() && s_transmitTable.size() >= kTransmitTableCap) return 0;
@@ -2803,14 +2808,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_ctiClientOff = (ctiErr.empty() && cit != ctiOffsets.end() && cit->second >= 0)
                                  ? cit->second : -1;
             GamedataResult("CheckTransmitInfo_clientEntityIndex", s_ctiClientOff >= 0,
-                           "offset key absent from gamedata");
+                           !ctiErr.empty() ? ctiErr.c_str() : "offset key absent from gamedata");
             // Reset the per-Load hook state (a shim reload starts a fresh validation cycle).
             s_transmitTable.clear();
             s_transmitLayoutState = 0;
             s_transmitValidateAttempts = 0;
             s_transmitSnapshots = 0; s_transmitBitsCleared = 0;
             s_transmitNsLast = 0; s_transmitNsMax = 0;
-            if (m_gameEntities && ret == 0 && s_ctiClientOff >= 0) {
+            if (m_gameEntities && ret == 0 && s_ctiClientOff >= 0 && m_clientLifecycleHooksInstalled) {
                 META_CONPRINTF("[s2script] interface OK: Source2GameEntities (%s)\n", verStr);
                 SH_ADD_HOOK(ISource2GameEntities, CheckTransmit, m_gameEntities,
                             SH_MEMBER(this, &S2ScriptPlugin::Hook_CheckTransmit), true);
@@ -2821,6 +2826,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 m_gameEntities = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameEntities (%s) — "
                                "transmit filtering off\n", verStr);
+            } else if (!m_clientLifecycleHooksInstalled) {
+                META_CONPRINTF("[s2script] WARN: CheckTransmit hook NOT installed — client lifecycle "
+                               "hooks unavailable (validation needs signon tracking); transmit "
+                               "filtering off\n");
             } else {
                 META_CONPRINTF("[s2script] WARN: CheckTransmitInfo offset not in gamedata — "
                                "transmit filtering off\n");
@@ -3883,30 +3892,32 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
 
 // First-fire layout validation (re-strategy Rule 2 for call-context-only facts). Decides the
 // semantics of the which-client int32 at s_ctiClientOff (slot vs entindex=slot+1 — CSSharp and
-// Swiftly disagree) by checking which interpretation maps EVERY info to a connected slot
-// (s_trackedSignon, maintained by the client lifecycle hooks). With a single connected client the
-// answer is unambiguous: v==0 is impossible in entindex mode (entindex 0 = worldspawn); v==1 with
-// slot 1 empty is impossible in slot mode. Also sanity-checks m_pTransmitEntity (offset 0, the
-// one field hl2sdk DOES guarantee): non-null and worldspawn bit 0 set. Returns 1 = validated
-// (mode cached), 0 = undecidable this snapshot (stay pending), -1 = hard mismatch.
+// Swiftly disagree) via EXCLUSIVE WITNESSES against s_trackedSignon (maintained by the client
+// lifecycle hooks): each evidence info votes for exactly one interpretation only when the other
+// is impossible; a mode wins only with >=1 exclusive witness and ZERO witnesses for the rival.
+// Hard fail (-1) is reserved for genuine layout evidence — v far outside any client range
+// ([0,128], double the slot count to absorb entindex skew) means the offset reads garbage.
+// Odd-but-legitimate infos (null raw/bitvec pointer, worldspawn bit 0 clear — HLTV/replay or a
+// mid-full-update client) are NON-EVIDENCE: skipped, never fatal, never a vote. Returns
+// 1 = validated (mode cached), 0 = undecidable this snapshot (stay pending), -1 = hard mismatch.
 static int TransmitValidateLayout(CCheckTransmitInfo** ppInfoList, int nInfoCount) {
     if (nInfoCount <= 0) return 0;
-    bool slotModeOk = true, entIndexModeOk = true;
+    int slotWitness = 0, entWitness = 0;
     for (int i = 0; i < nInfoCount; i++) {
         const uint8_t* raw = reinterpret_cast<const uint8_t*>(ppInfoList[i]);
-        if (!raw) return -1;
+        if (!raw) continue;                                     // non-evidence
         const CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
-        if (!bv || !bv->IsBitSet(0)) return -1;     // worldspawn must always transmit
+        if (!bv || !bv->IsBitSet(0)) continue;                  // non-evidence (HLTV/full-update?)
         int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
-        if (v < 0 || v > 64) return -1;
-        bool vSlotOk = (v >= 0 && v < kMaxClientSlots && s_trackedSignon[v] != kSignonNone);
-        bool vEntOk  = (v >= 1 && (v - 1) < kMaxClientSlots && s_trackedSignon[v - 1] != kSignonNone);
-        slotModeOk     = slotModeOk && vSlotOk;
-        entIndexModeOk = entIndexModeOk && vEntOk;
+        if (v < 0 || v > 128) return -1;    // the ONLY hard fail: garbage far outside client range
+        bool slotOk = (v < kMaxClientSlots && s_trackedSignon[v] != kSignonNone);
+        bool entOk  = (v >= 1 && (v - 1) < kMaxClientSlots && s_trackedSignon[v - 1] != kSignonNone);
+        if (slotOk && !entOk) slotWitness++;
+        if (entOk && !slotOk) entWitness++;
     }
-    if (slotModeOk == entIndexModeOk) return 0;     // both or neither -> retry next snapshot
-    s_transmitClientIsEntIndex = entIndexModeOk;
-    return 1;
+    if (slotWitness > 0 && entWitness == 0) { s_transmitClientIsEntIndex = false; return 1; }
+    if (entWitness > 0 && slotWitness == 0) { s_transmitClientIsEntIndex = true;  return 1; }
+    return 0;                               // no or conflicting exclusive witnesses -> retry
 }
 
 void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
@@ -3915,6 +3926,13 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
     s_transmitSnapshots++;
     if (!ppInfoList || nInfoCount <= 0) RETURN_META(MRES_IGNORED);
     if (s_transmitLayoutState == 0) {               // fail-closed gate: observe-only until validated
+        // No tracked clients -> no witness data possible: stay pending WITHOUT burning the attempt
+        // budget (a late-loaded shim whose lifecycle hooks missed the connects would otherwise
+        // false-FAIL through 512 undecidable snapshots; a fresh connect unblocks validation).
+        bool anyTracked = false;
+        for (int i = 0; i < kMaxClientSlots; i++)
+            if (s_trackedSignon[i] != kSignonNone) { anyTracked = true; break; }
+        if (!anyTracked) RETURN_META(MRES_IGNORED);
         int r = TransmitValidateLayout(ppInfoList, nInfoCount);
         if (r == 1) {
             s_transmitLayoutState = 1;
@@ -3939,6 +3957,7 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
     // means the entity is gone FOREVER (serials never come back), so the entry is evicted —
     // the table is self-cleaning across deaths and map changes.
     for (auto it = s_transmitTable.begin(); it != s_transmitTable.end(); ) {
+        if (it->first < 0 || it->first >= MAX_EDICTS) { it = s_transmitTable.erase(it); continue; }
         if (!ResolveEntityBySerial(it->first, it->second.serial)) {
             it = s_transmitTable.erase(it);
             continue;
