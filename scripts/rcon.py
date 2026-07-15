@@ -4,6 +4,27 @@ import socket, struct, sys, time
 
 HOST, PORT, PW = "127.0.0.1", 27015, "s2script"
 
+
+def parse_args(argv):
+    """Split argv into (port, cmds). `--port N` / `--port=N` may appear anywhere;
+    every other arg is an RCON command. Defaults to PORT so existing call sites
+    (`rcon.py "sm_say hi"`) are unchanged."""
+    port, cmds, i = PORT, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--port":
+            if i + 1 >= len(argv):
+                raise SystemExit("rcon.py: --port requires a value")
+            port = int(argv[i + 1])
+            i += 2
+        elif a.startswith("--port="):
+            port = int(a.split("=", 1)[1])
+            i += 1
+        else:
+            cmds.append(a)
+            i += 1
+    return port, cmds
+
 def pkt(pid, ptype, body):
     data = struct.pack("<ii", pid, ptype) + body.encode() + b"\x00\x00"
     return struct.pack("<i", len(data)) + data
@@ -24,8 +45,8 @@ def recv_pkt(s):
     return pid, ptype, data[8:-2].decode("utf-8", "replace")
 
 def main():
-    cmds = sys.argv[1:]
-    s = socket.create_connection((HOST, PORT), timeout=10)
+    port, cmds = parse_args(sys.argv[1:])
+    s = socket.create_connection((HOST, port), timeout=10)
     s.sendall(pkt(1, 3, PW))            # SERVERDATA_AUTH
     s.settimeout(3)
     try:
