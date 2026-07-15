@@ -24,4 +24,25 @@ assert m.parse_args(["cmd", "--port", "27020"]) == (27020, ["cmd"])
 print("  rcon parse_args OK")
 PYEOF
 
+# --- docker/pre.sh: the automatic gameinfo patch hook ------------------------
+[ -f docker/pre.sh ] || { echo "FAIL: docker/pre.sh missing"; exit 1; }
+
+bash -n docker/pre.sh || { echo "FAIL: docker/pre.sh is not valid bash"; exit 1; }
+
+# It must invoke patch-gameinfo.sh as a SUBPROCESS. patch-gameinfo.sh runs `set -euo pipefail`
+# and `exit 1`; entry.sh SOURCES pre.sh, so a `source`/`.` here would kill the whole boot.
+grep -qE '^[^#]*bash /patch-gameinfo\.sh' docker/pre.sh \
+  || { echo "FAIL: pre.sh must run 'bash /patch-gameinfo.sh' as a subprocess"; exit 1; }
+grep -qE '^[^#]*(source|\.) +/patch-gameinfo\.sh' docker/pre.sh \
+  && { echo "FAIL: pre.sh must NOT source patch-gameinfo.sh (its exit 1 would kill entry.sh)"; exit 1; }
+
+# A patch failure must not abort the boot.
+grep -qE '\|\|' docker/pre.sh \
+  || { echo "FAIL: pre.sh must tolerate a failed patch (|| warn), not abort the boot"; exit 1; }
+
+# Both compose files must mount it at the path entry.sh sources.
+grep -qE '^\s*-\s*\./pre\.sh:/home/steam/cs2-dedicated/pre\.sh:ro' docker/docker-compose.yml \
+  || { echo "FAIL: primary compose does not mount ./pre.sh"; exit 1; }
+echo "  pre.sh hook OK"
+
 echo "PASS: test-gate.sh"
