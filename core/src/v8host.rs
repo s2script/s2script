@@ -219,6 +219,8 @@ type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
 // NAME + a recipient slot set + a resource path are Source2-generic; no CS2 names in the C ABI.
 type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
 type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
+// --- changeteam slice (APPENDED after sound_precache_add; order is the ABI). (idx, serial, team).
+type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -328,6 +330,8 @@ pub struct S2EngineOps {
     // --- Sound slice (APPENDED after entity_name; order is the ABI; do not reorder above) ---
     pub sound_emit: Option<SoundEmitFn>,
     pub sound_precache_add: Option<SoundPrecacheAddFn>,
+    // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI; do not reorder above) ---
+    pub player_change_team: Option<PlayerChangeTeamFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -1899,8 +1903,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var s = __s2_menu_activeBySlot[client.slot];
     if (s) s._end(MenuCancelReason.Disconnect);
   });
-  // --- @s2script/db — Database.open/query/execute/close over the built-in drivers. SQLite is
-  //     sync-behind-Promise (__s2_sqlite_*); mysql/postgres are async off-thread (__s2_db_remote_*).
+  // --- @s2script/db — Database.open/query/execute/close over the built-in drivers. Both SQLite
+  //     (__s2_sqlite_*, a per-connection actor thread) and mysql/postgres (__s2_db_remote_*, the
+  //     shared tokio+sqlx runtime) run query/execute OFF the game thread and resolve later.
   //     Database.open resolves a name via databases.json (operator-owned; absent name -> sqlite). ---
   var __s2_db_drivers = {};
   var __s2_db_config = {};   // name -> {driver,host,port,user,password,database} from databases.json — IIFE-PRIVATE (credentials; never on globalThis)
@@ -4808,6 +4813,22 @@ fn s2_pawn_commit_suicide(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
+/// `__s2_player_change_team(index, serial, team)` — move a player's controller between teams via the
+/// sig-resolved ChangeTeam engine-op. A thin pass-through: the shim reconstructs + serial-gates the
+/// controller from (index, serial) and bounds-checks `team` (0..3). No-op without the op (unresolved
+/// signature) or on a stale ref. Engine-generic here (only the resolving signature is game-specific).
+fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.player_change_team else { return };
+        f(index, serial, team);
+    }));
+}
+
 /// `__s2_plugins_list() -> string` — JSON array of `{id, loaded}` for `sm plugins list` / `Plugins.list()`.
 fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -6435,6 +6456,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
+    set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
@@ -6452,7 +6474,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Slice nominations Task 1: raw configs-dir file read/write for @s2script/config.
     set_native(scope, global_obj, "__s2_config_read_file", s2_config_read_file);
     set_native(scope, global_obj, "__s2_config_write_file", s2_config_write_file);
-    // Slice DB Task 3: the `__s2_sqlite_*` natives (sync-behind-Promise) for `@s2script/db`.
+    // Slice DB Task 3: the `__s2_sqlite_*` natives (query/execute now actor-backed, off-thread) for `@s2script/db`.
     set_native(scope, global_obj, "__s2_sqlite_open", s2_sqlite_open);
     set_native(scope, global_obj, "__s2_sqlite_query", s2_sqlite_query);
     set_native(scope, global_obj, "__s2_sqlite_execute", s2_sqlite_execute);
@@ -7393,10 +7415,14 @@ fn s2_config_write_file(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 }
 
 // ---------------------------------------------------------------------------
-// Slice DB Task 3: the `__s2_sqlite_*` natives — sync-behind-Promise execution over
-// `crate::db` (Task 1) + the `db_data_dir` engine op (Task 2). Every native returns a real
-// `Promise` (the async API contract), resolved/rejected INLINE (no threadpool this slice — see
-// the plan's simplification note). A connection handle is ledgered against the CALLING plugin
+// Slice DB Task 3: the `__s2_sqlite_*` natives, over `crate::db` (Task 1) + the `db_data_dir`
+// engine op (Task 2). Every native returns a real `Promise` (the async API contract). `open`/
+// `close` resolve/reject INLINE (no I/O to await — `open` does its one blocking file-open eagerly
+// on the calling thread before spawning the actor; `close` just signals Shutdown). `query`/
+// `execute` run OFF the game thread on a per-connection actor (`db::submit_query`/
+// `submit_execute` hand off a `Command` and return immediately); the Promise resolves later via
+// the shared `resolve_db` spine (mirrors the remote sqlx driver's `s2_db_remote_query`/
+// `s2_db_remote_execute` exactly). A connection handle is ledgered against the CALLING plugin
 // (`record_db_conn`) so an unclosed connection is closed at teardown (`Resource::DbConn` arm in
 // `unload_plugin`). Degrade-never-crash: every body runs under `catch_unwind`; a bad handle / SQL
 // error rejects the Promise, never panics/throws synchronously.
@@ -7510,26 +7536,35 @@ fn query_result_to_js<'s>(scope: &mut v8::PinScope<'s, '_>, q: &crate::db::Query
     arr.into()
 }
 
-/// Native `__s2_sqlite_query(handle, sql, params) -> Promise<Row[]>`. Runs a parameterized SELECT
-/// synchronously and resolves an array of row objects keyed by column name (`query_result_to_js`);
-/// an invalid handle or SQL error rejects the Promise.
+/// Native `__s2_sqlite_query(handle, sql, params) -> Promise<Row[]>`. Owner-checks + queues the SELECT
+/// on the connection's actor thread (`db::submit_query`); the Promise resolves later via `resolve_db`
+/// with the row array. An invalid handle / closed connection rejects the Promise immediately, with no
+/// RESOLVERS/PENDING_JOBS/ledger entry (no pending job to track). MIRRORS `s2_db_remote_query`.
 fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let handle = args.get(0).integer_value(scope).unwrap_or(-1);
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
         let sql = args.get(1).to_rust_string_lossy(scope);
         let params = js_params_to_db(scope, args.get(2));
         let owner = current_plugin(scope).unwrap_or_default();
+
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
-        let result = if handle < 0 {
-            Err("invalid db handle".to_string())
-        } else {
-            crate::db::query(handle as u64, &sql, &params, &owner)
-        };
-        match result {
-            Ok(qr) => {
-                let result = query_result_to_js(scope, &qr);
-                resolver.resolve(scope, result);
+
+        let id = next_async_id();
+        match crate::db::submit_query(id, handle, sql, params, &owner) {
+            Ok(()) => {
+                let job_owner = resolver_owner_tag(scope);
+                if let Some((ref oid, _)) = job_owner {
+                    REGISTRY.with(|r| {
+                        if let Some(l) = r.borrow_mut().ledger_mut(oid) { l.record_job(id); }
+                    });
+                }
+                RESOLVERS.with(|m| {
+                    m.borrow_mut()
+                        .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+                });
+                PENDING_JOBS.with(|c| c.set(c.get() + 1));
+                refresh_detour();
             }
             Err(e) => {
                 let msg = v8::String::new(scope, &e).unwrap();
@@ -7541,32 +7576,34 @@ fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
     }));
 }
 
-/// Native `__s2_sqlite_execute(handle, sql, params) -> Promise<{changes, lastInsertId}>`. Runs a
-/// parameterized INSERT/UPDATE/DELETE/DDL statement synchronously; resolves `{changes,
-/// lastInsertId}` (both JS numbers); an invalid handle or SQL error rejects the Promise.
+/// Native `__s2_sqlite_execute(handle, sql, params) -> Promise<{changes, lastInsertId}>`. Same shape
+/// as `s2_sqlite_query` but queues an INSERT/UPDATE/DELETE/DDL (`db::submit_execute`); resolves later
+/// via `resolve_db` with `{changes, lastInsertId}`.
 fn s2_sqlite_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let handle = args.get(0).integer_value(scope).unwrap_or(-1);
+        let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
         let sql = args.get(1).to_rust_string_lossy(scope);
         let params = js_params_to_db(scope, args.get(2));
         let owner = current_plugin(scope).unwrap_or_default();
+
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
-        let result = if handle < 0 {
-            Err("invalid db handle".to_string())
-        } else {
-            crate::db::execute(handle as u64, &sql, &params, &owner)
-        };
-        match result {
-            Ok(er) => {
-                let obj = v8::Object::new(scope);
-                let k = v8::String::new(scope, "changes").unwrap();
-                let v = v8::Number::new(scope, er.changes as f64);
-                obj.set(scope, k.into(), v.into());
-                let k = v8::String::new(scope, "lastInsertId").unwrap();
-                let v = v8::Number::new(scope, er.last_insert_id as f64);
-                obj.set(scope, k.into(), v.into());
-                resolver.resolve(scope, obj.into());
+
+        let id = next_async_id();
+        match crate::db::submit_execute(id, handle, sql, params, &owner) {
+            Ok(()) => {
+                let job_owner = resolver_owner_tag(scope);
+                if let Some((ref oid, _)) = job_owner {
+                    REGISTRY.with(|r| {
+                        if let Some(l) = r.borrow_mut().ledger_mut(oid) { l.record_job(id); }
+                    });
+                }
+                RESOLVERS.with(|m| {
+                    m.borrow_mut()
+                        .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+                });
+                PENDING_JOBS.with(|c| c.set(c.get() + 1));
+                refresh_detour();
             }
             Err(e) => {
                 let msg = v8::String::new(scope, &e).unwrap();
@@ -7761,7 +7798,7 @@ fn s2_db_remote_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 /// disposed/replaced context), but resolves with the row array (`query_result_to_js`) or the
 /// `{changes, lastInsertId}` object on `Ok`, or rejects with an `Error` on `Err` (a SQL/connection
 /// failure surfaced by `sqldb::run_query`/`run_execute`).
-fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::sqldb::DbOutcome, String>) {
+fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::db::DbOutcome, String>) {
     let g_ctx = match &entry.owner {
         Some((id, generation)) => {
             if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
@@ -7783,11 +7820,11 @@ fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::sqld
     let resolver = v8::Local::new(scope, &entry.resolver);
 
     match result {
-        Ok(crate::sqldb::DbOutcome::Query(qr)) => {
+        Ok(crate::db::DbOutcome::Query(qr)) => {
             let v = query_result_to_js(scope, &qr);
             resolver.resolve(scope, v);
         }
-        Ok(crate::sqldb::DbOutcome::Exec(er)) => {
+        Ok(crate::db::DbOutcome::Exec(er)) => {
             let obj = v8::Object::new(scope);
             let k1 = v8::String::new(scope, "changes").unwrap();
             let v1 = v8::Number::new(scope, er.changes as f64);
@@ -8396,7 +8433,7 @@ pub(crate) fn frame_async_drain() {
         }
         // Remote SQL completions (core/src/sqldb.rs). Mirrors the http loop: pop a completion, remove
         // its RESOLVERS entry, decrement PENDING_JOBS, resolve/reject (or DROP on the liveness guard).
-        while let Some(c) = crate::sqldb::try_recv_completed() {
+        while let Some(c) = crate::db::try_recv_completed() {
             let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&c.id)) else { continue };
             PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
             resolve_db(host, &entry, c.result);
@@ -10319,6 +10356,7 @@ mod frame_tests {
             entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
+            player_change_team: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -10524,6 +10562,20 @@ mod frame_tests {
             JSON.stringify({ direct: direct, viaRef: viaRef });
         "#);
         assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);
+        shutdown();
+    }
+
+    /// changeteam slice: `__s2_player_change_team` (and `Player.changeTeam`/`.spectate`) no-op with no
+    /// `player_change_team` op (unresolved signature / every in-isolate test) — never a crash.
+    #[test]
+    fn player_change_team_degrades_without_op() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
+        let out = eval_std("pct1", r#"
+            var r = __s2_player_change_team(5, 7, 1);
+            String(r === undefined);
+        "#);
+        assert_eq!(out, "true");
         shutdown();
     }
 
@@ -10951,6 +11003,7 @@ mod frame_tests {
             entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
+            player_change_team: None,
         }
     }
 
@@ -12188,7 +12241,7 @@ mod frame_tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Slice DB Task 3: __s2_sqlite_* natives — sync-behind-Promise round trip + degrade tests.
+    // Slice DB Task 3: __s2_sqlite_* natives — round trip (now actor-backed, off-thread) + degrade tests.
     // ---------------------------------------------------------------------------
 
     /// A fresh per-call SQLite connection "name" — avoids cross-test file collisions (tests run
@@ -12222,11 +12275,12 @@ mod frame_tests {
     }
 
     /// The full happy path: open -> execute(CREATE) -> execute(INSERT, parameterized) ->
-    /// query(parameterized) -> close, all chained through native-returned Promises and drained by
-    /// ONE `frame_async_drain()` (a single `perform_microtask_checkpoint()` empties the whole
-    /// already-resolved chain, since each link resolves synchronously before the next `.then`
-    /// attaches). Proves value marshalling both directions (params in, columns/rows out) and the
-    /// `lastInsertId`/`changes` execute-result shape.
+    /// query(parameterized) -> close, all chained through native-returned Promises. `query`/
+    /// `execute` now run OFF-THREAD on the connection's actor (this task's behavior change), so
+    /// each link needs its OWN completion to arrive on the shared channel before the next `.then`
+    /// can fire — drive frames until the chain settles (bounded), mirroring
+    /// `thread_sleep_runs_off_thread_and_resolves_on_a_drain`. Proves value marshalling both
+    /// directions (params in, columns/rows out) and the `lastInsertId`/`changes` execute-result shape.
     #[test]
     fn sqlite_open_execute_query_round_trip() {
         let _ = init(dummy_logger());
@@ -12248,13 +12302,20 @@ mod frame_tests {
                 globalThis.__out = "ERROR:" + String(e);
             }});
         "#, name = name), "{}");
-        frame_async_drain();
-        assert_eq!(read_global_string("dbp", "__out"), "changes=1 id=1 rows=1 v=red k=color");
+        let mut out = "pending".to_string();
+        for _ in 0..500 {
+            frame_async_drain();
+            out = read_global_string("dbp", "__out");
+            if out != "pending" { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(out, "changes=1 id=1 rows=1 v=red k=color");
         shutdown();
     }
 
     /// A bad-SQL query rejects the Promise (not a panic/crash) — the `.catch` handler runs and
-    /// records the error, proving `db::query`'s `Err` path reaches JS as a rejection.
+    /// records the error, proving the actor's `run_query` `Err` path reaches JS as a rejection via
+    /// `resolve_db` on a LATER drain (the query itself now runs off-thread on the actor).
     #[test]
     fn sqlite_bad_sql_rejects_promise() {
         let _ = init(dummy_logger());
@@ -12270,8 +12331,14 @@ mod frame_tests {
                 globalThis.__out = "rejected:" + (String(e).length > 0);
             }});
         "#, name = name), "{}");
-        frame_async_drain();
-        assert_eq!(read_global_string("dbp2", "__out"), "rejected:true");
+        let mut out = "pending".to_string();
+        for _ in 0..500 {
+            frame_async_drain();
+            out = read_global_string("dbp2", "__out");
+            if out != "pending" { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(out, "rejected:true");
         shutdown();
     }
 
@@ -12316,7 +12383,8 @@ mod frame_tests {
 
     /// End-to-end through the PUBLIC `@s2script/db` API (not the raw natives): open a named
     /// database, CREATE + INSERT (parameterized), SELECT it back, close. Proves the Database
-    /// object built by the prelude (over the SQLite reference driver) round-trips correctly.
+    /// object built by the prelude (over the SQLite reference driver, now actor-backed)
+    /// round-trips correctly — drive frames until the chain settles (query/execute are off-thread).
     #[test]
     fn db_module_open_execute_query_round_trip() {
         let _ = init(dummy_logger());
@@ -12339,8 +12407,14 @@ mod frame_tests {
                 globalThis.__out = "ERROR:" + String(e);
             }});
         "#, name = name), "{}");
-        frame_async_drain();
-        assert_eq!(read_global_string("dbmod", "__out"), "changes=1 id=1 rows=1 v=red k=color");
+        let mut out = "pending".to_string();
+        for _ in 0..500 {
+            frame_async_drain();
+            out = read_global_string("dbmod", "__out");
+            if out != "pending" { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(out, "changes=1 id=1 rows=1 v=red k=color");
         shutdown();
     }
 

@@ -4,20 +4,15 @@
 //! the runtime, which sends a completion the frame drain resolves — the isolate thread never blocks.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 use sqlx::mysql::{MySqlArguments, MySqlPool, MySqlPoolOptions};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
 use sqlx::query::Query;
-use crate::db::{DbValue, QueryResult, ExecResult};
+use crate::db::{DbValue, QueryResult, ExecResult, DbOutcome, DbCompletion};
 
 #[derive(Clone)]
 pub enum PoolKind { MySql(MySqlPool), Postgres(PgPool) }
-
-pub enum DbOutcome { Query(QueryResult), Exec(ExecResult) }
-pub struct DbCompletion { pub id: u64, pub result: Result<DbOutcome, String> }
 
 thread_local! {
     // handle -> (pool, owner plugin id). Main-thread registry (the native clones the pool before
@@ -25,15 +20,6 @@ thread_local! {
     static POOLS: RefCell<HashMap<u64, (PoolKind, String)>> = RefCell::new(HashMap::new());
     static NEXT: Cell<u64> = Cell::new(1);
 }
-
-// Process-global completion channel (like http.rs::ENGINE). The runtime tasks send here; the frame
-// drain polls try_recv_completed().
-struct Chan { tx: Sender<DbCompletion>, rx: Mutex<Receiver<DbCompletion>> }
-static CHAN: OnceLock<Chan> = OnceLock::new();
-fn chan() -> &'static Chan {
-    CHAN.get_or_init(|| { let (tx, rx) = channel(); Chan { tx, rx: Mutex::new(rx) } })
-}
-pub fn try_recv_completed() -> Option<DbCompletion> { chan().rx.lock().ok()?.try_recv().ok() }
 
 /// Rewrite `?` placeholders to Postgres `$1..$n`, skipping any `?` inside a single-quoted literal.
 pub fn pg_translate_placeholders(sql: &str) -> String {
@@ -110,14 +96,14 @@ pub fn close(handle: u64, owner: &str) -> bool {
 
 /// Spawn a SELECT on the shared runtime; send a DbCompletion the frame drain resolves.
 pub fn spawn_query(id: u64, pool: PoolKind, sql: String, params: Vec<DbValue>) {
-    let tx = chan().tx.clone();
+    let tx = crate::db::completion_tx();
     crate::http::spawn(async move {
         let result = run_query(pool, sql, params).await.map(DbOutcome::Query);
         let _ = tx.send(DbCompletion { id, result });
     });
 }
 pub fn spawn_execute(id: u64, pool: PoolKind, sql: String, params: Vec<DbValue>) {
-    let tx = chan().tx.clone();
+    let tx = crate::db::completion_tx();
     crate::http::spawn(async move {
         let result = run_execute(pool, sql, params).await.map(DbOutcome::Exec);
         let _ = tx.send(DbCompletion { id, result });

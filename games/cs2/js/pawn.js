@@ -104,6 +104,16 @@
     return ok;
   };
 
+  // player.changeTeam(team) — move this player's controller between teams (Spectator=1/T=2/CT=3) via the
+  // sig-resolved CCSPlayerController::ChangeTeam engine op (serial-gated; no-op if stale/unresolved).
+  Player.prototype.changeTeam = function (team) {
+    __s2_player_change_team(this.ref.index, this.ref.serial, team | 0);
+  };
+  // player.spectate() — move this player to the Spectator team (SM parity; = changeTeam(1)).
+  Player.prototype.spectate = function () {
+    __s2_player_change_team(this.ref.index, this.ref.serial, 1);
+  };
+
   // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
   //   "#<userid>" -> that player; "@all" -> allConnected; "@me" -> the caller (empty from console);
   //   otherwise a case-insensitive name match (exact wins, else all partials). Empty on no match.

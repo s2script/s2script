@@ -15,7 +15,7 @@ test("classifyField maps in-scope kinds, skips the rest with a reason", () => {
   assert.deepEqual(classifyField({ kind: "atomic", name: "float32" }), { accessorKind: "f32", writable: true });
   assert.deepEqual(classifyField({ kind: "atomic", name: "bool" }), { accessorKind: "bool", writable: true });
   assert.deepEqual(classifyField({ kind: "atomic", name: "int32" }), { accessorKind: "i32", writable: true });
-  assert.deepEqual(classifyField({ kind: "atomic", name: "uint8" }), { accessorKind: "u8", writable: false });
+  assert.deepEqual(classifyField({ kind: "atomic", name: "uint8" }), { accessorKind: "u8", writable: true });
   assert.deepEqual(classifyField({ kind: "handle", inner: "CBaseEntity" }), { accessorKind: "handle", writable: false });
   assert.ok("skip" in classifyField({ kind: "enum", name: "Team_t" }));
   assert.ok("skip" in classifyField({ kind: "atomic", name: "CUtlSymbolLarge" }));
