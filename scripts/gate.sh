@@ -117,9 +117,9 @@ gate_up() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --addons)   [ $# -ge 2 ] || die "--addons needs a directory"
-                  addons_dir="$(cd "$2" && pwd)" || die "--addons: no such directory: $2"; shift 2 ;;
+                  addons_dir="$(cd -- "$2" >/dev/null && pwd)" || die "--addons: no such directory: $2"; shift 2 ;;
       --s2script) [ $# -ge 2 ] || die "--s2script needs a directory"
-                  s2_dir="$(cd "$2" && pwd)" || die "--s2script: no such directory: $2"; shift 2 ;;
+                  s2_dir="$(cd -- "$2" >/dev/null && pwd)" || die "--s2script: no such directory: $2"; shift 2 ;;
       *) die "unknown option: $1 (try: up [--addons <dir> | --s2script <dir>])" ;;
     esac
   done
@@ -131,7 +131,6 @@ gate_up() {
 
   gate_require_worktree
   [ -f "$COMPOSE" ] || die "missing $COMPOSE"
-  gate_clone
 
   local name; name="$(gate_instance_name "$WORKTREE")"
 
@@ -145,16 +144,28 @@ gate_up() {
     s2="$WORKTREE/dist/addons/s2script"; mm="$GATE_DIR/metamod"
   fi
 
+  # Validated BEFORE gate_clone so a validation failure (the common first-run case) leaves
+  # no side effects behind for `destroy` to clean up.
   [ -d "$s2" ] || die "no addon at $s2 — run 'npx s2script build' + scripts/package-addon.sh first"
   for sub in configs data; do
     [ -d "$s2/$sub" ] || die "missing $s2/$sub — package-addon.sh creates it; Docker would
        otherwise create it root-owned and the container (uid 1000) could not write it"
     [ -w "$s2/$sub" ] || die "$s2/$sub is not writable by you (uid $(id -u)); the container runs as uid 1000"
   done
-  [ -d "$mm/bin" ] || say "WARN: $mm has no bin/ — Metamod will not load (is this really a metamod dir?)"
+  # mm defaults to $GATE_DIR/metamod, which does not exist until gate_clone runs — only warn
+  # when the dir actually exists (post-clone re-run) or the user explicitly pointed us at one
+  # via --addons; otherwise a fresh worktree's first `up` would warn spuriously.
+  if [ -d "$mm" ] || [ -n "$addons_dir" ]; then
+    [ -d "$mm/bin" ] || say "WARN: $mm has no bin/ — Metamod will not load (is this really a metamod dir?)"
+  fi
+
+  gate_clone
 
   # Claim a port under a lock so two worktrees cannot race onto the same one. A port already
   # recorded in gate.env is reused if still free, so an instance keeps its port across up/down.
+  # The lock is held through `docker compose up -d` below — that bind is the moment the port
+  # actually becomes observable to another worktree's `ss`/`docker ps` read, so releasing the
+  # lock any earlier would serialize nothing.
   local port=""
   exec 9>"$GATE_LOCK"
   flock 9
@@ -178,8 +189,6 @@ GATE_CS2_DATA=$GATE_DIR/cs2-data
 GATE_S2SCRIPT_DIR=$s2
 GATE_METAMOD_DIR=$mm
 EOF
-  flock -u 9
-  exec 9>&-
 
   say "worktree : $WORKTREE"
   say "instance : $name"
@@ -187,6 +196,8 @@ EOF
   say "addon    : $s2"
   say "metamod  : $mm"
   docker compose --env-file "$GATE_DIR/gate.env" -f "$COMPOSE" -p "$name" up -d
+  flock -u 9
+  exec 9>&-
   say "ready -> python3 scripts/rcon.py --port $port \"meta list\""
   say "         docker logs -f $name"
 }
@@ -201,7 +212,14 @@ gate_compose_do() {
 gate_down()    { gate_compose_do down; say "stopped (clone kept — 'destroy' removes it)"; }
 
 gate_destroy() {
-  gate_compose_do down || true
+  gate_require_worktree
+  # gate_compose_do dies (exit — not caught by `|| true`, exit terminates the process even
+  # inside a function) when gate.env is missing, which a failed first `up` can leave behind
+  # (gate_clone ran but validation died before gate.env was written). Only call it when
+  # there's actually an env file to compose down; the removal below must always run.
+  if [ -f "$GATE_DIR/gate.env" ]; then
+    gate_compose_do down || true
+  fi
   rm -rf "$GATE_DIR"
   say "destroyed (clone removed)"
 }
