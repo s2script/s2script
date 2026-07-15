@@ -45,4 +45,35 @@ grep -qE '^\s*-\s*\./pre\.sh:/home/steam/cs2-dedicated/pre\.sh:ro' docker/docker
   || { echo "FAIL: primary compose does not mount ./pre.sh"; exit 1; }
 echo "  pre.sh hook OK"
 
+# --- docker-compose.gate.yml: env-driven, absolute-path mounts ---------------
+[ -f docker/docker-compose.gate.yml ] || { echo "FAIL: docker/docker-compose.gate.yml missing"; exit 1; }
+
+# Interpolates from a synthetic env — proves the vars wire through to real mount paths.
+gate_tmp="$(mktemp -d)"
+mkdir -p "$gate_tmp/s2script/configs" "$gate_tmp/s2script/data" "$gate_tmp/mm" "$gate_tmp/cs2data"
+gate_cfg="$(
+  GATE_NAME=s2script-cs2-probe \
+  GATE_PORT=27099 \
+  GATE_CS2_DATA="$gate_tmp/cs2data" \
+  GATE_S2SCRIPT_DIR="$gate_tmp/s2script" \
+  GATE_METAMOD_DIR="$gate_tmp/mm" \
+  docker compose -f docker/docker-compose.gate.yml config 2>&1
+)" || { echo "FAIL: gate compose did not interpolate: $gate_cfg"; exit 1; }
+
+echo "$gate_cfg" | grep -q "container_name: s2script-cs2-probe" \
+  || { echo "FAIL: GATE_NAME did not reach container_name"; exit 1; }
+echo "$gate_cfg" | grep -q "$gate_tmp/s2script" \
+  || { echo "FAIL: GATE_S2SCRIPT_DIR did not reach the mounts"; exit 1; }
+echo "$gate_cfg" | grep -q "$gate_tmp/cs2data" \
+  || { echo "FAIL: GATE_CS2_DATA did not reach the install mount"; exit 1; }
+# 1:1 port map — the advertised port must equal the reachable one.
+echo "$gate_cfg" | grep -q "27099" \
+  || { echo "FAIL: GATE_PORT did not reach the port mapping"; exit 1; }
+# Missing required vars must fail loudly, not mount something wrong.
+if docker compose -f docker/docker-compose.gate.yml config >/dev/null 2>&1; then
+  echo "FAIL: gate compose succeeded with no gate.env — the :? guards are missing"; exit 1
+fi
+rm -rf "$gate_tmp"
+echo "  docker-compose.gate.yml OK"
+
 echo "PASS: test-gate.sh"
