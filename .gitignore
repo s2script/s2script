@@ -4,6 +4,7 @@
 *.so
 docker/cs2-data/
 docker/metamod/
+.gate/
 
 # Example/plugin build artifacts (regenerable via `npx s2script build`)
 examples/**/dist/

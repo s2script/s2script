@@ -76,4 +76,54 @@ fi
 rm -rf "$gate_tmp"
 echo "  docker-compose.gate.yml OK"
 
+# --- gate.sh pure helpers ---------------------------------------------------
+[ -f scripts/gate.sh ] || { echo "FAIL: scripts/gate.sh missing"; exit 1; }
+bash -n scripts/gate.sh || { echo "FAIL: scripts/gate.sh is not valid bash"; exit 1; }
+
+# Source the helpers only (no CLI dispatch, no `set -e` leaking into this shell).
+GATE_LIB_ONLY=1 source scripts/gate.sh
+
+# Instance name is derived from the worktree dir basename.
+got="$(gate_instance_name /home/gkh/projects/s2script-sound)"
+[ "$got" = "s2script-cs2-sound" ] || { echo "FAIL: gate_instance_name gave '$got'"; exit 1; }
+got="$(gate_instance_name /home/gkh/projects/s2script-zones-polish)"
+[ "$got" = "s2script-cs2-zones-polish" ] || { echo "FAIL: gate_instance_name gave '$got'"; exit 1; }
+# A dir not named s2script-* still gets a sane instance name.
+got="$(gate_instance_name /tmp/experiment)"
+[ "$got" = "s2script-cs2-experiment" ] || { echo "FAIL: gate_instance_name gave '$got'"; exit 1; }
+# Trailing slash must not produce an empty suffix.
+got="$(gate_instance_name /home/gkh/projects/s2script-sound/)"
+[ "$got" = "s2script-cs2-sound" ] || { echo "FAIL: gate_instance_name trailing slash gave '$got'"; exit 1; }
+
+# The primary is the repo's main worktree; --git-dir == --git-common-dir identifies it.
+prim="$(gate_find_primary)"
+[ -d "$prim/.git" ] || [ -f "$prim/.git" ] || { echo "FAIL: gate_find_primary gave '$prim'"; exit 1; }
+[ -d "$prim/docker" ] || { echo "FAIL: gate_find_primary '$prim' has no docker/"; exit 1; }
+
+# gate_port_free must be hermetic — do NOT assert against 27015, which is only taken while the
+# primary happens to be running (that would fail spuriously whenever it is down). Bind a port
+# ourselves instead, so the test is deterministic wherever it runs.
+gate_port_free 27099 || { echo "FAIL: gate_port_free says the unbound 27099 is taken"; exit 1; }
+
+python3 -c "
+import socket, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', 27099)); s.listen(1)
+time.sleep(10)
+" &
+gate_probe_pid=$!
+sleep 0.7
+if gate_port_free 27099; then
+  kill "$gate_probe_pid" 2>/dev/null
+  echo "FAIL: gate_port_free reported a bound port as free"; exit 1
+fi
+kill "$gate_probe_pid" 2>/dev/null; wait "$gate_probe_pid" 2>/dev/null
+
+# A claimed port must land in the documented range.
+p="$(gate_claim_port)" || { echo "FAIL: gate_claim_port found nothing"; exit 1; }
+[ "$p" -ge 27016 ] && [ "$p" -le 27030 ] || { echo "FAIL: claimed port $p out of range"; exit 1; }
+
+grep -q '^\.gate/$' .gitignore || { echo "FAIL: .gate/ is not gitignored"; exit 1; }
+echo "  gate.sh helpers OK"
+
 echo "PASS: test-gate.sh"

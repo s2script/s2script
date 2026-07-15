@@ -289,6 +289,36 @@ change one version string in `gamedata/core.gamedata.jsonc` to a deliberately wr
 `hello from V8 in CS2` — confirming that a broken interface string never crashes or silences V8.
 Restore the correct string when done.
 
+### Running a second server (one gate per worktree)
+
+The primary folder runs the server you already know: `docker compose -f docker/docker-compose.yml
+up -d` → container `s2script-cs2` on port 27015. That is unchanged.
+
+Any *linked worktree* can run its own server at the same time, sharing the one ~74 G install:
+
+    cd ~/projects/s2script-sound
+    scripts/package-addon.sh          # build this worktree's dist/addons/s2script first
+    scripts/gate.sh up                # -> its own container + a port in 27016-27030
+    python3 scripts/rcon.py --port <N> "meta list"
+    scripts/gate.sh down              # stop, keep the clone
+    scripts/gate.sh destroy           # stop and delete the clone
+
+`gate.sh up` reflink-clones `docker/cs2-data` into the worktree's gitignored `.gate/` — 0.5s and
+zero real disk, because /home is btrfs. Each instance therefore has a *full independent* install,
+which is why two servers never corrupt each other. (`du` will report ~74 G per clone; that is
+reflinked extents counted per-file. `df` is the truth.)
+
+To point a gate at an addon build other than the worktree's own:
+
+    scripts/gate.sh up --addons   <dir>    # <dir> holds metamod/ + s2script/ (e.g. a release zip)
+    scripts/gate.sh up --s2script <dir>    # <dir> IS the s2script folder
+
+**Update day.** The primary updates `docker/cs2-data` on boot as always. Instance clones do not
+follow it, and an instance's own boot would update its clone in place (costing that clone real
+disk). So the rule is: **update the primary, then `gate.sh destroy` + `gate.sh up` each instance**
+— re-cloning is 0.5s, in-place updating is not. `gameinfo.gi` re-patching is now automatic on every
+boot (`docker/pre.sh`), so the old manual `docker exec … /patch-gameinfo.sh` step is gone.
+
 ---
 
 ## Acceptance checklist
