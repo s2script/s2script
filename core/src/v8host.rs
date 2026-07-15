@@ -4227,6 +4227,50 @@ fn s2_schema_dump(
 
 /// Set a named native function on `global_obj` in `scope`.  Small helper used by
 /// `install_natives` to keep the per-context install table declarative.
+/// `__s2_v8_heap_used()` -> Number (bytes). The V8 isolate's used_heap_size — the analog of
+/// .NET's `GC.GetTotalMemory`. Isolate-wide (all plugin contexts share one isolate); per-plugin
+/// memory would use V8's per-context MeasureMemory API. Degrades to -1 on panic.
+fn s2_v8_heap_used(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(-1.0);
+        let stats = _scope.get_heap_statistics();
+        rv.set_double(stats.used_heap_size() as f64);
+    }));
+}
+
+/// `__s2_v8_gc()` — force a full GC (V8 low-memory-notification), the analog of `GC.Collect()`.
+/// Dev/benchmark instrumentation. Degrades to a no-op on panic.
+fn s2_v8_gc(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        _scope.low_memory_notification();
+    }));
+}
+
+/// `__s2_hrtime_ns()` -> Number — nanoseconds since a process-start monotonic base (f64 is exact to
+/// ~104 days). The analog of .NET's `Stopwatch.GetTimestamp`; lets a plugin time a single
+/// sub-microsecond op directly instead of loop-amortizing against Date.now (ms).
+fn s2_hrtime_ns(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(-1.0);
+        static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let base = BASE.get_or_init(std::time::Instant::now);
+        rv.set_double(base.elapsed().as_nanos() as f64);
+    }));
+}
+
 fn set_native(
     scope: &mut v8::PinScope,
     global_obj: v8::Local<v8::Object>,
@@ -6539,6 +6583,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_thread_sleep", s2_thread_sleep);
     // Schema + entity system.
     set_native(scope, global_obj, "__s2_schema_offset", s2_schema_offset);
+    // Perf instrumentation: monotonic ns clock + isolate heap size + force-GC (dev/benchmark).
+    set_native(scope, global_obj, "__s2_v8_heap_used", s2_v8_heap_used);
+    set_native(scope, global_obj, "__s2_v8_gc", s2_v8_gc);
+    set_native(scope, global_obj, "__s2_hrtime_ns", s2_hrtime_ns);
     // Slice 5A: (index, serial) entity natives — serial-gated read/write/valid/decode.
     // The five Slice-3 raw-pointer natives (entity-by-index, deref-handle, ent-read/write-i32,
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.
