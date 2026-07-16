@@ -1,6 +1,6 @@
 {
   "name": "@s2script/sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "s2script SDK — types + CLI for building Source 2 / CS2 plugins. Placeholder release that bootstraps the package name + OIDC trusted publishing; the real per-capability type subpaths (@s2script/sdk/entity, …) and the `s2s` CLI land in 0.1.0 via the consolidation (Part C).",
   "publishConfig": {
     "access": "public"
@@ -10,35 +10,93 @@
     "README.md"
   ],
   "exports": {
-    "./admin": { "types": "./admin.d.ts" },
-    "./bans": { "types": "./bans.d.ts" },
-    "./chat": { "types": "./chat.d.ts" },
-    "./clients": { "types": "./clients.d.ts" },
-    "./commands": { "types": "./commands.d.ts" },
-    "./config": { "types": "./config.d.ts" },
-    "./console": { "types": "./console.d.ts" },
-    "./cookies": { "types": "./cookies.d.ts" },
-    "./damage": { "types": "./damage.d.ts" },
-    "./db": { "types": "./db.d.ts" },
-    "./entity": { "types": "./entity.d.ts" },
-    "./events": { "types": "./events.d.ts" },
-    "./frame": { "types": "./frame.d.ts" },
-    "./http": { "types": "./http.d.ts" },
-    "./interfaces": { "types": "./interfaces.d.ts" },
-    "./math": { "types": "./math.d.ts" },
-    "./menu": { "types": "./menu.d.ts" },
-    "./net": { "types": "./net.d.ts" },
-    "./plugins": { "types": "./plugins.d.ts" },
-    "./server": { "types": "./server.d.ts" },
-    "./sound": { "types": "./sound.d.ts" },
-    "./timers": { "types": "./timers.d.ts" },
-    "./topmenu": { "types": "./topmenu.d.ts" },
-    "./trace": { "types": "./trace.d.ts" },
-    "./translations": { "types": "./translations.d.ts" },
-    "./usercmd": { "types": "./usercmd.d.ts" },
-    "./usermessages": { "types": "./usermessages.d.ts" },
-    "./votes": { "types": "./votes.d.ts" },
-    "./ws": { "types": "./ws.d.ts" },
+    "./admin": {
+      "types": "./admin.d.ts"
+    },
+    "./bans": {
+      "types": "./bans.d.ts"
+    },
+    "./chat": {
+      "types": "./chat.d.ts"
+    },
+    "./clients": {
+      "types": "./clients.d.ts"
+    },
+    "./commands": {
+      "types": "./commands.d.ts"
+    },
+    "./config": {
+      "types": "./config.d.ts"
+    },
+    "./console": {
+      "types": "./console.d.ts"
+    },
+    "./cookies": {
+      "types": "./cookies.d.ts"
+    },
+    "./damage": {
+      "types": "./damage.d.ts"
+    },
+    "./db": {
+      "types": "./db.d.ts"
+    },
+    "./entity": {
+      "types": "./entity.d.ts"
+    },
+    "./events": {
+      "types": "./events.d.ts"
+    },
+    "./frame": {
+      "types": "./frame.d.ts"
+    },
+    "./http": {
+      "types": "./http.d.ts"
+    },
+    "./interfaces": {
+      "types": "./interfaces.d.ts"
+    },
+    "./math": {
+      "types": "./math.d.ts"
+    },
+    "./menu": {
+      "types": "./menu.d.ts"
+    },
+    "./net": {
+      "types": "./net.d.ts"
+    },
+    "./plugins": {
+      "types": "./plugins.d.ts"
+    },
+    "./server": {
+      "types": "./server.d.ts"
+    },
+    "./sound": {
+      "types": "./sound.d.ts"
+    },
+    "./timers": {
+      "types": "./timers.d.ts"
+    },
+    "./topmenu": {
+      "types": "./topmenu.d.ts"
+    },
+    "./trace": {
+      "types": "./trace.d.ts"
+    },
+    "./translations": {
+      "types": "./translations.d.ts"
+    },
+    "./usercmd": {
+      "types": "./usercmd.d.ts"
+    },
+    "./usermessages": {
+      "types": "./usermessages.d.ts"
+    },
+    "./votes": {
+      "types": "./votes.d.ts"
+    },
+    "./ws": {
+      "types": "./ws.d.ts"
+    },
     "./package.json": "./package.json"
   },
   "repository": {

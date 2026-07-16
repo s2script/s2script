@@ -18,7 +18,7 @@ const GETTER_RET: Record<GetterKey, string> = {
 export function emitEventDts(model: EventDescriptor[]): string {
   const out: string[] = [
     HEADER,
-    'import type { GameEvent, HookResultValue } from "@s2script/events";',
+    'import type { GameEvent, HookResultValue } from "@s2script/sdk/events";',
     "",
   ];
 

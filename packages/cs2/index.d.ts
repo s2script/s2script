@@ -5,14 +5,14 @@
  * nav-targets.json by `s2script gen-nav`; the typed event interfaces are GENERATED (events.generated.d.ts)
  * from the event catalog by `s2script gen-events`; this file adds the hand-written entry points on top.
  */
-import type { EntityRef } from "@s2script/entity";
-import type { Vector, QAngle } from "@s2script/math";
-import type { TraceHit } from "@s2script/trace";
+import type { EntityRef } from "@s2script/sdk/entity";
+import type { Vector, QAngle } from "@s2script/sdk/math";
+import type { TraceHit } from "@s2script/sdk/trace";
 export * from "./schema.generated";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
 export type { SceneNode, WeaponServices, MovementServices, AimPunchServices } from "./nav.generated";
 import type { SceneNode, WeaponServices, MovementServices, AimPunchServices } from "./nav.generated";
-export { GameEvent } from "@s2script/events";
+export { GameEvent } from "@s2script/sdk/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
 export { Weapon } from "./weapon";
@@ -133,9 +133,9 @@ export declare const Player: {
   target(pattern: string, callerSlot: number, filterImmunity?: boolean): Player[];
 };
 
-import type { GameEvent, HookResultValue } from "@s2script/events";
-export { HookResult } from "@s2script/events";
-export type { HookResultValue } from "@s2script/events";
+import type { GameEvent, HookResultValue } from "@s2script/sdk/events";
+export { HookResult } from "@s2script/sdk/events";
+export type { HookResultValue } from "@s2script/sdk/events";
 import type { GameEvents } from "./events.generated";
 /**
  * Game-event subscription (typed overlay). Importing from `@s2script/cs2` gives the typed overloads:

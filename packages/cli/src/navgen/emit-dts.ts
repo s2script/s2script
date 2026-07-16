@@ -26,8 +26,8 @@ export function emitNavDts(model: NavModel): string {
   const mathTypes: string[] = [];
   if (needsVector) mathTypes.push("Vector");
   if (needsQAngle) mathTypes.push("QAngle");
-  if (mathTypes.length) out.push(`import type { ${mathTypes.join(", ")} } from "@s2script/math";`);
-  if (needsEntityRef) out.push('import type { EntityRef } from "@s2script/entity";');
+  if (mathTypes.length) out.push(`import type { ${mathTypes.join(", ")} } from "@s2script/sdk/math";`);
+  if (needsEntityRef) out.push('import type { EntityRef } from "@s2script/sdk/entity";');
   out.push("");
 
   // One interface per wrapper.
