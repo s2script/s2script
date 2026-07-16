@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "gt": {
+      "type": "stdio",
+      "command": "gt",
+      "args": [
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}
