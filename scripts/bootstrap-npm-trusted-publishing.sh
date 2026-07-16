@@ -132,11 +132,11 @@ if ! npm trust --help >/dev/null 2>&1; then
 fi
 
 if [[ ${#missing[@]} -gt 0 ]]; then
-  if printf '%s\n' "${missing[@]}" | grep -q '|@s2script/cli$'; then
+  if printf '%s\n' "${missing[@]}" | grep -q '|@s2script/sdk$'; then
     if [[ ! -d node_modules ]]; then
       npm install --no-fund --no-audit
     fi
-    ( cd packages/cli && npm run build )
+    ( cd packages/sdk && npm run build )
   fi
   for entry in "${missing[@]}"; do
     dir="${entry%%|*}"

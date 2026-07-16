@@ -10,7 +10,7 @@ for base in examples plugins disabled; do
     [ -f "$d/package.json" ] || continue
     echo "=== typecheck $d ==="
     if ! node --experimental-strip-types --no-warnings -e "
-      import('./packages/cli/src/typecheck/typecheck.ts').then(({typecheckPlugin, formatDiagnostics}) => {
+      import('./packages/sdk/src/typecheck/typecheck.ts').then(({typecheckPlugin, formatDiagnostics}) => {
         const r = typecheckPlugin('$d', { packagesDir: 'packages' });
         if (!r.ok) { console.error(formatDiagnostics(r.diagnostics)); process.exit(1); }
         console.log('  OK');

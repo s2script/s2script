@@ -1,4 +1,4 @@
-// build.mjs — esbuild driver for @s2script/cli
+// build.mjs — esbuild driver for @s2script/sdk (the s2s CLI)
 // Bundles src/cli.ts → dist/cli.js (ESM, node platform).
 // esbuild itself is marked external (it has a native component that cannot be bundled).
 // adm-zip is marked external too (heavy CJS package; installed as a dependency).

@@ -39,14 +39,14 @@ export interface CreateResult {
 function readCliVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    join(here, "..", "package.json"), // dist/cli.js → packages/cli/package.json
-    join(here, "..", "..", "package.json"), // src/create → packages/cli/package.json
+    join(here, "..", "package.json"), // dist/cli.js → packages/sdk/package.json
+    join(here, "..", "..", "package.json"), // src/create → packages/sdk/package.json
   ];
   for (const p of candidates) {
     if (!existsSync(p)) continue;
     try {
       const pkg = JSON.parse(readFileSync(p, "utf8")) as { name?: string; version?: string };
-      if (pkg.name === "@s2script/cli" && pkg.version) return pkg.version;
+      if (pkg.name === "@s2script/sdk" && pkg.version) return pkg.version;
     } catch {
       /* try next */
     }
@@ -122,13 +122,13 @@ function assertInstall(v: string | undefined): InstallChoice | undefined {
 }
 
 /** Direct create deps needed for a clean typecheck. Post-consolidation the builtins all ship in
- *  the single `@s2script/sdk` package (subpaths `@s2script/sdk/<cap>`); the game types are the
- *  separate `@s2script/cs2`; the build CLI is `@s2script/cli`. */
+ *  the single `@s2script/sdk` package (subpaths `@s2script/sdk/<cap>`), which also carries the
+ *  build CLI (bin `s2s`); the game types are the separate `@s2script/cs2`. */
 function createPackageNames(game: GameChoice): string[] {
   if (game === "cs2") {
-    return ["cli", "sdk", "cs2"];
+    return ["sdk", "cs2"];
   }
-  return ["cli", "sdk"];
+  return ["sdk"];
 }
 
 function registryDevDeps(game: GameChoice, version: string): Record<string, string> {
@@ -221,7 +221,7 @@ function packageJsonContent(
         private: true,
         main: "src/plugin.ts",
         scripts: {
-          build: "s2script build .",
+          build: "s2s build .",
         },
         devDependencies,
         s2script: {

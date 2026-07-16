@@ -27,12 +27,12 @@ export function isPackagesDir(dir: string): boolean {
 /**
  * Walk from the CLI entry URL to find a packages-shaped directory.
  * Works for `dist/cli.js`, `src/cli.ts`, and a published install under
- * `node_modules/@s2script/cli/dist/cli.js` (→ sibling types packages).
+ * `node_modules/@s2script/sdk/dist/cli.js` (→ sibling types packages).
  */
 export function findPackagesDirNearCli(fromCliUrl: string = import.meta.url): string | undefined {
   const start = dirname(fileURLToPath(fromCliUrl));
-  // dist/cli.js → @s2script/cli → @s2script  (or packages/cli → packages)
-  // src/cli.ts  → packages/cli/src → packages/cli → packages  (one more ..)
+  // dist/cli.js → packages/sdk/dist → packages/sdk → packages
+  // src/cli.ts  → packages/sdk/src → packages/sdk → packages  (one more ..)
   for (const rel of ["../..", "../../.."] as const) {
     const candidate = join(start, rel);
     if (isPackagesDir(candidate)) return resolve(candidate);

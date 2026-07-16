@@ -38,7 +38,7 @@ npm run build
 npx s2script create my-plugin --game cs2 --name @me/my-plugin --yes --install npm
 ```
 
-`@s2script/*` packages on npm are **types-only** (plus `@s2script/cli` for `build` / `create`). Runtime APIs are injected by the server host — `s2script build` externalizes `@s2script/*` and never bundles them.
+`@s2script/*` packages on npm are **types-only** (plus `@s2script/sdk` for `build` / `create`). Runtime APIs are injected by the server host — `s2script build` externalizes `@s2script/*` and never bundles them.
 
 Monorepo treadmill commands (`gen-schema` / `gen-events` / `gen-nav`) stay in-tree; plugin authors only need `create` and `build`.
 
@@ -533,7 +533,7 @@ tags each timer/job resolver `(plugin_id, generation)` and drops any continuatio
 unloaded or reloaded — a threadpool result completing after its plugin is gone never runs into a disposed
 context (the use-after-free killer).
 
-**Authoring & injection.** Plugins are TypeScript; `@s2script/cli` (`npx s2script build`) esbuild-bundles
+**Authoring & injection.** Plugins are TypeScript; `@s2script/sdk` (`npx s2script build`) esbuild-bundles
 them to a CJS `plugin.js` with `@s2script/*` marked **external** and derives a minimal `manifest.json`.
 The runtime evals the bundle under a `(function(require, module, exports){…})` wrapper whose `require`
 resolves `@s2script/std` (`OnGameFrame`, `delay`, `nextTick`, `nextFrame`, `threadSleep`, `console`) and
@@ -567,7 +567,7 @@ the CLI-built `.s2sp`, and the externally-registered cs2 — proven end to end.
 
 | # | Criterion | Result |
 |---|---|---|
-| build | `cargo test` (registry/ledger/liveness + loader + context/dispatch/drain) + the CLI test + sniper | ✅ 49 core tests; `@s2script/cli` test; both boundary gates green; sniper GLIBC ≤ 2.30 |
+| build | `cargo test` (registry/ledger/liveness + loader + context/dispatch/drain) + the CLI test + sniper | ✅ 49 core tests; `@s2script/sdk` test; both boundary gates green; sniper GLIBC ≤ 2.30 |
 | build tool | `npx s2script build` turns a TS plugin into a loadable `.s2sp` (cjs + external + derived manifest) | ✅ cargo (`read_s2sp`) + the CLI round-trip test |
 | load | a dropped `.s2sp` loads into its own context and runs Slices 1–3 (`OnGameFrame`, `await delay`, `Pawn.health`) | ✅ live (`[demo] onLoad` → ticks `hp=100` → `after delay`) |
 | hot-reload | edit + rebuild + re-drop reloads with no server restart (old torn down, new active) | ✅ live (`onUnload` → `onLoad`, fresh state, same process) |
@@ -601,8 +601,8 @@ so `import greeter = require("@demo/greeter")` type-checks.
 
 ```bash
 # Build the CLI + both plugins → .s2sp
-node packages/cli/build.mjs
-( cd packages/cli && npm link )                 # so `npx s2script` resolves to this repo's CLI
+node packages/sdk/build.mjs
+( cd packages/sdk && npm link )                 # so `npx s2script` resolves to this repo's CLI
 npx s2script build examples/greeter-plugin
 npx s2script build examples/greeter-consumer
 
@@ -676,7 +676,7 @@ ledgered reverse-dependency teardown — proven end to end.
 
 | # | Criterion | Result |
 |---|---|---|
-| build | `cargo test` (publish/require/call/emit/teardown + loader dep maps) + CLI test + sniper | ✅ 74 core tests; `@s2script/cli` test; both boundary gates green; sniper GLIBC ≤ 2.31 |
+| build | `cargo test` (publish/require/call/emit/teardown + loader dep maps) + CLI test + sniper | ✅ 74 core tests; `@s2script/sdk` test; both boundary gates green; sniper GLIBC ≤ 2.31 |
 | publish | producer `publishInterface(name, version, impl)` exposes methods-as-natives + a `PublishHandle` | ✅ live (`[greeter] onLoad — publishing @demo/greeter@1.0.0`) |
 | call | consumer hard-dep proxy calls `greet(0)` cross-context (structured-copy args/return) | ✅ live (`[consumer] greet -> hello, player 0`) |
 | event | producer `handle.emit("greeted", …)` forwards to the consumer's `on("greeted", …)` | ✅ live (`[consumer] event greeted: slot=0 tick=1025`) |
@@ -717,7 +717,7 @@ stale ref degrades safely to `null`/`false` — never garbage, never a crash.
 ```bash
 cd /home/gkh/projects/s2script
 # 1. Build the demo .s2sp (stashes a Pawn, logs stashed vs fresh health every ~256 frames)
-node packages/cli/build.mjs                 # (run from packages/cli/ if it can't resolve src/cli.ts)
+node packages/sdk/build.mjs                 # (run from packages/cli/ if it can't resolve src/cli.ts)
 npx s2script build examples/demo-plugin
 # 2. Sniper-build the runtime (GLIBC <= 2.31) — MUST post-date the 5A commits (fresh EntityRef core)
 docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
@@ -826,8 +826,8 @@ system uses.
 ```bash
 cd /home/gkh/projects/s2script
 # 1. Build the CLI + both demo .s2sp
-node packages/cli/build.mjs
-( cd packages/cli && npm link )                 # so `npx s2script` resolves to this repo's CLI
+node packages/sdk/build.mjs
+( cd packages/sdk && npm link )                 # so `npx s2script` resolves to this repo's CLI
 npx s2script build examples/entref-producer
 npx s2script build examples/entref-consumer
 
@@ -933,8 +933,8 @@ until it returns `true`.
 
 ```bash
 # 1. Build the CLI + the dump plugin → .s2sp
-node packages/cli/build.mjs
-( cd packages/cli && npm link )                 # so `npx s2script` resolves to this repo's CLI
+node packages/sdk/build.mjs
+( cd packages/sdk && npm link )                 # so `npx s2script` resolves to this repo's CLI
 npx s2script build examples/schema-dump
 
 # 2. Sniper-build the runtime (GLIBC <= 2.31; carries the shim's schema_enumerate) and bring the server up
