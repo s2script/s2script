@@ -66,6 +66,34 @@ python3 scripts/rcon.py "<console command>"              # drive the running ser
 npm run changeset && npm run version-packages && npm run release    # @s2script/* npm types + CLI (changesets)
 ```
 
+## Ship work as a stack, not a branch (Graphite)
+
+**Default to `gt`, not `git push` + one PR.** A slice is a *stack* of small PRs, each independently reviewable. Only ~24% of PRs over 1000 lines get any review comment at all — a 40-file PR is not reviewed, it is rubber-stamped, and agentic work reaches that size fast.
+
+**Plan the stack before writing code.** After the plan exists and before the first edit, map the slice's building blocks in dependency order and make one task per intended PR. This is the step that produces good boundaries; deciding them afterwards means re-cutting commits.
+
+**What earns its own PR:**
+- **Atomic** — passes the gate suite and is safe to merge *on its own*. This is the binding constraint: a signature change that breaks every caller must land WITH its callers, in one PR. Don't split what CI can't verify separately.
+- **Narrow scope** — one module, or one mechanical change across many.
+- **Small.** No change is too small. A tiny PR buys clarity for the big one above it. Always argue for more PRs, never fewer.
+
+```bash
+gt ls                                  # see the stack
+gt create <stack>/<change> -m "msg"    # new PR on top (after `git add`)
+gt modify -m "msg"                     # amend the current one
+gt up / gt down / gt top / gt bottom   # navigate
+gt restack                             # rebase the stack on trunk
+gt submit --no-interactive             # push the whole stack
+```
+
+Branch naming: `terse-stack-name/terse-change` (e.g. `contract-grammar/publishes-grammar`, `contract-grammar/host-injected-version`).
+
+Run the gate suite **per PR**, not once at the top — an atomic PR that only passes with its children isn't atomic.
+
+PR bodies need **Stack Context** (what the whole stack is for) and **Why** (what prompted this piece, how it fits). Write the body with the Write tool to a file and `gh pr edit N --body-file` — never a heredoc; shell escaping mangles tables and code blocks.
+
+In a worktree the branch usually starts untracked (`gt branch info` errors): `gt track -p main` first, then create the stack.
+
 ## Repository layout
 
 ```
