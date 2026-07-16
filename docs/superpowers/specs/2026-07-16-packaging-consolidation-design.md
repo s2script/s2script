@@ -24,14 +24,16 @@ Three separable goals, one narrative — the packaging layer as it will look whe
 - **The derived manifest carries only `pluginDependencies` and `optionalPluginDependencies`** (`build.ts:113`). npm `dependencies` never reach it. This is the mechanism that makes Fork 1 work (see §5).
 - **`typecheck.ts:76`'s filter is `isBuiltinOnDisk`** — `d.startsWith("@s2script/") && existsSync(packagesDir/<name>/index.d.ts)`. A typo'd builtin (`@s2script/frmae`) is not on disk → falls through to the ambient `declare module` stub → types as `any` instead of TS2307. Verified end-to-end.
 - **`s2script` (unscoped) is unclaimed on npm; `@s2script` scope is owned (user `gkh`).** `@s2script/cli@0.2.0` already has `bin: { s2script: "dist/cli.js" }` and depends on `esbuild`, `adm-zip`, `typescript`.
-- **Blast radius (re-counted, larger than the earlier ~188/50 estimate):** **230 import sites across 77 files**; **9 `__s2require` string literals** in `games/cs2` (`pawn.js`, `weapon.js`, `nav.generated.js`, `schema.generated.js`) that are compiler-invisible — a miss degrades to `pawn.origin → null` silently at runtime; **11 cross-package `.d.ts` imports** in `packages/*/index.d.ts`; the `tsconfig.base.json:12` `paths` twin (`"@s2script/*": ["*/index.d.ts"]`); the root `package.json` is **already named `"s2script"` (private)** and must be renamed to free the name. `check-core-boundary.sh` and `check-plugins-typecheck.sh` are crate/path-based and need no change.
+- **Blast radius (re-counted, larger than the earlier ~188/50 estimate):** **230 import sites across 77 files**; **10 `__s2require` string literals** in `games/cs2` (`pawn.js` ×5 — including one embedded in the `__s2pkg_cs2 =` assignment at `pawn.js:830` — `weapon.js` ×1, `nav.generated.js` ×2, `schema.generated.js` ×2) that are compiler-invisible — a miss degrades to `pawn.origin → null` silently at runtime. **Every count in this spec is illustrative; the plan must grep, never hardcode a count** — the off-by-one here (an earlier pass said 9) is exactly the silent-failure class this migration worries about. **11 cross-package `.d.ts` imports** in `packages/*/index.d.ts`; the `tsconfig.base.json:12` `paths` twin (`"@s2script/*": ["*/index.d.ts"]`); the root `package.json` is **already named `"s2script"` (private)** and must be renamed to free the name. `check-core-boundary.sh` and `check-plugins-typecheck.sh` are crate/path-based and need no change.
+- **The typecheck gate resolves builtin types at three coupled sites**, all keyed to the current `packages/<name>/index.d.ts` layout: `typecheck.ts:87` (`paths: { "@s2script/*": ["*/index.d.ts"] }`), `typecheck.ts:60` (`isBuiltinOnDisk` = `existsSync`), `typecheck.ts:91` (the hardcoded `globals/globals.d.ts` rootName). A fourth, `packages/cli/src/packages-resolve.ts`, resolves `@s2script/*` types for out-of-monorepo builds via `node_modules/@s2script/` and names `@s2script/globals` in its error text. Any layout move must update all four in lockstep (§6.3).
+- **`@s2script/cs2` is declared in `pluginDependencies` by real consumers** (`plugins/zones`, `examples/{demo-plugin,entref-producer,zones-consumer-demo}`) and is itself in `BUILTIN_MODULES` (so skipped from the ledger today). Its own `package.json` pins **exact** versions of soon-deleted stubs (`@s2script/entity: 0.3.0`, `math`, `trace`, `events`) and its `index.d.ts` imports them.
 - **CLAUDE.md's "Never overload npm's `exports`"** governs *plugin manifests*, not a published types package — confirmed. Adding a subpath `exports` map to `s2script` is out of its scope.
 
 ## 3. Decisions (forks resolved)
 
 | Fork | Decision | Rationale |
 |---|---|---|
-| **1 — builtins → npm `dependencies`?** | **Yes.** Move builtins from `s2script.pluginDependencies` to npm `dependencies`. | A consolidated `s2script` *is* an npm build-dep, so CLAUDE.md's "`dependencies` = npm build-deps only" puts it there. Because the derived manifest never carries npm `dependencies` (§2), builtins **vanish from the manifest**, `imports_from_manifest` never sees them, and `BUILTIN_MODULES` becomes genuinely unemployed (deletable). This is also what lets the typecheck filter become honest (§6.4). |
+| **1 — builtins → npm `dependencies`?** | **Yes.** Move builtins from `s2script.pluginDependencies` to npm `dependencies` — **and the game package `@s2script/cs2` with them.** | A consolidated `s2script` *is* an npm build-dep, so CLAUDE.md's "`dependencies` = npm build-deps only" puts it there. Because the derived manifest never carries npm `dependencies` (§2), builtins **vanish from the manifest**, `imports_from_manifest` never sees them, and `BUILTIN_MODULES` becomes genuinely unemployed (deletable). **Game packages must move too:** `@s2script/cs2` is always-present-per-game (like a builtin, not a presence-conditional interface), it lives in `pluginDependencies` today, and it is in `BUILTIN_MODULES`. If its consumer declarations stayed in `pluginDependencies`, the typecheck filter would still need a disk/resolvability check to tell it from an interface — the exact check §6.4 claims disappears — and post-`BUILTIN_MODULES`-deletion it would become a phantom Hard ledger dep. Moving it to npm `dependencies` (it resolves via `node_modules/@s2script/cs2`, still scoped) is what lets the filter be purely shape-based. |
 | **2 — does `s2script` ship the CLI bin?** | **Yes — types + CLI** (the `typescript`/`tsc` model). | `npm i -D s2script` gives the subpath types *and* `npx s2script build`. Every plugin author needs the CLI to build anyway; one dep, one version. Kills the npx footgun definitively. `@s2script/cli` is deprecated/aliased. |
 | **3 — claim the name now or at consolidation?** | **Now, with a real forwarding bin** (Part A). | A defensive claim prevents squatting; the forwarding bin makes `npx s2script build` work today. A types-only placeholder is the one thing to avoid — it breaks `npx`. Part C later replaces the package contents. |
 | Decomposition | **One spec, three independently-stackable parts.** | A/B/C have no build-order dependency on each other except "A frees the name C fills." Each is its own Graphite stack, planned + implemented via its own workflow. |
@@ -44,8 +46,9 @@ Three separable goals, one narrative — the packaging layer as it will look whe
 
 **One PR. Independent of B and C. Do first.**
 
-Publish `s2script@0.0.x` with a **real forwarding bin** — a tiny `bin: { s2script }` shim that re-execs the installed `@s2script/cli` (or vendors its entry) so `npx s2script build` resolves and runs today. The package is otherwise minimal.
+Publish `s2script@0.0.x` with a **real forwarding bin** — a tiny `bin: { s2script }` shim that runs the installed `@s2script/cli` so `npx s2script build` resolves and runs today. The package is otherwise minimal.
 
+- **Forward by module path, never by bin name (avoids infinite recursion).** Both `s2script` and `@s2script/cli` declare a bin named `s2script`; a shim that forwards by *spawning the `s2script` bin* (PATH / `.bin`) can resolve to itself and loop. The shim must `require.resolve("@s2script/cli/dist/cli.js")` and execute that file directly. `@s2script/cli` is a real `dependency` of `s2script`, so it is always installed. Users who install both packages will see a transient npm `.bin` collision warning; it disappears in Part C when the CLI is absorbed. (Vendoring the CLI entry is the worse fork — it drags `esbuild`/`adm-zip`/`typescript` in as deps regardless.)
 - **Why a bin, not types-only:** a types-only package at `s2script` turns today's honest `npx s2script build` 404 into `could not determine executable` — a worse failure. Any placeholder MUST carry a bin.
 - **Squat prevention:** `s2script` is unclaimed; the name is the one irreversible asset here. Claiming it early is cheap insurance.
 - **Relationship to C:** Part C replaces this package's contents with the real types + CLI (§Part C). Part A only plants the flag and wires the bin; it does not move any `.d.ts` files.
@@ -82,13 +85,15 @@ The tentpole. Depends on Part A having claimed the name.
 
 Two namespaces, discriminated by **shape**, not by a disk check:
 
-| Import shape | Meaning | Resolves how | Typo behavior |
-|---|---|---|---|
-| `s2script/<cap>` (unscoped subpath) | a builtin | path-mapping / `exports` → the one `s2script` package's subpath `.d.ts` | **TS2307** (miss = real error) |
-| `@s2script/cs2`, `@s2script/<game>` (scoped, first-party) | a game package | real installed package `.d.ts` (kept as today via the `@s2script/*` path) | TS2307 |
-| `@scope/name` in `pluginDependencies` | an inter-plugin interface (incl. first-party `@s2script/zones`) | `.s2script/types/<name>/` if fetched, else ambient stub | `any` (unknowable until fetched) |
+| Import shape | Declared in | Meaning | Resolves how | Typo behavior |
+|---|---|---|---|---|
+| `s2script/<cap>` (unscoped subpath) | npm `dependencies` | a builtin | path-mapping / `exports` → the one `s2script` package's subpath `.d.ts` | **TS2307** (miss = real error) |
+| `@s2script/cs2`, `@s2script/<game>` (scoped) | npm `dependencies` | a game package | real installed package `.d.ts` (`node_modules/@s2script/cs2`) | **TS2307** |
+| `@scope/name` | `pluginDependencies` | an inter-plugin interface (incl. first-party `@s2script/zones`) | `.s2script/types/<name>/` if fetched, else ambient stub | `any` (unknowable until fetched) |
 
-At runtime, `s2require` resolves `s2script/<cap> → __s2pkg_<cap>` — one additive strip-path alongside the existing `@s2script/` one. `@s2script/cs2` keeps its current path untouched.
+The discriminator is now **which map declares it**, which the shape mirrors: npm `dependencies` = always-present (builtins + game packages) = resolve-or-error, never stub; `pluginDependencies` = presence-conditional interfaces = stub-until-fetched. That is what makes the typecheck filter honest (§6.4) with no disk check.
+
+**This table is a compile-time contract, not a runtime guarantee.** At runtime `s2require` resolves `s2script/<cap> → __s2pkg_<cap>` — one additive strip-path alongside the existing `@s2script/` one — and is deliberately permissive: `@s2script/cs2` keeps its current path untouched, and dual-stripping means `s2script/cs2` or any `__s2pkg_*` global would also resolve at runtime even though the gate rejects it. The gate, not `s2require`, enforces the namespace split.
 
 ### 6.2 The `s2script` package — layout and versioning
 
@@ -108,33 +113,39 @@ packages/s2script/
 - **Physically move** the stub files into one dir (one package = one dir — honest, greppable) rather than assembling at publish. The 11 cross-`.d.ts` imports rewrite `@s2script/math` → `./math` (relative, internal); the `exports` map gates only *external* subpath access, so internal relatives resolve regardless.
 - **Two faces of one package:** a plugin does `import { Entity } from "s2script/entity"` (esbuild-external, prelude at runtime) *and* the author runs `npx s2script build` (the bin). Same `npm i -D s2script`.
 - **Versioning — the one redundancy, named and kept:** a plugin declares `dependencies: { "s2script": "^1.x" }` (the `.d.ts` contract it compiled against) **and** keeps `s2script.apiVersion` (the host ABI it loads against). Two real axes — types vs runtime — that move together in practice, exactly as `typescript@5.4` is both the compiler and `lib.d.ts`. **Not collapsed.** The per-capability version pins builtins carry today (`@s2script/entity: ^0.2.0`) are lost, but those are fictional — all builtins ship in one runtime zip, versioned by the host — so one `s2script` version is *more* honest.
+- **Neither axis cross-validates the other, and that hole is pre-existing, not new.** `apiVersion` is major-only at load (`loader.rs:68`); the `s2script` npm version never reaches the manifest at all. Concrete failure the design does **not** fully close: a plugin compiled against `s2script@1.4` types that include a capability added in host runtime 1.4 (say a new `s2script/<cap>`), declaring `apiVersion: "1.x"`, deployed to a host at 1.2 → the apiVersion gate passes (major matches), `__s2pkg_<cap>` is undefined, `s2require` returns null → a runtime `TypeError` on a plugin that typechecked green. This hole exists today (the per-capability pins were equally unenforced), so consolidation does not worsen it. **Cheap mitigation in scope:** the CLI stamps the resolved `s2script` types version into the manifest as an **informational** field, so this exact failure is diagnosable at load. **Full minor-level gating is out of scope** (semver spec, §10).
 - **`@s2script/cs2`** stays a separate scoped package and gains `dependencies: { "s2script": "..." }`, since its `.d.ts` imports `s2script/entity`, `s2script/math`, `s2script/trace`, `s2script/events`.
 
 ### 6.3 The dual-prefix transition — how a 230-site rename becomes a stack
 
 A hard-cut rename of 77 files cannot be both atomic and small — after the resolution mechanism flips, every un-migrated import breaks. The enabling trick is a **dual-prefix transition**: teach the mechanism both spellings, migrate consumers in batches, then remove the old spelling once nothing uses it. The runtime cooperates for free — `s2require` resolving both `@s2script/entity` and `s2script/entity` to `__s2pkg_entity` is purely additive.
 
-**Phase 1 — publish `s2script` + dual-resolve (one PR).**
-- Create `packages/s2script/` (moved `.d.ts` + absorbed CLI), fill the package created in Part A.
+**Phase 1 — publish `s2script` + dual-resolve (one PR).** The `.d.ts` files physically move in this PR, so the gate's resolution sites **must move with them, in the same commit** — otherwise a plugin that declares builtins falls through `isBuiltinOnDisk` into the ambient stub and types as `any`, which typechecks **green**: a silent hollowing of the 5E.1 gate that CI cannot catch. Concretely:
+- Create `packages/s2script/` (moved `.d.ts` + absorbed CLI), filling the package created in Part A.
 - Add `s2script/` stripping to `s2require` (`v8host.rs:4065`), alongside the existing `@s2script/`.
-- Teach the typecheck gate, esbuild-external list, and `tsconfig.base.json` paths to accept **both** prefixes.
-- No consumer changes yet — fully backward-compatible, CI green.
+- Update **all four** type-resolution sites (§2) to find builtins at the new location while still resolving `@s2script/cs2` at the old one: `typecheck.ts:87` paths become an ordered fallback (`"@s2script/*": ["s2script/*.d.ts", "*/index.d.ts"]`) plus a new `"s2script/*"` entry; `isBuiltinOnDisk` checks both locations; the `globals` rootName checks both; `packages-resolve.ts` learns `node_modules/s2script`.
+- Add `s2script/*` to the esbuild `external` list (the literal `@s2script/*` wildcard already externalizes the scoped forms; `s2script/*` does not match a bare `s2script` import, which is fine because the flat barrel is rejected, §3).
+- No consumer changes yet — fully backward-compatible.
+- **Green CI does not prove this PR correct** (green is exactly the silent-failure signature). It must ship a **canary test** (§8): a fixture with a deliberate type error against a builtin still *fails* the gate, proving resolution did not degrade to `any`.
 
 **Phase 2 — migrate consumers in batches (N small PRs).**
-- One PR per plugin (or a few), rewriting `@s2script/<builtin>` → `s2script/<builtin>` and moving builtins from `s2script.pluginDependencies` to npm `dependencies`.
+- One PR per plugin (or a few), rewriting `@s2script/<builtin>` → `s2script/<builtin>` and moving builtins **and `@s2script/cs2`** from `s2script.pluginDependencies` to npm `dependencies` (Fork 1). The `@s2script/cs2` *import specifier* is unchanged (it stays scoped); only its declaration map moves.
 - Each PR atomic because both prefixes still resolve.
-- **`games/cs2`'s 9 `__s2require` literals get their own PR**, gated by the live Docker CS2 gate (`pawn.origin != null`) — a missed literal fails silently, so CI alone can't prove it.
+- **`games/cs2`'s `__s2require` literals get their own PR** (grep for the exact set — ~10, including the one embedded in the `__s2pkg_cs2 =` assignment), gated by the live Docker CS2 gate (`pawn.origin != null`) — a missed literal fails silently, so CI alone can't prove it.
 
 **Phase 3 — remove the legacy builtin prefix (one PR).**
 - Delete the 29 stub packages and `packages/globals`.
 - Delete `BUILTIN_MODULES` from `loader.rs` (now unemployed — see §6.4).
-- Narrow the typecheck filter to the honest scope-based rule (§6.4).
+- Narrow the typecheck filter to the honest shape-based rule (§6.4); collapse the phase-1 fallback paths to the single `s2script/*` + `@s2script/*`-for-games form.
 - Rename the private root `package.json` off `"s2script"`.
-- **Gate:** a grep proves zero `@s2script/<builtin>` imports survive. `@s2script/cs2` and `@s2script/zones` are untouched — they legitimately keep the scope.
+- **Republish `@s2script/cs2`** with its npm `dependencies` re-pointed at `s2script` and its `.d.ts` imports rewritten — otherwise the published game package dangles on deprecated stubs (`@s2script/entity@0.3.0` etc.) that no longer exist.
+- **Gate:** a grep proves zero `@s2script/<builtin>` imports survive. `@s2script/cs2` and `@s2script/zones` keep the scope — cs2 as an installed package, zones as an interface.
 
 ### 6.4 Why Fork 1 deletes `BUILTIN_MODULES`, and how the typecheck fix works
 
-**`BUILTIN_MODULES` deletion:** npm `dependencies` never reach the derived manifest (§2). Once builtins move there (Fork 1), they no longer appear in `pluginDependencies`, so `imports_from_manifest` never encounters a builtin name, so the `is_builtin_module` skip has nothing to skip. The list — and its stale-copy hazard, mirrored in the registry branch's `registry/builtins.ts` — is deletable.
+**`BUILTIN_MODULES` deletion:** npm `dependencies` never reach the derived manifest (§2). Once builtins (and `@s2script/cs2`) move there (Fork 1), they no longer appear in `pluginDependencies`, so `imports_from_manifest` never encounters a builtin name, so the `is_builtin_module` skip has nothing to skip. The list — and its stale-copy hazard, mirrored in the registry branch's `registry/builtins.ts` — is deletable.
+
+**Legacy `.s2sp` posture (stated, not hand-waved):** a pre-migration artifact (today's zones `.s2sp` declares 11 builtins in `pluginDependencies`) loaded by a post-deletion core gets those pushed as Hard interface deps with no producer. This is **behaviorally benign** — `call_target_inner` is lazy (`Unavailable` at *call* time, never at load) and `__s2_require` is prelude-first, so the phantom entry is never called — but the imports ledger carries phantoms. Acceptable because this is all pre-registry and the runtime resolves correctly. A **load-side test** pins it: a legacy-shaped manifest (builtins in `pluginDependencies`) still loads and runs post-deletion.
 
 **The `typecheck.ts:76` fix (Part C's acceptance test):** today the filter must *guess* whether an `@s2script/*` name is a builtin (resolve) or an interface (stub), and it guesses by disk existence — which types a builtin *typo* as `any`. After consolidation, builtins are `s2script/*`, resolved by real path-mapping against the package's fixed subpath set, so:
 
@@ -147,13 +158,14 @@ The honest filter keys on **shape**: `s2script/*` never stubs (resolve or error)
 
 - `core/src/v8host.rs:4065` — `s2require` gains `s2script/` stripping.
 - `core/src/loader.rs:78,121,125` — `BUILTIN_MODULES` + its two call sites deleted (phase 3).
-- `packages/cli/src/build.ts` — esbuild `external` accepts both prefixes (phase 1), then `s2script/*` (phase 3).
-- `packages/cli/src/typecheck/typecheck.ts:76` — filter rewritten to the shape-based rule.
+- `packages/cli/src/build.ts` — esbuild `external` accepts both prefixes (phase 1), then `s2script/*` (phase 3); CLI stamps the informational `s2script` types version into the manifest (§6.2).
+- `packages/cli/src/typecheck/typecheck.ts:60,76,87,91` — the four in-file resolution sites (paths, `isBuiltinOnDisk`, globals rootName) moved in phase 1, filter narrowed to the shape-based rule in phase 3.
+- `packages/cli/src/packages-resolve.ts` — learns `node_modules/s2script`; error text updated off `@s2script/globals`.
 - `tsconfig.base.json:12` — `paths` twin updated for both prefixes, then narrowed.
-- `games/cs2/js/*` — 9 `__s2require` literals (own PR, live gate).
-- 77 consumer files — `@s2script/<builtin>` → `s2script/<builtin>` (batched).
+- `games/cs2/js/*` — ~10 `__s2require` literals, **grep-derived not hardcoded** (own PR, live gate).
+- 77 consumer files — `@s2script/<builtin>` → `s2script/<builtin>` (batched); builtins + `@s2script/cs2` move `pluginDependencies` → npm `dependencies`.
 - root `package.json` — renamed off `"s2script"`.
-- `@s2script/cli` — deprecated/aliased; `@s2script/cs2` — gains `s2script` dep.
+- `@s2script/cli` — deprecated/aliased; `@s2script/cs2` — gains `s2script` dep, `.d.ts` imports rewritten, republished (phase 3).
 
 ## 7. The stack map
 
@@ -170,8 +182,9 @@ Branch naming per CLAUDE.md: `packaging-name/…`, `packaging-debt/…`, `packag
 ## 8. Testing
 
 - **Typo regression (C's acceptance test):** a fixture importing `s2script/frmae` produces **TS2307**, not `any`; a companion asserts an interface typo (`@community/x`, unfetched) still stubs to `any` — proving the right class was fixed and we did not over-error. Add to `packages/cli/test/typecheck.test.mjs`.
+- **Phase-1 no-degrade canary (blocks the silent-hollowing failure):** a fixture with a deliberate type error against a builtin (both `@s2script/entity` and `s2script/entity`) must **fail** the gate after the `.d.ts` move. Green CI is the silent-failure signature, so a passing canary — not overall green — is what proves phase 1 preserved real resolution.
 - **Dual-prefix parity (phases 1–2):** both `@s2script/entity` and `s2script/entity` typecheck, esbuild-external, and resolve at runtime to `__s2pkg_entity`. Unit test on `s2require`'s two strip paths.
-- **`BUILTIN_MODULES` deletion safety:** `check-plugins-typecheck.sh` green across every plugin post-migration; a test that a manifest cannot carry a phantom builtin ledger entry through the normal CLI path.
+- **`BUILTIN_MODULES` deletion safety:** `check-plugins-typecheck.sh` green across every plugin post-migration; a **load-side** test that a legacy-shaped manifest (builtins in `pluginDependencies`) still loads and runs post-deletion (phantom-lazy-hard-dep posture, §6.4); and a build-side test that the normal CLI path cannot emit a builtin into the manifest.
 - **Silent-failure guard (C phase 2, cs2 literals):** the live Docker CS2 gate — load a plugin, assert `pawn.origin` resolves. The one PR that requires the live gate rather than CI alone.
 - **Part A:** `npx s2script build` in a clean dir resolves the published bin.
 - **Part B:** per-finding regressions (B1 trim, B2 distinct hashes) where meaningful; gate suite green otherwise.
@@ -180,7 +193,11 @@ Branch naming per CLAUDE.md: `packaging-name/…`, `packaging-debt/…`, `packag
 
 | Risk | Mitigation |
 |---|---|
-| **The 9 `games/cs2` `__s2require` literals are compiler-invisible** — a missed rename degrades to `pawn.origin → null` silently. | Their own PR, dual-prefix so nothing breaks mid-flight, live-gate `pawn.origin != null` as the proof. |
+| **The ~10 `games/cs2` `__s2require` literals are compiler-invisible** — a missed rename degrades to `pawn.origin → null` silently. | Their own PR, dual-prefix so nothing breaks mid-flight, grep-derived set (not a hardcoded count — an earlier pass miscounted 9 vs 10), live-gate `pawn.origin != null` as the proof. |
+| **Phase 1 hollows the typecheck gate silently** if the `.d.ts` move and the four resolution sites don't land together — builtins fall through to the `any` stub, CI stays green. | Move all four sites in the phase-1 commit; ship the no-degrade canary (§8); treat green CI as insufficient proof for that PR. |
+| **Neither version axis cross-validates the other** — types newer than the host minor pass the major-only apiVersion gate, then `TypeError` at runtime. | Pre-existing, not worsened; CLI stamps an informational types version for diagnosis; full minor gating is the semver spec (§10). |
+| **Part A's forwarding bin recurses** if it forwards by bin name. | Forward via `require.resolve("@s2script/cli/dist/cli.js")`, never PATH/`.bin`. |
+| **Published `@s2script/cs2` dangles** on deleted stub versions after phase 3. | Republish it with `s2script`-pointed deps in/immediately after phase 3. |
 | **A batch PR breaks atomicity** if the mechanism doesn't yet accept both prefixes. | Phase 1 lands dual-resolve first; no consumer PR merges before it. |
 | **B2 corrects a just-frozen manifest shape** (distribution spec §9). | Isolate in its own PR, flag the frozen-shape change in the body, decide per-interface-hash vs single-contract-constraint at plan time. |
 | **`s2script` name squatted before Part C lands.** | Part A claims it immediately with a real bin — decoupled from C's timeline. |
