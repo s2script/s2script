@@ -1,8 +1,8 @@
 // db-remote-demo — opens the operator-configured "stats" (mysql) + "prefs" (postgres) connections,
 // round-trips CREATE/INSERT/SELECT against each, checks a BIGINT reads back as a decimal string, and
 // proves the game frame advances WHILE a query is in flight (async, off-thread).
-import { Database } from "@s2script/db";
-import { OnGameFrame } from "@s2script/frame";
+import { Database } from "@s2script/sdk/db";
+import { OnGameFrame } from "@s2script/sdk/frame";
 
 let frames = 0;
 OnGameFrame.subscribe(() => { frames++; });

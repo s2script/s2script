@@ -7,9 +7,9 @@
 //                        by userid, not the pawn-gated Player.all).
 //   sm_unspec [team]   — move the first Spectator back to CT (team 3), or an explicit team number.
 
-import { Commands } from "@s2script/commands";
+import { Commands } from "@s2script/sdk/commands";
 import { Player } from "@s2script/cs2";
-import { delay } from "@s2script/timers";
+import { delay } from "@s2script/sdk/timers";
 
 const TEAM_NAME = (t: number): string =>
   t === 1 ? "Spectator" : t === 2 ? "T" : t === 3 ? "CT" : `#${t}`;

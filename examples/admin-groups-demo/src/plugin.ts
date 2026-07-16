@@ -1,7 +1,7 @@
 // admin-groups-demo — logs the resolved admin model so the live gate can verify group/immunity/override
 // resolution at the DATA level (bots read SteamID "0" -> never admins, so real targeting is a human test).
-import { Admin } from "@s2script/admin";
-import { Commands } from "@s2script/commands";
+import { Admin } from "@s2script/sdk/admin";
+import { Commands } from "@s2script/sdk/commands";
 
 // A synthetic SteamID64 the operator seeds into admins.json + admin_groups.json for the gate.
 const SEED = "76561199000000001";

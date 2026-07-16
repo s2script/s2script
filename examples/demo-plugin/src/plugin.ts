@@ -1,4 +1,4 @@
-import type { EntityRef } from "@s2script/entity";
+import type { EntityRef } from "@s2script/sdk/entity";
 import { Player } from "@s2script/cs2";
 
 // Slice 5E.3 live gate — reload state-handoff. onUnload returns state (a reload counter + a tracked

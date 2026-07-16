@@ -7,10 +7,10 @@
 //   !ucmode side   — zero forwardMove, route it to sideMove (the sideways surf style — proves sign+effect)
 //   !ucmode block  — return HookResult.Handled (neutralize the whole input)
 
-import { UserCmd } from "@s2script/usercmd";
-import { Commands } from "@s2script/commands";
+import { UserCmd } from "@s2script/sdk/usercmd";
+import { Commands } from "@s2script/sdk/commands";
 import { Pawn } from "@s2script/cs2";
-import { HookResult } from "@s2script/events";
+import { HookResult } from "@s2script/sdk/events";
 
 type Mode = "off" | "jump" | "side" | "block";
 const modeBySlot = new Map<number, Mode>();

@@ -7,14 +7,14 @@
 // Task 2 (this file, current state): round_end (mp_maxrounds) + mp_timelimit detection, and the
 // real changeToNext body (delayed, validated changelevel/host_workshop_map).
 
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
-import { OnGameFrame } from "@s2script/frame";
-import { Server } from "@s2script/server";
-import { config } from "@s2script/config";
-import { Events } from "@s2script/events";
-import { delay } from "@s2script/timers";
-import { Chat } from "@s2script/chat";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
+import { OnGameFrame } from "@s2script/sdk/frame";
+import { Server } from "@s2script/sdk/server";
+import { config } from "@s2script/sdk/config";
+import { Events } from "@s2script/sdk/events";
+import { delay } from "@s2script/sdk/timers";
+import { Chat } from "@s2script/sdk/chat";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative). */
 interface MapEntry { name: string; workshopId: string | null; }

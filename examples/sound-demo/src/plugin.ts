@@ -1,5 +1,5 @@
-import { Commands } from "@s2script/commands";
-import { Sound } from "@s2script/sound";
+import { Commands } from "@s2script/sdk/commands";
+import { Sound } from "@s2script/sdk/sound";
 import { Pawn, Sounds } from "@s2script/cs2";
 
 export function onLoad(): void {

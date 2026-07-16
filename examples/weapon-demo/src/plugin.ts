@@ -1,9 +1,9 @@
 // Live-gate demo for the Weapon entity object + pawn fire control (CS2). Like items-demo, this
 // acts on every live pawn (Pawn.forSlot) rather than SM target resolution, since the client-list
 // offsets are stale on the current build (Player.target/allConnected return 0).
-import { Commands } from "@s2script/commands";
+import { Commands } from "@s2script/sdk/commands";
 import { Pawn } from "@s2script/cs2";
-import { Server } from "@s2script/server";
+import { Server } from "@s2script/sdk/server";
 
 const MAX_SLOTS = 12;
 

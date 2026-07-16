@@ -10,8 +10,8 @@
 // relay SYNCHRONOUSLY inside a command handler, which already holds the isolate borrow, so the engine's
 // OnEntityCreated/Spawned callbacks re-enter the dispatch and are gracefully SKIPPED (never a crash).
 // So the self-spawn does NOT log — that's by design; watch the "*" loggers for engine-driven events.
-import { Commands } from "@s2script/commands";
-import { createEntity, Entity } from "@s2script/entity";
+import { Commands } from "@s2script/sdk/commands";
+import { createEntity, Entity } from "@s2script/sdk/entity";
 
 // Exact-class subscriptions for logic_relay (fire only when the engine creates/spawns/deletes one
 // OUTSIDE a JS borrow — e.g. an entity placed by the map, or a console `ent_create`).

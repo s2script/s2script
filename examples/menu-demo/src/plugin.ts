@@ -1,6 +1,6 @@
-import { Menu, MenuStyle } from "@s2script/menu";
-import { Commands } from "@s2script/commands";
-import { OnGameFrame } from "@s2script/frame";
+import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { Commands } from "@s2script/sdk/commands";
+import { OnGameFrame } from "@s2script/sdk/frame";
 import { Player } from "@s2script/cs2";
 
 function showMenu(slot: number, style: MenuStyle): void {

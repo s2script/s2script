@@ -1,7 +1,7 @@
 // translations-demo — proves @s2script/translations: a seed English default, positional {1} formatting,
 // the default-language switch reading translations/de/trdemo.phrases.json live, and the key fallback.
-import { Translations } from "@s2script/translations";
-import { Commands } from "@s2script/commands";
+import { Translations } from "@s2script/sdk/translations";
+import { Commands } from "@s2script/sdk/commands";
 
 export function onLoad(): void {
   Translations.load("trdemo", { Greeting: "Hello {1}", Bye: "Goodbye {1}", OnlyEn: "English only" });

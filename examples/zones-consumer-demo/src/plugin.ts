@@ -16,7 +16,7 @@ import { on, getZones } from "@s2script/zones";   // hard dep -> producer-backed
 // and gets .s2script/types/@s2script/zones/index.d.ts instead (spec §4.6, plan 2). Replace this
 // import when that lands — tracked in the spec's §10.
 import type { ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "../../../plugins/zones/api";
-import { OnGameFrame } from "@s2script/frame";
+import { OnGameFrame } from "@s2script/sdk/frame";
 import { Player } from "@s2script/cs2";
 
 let subscribed = false;

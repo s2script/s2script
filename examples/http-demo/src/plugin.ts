@@ -1,8 +1,8 @@
 // http-demo — proves fetch works, is concurrent, and never blocks the tick. Fires N concurrent
 // requests at a public API and logs how many resolved; a frame handler proves the tick advanced
 // throughout (the fetches did not stall the game).
-import { fetch } from "@s2script/http";
-import { OnGameFrame } from "@s2script/frame";
+import { fetch } from "@s2script/sdk/http";
+import { OnGameFrame } from "@s2script/sdk/frame";
 
 let frames = 0;
 

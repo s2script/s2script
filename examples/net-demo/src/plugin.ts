@@ -1,7 +1,7 @@
 // net-demo — proves @s2script/net end-to-end: a TCP round-trip to a public HTTP server + a UDP A2S
 // query to our own CS2 server (challenge handshake), and that the game frame advances during both.
-import { Net } from "@s2script/net";
-import { OnGameFrame } from "@s2script/frame";
+import { Net } from "@s2script/sdk/net";
+import { OnGameFrame } from "@s2script/sdk/frame";
 
 let frames = 0;
 OnGameFrame.subscribe(() => { frames++; });

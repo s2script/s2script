@@ -1,4 +1,4 @@
-import { publishInterface } from "@s2script/interfaces";
+import { publishInterface } from "@s2script/sdk/interfaces";
 import { Pawn } from "@s2script/cs2";
 import type { Ent } from "../api";
 

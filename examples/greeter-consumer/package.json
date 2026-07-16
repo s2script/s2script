@@ -2,10 +2,12 @@
   "name": "@demo/greeter-consumer",
   "version": "0.1.0",
   "main": "src/plugin.ts",
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0"
+  },
   "s2script": {
     "apiVersion": "1.x",
     "pluginDependencies": {
-      "@s2script/frame": "^1.0.0",
       "@demo/greeter": "^1.0.0"
     }
   }

@@ -6,7 +6,7 @@
 // pawn found via Pawn.forSlot (schema-based, self-healing), which is exactly what "@all" would
 // have resolved to anyway. Revert to Player.target once the client-list offsets are regenerated
 // for the current CS2 patch.
-import { Commands } from "@s2script/commands";
+import { Commands } from "@s2script/sdk/commands";
 import { CsItem, Pawn } from "@s2script/cs2";
 
 const MAX_SLOTS = 12;

@@ -1,8 +1,8 @@
-import { OnGameFrame } from "@s2script/frame";
+import { OnGameFrame } from "@s2script/sdk/frame";
 import { Pawn, Beam, BeamHandle } from "@s2script/cs2";
-import { Commands } from "@s2script/commands";
-import { Vector } from "@s2script/math";
-import { delay } from "@s2script/timers";
+import { Commands } from "@s2script/sdk/commands";
+import { Vector } from "@s2script/sdk/math";
+import { delay } from "@s2script/sdk/timers";
 
 const IN_USE = 32;                       // the E key bit
 const state = new Map<number, { held: boolean; beam: BeamHandle | null }>();

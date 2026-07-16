@@ -1,4 +1,4 @@
-import { OnGameFrame } from "@s2script/frame";
+import { OnGameFrame } from "@s2script/sdk/frame";
 import { pawnRef, pawnHealth } from "@demo/ent"; // hard dep -> producer-backed proxy
 
 // Consumer: hard-deps @demo/ent (a proxy that throws while the producer is unloaded). On a tick it

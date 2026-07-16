@@ -1,5 +1,5 @@
-import { Commands } from "@s2script/commands";
-import { Entity } from "@s2script/entity";
+import { Commands } from "@s2script/sdk/commands";
+import { Entity } from "@s2script/sdk/entity";
 import { GameRules, Fade } from "@s2script/cs2";
 
 export function onLoad(): void {
