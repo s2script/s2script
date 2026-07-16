@@ -60,7 +60,7 @@ test("emitJs: flattened getters/setters, live off() resolve, notifyStateChanged 
 
 test("emitDts: extends chain, own fields only, writable vs readonly, skipped absent", () => {
   const dts = emitDts(buildModel(CATALOG, ["Leaf"]));
-  assert.match(dts, /import type \{ EntityRef \} from "@s2script\/entity";/);
+  assert.match(dts, /import type \{ EntityRef \} from "@s2script\/sdk\/entity";/);
   assert.match(dts, /export interface Base \{/);
   assert.match(dts, /health: number \| null;/);       // writable → mutable
   assert.match(dts, /friction: number \| null;/);
@@ -96,11 +96,11 @@ test("emitJs: a Vector field emits readFloats(off,3)+new Vector; the @s2script/s
   assert.match(js, /var a = this\.ref\.readFloats\(off\("Base","m_angEyeAngles"\), 3\); return a === null \? null : new QAngle\(a\[0\], a\[1\], a\[2\]\);/);
 });
 
-test("emitDts: a Vector/QAngle field adds the @s2script/math import + the field type", () => {
+test("emitDts: a Vector/QAngle field adds the @s2script/sdk/math import + the field type", () => {
   const CATALOG = { Base: { parent: null, fields: [
     { name: "m_vecAbsVelocity", offset: 8, type: { kind: "atomic", name: "Vector" } },
   ] } };
   const dts = emitDts(buildModel(CATALOG, ["Base"]));
-  assert.match(dts, /import type \{ Vector \} from "@s2script\/math";/);
+  assert.match(dts, /import type \{ Vector \} from "@s2script\/sdk\/math";/);
   assert.match(dts, /absVelocity: Vector \| null;/);
 });
