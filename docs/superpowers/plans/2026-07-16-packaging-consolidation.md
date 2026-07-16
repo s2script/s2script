@@ -24,7 +24,7 @@
 - **The `games/cs2` `__s2require` literals are compiler-invisible.** A missed rename degrades to `pawn.origin → null` silently at runtime; the live Docker CS2 gate (`pawn.origin != null`), not CI, is that PR's proof.
 - **Every count in this plan is illustrative — grep, never hardcode a count.** The literal off-by-one (an earlier pass said 9 vs 10) is the exact silent-failure class this migration worries about.
 - **Versioning stays two axes:** a plugin declares `dependencies: { "@s2script/sdk": "^0.1.0" }` (types) AND keeps `s2script.apiVersion` (host ABI). Not collapsed. `@s2script/sdk` starts pre-1.0 (not API-frozen); consumers pin `^0.1.0` and re-pin as minors move. (The `s2script` manifest block name and `s2script.apiVersion`/`s2script.pluginDependencies` keys are the *manifest grammar* — they do NOT rename.)
-- **Part A is DEAD (PR #50 closed; the unscoped `s2script` npm name is permanently blocked).** Nothing pre-exists at `packages/sdk/` — Phase 1 (PR C1) CREATES the package from scratch, **types-only (no bin)**. The CLI + `s2s` bin arrive in the final absorption PR. Cold-start usage after absorption: `npx @s2script/sdk build` — **not** `npx s2s`, which resolves the unrelated existing `s2s@0.20.1` package; installed, the command is `s2s build`.
+- **Part A is DEAD (PR #50 closed; the unscoped `s2script` npm name is permanently blocked).** `packages/sdk/` ALREADY EXISTS as a **bootstrap placeholder** — `@s2script/sdk@0.0.1` (README + package.json, published manually to claim the scoped name and enable OIDC trusted publishing). Phase 1 (PR C1) **EXPANDS** it: adds the `exports` map and moves the `.d.ts` in, **types-only (no bin)**, and its changeset bumps `0.0.1 → 0.1.0`. The CLI + `s2s` bin arrive in the final absorption PR. Cold-start usage after absorption: `npx @s2script/sdk build` — **not** `npx s2s`, which resolves the unrelated existing `s2s@0.20.1` package; installed, the command is `s2s build`.
 
 ---
 
@@ -50,10 +50,10 @@ The critical-trap PR. The `.d.ts` files physically move, so the gate's resolutio
 
 **Gate that proves this PR:** the no-degrade **canary** fixture (a deliberate builtin type error still FAILS) plus the parity/TS2307 fixtures in `packages/cli/test/typecheck.test.mjs`; the `s2require` dual-strip Rust unit test; then full suite green (`cargo test -p s2script-core`, `./scripts/check-plugins-typecheck.sh`, `make check-boundary`, the four `check-*-generated.sh`). **Green alone is insufficient — the passing canary is the proof.**
 
-### Task C1.1 — Create `packages/sdk/` and move the 29 builtin `.d.ts` + `globals.d.ts` into it
+### Task C1.1 — Expand the existing `packages/sdk/` (bootstrap) and move the 29 builtin `.d.ts` + `globals.d.ts` into it
 
 **Files:**
-- Create: `packages/sdk/package.json` (NEW — nothing pre-exists; Part A is dead), `packages/sdk/<cap>.d.ts` ×29 (git-moved from `packages/<cap>/index.d.ts`), `packages/sdk/globals.d.ts` (git-moved from `packages/globals/globals.d.ts`)
+- Modify: `packages/sdk/package.json` (EXISTS — the `@s2script/sdk@0.0.1` bootstrap placeholder; add the `exports` map + `.d.ts` to `files`, keep name/publishConfig/repository). Create: `packages/sdk/<cap>.d.ts` ×29 (git-moved from `packages/<cap>/index.d.ts`), `packages/sdk/globals.d.ts` (git-moved from `packages/globals/globals.d.ts`)
 
 **Interfaces:**
 - Consumes: the 29 stub `index.d.ts` bodies, `globals/globals.d.ts`
@@ -66,17 +66,12 @@ The critical-trap PR. The `.d.ts` files physically move, so the gate's resolutio
   ```
   Expected: the 29 capability names (admin, bans, chat, clients, commands, config, console, cookies, damage, db, entity, events, frame, http, interfaces, math, menu, net, plugins, server, sound, timers, topmenu, trace, translations, usercmd, usermessages, votes, ws). Save to a shell var `CAPS`.
 
-- [ ] **Step 2: Create the package skeleton — types-only, NO bin.** `mkdir -p packages/sdk`, then write `packages/sdk/package.json`:
-  ```json
-  {
-    "name": "@s2script/sdk",
-    "version": "0.0.0",
-    "description": "s2script SDK — the builtin capability types, imported as @s2script/sdk/<cap>. The CLI (bin: s2s) joins in the absorb-cli PR.",
-    "license": "MIT",
-    "files": ["*.d.ts"]
-  }
+- [ ] **Step 2: Expand the existing bootstrap `package.json` — still types-only, NO bin.** `packages/sdk/package.json` already exists (the `@s2script/sdk@0.0.1` placeholder: `name`, `version`, `description`, `publishConfig.access: public`, `repository`, `files: ["README.md"]`). Edit it to widen `files` to include the `.d.ts` (the `exports` map is added in Step 5); keep everything else. Do NOT recreate it or `mkdir` — the dir is present.
+  ```jsonc
+  // packages/sdk/package.json — keep name/version/description/publishConfig/repository; change `files`:
+  "files": ["*.d.ts", "README.md"]
   ```
-  (`version` becomes `0.1.0` via this PR's changeset — the first real release. No `bin`, no `dependencies` — those arrive in PR C5. The `exports` map is added in Step 5.)
+  (`version` stays `0.0.1` here and becomes `0.1.0` via this PR's changeset — the first real release. No `bin`, no `dependencies` — those arrive in the absorb-cli PR. The `exports` map is added in Step 5.)
 
 - [ ] **Step 3: git-move each stub `.d.ts` to the flat layout.**
   ```bash
