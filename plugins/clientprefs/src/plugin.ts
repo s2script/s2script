@@ -1,9 +1,9 @@
 // @s2script/clientprefs (plugin) — the cookie DB lifecycle: load a client's cookies from SQLite into
 // the core cache on connect, flush the dirty ones back on disconnect. The cookie API itself is the
 // @s2script/cookies MODULE; this plugin only drives persistence.
-import { Database } from "@s2script/db";
-import { Clients, Client } from "@s2script/clients";
-import { OnGameFrame } from "@s2script/frame";
+import { Database } from "@s2script/sdk/db";
+import { Clients, Client } from "@s2script/sdk/clients";
+import { OnGameFrame } from "@s2script/sdk/frame";
 
 // The core natives (injected globals; not in the module's typed surface).
 declare function __s2_cookie_load(steamid: string, name: string, value: string, updated: number): void;

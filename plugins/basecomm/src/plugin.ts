@@ -9,12 +9,12 @@
 //    robust path is a CServerSideClient::CLCMsg_VoiceData detour (like the 6.6 damage hook) — a
 //    deferred follow-up. sm_silence = gag + mute.
 
-import { Commands } from "@s2script/commands";
-import { Chat } from "@s2script/chat";
-import { ADMFLAG } from "@s2script/admin";
+import { Commands } from "@s2script/sdk/commands";
+import { Chat } from "@s2script/sdk/chat";
+import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, pickPlayer } from "@s2script/cs2";
-import { HookResult } from "@s2script/events";
-import { TopMenu } from "@s2script/topmenu";
+import { HookResult } from "@s2script/sdk/events";
+import { TopMenu } from "@s2script/sdk/topmenu";
 
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
 const muted = new Set<string>();  // SteamIDs — voice mute requested (best-effort)

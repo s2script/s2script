@@ -4,21 +4,12 @@
   "private": true,
   "main": "src/plugin.ts",
   "types": "api.d.ts",
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0",
+    "@s2script/cs2": "^0.5.0"
+  },
   "s2script": {
     "apiVersion": "1.x",
-    "publishes": "self",
-    "pluginDependencies": {
-      "@s2script/commands": "^0.1.0",
-      "@s2script/admin": "^0.2.0",
-      "@s2script/chat": "^0.1.0",
-      "@s2script/db": "^0.1.0",
-      "@s2script/server": "^0.1.0",
-      "@s2script/config": "^0.1.0",
-      "@s2script/frame": "^0.1.0",
-      "@s2script/interfaces": "^0.1.0",
-      "@s2script/cs2": "^0.3.0",
-      "@s2script/entity": "^0.2.0",
-      "@s2script/math": "^0.1.0"
-    }
+    "publishes": "self"
   }
 }

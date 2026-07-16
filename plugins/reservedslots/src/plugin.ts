@@ -12,11 +12,11 @@
 //   "kick an existing non-reserved player to make room for a connecting reserved one" variant is deferred
 //   (needs victim selection / a ping primitive we don't have yet).
 
-import { Clients } from "@s2script/clients";
-import { Server } from "@s2script/server";
-import { Admin, ADMFLAG } from "@s2script/admin";
+import { Clients } from "@s2script/sdk/clients";
+import { Server } from "@s2script/sdk/server";
+import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Player } from "@s2script/cs2";
-import { config } from "@s2script/config";
+import { config } from "@s2script/sdk/config";
 
 const KICK_MESSAGE =
   "[SM] This server has reserved slots — you were disconnected to keep a slot open for a reserved player.";

@@ -1,7 +1,7 @@
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
-import { TopMenu } from "@s2script/topmenu";
+import { TopMenu } from "@s2script/sdk/topmenu";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
 // item (two UIs over one action, never a re-implementation). Each returns whether it applied (a null

@@ -9,10 +9,10 @@
 //   DEFERRED: sm_burn (an ignite game-function, no framework sig to port),
 //   sm_beacon (a particle/temp-entity subsystem). Both are documented follow-ups.
 
-import { Commands, CommandContext } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
+import { Commands, CommandContext } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Pawn, Fade } from "@s2script/cs2";
-import { delay } from "@s2script/timers";
+import { delay } from "@s2script/sdk/timers";
 
 // MoveType_t (const.h)
 const WALK = 2;

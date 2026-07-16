@@ -8,10 +8,10 @@
 //   timeleft uses mp_timelimit (cvar) + Server.gameTime (map time / curtime), which includes warmup/freeze
 //   so it can differ from the HUD by the warmup — approximate, fine for an info trigger.
 
-import { Chat } from "@s2script/chat";
-import { Server } from "@s2script/server";
-import { HookResult } from "@s2script/events";
-import { nextFrame } from "@s2script/timers";
+import { Chat } from "@s2script/sdk/chat";
+import { Server } from "@s2script/sdk/server";
+import { HookResult } from "@s2script/sdk/events";
+import { nextFrame } from "@s2script/sdk/timers";
 
 function timeLeft(): string {
   const timelimit = parseFloat(Server.getCvar("mp_timelimit")) || 0; // minutes; 0 = no limit

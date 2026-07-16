@@ -1,10 +1,10 @@
-import { Vote } from "@s2script/votes";
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
-import { Chat } from "@s2script/chat";
-import { config } from "@s2script/config";
+import { Vote } from "@s2script/sdk/votes";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
+import { Chat } from "@s2script/sdk/chat";
+import { config } from "@s2script/sdk/config";
 import { Player, pickPlayer } from "@s2script/cs2";
-import { TopMenu } from "@s2script/topmenu";
+import { TopMenu } from "@s2script/sdk/topmenu";
 
 // Parse a command arg string into quoted (or bare) tokens: sm_vote "Kick Rex?" Yes No
 function parseTokens(s: string): string[] {
