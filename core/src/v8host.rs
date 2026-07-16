@@ -235,6 +235,8 @@ type UsercmdWriteFn        = extern "C" fn(c_int, f64);
 type UsercmdReadButtonsFn  = extern "C" fn() -> u64;
 type UsercmdWriteButtonsFn = extern "C" fn(u64);
 type UsercmdClearSubtickFn = extern "C" fn();
+type VoiceSetMutedFn = extern "C" fn(c_int, c_int) -> c_int;
+type VoiceGetMutedFn = extern "C" fn(c_int) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -357,6 +359,9 @@ pub struct S2EngineOps {
     pub usercmd_read_buttons:   Option<UsercmdReadButtonsFn>,
     pub usercmd_write_buttons:  Option<UsercmdWriteButtonsFn>,
     pub usercmd_clear_subtick:  Option<UsercmdClearSubtickFn>,
+    // Voice-control slice — APPENDED after usercmd_clear_subtick; order is the ABI.
+    pub voice_set_muted:        Option<VoiceSetMutedFn>,
+    pub voice_get_muted:        Option<VoiceGetMutedFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -1850,6 +1855,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Object.defineProperty(Client.prototype, "ip", { get: function () {
     var a = __s2_client_address(this.slot); if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
   } });
+  // Voice-control slice: server-side voice mute (this client's OUTGOING voice silenced for every
+  // receiver — the shim's SetClientListening rewrite). Framework state: cleared on disconnect. When
+  // the voice descriptor is degraded the setter is an inert no-op (shim logs the named reason) and
+  // reads stay false (get_muted -1/0 both map to false).
+  Object.defineProperty(Client.prototype, "voiceMuted", {
+    get: function () { return __s2_voice_get_muted(this.slot) === 1; },
+    set: function (on) { __s2_voice_set_muted(this.slot, !!on); }
+  });
   var __s2_MAX_CLIENTS = 64;
   function __s2_client_on(event, h) { __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
   var __s2_clients = {
@@ -1859,6 +1872,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     onFullyConnect:    function (h) { __s2_client_on("fullyconnect", h); },
     onDisconnect:      function (h) { __s2_client_on("disconnect", h); },
     onSettingsChanged: function (h) { __s2_client_on("settingschanged", h); },
+    // Fires while a client transmits voice (throttled shim-side to <=1 dispatch/slot/second; the FIRST
+    // packet of a transmission always fires). Never fires for bots.
+    onVoice:           function (h) { __s2_client_on("voice", h); },
     fromSlot: function (slot) { slot = slot | 0; return __s2_client_valid(slot) ? new Client(slot) : null; },
     all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_valid(s)) out.push(new Client(s)); } return out; }
   };
@@ -6836,6 +6852,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cookie_dispatch_cached", s2_cookie_dispatch_cached);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
+    // Voice-control slice: per-slot voice mute set/get (shim-side flag consulted by the
+    // SetClientListening rewrite hook; JS never sits in that hot path).
+    set_native(scope, global_obj, "__s2_voice_set_muted", s2_voice_set_muted);
+    set_native(scope, global_obj, "__s2_voice_get_muted", s2_voice_get_muted);
     // ban-reason sub-project 2: developer-console print + client IP address.
     set_native(scope, global_obj, "__s2_client_console_print", s2_client_console_print);
     set_native(scope, global_obj, "__s2_client_address", s2_client_address);
@@ -7635,6 +7655,35 @@ fn s2_client_kick(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.client_kick else { return };
         if let Ok(creason) = CString::new(reason) { f(slot, creason.as_ptr()); }
+    }));
+}
+
+/// `__s2_voice_set_muted(slot, on)` -> bool. Voice-control slice: set/clear the shim-side per-slot
+/// voice-mute flag (sender -> all receivers, enforced by the shim's SetClientListening rewrite).
+/// Returns false when degraded (no op / bad slot / voice descriptor disabled) — the prelude setter
+/// ignores it (degrade contract: inert no-op; the shim logs the named reason once).
+fn s2_voice_set_muted(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let on = if args.get(1).boolean_value(scope) { 1 } else { 0 };
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.voice_set_muted else { return };
+        rv.set_bool(f(slot, on) != 0);
+    }));
+}
+
+/// `__s2_voice_get_muted(slot)` -> i32 (1 muted / 0 not / -1 degraded-or-invalid). The prelude getter
+/// maps `=== 1` to boolean, so degraded reads are `false` (never a phantom mute).
+fn s2_voice_get_muted(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.voice_get_muted else { return };
+        rv.set_int32(f(slot));
     }));
 }
 
@@ -10542,6 +10591,69 @@ mod frame_tests {
         shutdown();
     }
 
+    thread_local! { static VOICE_MUTED_CAPTURE: std::cell::RefCell<[i32; 64]> = std::cell::RefCell::new([0; 64]); }
+    extern "C" fn capture_voice_set_muted(slot: c_int, muted: c_int) -> c_int {
+        if !(0..64).contains(&slot) { return 0; }
+        VOICE_MUTED_CAPTURE.with(|a| a.borrow_mut()[slot as usize] = if muted != 0 { 1 } else { 0 });
+        1
+    }
+    extern "C" fn capture_voice_get_muted(slot: c_int) -> c_int {
+        if !(0..64).contains(&slot) { return -1; }
+        VOICE_MUTED_CAPTURE.with(|a| a.borrow()[slot as usize])
+    }
+
+    /// Voice-control: Client.voiceMuted round-trips through the voice_set_muted/voice_get_muted ops
+    /// (set writes the shim-side flag; get maps 1 -> true, 0 -> false).
+    #[test]
+    fn voice_muted_property_round_trips_through_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            voice_set_muted: Some(capture_voice_set_muted),
+            voice_get_muted: Some(capture_voice_get_muted),
+            ..mock_event_ops()
+        }));
+        VOICE_MUTED_CAPTURE.with(|a| *a.borrow_mut() = [0; 64]);
+        create_plugin_context("pvm");
+        assert_eq!(eval_in_context_string("pvm",
+            "var c = new __s2pkg_clients.Client(5); c.voiceMuted = true; String(c.voiceMuted)"), "true");
+        assert_eq!(VOICE_MUTED_CAPTURE.with(|a| a.borrow()[5]), 1, "op received (5, 1)");
+        assert_eq!(eval_in_context_string("pvm", "c.voiceMuted = false; String(c.voiceMuted)"), "false");
+        assert_eq!(VOICE_MUTED_CAPTURE.with(|a| a.borrow()[5]), 0, "op received (5, 0)");
+        shutdown();
+    }
+
+    /// Voice-control degrade: with no engine ops the setter is a silent no-op and reads are false
+    /// (get_muted degrades to -1, which must NOT read as muted).
+    #[test]
+    fn voice_muted_degrades_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("pvd");
+        assert_eq!(eval_in_context_string("pvd",
+            "var c = new __s2pkg_clients.Client(2); c.voiceMuted = true; String(c.voiceMuted)"), "false");
+        shutdown();
+    }
+
+    /// Voice-control: Clients.onVoice subscribes on the existing CLIENT_MUX under the "voice" name —
+    /// a dispatched "voice" event delivers a Client with the slot; other names don't cross-fire.
+    #[test]
+    fn voice_client_event_dispatches_to_on_voice() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        load_plugin_js("pvv", r#"
+            __s2pkg_clients.Clients.onVoice(function (c) {
+                globalThis.__v_ran  = (globalThis.__v_ran || 0) + 1;
+                globalThis.__v_slot = c.slot;
+            });
+        "#, "{}");
+        dispatch_client_event("voice", 4);
+        assert_eq!(read_i32_global_in("pvv", "__v_ran"), 1, "onVoice handler runs once");
+        assert_eq!(read_i32_global_in("pvv", "__v_slot"), 4, "handler receives the dispatched slot");
+        dispatch_client_event("settingschanged", 4);   // a different name must not re-run it
+        assert_eq!(read_i32_global_in("pvv", "__v_ran"), 1);
+        shutdown();
+    }
+
     /// dispatch_map_start delivers the map name to a Server.onMapStart subscriber (the MAP_MUX reuse +
     /// the string-arg dispatch); mirrors client_event_dispatch_reaches_subscriber.
     #[test]
@@ -11040,6 +11152,8 @@ mod frame_tests {
             usercmd_read_buttons: None,
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
+            voice_set_muted: None,
+            voice_get_muted: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -11693,6 +11807,8 @@ mod frame_tests {
             usercmd_read_buttons: None,
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
+            voice_set_muted: None,
+            voice_get_muted: None,
         }
     }
 

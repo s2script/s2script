@@ -259,6 +259,15 @@ typedef void  (*s2_usercmd_write_fn)(int field, double value);
 typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_pb.buttonstate1 */
 typedef void  (*s2_usercmd_write_buttons_fn)(uint64_t mask);
 typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.subtick_moves */
+/* Voice-control slice — APPENDED after usercmd_clear_subtick; order is the ABI.
+ * voice_set_muted: set/clear the per-slot server-side voice mute (sender -> ALL receivers). The flag
+ * lives SHIM-side: the SetClientListening pre-hook consults it allocation-free (O(n^2) per game voice
+ * refresh), so JS only flips state through this op. Returns 1 = recorded + enforceable; 0 = slot out
+ * of range OR the voice descriptor is degraded (hook missing / vtable validation failed) — the flag
+ * is then inert and the shim has logged the named reason.
+ * voice_get_muted: 1 = muted, 0 = not muted, -1 = slot out of range / degraded. */
+typedef int (*s2_voice_set_muted_fn)(int slot, int muted);
+typedef int (*s2_voice_get_muted_fn)(int slot);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -373,6 +382,9 @@ typedef struct {
     s2_usercmd_read_buttons_fn  usercmd_read_buttons;
     s2_usercmd_write_buttons_fn usercmd_write_buttons;
     s2_usercmd_clear_subtick_fn usercmd_clear_subtick;
+    /* Voice-control slice — APPENDED after usercmd_clear_subtick; order is the ABI. */
+    s2_voice_set_muted_fn  voice_set_muted;
+    s2_voice_get_muted_fn  voice_get_muted;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
