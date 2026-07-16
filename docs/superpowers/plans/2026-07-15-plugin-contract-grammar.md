@@ -19,6 +19,22 @@
 - **`publishes: "self"` does not compose** — a plugin publishing its own contract *and* implementing another's must use the map form. Spec §4.2.
 - **Backwards compatibility is NOT required.** Pre-users; no `.s2sp` exists outside this repo. A 3-arg `publishInterface` becomes a hard error, not a deprecation.
 - **Out of scope (do not build):** semver unification (`version_satisfies` stays major-only — Task 12 pins the tests that the follow-on spec will change), registry/contract-artifact publish, `s2script add`/`install`, virtual-dependency resolution, `@s2script/*` stub consolidation, the `/npm/*` facade. Spec §10.
+
+## Amendments (applied 2026-07-15, after Tasks 1–6)
+
+Two plan defects surfaced during execution and are **already fixed on the branch** at `50f3a63` and `70b6a9e`. Tasks 7+ must assume these, not the original text:
+
+1. **`publishInterface` is generic, not `Record`-typed.** The signature in Task 5(f) — `impl: Record<string, (...args: any[]) => any>` — could never accept a contract-typed impl: a TypeScript `interface` has no implicit index signature (only a `type` alias does), so `const impl: Zones = {…}` fails **TS2345**. That made spec §4.6's mechanism unachievable and blocked Tasks 6 *and* 7. The shipped signature is:
+   ```typescript
+   export declare function publishInterface<T extends object>(name: string, impl: T): PublishHandle;
+   ```
+   Conformance is enforced by the author's own `: Zones` annotation — which was always the real mechanism.
+
+2. **Only a RANGE is refused, not the map form.** Task 6's original blanket rejection was the wrong line. A **concrete** version in the map form names a contract the plugin ships itself and resolves locally with no registry (`@demo/entref-producer` publishes `@demo/ent@1.0.0` — the exact name/package decoupling this grammar exists for). Only a **range** (`^1.2.0`) needs the registry to pick a contract and hash *its* bytes. `publishes.ts` owns this via `isConcreteVersion`; `build.ts` delegates.
+
+3. **Task 5's blast radius was under-scoped (fixed at `70b6a9e`).** Dropping the version param invalidated three 3-arg callers that **no task owned**: `examples/greeter-plugin/src/plugin.ts:13`, `examples/entref-producer/src/plugin.ts:12`, `packages/cli/test/fixtures/producer/src/plugin.ts:2`. Each now has an `api.d.ts`, a `types` field, and a contract-bound impl. `check-plugins-typecheck.sh` is green for everything except `plugins/zones` (Task 7).
+
+4. **Task 6 Step 1's embedded-member assertion had a typo** — the sanitizer maps `@demo/publisher` → `_demo_publisher` (the `@` is replaced too), so the entry is `types/_demo_publisher.d.ts`, not `types/@demo_publisher.d.ts`. Fixed in the test.
 - **Worktree:** all work in a dedicated worktree on `feat/contract-grammar`, rebased onto current `main` before the live gate. PR required. Changeset required (`packages/cli` and `packages/interfaces` both change).
 
 ## File Structure
@@ -879,7 +895,9 @@ The only ordering requirement is the one in (b): insert Globals *after* a succes
   };
 ```
 
-**(f)** `packages/interfaces/index.d.ts` — replace the `publishInterface` declaration and its doc:
+**(f)** `packages/interfaces/index.d.ts` — replace the `publishInterface` declaration and its doc.
+
+> **AMENDED** (see Amendments §1). The parameter is **generic**, not `Record`-typed: a TypeScript `interface` has no implicit index signature, so a `Record<…>` parameter rejects every interface-typed contract with TS2345 — which would break Task 6's fixture and Task 7's zones impl.
 
 ```typescript
 /**
@@ -891,11 +909,18 @@ The only ordering requirement is the one in (b): insert Globals *after* a succes
  * `publishes` map — never passed here, and never written in TypeScript source.
  * Publishing a name the manifest does not declare is refused at load.
  *
+ * `impl` is generic over `object` rather than `Record<string, Function>` so that a
+ * producer can bind it to its contract — `const impl: Zones = {…}` — which is what
+ * actually proves the implementation matches the published `.d.ts`. A TypeScript
+ * `interface` has no implicit index signature (only a `type` alias does), so a
+ * `Record<…>` parameter would reject every interface-typed contract. The host
+ * enumerates `impl`'s own function properties; non-function properties are ignored.
+ *
  * Auto-ledgered: the interface is withdrawn (and hard-dep consumers degraded) on unload.
  */
-export declare function publishInterface(
+export declare function publishInterface<T extends object>(
   name: string,
-  impl: Record<string, (...args: any[]) => any>,
+  impl: T,
 ): PublishHandle;
 ```
 
