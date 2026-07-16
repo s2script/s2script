@@ -2,8 +2,8 @@
 // requires, paginated. Reads Commands.list() (the core command registry + flag mask) and maps each
 // flag mask to human names via ADMFLAG. No engine work beyond the core __s2_commands_list native.
 
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
 
 const PER_PAGE = 10;
 

@@ -1,8 +1,8 @@
-import { Commands } from "@s2script/commands";
-import { Chat } from "@s2script/chat";
-import { Admin, ADMFLAG } from "@s2script/admin";
+import { Commands } from "@s2script/sdk/commands";
+import { Chat } from "@s2script/sdk/chat";
+import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Player, ChatColors, Activity } from "@s2script/cs2";
-import { HookResult } from "@s2script/events";
+import { HookResult } from "@s2script/sdk/events";
 
 const GREEN = ChatColors.Green, WHITE = ChatColors.White;
 

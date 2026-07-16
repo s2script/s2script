@@ -4,9 +4,9 @@
 // gets a throttled "slow down" notice (SM parity). Config-driven (flood_time / max_tokens),
 // live-reloadable via config.onChange.
 
-import { Chat } from "@s2script/chat";
-import { config } from "@s2script/config";
-import { HookResult } from "@s2script/events";
+import { Chat } from "@s2script/sdk/chat";
+import { config } from "@s2script/sdk/config";
+import { HookResult } from "@s2script/sdk/events";
 import { ChatColors } from "@s2script/cs2";
 import { floodStep } from "./flood";
 

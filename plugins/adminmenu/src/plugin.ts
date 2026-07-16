@@ -1,7 +1,7 @@
-import { TopMenu } from "@s2script/topmenu";
-import { Menu, MenuStyle } from "@s2script/menu";
-import { Commands } from "@s2script/commands";
-import { Admin, ADMFLAG } from "@s2script/admin";
+import { TopMenu } from "@s2script/sdk/topmenu";
+import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { Commands } from "@s2script/sdk/commands";
+import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 
 // Pure helpers (no side effects) — module-level.
 function itemsFor(category: string, flags: number) {

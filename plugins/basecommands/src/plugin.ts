@@ -1,11 +1,11 @@
-import { Commands } from "@s2script/commands";
-import { Admin, ADMFLAG } from "@s2script/admin";
+import { Commands } from "@s2script/sdk/commands";
+import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Player } from "@s2script/cs2";
-import { Server } from "@s2script/server";
-import { Damage } from "@s2script/damage";
-import { Plugins } from "@s2script/plugins";
-import { Menu, MenuStyle } from "@s2script/menu";
-import { TopMenu } from "@s2script/topmenu";
+import { Server } from "@s2script/sdk/server";
+import { Damage } from "@s2script/sdk/damage";
+import { Plugins } from "@s2script/sdk/plugins";
+import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { TopMenu } from "@s2script/sdk/topmenu";
 
 // adminmenu — Change Map proof item (Server Commands, ADMFLAG.CHANGEMAP), a curated map picker filtered
 // by Server.isMapValid so an uninstalled map never shows.

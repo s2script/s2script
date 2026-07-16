@@ -9,17 +9,17 @@
 // engine-accurate edges, no per-frame position math, and it can see non-player entities too. A tiny poll
 // remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
 // engine-maintained inside-set).
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
-import { Database } from "@s2script/db";
-import { Server } from "@s2script/server";
-import { config } from "@s2script/config";
-import { OnGameFrame } from "@s2script/frame";
-import { publishInterface, PublishHandle } from "@s2script/interfaces";
-import { Entity } from "@s2script/entity";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
+import { Database } from "@s2script/sdk/db";
+import { Server } from "@s2script/sdk/server";
+import { config } from "@s2script/sdk/config";
+import { OnGameFrame } from "@s2script/sdk/frame";
+import { publishInterface, PublishHandle } from "@s2script/sdk/interfaces";
+import { Entity } from "@s2script/sdk/entity";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
-import { Vector } from "@s2script/math";
-import { Chat } from "@s2script/chat";
+import { Vector } from "@s2script/sdk/math";
+import { Chat } from "@s2script/sdk/chat";
 import type { Zones } from "../api";
 
 interface Vec3 { x: number; y: number; z: number; }

@@ -13,13 +13,13 @@
 //  immediately; the onConnect handler is the RECONNECT enforcement + is where a 3rd party would query
 //  their own ban store instead of ours.
 
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
-import { Bans } from "@s2script/bans";
-import { Clients } from "@s2script/clients";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
+import { Bans } from "@s2script/sdk/bans";
+import { Clients } from "@s2script/sdk/clients";
 import { Player, pickPlayer } from "@s2script/cs2";
-import { Menu, MenuStyle } from "@s2script/menu";
-import { TopMenu } from "@s2script/topmenu";
+import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { TopMenu } from "@s2script/sdk/topmenu";
 
 // The message a banned player sees (chat + console) — shared by the immediate sm_ban path and the
 // reconnect enforcement so the wording is identical.
