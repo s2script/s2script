@@ -53,6 +53,12 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     throw new Error(`publish gate failed: ${gate.error}`);
   }
 
+  // --- Derive + validate the publishes block BEFORE tsc/esbuild (fail fast). derivePublishes
+  //     throws on a RANGE (which needs the registry — spec §4.6, §10), so a plugin with an
+  //     unresolvable publishes map is rejected before it pays for a full typecheck + bundle. ---
+  const s2 = pkg.s2script ?? {};
+  const derivedPublishes = derivePublishes(s2.publishes, pkg.name, pkg.version, gate.typesPath);
+
   // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on error. ---
   const tc = typecheckPlugin(absDir, packagesDir !== undefined ? { packagesDir } : undefined);
   if (!tc.ok) {
@@ -60,11 +66,9 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   }
 
   const { name, version } = pkg;
-  const s2 = pkg.s2script ?? {};
   const apiVersion = s2.apiVersion ?? "";
   const pluginDependencies = s2.pluginDependencies ?? {};
   const optionalPluginDependencies = s2.optionalPluginDependencies ?? {};
-  const publishes = s2.publishes;
   const config = s2.config ?? undefined;
   if (config !== undefined) {
     const cfgErrs = validateConfigBlock(config);
@@ -110,10 +114,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     pluginDependencies,
     optionalPluginDependencies,
   };
-  // publishes.ts owns the grammar, including which forms resolve locally ("self", or a map with
-  // a CONCRETE version naming a contract this plugin ships) versus which need the registry
-  // (a RANGE against someone else's published contract — spec §4.6, §10).
-  const derivedPublishes = derivePublishes(publishes, name, version, gate.typesPath);
+  // publishes.ts owns the grammar; the block was derived + validated up front (fail fast).
   if (Object.keys(derivedPublishes).length > 0) {
     manifest.publishes = derivedPublishes;
   }

@@ -90,6 +90,23 @@ test("build rejects a RANGE — resolving one against a published contract needs
   );
 });
 
+test("build rejects a RANGE BEFORE the typecheck gate (fail fast)", async () => {
+  // The range rejection must fire before the expensive tsc/esbuild steps. Native ESM makes the
+  // esbuild namespace read-only (esbuild.build = … throws), so we can't spy on the bundler. Instead
+  // the fixture carries BOTH a range publishes AND a deliberate type error: today the typecheck runs
+  // first and surfaces "typecheck failed"; after the fail-fast fix (derive hoisted above tsc) the
+  // "is a RANGE" error surfaces first. Asserting the RANGE error — and NOT the typecheck error —
+  // proves the ordering with no monkeypatching.
+  await assert.rejects(
+    () => buildPlugin(join(here, "fixtures", "publisher-mapform-typeerror"), packagesDir),
+    (err) => {
+      assert.match(err.message, /is a RANGE/, "the RANGE must be rejected before the typecheck gate");
+      assert.doesNotMatch(err.message, /typecheck failed/, "must fail fast on the range, not fall through to tsc");
+      return true;
+    },
+  );
+});
+
 test("build accepts a CONCRETE map value naming an interface the package does not share a name with", async () => {
   // The decoupling the grammar exists for: @demo/renamer publishes @demo/other-name@1.0.0.
   // Concrete + a contract the plugin ships itself ⇒ resolvable with no registry.
