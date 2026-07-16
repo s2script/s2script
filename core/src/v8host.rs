@@ -4039,12 +4039,14 @@ pub(crate) fn log_warn(msg: &str) {
     }
 }
 
-/// Native `__s2require(name) -> object|null` — resolves first-party `@s2script/<name>` specifiers
-/// to their per-context module globals (e.g. `"@s2script/frame"` → `globalThis.__s2pkg_frame`,
-/// `"@s2script/entity"` → `globalThis.__s2pkg_entity`).  Non-`@s2script/` specifiers → `null`
-/// (the JS `__s2_require` shim resolves those as inter-plugin deps).  A retired/unknown name
-/// (global undefined) → `null`.  Engine-generic: no module list hardcoded; `@s2script/cs2` maps
-/// to `__s2pkg_cs2` by the same rule.
+/// Native `__s2require(name) -> object|null` — resolves first-party builtin specifiers to their
+/// per-context module globals under BOTH spellings: the consolidated `@s2script/sdk/<cap>` and the
+/// legacy `@s2script/<cap>` (e.g. `"@s2script/sdk/frame"` or `"@s2script/frame"` → `globalThis.__s2pkg_frame`).
+/// ORDER IS LOAD-BEARING: `@s2script/sdk/` is stripped BEFORE the shorter `@s2script/`, which also
+/// matches `@s2script/sdk/<cap>` and would strip to the garbage cap `sdk/<cap>`. Non-`@s2script/`
+/// specifiers → `null` (the JS `__s2_require` shim resolves those as inter-plugin deps).  A
+/// retired/unknown name (global undefined) → `null`. Engine-generic: no module list hardcoded;
+/// `@s2script/cs2` maps to `__s2pkg_cs2` via the plain `@s2script/` strip.
 ///
 /// Like every native, the body runs under `catch_unwind` (no panic may cross the FFI boundary).
 fn s2require(
@@ -4062,7 +4064,20 @@ fn s2require(
         // hardcoded; @s2script/cs2 → __s2pkg_cs2 subsumed). Non-@s2script specifiers → null (the JS
         // `__s2_require` shim resolves those as inter-plugin deps). A retired/unknown name → the global is
         // undefined → null.
-        let Some(rest) = name.strip_prefix("@s2script/") else { return };
+        // Dual-prefix (packaging consolidation): a builtin resolves as BOTH the consolidated
+        // `@s2script/sdk/<cap>` and the legacy `@s2script/<cap>` — both map to `__s2pkg_<cap>`.
+        // ORDER IS LOAD-BEARING: the shorter `@s2script/` also matches `@s2script/sdk/entity`
+        // and would strip to `sdk/entity` → `__s2pkg_sdk/entity` garbage — try `@s2script/sdk/`
+        // FIRST. Bare `@s2script/sdk` (no capability) falls to the plain strip → `__s2pkg_sdk`,
+        // which never exists → null (the flat barrel is rejected; the typecheck gate, not
+        // s2require, enforces the namespace split). Still generic — no module list hardcoded;
+        // `@s2script/cs2` keeps riding the plain `@s2script/` strip.
+        let Some(rest) = name
+            .strip_prefix("@s2script/sdk/")
+            .or_else(|| name.strip_prefix("@s2script/"))
+        else {
+            return;
+        };
         let key = format!("__s2pkg_{}", rest);
         let global = scope.get_current_context().global(scope);
         let Some(k) = v8::String::new(scope, &key) else { return };
@@ -9981,6 +9996,28 @@ mod frame_tests {
             let script = v8::Script::compile(tc, code, None).expect("compile failed");
             script.run(tc).map(|v| v.boolean_value(tc)).unwrap_or(false)
         })
+    }
+
+    #[test]
+    fn s2require_dual_resolves_sdk_and_legacy_prefixes() {
+        let _ = init(dummy_logger());
+        create_plugin_context("dualpfx");
+        // Both prefixes resolve the SAME capability global.
+        assert!(eval_in_context_bool("dualpfx",
+            r#"__s2require("@s2script/sdk/math") === __s2require("@s2script/math")"#),
+            "@s2script/sdk/math must resolve to the same object as @s2script/math");
+        assert!(eval_in_context_bool("dualpfx",
+            r#"typeof __s2require("@s2script/sdk/entity").EntityRef === "function""#),
+            "@s2script/sdk/entity must expose EntityRef");
+        // Bare `@s2script/sdk` (no capability — the rejected flat barrel) → null at runtime:
+        // it falls through to the plain `@s2script/` strip → `__s2pkg_sdk`, which never exists.
+        assert!(eval_in_context_bool("dualpfx",
+            r#"__s2require("@s2script/sdk") === null"#),
+            "bare @s2script/sdk must resolve to null");
+        // A non-s2script specifier is still null (handled by the JS interop shim).
+        assert!(eval_in_context_bool("dualpfx",
+            r#"__s2require("@other/x") === null"#));
+        shutdown();
     }
 
     #[test]

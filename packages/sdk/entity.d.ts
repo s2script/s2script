@@ -2,7 +2,7 @@
  * @s2script/entity — author-time type stubs for the injected entity API.
  * NO runtime code: the engine injects the implementation at load time.
  */
-import type { HookResultValue } from "@s2script/events";
+import type { HookResultValue } from "./events";
 
 /**
  * A serial-gated handle to a live entity. Wraps the `__s2_ent_ref_*` natives; the raw

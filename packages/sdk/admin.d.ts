@@ -2,7 +2,7 @@
  * @s2script/admin — engine-generic admin flag model + cache API.
  *
  * Resolved at runtime via `globalThis.__s2pkg_admin`; no game-specific symbols.
- * Import: `import { ADMFLAG, Admin } from "@s2script/admin";`
+ * Import: `import { ADMFLAG, Admin } from "./admin";`
  */
 
 /** SourceMod-parity admin flag bitmask constants (SM bit values). */

@@ -4,8 +4,8 @@
  * NO runtime code (injected at load) — `CBaseUserCmdPB`/`CMsgQAngle`/`CInButtonStatePB` are a
  * Source2-shared concept (`usercmd.proto`), so this module is engine-generic.
  */
-import type { QAngle } from "@s2script/math";
-import type { HookResultValue } from "@s2script/events";
+import type { QAngle } from "./math";
+import type { HookResultValue } from "./events";
 
 /**
  * A block-scoped view of the CURRENT tick's usercmd (valid only during a `UserCmd.onRun` handler —

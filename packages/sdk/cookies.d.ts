@@ -1,5 +1,5 @@
 /** @s2script/cookies — SM-parity client preference cookies. NO runtime code (injected as __s2pkg_cookies). */
-import type { Client } from "@s2script/clients";
+import type { Client } from "./clients";
 export enum CookieAccess { Public, Protected, Private }
 export interface Cookie { readonly name: string; readonly access: CookieAccess; readonly default: string; }
 export interface CookieOptions { description?: string; access?: CookieAccess; default?: string; }

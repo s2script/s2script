@@ -57,9 +57,23 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   // should resolve a plugin-published interface to its REAL contract via `s2script add` →
   // `.s2script/types/<iface>/index.d.ts`. Until that lands, `examples/zones-consumer-demo` has
   // weaker types than it did when packages/zones existed. Tracked in the spec's §10.
-  const isBuiltinOnDisk = (d: string): boolean =>
-    d.startsWith("@s2script/") &&
-    existsSync(join(packagesDir, d.slice("@s2script/".length), "index.d.ts"));
+  // A builtin resolves either at the consolidated layout (packages/sdk/<cap>.d.ts) or the
+  // legacy per-package layout (packages/<cap>/index.d.ts, still serving @s2script/cs2). During
+  // the dual-prefix transition BOTH the consolidated `@s2script/sdk/<cap>` and the legacy
+  // `@s2script/<cap>` spellings count as builtin-on-disk so a plugin that still DECLARES one in
+  // pluginDependencies is filtered out of the ambient-stub list and resolves via `paths` below
+  // (never degrades to `any`). ORDER IS LOAD-BEARING: check `@s2script/sdk/` before the shorter
+  // `@s2script/`, which also matches and would yield the garbage cap `sdk/<cap>`.
+  const capOf = (d: string): string | null =>
+    d.startsWith("@s2script/sdk/") ? d.slice("@s2script/sdk/".length)
+    : d.startsWith("@s2script/") ? d.slice("@s2script/".length)
+    : null;
+  const isBuiltinOnDisk = (d: string): boolean => {
+    const cap = capOf(d);
+    if (cap === null) return false;
+    return existsSync(join(packagesDir, "sdk", cap + ".d.ts")) ||
+           existsSync(join(packagesDir, cap, "index.d.ts"));
+  };
 
   // A plugin's OWN .d.ts files are part of its typecheck. They carry ambient declarations for
   // interfaces it consumes (see examples/*-consumer). Before this they were compiled only by the
@@ -84,11 +98,21 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     lib: ["lib.es2020.d.ts"],
     types: [],
     baseUrl: packagesDir,
-    paths: { "@s2script/*": ["*/index.d.ts"] },
+    paths: {
+      // Consolidated layout first, legacy per-package second (the latter now serves only
+      // @s2script/cs2, which is NOT moved). tsc picks the longest matching prefix, so the
+      // @s2script/sdk/* pattern wins for sdk imports. Collapsed to @s2script/sdk/* +
+      // @s2script/* (cs2 only) in Phase 3 once the legacy builtin dirs are deleted.
+      "@s2script/sdk/*": ["sdk/*.d.ts"],
+      "@s2script/*": ["sdk/*.d.ts", "*/index.d.ts"],
+    },
     skipLibCheck: true,
   };
 
-  const rootNames = [entry, join(packagesDir, "globals", "globals.d.ts"), ...localDts];
+  const globalsDts = existsSync(join(packagesDir, "sdk", "globals.d.ts"))
+    ? join(packagesDir, "sdk", "globals.d.ts")
+    : join(packagesDir, "globals", "globals.d.ts");
+  const rootNames = [entry, globalsDts, ...localDts];
   const tmp = mkdtempSync(join(tmpdir(), "s2tc-"));
   try {
     if (deps.length) {
