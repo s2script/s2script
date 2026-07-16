@@ -8608,6 +8608,11 @@ pub fn shutdown() {
     IFACE_SUBS.with(|m| m.borrow_mut().clear());
     // Clear the interface registry (pure Rust, no V8 handles; cleared for re-init hygiene).
     IFACES.with(|r| r.borrow_mut().clear());
+    // Clear the publishes registries (pure Rust, no V8 handles): the per-plugin unload path clears
+    // these per id, but a plugin that was `set` and never loaded (or a partial init) leaves an entry
+    // no unload ever walks. This bulk clear is the teardown backstop, symmetric with IFACES above.
+    PLUGIN_PUBLISHES.with(|p| p.borrow_mut().clear());
+    UNDECLARED_PUBLISHES.with(|p| p.borrow_mut().clear());
     // Reset the subscription-id allocator for a clean slate (symmetric with TimerQueue::new()).
     NEXT_SUB_ID.with(|c| c.set(1));
     // Drop all per-plugin contexts BEFORE the isolate: each `Global<Context>` points into the
@@ -10120,6 +10125,34 @@ mod frame_tests {
         "#, "{}");
         assert!(reconcile_publishes("retry").is_ok(), "the stale undeclared record must not persist");
         shutdown();
+    }
+
+    #[test]
+    fn shutdown_clears_the_publishes_registries() {
+        let _ = init(dummy_logger());
+        // Populate PLUGIN_PUBLISHES via a `set` with no matching load (so no per-plugin unload ever
+        // clears it), and UNDECLARED_PUBLISHES via a plugin that publishes an interface it never
+        // declared. Both thread_locals must be non-empty going into shutdown.
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+        )].into_iter().collect());
+        set_plugin_publishes("forgetful", std::collections::HashMap::new());
+        load_plugin_js("forgetful", r#"
+            const { publishInterface } = require("@s2script/interfaces");
+            publishInterface("@x/undeclared", { a: function () { return 1; } });
+        "#, "{}");
+        assert!(!PLUGIN_PUBLISHES.with(|p| p.borrow().is_empty()),
+            "precondition: PLUGIN_PUBLISHES populated");
+        assert!(!UNDECLARED_PUBLISHES.with(|p| p.borrow().is_empty()),
+            "precondition: UNDECLARED_PUBLISHES populated");
+
+        shutdown();
+
+        assert!(PLUGIN_PUBLISHES.with(|p| p.borrow().is_empty()),
+            "shutdown must clear PLUGIN_PUBLISHES");
+        assert!(UNDECLARED_PUBLISHES.with(|p| p.borrow().is_empty()),
+            "shutdown must clear UNDECLARED_PUBLISHES");
     }
 
     #[test]
