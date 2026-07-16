@@ -62,6 +62,11 @@ public:
                                unsigned long long xuid, const char* netid);
     void Hook_ClientSettingsChanged(CPlayerSlot slot);
 
+    // Voice-control slice: throttled voice-packet notify (dispatches client event "voice") + the
+    // listen-matrix rewrite that enforces the per-slot mute (shim-resident flag array, zero FFI).
+    void Hook_ClientVoice(CPlayerSlot slot);
+    bool Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen);
+
     // Map-start hook (clientlist-fakeconvar-onmapstart slice) — POST hook on
     // INetworkServerService::StartupServer (the CSSharp OnMapStart mechanism). Reads the live map
     // name off the (typed) game server and forwards to s2script_core_dispatch_map_start.
