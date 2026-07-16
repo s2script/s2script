@@ -81,9 +81,30 @@ test("build of a non-publishing plugin has no publishes block and no types membe
   assert.equal(zip.getEntries().filter((e) => e.entryName.startsWith("types/")).length, 0);
 });
 
-test("build rejects the map form until contract resolution lands", async () => {
+test("build rejects a RANGE — resolving one against a published contract needs the registry", async () => {
+  // publisher-mapform declares {"@community/contract": "^1.0.0"} — a range means "resolve me
+  // against someone else's contract and hash THEIR bytes", which has no local answer.
   await assert.rejects(
     () => buildPlugin("test/fixtures/publisher-mapform", packagesDir),
-    /publishes map form is not yet supported/,
+    /is a RANGE/,
   );
+});
+
+test("build accepts a CONCRETE map value naming an interface the package does not share a name with", async () => {
+  // The decoupling the grammar exists for: @demo/renamer publishes @demo/other-name@1.0.0.
+  // Concrete + a contract the plugin ships itself ⇒ resolvable with no registry.
+  const out = await buildPlugin("test/fixtures/publisher-renamed", packagesDir);
+  const zip = new AdmZip(out);
+  const manifest = JSON.parse(zip.readAsText("manifest.json"));
+
+  const decl = manifest.publishes["@demo/other-name"];
+  assert.ok(decl, "the interface name, not the package name, is the manifest key");
+  assert.equal(manifest.publishes["@demo/renamer"], undefined, "the package name is not a key");
+  assert.equal(decl.version, "1.0.0", "the contract's version, not the package's 4.2.0");
+
+  const expected = createHash("sha256")
+    .update(readFileSync("test/fixtures/publisher-renamed/api.d.ts"))
+    .digest("hex");
+  assert.equal(decl.typesSha256, expected);
+  assert.ok(zip.readFile("types/_demo_other-name.d.ts"), "embeds under the INTERFACE name");
 });

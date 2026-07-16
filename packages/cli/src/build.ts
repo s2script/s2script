@@ -112,20 +112,10 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     pluginDependencies,
     optionalPluginDependencies,
   };
-  // The map form needs a registry to resolve a range → a concrete contract version + its bytes
-  // (design spec §4.6, §10 — out of scope for this slice). "self" resolves locally, so ship it now
-  // and refuse the map form loudly rather than stamping a RANGE where a concrete version belongs.
-  if (publishes !== undefined && typeof publishes !== "string") {
-    throw new Error(
-      `publishes map form is not yet supported (needs registry contract resolution); use "self"`,
-    );
-  }
-  const derivedPublishes = derivePublishes(
-    publishes as string | undefined,
-    name,
-    version,
-    gate.typesPath,
-  );
+  // publishes.ts owns the grammar, including which forms resolve locally ("self", or a map with
+  // a CONCRETE version naming a contract this plugin ships) versus which need the registry
+  // (a RANGE against someone else's published contract — spec §4.6, §10).
+  const derivedPublishes = derivePublishes(publishes, name, version, gate.typesPath);
   if (Object.keys(derivedPublishes).length > 0) {
     manifest.publishes = derivedPublishes;
   }

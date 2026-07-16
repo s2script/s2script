@@ -1,0 +1,13 @@
+{
+  "name": "@demo/renamer",
+  "version": "4.2.0",
+  "main": "src/plugin.ts",
+  "types": "api.d.ts",
+  "s2script": {
+    "apiVersion": "1.x",
+    "publishes": {
+      "@demo/other-name": "1.0.0"
+    }
+  },
+  "private": true
+}
