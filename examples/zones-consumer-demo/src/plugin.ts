@@ -7,7 +7,15 @@
 // does NOT wire — so we DEFER the subscription until the producer is live, probing with a method call
 // (getZones, which throws InterfaceUnavailable while the producer is absent, unlike on()).
 import { on, getZones } from "@s2script/zones";   // hard dep -> producer-backed proxy
-import type { ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "@s2script/zones";
+// TYPES come straight from the producer's contract, so they cannot drift from it.
+// @s2script/zones is published by a PLUGIN, so it has no packagesDir stub for the typecheck gate
+// to resolve (the contract-grammar slice deleted packages/zones — design spec §6); the gate's
+// ambient fallback types the VALUES above as `any`, and an ambient `declare module` cannot carry
+// these types (TS forbids relative re-exports inside one). Reaching across the monorepo is honest
+// for a demo and zero-drift; a real consumer outside this repo does `s2script add @s2script/zones`
+// and gets .s2script/types/@s2script/zones/index.d.ts instead (spec §4.6, plan 2). Replace this
+// import when that lands — tracked in the spec's §10.
+import type { ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "../../../plugins/zones/api";
 import { OnGameFrame } from "@s2script/frame";
 import { Player } from "@s2script/cs2";
 
