@@ -89,6 +89,29 @@ fn is_builtin_module(name: &str) -> bool {
     BUILTIN_MODULES.contains(&name)
 }
 
+/// Load a plugin's JS, then reconcile its manifest `publishes` (design spec §4.3).
+///
+/// A plugin that declares an interface it does not end up owning FAILS ITS LOAD: WARN + teardown,
+/// so it does not run at all. Without this, a typo'd `publishInterface` name loads green and the
+/// gap only surfaces later, in a consumer, as `InterfaceUnavailable` — the silent drift this
+/// design exists to remove.
+///
+/// Degrade per-descriptor: only THIS plugin is refused; the framework keeps running. Same posture
+/// as the apiVersion gate above, which likewise declines to load a plugin it cannot honour.
+///
+/// The caller records the watch entry either way — a `publishes` mismatch is deterministic, so
+/// re-trying it every poll would only spam. Editing the plugin bumps its mtime and re-tries.
+fn load_and_reconcile(manifest: &Manifest, js: &str, cfg: &str) {
+    crate::v8host::load_plugin_js(&manifest.id, js, cfg);
+    if let Err(e) = crate::v8host::reconcile_publishes(&manifest.id) {
+        crate::v8host::log_warn(&format!(
+            "WARN: load('{}'): {} — refusing the load (the plugin is NOT running)",
+            manifest.id, e
+        ));
+        crate::v8host::unload_plugin(&manifest.id);
+    }
+}
+
 /// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects,
 /// skipping only the framework BUILTINS (resolved via __s2require). Non-builtin `@s2script/*` names
 /// (a first-party plugin's PUBLISHED interface, e.g. `@s2script/zones`) flow through as interface deps.
@@ -251,7 +274,7 @@ fn drain_pending_ops() {
                         crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                         crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                         let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                        crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
+                        load_and_reconcile(&manifest, &js, &cfg);
                         crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
                         WATCH_STATE.with(|ws| { ws.borrow_mut().insert(path.clone(), WatchedPlugin { mtime, id: manifest.id }); });
@@ -365,7 +388,7 @@ pub(crate) fn poll_plugins() {
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                    crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
+                    load_and_reconcile(&manifest, &js, &cfg);
                     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
@@ -393,7 +416,7 @@ pub(crate) fn poll_plugins() {
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                    crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
+                    load_and_reconcile(&manifest, &js, &cfg);
                     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }

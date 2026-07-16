@@ -436,4 +436,31 @@ mod tests {
             .expect("free after unload");
         assert_eq!(r.lookup("@c/mapchooser").expect("entry").producer_id, "@stock/mapchooser");
     }
+
+    // --- Characterization: version_satisfies is MAJOR-ONLY (design spec §10). ---
+    // These document the hole this slice does NOT fix. The semver-unification spec
+    // inverts every assertion below; until then they lock in what we know is wrong.
+
+    #[test]
+    fn characterize_major_only_matching_accepts_wrong_minors_pre_1_0() {
+        // npm semantics: ^0.1.0 pins the minor, so 0.2.0 must NOT satisfy it.
+        // We accept it. Pre-1.0, every range matches every version.
+        assert!(version_satisfies("^0.1.0", "0.2.0"), "KNOWN WRONG: 0.x caret ignores the minor");
+        assert!(version_satisfies("^0.1.0", "0.99.0"), "KNOWN WRONG");
+        assert!(version_satisfies("^0.2.0", "0.1.0"), "KNOWN WRONG: this is the zones drift");
+    }
+
+    #[test]
+    fn characterize_major_only_matching_accepts_older_minors_post_1_0() {
+        // A consumer that typechecked against a 1.2.0 contract binds a 1.0.0 producer
+        // that lacks the methods 1.2.0 promised → the proxy throws at call time.
+        assert!(version_satisfies("^1.2.0", "1.0.0"), "KNOWN WRONG: older minor satisfies a caret");
+    }
+
+    #[test]
+    fn characterize_major_mismatch_is_correctly_refused() {
+        // The one thing major-only DOES get right.
+        assert!(!version_satisfies("^1.0.0", "2.0.0"));
+        assert!(!version_satisfies("^2.0.0", "1.0.0"));
+    }
 }
