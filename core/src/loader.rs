@@ -17,6 +17,16 @@ use std::time::SystemTime;
 // Manifest
 // ---------------------------------------------------------------------------
 
+/// One derived `publishes` entry: the contract's resolved version + the sha256 of the
+/// exact `.d.ts` bytes the implementation typechecked against (design spec §4.2).
+/// The interface NAME is the map key and is deliberately independent of the plugin id.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PublishDecl {
+    pub version: String,
+    #[serde(rename = "typesSha256", default)]
+    pub types_sha256: String,
+}
+
 /// Minimal manifest parsed from `manifest.json` inside a `.s2sp` archive.
 /// Unknown extra fields are ignored (forward-compatible via serde's default).
 #[derive(Debug, Deserialize)]
@@ -31,6 +41,11 @@ pub struct Manifest {
     pub plugin_dependencies: std::collections::HashMap<String, String>,
     #[serde(rename = "optionalPluginDependencies", default)]
     pub optional_plugin_dependencies: std::collections::HashMap<String, String>,
+    /// Interfaces this plugin implements: interface-name → {version, typesSha256}.
+    /// Empty when the plugin publishes nothing. The host injects an interface's version
+    /// from HERE — a plugin may never type a version string (spec §4.3).
+    #[serde(default)]
+    pub publishes: std::collections::HashMap<String, PublishDecl>,
     #[serde(default)]
     pub config: std::collections::HashMap<String, crate::config::ConfigDecl>,
 }
@@ -632,5 +647,36 @@ mod tests {
         let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
         assert!(m.plugin_dependencies.is_empty());
         assert!(m.optional_plugin_dependencies.is_empty());
+    }
+
+    #[test]
+    fn manifest_parses_derived_publishes_block() {
+        let json = r#"{
+            "id":"@s2script/zones","version":"1.2.0","apiVersion":"1.x",
+            "publishes":{"@s2script/zones":{"version":"1.2.0","typesSha256":"abc123"}}
+        }"#;
+        let m: Manifest = serde_json::from_str(json).expect("parse");
+        let d = m.publishes.get("@s2script/zones").expect("entry present");
+        assert_eq!(d.version, "1.2.0");
+        assert_eq!(d.types_sha256, "abc123");
+    }
+
+    #[test]
+    fn manifest_without_publishes_yields_an_empty_map() {
+        let json = r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"1.x"}"#;
+        let m: Manifest = serde_json::from_str(json).expect("parse");
+        assert!(m.publishes.is_empty());
+    }
+
+    #[test]
+    fn manifest_publishes_may_name_a_different_interface_than_the_package() {
+        // @edge/mce publishes @community/mapchooser — the decoupling this grammar exists for.
+        let json = r#"{
+            "id":"@edge/mce","version":"3.1.0","apiVersion":"1.x",
+            "publishes":{"@community/mapchooser":{"version":"1.2.0","typesSha256":"deadbeef"}}
+        }"#;
+        let m: Manifest = serde_json::from_str(json).expect("parse");
+        assert_eq!(m.publishes["@community/mapchooser"].version, "1.2.0");
+        assert!(!m.publishes.contains_key("@edge/mce"));
     }
 }

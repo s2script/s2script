@@ -60,7 +60,27 @@ impl InterfaceRegistry {
         Self { ifaces: HashMap::new(), imports: HashMap::new() }
     }
 
-    pub fn publish(&mut self, name: &str, version: &str, producer_id: &str, producer_gen: u64, method_names: Vec<String>) {
+    /// Register (or re-register) an interface. Returns Err when a DIFFERENT producer already
+    /// holds a live entry for `name` — implementations are alternatives (you run mapchooser OR
+    /// mapchooser_extended, never both), spec §4.8. Re-publish by the SAME producer is a
+    /// hot-reload and preserves subscribers.
+    pub fn publish(
+        &mut self,
+        name: &str,
+        version: &str,
+        producer_id: &str,
+        producer_gen: u64,
+        method_names: Vec<String>,
+    ) -> Result<(), String> {
+        if let Some(existing) = self.ifaces.get(name) {
+            if existing.producer_id != producer_id {
+                return Err(format!(
+                    "interface '{}' is already published by '{}' — '{}' cannot also publish it \
+                     (implementations are alternatives; load only one)",
+                    name, existing.producer_id, producer_id
+                ));
+            }
+        }
         // Preserve any existing subscribers on republish of the same name: a producer updating its
         // interface in place keeps its consumers subscribed. (A fresh producer's entry starts empty
         // because `remove_by_producer` cleared the prior one on unload.)
@@ -72,6 +92,7 @@ impl InterfaceRegistry {
             method_names,
             subscribers,
         });
+        Ok(())
     }
 
     pub fn lookup(&self, name: &str) -> Option<&InterfaceEntry> {
@@ -377,5 +398,42 @@ mod tests {
         assert_eq!(e.version, "1.1.0");
         assert_eq!(e.method_names, vec!["greet".to_string(), "wave".to_string()]);
         assert_eq!(e.subscribers.len(), 1, "existing subscriber preserved across republish");
+    }
+
+    #[test]
+    fn republish_by_the_same_producer_succeeds_and_keeps_subscribers() {
+        let mut r = InterfaceRegistry::new();
+        r.publish("@c/mapchooser", "1.2.0", "@edge/mce", 1, vec!["pick".into()]).expect("first");
+        r.add_subscriber("@c/mapchooser", Subscriber {
+            sub_id: 7, consumer_id: "@x/rtv".into(), consumer_gen: 1, event: "changed".into(),
+        });
+        // Same producer republishing (hot-reload) is allowed and preserves subscribers.
+        r.publish("@c/mapchooser", "1.3.0", "@edge/mce", 2, vec!["pick".into()]).expect("republish");
+        let e = r.lookup("@c/mapchooser").expect("entry");
+        assert_eq!(e.version, "1.3.0");
+        assert_eq!(e.subscribers.len(), 1, "republish must keep subscribers");
+    }
+
+    #[test]
+    fn a_second_live_producer_of_the_same_interface_is_rejected() {
+        let mut r = InterfaceRegistry::new();
+        r.publish("@c/mapchooser", "1.2.0", "@edge/mce", 1, vec!["pick".into()]).expect("first");
+        // A DIFFERENT producer claiming the same live name: implementations are alternatives.
+        let err = r.publish("@c/mapchooser", "1.2.0", "@stock/mapchooser", 1, vec!["pick".into()])
+            .expect_err("second producer must be rejected");
+        assert!(err.contains("@c/mapchooser"), "error names the interface: {}", err);
+        assert!(err.contains("@edge/mce"), "error names the incumbent producer: {}", err);
+        // The incumbent is untouched.
+        assert_eq!(r.lookup("@c/mapchooser").expect("entry").producer_id, "@edge/mce");
+    }
+
+    #[test]
+    fn a_new_producer_may_claim_a_name_after_the_incumbent_unloads() {
+        let mut r = InterfaceRegistry::new();
+        r.publish("@c/mapchooser", "1.2.0", "@edge/mce", 1, vec!["pick".into()]).expect("first");
+        r.remove_by_producer("@edge/mce");
+        r.publish("@c/mapchooser", "1.2.0", "@stock/mapchooser", 1, vec!["pick".into()])
+            .expect("free after unload");
+        assert_eq!(r.lookup("@c/mapchooser").expect("entry").producer_id, "@stock/mapchooser");
     }
 }
