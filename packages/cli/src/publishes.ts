@@ -57,6 +57,15 @@ export function hashContract(typesPath: string): string {
   return createHash("sha256").update(readFileSync(typesPath)).digest("hex");
 }
 
+/** A concrete semver (what the MANIFEST carries), as opposed to a range (what an author
+ *  may write when implementing someone else's contract). Prerelease/build metadata count
+ *  as concrete; `^1.2.0`, `1.x`, `*`, `>=1.0.0` do not. */
+const CONCRETE_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+export function isConcreteVersion(v: string): boolean {
+  return CONCRETE_SEMVER.test(v.trim());
+}
+
 /** Expand + hash → the manifest `publishes` block. */
 export function derivePublishes(
   authored: PublishesAuthored,
@@ -71,6 +80,19 @@ export function derivePublishes(
     throw new Error(
       `publishes is set but no contract .d.ts was resolved — set "types": "api.d.ts" in package.json`,
     );
+  }
+  // The manifest carries a CONCRETE version (spec §4.2). A concrete map value names a contract
+  // this plugin ships itself — resolvable locally, no registry (e.g. @demo/entref-producer
+  // publishing @demo/ent@1.0.0). A RANGE means "resolve me against someone else's published
+  // contract and hash THEIR bytes", which needs the registry (spec §4.6, §10 — not this slice).
+  for (const [iface, v] of Object.entries(expanded)) {
+    if (!isConcreteVersion(v)) {
+      throw new Error(
+        `publishes[${JSON.stringify(iface)}] = ${JSON.stringify(v)} is a RANGE. Resolving a range ` +
+          `against a published contract requires the registry (design spec §4.6, §10 — not yet ` +
+          `implemented). Use a concrete version for a contract you ship yourself, or "self".`,
+      );
+    }
   }
   const typesSha256 = hashContract(typesPath);
   const out: Record<string, PublishDecl> = {};

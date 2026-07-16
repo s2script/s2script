@@ -2,6 +2,7 @@
   "name": "@demo/entref-producer",
   "version": "1.0.0",
   "main": "src/plugin.ts",
+  "types": "api.d.ts",
   "s2script": {
     "apiVersion": "1.x",
     "pluginDependencies": {

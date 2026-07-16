@@ -15,18 +15,22 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
+import { assertPublishesTypes } from "./publish-gate.ts";
+import { derivePublishes } from "./publishes.ts";
+import { readFileSync as readFileSyncRaw } from "node:fs";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
   name: string;
   version: string;
   main?: string;
+  types?: string;
   s2script?: {
     apiVersion?: string;
     main?: string;
     pluginDependencies?: Record<string, string>;
     optionalPluginDependencies?: Record<string, string>;
-    publishes?: Record<string, unknown>;
+    publishes?: string | Record<string, string>;
     config?: Record<string, unknown>;
   };
 }
@@ -39,6 +43,13 @@ interface PluginPackageJson {
  */
 export async function buildPlugin(dir: string, packagesDir?: string): Promise<string> {
   const absDir = resolve(dir);
+
+  // --- publishes ⇒ types gate (before we spend cycles on tsc/esbuild) ---
+  const pkgEarly: PluginPackageJson = JSON.parse(readFileSync(join(absDir, "package.json"), "utf8"));
+  const gate = assertPublishesTypes(pkgEarly, absDir);
+  if (!gate.ok) {
+    throw new Error(`publish gate failed: ${gate.error}`);
+  }
 
   // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on error. ---
   const tc = typecheckPlugin(absDir, packagesDir !== undefined ? { packagesDir } : undefined);
@@ -101,8 +112,12 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     pluginDependencies,
     optionalPluginDependencies,
   };
-  if (publishes !== undefined) {
-    manifest.publishes = publishes;
+  // publishes.ts owns the grammar, including which forms resolve locally ("self", or a map with
+  // a CONCRETE version naming a contract this plugin ships) versus which need the registry
+  // (a RANGE against someone else's published contract — spec §4.6, §10).
+  const derivedPublishes = derivePublishes(publishes, name, version, gate.typesPath);
+  if (Object.keys(derivedPublishes).length > 0) {
+    manifest.publishes = derivedPublishes;
   }
   if (config !== undefined) manifest.config = config;
 
@@ -110,6 +125,17 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   const zip = new AdmZip();
   zip.addFile("manifest.json", Buffer.from(JSON.stringify(manifest, null, 2)));
   zip.addFile("plugin.js", Buffer.from(pluginJs));
+
+  // --- Embedded verified copy (spec §4.5): redundant, hash-checked, NEVER authoritative.
+  // core's read_s2sp reads manifest.json/plugin.js by_name and ignores every other member,
+  // so this needs no loader change and can be dropped without breaking anyone.
+  if (gate.typesPath !== null && Object.keys(derivedPublishes).length > 0) {
+    const contract = readFileSyncRaw(gate.typesPath);
+    for (const iface of Object.keys(derivedPublishes)) {
+      const safe = iface.replace(/[^a-zA-Z0-9._-]/g, "_");
+      zip.addFile(`types/${safe}.d.ts`, contract);
+    }
+  }
 
   // --- Write to dir/dist/<sanitized-id>.s2sp ---
   const sanitizedId = name.replace(/[^a-zA-Z0-9._-]/g, "_");

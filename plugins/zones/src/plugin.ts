@@ -1,5 +1,6 @@
 // @s2script/zones — DB-backed, per-map, coordinate-defined zones with JSON export/import, operator CRUD,
-// and a published inter-plugin interface (`@s2script/zones@0.1.0`, emits enter/leave/stay).
+// and a published inter-plugin interface (`@s2script/zones`, emits enter/leave/stay). The contract is
+// api.d.ts; its VERSION lives only in package.json — the host injects it from the manifest at publish.
 //
 // DETECTION BACKEND: REAL ENGINE TRIGGERS. Each zone is a runtime `trigger_multiple` whose collision is an
 // arbitrary box built from the zone bounds (createEntity -> SetModel registers the touch aggregate ->
@@ -19,6 +20,7 @@ import { Entity } from "@s2script/entity";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
 import { Vector } from "@s2script/math";
 import { Chat } from "@s2script/chat";
+import type { Zones } from "../api";
 
 interface Vec3 { x: number; y: number; z: number; }
 interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set<number>; trigger: TriggerZoneHandle | null; }
@@ -217,7 +219,7 @@ export function onLoad(): void {
 
   Server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
 
-  iface = publishInterface("@s2script/zones", "0.1.0", {
+  const zonesImpl: Zones = {
     createZone(name: string, min: Vec3, max: Vec3): boolean {
       const nm = sanitizeName(name);
       if (!nm || !min || !max) return false;
@@ -259,8 +261,9 @@ export function onLoad(): void {
       if (db) db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [t.join(","), currentMap, nm]).catch(() => {});
       return true;
     },
-  });
-  console.log("[zones] publishing @s2script/zones@0.1.0");
+  };
+  iface = publishInterface("@s2script/zones", zonesImpl);
+  console.log("[zones] publishing @s2script/zones");
 
   // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. Entity.onOutput fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.

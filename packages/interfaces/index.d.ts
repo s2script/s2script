@@ -13,13 +13,24 @@ export interface PublishHandle {
 }
 
 /**
- * Publish a typed inter-plugin interface under `name`@`version`. `impl`'s methods
- * become the natives consumers call (`interface.method(...)`); the returned handle's
- * `emit` fans forwarded events out to consumers' `on(event, …)` subscriptions.
+ * Publish a typed inter-plugin interface under `name`. `impl`'s methods become the
+ * natives consumers call (`interface.method(...)`); the returned handle's `emit` fans
+ * forwarded events out to consumers' `on(event, …)` subscriptions.
+ *
+ * The interface's VERSION is injected by the host from this plugin's manifest
+ * `publishes` map — never passed here, and never written in TypeScript source.
+ * Publishing a name the manifest does not declare is refused at load.
+ *
+ * `impl` is generic over `object` rather than `Record<string, Function>` so that a
+ * producer can bind it to its contract — `const impl: Zones = {…}` — which is what
+ * actually proves the implementation matches the published `.d.ts`. A TypeScript
+ * `interface` has no implicit index signature (only a `type` alias does), so a
+ * `Record<…>` parameter would reject every interface-typed contract. The host
+ * enumerates `impl`'s own function properties; non-function properties are ignored.
+ *
  * Auto-ledgered: the interface is withdrawn (and hard-dep consumers degraded) on unload.
  */
-export declare function publishInterface(
+export declare function publishInterface<T extends object>(
   name: string,
-  version: string,
-  impl: Record<string, (...args: any[]) => any>,
+  impl: T,
 ): PublishHandle;

@@ -805,8 +805,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return resolveInterface(name);                          // inter-plugin, or null
   };
   const interfaces = {
-    publishInterface: function (name, version, impl) {
-      __s2_iface_publish(name, version, impl);
+    publishInterface: function (name, impl) {
+      __s2_iface_publish(name, impl);
       return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
     },
   };
@@ -4150,6 +4150,27 @@ pub fn set_plugin_imports(id: &str, decls: Vec<(String, String, crate::interface
     IFACES.with(|r| r.borrow_mut().set_imports(id, decls));
 }
 
+thread_local! {
+    /// plugin_id → the manifest's `publishes` map. The SOLE source of an interface's version
+    /// (spec §4.3): JS never carries one. Set by the loader before load_plugin_js.
+    static PLUGIN_PUBLISHES: std::cell::RefCell<
+        std::collections::HashMap<String, std::collections::HashMap<String, crate::loader::PublishDecl>>
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Record a plugin's declared `publishes` map (from its manifest) before its context loads.
+pub fn set_plugin_publishes(
+    plugin_id: &str,
+    publishes: std::collections::HashMap<String, crate::loader::PublishDecl>,
+) {
+    PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().insert(plugin_id.to_string(), publishes); });
+}
+
+/// Drop a plugin's publishes map (teardown).
+pub fn clear_plugin_publishes(plugin_id: &str) {
+    PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
+}
+
 // ---------------------------------------------------------------------------
 // Slice 5B.1: schema enumeration callbacks + `__s2_schema_dump` native.
 //
@@ -4282,10 +4303,10 @@ fn set_native(
     global_obj.set(scope, key.into(), func.into());
 }
 
-/// `__s2_iface_publish(name, version, implObj)` — the producer registers a versioned interface.
-/// Reflects `implObj`'s own function properties into method Globals; records the registry entry
-/// tagged with the producer (id, generation); ledgers `Interface(name)` on the producer. Degrade:
-/// missing plugin identity / bad args → WARN + return (no throw; publish is producer-side).
+/// `__s2_iface_publish(name, implObj)` — the producer registers an interface it DECLARED.
+/// The version is injected from the plugin's manifest `publishes` map (spec §4.3): a plugin may
+/// never type a version string. Refuses (WARN + return, no throw — publish is producer-side) when:
+/// the name is absent from the manifest, or another live producer already owns it (spec §4.8).
 fn s2_iface_publish(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -4293,10 +4314,9 @@ fn s2_iface_publish(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_undefined();
-        if args.length() < 3 { return; }
+        if args.length() < 2 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
-        let version = args.get(1).to_rust_string_lossy(scope);
-        let Ok(impl_obj) = v8::Local::<v8::Object>::try_from(args.get(2)) else {
+        let Ok(impl_obj) = v8::Local::<v8::Object>::try_from(args.get(1)) else {
             log_warn(&format!("WARN: iface_publish('{}'): impl is not an object", name));
             return;
         };
@@ -4304,10 +4324,24 @@ fn s2_iface_publish(
             log_warn("WARN: iface_publish: no current plugin");
             return;
         };
+
+        // The manifest is the sole source of the version. An undeclared name never registers.
+        let Some(decl) = PLUGIN_PUBLISHES.with(|p| {
+            p.borrow().get(&owner).and_then(|m| m.get(&name)).cloned()
+        }) else {
+            log_warn(&format!(
+                "WARN: iface_publish('{}'): plugin '{}' did not declare this interface in its \
+                 manifest `publishes` — refusing",
+                name, owner
+            ));
+            return;
+        };
+
         let generation = REGISTRY.with(|r| r.borrow().generation_of(&owner)).unwrap_or(0);
 
         // Enumerate own function properties → method names + capture Globals.
         let mut method_names: Vec<String> = Vec::new();
+        let mut captured: Vec<(String, v8::Global<v8::Function>)> = Vec::new();
         if let Some(prop_names) = impl_obj.get_own_property_names(scope, Default::default()) {
             for i in 0..prop_names.length() {
                 let Some(key) = prop_names.get_index(scope, i) else { continue };
@@ -4315,13 +4349,23 @@ fn s2_iface_publish(
                 if let Ok(f) = v8::Local::<v8::Function>::try_from(val) {
                     let m = key.to_rust_string_lossy(scope);
                     method_names.push(m.clone());
-                    let g = v8::Global::new(scope.as_ref(), f);
-                    IFACE_METHODS.with(|mm| { mm.borrow_mut().insert((name.clone(), m), g); });
+                    captured.push((m, v8::Global::new(scope.as_ref(), f)));
                 }
             }
         }
 
-        IFACES.with(|r| r.borrow_mut().publish(&name, &version, &owner, generation, method_names));
+        // Register FIRST: a REJECTED publish must not leave method Globals behind (a rejected
+        // second producer's functions would otherwise shadow the incumbent's in IFACE_METHODS,
+        // which is keyed by name).
+        if let Err(e) = IFACES.with(|r| {
+            r.borrow_mut().publish(&name, &decl.version, &owner, generation, method_names)
+        }) {
+            log_warn(&format!("WARN: iface_publish('{}'): {}", name, e));
+            return;
+        }
+        for (m, g) in captured {
+            IFACE_METHODS.with(|mm| { mm.borrow_mut().insert((name.clone(), m), g); });
+        }
         REGISTRY.with(|r| {
             if let Some(l) = r.borrow_mut().ledger_mut(&owner) { l.record_interface(name.clone()); }
         });
@@ -8980,11 +9024,11 @@ pub(crate) fn unload_plugin(id: &str) {
                     let _ = FRAME.with(|f| f.borrow_mut().unsubscribe(sid));
                 }
                 plugin::Resource::Interface(name) => {
-                    // Remove the registry entry(ies) this producer owned + drop its method Globals.
-                    // TODO(slice5): this prunes IFACE_METHODS by interface NAME only. Safe today (one
-                    // namespaced producer per name), but once manifest-vs-runtime `publishes`
-                    // cross-validation lands, key the prune by (producer_id, name) so unloading one
-                    // producer can never drop a different producer's method Globals for the same name.
+                    // Prunes IFACE_METHODS by interface NAME. Safe by construction since the
+                    // contract-grammar slice: InterfaceRegistry::publish rejects a second live
+                    // producer of a name (spec §4.8), so at most one producer can ever hold the
+                    // methods being pruned here. (Retires the slice-5 TODO, which asked for a
+                    // (producer_id, name) key against a case that can no longer occur.)
                     IFACES.with(|r| { let _ = r.borrow_mut().remove_by_producer(id); });
                     IFACE_METHODS.with(|m| {
                         m.borrow_mut().retain(|(iface, _method), _| iface != &name);
@@ -9033,6 +9077,7 @@ pub(crate) fn unload_plugin(id: &str) {
     let orphaned = IFACES.with(|r| r.borrow_mut().remove_subscribers_by_consumer(id));
     IFACE_SUBS.with(|m| { let mut mm = m.borrow_mut(); for (_iface, sid) in orphaned { mm.remove(&sid); } });
     IFACES.with(|r| r.borrow_mut().clear_imports(id));
+    clear_plugin_publishes(id);
     // Removing timers/jobs (or an onUnload-added hook) changed the detour predicate — reconcile.
     refresh_detour();
 
@@ -9852,11 +9897,15 @@ mod frame_tests {
     fn iface_publish_records_methods_and_dep_kind() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         create_plugin_context("prod");
         create_plugin_context("cons");
 
         // Producer publishes.
-        eval_in_context("prod", r#"__s2_iface_publish("@x/greeter","1.0.0",{ greet:function(n){return "hi "+n;} });"#).expect("publish");
+        eval_in_context("prod", r#"__s2_iface_publish("@x/greeter",{ greet:function(n){return "hi "+n;} });"#).expect("publish");
         // Registry has the method name.
         let has = IFACES.with(|r| r.borrow().lookup("@x/greeter").map(|e| e.method_names.clone()));
         assert_eq!(has, Some(vec!["greet".to_string()]));
@@ -9867,6 +9916,65 @@ mod frame_tests {
         assert!(pub_ok);
         // A JSON round-trip across the two contexts preserves data, not identity.
         assert_eq!(eval_in_context_string("prod", r#"JSON.stringify({a:1,b:"x"})"#), r#"{"a":1,"b":"x"}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn publish_interface_takes_its_version_from_the_manifest() {
+        let _ = init(dummy_logger());
+        // The manifest declares the contract; the plugin never types a version.
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "2.5.0".into(), types_sha256: "abc".into() },
+        )].into_iter().collect());
+        create_plugin_context("prod");
+        eval_in_context("prod", r#"__s2_iface_publish("@x/greeter",{ greet:function(){return "hi";} });"#)
+            .expect("publish");
+        let v = IFACES.with(|r| r.borrow().lookup("@x/greeter").map(|e| e.version.clone()));
+        assert_eq!(v, Some("2.5.0".to_string()), "version must come from the manifest, not JS");
+        shutdown();
+    }
+
+    #[test]
+    fn publish_interface_of_an_undeclared_name_is_refused() {
+        let _ = init(dummy_logger());
+        set_plugin_publishes("prod", std::collections::HashMap::new());
+        create_plugin_context("prod");
+        // Publishing a name absent from the manifest must NOT register anything.
+        let _ = eval_in_context("prod", r#"__s2_iface_publish("@x/undeclared",{ a:function(){} });"#);
+        let found = IFACES.with(|r| r.borrow().lookup("@x/undeclared").is_some());
+        assert!(!found, "an undeclared interface must never reach the registry");
+        shutdown();
+    }
+
+    #[test]
+    fn publish_interface_of_a_name_owned_by_another_producer_is_refused() {
+        let _ = init(dummy_logger());
+        let decl = crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() };
+        set_plugin_publishes("first", [("@x/dup".to_string(), decl.clone())].into_iter().collect());
+        set_plugin_publishes("second", [("@x/dup".to_string(), decl)].into_iter().collect());
+        create_plugin_context("first");
+        create_plugin_context("second");
+        eval_in_context("first", r#"__s2_iface_publish("@x/dup",{ a:function(){return 1;} });"#).expect("first");
+        let _ = eval_in_context("second", r#"__s2_iface_publish("@x/dup",{ a:function(){return 2;} });"#);
+        let owner = IFACES.with(|r| r.borrow().lookup("@x/dup").map(|e| e.producer_id.clone()));
+        assert_eq!(owner, Some("first".to_string()), "the incumbent producer must keep the name");
+        shutdown();
+    }
+
+    #[test]
+    fn prelude_publish_interface_takes_two_args() {
+        let _ = init(dummy_logger());
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.4.0".into(), types_sha256: "abc".into() },
+        )].into_iter().collect());
+        load_plugin_js("prod", r#"
+            const { publishInterface } = require("@s2script/interfaces");
+            publishInterface("@x/greeter", { greet: function (n) { return "hi " + n.who; } });
+        "#, "{}");
+        let v = IFACES.with(|r| r.borrow().lookup("@x/greeter").map(|e| e.version.clone()));
+        assert_eq!(v, Some("1.4.0".to_string()));
         shutdown();
     }
 
@@ -9899,10 +10007,14 @@ mod frame_tests {
     fn consumer_calls_producer_method_structured_copy() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         // Producer publishes via the plugin path so the prelude publishInterface is exercised.
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
-            publishInterface("@x/greeter","1.0.0",{ greet:function(n){ return "hi "+n.who; } });
+            publishInterface("@x/greeter",{ greet:function(n){ return "hi "+n.who; } });
         "#, "{}");
         // Consumer resolves a hard proxy and calls across (arg + return structured-copied).
         load_plugin_js("cons", r#"
@@ -9936,9 +10048,13 @@ mod frame_tests {
 
         // Producer method THROWS → consumer sees InterfaceCallError carrying the producer message
         // (not a crash, not a mislabeled InterfaceValueNotSerializable).
+        set_plugin_publishes("prodBoom", [(
+            "@x/boom".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prodBoom", r#"
             const { publishInterface } = require("@s2script/interfaces");
-            publishInterface("@x/boom", "1.0.0", { boom: function(){ throw new Error("kaboom"); } });
+            publishInterface("@x/boom", { boom: function(){ throw new Error("kaboom"); } });
         "#, "{}");
         set_plugin_imports("consBoom", vec![("@x/boom".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("consBoom", r#"
@@ -9950,9 +10066,13 @@ mod frame_tests {
         assert!(boom.contains("kaboom"), "producer message surfaced, got: {}", boom);
 
         // Producer method returns undefined (void) → consumer receives undefined, NOT a throw.
+        set_plugin_publishes("prodVoid", [(
+            "@x/void".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prodVoid", r#"
             const { publishInterface } = require("@s2script/interfaces");
-            publishInterface("@x/void", "1.0.0", { poke: function(){ /* returns undefined */ } });
+            publishInterface("@x/void", { poke: function(){ /* returns undefined */ } });
         "#, "{}");
         set_plugin_imports("consVoid", vec![("@x/void".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
         load_plugin_js("consVoid", r#"
@@ -9970,9 +10090,13 @@ mod frame_tests {
     fn producer_emit_forwards_to_live_consumer_only() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
-            globalThis.__h = publishInterface("@x/greeter","1.0.0",{ greet:function(){return "";} });
+            globalThis.__h = publishInterface("@x/greeter",{ greet:function(){return "";} });
         "#, "{}");
         load_plugin_js("cons", r#"
             const g = require("@x/greeter");
@@ -9991,8 +10115,12 @@ mod frame_tests {
     fn producer_unload_invalidates_consumer_proxy() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
-            publishInterface("@x/greeter","1.0.0",{greet:function(){return "ok";}});"#, "{}");
+            publishInterface("@x/greeter",{greet:function(){return "ok";}});"#, "{}");
         load_plugin_js("cons", r#"const g=require("@x/greeter");
             globalThis.call=function(){ try { return g.greet(); } catch(e){ return String(e); } };
             globalThis.__before=call();"#, "{}");
@@ -10012,8 +10140,12 @@ mod frame_tests {
     fn consumer_unload_removes_subscriber() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
-            globalThis.__h=publishInterface("@x/greeter","1.0.0",{greet:function(){return "";}});"#, "{}");
+            globalThis.__h=publishInterface("@x/greeter",{greet:function(){return "";}});"#, "{}");
         load_plugin_js("cons", r#"const g=require("@x/greeter"); g.on("greeted",function(){});"#, "{}");
         assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/greeter").unwrap().subscribers.len()), 1);
         unload_plugin("cons");
@@ -10028,8 +10160,12 @@ mod frame_tests {
     fn unload_all_runs_consumers_before_producers() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
-            publishInterface("@x/greeter","1.0.0",{greet:function(){return "still-here";}});"#, "{}");
+            publishInterface("@x/greeter",{greet:function(){return "still-here";}});"#, "{}");
         // consumer's onUnload calls the producer — must still work because producer outlives it.
         load_plugin_js("cons", r#"const g=require("@x/greeter");
             module.exports.onUnload=function(){ globalThis.__unload_result = g.greet(); };"#, "{}");
@@ -10477,11 +10613,15 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_engine_ops(None); // degrade path: a real EntityRef -> isValid()==false, readInt32()==null
         set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/ent".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         // Producer returns an EntityRef from a method.
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             const { EntityRef } = require("@s2script/entity");
-            publishInterface("@x/ent", "1.0.0", { getRef: function(){ return new EntityRef(1, 7); } });
+            publishInterface("@x/ent", { getRef: function(){ return new EntityRef(1, 7); } });
         "#, "{}");
         // Consumer receives it: must be a LIVE EntityRef (methods present), not plain data.
         load_plugin_js("cons", r#"
@@ -10504,10 +10644,14 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_engine_ops(None);
         set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/ent".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             const { EntityRef } = require("@s2script/entity");
-            globalThis.__h = publishInterface("@x/ent", "1.0.0", { noop: function(){} });
+            globalThis.__h = publishInterface("@x/ent", { noop: function(){} });
         "#, "{}");
         load_plugin_js("cons", r#"
             const { EntityRef } = require("@s2script/entity");
@@ -10527,9 +10671,13 @@ mod frame_tests {
     fn non_entityref_payload_round_trips_unchanged() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![("@x/data".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_publishes("prod", [(
+            "@x/data".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
         load_plugin_js("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
-            publishInterface("@x/data", "1.0.0", { echo: function(){ return { a: 1, b: "hi", c: [1,2,3] }; } });
+            publishInterface("@x/data", { echo: function(){ return { a: 1, b: "hi", c: [1,2,3] }; } });
         "#, "{}");
         load_plugin_js("cons", r#"
             const d = require("@x/data").echo();

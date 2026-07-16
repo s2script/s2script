@@ -249,6 +249,7 @@ fn drain_pending_ops() {
                     Ok((manifest, js)) => {
                         crate::v8host::unload_plugin(&id);   // no-op if not currently loaded
                         crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
+                        crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                         let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
                         crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
                         crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
@@ -362,6 +363,7 @@ pub(crate) fn poll_plugins() {
                         continue;
                     }
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
+                    crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
                     crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
                     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
@@ -389,6 +391,7 @@ pub(crate) fn poll_plugins() {
                     // explicitly so the intent is clear and the ledger is the authority.
                     crate::v8host::unload_plugin(&old_id);
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
+                    crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
                     crate::v8host::load_plugin_js(&manifest.id, &js, &cfg);
                     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
