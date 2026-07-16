@@ -13,13 +13,17 @@ export interface PublishHandle {
 }
 
 /**
- * Publish a typed inter-plugin interface under `name`@`version`. `impl`'s methods
- * become the natives consumers call (`interface.method(...)`); the returned handle's
- * `emit` fans forwarded events out to consumers' `on(event, …)` subscriptions.
+ * Publish a typed inter-plugin interface under `name`. `impl`'s methods become the
+ * natives consumers call (`interface.method(...)`); the returned handle's `emit` fans
+ * forwarded events out to consumers' `on(event, …)` subscriptions.
+ *
+ * The interface's VERSION is injected by the host from this plugin's manifest
+ * `publishes` map — never passed here, and never written in TypeScript source.
+ * Publishing a name the manifest does not declare is refused at load.
+ *
  * Auto-ledgered: the interface is withdrawn (and hard-dep consumers degraded) on unload.
  */
 export declare function publishInterface(
   name: string,
-  version: string,
   impl: Record<string, (...args: any[]) => any>,
 ): PublishHandle;
