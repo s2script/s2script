@@ -126,3 +126,24 @@ test("derivePublishes: trims surrounding whitespace off the stamped version", ()
   const out = derivePublishes({ "@x/y": " 1.0.0 " }, "@a/b", "1.0.0", p);
   assert.equal(out["@x/y"].version, "1.0.0", "stamped version must be trimmed, not ' 1.0.0 '");
 });
+
+test("derivePublishes: a two-interface map is rejected (one plugin ships one contract)", () => {
+  // Two interfaces cannot share one plugin's single "types" file — the same typesSha256 could not
+  // identify which contract is which. Reject with a named error rather than stamp a meaningless hash.
+  const dir = mkdtempSync(join(tmpdir(), "s2pub-"));
+  const p = join(dir, "api.d.ts");
+  writeFileSync(p, "export declare function m(): void;\n");
+  assert.throws(
+    () => derivePublishes({ "@x/a": "1.0.0", "@x/b": "1.0.0" }, "@a/b", "1.0.0", p),
+    /single .*contract|one interface per plugin/i,
+  );
+});
+
+test("derivePublishes: a single-interface map still derives (one contract, one hash)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "s2pub-"));
+  const p = join(dir, "api.d.ts");
+  writeFileSync(p, "export declare function s(): void;\n");
+  const out = derivePublishes({ "@x/only": "1.0.0" }, "@a/b", "1.0.0", p);
+  assert.deepEqual(Object.keys(out), ["@x/only"]);
+  assert.equal(out["@x/only"].typesSha256, hashContract(p));
+});

@@ -76,6 +76,18 @@ export function derivePublishes(
   const expanded = expandPublishes(authored, pkgName, pkgVersion);
   const names = Object.keys(expanded);
   if (names.length === 0) return {};
+  // One plugin ships ONE `types` contract, so it hashes to ONE typesSha256. A multi-interface map
+  // would give every entry that SAME hash, which cannot identify which contract belongs to which
+  // interface (design spec 2026-07-16 §Part B/B2 — frozen-shape fix). Publish one interface per
+  // plugin. A per-interface `types` map is out of scope (see the plan's open questions).
+  if (names.length > 1) {
+    throw new Error(
+      `publishes declares ${names.length} interfaces (${names.join(", ")}) but a plugin ships a ` +
+        `single "types" contract, so they would all carry the SAME typesSha256 — a hash that ` +
+        `cannot say which contract is which. Publish one interface per plugin (a per-interface ` +
+        `"types" map is not supported).`,
+    );
+  }
   if (typesPath === null) {
     throw new Error(
       `publishes is set but no contract .d.ts was resolved — set "types": "api.d.ts" in package.json`,
