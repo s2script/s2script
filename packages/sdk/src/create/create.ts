@@ -146,10 +146,17 @@ export function versionSpecFrom(status: number | null, stdout: string | null): s
   return status === 0 && /^\d+\.\d+\.\d+/.test(v) ? `^${v}` : "latest";
 }
 
-function registryDevDeps(game: GameChoice, version: string): Record<string, string> {
+/** Registry-path dev deps. `@s2script/sdk` pins to the running CLI's own version (the CLI *is*
+ *  that artifact, so its version is installable by construction); every other package versions
+ *  independently and must be resolved live. `resolve` is injectable so tests avoid the network. */
+export function registryDevDeps(
+  game: GameChoice,
+  sdkVersion: string,
+  resolve: (pkg: string) => string = resolvePublishedVersion,
+): Record<string, string> {
   const deps: Record<string, string> = {};
   for (const n of createPackageNames(game)) {
-    deps[`@s2script/${n}`] = `^${version}`;
+    deps[`@s2script/${n}`] = n === "sdk" ? `^${sdkVersion}` : resolve(`@s2script/${n}`);
   }
   return deps;
 }
