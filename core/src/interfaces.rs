@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn publish_then_lookup() {
         let mut r = reg();
-        r.publish("@x/if", "1.2.0", "prod", 0, vec!["greet".into()]);
+        r.publish("@x/if", "1.2.0", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
         let e = r.lookup("@x/if").expect("published");
         assert_eq!(e.version, "1.2.0");
         assert_eq!(e.producer_id, "prod");
@@ -265,9 +265,9 @@ mod tests {
     #[test]
     fn remove_by_producer_drops_all_its_interfaces() {
         let mut r = reg();
-        r.publish("@a", "1.0.0", "prod", 0, vec![]);
-        r.publish("@b", "1.0.0", "prod", 0, vec![]);
-        r.publish("@c", "1.0.0", "other", 0, vec![]);
+        r.publish("@a", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@b", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@c", "1.0.0", "other", 0, vec![]).expect("test-setup publish must succeed");
         let mut removed = r.remove_by_producer("prod");
         removed.sort();
         assert_eq!(removed, vec!["@a".to_string(), "@b".to_string()]);
@@ -287,10 +287,10 @@ mod tests {
         assert_eq!(r.dep_kind("cons", "@undeclared"), None);
         // not published yet → not available
         assert!(!r.is_available("cons", "@hard"));
-        r.publish("@hard", "1.5.0", "prod", 0, vec![]);
+        r.publish("@hard", "1.5.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
         assert!(r.is_available("cons", "@hard"));
         // published but incompatible version → not available
-        r.publish("@opt", "2.0.0", "prod2", 0, vec![]);
+        r.publish("@opt", "2.0.0", "prod2", 0, vec![]).expect("test-setup publish must succeed");
         assert!(!r.is_available("cons", "@opt"));
     }
 
@@ -299,17 +299,17 @@ mod tests {
         let mut r = reg();
         r.set_imports("cons", vec![("@x".into(), "^1.0.0".into(), Kind::Hard)]);
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::Unavailable);
-        r.publish("@x", "1.2.0", "prod", 0, vec!["greet".into()]);
+        r.publish("@x", "1.2.0", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::Ok);
         assert_eq!(r.call_target("cons", "@x", "missingMethod"), CallTarget::Unavailable);
-        r.publish("@x", "3.0.0", "prod", 1, vec!["greet".into()]);   // republished incompatible
+        r.publish("@x", "3.0.0", "prod", 1, vec!["greet".into()]).expect("test-setup publish must succeed");   // republished incompatible
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::VersionMismatch);
     }
 
     #[test]
     fn subscribers_add_and_remove_by_consumer() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
         assert!(r.add_subscriber("@x", Subscriber { sub_id: 1, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() }));
         assert!(r.add_subscriber("@x", Subscriber { sub_id: 2, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() }));
         // adding to a missing interface → false
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn live_subscriber_ids_filters_by_event_and_liveness() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 1, consumer_id: "live".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 2, consumer_id: "dead".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 3, consumer_id: "live".into(), consumer_gen: 0, event: "other".into() });
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn unload_order_puts_consumers_before_producers() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.set_imports("cons", vec![("@x".into(), "^1.0.0".into(), Kind::Hard)]);
         // input order must not matter:
         assert_eq!(r.unload_order(&["prod".into(), "cons".into()]), vec!["cons".to_string(), "prod".to_string()]);
@@ -346,14 +346,14 @@ mod tests {
     fn producer_of_returns_id_and_generation() {
         let mut r = reg();
         assert!(r.producer_of("@x").is_none());
-        r.publish("@x", "1.0.0", "prod", 3, vec![]);
+        r.publish("@x", "1.0.0", "prod", 3, vec![]).expect("test-setup publish must succeed");
         assert_eq!(r.producer_of("@x"), Some(("prod".to_string(), 3)));
     }
 
     #[test]
     fn clear_empties_ifaces_and_imports() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.set_imports("cons", vec![("@x".into(), "^1.0.0".into(), Kind::Hard)]);
         r.clear();
         assert!(r.lookup("@x").is_none());
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn remove_subscribers_by_consumer_on_drops_only_matching_name_event() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 1, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 2, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 3, consumer_id: "cons".into(), consumer_gen: 0, event: "other".into() });
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn consumer_of_sub_returns_owner() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]);
+        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 42, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
         assert_eq!(r.consumer_of_sub("@x", 42), Some("cons".to_string()));
         assert_eq!(r.consumer_of_sub("@x", 99), None);  // sub_id not found
@@ -391,9 +391,9 @@ mod tests {
     #[test]
     fn republish_preserves_existing_subscribers() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec!["greet".into()]);
+        r.publish("@x", "1.0.0", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 5, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
-        r.publish("@x", "1.1.0", "prod", 0, vec!["greet".into(), "wave".into()]); // in-place update
+        r.publish("@x", "1.1.0", "prod", 0, vec!["greet".into(), "wave".into()]).expect("test-setup publish must succeed"); // in-place update
         let e = r.lookup("@x").unwrap();
         assert_eq!(e.version, "1.1.0");
         assert_eq!(e.method_names, vec!["greet".to_string(), "wave".to_string()]);
