@@ -16,6 +16,10 @@ export { GameEvent } from "@s2script/sdk/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
 export { Weapon } from "./weapon";
+// A re-export (`export { Weapon }`) does NOT create a local binding, so the Pawn interface below
+// referenced an unbound `Weapon` → TS2304, swallowed by the gate's skipLibCheck into `any`. Bind it
+// locally too (the SceneNode pattern on line 14) so activeWeapon/weapons/giveNamedItem stay typed.
+import type { Weapon } from "./weapon";
 
 /**
  * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the serial-gated ref.

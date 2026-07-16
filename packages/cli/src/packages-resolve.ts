@@ -2,8 +2,8 @@
  * Resolve where @s2script/* type stubs live for typecheck.
  *
  * The monorepo `packages/` tree and a plugin's `node_modules/@s2script/` share
- * the same shape (globals/globals.d.ts, <name>/index.d.ts), so both work as a
- * "packagesDir" for the path-mapped typecheck.
+ * the same shape (sdk/globals.d.ts, sdk/<cap>.d.ts, cs2/index.d.ts), so both work
+ * as a "packagesDir" for the path-mapped typecheck.
  *
  * Priority:
  *   1. explicit packagesDir / --packages-dir
@@ -19,12 +19,8 @@ import { fileURLToPath } from "node:url";
 export function isPackagesDir(dir: string): boolean {
   const abs = resolve(dir);
   return (
-    existsSync(join(abs, "sdk", "globals.d.ts")) ||     // consolidated layout
-    existsSync(join(abs, "sdk", "entity.d.ts")) ||      // consolidated layout
-    existsSync(join(abs, "globals", "globals.d.ts")) || // legacy per-package layout
-    existsSync(join(abs, "entity", "index.d.ts")) ||
-    existsSync(join(abs, "frame", "index.d.ts")) ||
-    existsSync(join(abs, "commands", "index.d.ts"))
+    existsSync(join(abs, "sdk", "globals.d.ts")) ||
+    existsSync(join(abs, "sdk", "entity.d.ts"))
   );
 }
 

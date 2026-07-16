@@ -121,23 +121,14 @@ function assertInstall(v: string | undefined): InstallChoice | undefined {
   throw new Error(`invalid --install ${JSON.stringify(v)} (expected npm|pnpm|yarn|bun|none)`);
 }
 
-/** Direct create deps + type-transitive packages needed for a clean typecheck. */
+/** Direct create deps needed for a clean typecheck. Post-consolidation the builtins all ship in
+ *  the single `@s2script/sdk` package (subpaths `@s2script/sdk/<cap>`); the game types are the
+ *  separate `@s2script/cs2`; the build CLI is `@s2script/cli`. */
 function createPackageNames(game: GameChoice): string[] {
   if (game === "cs2") {
-    // chat→events; cs2→entity/math/trace/events; trace→entity/math
-    return [
-      "cli",
-      "cs2",
-      "commands",
-      "chat",
-      "globals",
-      "events",
-      "entity",
-      "math",
-      "trace",
-    ];
+    return ["cli", "sdk", "cs2"];
   }
-  return ["cli", "frame", "timers", "globals"];
+  return ["cli", "sdk"];
 }
 
 function registryDevDeps(game: GameChoice, version: string): Record<string, string> {
@@ -160,8 +151,8 @@ function fileDevDeps(packagesDir: string, game: GameChoice): Record<string, stri
 
 function pluginSource(game: GameChoice): string {
   if (game === "cs2") {
-    return `import { Commands } from "@s2script/commands";
-import { Chat } from "@s2script/chat";
+    return `import { Commands } from "@s2script/sdk/commands";
+import { Chat } from "@s2script/sdk/chat";
 
 export function onLoad(): void {
   Commands.register("hello", (ctx) => {
@@ -175,8 +166,8 @@ export function onLoad(): void {
 export function onUnload(): void {}
 `;
   }
-  return `import { OnGameFrame } from "@s2script/frame";
-import { delay } from "@s2script/timers";
+  return `import { OnGameFrame } from "@s2script/sdk/frame";
+import { delay } from "@s2script/sdk/timers";
 
 export function onLoad(): void {
   let n = 0;
@@ -206,7 +197,7 @@ function tsconfigJson(): string {
           types: [],
           skipLibCheck: true,
         },
-        include: ["src", "node_modules/@s2script/globals/globals.d.ts"],
+        include: ["src", "node_modules/@s2script/sdk/globals.d.ts"],
       },
       null,
       2,

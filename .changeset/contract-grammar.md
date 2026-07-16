@@ -1,5 +1,4 @@
 ---
-"@s2script/interfaces": major
 "@s2script/cli": minor
 ---
 

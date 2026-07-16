@@ -1,0 +1,1 @@
+{ "name":"@fix/decl-builtin-typo","version":"1.0.0","main":"src/plugin.ts","s2script":{"apiVersion":"1.x","pluginDependencies":{"@s2script/sdk/frmae":"^1.0.0"}},"private":true }

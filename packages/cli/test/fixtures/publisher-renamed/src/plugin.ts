@@ -1,4 +1,4 @@
-import { publishInterface } from "@s2script/interfaces";
+import { publishInterface } from "@s2script/sdk/interfaces";
 import type { OtherName } from "../api";
 
 const impl: OtherName = {
