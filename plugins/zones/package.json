@@ -1,10 +1,12 @@
 {
   "name": "@s2script/zones",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "main": "src/plugin.ts",
+  "types": "api.d.ts",
   "s2script": {
     "apiVersion": "1.x",
+    "publishes": "self",
     "pluginDependencies": {
       "@s2script/commands": "^0.1.0",
       "@s2script/admin": "^0.2.0",
@@ -17,9 +19,6 @@
       "@s2script/cs2": "^0.3.0",
       "@s2script/entity": "^0.2.0",
       "@s2script/math": "^0.1.0"
-    },
-    "publishes": {
-      "@s2script/zones": "0.1.0"
     }
   }
 }

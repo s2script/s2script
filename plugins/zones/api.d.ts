@@ -1,8 +1,8 @@
 /**
- * @s2script/zones — the zone system's inter-plugin interface, published by the first-party
- * @s2script/zones plugin. Import it like any other @s2script/* module; as a hard dependency it resolves
- * to a producer-backed proxy that throws `InterfaceUnavailable` while the plugin is unloaded (probe with
- * a method call and defer subscribing if it throws — the producer may load after the consumer). NO runtime code.
+ * @s2script/zones — the zone system's contract, implemented by the first-party zones plugin.
+ * As a hard dependency it resolves to a producer-backed proxy that throws `InterfaceUnavailable`
+ * while the plugin is unloaded (probe with a method call and defer subscribing if it throws — the
+ * producer may load after the consumer). NO runtime code.
  */
 export interface Vec3 { x: number; y: number; z: number; }
 export interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; }
@@ -40,3 +40,15 @@ export declare function on(event: "created", handler: (p: ZoneCreatedEvent) => v
 export declare function on(event: "deleted", handler: (p: ZoneDeletedEvent) => void): number;
 /** Unsubscribe a handler from an event. */
 export declare function off(event: string, handler: (...args: unknown[]) => void): void;
+
+/** The published surface, as one object type. The plugin's impl is declared `: Zones`,
+ *  so `s2script build` fails if a method is missing or mistyped (spec §4.6). */
+export interface Zones {
+  createZone(name: string, min: Vec3, max: Vec3): boolean;
+  deleteZone(name: string): boolean;
+  getZones(): Zone[];
+  isInZone(slot: number, name: string): boolean;
+  zonesFor(slot: number): string[];
+  getZonesByTag(tag: string): Zone[];
+  setZoneTags(name: string, tags: string[]): boolean;
+}
