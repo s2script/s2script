@@ -117,3 +117,12 @@ test("isConcreteVersion: separates a shipped version from a range", () => {
     assert.equal(isConcreteVersion(v), false, `${v} is not concrete`);
   }
 });
+
+test("derivePublishes: trims surrounding whitespace off the stamped version", () => {
+  // isConcreteVersion trims for the CHECK; the stamp must trim too, or " 1.0.0 " reaches the manifest.
+  const dir = mkdtempSync(join(tmpdir(), "s2pub-"));
+  const p = join(dir, "api.d.ts");
+  writeFileSync(p, "export declare function w(): void;\n");
+  const out = derivePublishes({ "@x/y": " 1.0.0 " }, "@a/b", "1.0.0", p);
+  assert.equal(out["@x/y"].version, "1.0.0", "stamped version must be trimmed, not ' 1.0.0 '");
+});

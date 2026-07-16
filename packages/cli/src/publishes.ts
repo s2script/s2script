@@ -97,7 +97,7 @@ export function derivePublishes(
   const typesSha256 = hashContract(typesPath);
   const out: Record<string, PublishDecl> = {};
   for (const name of names) {
-    out[name] = { version: expanded[name], typesSha256 };
+    out[name] = { version: expanded[name].trim(), typesSha256 };
   }
   return out;
 }
