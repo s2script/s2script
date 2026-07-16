@@ -11,7 +11,7 @@ import {
 } from "../src/packages-resolve.ts";
 import { typecheckPlugin } from "../src/typecheck/typecheck.ts";
 import { buildPlugin } from "../src/build.ts";
-import { createPlugin } from "../src/create/create.ts";
+import { createPlugin, versionSpecFrom } from "../src/create/create.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
@@ -135,4 +135,13 @@ test("create --game none scaffolds an engine-generic plugin", async () => {
   const tc = typecheckPlugin(tmp, { packagesDir });
   assert.equal(tc.ok, true, JSON.stringify(tc.diagnostics));
   rmSync(tmp, { recursive: true, force: true });
+});
+
+test("versionSpecFrom carets a clean semver and degrades to latest on any failure", () => {
+  assert.equal(versionSpecFrom(0, "0.5.0\n"), "^0.5.0");
+  assert.equal(versionSpecFrom(0, "1.2.3-beta.1\n"), "^1.2.3-beta.1");
+  assert.equal(versionSpecFrom(0, ""), "latest");
+  assert.equal(versionSpecFrom(0, "not-a-version"), "latest");
+  assert.equal(versionSpecFrom(1, "0.5.0"), "latest");
+  assert.equal(versionSpecFrom(null, "0.5.0"), "latest");
 });

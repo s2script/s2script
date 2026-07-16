@@ -131,6 +131,21 @@ function createPackageNames(game: GameChoice): string[] {
   return ["sdk"];
 }
 
+/** Resolve a published package's current version from the registry, as a caret range.
+ *  `npm view` respects .npmrc / private registries. Any failure — non-zero exit, empty or
+ *  malformed output, npm absent, package unpublished — degrades to the floating `latest` spec. */
+function resolvePublishedVersion(pkg: string): string {
+  const r = spawnSync("npm", ["view", pkg, "version"], { encoding: "utf8", timeout: 5000 });
+  return versionSpecFrom(r.status, r.stdout);
+}
+
+/** Pure formatter for a `npm view <pkg> version` result: a caret range on a clean semver,
+ *  else the floating `latest`. Split out so the fallback logic is unit-testable without a network. */
+export function versionSpecFrom(status: number | null, stdout: string | null): string {
+  const v = (stdout ?? "").trim();
+  return status === 0 && /^\d+\.\d+\.\d+/.test(v) ? `^${v}` : "latest";
+}
+
 function registryDevDeps(game: GameChoice, version: string): Record<string, string> {
   const deps: Record<string, string> = {};
   for (const n of createPackageNames(game)) {
