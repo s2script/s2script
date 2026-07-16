@@ -1,5 +1,13 @@
 # Part A: Claim the `s2script` npm name — Implementation Plan
 
+> **⚠ SUPERSEDED / VOID (2026-07-16).** npm permanently blocks the unscoped `s2script` name
+> (`403 — too similar to existing package rescript`), so this plan's entire premise is dead. It was
+> implemented (commit `f4ba5db` on branch `packaging-name/forwarding-bin`) and then **closed as PR #50**.
+> The packaging story now consolidates into the scoped **`@s2script/sdk`** (types + CLI, bin `s2s`) —
+> see the naming-pivot banner in `docs/superpowers/specs/2026-07-16-packaging-consolidation-design.md`
+> and the revised `docs/superpowers/plans/2026-07-16-packaging-consolidation.md`. Kept only as a record;
+> the one commit is revivable **only** if an npm-support appeal for the unscoped name ever succeeds.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (- [ ]) syntax for tracking.

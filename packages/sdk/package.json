@@ -1,0 +1,15 @@
+{
+  "name": "@s2script/sdk",
+  "version": "0.0.1",
+  "description": "s2script SDK — types + CLI for building Source 2 / CS2 plugins. Placeholder release that bootstraps the package name + OIDC trusted publishing; the real per-capability type subpaths (@s2script/sdk/entity, …) and the `s2s` CLI land in 0.1.0 via the consolidation (Part C).",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GabeHirakawa/s2script.git"
+  }
+}

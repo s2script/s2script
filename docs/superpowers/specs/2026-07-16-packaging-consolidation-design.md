@@ -6,6 +6,25 @@
 
 **Depends on:** the contract-grammar stack (#36–#41) being the baseline. This spec assumes those defects (see that stack's plan "Amendments") are already fixed.
 
+---
+
+## ⚠ Naming pivot (amended 2026-07-16) — READ FIRST, supersedes the unscoped-name decisions below
+
+The unscoped **`s2script` npm name is permanently unobtainable**: npm's new-package name-similarity filter hard-blocks it (`403 Forbidden — Package name too similar to existing package rescript`), for everyone, forever. The design's *mechanics* are unchanged — only the name moves. Everything below that assumes the unscoped name is superseded by these authoritative decisions:
+
+- **The consolidated package is `@s2script/sdk`** (scoped — bypasses the filter), a **types + CLI** package ("SDK" = the kit: types *and* tooling). Subpath imports are **`@s2script/sdk/<cap>`** — e.g. `import { Entity } from "@s2script/sdk/entity"`. Wherever the text below says the unscoped `s2script` package or an `s2script/<cap>` subpath, read `@s2script/sdk` / `@s2script/sdk/<cap>`. The package dir is `packages/sdk/`.
+- **The CLI bin is `s2s`** (not `s2script`). Bin names are exempt from npm's package-name filter. Installed usage: `s2s build`. Cold-start: `npx @s2script/sdk build` — **not** `npx s2s`, which resolves the unrelated existing `s2s@0.20.1` "Source To Source" package. Wherever the text says the bin `s2script`, read `s2s`.
+- **Part A is CLOSED (void).** Its entire premise was claiming the unscoped name; PR #50 is closed. There is no squat risk (npm blocks the name for everyone) and no "honest 404 → could-not-determine-executable" footgun (the name is unpublishable). An npm-support appeal for the unscoped name is a free lottery ticket — do not plan around it.
+- **The root-`package.json` rename is DROPPED** (former Part C PR C4). It existed only to free the unscoped `s2script` name; the root stays `name: "s2script"`, private.
+- **Fork 2 stands** (types + CLI in one package), now realized as `@s2script/sdk` binning `s2s`. **Fork 3 is void** (nothing to claim now). **Fork 1 stands** unchanged.
+- **`s2require` strip order (correctness):** strip `@s2script/sdk/` **before** `@s2script/` — the shorter prefix also matches `@s2script/sdk/entity` and would yield `__s2pkg_sdk/entity` garbage. Both map to `__s2pkg_<cap>`; `@s2script/cs2` keeps riding the plain `@s2script/` strip.
+- **esbuild `external` needs no new pattern** — the existing `@s2script/*` wildcard already covers `@s2script/sdk/entity` (esbuild wildcards cross `/`). The earlier "add `s2script/*` to external" step is dropped.
+- **After migration:** `npm deprecate` the 29 `@s2script/*` capability stubs → `@s2script/sdk`, and `@s2script/cli` → `@s2script/sdk`. Keep the `@s2script` scope owned as brand protection.
+
+The authoritative, concrete implementation is `docs/superpowers/plans/2026-07-16-packaging-consolidation.md` (revised to `@s2script/sdk` + bin `s2s`). Parts A and B below keep their original text for history; **Part B (#44–#49) is unaffected**.
+
+---
+
 ## 1. Goal
 
 Three separable goals, one narrative — the packaging layer as it will look when `s2script.com` launches:
