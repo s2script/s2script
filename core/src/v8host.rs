@@ -4171,6 +4171,52 @@ pub fn clear_plugin_publishes(plugin_id: &str) {
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
 }
 
+/// Post-load reconciliation (design spec §4.3): did `plugin_id` actually publish every interface
+/// its manifest declares, and own each one?  Returns `Err(reason)` if not; the LOADER turns that
+/// into a teardown, which is what makes an inconsistent manifest "fail the load" rather than load
+/// green.
+///
+/// Why here and not at publish time: `s2_iface_publish` already refuses an UNDECLARED name, but
+/// that only covers one direction.  A typo — manifest declares `@x/greeter`, code publishes
+/// `@x/greetr` — refuses the stray publish and then loads happily with `@x/greeter` unpublished,
+/// leaving consumers to discover it as `InterfaceUnavailable` at runtime.  That is exactly the
+/// silent-drift class this design exists to remove, so the manifest is treated as a contract:
+/// declare it and you must publish it.  (A plugin that publishes CONDITIONALLY therefore cannot
+/// declare the interface — a deliberate constraint, same posture as `publishes ⇒ types`.)
+///
+/// Note this also catches the §4.8 loser: a second producer's publish is refused, so its declared
+/// name is owned by the incumbent, and reconciliation fails its load — which tears down its
+/// context and, with it, the `PublishHandle` its prelude handed back.
+pub fn reconcile_publishes(plugin_id: &str) -> Result<(), String> {
+    let declared: Vec<String> = PLUGIN_PUBLISHES.with(|p| {
+        p.borrow().get(plugin_id).map(|m| m.keys().cloned().collect()).unwrap_or_default()
+    });
+    if declared.is_empty() {
+        return Ok(());
+    }
+    let mut missing: Vec<String> = declared
+        .into_iter()
+        .filter(|name| {
+            IFACES.with(|r| {
+                // Not published at all, or published by someone else → this plugin did not honour
+                // its manifest.
+                r.borrow().lookup(name).map(|e| e.producer_id != plugin_id).unwrap_or(true)
+            })
+        })
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();   // deterministic message (HashMap iteration order is not stable)
+    Err(format!(
+        "manifest `publishes` declares {:?} but the plugin does not own {} after load \
+         (typo in the publishInterface name, a publish that never ran, or another plugin \
+         already owns the interface)",
+        missing,
+        if missing.len() == 1 { "it" } else { "them" },
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Slice 5B.1: schema enumeration callbacks + `__s2_schema_dump` native.
 //
@@ -9944,6 +9990,75 @@ mod frame_tests {
         let _ = eval_in_context("prod", r#"__s2_iface_publish("@x/undeclared",{ a:function(){} });"#);
         let found = IFACES.with(|r| r.borrow().lookup("@x/undeclared").is_some());
         assert!(!found, "an undeclared interface must never reach the registry");
+        shutdown();
+    }
+
+    // --- Post-load publishes reconciliation (design spec §4.3). ---
+    // An undeclared publish is refused at publish time (above), but that alone lets a TYPO load
+    // green: the manifest declares "@x/greeter", the code publishes "@x/greetr", nothing registers,
+    // and consumers just see InterfaceUnavailable. Reconciling AFTER the load catches it, and the
+    // loader turns a mismatch into a real teardown — the spec's "fails the load".
+
+    #[test]
+    fn reconcile_publishes_ok_when_every_declared_interface_was_published() {
+        let _ = init(dummy_logger());
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+        )].into_iter().collect());
+        load_plugin_js("prod", r#"
+            const { publishInterface } = require("@s2script/interfaces");
+            publishInterface("@x/greeter", { greet: function () { return "hi"; } });
+        "#, "{}");
+        assert!(reconcile_publishes("prod").is_ok());
+        shutdown();
+    }
+
+    #[test]
+    fn reconcile_publishes_reports_a_declared_interface_the_plugin_never_published() {
+        let _ = init(dummy_logger());
+        // The typo case: manifest says @x/greeter, the code publishes @x/greetr.
+        set_plugin_publishes("prod", [(
+            "@x/greeter".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+        )].into_iter().collect());
+        load_plugin_js("prod", r#"
+            const { publishInterface } = require("@s2script/interfaces");
+            publishInterface("@x/greetr", { greet: function () { return "hi"; } });
+        "#, "{}");
+        let err = reconcile_publishes("prod").expect_err("a declared-but-unpublished name must fail");
+        assert!(err.contains("@x/greeter"), "error names the missing interface: {}", err);
+        shutdown();
+    }
+
+    #[test]
+    fn reconcile_publishes_ok_for_a_plugin_that_declares_nothing() {
+        let _ = init(dummy_logger());
+        set_plugin_publishes("plain", std::collections::HashMap::new());
+        load_plugin_js("plain", r#"module.exports.onLoad = function () {};"#, "{}");
+        assert!(reconcile_publishes("plain").is_ok(), "publishing nothing is not a mismatch");
+        shutdown();
+    }
+
+    #[test]
+    fn reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer() {
+        let _ = init(dummy_logger());
+        let decl = crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() };
+        set_plugin_publishes("first", [("@x/dup".to_string(), decl.clone())].into_iter().collect());
+        set_plugin_publishes("second", [("@x/dup".to_string(), decl)].into_iter().collect());
+        load_plugin_js("first", r#"
+            const { publishInterface } = require("@s2script/interfaces");
+            publishInterface("@x/dup", { a: function () { return 1; } });
+        "#, "{}");
+        // `second`'s publish is refused (the incumbent holds the name), so reconciliation must
+        // fail it rather than let it run as a live plugin whose declared interface isn't its own.
+        load_plugin_js("second", r#"
+            const { publishInterface } = require("@s2script/interfaces");
+            publishInterface("@x/dup", { a: function () { return 2; } });
+        "#, "{}");
+        assert!(reconcile_publishes("first").is_ok(), "the incumbent is consistent");
+        let err = reconcile_publishes("second").expect_err("the loser must fail its load");
+        assert!(err.contains("@x/dup"), "error names the interface: {}", err);
         shutdown();
     }
 

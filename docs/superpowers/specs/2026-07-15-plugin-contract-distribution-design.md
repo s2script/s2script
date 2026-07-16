@@ -218,6 +218,11 @@ Everything else in this spec is reversible.
 
 ## 10. Out of scope (separate specs)
 
+- **Consumer contract resolution (`s2script add`) — a DEBT this design creates.** §6 deletes `packages/zones`, which is correct, but it removes the only way a consumer resolved `@s2script/zones`'s types. Until `s2script add` extracts a contract to `.s2script/types/<iface>/index.d.ts` (§4.6), a consumer's imports from a plugin-published interface are `any`:
+  - `examples/zones-consumer-demo` types its VALUE imports (`on`, `getZones`) as `any` via the gate's ambient stub, and reaches across the monorepo (`../../../plugins/zones/api`) for its TYPE imports — legal and zero-drift, but only because it lives in this repo. A real consumer has neither option.
+  - An ambient `declare module` **cannot** substitute: TypeScript forbids relative re-exports inside one (TS2439, and `skipLibCheck` swallows the error), so the only ambient option is hand-copying the contract — which is the drift this design exists to eliminate. `examples/greeter-consumer/src/greeter.d.ts` is exactly that hand-copy, and is now at least gate-compiled.
+  - **This is the first thing plan 2 must build.** It is not optional polish; the consumer story is `any` until it lands.
+
 - **Semver unification** — replace `core/src/interfaces.rs:50` major-only matching with real caret semantics *including the npm `^0.x` minor-pin rule*, specified once and table-tested against both core and `website/src/lib/server/registry/semver.ts` (whose caret is currently wrong for 0.x in the npm-incompatible direction, accepting `0.2.0` for `^0.1.0`). Also fixes `install.ts updatePackages` widening every pin to `^<major>.0.0`. **Hard follow-on to this spec.**
 - **`@s2script/*` stub consolidation (29 → 1 `s2script` with subpaths)** — after §6, this is pure ergonomics, not correctness. If wanted, it must land **before the registry launches, never after**.
 - **The `/npm/*` facade + `.npmrc` writing** — park. It buys editor resolution obtainable via tsconfig paths, and today causes a dual-copy seam (gate reads `.s2script/types/`, editor reads `node_modules/`) that can silently disagree. Revisit only if third-party tooling interop (Renovate, typedoc) is demanded.
