@@ -1435,90 +1435,117 @@ git commit -am "fix: gate suite fallout"   # only if a gate required changes
 
 ---
 
-### Task 10: Live gate on the Docker CS2 server
+### Task 10: Live gate on this worktree's CS2 instance
 
-CLAUDE.md + memory (`live-gate-boot-window`). The host must inject zones' version on a real server and a real consumer must bind through it.
+CLAUDE.md + memory (`live-gate-boot-window`). The host must inject zones' version on a real server, a real consumer must bind through it, and an inconsistent manifest must actually refuse its load.
+
+> **AMENDED.** The original text said `docker compose -f docker/docker-compose.yml restart cs2` — that bounces the PRIMARY server on 27015, which is shared. The multi-instance gate merged in PR #35: `scripts/gate.sh` gives each worktree its own CS2 instance on its own port (27016–27030) over a btrfs reflink clone of the 74 G install, leaving the primary alone. Use it.
 
 **Files:** none.
 
-**Interfaces:**
-- Consumes: everything.
-
 - [ ] **Step 1: Build deployable binaries**
 
-Host glibc is too new — build in the bullseye container:
+Host glibc is too new to load on the server — build in the bullseye container, from the worktree:
 
 ```bash
+cd /home/gkh/projects/s2script-contract-grammar
 docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
   rust:bullseye bash /repo/scripts/build-sniper.sh
 ```
 Expected: `s2script.so` (GLIBC_2.14) + `libs2script_core.so` (GLIBC_2.30), repackaged into `dist/`.
 
-**Gotcha (memory `cs2-admin-and-deploy`):** after a sniper build, recreate `dist/addons/s2script/configs` as `gkh` or the container's config auto-gen write fails.
+**Gotcha (memory `cs2-admin-and-deploy`):** after a sniper build, recreate `dist/addons/s2script/configs` as `gkh` or the container's config auto-gen write fails:
 
-- [ ] **Step 2: Deploy zones + the consumer demo**
+```bash
+ls -ld dist/addons/s2script/configs dist/addons/s2script/data   # must be owned by gkh, not root
+```
 
-Build both and copy only these two `.s2sp` files into the server's plugins dir. **Do not deploy `examples/*` wholesale** — stale bundles fail `onLoad` and a hard-dep consumer then spams every frame (memory `live-gate-boot-window`).
+- [ ] **Step 2: Boot this worktree's instance**
+
+```bash
+cd /home/gkh/projects/s2script-contract-grammar
+./scripts/gate.sh up
+```
+Expected: container `s2script-cs2-contract-grammar` on the first free port in 27016–27030 (27016 unless another worktree has claimed it), and a printed paste-ready rcon line. The primary `s2script-cs2` on 27015 is untouched — verify with `docker ps`.
+
+`gate.sh status` shows this worktree's instance and port; `.gate/gate.env` records the claim.
+
+- [ ] **Step 3: Deploy zones + the consumer demo**
+
+Build both and copy ONLY these two `.s2sp` into the instance's plugins dir. **Do not deploy `examples/*` wholesale** — stale bundles fail `onLoad`, and a hard-dep consumer then spams every frame (memory `live-gate-boot-window`).
 
 ```bash
 cd plugins/zones && npx s2script build && cd -
 cd examples/zones-consumer-demo && npx s2script build && cd -
 ```
 
-- [ ] **Step 3: Restart and wait out the boot window**
-
-```bash
-docker compose -f docker/docker-compose.yml restart cs2
-```
-**NOT** `--force-recreate` (resets `gameinfo.gi`), **NOT** `meta-reload`. Demos arm only after the boot window.
-
 - [ ] **Step 4: Verify the host injected the version and the consumer bound**
 
+Use the port `gate.sh up` printed (PORT below). Demos arm only after the boot window — wait for it.
+
 ```bash
-docker logs s2script-cs2 2>&1 | grep -i "zones\|iface_publish\|InterfaceUnavailable"
-python3 scripts/rcon.py "sm_zone_add livegate"
-python3 scripts/rcon.py "sm_zones"
+docker logs s2script-cs2-contract-grammar 2>&1 | grep -iE "zones|iface_publish|InterfaceUnavailable|refusing the load"
+python3 scripts/rcon.py --port <PORT> "sm_zone_add livegate"
+python3 scripts/rcon.py --port <PORT> "sm_zones"
 ```
 
 Expected:
 - **No** `iface_publish` WARN — zones' manifest declares `@s2script/zones`, so the publish is accepted.
+- **No** `refusing the load` for zones — reconciliation passes.
 - **No** `InterfaceUnavailable` from the consumer — its `^0.3.0` range matches the host-injected `0.3.0`.
 - `sm_zone_add` / `sm_zones` behave as before the migration.
 
-**If the consumer reports a version mismatch:** check the injected version against the pin — `unzip -p plugins/zones/dist/_s2script_zones.s2sp manifest.json`. Note that `version_satisfies` is still major-only (out of scope, spec §10), so `^0.3.0` vs `0.3.0` matching proves nothing about minor drift; it only proves the version *arrived* from the manifest.
-
-- [ ] **Step 5: Verify the negative — an undeclared publish is refused**
-
-Temporarily prove the refusal path on the live host. Build a throwaway plugin that publishes a name its manifest does not declare:
+Confirm the version genuinely came from the manifest rather than a leftover literal:
 
 ```bash
-mkdir -p /tmp/claude-1000/-home-gkh-projects-s2script/cc657ab4-8d55-447b-9e98-87cda0a7a327/scratchpad/undeclared/src
+unzip -p plugins/zones/dist/_s2script_zones.s2sp manifest.json | python3 -m json.tool | grep -A3 publishes
+grep -rn '"0\.1\.0"\|"0\.3\.0"' plugins/zones/src/    # must find NOTHING
 ```
 
-`package.json`:
-```json
+Note `version_satisfies` is still major-only (out of scope, spec §10), so `^0.3.0` matching `0.3.0` proves the version *arrived* — not that mismatches are caught. That is the follow-on spec's job.
+
+- [ ] **Step 5: Verify the negative — an inconsistent manifest refuses its load**
+
+This is the §4.3 behaviour, and it is the one thing no unit test can prove end-to-end. Build a throwaway plugin that publishes a name its manifest does not declare:
+
+```bash
+D=/tmp/claude-1000/-home-gkh-projects-s2script/cc657ab4-8d55-447b-9e98-87cda0a7a327/scratchpad/undeclared
+mkdir -p "$D/src"
+cat > "$D/package.json" <<'JSON'
 { "name": "@demo/undeclared", "version": "0.1.0", "main": "src/plugin.ts",
   "s2script": { "apiVersion": "1.x" }, "private": true }
-```
-
-`src/plugin.ts`:
-```typescript
+JSON
+cat > "$D/src/plugin.ts" <<'TS'
 import { publishInterface } from "@s2script/interfaces";
-publishInterface("@demo/never-declared", { ping: () => true });
+export function onLoad(): void {
+  publishInterface("@demo/never-declared", { ping: () => true });
+}
+TS
+cd "$D" && npx s2script build && cd -
 ```
 
-Build it, drop the `.s2sp` in the plugins dir, and check the log:
+Drop its `.s2sp` in the instance's plugins dir, then:
 
 ```bash
-docker logs s2script-cs2 2>&1 | grep "never-declared"
+docker logs s2script-cs2-contract-grammar 2>&1 | grep "never-declared"
 ```
-Expected: `WARN: iface_publish('@demo/never-declared'): plugin '@demo/undeclared' did not declare this interface in its manifest \`publishes\` — refusing`
+
+Expected BOTH lines — the publish refused, and then the load refused:
+```
+WARN: iface_publish('@demo/never-declared'): plugin '@demo/undeclared' did not declare this interface in its manifest `publishes` — refusing
+WARN: load('@demo/undeclared'): published ["@demo/never-declared"] without declaring it in the manifest `publishes` ... — refusing the load (the plugin is NOT running)
+```
 
 Then remove the `.s2sp` (file-watch unloads it; no restart needed).
 
-- [ ] **Step 6: Record the result**
+- [ ] **Step 6: Tear down and record**
 
-Append a `docs/PROGRESS.md` entry for the slice: what it built, why, and the live-gate result.
+```bash
+./scripts/gate.sh down          # keeps the reflink clone for next time
+# or: ./scripts/gate.sh destroy # also deletes the clone
+```
+
+Append a `docs/PROGRESS.md` entry: what the slice built, why, and the live-gate result.
 
 ```bash
 git add docs/PROGRESS.md
