@@ -38,6 +38,7 @@ public:
     // Pre-phase (false) dispatches phase 0; post-phase (true) dispatches phase 1.
     void Hook_GameFramePre(bool simulating, bool first, bool last);
     void Hook_GameFramePost(bool simulating, bool first, bool last);
+    void Hook_GameFrameRoundDrain(bool simulating, bool first, bool last);
 
     // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
     bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);

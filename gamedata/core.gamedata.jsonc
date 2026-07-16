@@ -208,6 +208,32 @@
         "resolve": "direct"
       }
     },
+    // CCSGameRules::TerminateRound(float delay /*xmm0*/, uint32 reason /*esi*/, void* unk3=0 /*rdx*/,
+    // uint32 unk4=0 /*ecx*/) — force the current round to end with a RoundEndReason. Backs
+    // GameRules.terminateRound. SELF-DERIVED against OUR libserver.so (build 2000875) — do NOT ship the
+    // borrowed CSSharp/Swiftly sig ("55 48 89 E5 41 57 41 56 49 89 FE 41 55 41 54 53 48 81 EC ? ? ? ?
+    // 48 8D 05 ? ? ? ? F3 0F 11 85"): on this build it matches UNIQUELY yet at the WRONG function
+    // (va 0xc75ec0 — treats esi as a POINTER; a uniqueness gate alone would green-light a corrupting
+    // call). The real function (va 0x1384e80 on 2000875) is anchored by: (a) a unique
+    // `lea rsi,[rip+disp]` to the literal "TerminateRound" telemetry-scope string at fn+0xb (exactly 1
+    // xref binary-wide), (b) the sole xref to "TerminateRound: unknown round end ID %i" inside its own
+    // cold branch after `cmp $0x16,%r15d` (the reason-enum bound = 22 = SurvivalDraw), (c) the
+    // CS:GO-inherited reason -> "#SFUI_Notice_*" switch in the body (16 direct callers in the gamerules
+    // TU). This pattern masks the volatile string disp + frame size and keeps the stable `41 89 F7`
+    // reason capture. The boot gate re-validates UNIQUE, and a SECOND semantic descriptor
+    // (TerminateRound.scope-string) verifies the fn+0xb lea really targets "TerminateRound" — the exact
+    // check that separates the real function from the borrowed-sig false positive. Treadmill
+    // re-resolution recipe: xref the two unique strings above. NOT virtual on this build (zero
+    // data-segment refs) — direct call only. TTT/CSSharp's reason-first Linux arg order is a managed-
+    // marshaller artifact; the direct C call is DELAY-FIRST. args 3/4 semantics unknown in every
+    // framework (all pass 0,0) — hardcoded 0, never exposed; revisit if a future build uses them.
+    "TerminateRound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 89 F7 41 56 48 8D 35 ? ? ? ? 41 55 41 54 53 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
     // GetLegacyGameEventListener(int slot) -> IGameEventListener2* : the CS2 engine helper that returns a
     // client's per-client legacy game-event listener (a frameless leaf that loads a global array base,
     // bounds-checks the slot, and indexes it). event_fire_to_client (SourceMod FireToClient parity) calls
