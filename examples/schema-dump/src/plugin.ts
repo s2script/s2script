@@ -1,4 +1,4 @@
-import { OnGameFrame } from "@s2script/frame";
+import { OnGameFrame } from "@s2script/sdk/frame";
 
 // Dev/treadmill plugin: once a map is live and the SchemaSystem is populated, dump the whole
 // class/field/type catalog to JSON via the __s2_schema_dump native, then stop. The committed

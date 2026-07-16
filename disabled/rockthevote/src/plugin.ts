@@ -7,17 +7,17 @@
 // Task 2 (this file, current state): the ballot (nominations + random pool-fill − cooldown +
 // "Don't Change"), the @s2script/votes vote, and the round_end map-change apply (workshop/stock).
 
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
-import { Chat } from "@s2script/chat";
-import { Events, HookResult } from "@s2script/events";
-import type { VoteResult } from "@s2script/votes";
-import { Vote } from "@s2script/votes";
-import { Clients } from "@s2script/clients";
-import { OnGameFrame } from "@s2script/frame";
-import { Server } from "@s2script/server";
-import { config } from "@s2script/config";
-import { Database } from "@s2script/db";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
+import { Chat } from "@s2script/sdk/chat";
+import { Events, HookResult } from "@s2script/sdk/events";
+import type { VoteResult } from "@s2script/sdk/votes";
+import { Vote } from "@s2script/sdk/votes";
+import { Clients } from "@s2script/sdk/clients";
+import { OnGameFrame } from "@s2script/sdk/frame";
+import { Server } from "@s2script/sdk/server";
+import { config } from "@s2script/sdk/config";
+import { Database } from "@s2script/sdk/db";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative — see the ballot). */
 interface MapEntry { name: string; workshopId: string | null; }

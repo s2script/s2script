@@ -1,4 +1,4 @@
-import { OnGameFrame } from "@s2script/frame";
+import { OnGameFrame } from "@s2script/sdk/frame";
 import { on, greet } from "@demo/greeter"; // hard dep → producer-backed proxy
 
 // Consumer: hard-deps @demo/greeter (a proxy that throws InterfaceUnavailable while the

@@ -4,13 +4,13 @@
 // Task 1 (this file): all 4 commands (sm_votealltalk/sm_voteff/sm_votegravity/sm_voteslay) +
 // the shared Yes/No vote helper.
 
-import { Commands } from "@s2script/commands";
-import { ADMFLAG } from "@s2script/admin";
-import { Chat } from "@s2script/chat";
-import { config } from "@s2script/config";
-import { Vote } from "@s2script/votes";
+import { Commands } from "@s2script/sdk/commands";
+import { ADMFLAG } from "@s2script/sdk/admin";
+import { Chat } from "@s2script/sdk/chat";
+import { config } from "@s2script/sdk/config";
+import { Vote } from "@s2script/sdk/votes";
 import { Player } from "@s2script/cs2";
-import { Server } from "@s2script/server";
+import { Server } from "@s2script/sdk/server";
 
 /** Start a Yes/No vote; on Yes (winner === 0, options[0] === "Yes"), run `onPass`. Refuses (via
  *  `reply`) if a vote is already active — never queues, SM parity ("one vote at a time"). */

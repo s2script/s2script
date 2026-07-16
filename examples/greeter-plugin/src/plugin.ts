@@ -1,5 +1,5 @@
-import { OnGameFrame } from "@s2script/frame";
-import { publishInterface, PublishHandle } from "@s2script/interfaces";
+import { OnGameFrame } from "@s2script/sdk/frame";
+import { publishInterface, PublishHandle } from "@s2script/sdk/interfaces";
 import type { Greeter } from "../api";
 
 // Producer: publishes the typed inter-plugin interface @demo/greeter@1.0.0 with a

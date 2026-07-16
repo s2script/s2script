@@ -4,7 +4,7 @@
 // confirm: the events fire, the firing order (esp. where fullyConnect lands), Client.steamId/name/
 // userId read correctly, isBot for bots, and whether onDisconnect's live-ops are still populated.
 
-import { Clients } from "@s2script/clients";
+import { Clients } from "@s2script/sdk/clients";
 
 export function onLoad(): void {
   Clients.onConnect((c) => {

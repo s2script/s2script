@@ -1,6 +1,6 @@
-import { Commands } from "@s2script/commands";
-import { Server } from "@s2script/server";
-import { Clients } from "@s2script/clients";
+import { Commands } from "@s2script/sdk/commands";
+import { Server } from "@s2script/sdk/server";
+import { Clients } from "@s2script/sdk/clients";
 import { Player } from "@s2script/cs2";
 
 export function onLoad(): void {

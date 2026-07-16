@@ -1,11 +1,11 @@
-import { Commands } from "@s2script/commands";
-import { config } from "@s2script/config";
-import { Database } from "@s2script/db";
-import { OnGameFrame } from "@s2script/frame";
-import { Menu, MenuStyle } from "@s2script/menu";
-import { Server } from "@s2script/server";
+import { Commands } from "@s2script/sdk/commands";
+import { config } from "@s2script/sdk/config";
+import { Database } from "@s2script/sdk/db";
+import { OnGameFrame } from "@s2script/sdk/frame";
+import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { Server } from "@s2script/sdk/server";
 import { Player } from "@s2script/cs2";
-import { Chat } from "@s2script/chat";
+import { Chat } from "@s2script/sdk/chat";
 
 interface MapEntry { name: string; workshopId: string | null; }
 

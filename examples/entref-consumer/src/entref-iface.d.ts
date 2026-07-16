@@ -4,7 +4,7 @@
 // EntityRef — the same @s2script/entity type the entity system uses — that the wire rehydrates into a
 // LIVE ref bound to THIS context's natives (Task 1's replacer/reviver).
 declare module "@demo/ent" {
-  import { EntityRef } from "@s2script/entity";
+  import { EntityRef } from "@s2script/sdk/entity";
   interface Ent {
     pawnRef(slot: number): EntityRef | null;
     pawnHealth(slot: number): number | null;

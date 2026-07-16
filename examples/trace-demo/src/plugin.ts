@@ -1,9 +1,9 @@
 // Live-gate demo for @s2script/trace on CS2 2000870 — validates the SDK Ray_t/CGameTrace layouts
 // against the running engine. Uses Pawn.forSlot (schema-based, self-healing) not Player.allConnected
 // (client-list OFFSETS are stale on 2000870 — a separate offset-treadmill item).
-import { Commands } from "@s2script/commands";
-import { Trace } from "@s2script/trace";
-import { Vector } from "@s2script/math";
+import { Commands } from "@s2script/sdk/commands";
+import { Trace } from "@s2script/sdk/trace";
+import { Vector } from "@s2script/sdk/math";
 import { Pawn } from "@s2script/cs2";
 
 function fmt(v: { x: number; y: number; z: number }): string {

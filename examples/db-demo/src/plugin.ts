@@ -1,5 +1,5 @@
 // @s2script/db-demo — proves the SQLite primitive persists across a server restart.
-import { Database } from "@s2script/db";
+import { Database } from "@s2script/sdk/db";
 
 export async function onLoad(): Promise<void> {
   try {

@@ -3,8 +3,8 @@
 // (demo_boots); (2) the OFFLINE setAuthId path (authid_boots — persisted ONLY by the clientprefs
 // plugin's OnGameFrame drain, via a separate SteamID the demo never flushes itself); (3) empty-string
 // round-trip; (4) getTime.
-import { Database } from "@s2script/db";
-import { Cookies } from "@s2script/cookies";
+import { Database } from "@s2script/sdk/db";
+import { Cookies } from "@s2script/sdk/cookies";
 
 declare function __s2_cookie_load(steamid: string, name: string, value: string, updated?: number): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;

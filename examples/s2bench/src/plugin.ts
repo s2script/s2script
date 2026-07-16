@@ -4,12 +4,12 @@
 // subtracted timer baseline. NO loop-amortization multipliers. Throwaway informational tool.
 // Run: `s2bench` (rcon/console).
 
-import { Commands } from "@s2script/commands";
-import { createEntity, Entity, EntityRef } from "@s2script/entity";
+import { Commands } from "@s2script/sdk/commands";
+import { createEntity, Entity, EntityRef } from "@s2script/sdk/entity";
 import { GameRules } from "@s2script/cs2";
-import { Server } from "@s2script/server";
-import { Events } from "@s2script/events";
-import { UserMessage } from "@s2script/usermessages";
+import { Server } from "@s2script/sdk/server";
+import { Events } from "@s2script/sdk/events";
+import { UserMessage } from "@s2script/sdk/usermessages";
 
 // Internal natives (dev instrumentation) — declared ambiently, probed with typeof at runtime.
 declare const __s2_schema_offset: ((cls: string, field: string) => number | null) | undefined;

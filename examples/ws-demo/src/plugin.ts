@@ -1,7 +1,7 @@
 // ws-demo — connects to a public WebSocket echo service, sends a message, logs the echoed reply, and
 // logs the frame counter to prove the connection didn't block the tick.
-import { WebSocket } from "@s2script/ws";
-import { OnGameFrame } from "@s2script/frame";
+import { WebSocket } from "@s2script/sdk/ws";
+import { OnGameFrame } from "@s2script/sdk/frame";
 
 let frames = 0;
 

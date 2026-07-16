@@ -2,8 +2,8 @@
 // both-directions test: acceptInput("Trigger") on a spawned logic_relay fires AddEntityIOEvent,
 // which routes through the game's own I/O pump to FireOutputInternal (our detour) -> OnTrigger ->
 // our Entity.onOutput subscriber, with a live caller EntityRef. No human client needed.
-import { Commands } from "@s2script/commands";
-import { createEntity, Entity } from "@s2script/entity";
+import { Commands } from "@s2script/sdk/commands";
+import { createEntity, Entity } from "@s2script/sdk/entity";
 
 Entity.onOutput("logic_relay", "OnTrigger", (ev) => {
   const callerValid = !!(ev.caller && ev.caller.isValid());

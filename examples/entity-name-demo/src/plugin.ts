@@ -1,6 +1,6 @@
-import { Entity } from "@s2script/entity";
-import { Commands } from "@s2script/commands";
-import { Server } from "@s2script/server";
+import { Entity } from "@s2script/sdk/entity";
+import { Commands } from "@s2script/sdk/commands";
+import { Server } from "@s2script/sdk/server";
 
 // Live-gate demo for the entity_name primitive: dump every trigger_multiple's targetname.
 // EntityRef.name reads CEntityIdentity::m_name — on a CS2Surf-spec map (e.g. surf_kitsune) this

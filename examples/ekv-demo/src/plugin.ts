@@ -3,8 +3,8 @@
 // the keys — proven both by reading the parsed fields back through the live schema (string/bool/float)
 // AND behaviorally (an int-tagged keyvalue drives the entity's own logic to fire an output). No human
 // client needed.
-import { Commands } from "@s2script/commands";
-import { createEntity, Entity, EntityRef } from "@s2script/entity";
+import { Commands } from "@s2script/sdk/commands";
+import { createEntity, Entity, EntityRef } from "@s2script/sdk/entity";
 
 const off = (cls: string, field: string): number =>
   (globalThis as any).__s2_schema_offset(cls, field);

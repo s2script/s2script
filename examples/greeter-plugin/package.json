@@ -3,12 +3,11 @@
   "version": "1.0.0",
   "main": "src/plugin.ts",
   "types": "api.d.ts",
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0"
+  },
   "s2script": {
     "apiVersion": "1.x",
-    "pluginDependencies": {
-      "@s2script/frame": "^1.0.0",
-      "@s2script/interfaces": "^1.0.0"
-    },
     "publishes": {
       "@demo/greeter": "1.0.0"
     }
