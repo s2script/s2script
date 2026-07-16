@@ -1,9 +1,9 @@
 /**
- * Demo plugin fixture — imports @s2script/frame and @s2script/timers so esbuild emits
- * require("@s2script/frame") / require("@s2script/timers") in the CJS bundle (marked external).
+ * Demo plugin fixture — imports @s2script/sdk/frame and @s2script/sdk/timers so esbuild emits
+ * require("@s2script/sdk/frame") / require("@s2script/sdk/timers") in the CJS bundle (external).
  */
-import { OnGameFrame } from "@s2script/frame";
-import { delay } from "@s2script/timers";
+import { OnGameFrame } from "@s2script/sdk/frame";
+import { delay } from "@s2script/sdk/timers";
 
 OnGameFrame.subscribe(() => {
   console.log("frame tick");

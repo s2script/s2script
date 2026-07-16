@@ -661,14 +661,22 @@ Nothing imports `@s2script/<builtin>` anymore (Phase 2). Remove the legacy stub 
 
 ### Task C3.1 — Grep-gate: zero legacy builtin imports survive
 
-- [ ] **Step 1: Prove nothing imports a builtin under the legacy prefix.**
+- [ ] **Step 1: Prove nothing imports a builtin under the legacy prefix.** Scope includes `packages/`
+  (the finding fix — the original C3.1 scope excluded `packages/` and missed `packages/cs2/weapon.d.ts`'s
+  legacy `@s2script/entity` import; after the stub dirs are deleted that dangles, hidden by `skipLibCheck`).
+  The only permitted survivor is the deliberate `canary-legacy` typecheck fixture (it resolves against a
+  test `fake-packages` dir, never the real deleted stubs — excluded below), plus `node_modules`.
   ```bash
   cd /home/gkh/projects/s2script
   grep -rnE 'from "@s2script/(admin|bans|chat|clients|commands|config|console|cookies|damage|db|entity|events|frame|http|interfaces|math|menu|net|plugins|server|sound|timers|topmenu|trace|translations|usercmd|usermessages|votes|ws)"' \
     plugins/ examples/ disabled/ games/ && echo "FAIL: legacy imports remain" || echo "PASS: none"
+  # widened to packages/ — the destructive gate must prove zero survivors repo-wide (excl. node_modules + the canary fixture):
+  grep -rnE 'from "@s2script/(admin|bans|chat|clients|commands|config|console|cookies|damage|db|entity|events|frame|http|interfaces|math|menu|net|plugins|server|sound|timers|topmenu|trace|translations|usercmd|usermessages|votes|ws)"' \
+    packages/ --include='*.ts' --include='*.d.ts' | grep -v node_modules | grep -v '/fixtures/typecheck/canary-legacy/' \
+    && echo "FAIL: legacy imports remain in packages/" || echo "PASS: none"
   grep -rn '__s2require("@s2script/' games/cs2/js/ | grep -v '@s2script/sdk/' && echo "FAIL" || echo "PASS: none"
   ```
-  Expected: `PASS: none` for both. (Do NOT proceed until clean — a survivor here becomes a dangling import after deletion.)
+  Expected: `PASS: none` for all three. (Do NOT proceed until clean — a survivor here becomes a dangling import after deletion.)
 
 ### Task C3.2 — Delete the hollow stub packages + globals
 

@@ -104,7 +104,8 @@ test("create --yes scaffolds a CS2 plugin that typechecks against monorepo packa
   );
   // In-tree create should prefer file: links to monorepo packages
   assert.match(pkg.devDependencies["@s2script/cli"], /^file:/);
-  assert.match(pkg.devDependencies["@s2script/commands"], /^file:/);
+  assert.match(pkg.devDependencies["@s2script/sdk"], /^file:/);
+  assert.match(pkg.devDependencies["@s2script/cs2"], /^file:/);
 
   // Typecheck with explicit monorepo packagesDir (no node_modules install)
   const tc = typecheckPlugin(tmp, { packagesDir });

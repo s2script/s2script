@@ -69,26 +69,6 @@ fn api_version_compatible(api_version: &str) -> bool {
     matches!(parse_api_major(api_version), Some(m) if m == HOST_API_VERSION_MAJOR)
 }
 
-/// The first-party BUILTIN modules — resolved via `__s2require` (the prelude sets `__s2pkg_<name>`),
-/// NOT the inter-plugin interface registry. A dependency on one of these is skipped from the ledger.
-/// A first-party plugin that PUBLISHES an interface may use the `@s2script/*` scope too (e.g.
-/// `@s2script/zones`) — such names are NOT in this list, so they flow through as interface deps and
-/// resolve to the producer's proxy (the runtime `__s2_require` tries the builtin first, then the
-/// interface registry, so even a name mistakenly omitted here still resolves correctly).
-const BUILTIN_MODULES: &[&str] = &[
-    "@s2script/entity", "@s2script/frame", "@s2script/timers", "@s2script/console",
-    "@s2script/interfaces", "@s2script/config", "@s2script/commands", "@s2script/chat",
-    "@s2script/clients", "@s2script/cookies", "@s2script/admin", "@s2script/bans",
-    "@s2script/server", "@s2script/damage", "@s2script/db", "@s2script/http", "@s2script/ws",
-    "@s2script/menu", "@s2script/topmenu", "@s2script/votes", "@s2script/plugins",
-    "@s2script/trace", "@s2script/usermessages", "@s2script/math", "@s2script/events",
-    "@s2script/cs2", "@s2script/sound",
-];
-
-fn is_builtin_module(name: &str) -> bool {
-    BUILTIN_MODULES.contains(&name)
-}
-
 /// Load a plugin's JS, then reconcile its manifest `publishes` (design spec §4.3).
 ///
 /// A plugin that declares an interface it does not end up owning FAILS ITS LOAD: WARN + teardown,
@@ -112,17 +92,22 @@ fn load_and_reconcile(manifest: &Manifest, js: &str, cfg: &str) {
     }
 }
 
-/// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects,
-/// skipping only the framework BUILTINS (resolved via __s2require). Non-builtin `@s2script/*` names
-/// (a first-party plugin's PUBLISHED interface, e.g. `@s2script/zones`) flow through as interface deps.
+/// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects.
+///
+/// Every `pluginDependencies`/`optionalPluginDependencies` entry flows through as an interface dep.
+/// Post-consolidation there is no builtin-skip: the framework modules are `@s2script/sdk/<cap>`
+/// subpaths resolved by the prelude's `__s2require`, and no plugin declares them in its dependency
+/// maps anymore (the manifest grammar lists only inter-plugin interfaces there). A first-party
+/// plugin's PUBLISHED interface (e.g. `@s2script/zones`) is one of these interface deps. A legacy
+/// `.s2sp` that still carries a builtin under its old `@s2script/<cap>` name flows through as a
+/// phantom Hard dep — behaviorally benign: `call_target_inner` is lazy (Unavailable only at CALL
+/// time, never at load) and `__s2require` is prelude-first, so the phantom is never called.
 fn imports_from_manifest(m: &Manifest) -> Vec<(String, String, crate::interfaces::Kind)> {
     let mut out = Vec::new();
     for (name, range) in &m.plugin_dependencies {
-        if is_builtin_module(name) { continue; }
         out.push((name.clone(), range.clone(), crate::interfaces::Kind::Hard));
     }
     for (name, range) in &m.optional_plugin_dependencies {
-        if is_builtin_module(name) { continue; }
         out.push((name.clone(), range.clone(), crate::interfaces::Kind::Optional));
     }
     out
@@ -673,6 +658,25 @@ mod tests {
         let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
         assert!(m.plugin_dependencies.is_empty());
         assert!(m.optional_plugin_dependencies.is_empty());
+    }
+
+    #[test]
+    fn legacy_manifest_with_builtins_in_plugin_deps_still_loads() {
+        // A pre-consolidation .s2sp declares builtins as pluginDependencies. Post-BUILTIN_MODULES-deletion
+        // these flow through as Hard imports with no producer — behaviorally benign: call_target_inner is
+        // lazy (Unavailable at CALL time, never at load) and __s2require is prelude-first, so the phantom
+        // is never called. The manifest must still parse and its imports flatten without panic.
+        let bytes = make_test_s2sp(
+            r#"{"id":"@legacy/plugin","version":"0.1.0","apiVersion":"1.x",
+                "pluginDependencies":{"@s2script/entity":"^0.2.0","@s2script/math":"^0.1.0"}}"#,
+            "module.exports.onLoad=()=>{};",
+        );
+        let (m, _js) = read_s2sp(&bytes).expect("legacy manifest parses");
+        let imports = imports_from_manifest(&m);
+        // Builtins are no longer skipped — they become phantom Hard deps (lazy, never called).
+        assert_eq!(imports.len(), 2, "both builtin deps flow through post-deletion");
+        assert!(imports.iter().all(|(_, _, k)| matches!(k, crate::interfaces::Kind::Hard)));
+        assert!(imports.iter().any(|(n, _, _)| n == "@s2script/entity"));
     }
 
     #[test]

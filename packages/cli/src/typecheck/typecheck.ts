@@ -30,8 +30,9 @@ function declaredModules(dtsFiles: string[]): Set<string> {
 }
 
 /** Typecheck a plugin dir (full strict) against the shipped engine .d.ts.
- *  @s2script/* -> packagesDir/<name>/index.d.ts; the global `console` -> packagesDir/globals/globals.d.ts;
- *  each declared pluginDependency -> an ambient `declare module "<dep>";` (any). Never emits.
+ *  @s2script/sdk/* -> packagesDir/sdk/<cap>.d.ts; @s2script/cs2 -> packagesDir/cs2/index.d.ts;
+ *  the global `console` -> packagesDir/sdk/globals.d.ts; each declared pluginDependency that is not
+ *  always-resolved -> an ambient `declare module "<dep>";` (any). Never emits.
  *
  *  `packagesDir` may be omitted — resolved via monorepo packages/, env, or the plugin's
  *  node_modules/@s2script (see packages-resolve.ts). */
@@ -45,35 +46,23 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   const entryRel = s2.main ?? pkg.main;
   if (!entryRel) throw new Error(`typecheckPlugin: no entry point in ${join(absDir, "package.json")}`);
   const entry = resolve(absDir, entryRel);
-  // A dep gets an ambient `declare module "<dep>";` (any) stub UNLESS it resolves to a real
-  // .d.ts on disk via `paths` below. Until the contract-grammar slice every `@s2script/*` name
-  // was a framework builtin living in packagesDir, so a blanket prefix filter was correct. It
-  // no longer is: a first-party interface published by a PLUGIN (`@s2script/zones`) has no
-  // packagesDir entry, and filtering it out left it resolving to NOTHING — TS2307, not `any`.
-  // So filter on what actually exists, and let everything else fall through to the stub, exactly
-  // like any third-party interface.
+  // A dep gets an ambient `declare module "<dep>";` (any) stub UNLESS it is always-resolved.
   //
-  // FOLLOW-ON (design spec 2026-07-15 §4.6, plan 2): the `any` here is a placeholder. A consumer
-  // should resolve a plugin-published interface to its REAL contract via `s2script add` →
-  // `.s2script/types/<iface>/index.d.ts`. Until that lands, `examples/zones-consumer-demo` has
-  // weaker types than it did when packages/zones existed. Tracked in the spec's §10.
-  // A builtin resolves either at the consolidated layout (packages/sdk/<cap>.d.ts) or the
-  // legacy per-package layout (packages/<cap>/index.d.ts, still serving @s2script/cs2). During
-  // the dual-prefix transition BOTH the consolidated `@s2script/sdk/<cap>` and the legacy
-  // `@s2script/<cap>` spellings count as builtin-on-disk so a plugin that still DECLARES one in
-  // pluginDependencies is filtered out of the ambient-stub list and resolves via `paths` below
-  // (never degrades to `any`). ORDER IS LOAD-BEARING: check `@s2script/sdk/` before the shorter
-  // `@s2script/`, which also matches and would yield the garbage cap `sdk/<cap>`.
-  const capOf = (d: string): string | null =>
-    d.startsWith("@s2script/sdk/") ? d.slice("@s2script/sdk/".length)
-    : d.startsWith("@s2script/") ? d.slice("@s2script/".length)
-    : null;
-  const isBuiltinOnDisk = (d: string): boolean => {
-    const cap = capOf(d);
-    if (cap === null) return false;
-    return existsSync(join(packagesDir, "sdk", cap + ".d.ts")) ||
-           existsSync(join(packagesDir, cap, "index.d.ts"));
-  };
+  // Shape-based (post-consolidation): the framework builtins are `@s2script/sdk/<cap>` subpaths
+  // and the game package is the separate scoped `@s2script/cs2` — both live in npm `dependencies`
+  // and resolve via `paths` below (a miss = TS2307, a real error, never a silent `any`). Only
+  // presence-conditional inter-plugin interfaces (a first-party plugin's PUBLISHED interface such
+  // as `@s2script/zones`, or a third-party one) declared in pluginDependencies stub to `any` until
+  // fetched. No disk-existence guess — the old check that made `@s2script/sdk/frmae` (a typo the
+  // plugin DECLARES) stub to `any` instead of erroring is gone (the finding fix).
+  //
+  // FOLLOW-ON (design spec 2026-07-15 §4.6, plan 2): the `any` for a stubbed interface is a
+  // placeholder. A consumer should resolve a plugin-published interface to its REAL contract via
+  // `s2script add` → `.s2script/types/<iface>/index.d.ts`. Until that lands,
+  // `examples/zones-consumer-demo` has weaker types than it did when packages/zones existed.
+  // Tracked in the spec's §10.
+  const isAlwaysResolved = (d: string): boolean =>
+    d.startsWith("@s2script/sdk/") || d === "@s2script/cs2" || d.startsWith("@s2script/cs2/");
 
   // A plugin's OWN .d.ts files are part of its typecheck. They carry ambient declarations for
   // interfaces it consumes (see examples/*-consumer). Before this they were compiled only by the
@@ -87,7 +76,7 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
     // Never stub a module the plugin declares itself — a shorthand `declare module "X";` and a
     // full `declare module "X" { … }` for the same X collide.
-  ].filter((d) => !isBuiltinOnDisk(d) && !locallyDeclared.has(d));
+  ].filter((d) => !isAlwaysResolved(d) && !locallyDeclared.has(d));
 
   const options: ts.CompilerOptions = {
     strict: true,
@@ -99,20 +88,18 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     types: [],
     baseUrl: packagesDir,
     paths: {
-      // Consolidated layout first, legacy per-package second (the latter now serves only
-      // @s2script/cs2, which is NOT moved). tsc picks the longest matching prefix, so the
-      // @s2script/sdk/* pattern wins for sdk imports. Collapsed to @s2script/sdk/* +
-      // @s2script/* (cs2 only) in Phase 3 once the legacy builtin dirs are deleted.
+      // Builtins are `@s2script/sdk/<cap>` → packages/sdk/<cap>.d.ts. The `@s2script/*` fallback
+      // now serves only @s2script/cs2 → packages/cs2/index.d.ts (the legacy per-package builtin
+      // dirs are deleted). tsc picks the longest matching prefix, so `@s2script/sdk/*` wins for
+      // sdk imports.
       "@s2script/sdk/*": ["sdk/*.d.ts"],
-      "@s2script/*": ["sdk/*.d.ts", "*/index.d.ts"],
+      "@s2script/*": ["*/index.d.ts"],
     },
     skipLibCheck: true,
   };
 
-  const globalsDts = existsSync(join(packagesDir, "sdk", "globals.d.ts"))
-    ? join(packagesDir, "sdk", "globals.d.ts")
-    : join(packagesDir, "globals", "globals.d.ts");
-  const rootNames = [entry, globalsDts, ...localDts];
+  // Globals live at the consolidated path (the legacy packages/globals/ dir is deleted).
+  const rootNames = [entry, join(packagesDir, "sdk", "globals.d.ts"), ...localDts];
   const tmp = mkdtempSync(join(tmpdir(), "s2tc-"));
   try {
     if (deps.length) {

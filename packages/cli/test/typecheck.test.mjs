@@ -43,6 +43,13 @@ test("acceptance: a builtin TYPO yields TS2307, not any", () => {
     "expected TS2307 for @s2script/sdk/frmae: " + JSON.stringify(r.diagnostics));
 });
 
+test("narrowed filter: a declared @s2script/sdk/* typo still yields TS2307 (never stubs)", () => {
+  const r = typecheckPlugin(join(fixtures, "decl-builtin-typo"), { packagesDir: fakePkgs });
+  assert.equal(r.ok, false);
+  assert.ok(r.diagnostics.some((d) => d.code === 2307),
+    "@s2script/sdk/* must resolve-or-error, never stub: " + JSON.stringify(r.diagnostics));
+});
+
 test("acceptance: an unfetched interface typo stays any (correctly indistinguishable)", () => {
   const r = typecheckPlugin(join(fixtures, "typo-interface"), { packagesDir: fakePkgs });
   assert.deepEqual(r.diagnostics, [], "interface typo must stub to any, not error: "
