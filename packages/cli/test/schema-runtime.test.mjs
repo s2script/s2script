@@ -23,7 +23,7 @@ test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (
   const math = { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                   QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } };
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? stdEntity : n === "@s2script/math" ? math : null),
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? stdEntity : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => 8,               // any non-negative offset
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],
@@ -55,8 +55,8 @@ test("Player.fromSlot degrades to null when the controller is invalid (offline v
   function EntityRef(i, s) { this.index = i; this.serial = s; }
   EntityRef.prototype.isValid = function () { return false; };   // invalid slot
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef }
-      : n === "@s2script/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef }
+      : n === "@s2script/sdk/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                                    QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
       : null),
     __s2_schema_offset: () => 8, __s2_ent_current_serial: () => -1, __s2_handle_decode: (h) => [h & 0x7fff, 0],
@@ -77,8 +77,8 @@ test("schema.generated.js + pawn.js compose: Pawn.prototype has generated access
   stdPkg.EntityRef.prototype.readBool = function () { return false; };
   stdPkg.EntityRef.prototype.readHandle = function () { return new stdPkg.EntityRef(1, 7); };
   const ctx = {
-    __s2require: (name) => (name === "@s2script/entity" ? stdPkg
-      : name === "@s2script/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
+    __s2require: (name) => (name === "@s2script/sdk/entity" ? stdPkg
+      : name === "@s2script/sdk/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                                       QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
       : null),
     __s2_schema_offset: () => 100,
@@ -103,8 +103,8 @@ test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter
   EntityRef.prototype.isValid = function () { return true; };    // controller entity exists...
   EntityRef.prototype.readHandle = function () { return null; };  // ...but has no player pawn (empty slot)
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef }
-      : n === "@s2script/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef }
+      : n === "@s2script/sdk/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                                    QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
       : null),
     __s2_schema_offset: () => 8, __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
@@ -130,7 +130,7 @@ test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade t
   const math = { Vector, QAngle };
   let offRet = 8;                                        // schema-offset stub; toggled to -1 below
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math : null),
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => offRet,
     __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
   };
@@ -159,7 +159,7 @@ test("generated Vector/QAngle accessor: reads a value object, degrades to null (
   function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
   const math = { Vector, QAngle };
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math : null),
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => 8, __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
@@ -198,7 +198,7 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
     QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
   };
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math : null),
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => 8,      // all offsets valid; NAV paths resolve to [8, …]
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],
@@ -228,7 +228,7 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
   // Null-hop guard: re-eval with __s2_schema_offset returning -1 → each nav getter's oN < 0 guard returns null
   // immediately (per-access resolution, boot-window-safe — no baked NAV table).
   const ctx2 = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math : null),
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => -1,     // per-access off() returns -1 → oN < 0 guard returns null
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],

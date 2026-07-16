@@ -2,8 +2,8 @@
 (function () {
   var off = __s2_schema_offset;
   var A = {};
-  var QAngle = __s2require("@s2script/math").QAngle;
-  var Vector = __s2require("@s2script/math").Vector;
+  var QAngle = __s2require("@s2script/sdk/math").QAngle;
+  var Vector = __s2require("@s2script/sdk/math").Vector;
   A["CEntityInstance"] = {
   };
   A["CBaseEntity"] = {

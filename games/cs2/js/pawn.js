@@ -4,8 +4,8 @@
 // CCSPlayerPawn accessors to Pawn.prototype and keeps the behavioral entry point (Pawn.forSlot).
 // Offsets are resolved live (Slice 3) and cached by the core OffsetCache; nothing is baked.
 (function () {
-  var EntityRef = __s2require("@s2script/entity").EntityRef;
-  var math = __s2require("@s2script/math");
+  var EntityRef = __s2require("@s2script/sdk/entity").EntityRef;
+  var math = __s2require("@s2script/sdk/math");
   var Vector = math.Vector, QAngle = math.QAngle;
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
   var Weapon = globalThis.__s2pkg_cs2.Weapon;   // set by weapon.js (concatenated before this file)
@@ -280,7 +280,7 @@
     return (wsOff < 0 || naOff < 0) ? null : { ws: wsOff, na: naOff };
   }
   function nowGameTime() {
-    var Server = __s2require("@s2script/server").Server;
+    var Server = __s2require("@s2script/sdk/server").Server;
     var t = Server ? Server.gameTime : 0;
     return (typeof t === "number") ? t : 0;
   }
@@ -395,7 +395,7 @@
   // yet, so eager resolution could abort CS2 module init; by formatSource call-time it is always present.
   var __adminMod = null;
   function __resolveAdmin() {
-    if (__adminMod === null) __adminMod = __s2require("@s2script/admin") || {};
+    if (__adminMod === null) __adminMod = __s2require("@s2script/sdk/admin") || {};
     return __adminMod;
   }
 
@@ -827,5 +827,5 @@
 
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
 })();

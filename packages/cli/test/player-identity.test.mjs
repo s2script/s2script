@@ -24,8 +24,8 @@ function runWith(clientMock, names) {
   const math = { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                  QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } };
   const ctx = {
-    __s2require: (n) => (n === "@s2script/entity" ? { EntityRef } : n === "@s2script/math" ? math
-                       : n === "@s2script/events" ? {} : null),
+    __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math
+                       : n === "@s2script/sdk/events" ? {} : null),
     __s2_schema_offset: () => 8,
     __s2_ent_current_serial: () => 7,
     __s2_handle_decode: (h) => [h & 0x7fff, 0],
