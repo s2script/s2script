@@ -56,7 +56,7 @@
 
   // Weapon.findAll(className) — every live entity of `className` as a Weapon (e.g. "weapon_ak47").
   Weapon.findAll = function (className) {
-    var entity = __s2require("@s2script/entity");
+    var entity = __s2require("@s2script/sdk/entity");
     var refs = (entity && entity.Entity) ? entity.Entity.findByClass(String(className)) : [];
     var out = [];
     for (var i = 0; i < refs.length; i++) out.push(new Weapon(refs[i]));

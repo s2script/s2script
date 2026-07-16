@@ -87,12 +87,12 @@ test("emitJs: char[N] emits readString(len); 64-bit int emits a null-safe readUI
   assert.doesNotMatch(dts, /steamID[^;\n]*: bigint/);
 });
 
-test("emitJs: a Vector field emits readFloats(off,3)+new Vector; the @s2script/math require appears", () => {
+test("emitJs: a Vector field emits readFloats(off,3)+new Vector; the @s2script/sdk/math require appears", () => {
   const CATALOG = { Base: { parent: null, fields: [
     { name: "m_angEyeAngles", offset: 8, type: { kind: "atomic", name: "QAngle" } },
   ] } };
   const js = emitJs(buildModel(CATALOG, ["Base"]));
-  assert.match(js, /var QAngle = __s2require\("@s2script\/math"\)\.QAngle;/);
+  assert.match(js, /var QAngle = __s2require\("@s2script\/sdk\/math"\)\.QAngle;/);
   assert.match(js, /var a = this\.ref\.readFloats\(off\("Base","m_angEyeAngles"\), 3\); return a === null \? null : new QAngle\(a\[0\], a\[1\], a\[2\]\);/);
 });
 

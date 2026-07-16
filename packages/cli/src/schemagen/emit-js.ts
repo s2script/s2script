@@ -11,7 +11,7 @@ export function emitJs(model: SchemaModel): string {
     const vi = VEC_INFO[f.accessorKind]; if (vi) vecClasses.add(vi.cls);
   }
   for (const cls of [...vecClasses].sort()) {
-    out.push(`  var ${cls} = __s2require("@s2script/math").${cls};`);
+    out.push(`  var ${cls} = __s2require("@s2script/sdk/math").${cls};`);
   }
   for (const c of model.classes) {
     out.push(`  A[${S(c.className)}] = {`);

@@ -32,7 +32,7 @@ export function emitNavJs(model: NavModel): string {
     }
   }
   for (const cls of [...vecClasses].sort()) {
-    out.push(`  var ${cls} = __s2require("@s2script/math").${cls};`);
+    out.push(`  var ${cls} = __s2require("@s2script/sdk/math").${cls};`);
   }
 
   // Emit one constructor + Object.defineProperties block per wrapper.
