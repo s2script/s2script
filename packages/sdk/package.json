@@ -1,11 +1,29 @@
 {
   "name": "@s2script/sdk",
   "version": "0.1.0",
-  "description": "s2script SDK — types + CLI for building Source 2 / CS2 plugins. Placeholder release that bootstraps the package name + OIDC trusted publishing; the real per-capability type subpaths (@s2script/sdk/entity, …) and the `s2s` CLI land in 0.1.0 via the consolidation (Part C).",
+  "description": "s2script SDK — the builtin capability types (imported as @s2script/sdk/entity, …) plus the `s2s` CLI for building Source 2 / CS2 plugins.",
+  "type": "module",
+  "bin": {
+    "s2s": "dist/cli.js"
+  },
+  "scripts": {
+    "prepare": "node build.mjs",
+    "build": "node build.mjs",
+    "test": "node --experimental-strip-types --no-warnings --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.0",
+    "adm-zip": "^0.5.16",
+    "typescript": "^5.6.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7"
+  },
   "publishConfig": {
     "access": "public"
   },
   "files": [
+    "dist",
     "*.d.ts",
     "README.md"
   ],

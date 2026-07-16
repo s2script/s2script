@@ -11,7 +11,7 @@ const argv = process.argv.slice(2);
 const command = argv[0];
 
 function repoRootFromCli(): string {
-  // dist/cli.js → packages/cli → packages → repo  (or src/cli.ts → same)
+  // dist/cli.js → packages/sdk → packages → repo  (or src/cli.ts → same)
   return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 }
 
@@ -32,7 +32,7 @@ if (command === "gen-schema") {
   const check = argv[1] === "--check";
   const r = runGenSchema(repoRoot, { check });
   if (check) {
-    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2script gen-schema\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
+    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-schema\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
     console.log(`schema codegen up to date (${r.classes} classes, ${r.fields} fields, ${r.skipped} skipped)`);
   } else {
     console.log(`gen-schema: wrote ${r.classes} classes, ${r.fields} fields (${r.skipped} skipped)`);
@@ -42,7 +42,7 @@ if (command === "gen-schema") {
   const check = argv[1] === "--check";
   const r = runGenEvents(repoRoot, { check });
   if (check) {
-    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2script gen-events\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
+    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-events\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
     console.log(`event codegen up to date (${r.events} events)`);
   } else {
     console.log(`gen-events: wrote ${r.events} events`);
@@ -52,7 +52,7 @@ if (command === "gen-schema") {
   const check = argv[1] === "--check";
   const r = runGenNav(repoRoot, { check });
   if (check) {
-    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2script gen-nav\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
+    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-nav\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
     console.log(`nav codegen up to date (${r.wrappers} wrappers, ${r.fields} fields)`);
   } else {
     console.log(`gen-nav: wrote ${r.wrappers} wrappers, ${r.fields} fields`);
@@ -96,12 +96,12 @@ if (command === "gen-schema") {
 } else {
   console.error(
     "Usage:\n" +
-      "  s2script create [path] [--game cs2|none] [--name <pkg>] [--template minimal]\n" +
-      "                  [--install npm|pnpm|yarn|bun|none] [--no-install] [-y]\n" +
-      "  s2script build <dir> [--packages-dir <path>]\n" +
-      "  s2script gen-schema [--check]\n" +
-      "  s2script gen-events [--check]\n" +
-      "  s2script gen-nav [--check]"
+      "  s2s create [path] [--game cs2|none] [--name <pkg>] [--template minimal]\n" +
+      "             [--install npm|pnpm|yarn|bun|none] [--no-install] [-y]\n" +
+      "  s2s build <dir> [--packages-dir <path>]\n" +
+      "  s2s gen-schema [--check]\n" +
+      "  s2s gen-events [--check]\n" +
+      "  s2s gen-nav [--check]"
   );
   process.exit(1);
 }

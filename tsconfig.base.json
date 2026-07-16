@@ -1,5 +1,5 @@
 {
-  "//": "Authoring config for plugins/examples. Mirrors the `s2script build` typecheck (packages/cli/src/typecheck/typecheck.ts) so editor IntelliSense matches the build gate exactly. The CLI does NOT read this — it builds its own in-memory program; this file exists only for tsserver/tsc (editor IntelliSense + optional manual `tsc -p`).",
+  "//": "Authoring config for plugins/examples. Mirrors the `s2script build` typecheck (packages/sdk/src/typecheck/typecheck.ts) so editor IntelliSense matches the build gate exactly. The CLI does NOT read this — it builds its own in-memory program; this file exists only for tsserver/tsc (editor IntelliSense + optional manual `tsc -p`).",
   "compilerOptions": {
     "strict": true,
     "noEmit": true,

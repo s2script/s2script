@@ -22,12 +22,10 @@ echo "note: prefer Changesets + OIDC trusted publishing on main. Continuing as f
 if [ ! -d node_modules ]; then
   npm install --no-fund --no-audit
 fi
-( cd packages/cli && npm run build )
+( cd packages/sdk && npm run build )
 
 PACKAGES=(
-  events entity math frame timers console interfaces config commands chat
-  clients cookies admin bans server damage db http ws menu topmenu votes
-  plugins trace usermessages globals cs2 zones cli
+  sdk cs2
 )
 
 for name in "${PACKAGES[@]}"; do

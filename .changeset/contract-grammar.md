@@ -1,5 +1,5 @@
 ---
-"@s2script/cli": minor
+"@s2script/sdk": minor
 ---
 
 Contract grammar: the host injects an interface's version, and an inconsistent manifest fails the plugin's load.

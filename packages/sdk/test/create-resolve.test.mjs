@@ -26,10 +26,10 @@ test("isPackagesDir recognizes monorepo packages and fake fixtures", () => {
 });
 
 test("findPackagesDirNearCli finds monorepo packages from this test URL", () => {
-  // test file is packages/cli/test/*.mjs → .. = cli, ../.. = packages
+  // test file is packages/sdk/test/*.mjs → .. = sdk, ../.. = packages
   const found = findPackagesDirNearCli(import.meta.url);
   // from test/*.mjs: dirname=test, ../..=packages — but findPackagesDirNearCli does start/../..
-  // start=test → ../..= packages/cli — NOT packages. So from test URL it may miss.
+  // start=test → ../..= packages/sdk — NOT packages. So from test URL it may miss.
   // Explicit: resolve from cli package.json location via env/explicit instead.
   const viaExplicit = resolvePackagesDir({ explicit: packagesDir });
   assert.equal(viaExplicit, packagesDir);
@@ -102,8 +102,10 @@ test("create --yes scaffolds a CS2 plugin that typechecks against monorepo packa
   const pkg = JSON.parse(
     (await import("node:fs")).readFileSync(join(tmp, "package.json"), "utf8"),
   );
-  // In-tree create should prefer file: links to monorepo packages
-  assert.match(pkg.devDependencies["@s2script/cli"], /^file:/);
+  // In-tree create should prefer file: links to monorepo packages.
+  // Post-consolidation the CLI ships inside @s2script/sdk (bin s2s), so there is
+  // no separate @s2script/cli devDep.
+  assert.equal(pkg.devDependencies["@s2script/cli"], undefined);
   assert.match(pkg.devDependencies["@s2script/sdk"], /^file:/);
   assert.match(pkg.devDependencies["@s2script/cs2"], /^file:/);
 
