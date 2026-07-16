@@ -7,8 +7,8 @@
  * underlying vtable can't be resolved (a different Source 2 game build, or in-isolate tests) —
  * never a crash.
  */
-import type { Vector, QAngle } from "@s2script/math";
-import type { EntityRef } from "@s2script/entity";
+import type { Vector, QAngle } from "./math";
+import type { EntityRef } from "./entity";
 
 /** Named `InteractionLayers` bitmasks for `TraceOptions.mask`/`exclude` (bitwise-OR combinable). */
 export declare const TraceMask: {

@@ -1,5 +1,5 @@
 /** @s2script/sound — engine-generic sound: emit a named SoundEvent + register custom precache paths. */
-import type { EntityRef } from "@s2script/entity";
+import type { EntityRef } from "./entity";
 
 export interface SoundEmitOptions {
   /** Source entity (serial-gated; a stale ref emits nothing and returns 0). Omitted -> worldspawn

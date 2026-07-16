@@ -2,7 +2,7 @@
  * @s2script/damage — damage pre-hooks (SDKHooks-equivalent). NO runtime code (injected at load).
  * CTakeDamageInfo is a Source 2 engine type, so this module is engine-generic (lives in core).
  */
-import type { EntityRef } from "@s2script/entity";
+import type { EntityRef } from "./entity";
 
 /** A block-scoped view of the current damage event (valid only inside a Damage.onPre handler). */
 export interface DamageInfo {

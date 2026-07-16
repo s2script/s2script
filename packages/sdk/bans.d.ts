@@ -2,7 +2,7 @@
  * @s2script/bans — engine-generic SteamID64 ban store + bans.json persistence.
  *
  * Resolved at runtime via `globalThis.__s2pkg_bans`; no game-specific symbols.
- * Import: `import { Bans } from "@s2script/bans";`
+ * Import: `import { Bans } from "./bans";`
  *
  * The store is host-global in core, populated from `addons/s2script/configs/bans.json` via the config
  * bridge. Enforcement is JS-driven: a ban plugin (e.g. @s2script/basebans) registers a

@@ -9,7 +9,7 @@
     "lib": ["ES2020"],
     "types": [],
     "baseUrl": "packages",
-    "paths": { "@s2script/*": ["*/index.d.ts"] },
+    "paths": { "@s2script/sdk/*": ["sdk/*.d.ts"], "@s2script/*": ["sdk/*.d.ts", "*/index.d.ts"] },
     "skipLibCheck": true
   }
 }

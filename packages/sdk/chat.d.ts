@@ -1,5 +1,5 @@
 /** @s2script/chat — print messages to player chat. NO runtime code (injected at load). */
-import type { HookResultValue } from "@s2script/events";
+import type { HookResultValue } from "./events";
 
 export declare const Chat: {
   /**

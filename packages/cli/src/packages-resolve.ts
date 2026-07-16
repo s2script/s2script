@@ -19,7 +19,9 @@ import { fileURLToPath } from "node:url";
 export function isPackagesDir(dir: string): boolean {
   const abs = resolve(dir);
   return (
-    existsSync(join(abs, "globals", "globals.d.ts")) ||
+    existsSync(join(abs, "sdk", "globals.d.ts")) ||     // consolidated layout
+    existsSync(join(abs, "sdk", "entity.d.ts")) ||      // consolidated layout
+    existsSync(join(abs, "globals", "globals.d.ts")) || // legacy per-package layout
     existsSync(join(abs, "entity", "index.d.ts")) ||
     existsSync(join(abs, "frame", "index.d.ts")) ||
     existsSync(join(abs, "commands", "index.d.ts"))
@@ -71,8 +73,8 @@ export function resolvePackagesDir(opts?: {
   }
 
   throw new Error(
-    "cannot resolve @s2script/* types: no packages dir found.\n" +
-      "  Install @s2script/globals (and other @s2script/* packages) in the plugin,\n" +
+    "cannot resolve @s2script/sdk/* types: no packages dir found.\n" +
+      "  Install `@s2script/sdk` in the plugin (npm i -D @s2script/sdk),\n" +
       "  or set S2SCRIPT_PACKAGES_DIR / pass --packages-dir."
   );
 }

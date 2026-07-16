@@ -1,6 +1,6 @@
 /**
  * @s2script/clients — engine-generic client handle + lifecycle events.
- * Resolved at runtime via globalThis.__s2pkg_clients. Import: import { Client, Clients } from "@s2script/clients";
+ * Resolved at runtime via globalThis.__s2pkg_clients. Import: import { Client, Clients } from "./clients";
  */
 /** A connected client, identified by its 0-based slot (CPlayerSlot). Slot-backed; getters read live. */
 export declare class Client {
