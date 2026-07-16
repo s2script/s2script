@@ -17,7 +17,6 @@ import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
 import { assertPublishesTypes } from "./publish-gate.ts";
 import { derivePublishes } from "./publishes.ts";
-import { readFileSync as readFileSyncRaw } from "node:fs";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -44,9 +43,12 @@ interface PluginPackageJson {
 export async function buildPlugin(dir: string, packagesDir?: string): Promise<string> {
   const absDir = resolve(dir);
 
+  // --- Read package.json ONCE; every step below reuses this parse. ---
+  const pkgPath = join(absDir, "package.json");
+  const pkg: PluginPackageJson = JSON.parse(readFileSync(pkgPath, "utf8"));
+
   // --- publishes ⇒ types gate (before we spend cycles on tsc/esbuild) ---
-  const pkgEarly: PluginPackageJson = JSON.parse(readFileSync(join(absDir, "package.json"), "utf8"));
-  const gate = assertPublishesTypes(pkgEarly, absDir);
+  const gate = assertPublishesTypes(pkg, absDir);
   if (!gate.ok) {
     throw new Error(`publish gate failed: ${gate.error}`);
   }
@@ -56,10 +58,6 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   if (!tc.ok) {
     throw new Error(`typecheck failed (${tc.diagnostics.length} error(s)):\n${formatDiagnostics(tc.diagnostics)}`);
   }
-
-  // --- Read package.json ---   (existing code continues unchanged) ---
-  const pkgPath = join(absDir, "package.json");
-  const pkg: PluginPackageJson = JSON.parse(readFileSync(pkgPath, "utf8"));
 
   const { name, version } = pkg;
   const s2 = pkg.s2script ?? {};
@@ -130,7 +128,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   // core's read_s2sp reads manifest.json/plugin.js by_name and ignores every other member,
   // so this needs no loader change and can be dropped without breaking anyone.
   if (gate.typesPath !== null && Object.keys(derivedPublishes).length > 0) {
-    const contract = readFileSyncRaw(gate.typesPath);
+    const contract = readFileSync(gate.typesPath);
     for (const iface of Object.keys(derivedPublishes)) {
       const safe = iface.replace(/[^a-zA-Z0-9._-]/g, "_");
       zip.addFile(`types/${safe}.d.ts`, contract);
