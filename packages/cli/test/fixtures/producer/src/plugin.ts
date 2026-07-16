@@ -1,2 +1,7 @@
 import { publishInterface } from "@s2script/interfaces";
-export function onLoad(): void { publishInterface("@demo/greeter", "1.0.0", { greet: (n: number) => `hi ${n}` }); }
+import type { Greeter } from "../api";
+
+export function onLoad(): void {
+  const impl: Greeter = { greet: (n: number) => `hi ${n}` };
+  publishInterface("@demo/greeter", impl);
+}
