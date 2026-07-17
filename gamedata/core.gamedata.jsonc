@@ -19,7 +19,10 @@
     "NetworkMessages": "NetworkMessagesVersion001",
     // ISource2GameClients — backs the ClientCommand hook for player console commands (Slice 6.11c).
     // Interface string from eiface.h INTERFACEVERSION_SERVERGAMECLIENTS.
-    "Source2GameClients": "Source2GameClients001"
+    "Source2GameClients": "Source2GameClients001",
+    // ISource2GameEntities — backs the CheckTransmit POST hook (checktransmit slice: per-client
+    // entity visibility). Interface string from eiface.h INTERFACEVERSION_SERVERGAMEENTS.
+    "Source2GameEntities": "Source2GameEntities001"
   },
   // Byte offsets into engine interface objects — keyed by platform string.
   // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked
@@ -31,6 +34,14 @@
     // entity-system pointer). This is the one entity value that isn't resolved dynamically — a wrong
     // offset reads garbage, so it must be re-confirmed on the update treadmill if entity access breaks.
     "GameEntitySystem": { "linuxsteamrt64": 80 },
+    // CCheckTransmitInfo: byte offset of the which-client int32. hl2sdk's CCheckTransmitInfo is
+    // explicitly incomplete ("TODO" at iservernetworkable.h:44), so this is a borrowed constant —
+    // CSSharp calls it m_nPlayerSlot, Swiftly m_nClientEntityIndex (they DISAGREE on semantics:
+    // slot vs entindex=slot+1). Both the offset AND the semantics are validated at FIRST
+    // CheckTransmit fire (fail-closed: no transmit bits are touched until validation passes; a
+    // persistent mismatch prints a named gamedata FAIL and disables the descriptor). Re-derive on
+    // the update treadmill if transmit filtering reports FAILED; see docs/re-strategy.md.
+    "CheckTransmitInfo_clientEntityIndex": { "linuxsteamrt64": 576 },
     // NOTE: the six 5D.2 engine-identity offsets (NetworkServerService.gameServer /
     // NetworkGameServer.clientCount+clientElems / ServerSideClient.name+signon+userId) were RETIRED in
     // the clientlist-fakeconvar-onmapstart slice — the client ops now use typed SDK virtuals
@@ -205,6 +216,32 @@
       "linuxsteamrt64": {
         "module": "libserver.so",
         "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 83 EC ? 44 0F B6 B7 ? ? ? ? 44 39 F6",
+        "resolve": "direct"
+      }
+    },
+    // CCSGameRules::TerminateRound(float delay /*xmm0*/, uint32 reason /*esi*/, void* unk3=0 /*rdx*/,
+    // uint32 unk4=0 /*ecx*/) — force the current round to end with a RoundEndReason. Backs
+    // GameRules.terminateRound. SELF-DERIVED against OUR libserver.so (build 2000875) — do NOT ship the
+    // borrowed CSSharp/Swiftly sig ("55 48 89 E5 41 57 41 56 49 89 FE 41 55 41 54 53 48 81 EC ? ? ? ?
+    // 48 8D 05 ? ? ? ? F3 0F 11 85"): on this build it matches UNIQUELY yet at the WRONG function
+    // (va 0xc75ec0 — treats esi as a POINTER; a uniqueness gate alone would green-light a corrupting
+    // call). The real function (va 0x1384e80 on 2000875) is anchored by: (a) a unique
+    // `lea rsi,[rip+disp]` to the literal "TerminateRound" telemetry-scope string at fn+0xb (exactly 1
+    // xref binary-wide), (b) the sole xref to "TerminateRound: unknown round end ID %i" inside its own
+    // cold branch after `cmp $0x16,%r15d` (the reason-enum bound = 22 = SurvivalDraw), (c) the
+    // CS:GO-inherited reason -> "#SFUI_Notice_*" switch in the body (16 direct callers in the gamerules
+    // TU). This pattern masks the volatile string disp + frame size and keeps the stable `41 89 F7`
+    // reason capture. The boot gate re-validates UNIQUE, and a SECOND semantic descriptor
+    // (TerminateRound.scope-string) verifies the fn+0xb lea really targets "TerminateRound" — the exact
+    // check that separates the real function from the borrowed-sig false positive. Treadmill
+    // re-resolution recipe: xref the two unique strings above. NOT virtual on this build (zero
+    // data-segment refs) — direct call only. TTT/CSSharp's reason-first Linux arg order is a managed-
+    // marshaller artifact; the direct C call is DELAY-FIRST. args 3/4 semantics unknown in every
+    // framework (all pass 0,0) — hardcoded 0, never exposed; revisit if a future build uses them.
+    "TerminateRound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 89 F7 41 56 48 8D 35 ? ? ? ? 41 55 41 54 53 48 89 FB 48 81 EC ? ? ? ?",
         "resolve": "direct"
       }
     },

@@ -235,6 +235,21 @@ type UsercmdWriteFn        = extern "C" fn(c_int, f64);
 type UsercmdReadButtonsFn  = extern "C" fn() -> u64;
 type UsercmdWriteButtonsFn = extern "C" fn(u64);
 type UsercmdClearSubtickFn = extern "C" fn();
+// --- checktransmit slice (APPENDED after usercmd_clear_subtick; order is the ABI). ENGINE-GENERIC:
+// a serial-gated entity index + a u64 viewer-slot mask are Source2-generic; no CS2 names in the C ABI.
+/// checktransmit slice: upsert the merged visibility mask for a serial-gated entity.
+/// Returns 1 on success, 0 on a stale ref / full table / uninstalled hook / disabled descriptor.
+pub type TransmitSetFn = extern "C" fn(index: std::os::raw::c_int, serial: std::os::raw::c_int, mask: u64) -> std::os::raw::c_int;
+/// checktransmit slice: drop the entity's rule entry (1 removed, 0 absent).
+pub type TransmitClearFn = extern "C" fn(index: std::os::raw::c_int) -> std::os::raw::c_int;
+/// checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}.
+pub type TransmitStatsFn = extern "C" fn(out: *mut u64);
+// --- Round-control slice (APPENDED after transmit_stats; order is the ABI). ENGINE-GENERIC:
+// (proxy idx, serial, rules-ptr field offset, delay, reason) -> 1 queued / 0 degraded. The shim defers
+// the sig-resolved engine call to the next GameFrame OUTSIDE the JS isolate borrow (it fires round_end
+// synchronously). No game names cross the ABI.
+type GamerulesTerminateRoundFn = extern "C" fn(c_int, c_int, c_int, f32, c_int) -> c_int;
+// --- Voice-control slice (APPENDED after gamerules_terminate_round; order is the ABI).
 type VoiceSetMutedFn = extern "C" fn(c_int, c_int) -> c_int;
 type VoiceGetMutedFn = extern "C" fn(c_int) -> c_int;
 
@@ -359,7 +374,13 @@ pub struct S2EngineOps {
     pub usercmd_read_buttons:   Option<UsercmdReadButtonsFn>,
     pub usercmd_write_buttons:  Option<UsercmdWriteButtonsFn>,
     pub usercmd_clear_subtick:  Option<UsercmdClearSubtickFn>,
-    // Voice-control slice — APPENDED after usercmd_clear_subtick; order is the ABI.
+    // --- checktransmit slice (APPENDED after usercmd_clear_subtick; order is the ABI; do not reorder above) ---
+    pub transmit_set:   Option<TransmitSetFn>,
+    pub transmit_clear: Option<TransmitClearFn>,
+    pub transmit_stats: Option<TransmitStatsFn>,
+    // --- Round-control slice (APPENDED after transmit_stats; order is the ABI; do not reorder above) ---
+    pub gamerules_terminate_round: Option<GamerulesTerminateRoundFn>,
+    // Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
     pub voice_set_muted:        Option<VoiceSetMutedFn>,
     pub voice_get_muted:        Option<VoiceGetMutedFn>,
 }
@@ -702,6 +723,49 @@ struct TopMenuItem {
     generation: u64,
     seq: u64,
     on_select: v8::Global<v8::Function>,
+}
+
+/// checktransmit slice: per-plugin entity-visibility rules. owner -> (entindex -> rule).
+/// INVARIANT: all owners' entries for one index share ONE serial (enforced in s2_transmit_set —
+/// the op validates the incoming serial is the live one, so different-serial entries are stale
+/// and evicted). The shim holds only the AND-merged mask per index; this map is the policy source
+/// of truth so unload/reset can recompute the merge.
+#[derive(Clone, Copy)]
+struct TransmitRule { serial: i32, mask: u64 }
+thread_local! {
+    static TRANSMIT_RULES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<i32, TransmitRule>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Recompute the AND-merged mask for `index` across every owner's rule and push it to the shim
+/// (transmit_set), or clear the shim entry when no rule remains (transmit_clear).
+fn transmit_recompute_and_push(index: i32) {
+    let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+    let merged = TRANSMIT_RULES.with(|r| {
+        let map = r.borrow();
+        let mut acc: Option<TransmitRule> = None;
+        for rules in map.values() {
+            if let Some(rule) = rules.get(&index) {
+                acc = Some(match acc {
+                    None => *rule,
+                    Some(a) => TransmitRule { serial: rule.serial, mask: a.mask & rule.mask },
+                });
+            }
+        }
+        acc
+    });
+    match merged {
+        Some(rule) => { if let Some(f) = ops.transmit_set { f(index, rule.serial, rule.mask); } }
+        None => { if let Some(f) = ops.transmit_clear { f(index); } }
+    }
+}
+
+/// Unload/resetAll teardown: drop every rule owned by `owner`, re-pushing each affected index.
+fn transmit_remove_owner(owner: &str) {
+    let indices: Vec<i32> = TRANSMIT_RULES.with(|r| {
+        r.borrow_mut().remove(owner).map(|m| m.keys().copied().collect()).unwrap_or_default()
+    });
+    for i in indices { transmit_recompute_and_push(i); }
 }
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
@@ -1232,8 +1296,29 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   UserMessage.prototype.send    = function (slots) { return this._flush(Array.isArray(slots) ? slots : [slots]); };
   UserMessage.prototype.sendAll = function () { return this._flush(null); };
+  // @s2script/transmit — per-client entity visibility rules (checktransmit slice). Declarative:
+  // the native side evaluates rules per snapshot; NO JS runs in the CheckTransmit hot path.
+  var Transmit = {
+    setVisibleTo: function (entity, viewers) {
+      if (!entity || typeof entity.index !== "number" || typeof entity.serial !== "number") return false;
+      if (!Array.isArray(viewers)) throw new TypeError("viewers must be an array of player slots");
+      for (var i = 0; i < viewers.length; i++) {
+        var s = viewers[i];
+        if (typeof s !== "number" || (s | 0) !== s || s < 0 || s >= 64)
+          throw new RangeError("viewer slot out of range [0,64): " + s);
+      }
+      return __s2_transmit_set(entity.index, entity.serial, viewers);
+    },
+    reset: function (entity) {
+      if (!entity || typeof entity.index !== "number" || typeof entity.serial !== "number") return false;
+      return __s2_transmit_reset(entity.index, entity.serial);
+    },
+    resetAll: function () { __s2_transmit_reset_all(); },
+    stats: function () { return __s2_transmit_stats(); }
+  };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
+  globalThis.__s2pkg_transmit  = { Transmit: Transmit };
   globalThis.__s2pkg_usermessages = { UserMessage: UserMessage };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -5148,6 +5233,131 @@ fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
+/// `__s2_gamerules_terminate_round(index, serial, rulesPtrOff, delay, reason) -> 0|1` — queue a
+/// round-termination via the sig-resolved engine op. (index, serial) identify the game-rules PROXY
+/// entity; rulesPtrOff is the offset of its rules-struct pointer field (both supplied by the game
+/// package — engine-generic here). 1 = queued: the shim executes on the NEXT GameFrame, outside the
+/// JS isolate borrow, so the resulting round-end event dispatches to ALL plugins (including the
+/// caller). 0 = degraded (no op / unresolved signature / stale proxy / out-of-range reason).
+fn s2_gamerules_terminate_round(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        if args.length() < 5 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let delay = args.get(3).number_value(scope).unwrap_or(0.0) as f32;
+        let reason = args.get(4).integer_value(scope).unwrap_or(-1) as c_int;
+        if off < 0 { return; }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.gamerules_terminate_round else { return };
+        rv.set_int32(f(index, serial, off, delay, reason));
+    }));
+}
+
+/// Native `__s2_transmit_set(index, serial, viewerSlots[]) -> boolean` — replace the calling
+/// plugin's visibility rule for the entity: transmit ONLY to the given viewer slots (empty array
+/// = hidden from everyone). The u64 mask is folded core-side from the JS number array (no BigInt
+/// on any boundary). The shim op serial-gates at registration; stale ref / full table / missing
+/// op / disabled descriptor degrade to `false`. Other owners' entries on this index with a
+/// DIFFERENT serial are evicted after the op accepts (ours is the live serial; theirs are dead).
+fn s2_transmit_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        if index < 0 || serial < 0 { return; }
+        let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return };
+        let mut mask: u64 = 0;
+        for i in 0..arr.length() {
+            let Some(v) = arr.get_index(scope, i) else { return };
+            let slot = v.integer_value(scope).unwrap_or(-1);
+            if !(0..64).contains(&slot) { return; }   // the JS wrapper throws first; belt-and-braces
+            mask |= 1u64 << (slot as u32);
+        }
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        // Candidate merged mask: AND with every OTHER owner's same-serial rule on this index.
+        let merged = TRANSMIT_RULES.with(|r| {
+            let map = r.borrow();
+            let mut acc = mask;
+            for (o, rules) in map.iter() {
+                if o == &owner { continue; }
+                if let Some(rule) = rules.get(&index) {
+                    if rule.serial == serial { acc &= rule.mask; }
+                }
+            }
+            acc
+        });
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.transmit_set) else { return };
+        if f(index, serial, merged) == 0 { return; }
+        TRANSMIT_RULES.with(|r| {
+            let mut map = r.borrow_mut();
+            // Evict stale (different-serial) entries on this index — the op just validated `serial`
+            // is the live one, so any other serial in this slot belongs to a dead entity.
+            for rules in map.values_mut() {
+                let stale = rules.get(&index).map_or(false, |ru| ru.serial != serial);
+                if stale { rules.remove(&index); }
+            }
+            map.entry(owner).or_default().insert(index, TransmitRule { serial, mask });
+        });
+        rv.set_bool(true);
+    }));
+}
+
+/// Native `__s2_transmit_reset(index, serial) -> boolean` — remove the calling plugin's rule for
+/// the entity (the serial must match the recorded rule), then re-push the remaining merge (or
+/// clear the shim entry when this was the last rule).
+fn s2_transmit_reset(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let removed = TRANSMIT_RULES.with(|r| {
+            let mut map = r.borrow_mut();
+            match map.get_mut(&owner) {
+                Some(rules) if rules.get(&index).map_or(false, |ru| ru.serial == serial) => {
+                    rules.remove(&index);
+                    true
+                }
+                _ => false,
+            }
+        });
+        if removed {
+            transmit_recompute_and_push(index);
+            rv.set_bool(true);
+        }
+    }));
+}
+
+/// Native `__s2_transmit_reset_all()` — remove all of the calling plugin's rules.
+fn s2_transmit_reset_all(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        transmit_remove_owner(&owner);
+    }));
+}
+
+/// Native `__s2_transmit_stats() -> {snapshots, entries, bitsCleared, nsLast, nsMax} | null`.
+/// Null when the op is unassigned (old shim) — the capability is absent, not zero.
+fn s2_transmit_stats(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.transmit_stats) else { return };
+        let mut out = [0u64; 5];
+        f(out.as_mut_ptr());
+        let obj = v8::Object::new(scope);
+        for (i, name) in ["snapshots", "entries", "bitsCleared", "nsLast", "nsMax"].iter().enumerate() {
+            let k = v8::String::new(scope, name).unwrap();
+            let v = v8::Number::new(scope, out[i] as f64);
+            obj.set(scope, k.into(), v.into());
+        }
+        rv.set(obj.into());
+    }));
+}
+
 /// `__s2_plugins_list() -> string` — JSON array of `{id, loaded}` for `sm plugins list` / `Plugins.list()`.
 fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -6868,6 +7078,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
+    set_native(scope, global_obj, "__s2_gamerules_terminate_round", s2_gamerules_terminate_round);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
     // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
@@ -6960,6 +7171,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // entity_name slice: EntityRef.name reads CEntityIdentity::m_name (sibling of entity_find_by_class's
     // m_designerName read on the same identity).
     set_native(scope, global_obj, "__s2_entity_name", s2_entity_name);
+    // checktransmit slice: declarative per-client entity visibility rules (@s2script/transmit).
+    set_native(scope, global_obj, "__s2_transmit_set", s2_transmit_set);
+    set_native(scope, global_obj, "__s2_transmit_reset", s2_transmit_reset);
+    set_native(scope, global_obj, "__s2_transmit_reset_all", s2_transmit_reset_all);
+    set_native(scope, global_obj, "__s2_transmit_stats", s2_transmit_stats);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -8726,6 +8942,8 @@ pub fn shutdown() {
     ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the UserCmd.onRun mux (usercmd primitive) so a re-init starts clean.
     USERCMD_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the per-plugin visibility rules (checktransmit slice) so a re-init starts clean.
+    TRANSMIT_RULES.with(|r| r.borrow_mut().clear());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
@@ -9076,6 +9294,9 @@ pub(crate) fn unload_plugin(id: &str) {
     // stays installed for the process lifetime once lazily installed (removed in the shim's Unload),
     // so no per-plugin hook-removal request is needed.
     USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // checktransmit slice: drop the plugin's visibility rules and re-push the remaining merges
+    // (last-owner-gone entries are cleared from the shim table).
+    transmit_remove_owner(id);
     // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
     CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
     crate::loader::unwatch_config_for(id);
@@ -11152,6 +11373,8 @@ mod frame_tests {
             usercmd_read_buttons: None,
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
+            transmit_set: None, transmit_clear: None, transmit_stats: None,
+            gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
         }));
@@ -11617,6 +11840,217 @@ mod frame_tests {
         shutdown();
     }
 
+    // --- checktransmit slice: __s2_transmit_* natives + the per-plugin rule store ---
+    static TRANSMIT_SET_CALLS: std::sync::Mutex<Vec<(i32, i32, u64)>> = std::sync::Mutex::new(Vec::new());
+    static TRANSMIT_CLEAR_CALLS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_transmit_set(index: c_int, serial: c_int, mask: u64) -> c_int {
+        TRANSMIT_SET_CALLS.lock().unwrap().push((index, serial, mask));
+        1
+    }
+    extern "C" fn mock_transmit_set_reject(_index: c_int, _serial: c_int, _mask: u64) -> c_int { 0 }
+    extern "C" fn mock_transmit_clear(index: c_int) -> c_int {
+        TRANSMIT_CLEAR_CALLS.lock().unwrap().push(index);
+        1
+    }
+    extern "C" fn mock_transmit_stats(out: *mut u64) {
+        unsafe { for i in 0..5 { *out.add(i) = (i as u64 + 1) * 10; } }
+    }
+    fn transmit_test_ops() -> S2EngineOps {
+        S2EngineOps {
+            transmit_set: Some(mock_transmit_set),
+            transmit_clear: Some(mock_transmit_clear),
+            transmit_stats: Some(mock_transmit_stats),
+            ..mock_event_ops()
+        }
+    }
+
+    /// setVisibleTo folds the viewer-slot array into a u64 mask and pushes (index, serial, mask).
+    #[test]
+    fn transmit_set_folds_viewer_slots_into_mask() {
+        let _ = init(dummy_logger());
+        TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tm1");
+        let out = eval_in_context_string("tm1",
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 7, serial: 42}, [0, 5, 63]))");
+        assert_eq!(out, "true");
+        let calls = TRANSMIT_SET_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], (7, 42, 1u64 | (1u64 << 5) | (1u64 << 63)));
+        drop(calls);
+        shutdown();
+    }
+
+    /// Empty viewer array = hidden from everyone = mask 0.
+    #[test]
+    fn transmit_set_empty_array_masks_zero() {
+        let _ = init(dummy_logger());
+        TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tm2");
+        let out = eval_in_context_string("tm2",
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 3, serial: 1}, []))");
+        assert_eq!(out, "true");
+        assert_eq!(TRANSMIT_SET_CALLS.lock().unwrap()[0], (3, 1, 0u64));
+        shutdown();
+    }
+
+    /// A slot outside [0,64) throws RangeError from the JS wrapper (programmer error, not staleness).
+    #[test]
+    fn transmit_set_out_of_range_slot_throws() {
+        let _ = init(dummy_logger());
+        TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tm3");
+        let out = eval_in_context_string("tm3",
+            "(function(){ try { __s2pkg_transmit.Transmit.setVisibleTo({index:1,serial:1},[64]); return 'no-throw'; } catch (e) { return e.constructor.name; } })()");
+        assert_eq!(out, "RangeError");
+        assert_eq!(TRANSMIT_SET_CALLS.lock().unwrap().len(), 0);
+        shutdown();
+    }
+
+    /// Two plugins with rules on the same (index, serial) AND-merge: the pushed mask is the intersection.
+    #[test]
+    fn transmit_rules_and_merge_across_plugins() {
+        let _ = init(dummy_logger());
+        TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tma");
+        create_plugin_context("tmb");
+        eval_in_context_string("tma",
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [0, 1]))");
+        eval_in_context_string("tmb",
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [1, 2]))");
+        let calls = TRANSMIT_SET_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], (5, 9, 0b11u64));          // tma alone
+        assert_eq!(calls[1], (5, 9, 0b10u64));          // tma AND tmb = bit 1 only
+        drop(calls);
+        shutdown();
+    }
+
+    /// reset() removes only the caller's rule; the remaining merge is re-pushed; the LAST reset clears.
+    #[test]
+    fn transmit_reset_recomputes_then_clears() {
+        let _ = init(dummy_logger());
+        TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        TRANSMIT_CLEAR_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tra");
+        create_plugin_context("trb");
+        eval_in_context_string("tra", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [0, 1])");
+        eval_in_context_string("trb", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [1, 2])");
+        let out = eval_in_context_string("tra", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 9}))");
+        assert_eq!(out, "true");
+        assert_eq!(TRANSMIT_SET_CALLS.lock().unwrap().last().copied(), Some((5, 9, 0b110u64))); // trb alone
+        let out = eval_in_context_string("trb", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 9}))");
+        assert_eq!(out, "true");
+        assert_eq!(TRANSMIT_CLEAR_CALLS.lock().unwrap().as_slice(), &[5]);
+        shutdown();
+    }
+
+    /// reset() with a serial that doesn't match the recorded rule returns false and pushes nothing.
+    #[test]
+    fn transmit_reset_serial_mismatch_is_false() {
+        let _ = init(dummy_logger());
+        TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        TRANSMIT_CLEAR_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("trm");
+        eval_in_context_string("trm", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [0])");
+        let out = eval_in_context_string("trm", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 8}))");
+        assert_eq!(out, "false");
+        assert_eq!(TRANSMIT_CLEAR_CALLS.lock().unwrap().len(), 0);
+        shutdown();
+    }
+
+    /// Unloading a plugin clears its rules (the ledger walk): last owner gone -> transmit_clear pushed.
+    #[test]
+    fn transmit_unload_clears_owner_rules() {
+        let _ = init(dummy_logger());
+        TRANSMIT_CLEAR_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tun");
+        eval_in_context_string("tun", "__s2pkg_transmit.Transmit.setVisibleTo({index: 11, serial: 2}, [0])");
+        unload_plugin("tun");
+        assert_eq!(TRANSMIT_CLEAR_CALLS.lock().unwrap().as_slice(), &[11]);
+        shutdown();
+    }
+
+    /// A new rule with a NEWER live serial evicts other owners' stale-serial entries on the same index
+    /// (the op validated the new serial is the live one, so the old one is a dead entity's rule).
+    #[test]
+    fn transmit_stale_serial_evicted_on_new_set() {
+        let _ = init(dummy_logger());
+        TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tsa");
+        create_plugin_context("tsb");
+        eval_in_context_string("tsa", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 1}, [0])");
+        eval_in_context_string("tsb", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 2}, [1])");
+        let calls = TRANSMIT_SET_CALLS.lock().unwrap();
+        // Second push must NOT be ANDed with tsa's stale-serial mask.
+        assert_eq!(calls[1], (5, 2, 1u64 << 1));
+        drop(calls);
+        // And tsa's stale entry is gone: resetting it now reports false.
+        let out = eval_in_context_string("tsa", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 1}))");
+        assert_eq!(out, "false");
+        shutdown();
+    }
+
+    /// Missing ops (old shim) degrade to false — never a throw.
+    #[test]
+    fn transmit_set_missing_op_degrades_false() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));   // no transmit ops
+        create_plugin_context("tmo");
+        let out = eval_in_context_string("tmo",
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 1, serial: 1}, [0]))");
+        assert_eq!(out, "false");
+        shutdown();
+    }
+
+    /// The op rejecting (stale ref / full table / disabled) -> false, and the rule is NOT recorded.
+    #[test]
+    fn transmit_set_op_reject_not_recorded() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            transmit_set: Some(mock_transmit_set_reject),
+            transmit_clear: Some(mock_transmit_clear),
+            transmit_stats: Some(mock_transmit_stats),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("trj");
+        let out = eval_in_context_string("trj",
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 1, serial: 1}, [0]))");
+        assert_eq!(out, "false");
+        let out = eval_in_context_string("trj", "String(__s2pkg_transmit.Transmit.reset({index: 1, serial: 1}))");
+        assert_eq!(out, "false");   // nothing was recorded
+        shutdown();
+    }
+
+    /// stats() surfaces the op's out[5] as a plain numbers object.
+    #[test]
+    fn transmit_stats_surfaces_counters() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(transmit_test_ops()));
+        create_plugin_context("tst");
+        let out = eval_in_context_string("tst", "JSON.stringify(__s2pkg_transmit.Transmit.stats())");
+        assert_eq!(out, r#"{"snapshots":10,"entries":20,"bitsCleared":30,"nsLast":40,"nsMax":50}"#);
+        shutdown();
+    }
+
+    /// stats() with no op -> null (typed TransmitStats | null).
+    #[test]
+    fn transmit_stats_missing_op_is_null() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));
+        create_plugin_context("tsn");
+        let out = eval_in_context_string("tsn", "String(__s2pkg_transmit.Transmit.stats())");
+        assert_eq!(out, "null");
+        shutdown();
+    }
+
     /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
     /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
     /// never a crash.
@@ -11807,6 +12241,8 @@ mod frame_tests {
             usercmd_read_buttons: None,
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
+            transmit_set: None, transmit_clear: None, transmit_stats: None,
+            gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
         }
@@ -12629,6 +13065,19 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read_buttons())"), "0", "read_buttons degrades to 0n");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write_buttons(5n))"), "undefined", "write_buttons no-throws");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_clear_subtick())"), "undefined", "clear_subtick no-throws");
+        shutdown();
+    }
+
+    /// Round-control slice (degrade-never-crash): with NO engine ops installed,
+    /// `__s2_gamerules_terminate_round` returns 0 (an int, never undefined) and never throws —
+    /// the `GameRules.terminateRound -> false` degrade contract holds without a shim.
+    #[test]
+    fn gamerules_terminate_round_degrades_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_gamerules_terminate_round(1, 2, 8, 5.0, 9))"), "0", "degrades to 0 without ops");
+        assert_eq!(eval_in_context_string("p", "String(__s2_gamerules_terminate_round())"), "0", "no-args degrades to 0, no throw");
         shutdown();
     }
 

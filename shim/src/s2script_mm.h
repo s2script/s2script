@@ -28,6 +28,14 @@ enum ENetworkDisconnectionReason : int;
 class INetworkServerService;
 class GameSessionConfiguration_t;
 class ISource2WorldSession;
+// Forward-declared for the CheckTransmit hook (checktransmit slice); full definitions
+// (eiface.h / iservernetworkable.h / bitvec.h) live in s2script_mm.cpp. CBitVec's forward decl
+// matches bitvec.h:414 (`template <int NUM_BITS> class CBitVec`); by-ref params in pure
+// DECLARATIONS don't need the complete type.
+class ISource2GameEntities;
+class CCheckTransmitInfo;
+struct Entity2Networkable_t;
+template <int NUM_BITS> class CBitVec;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
@@ -38,6 +46,7 @@ public:
     // Pre-phase (false) dispatches phase 0; post-phase (true) dispatches phase 1.
     void Hook_GameFramePre(bool simulating, bool first, bool last);
     void Hook_GameFramePost(bool simulating, bool first, bool last);
+    void Hook_GameFrameRoundDrain(bool simulating, bool first, bool last);
 
     // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
     bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);
@@ -73,6 +82,15 @@ public:
     void Hook_StartupServer(const GameSessionConfiguration_t& config, ISource2WorldSession* session,
                             const char* unk);
 
+    // CheckTransmit POST hook (checktransmit slice) — per-client entity visibility filtering.
+    // Applies the core-pushed rule table to each client's transmit bitvec; notify-only for the
+    // engine (MRES_IGNORED) — the mutation is in-place on the info structs. `unsigned short`
+    // == the SDK's uint16 (the META_NO_HL2SDK header convention, like the uint64 params above).
+    void Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
+                            CBitVec<16384>& unionTransmitEdicts, CBitVec<16384>& unionTransmitEdicts2,
+                            const Entity2Networkable_t** pNetworkables,
+                            const unsigned short* pEntityIndices, int nEntityIndices);
+
     // (Sound slice precache: NO member hook — OnPrecacheResource is intercepted by a class-vtable slot
     // swap (s2vtable::GetVTableByName + s2detour-free WriteVtableSlot) whose handler + installer are
     // file-static free functions in s2script_mm.cpp. No live instance, no SourceHook needed; see the
@@ -82,6 +100,8 @@ public:
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
     ISource2GameClients* m_gameClients = nullptr;
+    ISource2GameEntities* m_gameEntities = nullptr;
+    bool m_checkTransmitHookInstalled = false;     // checktransmit: the CheckTransmit POST hook
     bool m_frameHookInstalled  = false;
     bool m_eventHookInstalled  = false;
     bool m_clientCmdHookInstalled = false;

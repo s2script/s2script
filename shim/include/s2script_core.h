@@ -250,6 +250,13 @@ typedef int (*s2_sound_precache_add_fn)(const char* path);
  * `team` (Spectator=1/T=2/CT=3) via the sig-resolved CCSPlayerController::ChangeTeam. No-op if the
  * signature is unresolved or the ref is stale. APPENDED after sound_precache_add; order is the ABI. */
 typedef void (*s2_player_change_team_fn)(int idx, int serial, int team);
+/* checktransmit slice: upsert the merged visibility mask for a serial-gated entity.
+ * Returns 1 on success, 0 on a stale ref / full table / uninstalled hook / disabled descriptor. */
+typedef int (*s2_transmit_set_fn)(int index, int serial, unsigned long long mask);
+/* checktransmit slice: drop the entity's rule entry (1 removed, 0 absent). */
+typedef int (*s2_transmit_clear_fn)(int index);
+/* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
+typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
 
 /* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
  * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
@@ -259,7 +266,17 @@ typedef void  (*s2_usercmd_write_fn)(int field, double value);
 typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_pb.buttonstate1 */
 typedef void  (*s2_usercmd_write_buttons_fn)(uint64_t mask);
 typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.subtick_moves */
-/* Voice-control slice — APPENDED after usercmd_clear_subtick; order is the ABI.
+
+/* Round-control slice — APPENDED after transmit_stats; order is the ABI.
+ * gamerules_terminate_round(idx, serial, rules_ptr_off, delay, reason) -> 1 queued / 0 degraded.
+ * (idx, serial) = the rules PROXY entity; rules_ptr_off = the offset of its rules-struct pointer
+ * field (resolved by the game package; no game names cross this ABI). DEFERRED: the shim queues the
+ * call and drains it on the next GameFrame OUTSIDE the JS isolate borrow — the engine call fires the
+ * round-end event machinery synchronously, and an inline call from JS would silently skip every
+ * plugin's round_end handler via the try_borrow re-entrancy guard. reason is bounded 0..22. */
+typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_ptr_off,
+                                                 float delay, int reason);
+/* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
  * voice_set_muted: set/clear the per-slot server-side voice mute (sender -> ALL receivers). The flag
  * lives SHIM-side: the SetClientListening pre-hook consults it allocation-free (O(n^2) per game voice
  * refresh), so JS only flips state through this op. Returns 1 = recorded + enforceable; 0 = slot out
@@ -382,7 +399,13 @@ typedef struct {
     s2_usercmd_read_buttons_fn  usercmd_read_buttons;
     s2_usercmd_write_buttons_fn usercmd_write_buttons;
     s2_usercmd_clear_subtick_fn usercmd_clear_subtick;
-    /* Voice-control slice — APPENDED after usercmd_clear_subtick; order is the ABI. */
+    /* checktransmit slice — APPENDED after usercmd_clear_subtick; order is the ABI; do not reorder above. */
+    s2_transmit_set_fn   transmit_set;
+    s2_transmit_clear_fn transmit_clear;
+    s2_transmit_stats_fn transmit_stats;
+    /* Round-control slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
+    s2_gamerules_terminate_round_fn gamerules_terminate_round;
+    /* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI. */
     s2_voice_set_muted_fn  voice_set_muted;
     s2_voice_get_muted_fn  voice_get_muted;
 } S2EngineOps;
