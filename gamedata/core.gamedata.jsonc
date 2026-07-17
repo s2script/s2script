@@ -219,6 +219,50 @@
         "resolve": "direct"
       }
     },
+    // CCSPlayerController::Respawn(this /*rdi*/) — re-activate a (dead) player's pawn; backs
+    // Player.respawn. SELF-RESOLVED against OUR libserver.so (build 2000875), NOT a borrowed constant:
+    // CSSharp ships this as a BARE vtable offset ({windows:272, linux:274}, no signature) — the exact
+    // borrowed-index class that bit sm_slay (400 = a getter) and ChangeTeam (101 = a ret stub; real 102).
+    // The index was used ONLY OFFLINE as a finding aid: RTTI-walk the primary CCSPlayerController vtable
+    // (typeinfo name "19CCSPlayerController" -> typeinfo -> offset-to-top-0 vtable, slot pointers from
+    // .rela.dyn RELATIVE addends), read slot 274 (= va 0x14f0ce0 on 2000875 — the LAST fn slot of the
+    // primary vtable), disassemble, mask the volatile bytes. The body is a clean nullary controller
+    // method: fetch an object off the controller, early-branch on a bool virtual (+0xC98, alive-check
+    // shape), re-fetch, dispatch — no unique log string exists, so the semantic boot gate is RTTI
+    // VTABLE MEMBERSHIP (Respawn.vtable-member): the sig-resolved address must appear among the
+    // RTTI-derived primary-vtable fn slots, else the descriptor is disabled (the unique-but-WRONG trap
+    // the round-control slice proved real). Masks: call rel32, jz disp, virtual-call vtable disp.
+    // Validated UNIQUE (exactly 1 match) in the pinned libserver.so PF_X range; the boot gate
+    // re-validates both and SCREAMS if either moves on the update treadmill. Treadmill recipe: re-run
+    // the offline RTTI walk (docs/superpowers/specs/2026-07-16-player-respawn-design.md §2.1) and
+    // re-derive the mask from the new slot's prologue; CSSharp's slot number is a hint, never a number.
+    // NOTE: CSSharp additionally calls CBasePlayerController::SetPawn first — its sig has 0 hits on
+    // 2000875 (stale); Respawn-alone is Plan A, measured at the live gate (spec §2.3).
+    "Respawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 53 48 89 FB E8 ? ? ? ? 48 85 C0 74 ? 48 89 C7 48 8B 00 FF 90 ? ? ? ? 84 C0",
+        "resolve": "direct"
+      }
+    },
+    // CBasePlayerController::SetPawn(pawn, b1, b2) — re-activate a dead player's pawn BEFORE Respawn (a dead
+    // controller's active m_hPawn points at the observer pawn; SetPawn re-points it + tears down observer mode
+    // + sets dirty flags — the setup Respawn-alone can't do, live-gate proven on 2000875: Respawn alone / a raw
+    // m_hPawn write both clear the death screen but never spawn). A 4-ARG function (void*,void*,bool,bool)
+    // called SetPawn(controller, playerPawn, true, false) — verbatim what SwiftlyS2 (player.cpp:345) and CSSharp
+    // both declare; SwiftlyS2's shipped gamedata sig is BYTE-IDENTICAL to ours below. NON-VIRTUAL on 2000875
+    // (direct call, resolved by signature — NOT a vtable member; validated by unique-match + .text guard, no
+    // vtable-member gate). Self-derived masked prologue, validated UNIQUE at va 0x15ef580 (SysV: rdi=this
+    // rsi=pawn edx=b1 ecx=b2; the mask covers the lea rdi+0x7c0 m_hPawn disp). CSSharp's borrowed sig
+    // (…41 57 41 89 CF) has 0 hits — 2000875 inserted a push r14, moved ecx-save to r14d.
+    // Treadmill: re-derive the prologue if it moves (register-alloc-sensitive; the .text + unique gates fail LOUD).
+    "SetPawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 8D 87 ? ? ? ? 48 89 E5 41 57 41 56 41 89 CE 41 55 45 89 CD",
+        "resolve": "direct"
+      }
+    },
     // GetLegacyGameEventListener(int slot) -> IGameEventListener2* : the CS2 engine helper that returns a
     // client's per-client legacy game-event listener (a frameless leaf that loads a global array base,
     // bounds-checks the slot, and indexes it). event_fire_to_client (SourceMod FireToClient parity) calls

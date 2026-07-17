@@ -258,6 +258,15 @@ typedef int (*s2_transmit_clear_fn)(int index);
 /* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
 typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
 
+/* player-respawn slice — APPENDED after transmit_stats; order is the ABI.
+ * player_respawn(idx, serial, alive_off) -> 1 queued / 0 degraded. (idx, serial) = the player's
+ * CONTROLLER entity; alive_off = the offset of its "pawn is alive" bool field (resolved by the game
+ * package; no game names cross this ABI; < 0 skips the drain-time re-check). DEFERRED: the shim
+ * queues into a deduped multi-entry set and drains on the next GameFrame OUTSIDE the JS isolate
+ * borrow — the engine call fires player_spawn synchronously, and an inline call from JS would
+ * silently skip every plugin's handlers via the try_borrow re-entrancy guard. */
+typedef int (*s2_player_respawn_fn)(int idx, int serial, int alive_off, int hplayerpawn_off);
+
 /* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
  * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
 typedef int   (*s2_usercmd_hook_install_fn)(void);              /* lazily install the ProcessUsercmds detour; 1 ok / 0 unresolved */
@@ -384,6 +393,8 @@ typedef struct {
     s2_transmit_set_fn   transmit_set;
     s2_transmit_clear_fn transmit_clear;
     s2_transmit_stats_fn transmit_stats;
+    /* player-respawn slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
+    s2_player_respawn_fn player_respawn;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

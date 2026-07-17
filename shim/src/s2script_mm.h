@@ -46,6 +46,9 @@ public:
     // Pre-phase (false) dispatches phase 0; post-phase (true) dispatches phase 1.
     void Hook_GameFramePre(bool simulating, bool first, bool last);
     void Hook_GameFramePost(bool simulating, bool first, bool last);
+    // player-respawn slice: drains the deduped pending respawn set OUTSIDE the JS isolate borrow
+    // (installed eagerly at Load iff both Respawn boot gates passed, removed at Unload).
+    void Hook_GameFrameRespawnDrain(bool simulating, bool first, bool last);
 
     // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
     bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);

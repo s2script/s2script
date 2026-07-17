@@ -244,6 +244,11 @@ pub type TransmitSetFn = extern "C" fn(index: std::os::raw::c_int, serial: std::
 pub type TransmitClearFn = extern "C" fn(index: std::os::raw::c_int) -> std::os::raw::c_int;
 /// checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}.
 pub type TransmitStatsFn = extern "C" fn(out: *mut u64);
+// --- player-respawn slice (APPENDED after transmit_stats; order is the ABI). ENGINE-GENERIC:
+// (controller idx, serial, alive-bool field offset) -> 1 queued / 0 degraded. The shim defers the
+// sig-resolved engine call to the next GameFrame OUTSIDE the JS isolate borrow (it fires player_spawn
+// synchronously). No game names cross the ABI.
+type PlayerRespawnFn = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -370,6 +375,8 @@ pub struct S2EngineOps {
     pub transmit_set:   Option<TransmitSetFn>,
     pub transmit_clear: Option<TransmitClearFn>,
     pub transmit_stats: Option<TransmitStatsFn>,
+    // --- player-respawn slice (APPENDED after transmit_stats; order is the ABI; do not reorder above) ---
+    pub player_respawn: Option<PlayerRespawnFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -5209,6 +5216,26 @@ fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
+/// `__s2_player_respawn(index, serial, aliveOff) -> 0|1` — queue a player respawn via the
+/// sig-resolved engine op. (index, serial) identify the player's CONTROLLER entity; aliveOff is the
+/// offset of its "pawn is alive" bool field (supplied by the game package — engine-generic here;
+/// < 0 skips the shim's drain-time alive re-check). 1 = queued: the shim executes on the NEXT
+/// GameFrame, outside the JS isolate borrow, so the resulting player_spawn dispatches to ALL
+/// plugins (including the caller). 0 = degraded (no op / unresolved signature / stale controller).
+fn s2_player_respawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        if args.length() < 2 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let alive_off = if args.length() >= 3 { args.get(2).integer_value(scope).unwrap_or(-1) as c_int } else { -1 };
+        let hplayerpawn_off = if args.length() >= 4 { args.get(3).integer_value(scope).unwrap_or(-1) as c_int } else { -1 };
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.player_respawn else { return };
+        rv.set_int32(f(index, serial, alive_off, hplayerpawn_off));
+    }));
+}
+
 /// Native `__s2_transmit_set(index, serial, viewerSlots[]) -> boolean` — replace the calling
 /// plugin's visibility rule for the entity: transmit ONLY to the given viewer slots (empty array
 /// = hidden from everyone). The u64 mask is folded core-side from the JS number array (no BigInt
@@ -7028,6 +7055,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
+    set_native(scope, global_obj, "__s2_player_respawn", s2_player_respawn);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
     // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
@@ -11231,6 +11259,7 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            player_respawn: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -11450,6 +11479,19 @@ mod frame_tests {
             String(r === undefined);
         "#);
         assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// player-respawn slice (degrade-never-crash): with NO engine ops installed,
+    /// `__s2_player_respawn` returns 0 (an int, never undefined) and never throws — the
+    /// `Player.respawn() -> false` degrade contract holds without a shim.
+    #[test]
+    fn player_respawn_degrades_without_op() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_player_respawn(3, 7, 1988))"), "0", "degrades to 0 without ops");
+        assert_eq!(eval_in_context_string("p", "String(__s2_player_respawn())"), "0", "no-args degrades to 0, no throw");
         shutdown();
     }
 
@@ -12096,6 +12138,7 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            player_respawn: None,
         }
     }
 
