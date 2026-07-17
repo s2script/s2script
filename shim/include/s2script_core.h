@@ -286,6 +286,13 @@ typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_
 typedef int (*s2_voice_set_muted_fn)(int slot, int muted);
 typedef int (*s2_voice_get_muted_fn)(int slot);
 
+/* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
+ * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
+ * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
+ * (CSSharp/SwiftlyS2 parity). No-op if the signature is unresolved or the ref is stale.
+ * APPENDED after voice_get_muted; order is the ABI. */
+typedef void (*s2_player_switch_team_fn)(int idx, int serial, int team);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -408,6 +415,8 @@ typedef struct {
     /* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI. */
     s2_voice_set_muted_fn  voice_set_muted;
     s2_voice_get_muted_fn  voice_get_muted;
+    /* switchteam slice — APPENDED after voice_get_muted; order is the ABI; do not reorder above. */
+    s2_player_switch_team_fn player_switch_team;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
