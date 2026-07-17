@@ -9,6 +9,7 @@
 // from the HL2SDK.  The stub sdk_stubs/network_connection.pb.h satisfies the
 // one missing generated include that eiface.h unconditionally pulls in.
 #include <eiface.h>
+#include <iservernetworkable.h>  // CCheckTransmitInfo (m_pTransmitEntity @0) — checktransmit slice
 #include <playerslot.h>   // CPlayerSlot — IVEngineServer2::ClientPrintf target (Slice 6.1b)
 #include <inetchannel.h>  // NetChannelBufType_t / BUF_RELIABLE (Slice 6.1c PostEventAbstract)
 #include <irecipientfilter.h>   // Sound slice: the modern 4-method IRecipientFilter + CPlayerBitVec
@@ -61,12 +62,14 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
+#include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
 #include <fstream>
 #include <sstream>
 #include <filesystem>
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>   // the CheckTransmit rule table (checktransmit slice)
 #include <unordered_set>
 #include <vector>
 
@@ -116,6 +119,16 @@ class GameSessionConfiguration_t {};
 // mechanism (mm_plugin.cpp:82), verbatim. POST hook only. Signature confirmed against OUR iserver.h:221.
 SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*);
 
+// ISource2GameEntities::CheckTransmit (checktransmit slice) — per-client entity visibility. POST
+// hook: the game has filled each client's transmit bitvec; we clear bits per the core-pushed rule
+// table. Signature verbatim from OUR eiface.h:500 (7 args; the two CBitVec<16384>& are complete
+// via bitvec.h, which eiface.h includes; Entity2Networkable_t stays an incomplete pointee — fine,
+// SourceHook only sizeof's the pointer). SwiftlyS2 hooks this with the identical declared
+// signature (their entrypoint.cpp:74) — corroboration; the vtable index comes from OUR pinned
+// hl2sdk at compile time, exactly like the seven ISource2GameClients hooks.
+SH_DECL_HOOK7_void(ISource2GameEntities, CheckTransmit, SH_NOATTRIB, 0, CCheckTransmitInfo**, int,
+                   CBitVec<16384>&, CBitVec<16384>&, const Entity2Networkable_t**, const uint16*, int);
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -141,6 +154,32 @@ static ISchemaSystem* s_pSchemaSystem = nullptr;
 // ---------------------------------------------------------------------------
 static void* s_pGameResourceService   = nullptr;
 static int   s_gameEntitySystemOffset = -1;
+
+// ---------------------------------------------------------------------------
+// CheckTransmit (checktransmit slice) — the per-entity visibility rule table + layout validation.
+// Rules are pushed by the core (transmit_set/transmit_clear ops; AND-merged per entity across
+// plugins core-side); the POST hook applies them to each client's transmit bitvec with ZERO JS in
+// the hot path. The one non-SDK layout fact (which client an info is for) is a gamedata offset
+// validated at FIRST FIRE (the info structs exist only inside a live snapshot build, so boot-time
+// validation is impossible): fail-closed — no bit is touched until validation passes. Validation
+// decides by EXCLUSIVE WITNESSES (see TransmitValidateLayout): -1/hard-fail ONLY on a range
+// violation (garbage read = wrong offset); odd-but-legitimate infos are non-evidence, skipped;
+// snapshots with NO tracked clients don't burn the attempt budget (a late-loaded shim stays
+// pending until a connect provides data). A persistent failure disables the descriptor with a
+// named gamedata FAIL (degrade, never crash).
+// ---------------------------------------------------------------------------
+struct TransmitEntry { int serial; uint64_t mask; };
+static std::unordered_map<int, TransmitEntry> s_transmitTable;   // entindex -> merged rule
+static const size_t kTransmitTableCap = 4096;
+static int  s_ctiClientOff = -1;   // CCheckTransmitInfo which-client int32 (gamedata; hint +576)
+// Layout state: 0 = pending (observe only), 1 = validated, -1 = FAILED (descriptor disabled).
+static int  s_transmitLayoutState = 0;
+static bool s_transmitClientIsEntIndex = false;  // +off semantics: false = slot, true = entindex (slot+1)
+static int  s_transmitValidateAttempts = 0;
+static const int kTransmitValidateMaxAttempts = 512;  // EVIDENCING snapshots before FAILED (tracked-client snapshots only)
+// Stats out[5]: snapshots, entries (read live), bitsCleared, nsLast, nsMax.
+static uint64_t s_transmitSnapshots = 0, s_transmitBitsCleared = 0;
+static uint64_t s_transmitNsLast = 0, s_transmitNsMax = 0;
 
 /// Read CGameEntitySystem* fresh from the IGameResourceService* on each call.
 /// Returns nullptr when the service pointer or offset is not yet available,
@@ -1209,6 +1248,42 @@ static void s2_player_change_team(int idx, int serial, int team) {
 }
 
 // ---------------------------------------------------------------------------
+// gamerules_terminate_round (round-control slice) — force the round to end via the sig-resolved
+// CCSGameRules::TerminateRound(float delay, uint32 reason, void* unk3=0, uint32 unk4=0) (s_pTerminateRound,
+// loaded in Load behind TWO gates: unique-match AND the scope-string semantic check — the borrowed
+// CSSharp/Swiftly sig is unique-but-WRONG on 2000875). DEFERRED EXECUTION: TerminateRound fires the
+// round-end event machinery SYNCHRONOUSLY; called inline from a JS native (inside the core's isolate
+// borrow) the round_end re-entry would be try_borrow-skipped and EVERY plugin would silently miss the
+// event. So the op only arms a single-slot pending request (latest-wins — a round ends once) and
+// Hook_GameFrameRoundDrain (installed eagerly at Load iff the sig resolved; one branch/frame) executes
+// it OUTSIDE the JS borrow. (idx, serial) identify the rules PROXY entity and rules_ptr_off the offset
+// of its rules-struct pointer field — both come from the game package; no game names live here. The
+// proxy is serial-gated at BOTH enqueue (fast feedback) and drain (it can die in between); the fn ptr
+// is .text-range-guarded like ChangeTeam. reason is host-bounded 0..22 (mirrors the engine's own
+// `cmp $0x16` check; in-range legacy holes 2/3/15 pass through — the engine's switch handles them).
+// ---------------------------------------------------------------------------
+typedef void (*TerminateRound_t)(void* rules, float delay, uint32_t reason, void* unk3, uint32_t unk4);
+static TerminateRound_t s_pTerminateRound = nullptr;     // sig-resolved fn ptr (loaded in Load, dual-gated)
+struct PendingTerminate { bool armed; uint32_t proxyHandle; int rulesPtrOff; float delay; int reason; };
+static PendingTerminate s_pendingTerminate = { false, 0, 0, 0.0f, 0 };
+static bool s_termDrainHooked = false;                   // Load-installed, Unload-removed
+
+static int s2_gamerules_terminate_round(int idx, int serial, int rules_ptr_off, float delay, int reason) {
+    if (!s_pTerminateRound) return 0;                    // signature unresolved/failed-semantic -> degrade
+    if (reason < 0 || reason > 22) {
+        META_CONPRINTF("[s2script] terminate_round: reason %d out of range 0..22 — rejected\n", reason);
+        return 0;
+    }
+    if (rules_ptr_off < 0) return 0;
+    CEntityHandle h(idx, serial);
+    if (!s2_deref_handle(static_cast<unsigned int>(h.ToInt()))) return 0;  // stale proxy NOW; re-gated at drain
+    if (s_pendingTerminate.armed)
+        META_CONPRINTF("[s2script] terminate_round: overwriting a pending request (latest wins)\n");
+    s_pendingTerminate = { true, static_cast<uint32_t>(h.ToInt()), rules_ptr_off, delay, reason };
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Usercmd primitive (per-tick input read/modify/block; SM OnPlayerRunCmd parity) — detours
 // CCSPlayer_MovementServices::ProcessUsercmds (self-resolved sig "ProcessUsercmds"; batch ABI + return
 // type + CUserCmd stride confirmed by an offline disassembly spike, 2026-07-14 — see
@@ -1972,6 +2047,49 @@ static ModText FindModuleText(const char* soname) {
     return ctx.out;
 }
 
+// Full mapped [lo, hi) LOAD extent of the SAME module FindModuleText selects (largest-PF_X-wins,
+// Metamod-proxy-safe). Needed because .rodata (where sig-anchoring C-strings live) sits in a LOAD
+// segment BELOW the PF_X base — a rip-relative string target is OUTSIDE the .text buffer and must be
+// range-guarded against the whole mapping before it is read.
+struct ModBounds { const uint8_t* lo; const uint8_t* hi; };
+static ModBounds FindModuleBounds(const char* soname) {
+    struct Ctx { const char* name; size_t bestX; ModBounds out; } ctx{ soname, 0, { nullptr, nullptr } };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
+        size_t maxX = 0;
+        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type != PT_LOAD) continue;
+            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) maxX = ph.p_filesz;
+            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
+            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
+        }
+        if (maxX > c->bestX) {   // same winner rule as FindModuleText: largest PF_X segment
+            c->bestX = maxX;
+            c->out.lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
+            c->out.hi = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
+        }
+        return 0;
+    }, &ctx);
+    return ctx.out;
+}
+
+// Semantic load-gate for the TerminateRound descriptor (uniqueness is NOT enough — the borrowed
+// CSSharp/Swiftly sig matches UNIQUELY at the WRONG function on build 2000875). The self-derived
+// pattern pins the `48 8D 35` (lea rsi,[rip+disp32]) opcode at fn+0xb and masks only the disp;
+// this follows the disp and verifies the target is the literal scope string "TerminateRound".
+static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, const char* module) {
+    int64_t tgt = s2sig::ResolveLeaDisp(mt.text, mt.size, fnOff + 0xb, /*dispOff=*/3, /*instrLen=*/7);
+    if (tgt == s2sig::kFail) return false;
+    const uint8_t* p = mt.text + tgt;   // typically BELOW mt.text (.rodata precedes .text in the map)
+    ModBounds mb = FindModuleBounds(module);
+    static const char kScope[] = "TerminateRound";   // compare INCLUDING the NUL
+    if (!mb.lo || p < mb.lo || p + sizeof(kScope) > mb.hi) return false;
+    return std::memcmp(p, kScope, sizeof(kScope)) == 0;
+}
+
 // ---------------------------------------------------------------------------
 // Gamedata validation report (Slice 6.9). Every engine fact resolved against the LIVE binary records a
 // pass/fail here so a version mismatch / stale signature is LOUD at boot, not a silent no-op (the sm_slay
@@ -2030,6 +2148,31 @@ static CEntityInstance* ResolveEntityBySerial(int index, int serial) {
     if (index < 0 || serial < 0) return nullptr;
     CEntityHandle h(index, serial);
     return static_cast<CEntityInstance*>(s2_deref_handle(static_cast<unsigned int>(h.ToInt())));
+}
+
+// transmit_set op: upsert the AND-merged visibility mask for (index, serial). Serial-gated at
+// registration — a stale ref never enters the table. Returns 0 when the entity is stale, the
+// table is at cap, the hook isn't installed, or the first-fire layout validation FAILED.
+static int s2_transmit_set(int index, int serial, unsigned long long mask) {
+    if (!g_S2ScriptPlugin.m_checkTransmitHookInstalled || s_transmitLayoutState < 0) return 0;
+    if (index < 0 || serial < 0) return 0;
+    if (index >= MAX_EDICTS) return 0;   // not a networkable edict; the bit index would be OOB on m_pTransmitEntity
+    if (!ResolveEntityBySerial(index, serial)) return 0;
+    auto it = s_transmitTable.find(index);
+    if (it == s_transmitTable.end() && s_transmitTable.size() >= kTransmitTableCap) return 0;
+    s_transmitTable[index] = TransmitEntry{serial, static_cast<uint64_t>(mask)};
+    return 1;
+}
+static int s2_transmit_clear(int index) {
+    return s_transmitTable.erase(index) > 0 ? 1 : 0;
+}
+static void s2_transmit_stats(unsigned long long* out) {
+    if (!out) return;
+    out[0] = s_transmitSnapshots;
+    out[1] = static_cast<unsigned long long>(s_transmitTable.size());
+    out[2] = s_transmitBitsCleared;
+    out[3] = s_transmitNsLast;
+    out[4] = s_transmitNsMax;
 }
 
 // Validate a resolved (vtable-slot / signature) fn pointer lands inside libserver.so's own
@@ -2727,6 +2870,51 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
         }
 
+        // Acquire ISource2GameEntities + install the CheckTransmit POST hook (checktransmit
+        // slice): per-client entity visibility filtering. A sibling of the Source2GameClients
+        // acquisition — same serverFactory, same degrade-never-crash. The hook only OBSERVES
+        // until the first-fire layout validation passes (see Hook_CheckTransmit).
+        {
+            auto it = versions.find("Source2GameEntities");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : INTERFACEVERSION_SERVERGAMEENTS;
+            int ret = 0;
+            m_gameEntities = serverFactory
+                ? reinterpret_cast<ISource2GameEntities*>(serverFactory(verStr, &ret)) : nullptr;
+            std::string ctiErr;
+            auto ctiOffsets = LoadOffsets(GamedataPath(), "linuxsteamrt64", ctiErr);
+            auto cit = ctiOffsets.find("CheckTransmitInfo_clientEntityIndex");
+            s_ctiClientOff = (ctiErr.empty() && cit != ctiOffsets.end() && cit->second >= 0)
+                                 ? cit->second : -1;
+            GamedataResult("CheckTransmitInfo_clientEntityIndex", s_ctiClientOff >= 0,
+                           !ctiErr.empty() ? ctiErr.c_str() : "offset key absent from gamedata");
+            // Reset the per-Load hook state (a shim reload starts a fresh validation cycle).
+            s_transmitTable.clear();
+            s_transmitLayoutState = 0;
+            s_transmitValidateAttempts = 0;
+            s_transmitSnapshots = 0; s_transmitBitsCleared = 0;
+            s_transmitNsLast = 0; s_transmitNsMax = 0;
+            if (m_gameEntities && ret == 0 && s_ctiClientOff >= 0 && m_clientLifecycleHooksInstalled) {
+                META_CONPRINTF("[s2script] interface OK: Source2GameEntities (%s)\n", verStr);
+                SH_ADD_HOOK(ISource2GameEntities, CheckTransmit, m_gameEntities,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_CheckTransmit), true);
+                m_checkTransmitHookInstalled = true;
+                META_CONPRINTF("[s2script] CheckTransmit hook installed (entity visibility; "
+                               "layout validates on first fire)\n");
+            } else if (!m_gameEntities || ret != 0) {
+                m_gameEntities = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameEntities (%s) — "
+                               "transmit filtering off\n", verStr);
+            } else if (!m_clientLifecycleHooksInstalled) {
+                META_CONPRINTF("[s2script] WARN: CheckTransmit hook NOT installed — client lifecycle "
+                               "hooks unavailable (validation needs signon tracking); transmit "
+                               "filtering off\n");
+            } else {
+                META_CONPRINTF("[s2script] WARN: CheckTransmitInfo offset not in gamedata — "
+                               "transmit filtering off\n");
+            }
+        }
+
         // Acquire and STORE ICvar* (Slice 6.1 ConCommand registration via vtable).
         // ConCommand::Create was NOT exported by CS2; ICvar::RegisterConCommand is.
         // Degrade-never-crash: null s_pCvar → s2_concommand_register logs + skips.
@@ -2987,6 +3175,39 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] ChangeTeam resolved @%p (Player.changeTeam; libserver .text=%p+%zu)\n",
                                    reinterpret_cast<void*>(s_pChangeTeam), (const void*)s_serverText, s_serverTextSize);
                 }   // stOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Round-control slice: resolve CCSGameRules::TerminateRound (GameRules.terminateRound).
+            // DUAL-GATED: unique-match (ResolveSigValidated) AND the scope-string semantic check —
+            // on THIS build the borrowed CSSharp/Swiftly sig is unique yet lands on the WRONG function,
+            // so uniqueness alone must never assign the pointer. Failure of either gate leaves
+            // s_pTerminateRound null -> the op degrades to 0 (degrade-never-crash).
+            auto trit = sigs.find("TerminateRound");
+            if (trit == sigs.end()) {
+                GamedataResult("TerminateRound", false, "signature absent from gamedata");
+            } else {
+                int64_t trOff = ResolveSigValidated("TerminateRound", trit->second);
+                ModText trmt = FindModuleText(trit->second.module.c_str());
+                if (trOff != s2sig::kFail && trmt.text) {
+                    if (!ValidateTerminateRoundScopeString(trmt, trOff, trit->second.module.c_str())) {
+                        GamedataResult("TerminateRound.scope-string", false,
+                            "prologue lea does not reference the 'TerminateRound' scope string "
+                            "(unique-but-WRONG match — the borrowed-sig trap); descriptor disabled");
+                    } else {
+                        GamedataResult("TerminateRound.scope-string", true, nullptr);
+                        s_pTerminateRound = reinterpret_cast<TerminateRound_t>(const_cast<uint8_t*>(trmt.text) + trOff);
+                        s_serverText = trmt.text; s_serverTextSize = trmt.size;
+                        META_CONPRINTF("[s2script] TerminateRound resolved @%p (GameRules.terminateRound)\n",
+                                       reinterpret_cast<void*>(s_pTerminateRound));
+                        // Eager drain-hook install (NOT lazy): adding a SourceHook from inside a frame
+                        // dispatch would mutate the hook chain mid-iteration; one if-not-armed branch
+                        // per frame is negligible.
+                        if (m_server && !s_termDrainHooked) {
+                            SH_ADD_HOOK(ISource2Server, GameFrame, m_server,
+                                        SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+                            s_termDrainHooked = true;
+                        }
+                    }
+                }   // trOff == kFail: ResolveSigValidated already recorded the reason
             }
             // Slice menu: resolve GetLegacyGameEventListener (per-client event fire; Events.fireToClient).
             // A DIRECT prologue signature self-resolved on OUR libserver.so (CSSharp reaches the per-client
@@ -3474,6 +3695,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.usercmd_read_buttons  = &s2_usercmd_read_buttons;
     ops.usercmd_write_buttons = &s2_usercmd_write_buttons;
     ops.usercmd_clear_subtick = &s2_usercmd_clear_subtick;
+    // checktransmit slice — APPENDED after usercmd_clear_subtick; order MUST match S2EngineOps.
+    ops.transmit_set   = &s2_transmit_set;
+    ops.transmit_clear = &s2_transmit_clear;
+    ops.transmit_stats = &s2_transmit_stats;
+    // Round-control slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
+    ops.gamerules_terminate_round = &s2_gamerules_terminate_round;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -3541,6 +3768,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_frameHookInstalled = false;
     }
 
+    if (s_termDrainHooked && m_server) {
+        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+        s_termDrainHooked = false;
+        s_pendingTerminate.armed = false;
+    }
+
     // Remove the FireEvent pre-hook (Slice 5D.3) before tearing down the event listener.
     if (m_eventHookInstalled && s_pGameEventManager) {
         SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
@@ -3571,6 +3805,14 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
         m_clientLifecycleHooksInstalled = false;
     }
+
+    // Remove the CheckTransmit POST hook (checktransmit slice) + drop the rule table.
+    if (m_checkTransmitHookInstalled && m_gameEntities) {
+        SH_REMOVE_HOOK(ISource2GameEntities, CheckTransmit, m_gameEntities,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_CheckTransmit), true);
+        m_checkTransmitHookInstalled = false;
+    }
+    s_transmitTable.clear();
 
     // Remove the StartupServer map-start POST hook (clientlist-fakeconvar-onmapstart slice).
     if (m_startupServerHookInstalled && s_pNetworkServerService) {
@@ -3681,6 +3923,28 @@ void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) 
     RETURN_META(MRES_IGNORED);
 }
 
+void S2ScriptPlugin::Hook_GameFrameRoundDrain(bool, bool, bool) {
+    if (s_pendingTerminate.armed) {
+        PendingTerminate req = s_pendingTerminate;
+        s_pendingTerminate.armed = false;               // consume before calling (the call re-enters gamerules)
+        void* proxy = s2_deref_handle(req.proxyHandle); // re-gate: the proxy can die between enqueue and drain
+        const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pTerminateRound);
+        if (proxy && s_pTerminateRound && s_serverText && f >= s_serverText && f < s_serverText + s_serverTextSize) {
+            void* rules = *reinterpret_cast<void**>(reinterpret_cast<char*>(proxy) + req.rulesPtrOff);
+            if (rules) {
+                // OUTSIDE the JS isolate borrow: the synchronous round_end flows through the normal
+                // FireEvent pre-hook -> core dispatch -> every plugin's subscribers.
+                s_pTerminateRound(rules, req.delay, static_cast<uint32_t>(req.reason), nullptr, 0);
+            } else {
+                META_CONPRINTF("[s2script] terminate_round: null rules pointer at drain — dropped\n");
+            }
+        } else {
+            META_CONPRINTF("[s2script] terminate_round: stale proxy / fn out of .text at drain — dropped\n");
+        }
+    }
+    RETURN_META(MRES_IGNORED);
+}
+
 // FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
 // to "suppress broadcast", re-call the original with bDontBroadcast=true and SUPERCEDE.
 bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast) {
@@ -3766,6 +4030,100 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     // installed once at Load, since the class vtable is static data present from module load.)
     s2script_core_dispatch_map_start(map ? map : "");
     EnsureEntityListenerRegistered();   // re-assert the IEntityListener each map (idempotent Find-guard)
+    RETURN_META(MRES_IGNORED);
+}
+
+// First-fire layout validation (re-strategy Rule 2 for call-context-only facts). Decides the
+// semantics of the which-client int32 at s_ctiClientOff (slot vs entindex=slot+1 — CSSharp and
+// Swiftly disagree) via EXCLUSIVE WITNESSES against s_trackedSignon (maintained by the client
+// lifecycle hooks): each evidence info votes for exactly one interpretation only when the other
+// is impossible; a mode wins only with >=1 exclusive witness and ZERO witnesses for the rival.
+// Hard fail (-1) is reserved for genuine layout evidence — v far outside any client range
+// ([0,128], double the slot count to absorb entindex skew) means the offset reads garbage.
+// Odd-but-legitimate infos (null raw/bitvec pointer, worldspawn bit 0 clear — HLTV/replay or a
+// mid-full-update client) are NON-EVIDENCE: skipped, never fatal, never a vote. Returns
+// 1 = validated (mode cached), 0 = undecidable this snapshot (stay pending), -1 = hard mismatch.
+static int TransmitValidateLayout(CCheckTransmitInfo** ppInfoList, int nInfoCount) {
+    if (nInfoCount <= 0) return 0;
+    int slotWitness = 0, entWitness = 0;
+    for (int i = 0; i < nInfoCount; i++) {
+        const uint8_t* raw = reinterpret_cast<const uint8_t*>(ppInfoList[i]);
+        if (!raw) continue;                                     // non-evidence
+        const CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
+        if (!bv || !bv->IsBitSet(0)) continue;                  // non-evidence (HLTV/full-update?)
+        int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
+        if (v < 0 || v > 128) return -1;    // the ONLY hard fail: garbage far outside client range
+        bool slotOk = (v < kMaxClientSlots && s_trackedSignon[v] != kSignonNone);
+        bool entOk  = (v >= 1 && (v - 1) < kMaxClientSlots && s_trackedSignon[v - 1] != kSignonNone);
+        if (slotOk && !entOk) slotWitness++;
+        if (entOk && !slotOk) entWitness++;
+    }
+    if (slotWitness > 0 && entWitness == 0) { s_transmitClientIsEntIndex = false; return 1; }
+    if (entWitness > 0 && slotWitness == 0) { s_transmitClientIsEntIndex = true;  return 1; }
+    return 0;                               // no or conflicting exclusive witnesses -> retry
+}
+
+void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
+                                        CBitVec<16384>&, CBitVec<16384>&,
+                                        const Entity2Networkable_t**, const uint16*, int) {
+    s_transmitSnapshots++;
+    if (!ppInfoList || nInfoCount <= 0) RETURN_META(MRES_IGNORED);
+    if (s_transmitLayoutState == 0) {               // fail-closed gate: observe-only until validated
+        // No tracked clients -> no witness data possible: stay pending WITHOUT burning the attempt
+        // budget (a late-loaded shim whose lifecycle hooks missed the connects would otherwise
+        // false-FAIL through 512 undecidable snapshots; a fresh connect unblocks validation).
+        bool anyTracked = false;
+        for (int i = 0; i < kMaxClientSlots; i++)
+            if (s_trackedSignon[i] != kSignonNone) { anyTracked = true; break; }
+        if (!anyTracked) RETURN_META(MRES_IGNORED);
+        int r = TransmitValidateLayout(ppInfoList, nInfoCount);
+        if (r == 1) {
+            s_transmitLayoutState = 1;
+            META_CONPRINTF("[s2script] transmit: CheckTransmitInfo layout VALIDATED (client int @%d = %s)\n",
+                           s_ctiClientOff, s_transmitClientIsEntIndex ? "entindex (slot+1)" : "slot");
+        } else if (r == -1 || ++s_transmitValidateAttempts >= kTransmitValidateMaxAttempts) {
+            s_transmitLayoutState = -1;
+            s_transmitTable.clear();
+            META_CONPRINTF("[s2script]   gamedata FAIL  CheckTransmitInfo_clientEntityIndex — first-fire "
+                           "validation %s (offset %d wrong for this build? re-derive; see "
+                           "docs/re-strategy.md); transmit filtering DISABLED\n",
+                           (r == -1) ? "MISMATCH" : "UNDECIDABLE", s_ctiClientOff);
+        }
+        RETURN_META(MRES_IGNORED);                  // never mutate on the validating snapshot
+    }
+    if (s_transmitLayoutState != 1 || s_transmitTable.empty()) RETURN_META(MRES_IGNORED);
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    // Entries outer, infos inner: serial-gate each entry ONCE per snapshot (a single lookup — no
+    // TOCTOU window inside the snapshot), then apply to every client's bitvec. A failed resolve
+    // means the entity is gone FOREVER (serials never come back), so the entry is evicted —
+    // the table is self-cleaning across deaths and map changes.
+    for (auto it = s_transmitTable.begin(); it != s_transmitTable.end(); ) {
+        if (it->first < 0 || it->first >= MAX_EDICTS) { it = s_transmitTable.erase(it); continue; }
+        if (!ResolveEntityBySerial(it->first, it->second.serial)) {
+            it = s_transmitTable.erase(it);
+            continue;
+        }
+        const int      entIndex = it->first;
+        const uint64_t mask     = it->second.mask;
+        for (int i = 0; i < nInfoCount; i++) {
+            uint8_t* raw = reinterpret_cast<uint8_t*>(ppInfoList[i]);
+            if (!raw) continue;
+            int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
+            int slot = s_transmitClientIsEntIndex ? (v - 1) : v;
+            if (slot < 0 || slot >= 64) continue;
+            if ((mask >> slot) & 1ull) continue;    // visible to this viewer — leave the bit alone
+            CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
+            if (bv && bv->IsBitSet(entIndex)) { bv->Clear(entIndex); s_transmitBitsCleared++; }
+        }
+        ++it;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull
+                + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+    s_transmitNsLast = ns;
+    if (ns > s_transmitNsMax) s_transmitNsMax = ns;
     RETURN_META(MRES_IGNORED);
 }
 

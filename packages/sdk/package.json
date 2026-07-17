@@ -103,6 +103,9 @@
     "./translations": {
       "types": "./translations.d.ts"
     },
+    "./transmit": {
+      "types": "./transmit.d.ts"
+    },
     "./usercmd": {
       "types": "./usercmd.d.ts"
     },
