@@ -139,6 +139,14 @@ SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const G
 SH_DECL_HOOK7_void(ISource2GameEntities, CheckTransmit, SH_NOATTRIB, 0, CCheckTransmitInfo**, int,
                    CBitVec<16384>&, CBitVec<16384>&, const Entity2Networkable_t**, const uint16*, int);
 
+// UserMessage-interception slice. The 8-arg PostEventAbstract overload — the EXACT method our send
+// path calls live (s2_client_print :961 / s2_user_message_send :1066), so the vendored-header vtable
+// slot is transitively proven against our binary. Param 7 is `unsigned long` exactly (ABI). SourceHook
+// disambiguates from the 6-arg IRecipientFilter overload by the parameter type list — no numeric index.
+SH_DECL_HOOK8_void(IGameEventSystem, PostEventAbstract, SH_NOATTRIB, 0,
+    CSplitScreenSlot, bool, int, const uint64*,
+    INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t);
+
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
 
@@ -1078,6 +1086,180 @@ static int s2_user_message_send(const int* slots, int slotCount) {
     }
     s_umInfo = nullptr; s_umData = nullptr; s_umMsg = nullptr;   // clear the single target after send (leak-TODO: pData)
     return ok;
+}
+
+// ---------------------------------------------------------------------------
+// UserMessage-interception slice. Doctrine: the ONE borrowed layout fact is
+// NetMessageInfo_t::m_MessageId (inetworkserializer.h:53 — never exercised by the send path);
+// validated fail-closed at subscribe (round-trip below) and on an observe-only first fire.
+// Hot path: a bitmap test on the id, MRES_IGNORED on miss before ANY reflection.
+// Block-scoped view statics are SEPARATE from the send builder's s_umInfo/s_umData/s_umMsg above,
+// so a handler that builds+sends a NEW user message mid-hook cannot retarget the intercepted view.
+// ---------------------------------------------------------------------------
+static constexpr int kUserMsgMaxId = 2048;
+static uint64_t s_userMsgSubBits[kUserMsgMaxId / 64] = {0};
+static bool     s_userMsgHookInstalled = false;   // lazy SH_ADD_HOOK on first-ever sub
+static bool     s_userMsgFirstFireDone = false;   // observe-only validation ran on the first subscribed fire
+static bool     s_inUserMsgDispatch = false;      // recursion guard (a mid-hook send re-enters PostEventAbstract)
+static google::protobuf::Message* s_hookMsg = nullptr;      // current intercepted message (block-scoped)
+static const uint64*              s_hookClients = nullptr;  // its recipient mask (null = broadcast); uint64 == the hook param type
+static int                        s_hookClientCount = 0;
+
+static inline bool s2_usermsg_bit(int id) {
+    return id >= 0 && id < kUserMsgMaxId && (s_userMsgSubBits[id >> 6] & (1ull << (id & 63)));
+}
+
+// Dotted-path walk: returns the leaf's parent message + writes the leaf field name. Every sub-message
+// hop is guarded (CPPTYPE_MESSAGE, !is_repeated) — a scalar Get* on a repeated field is a protobuf
+// FATAL that aborts the process (the shipping s2_user_message_set_* guards, mirrored). nullptr on a miss.
+static const google::protobuf::Message* s2_usermsg_walk(const google::protobuf::Message* m,
+                                                        const char* path, std::string& leaf) {
+    if (!m || !path) return nullptr;
+    std::string p(path);
+    const google::protobuf::Message* cur = m;
+    size_t dot;
+    while ((dot = p.find('.')) != std::string::npos) {
+        std::string seg = p.substr(0, dot);
+        p = p.substr(dot + 1);
+        const google::protobuf::Descriptor* d = cur->GetDescriptor();
+        const google::protobuf::Reflection*  r = cur->GetReflection();
+        if (!d || !r) return nullptr;
+        const google::protobuf::FieldDescriptor* f = d->FindFieldByName(seg);
+        if (!f || f->is_repeated()) return nullptr;                                 // repeated hop -> FATAL guard
+        if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) return nullptr;
+        cur = &r->GetMessage(*cur, f);
+        if (!cur) return nullptr;
+    }
+    leaf = p;
+    return cur;
+}
+
+// Subscribe-time validation (spec §2.1): resolve via the live-proven SayText2 path, then require a
+// non-null NetMessageInfo, an id in [0,2048), and the requested name a substring of the canonical
+// unscoped name. Any failure -> named USERMSG reason logged + return -1 (onPre throws plugin-side).
+// On the first-ever OK sub, lazily SH_ADD_HOOK PostEventAbstract on the already-held s_pGameEventSystem.
+static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonicalLen) {
+    if (!name || !s_pNetworkMessages || !s_pGameEventSystem) return -1;
+    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
+    if (!info) { META_CONPRINTF("[s2script] USERMSG sub FAILED: no message matches '%s'\n", name); return -1; }
+    const NetMessageInfo_t* mi = info->GetNetMessageInfo();
+    if (!mi) { META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: "
+                              "GetNetMessageInfo null for '%s'\n", name); return -1; }
+    int id = (int)mi->m_MessageId;
+    const char* canonical = info->GetUnscopedName();
+    if (id < 0 || id >= kUserMsgMaxId || !canonical || !*canonical || !strstr(canonical, name)) {
+        META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: '%s' -> id=%d "
+                       "canonical='%s' (out of range or name mismatch — header layout drift?)\n",
+                       name, id, canonical ? canonical : "(null)");
+        return -1;
+    }
+    if (canonicalOut && canonicalLen > 0) snprintf(canonicalOut, (size_t)canonicalLen, "%s", canonical);
+    if (!s_userMsgHookInstalled) {   // lazy install, idempotent (m_eventHookInstalled pattern; PRE = false)
+        SH_ADD_HOOK(IGameEventSystem, PostEventAbstract, s_pGameEventSystem,
+                    SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_PostEvent), false);
+        s_userMsgHookInstalled = true;
+        META_CONPRINTF("[s2script] usermsg: PostEventAbstract hook installed (lazy, first subscribe)\n");
+    }
+    s_userMsgSubBits[id >> 6] |= (1ull << (id & 63));
+    return id;
+}
+static int s2_usermsg_hook_unsub(int id) {
+    if (id < 0 || id >= kUserMsgMaxId) return 0;
+    s_userMsgSubBits[id >> 6] &= ~(1ull << (id & 63));
+    return 1;
+}
+
+// Read ops — Get* reflection mirrors of the shipping s2_user_message_set_* setters, each null-guarded on
+// the block-scoped s_hookMsg and carrying the is_repeated() FATAL guard on the leaf field.
+static int s2_usermsg_hook_read_int(const char* path, long long* out) {
+    if (!s_hookMsg || !path || !out) return 0;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return 0;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f || f->is_repeated()) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    switch (f->cpp_type()) {
+        // UINT32 is protobuf's cpp_type for BOTH uint32 AND fixed32 (the `player` field is fixed32); widen
+        // as UNSIGNED so an entity-handle's high bits survive (a signed GetInt32 would sign-extend + corrupt).
+        case FD::CPPTYPE_UINT32: *out = (long long)(unsigned long long)r->GetUInt32(*m, f); return 1;
+        case FD::CPPTYPE_INT32:  *out = (long long)r->GetInt32(*m, f);                       return 1;
+        case FD::CPPTYPE_ENUM:   *out = (long long)r->GetEnumValue(*m, f);                   return 1;
+        case FD::CPPTYPE_BOOL:   *out = r->GetBool(*m, f) ? 1 : 0;                           return 1;
+        // int64/uint64/fixed64/sfixed64: DELIBERATELY unsupported. readInt marshals through an f64 (exact only
+        // up to 2^53) and the locked 64-bit doctrine is decimal-string, never a lossy number; no TTT consumer
+        // reads 64-bit (spec §10 deferred). default → 0 → the native returns null, never a truncated int.
+        default: return 0;
+    }
+}
+static int s2_usermsg_hook_read_float(const char* path, double* out) {
+    if (!s_hookMsg || !path || !out) return 0;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return 0;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f || f->is_repeated()) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    if (f->cpp_type() == FD::CPPTYPE_FLOAT)  { *out = (double)r->GetFloat(*m, f); return 1; }
+    if (f->cpp_type() == FD::CPPTYPE_DOUBLE) { *out = r->GetDouble(*m, f);        return 1; }
+    return 0;
+}
+static int s2_usermsg_hook_read_string(const char* path, char* buf, int buflen) {
+    if (!s_hookMsg || !path || !buf || buflen <= 0) return -1;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return -1;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return -1;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f || f->is_repeated()) return -1;
+    if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) return -1;
+    std::string s = r->GetString(*m, f);
+    int n = (int)s.size();
+    if (n > buflen - 1) n = buflen - 1;
+    memcpy(buf, s.data(), (size_t)n);
+    buf[n] = 0;
+    return n;
+}
+static int s2_usermsg_hook_has_field(const char* path) {
+    if (!s_hookMsg) return -1;
+    if (!path) return 0;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return 0;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f) return 0;
+    if (f->is_repeated()) return 1;                       // exists-by-definition; can't HasField a repeated (FATAL)
+    if (f->has_presence()) return r->HasField(*m, f) ? 1 : 0;
+    return 1;                                             // implicit-presence scalar: always "there"
+}
+static int s2_usermsg_hook_recipients(unsigned long long* outMask) {
+    if (!s_hookMsg || !outMask) return 0;
+    if (s_hookClients) { *outMask = *s_hookClients; return 1; }   // bit N = slot N (as our send builds it)
+    unsigned long long mask = 0;                                   // broadcast (clients==null): all valid slots
+    for (int s = 0; s < 64; ++s)
+        if (s2_client_valid(s)) mask |= (1ull << (unsigned)s);
+    *outMask = mask;
+    return 1;
+}
+static int s2_usermsg_hook_debug(char* buf, int buflen) {
+    if (!s_hookMsg || !buf || buflen <= 0) return -1;
+    std::string s = s_hookMsg->DebugString();
+    int n = (int)s.size();
+    if (n > buflen - 1) n = buflen - 1;
+    memcpy(buf, s.data(), (size_t)n);
+    buf[n] = 0;
+    return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -3976,7 +4158,16 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.voice_get_muted = &s2_voice_get_muted;
     // switchteam slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
     ops.player_switch_team = &s2_player_switch_team;
-    // player-respawn slice — APPENDED after player_switch_team; order MUST match S2EngineOps.
+    // UserMessage-interception slice — APPENDED after player_switch_team; order MUST match S2EngineOps.
+    ops.usermsg_hook_sub         = &s2_usermsg_hook_sub;
+    ops.usermsg_hook_unsub       = &s2_usermsg_hook_unsub;
+    ops.usermsg_hook_read_int    = &s2_usermsg_hook_read_int;
+    ops.usermsg_hook_read_float  = &s2_usermsg_hook_read_float;
+    ops.usermsg_hook_read_string = &s2_usermsg_hook_read_string;
+    ops.usermsg_hook_has_field   = &s2_usermsg_hook_has_field;
+    ops.usermsg_hook_recipients  = &s2_usermsg_hook_recipients;
+    ops.usermsg_hook_debug       = &s2_usermsg_hook_debug;
+    // player-respawn slice — APPENDED after usermsg_hook_debug; order MUST match S2EngineOps.
     ops.player_respawn = &s2_player_respawn;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
@@ -4066,6 +4257,15 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_FireEventPre), false);
         m_eventHookInstalled = false;
+    }
+
+    // Remove the lazy PostEventAbstract pre-hook (usermsg-hook slice — ledger/teardown authority).
+    if (s_userMsgHookInstalled && s_pGameEventSystem) {
+        SH_REMOVE_HOOK(IGameEventSystem, PostEventAbstract, s_pGameEventSystem,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_PostEvent), false);
+        s_userMsgHookInstalled = false;
+        s_userMsgFirstFireDone = false;                       // a later re-arm re-observes + re-validates
+        for (auto& w : s_userMsgSubBits) w = 0;               // clear the subscribed-id bitmap
     }
 
     // Remove the ClientCommand hook (Slice 6.11c).
@@ -4310,6 +4510,56 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
         RETURN_META_VALUE(MRES_SUPERCEDE, ret);                // we fired it ourselves with broadcast off
     }
     RETURN_META_VALUE(MRES_IGNORED, true);                     // original runs; any set* mods already applied
+}
+
+// UserMessage-interception choke point (usermsg-hook slice): every outbound event/message posts through
+// here. Order: recursion guard -> degraded guard -> observe-only FIRST-FIRE validation (never suppresses)
+// -> bitmap gate on m_MessageId (one virtual + one bit test; MRES_IGNORED on miss BEFORE any reflection/
+// strcmp/FFI/alloc/logging) -> name-keyed core dispatch with block-scoped statics -> collapsed HookResult
+// >= Handled(2) => MRES_SUPERCEDE (the message is dropped for every recipient AND any server-side local
+// listener — the live gate watches for server-side fallout; fallback = recall-with-modified-mask).
+void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
+                                    const uint64* clients, INetworkMessageInternal* pEvent,
+                                    const CNetMessage* pData, unsigned long nSize,
+                                    NetChannelBufType_t bufType) {
+    (void)nSlot; (void)bLocalOnly; (void)nSize; (void)bufType;
+    if (s_inUserMsgDispatch) RETURN_META(MRES_IGNORED);   // recursion guard (a mid-hook send re-enters here)
+    // Cheap gate FIRST: one virtual (GetNetMessageInfo) + one bitmap bit test on m_MessageId. A non-subscribed
+    // message costs exactly this before ANY reflection/strcmp/FFI/alloc/logging. Doctrine note on the ONE
+    // borrowed layout fact (NetMessageInfo_t::m_MessageId): it is RANGE-CHECKED fail-closed at subscribe and
+    // used only for this SELF-CONSISTENT pre-filter (subscribe and dispatch read the same offset); the
+    // AUTHORITATIVE dispatch key is GetUnscopedName() (a reliable virtual, no layout dependency). A drifted
+    // offset therefore degrades to at-worst a wasted dispatch the name-mux drops, or a fail-closed subscribe —
+    // never a false suppression.
+    NetMessageInfo_t* mi = pEvent ? pEvent->GetNetMessageInfo() : nullptr;
+    if (!mi || !s2_usermsg_bit((int)mi->m_MessageId)) RETURN_META(MRES_IGNORED);
+    google::protobuf::Message* pb = pData
+        ? reinterpret_cast<google::protobuf::Message*>(const_cast<CNetMessage*>(pData)->AsProto()) : nullptr;
+    if (!pb) RETURN_META(MRES_IGNORED);
+    const char* nm = pEvent->GetUnscopedName();
+    // Observe-only first-fire, gated on the first SUBSCRIBED message that reaches here (deterministic — a
+    // message a plugin actually asked for, NOT the arbitrary first engine post, which could be bodyless and
+    // must never disable anything). Validate reflection is readable, log the operator banner, and NEVER
+    // dispatch/suppress this one fire. A reflection failure skips THIS fire only (per-descriptor; the send
+    // path is untouched and every other subscribed message still works) — it never globally latches.
+    if (!s_userMsgFirstFireDone) {
+        s_userMsgFirstFireDone = true;
+        if (!pb->GetDescriptor() || !pb->GetReflection() || !nm || !*nm) {
+            META_CONPRINTF("[s2script] USERMSG VALIDATION: subscribed message id=%d lacks readable protobuf "
+                           "reflection — this fire skipped (send path unaffected)\n", (int)mi->m_MessageId);
+            RETURN_META(MRES_IGNORED);
+        }
+        META_CONPRINTF("[s2script] USERMSG intercept validated (first subscribed fire: id=%d name=%s)\n",
+                       (int)mi->m_MessageId, nm);
+        RETURN_META(MRES_IGNORED);   // observe-only: the hook goes live on the NEXT subscribed fire
+    }
+    s_hookMsg = pb; s_hookClients = clients; s_hookClientCount = nClientCount;
+    s_inUserMsgDispatch = true;
+    int result = s2script_core_dispatch_usermsg(nm, (int)mi->m_MessageId);
+    s_inUserMsgDispatch = false;
+    s_hookMsg = nullptr; s_hookClients = nullptr; s_hookClientCount = 0;   // block-scope ends here
+    if (result >= 2 /* HookResult.Handled */) RETURN_META(MRES_SUPERCEDE);
+    RETURN_META(MRES_IGNORED);
 }
 
 // Slice 6.11c: a player typed a command at the console. Dispatch the matching registered s2script command
