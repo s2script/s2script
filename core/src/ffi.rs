@@ -204,6 +204,23 @@ pub extern "C" fn s2script_core_dispatch_output(
     .unwrap_or(0)
 }
 
+/// UserMessage-interception: shim → core on a bitmap-hit PostEventAbstract. `name` = the intercepted
+/// message's `GetUnscopedName()` (the canonical dispatch key), `id` = its `m_MessageId`. Runs the
+/// matching `UserMessages.onPre` subscribers SYNCHRONOUSLY over the shim's current (block-scoped)
+/// intercepted message and returns the collapsed `HookResult` (0..3); >= Handled(2) tells the shim to
+/// MRES_SUPERCEDE the send. `catch_unwind`-wrapped and FAIL-OPEN (→ 0 Continue on a panic or invalid
+/// UTF-8): a core bug must never suppress a message it didn't mean to (mirrors
+/// `s2script_core_dispatch_output`'s fail-open shape).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_usermsg(name: *const c_char, id: c_int) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0; };
+        v8host::dispatch_usermsg(name_str, id as i32)
+    })
+    .unwrap_or(0)
+}
+
 /// C-ABI entry point the shim's ConCommand trampoline calls when a registered command fires.
 /// `name` = command name (Arg(0)), `slot` = CPlayerSlot::Get() (-1 for server console),
 /// `args` = CCommand::ArgS() (everything after the name).
