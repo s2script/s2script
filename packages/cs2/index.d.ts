@@ -218,10 +218,57 @@ export interface GameRulesView {
   readonly gameStartTime: number | null;
   readonly matchWaitingForResume: boolean | null;
   readonly hasMatchStarted: boolean | null;
+  /** m_fRoundStartTime (GameTime_t): the map-time at which the current round started. */
+  readonly roundStartTime: number | null;
+  /** Server.gameTime - roundStartTime — real seconds since the round started (freeze included; the
+   *  engine ends the round at roundStartTime + roundTime). null pre-round / no proxy. */
+  readonly timeElapsed: number | null;
+  /** roundTime - timeElapsed — real seconds until the engine ends the round (matches the HUD clock). */
+  readonly timeRemaining: number | null;
+  /** Write m_iRoundTime and renetwork it (proxy notifyStateChanged at m_pGameRules — the HUD clock
+   *  repaints on clients). Returns false if the proxy is stale or an offset fails to resolve. */
+  setRoundTime(seconds: number): boolean;
+  /** Set the REMAINING round time (writes roundTime = timeElapsed + seconds). */
+  setTimeRemaining(seconds: number): boolean;
+  /** Extend/shrink the round clock by delta seconds (writes roundTime += seconds). */
+  addTimeRemaining(seconds: number): boolean;
+  /** Force the round to end with a RoundEndReason (sig-resolved CCSGameRules::TerminateRound).
+   *  QUEUED: executes on the NEXT engine frame, outside the JS isolate borrow, so every plugin's
+   *  round_end handler — including the caller's — fires normally (a state read immediately after
+   *  still sees the old round). delay (default 5s) is the engine's pre-restart delay. Returns true if
+   *  queued; false when degraded (unresolved signature, stale proxy, or reason outside 0..22). */
+  terminateRound(reason: number, delay?: number): boolean;
 }
-/** Read CCSGameRules state. get() re-finds the cs_gamerules proxy each call (not a hot path); returns
- *  null when no proxy exists (e.g. pre-map-load). */
-export declare const GameRules: { get(): GameRulesView | null };
+/** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (serial-gated
+ *  cache); returns null when no proxy exists (e.g. pre-map-load). */
+export declare const GameRules: {
+  get(): GameRulesView | null;
+  /** Convenience over get()?.terminateRound(reason, delay) — false when no proxy. */
+  terminateRound(reason: number, delay?: number): boolean;
+};
+
+/** Team scoreboard scores (cs_team_manager entities, CTeam.m_iScore + notifyStateChanged). team is
+ *  0..3 (Unassigned/Spectator/T/CT), matched by m_iTeamNum; entities are re-found per call. */
+export declare const Teams: {
+  getScore(team: number): number | null;
+  setScore(team: number, score: number): boolean;
+  addScore(team: number, delta: number): boolean;
+};
+
+/** CS2 round-end reasons (CCSGameRules::TerminateRound / round_end.reason). Binary-validated against
+ *  our build (reason bound = 22; #SFUI_Notice_* switch). Gaps 2/3/15 are removed legacy VIP reasons. */
+export declare const RoundEndReason: {
+  readonly Unknown: 0; readonly TargetBombed: 1; readonly TerroristsEscaped: 4;
+  readonly CTsPreventEscape: 5; readonly EscapingTerroristsNeutralized: 6; readonly BombDefused: 7;
+  readonly CTsWin: 8; readonly TerroristsWin: 9; readonly RoundDraw: 10;
+  readonly AllHostagesRescued: 11; readonly TargetSaved: 12; readonly HostagesNotRescued: 13;
+  readonly TerroristsNotEscaped: 14; readonly GameCommencing: 16; readonly TerroristsSurrender: 17;
+  readonly CTsSurrender: 18; readonly TerroristsPlanted: 19; readonly CTsReachedHostage: 20;
+  readonly SurvivalWin: 21; readonly SurvivalDraw: 22;
+};
+
+/** cs_win_panel_round final_event values (validated at the live gate against a natural round end). */
+export declare const WinPanelFinalEvent: { readonly CTsWin: 2; readonly TerroristsWin: 3 };
 
 /** Screen-fade user message (CUserMessageFade). duration/holdTime are engine fade units; color is a
  *  packed RGBA fixed32. Returns false if the message/fields don't resolve. */

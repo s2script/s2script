@@ -49,6 +49,8 @@ public:
     // player-respawn slice: drains the deduped pending respawn set OUTSIDE the JS isolate borrow
     // (installed eagerly at Load iff both Respawn boot gates passed, removed at Unload).
     void Hook_GameFrameRespawnDrain(bool simulating, bool first, bool last);
+    // round-control slice: drains the pending TerminateRound request OUTSIDE the JS isolate borrow.
+    void Hook_GameFrameRoundDrain(bool simulating, bool first, bool last);
 
     // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
     bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);
@@ -72,6 +74,11 @@ public:
     void Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason reason, const char* name,
                                unsigned long long xuid, const char* netid);
     void Hook_ClientSettingsChanged(CPlayerSlot slot);
+
+    // Voice-control slice: throttled voice-packet notify (dispatches client event "voice") + the
+    // listen-matrix rewrite that enforces the per-slot mute (shim-resident flag array, zero FFI).
+    void Hook_ClientVoice(CPlayerSlot slot);
+    bool Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen);
 
     // Map-start hook (clientlist-fakeconvar-onmapstart slice) — POST hook on
     // INetworkServerService::StartupServer (the CSSharp OnMapStart mechanism). Reads the live map
