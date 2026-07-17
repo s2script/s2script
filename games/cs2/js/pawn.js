@@ -123,6 +123,32 @@
     __s2_player_switch_team(this.ref.index, this.ref.serial, team | 0);
   };
 
+  // player.respawn() — respawn this (dead) player via the self-resolved CCSPlayerController::Respawn
+  // (byte-sig + RTTI-vtable-membership boot-gated; NEVER CSSharp's borrowed vtable index). QUEUED: the
+  // shim executes on the NEXT GameFrame outside the JS isolate borrow, so the resulting player_spawn
+  // reaches EVERY plugin — safe to call from event/command handlers, no nextFrame wrapping needed
+  // (TTT's Server.NextWorldUpdate semantics, built in). The alive-guard runs here (game-side: the
+  // CS2 field name stays out of core) AND at drain via the passed offset (closes the 1-frame TOCTOU).
+  // Returns false when already alive, the ref is stale, or the Respawn descriptor is degraded.
+  // Plan B (spec §2.3, live-gate fallback — do NOT enable unless gate item 2 fails): before the
+  // native call, re-point the active pawn from schema —
+  //   var hp = this.ref.readUInt32(__s2_schema_offset("CCSPlayerController", "m_hPlayerPawn"));
+  //   var ho = __s2_schema_offset("CBasePlayerController", "m_hPawn");
+  //   if (hp !== null && ho >= 0 && this.ref.writeUInt32(ho, hp >>> 0)) this.ref.notifyStateChanged(ho);
+  Player.prototype.respawn = function () {
+    if (this.pawnIsAlive === true) return false;
+    if (typeof __s2_player_respawn !== "function") return false;
+    // A dead player needs SetPawn BEFORE Respawn (live-gate proven on 2000875: Respawn alone — or a raw
+    // m_hPawn write — only clears the death screen, never spawns). CSSharp calls SetPawn(playerPawn) first
+    // (CCSPlayerController.cs:139); we self-resolve the real SetPawn (its borrowed sig has 0 hits on 2000875)
+    // and the shim runs SetPawn(controller, playerPawn, true,false,false,false) then Respawn in the drain,
+    // same frame. We pass the player-pawn handle offset so the shim can deref it for SetPawn's pawn arg;
+    // the CS2 schema strings stay here in the game package, never in core/shim (opaque int over the ABI).
+    var aliveOff = __s2_schema_offset("CCSPlayerController", "m_bPawnIsAlive");
+    var hplayerpawnOff = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
+    return __s2_player_respawn(this.ref.index, this.ref.serial, aliveOff, hplayerpawnOff) === 1;
+  };
+
   // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
   //   "#<userid>" -> that player; "@all" -> allConnected; "@me" -> the caller (empty from console);
   //   otherwise a case-insensitive name match (exact wins, else all partials). Empty on no match.

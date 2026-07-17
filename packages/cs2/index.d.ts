@@ -134,6 +134,13 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
    * Serial-gated; a no-op if the ref is stale or the signature is unresolved. Bounded 0..3 engine-side.
    */
   switchTeam(team: number): void;
+  /** Respawn this (dead) player via the self-resolved CCSPlayerController::Respawn (byte-sig +
+   *  RTTI-vtable-membership load-validated). QUEUED: the engine call executes on the NEXT engine
+   *  frame, outside the JS isolate borrow, so the resulting player_spawn reaches EVERY plugin's
+   *  handlers — including the caller's. Safe from inside event/command handlers; no nextFrame
+   *  wrapping needed. Returns false when degraded: the player is already alive, the ref is stale,
+   *  or the Respawn descriptor failed its boot gates. */
+  respawn(): boolean;
 }
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */
