@@ -258,6 +258,22 @@ typedef int (*s2_transmit_clear_fn)(int index);
 /* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
 typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
 
+/* UserMessage-interception slice — APPENDED after transmit_stats; order is the ABI.
+ * usermsg_hook_sub: resolve an unscoped message name (FindNetworkMessagePartial, the live-proven
+ * SayText2 path), VALIDATE the m_MessageId extraction fail-closed (non-null NetMessageInfo, id in
+ * [0,2048), requested name a substring of GetUnscopedName), lazily SH_ADD_HOOK PostEventAbstract on
+ * the first-ever sub, set the id's bitmap bit, write the canonical unscoped name into canonicalOut.
+ * Returns the id, or -1 with a named USERMSG reason logged. All read ops target the BLOCK-SCOPED
+ * current intercepted message (null-guarded; valid only during a dispatch). */
+typedef int (*s2_usermsg_hook_sub_fn)(const char* name, char* canonicalOut, int canonicalLen);
+typedef int (*s2_usermsg_hook_unsub_fn)(int id);
+typedef int (*s2_usermsg_hook_read_int_fn)(const char* path, long long* out);
+typedef int (*s2_usermsg_hook_read_float_fn)(const char* path, double* out);
+typedef int (*s2_usermsg_hook_read_string_fn)(const char* path, char* buf, int buflen);
+typedef int (*s2_usermsg_hook_has_field_fn)(const char* path);
+typedef int (*s2_usermsg_hook_recipients_fn)(unsigned long long* outMask);
+typedef int (*s2_usermsg_hook_debug_fn)(char* buf, int buflen);
+
 /* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
  * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
 typedef int   (*s2_usercmd_hook_install_fn)(void);              /* lazily install the ProcessUsercmds detour; 1 ok / 0 unresolved */
@@ -384,6 +400,15 @@ typedef struct {
     s2_transmit_set_fn   transmit_set;
     s2_transmit_clear_fn transmit_clear;
     s2_transmit_stats_fn transmit_stats;
+    /* UserMessage-interception slice — APPENDED after transmit_stats; order is the ABI. */
+    s2_usermsg_hook_sub_fn         usermsg_hook_sub;
+    s2_usermsg_hook_unsub_fn       usermsg_hook_unsub;
+    s2_usermsg_hook_read_int_fn    usermsg_hook_read_int;
+    s2_usermsg_hook_read_float_fn  usermsg_hook_read_float;
+    s2_usermsg_hook_read_string_fn usermsg_hook_read_string;
+    s2_usermsg_hook_has_field_fn   usermsg_hook_has_field;
+    s2_usermsg_hook_recipients_fn  usermsg_hook_recipients;
+    s2_usermsg_hook_debug_fn       usermsg_hook_debug;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -461,6 +486,14 @@ int s2script_core_dispatch_game_event_pre(const char* name);
  * and always still calls the original trampoline (server-authoritative — a suppressed cmd is a ZEROED
  * cmd, not a skipped call). catch_unwind -> 0 (fail-open: a core bug must never corrupt player input). */
 int s2script_core_dispatch_usercmd(int slot);
+/* Shim -> core: called by the PostEventAbstract PRE hook on a bitmap-hit outbound user message
+ * (usermsg-hook slice). name = the message's canonical GetUnscopedName() (the dispatch key), id =
+ * its m_MessageId. The shim sets the block-scoped current-message statics BEFORE this call and nulls
+ * them after — the JS UserMessages.onPre subscribers read the live message via the usermsg_hook_read_*
+ * / recipients / debug ops during this call. Returns the collapsed HookResult (0 Continue .. 3 Stop);
+ * the caller MRES_SUPERCEDEs the send when >= Handled (2). catch_unwind -> 0 (fail-open: a core bug
+ * must never suppress a message it didn't mean to). */
+int s2script_core_dispatch_usermsg(const char* name, int id);
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);

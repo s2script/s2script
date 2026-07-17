@@ -36,6 +36,16 @@ class ISource2GameEntities;
 class CCheckTransmitInfo;
 struct Entity2Networkable_t;
 template <int NUM_BITS> class CBitVec;
+// Forward-declared for the UserMessage-interception PostEventAbstract hook (usermsg-hook slice); full
+// definitions (engine/igameeventsystem.h -> networksystem/inetworkserializer.h, netmessage.h,
+// tier1/convar.h, inetchannel.h) live in s2script_mm.cpp. Pure by-value/by-pointer DECLARATION params
+// don't need complete types here. `unsigned long long` == the SDK's uint64 on Linux (the META_NO_HL2SDK
+// convention used by the client-lifecycle hooks); NetChannelBufType_t's underlying type is int8
+// (== signed char, platform.h:273), stated so this forward decl matches the later full definition.
+struct CSplitScreenSlot;
+class INetworkMessageInternal;
+class CNetMessage;
+enum NetChannelBufType_t : signed char;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
@@ -84,6 +94,14 @@ public:
                             CBitVec<16384>& unionTransmitEdicts, CBitVec<16384>& unionTransmitEdicts2,
                             const Entity2Networkable_t** pNetworkables,
                             const unsigned short* pEntityIndices, int nEntityIndices);
+
+    // UserMessage-interception PRE hook (usermsg-hook slice) on IGameEventSystem::PostEventAbstract —
+    // bitmap-gated (m_MessageId); MRES_IGNORED on a non-subscribed message before any reflection, or
+    // MRES_SUPERCEDE when the collapsed JS HookResult is >= Handled. `unsigned long long` == the SDK's
+    // uint64 (the META_NO_HL2SDK convention, like the lifecycle hooks above).
+    void Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
+                        const unsigned long long* clients, INetworkMessageInternal* pEvent,
+                        const CNetMessage* pData, unsigned long nSize, NetChannelBufType_t bufType);
 
     // (Sound slice precache: NO member hook — OnPrecacheResource is intercepted by a class-vtable slot
     // swap (s2vtable::GetVTableByName + s2detour-free WriteVtableSlot) whose handler + installer are

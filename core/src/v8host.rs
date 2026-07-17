@@ -245,6 +245,17 @@ pub type TransmitClearFn = extern "C" fn(index: std::os::raw::c_int) -> std::os:
 /// checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}.
 pub type TransmitStatsFn = extern "C" fn(out: *mut u64);
 
+// UserMessage-interception slice (APPENDED after transmit_stats; order is the ABI). ENGINE-GENERIC:
+// message NAMES and dotted field PATHS are strings, ids/slots are ints — no CS2 identifier crosses.
+type UsermsgHookSubFn        = extern "C" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int;
+type UsermsgHookUnsubFn      = extern "C" fn(c_int) -> c_int;
+type UsermsgHookReadIntFn    = extern "C" fn(*const std::os::raw::c_char, *mut i64) -> c_int;
+type UsermsgHookReadFloatFn  = extern "C" fn(*const std::os::raw::c_char, *mut f64) -> c_int;
+type UsermsgHookReadStringFn = extern "C" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int;
+type UsermsgHookHasFieldFn   = extern "C" fn(*const std::os::raw::c_char) -> c_int;
+type UsermsgHookRecipientsFn = extern "C" fn(*mut u64) -> c_int;
+type UsermsgHookDebugFn      = extern "C" fn(*mut std::os::raw::c_char, c_int) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -370,6 +381,15 @@ pub struct S2EngineOps {
     pub transmit_set:   Option<TransmitSetFn>,
     pub transmit_clear: Option<TransmitClearFn>,
     pub transmit_stats: Option<TransmitStatsFn>,
+    // --- UserMessage-interception slice (APPENDED after transmit_stats; order is the ABI; do not reorder above) ---
+    pub usermsg_hook_sub:         Option<UsermsgHookSubFn>,
+    pub usermsg_hook_unsub:       Option<UsermsgHookUnsubFn>,
+    pub usermsg_hook_read_int:    Option<UsermsgHookReadIntFn>,
+    pub usermsg_hook_read_float:  Option<UsermsgHookReadFloatFn>,
+    pub usermsg_hook_read_string: Option<UsermsgHookReadStringFn>,
+    pub usermsg_hook_has_field:   Option<UsermsgHookHasFieldFn>,
+    pub usermsg_hook_recipients:  Option<UsermsgHookRecipientsFn>,
+    pub usermsg_hook_debug:       Option<UsermsgHookDebugFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -633,6 +653,30 @@ thread_local! {
     /// shutdown so a re-init starts empty.
     static USERCMD_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// UserMessage-interception slice: `UserMessages.onPre(name, handler)` pre-hook subscribers keyed by
+    /// the CANONICAL unscoped message name (the shim's `usermsg_hook_sub` canonicalizes the caller's
+    /// partial name). Collapsing dispatch (max-by-precedence, multiplexer.rs rule) — a collapsed result
+    /// >= Handled(2) tells the shim to MRES_SUPERCEDE the outbound send. The shim's PostEventAbstract
+    /// SourceHook installs LAZILY on the first-ever subscribe (via `usermsg_hook_sub`, which also sets
+    /// the id's bitmap bit); on a canonical name's last-empty transition (off, or unload's
+    /// `remove_by_owner`) the shim's bitmap bit is cleared via `usermsg_hook_unsub`. `remove_by_owner`
+    /// on unload; reset on shutdown so a re-init starts empty.
+    static USERMSG_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// UserMessage-interception slice: canonical name -> engine id (from `usermsg_hook_sub`) so teardown
+    /// (a name that became empty on unload) can clear the shim's bitmap bit via `usermsg_hook_unsub`.
+    static USERMSG_IDS: std::cell::RefCell<std::collections::HashMap<String, i32>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// UserMessage-interception slice: the (possibly partial) name a plugin passed to `onPre` -> its
+    /// canonical unscoped name (and canonical -> itself). Populated in `s2_usermsg_on` so `s2_usermsg_off`
+    /// resolves the mux key WITHOUT calling the installing `usermsg_hook_sub` op — which would lazily install
+    /// the PostEventAbstract hook + set a bitmap bit for a never-subscribed name (a permanent hot-path leak on
+    /// a no-op `off()`). A name we never subscribed simply misses this map and `off` no-ops.
+    static USERMSG_RESOLVE: std::cell::RefCell<std::collections::HashMap<String, String>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
 
     /// Entity lifecycle listeners slice: `Entity.onCreate/onSpawn/onDelete(className, handler)` mux,
     /// keyed `"<kind>\0<className>"` (kind = "create"/"spawn"/"delete"; className "*" = all). Notify-only,
@@ -1283,6 +1327,32 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   UserMessage.prototype.send    = function (slots) { return this._flush(Array.isArray(slots) ? slots : [slots]); };
   UserMessage.prototype.sendAll = function () { return this._flush(null); };
+  // --- UserMessage interception (usermsg-hook slice). The view is BLOCK-SCOPED: the shim's current-
+  // message statics are nulled when the synchronous dispatch returns, so reads after an await (or on a
+  // stashed view) return null/[]/"" — never a dangling pointer. Suppression is the HookResult return
+  // (>= Handled supersedes the send for EVERY recipient). Plugin-originated sends from inside any JS
+  // dispatch do NOT re-trigger these hooks (recursion guard; documented v1 limitation).
+  function __s2_umView(name, id) {
+    return {
+      name: name, id: id,
+      get recipients() { return __s2_usermsg_recipients(); },
+      get debugString() { return __s2_usermsg_debug(); },
+      hasField:   function (p) { return __s2_usermsg_has_field(String(p)) === 1; },
+      readInt:    function (p) { return __s2_usermsg_read_int(String(p)); },
+      readFloat:  function (p) { return __s2_usermsg_read_float(String(p)); },
+      readBool:   function (p) { var v = __s2_usermsg_read_int(String(p)); return v === null ? null : v !== 0; },
+      readString: function (p) { return __s2_usermsg_read_string(String(p)); }
+    };
+  }
+  var UserMessages = {
+    onPre: function (name, handler) {
+      var canonical = __s2_usermsg_on(String(name), function (n, id) { return handler(__s2_umView(n, id)); });
+      if (!canonical)
+        throw new Error("UserMessages.onPre: cannot resolve message '" + name +
+                        "' (unknown name, or the intercept descriptor is degraded — see server log)");
+    },
+    off: function (name) { __s2_usermsg_off(String(name)); }
+  };
   // @s2script/transmit — per-client entity visibility rules (checktransmit slice). Declarative:
   // the native side evaluates rules per snapshot; NO JS runs in the CheckTransmit hot path.
   var Transmit = {
@@ -1306,7 +1376,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
   globalThis.__s2pkg_transmit  = { Transmit: Transmit };
-  globalThis.__s2pkg_usermessages = { UserMessage: UserMessage };
+  globalThis.__s2pkg_usermessages = { UserMessage: UserMessage, UserMessages: UserMessages };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
   globalThis.__s2pkg_console    = { console: console };
@@ -5770,6 +5840,166 @@ fn s2_user_message_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
     }));
 }
 
+// ---------------------------------------------------------------------------
+// UserMessage interception (usermsg-hook slice) — the `UserMessages.onPre` mux natives + block-scoped
+// view read natives. Subscribe resolves+validates+lazily-installs shim-side (usermsg_hook_sub); the
+// read natives target the shim's current intercepted message (null-guarded, valid only during a
+// dispatch). All engine-generic: message NAMES + dotted field PATHS are the caller's strings.
+// ---------------------------------------------------------------------------
+
+/// Native `__s2_usermsg_on(name, wrappedHandler) -> canonicalName | null`. Resolves + validates the
+/// message name via the `usermsg_hook_sub` op (which lazily installs the shim's PostEventAbstract hook
+/// and sets the id's bitmap bit on the first-ever subscribe), records the canonical name → engine id in
+/// `USERMSG_IDS`, and subscribes the wrapped handler in `USERMSG_MUX` keyed by the CANONICAL name.
+/// Returns the canonical name on success; `null` on a missing op, an unresolvable name, or a degraded
+/// intercept descriptor (the op returned -1) — the prelude then throws at subscribe time.
+fn s2_usermsg_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let nc = match std::ffi::CString::new(name.clone()) { Ok(c) => c, Err(_) => return };
+        let Some(sub) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_sub) else { return };
+        let mut buf = [0i8; 256];
+        let id = sub(nc.as_ptr(), buf.as_mut_ptr(), buf.len() as c_int);
+        if id < 0 { return; }   // unresolvable name / null NetMessageInfo — prelude throws
+        let canonical = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned();
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        USERMSG_IDS.with(|m| { m.borrow_mut().insert(canonical.clone(), id); });
+        // Cache raw-name -> canonical (and canonical -> itself) so off() can resolve the mux key without the
+        // installing sub op (see USERMSG_RESOLVE).
+        USERMSG_RESOLVE.with(|m| { let mut b = m.borrow_mut();
+            b.insert(name, canonical.clone()); b.insert(canonical.clone(), canonical.clone()); });
+        USERMSG_MUX.with(|m| { m.borrow_mut().subscribe(&canonical, owner, generation, handler_g); });
+        if let Some(js) = v8::String::new(scope, &canonical) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_usermsg_off(name)`. Drops the CURRENT plugin's `UserMessages.onPre` subs for `name`
+/// (best-effort, mirrors `s2_output_unsubscribe` — V8 Globals can't be compared by identity, so all of
+/// the caller's subs for that canonical name go). Resolves the caller's (possibly partial) name to its
+/// canonical via the subscribe-time `USERMSG_RESOLVE` cache — NOT the `usermsg_hook_sub` op, whose
+/// install/set-bit side effects would permanently arm the hook for a never-subscribed name. A name we
+/// never subscribed misses the cache and this is a clean no-op. If the name is now empty across ALL owners
+/// the shim's bitmap bit is cleared via `usermsg_hook_unsub`.
+fn s2_usermsg_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let Some(canonical) = USERMSG_RESOLVE.with(|m| m.borrow().get(&name).cloned()) else { return };
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let now_empty = USERMSG_MUX.with(|m| m.borrow_mut().remove_by_owner_on(&canonical, &owner));
+        if now_empty {
+            if let Some(hook_id) = USERMSG_IDS.with(|m| m.borrow_mut().remove(&canonical)) {
+                if let Some(unsub) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_unsub) {
+                    let _ = unsub(hook_id);
+                }
+            }
+        }
+    }));
+}
+
+/// Native `__s2_usermsg_read_int(path) -> number | null`. Over the `usermsg_hook_read_int` op (int32/
+/// uint32/fixed32/enum/bool via reflection; dotted nested paths). rc 0 → `null` (no field / repeated /
+/// wrong type / no current message / a 64-bit field — those are refused shim-side per the decimal-string
+/// doctrine, spec §10). Every value it returns fits f64 exactly (int32/uint32/fixed32 ≤ 2^32).
+fn s2_usermsg_read_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
+        let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_read_int) else { return };
+        let mut out: i64 = 0;
+        if f(pc.as_ptr(), &mut out as *mut i64) != 0 {
+            rv.set(v8::Number::new(scope, out as f64).into());
+        }
+    }));
+}
+
+/// Native `__s2_usermsg_read_float(path) -> number | null`. Over `usermsg_hook_read_float` (float/double,
+/// dotted paths). rc 0 → `null`.
+fn s2_usermsg_read_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
+        let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_read_float) else { return };
+        let mut out: f64 = 0.0;
+        if f(pc.as_ptr(), &mut out as *mut f64) != 0 {
+            rv.set(v8::Number::new(scope, out).into());
+        }
+    }));
+}
+
+/// Native `__s2_usermsg_read_string(path) -> string | null`. Over `usermsg_hook_read_string` (a 4096-byte
+/// buffer; the op returns the byte length or -1). -1 → `null`.
+fn s2_usermsg_read_string(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
+        let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_read_string) else { return };
+        let mut buf = [0u8; 4096];
+        let n = f(pc.as_ptr(), buf.as_mut_ptr() as *mut i8, buf.len() as c_int);
+        if n < 0 { return; }
+        let len = (n as usize).min(buf.len());
+        let s = String::from_utf8_lossy(&buf[..len]).into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// Native `__s2_usermsg_has_field(path) -> i32` (1 present / 0 absent-or-invalid / -1 no current
+/// message). Over `usermsg_hook_has_field`. Degrades to -1 with no op.
+fn s2_usermsg_has_field(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
+        if let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_has_field) {
+            rv.set_int32(f(pc.as_ptr()));
+        }
+    }));
+}
+
+/// Native `__s2_usermsg_recipients() -> number[]`. Over `usermsg_hook_recipients` (the recipient mask,
+/// broadcast pre-expanded shim-side to all valid slots). Decodes the u64 mask's set bits to a JS array
+/// of 0-based slots. rc 0 (no current message) or no op → an empty array (never null).
+fn s2_usermsg_recipients(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut mask: u64 = 0;
+        let ok = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_recipients)
+            .map_or(false, |f| f(&mut mask as *mut u64) != 0);
+        let mut slots: Vec<u32> = Vec::new();
+        if ok {
+            for s in 0..64u32 { if mask & (1u64 << s) != 0 { slots.push(s); } }
+        }
+        let arr = v8::Array::new(scope, slots.len() as i32);
+        for (i, s) in slots.iter().enumerate() {
+            let num = v8::Number::new(scope, *s as f64);
+            arr.set_index(scope, i as u32, num.into());
+        }
+        rv.set(arr.into());
+    }));
+}
+
+/// Native `__s2_usermsg_debug() -> string`. Over `usermsg_hook_debug` (protobuf TextFormat dump into an
+/// 8192-byte buffer; the op returns the byte length or -1). -1 / no op → "".
+fn s2_usermsg_debug(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(js) = v8::String::new(scope, "") { rv.set(js.into()); }
+        let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_debug) else { return };
+        let mut buf = [0u8; 8192];
+        let n = f(buf.as_mut_ptr() as *mut i8, buf.len() as c_int);
+        if n < 0 { return; }
+        let len = (n as usize).min(buf.len());
+        let s = String::from_utf8_lossy(&buf[..len]).into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
 /// Native `__s2_entity_spawn(index, serial) -> boolean`. Serial-gated `DispatchSpawn`. Degrades to
 /// `false` with no op / a stale ref.
 fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -6883,6 +7113,71 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
     outcome.result as i32
 }
 
+/// UserMessage-interception slice: run the `UserMessages.onPre` subscribers for `name` over the shim's
+/// current BLOCK-SCOPED intercepted message (already set by the shim before this call; read via the
+/// `usermsg_hook_*` ops from inside each handler). A verbatim copy of `dispatch_output`'s shape (snapshot
+/// with the mux borrow released → `try_borrow_mut` graceful-skip → `run_chain` collapse) except the
+/// handler receives `(nameString, idNumber)` — the prelude wraps those into a `UserMessageView`. Returns
+/// the collapsed `HookResult` (0 Continue .. 3 Stop); the shim MRES_SUPERCEDEs the send when it is >=
+/// Handled(2). The `try_borrow_mut` skip guards re-entrancy (a handler that itself sends a user message
+/// re-enters PostEventAbstract while the isolate is borrowed — the documented v1 limitation, mirrored by
+/// the shim's own `s_inUserMsgDispatch` flag).
+pub(crate) fn dispatch_usermsg(name: &str, id: i32) -> i32 {
+    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
+    // Phase 1: snapshot the subscribers for the canonical name, releasing the mux borrow before any context.
+    let snap0: Vec<(String, u64, v8::Global<v8::Function>)> = USERMSG_MUX.with(|m| m.borrow().snapshot(name));
+    if snap0.is_empty() { return 0; }
+    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
+        .into_iter().enumerate()
+        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
+        .collect();
+
+    let outcome = HOST.with(|h| {
+        // Re-entrancy guard: a handler that sends a user message re-enters PostEventAbstract while the
+        // isolate is already borrowed. ALLOW (Continue) rather than double-borrow (would panic) — the
+        // shim's s_inUserMsgDispatch flag also short-circuits before ever reaching this FFI.
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        let Some(host) = borrow.as_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else { return Ok(HookResult::Continue); };
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // The handler is the prelude wrapper `function (n, id) { return handler(__s2_umView(n, id)); }`
+            // — pass the canonical name + id; the view's field reads route through the usermsg_hook_* ops.
+            let name_val: v8::Local<v8::Value> = match v8::String::new(tc, name) {
+                Some(s) => s.into(), None => v8::null(tc).into(),
+            };
+            let id_val: v8::Local<v8::Value> = v8::Number::new(tc, id as f64).into();
+
+            let func = v8::Local::new(tc, handler_g);
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            match func.call(tc, recv, &[name_val, id_val]) {
+                None => Err(()),                                   // threw → drop this sub
+                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
+                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                    0 => HookResult::Continue, 1 => HookResult::Changed,
+                    2 => HookResult::Handled, 3 => HookResult::Stop,
+                    _ => HookResult::Continue,                     // out-of-range → Continue
+                }),
+            }
+        })
+    });
+    outcome.result as i32
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -7125,6 +7420,17 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_transmit_reset", s2_transmit_reset);
     set_native(scope, global_obj, "__s2_transmit_reset_all", s2_transmit_reset_all);
     set_native(scope, global_obj, "__s2_transmit_stats", s2_transmit_stats);
+    // UserMessage-interception slice: UserMessages.onPre subscribe/unsubscribe + the block-scoped view
+    // read natives (route through the usermsg_hook_* ops; the shim's PostEventAbstract hook installs
+    // lazily on the first subscribe).
+    set_native(scope, global_obj, "__s2_usermsg_on", s2_usermsg_on);
+    set_native(scope, global_obj, "__s2_usermsg_off", s2_usermsg_off);
+    set_native(scope, global_obj, "__s2_usermsg_read_int", s2_usermsg_read_int);
+    set_native(scope, global_obj, "__s2_usermsg_read_float", s2_usermsg_read_float);
+    set_native(scope, global_obj, "__s2_usermsg_read_string", s2_usermsg_read_string);
+    set_native(scope, global_obj, "__s2_usermsg_has_field", s2_usermsg_has_field);
+    set_native(scope, global_obj, "__s2_usermsg_recipients", s2_usermsg_recipients);
+    set_native(scope, global_obj, "__s2_usermsg_debug", s2_usermsg_debug);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -8862,6 +9168,10 @@ pub fn shutdown() {
     ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the UserCmd.onRun mux (usercmd primitive) so a re-init starts clean.
     USERCMD_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Reset the UserMessages.onPre mux + name→id map (usermsg-hook slice) so a re-init starts clean.
+    USERMSG_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    USERMSG_IDS.with(|m| m.borrow_mut().clear());
+    USERMSG_RESOLVE.with(|m| m.borrow_mut().clear());
     // Reset the per-plugin visibility rules (checktransmit slice) so a re-init starts clean.
     TRANSMIT_RULES.with(|r| r.borrow_mut().clear());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
@@ -9214,6 +9524,19 @@ pub(crate) fn unload_plugin(id: &str) {
     // stays installed for the process lifetime once lazily installed (removed in the shim's Unload),
     // so no per-plugin hook-removal request is needed.
     USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    // Drop the plugin's UserMessages.onPre subscriptions (usermsg-hook slice). For any canonical name
+    // that became empty (no plugin still hooks it), clear the shim's bitmap bit via usermsg_hook_unsub —
+    // the ledger is the teardown authority, so this runs regardless of whether the plugin called `off`.
+    // The lazy PostEventAbstract SourceHook itself stays installed for the process lifetime (removed in
+    // the shim's Unload), so there is no per-plugin hook-removal request here.
+    let emptied_usermsgs = USERMSG_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
+    for canonical in &emptied_usermsgs {
+        if let Some(hook_id) = USERMSG_IDS.with(|m| m.borrow_mut().remove(canonical)) {
+            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_unsub) {
+                let _ = func(hook_id);
+            }
+        }
+    }
     // checktransmit slice: drop the plugin's visibility rules and re-push the remaining merges
     // (last-owner-gone entries are cleared from the shim table).
     transmit_remove_owner(id);
@@ -11231,6 +11554,10 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            usermsg_hook_sub: None, usermsg_hook_unsub: None,
+            usermsg_hook_read_int: None, usermsg_hook_read_float: None,
+            usermsg_hook_read_string: None, usermsg_hook_has_field: None,
+            usermsg_hook_recipients: None, usermsg_hook_debug: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -11467,6 +11794,177 @@ mod frame_tests {
             String(m.send([0]) === false && m.sendAll() === false)
         "#);
         assert_eq!(out, "true");
+        shutdown();
+    }
+
+    // ---------------------------------------------------------------------------
+    // UserMessage interception (usermsg-hook slice) — mux/dispatch/view/teardown in-isolate tests.
+    // ---------------------------------------------------------------------------
+    thread_local! {
+        static USERMSG_SUB_CAPTURE:   std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        static USERMSG_UNSUB_CAPTURE: std::cell::RefCell<Vec<i32>>    = std::cell::RefCell::new(Vec::new());
+    }
+    /// Mock resolver: canonicalizes any name containing "FireBullets" -> "TE_FireBullets_Canonical" id 452
+    /// (partial-match shape); "SubFail" (and anything else) -> -1 (degraded/unknown). Records every sub call.
+    extern "C" fn mock_usermsg_sub(name: *const c_char, out: *mut c_char, len: c_int) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().to_string();
+        USERMSG_SUB_CAPTURE.with(|v| v.borrow_mut().push(n.clone()));
+        if n == "SubFail" { return -1; }
+        let canonical = if n.contains("FireBullets") { "TE_FireBullets_Canonical" } else { return -1 };
+        let bytes = canonical.as_bytes();
+        assert!((bytes.len() as c_int) < len);
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+            *out.add(bytes.len()) = 0;
+        }
+        452
+    }
+    extern "C" fn mock_usermsg_unsub(id: c_int) -> c_int {
+        USERMSG_UNSUB_CAPTURE.with(|v| v.borrow_mut().push(id)); 1
+    }
+    extern "C" fn mock_usermsg_read_int(path: *const c_char, out: *mut i64) -> c_int {
+        let p = unsafe { std::ffi::CStr::from_ptr(path) }.to_string_lossy().to_string();
+        let v = match p.as_str() { "item_def_index" => 9, "player" => 6390016, "origin.x" => 0, _ => return 0 };
+        unsafe { *out = v; } 1
+    }
+    extern "C" fn mock_usermsg_read_float(path: *const c_char, out: *mut f64) -> c_int {
+        let p = unsafe { std::ffi::CStr::from_ptr(path) }.to_string_lossy().to_string();
+        if p == "origin.x" { unsafe { *out = 128.5; } 1 } else { 0 }
+    }
+    extern "C" fn mock_usermsg_recipients(out: *mut u64) -> c_int { unsafe { *out = 0b1010; } 1 }
+
+    fn usermsg_test_ops() -> S2EngineOps {
+        S2EngineOps {
+            usermsg_hook_sub:        Some(mock_usermsg_sub),
+            usermsg_hook_unsub:      Some(mock_usermsg_unsub),
+            usermsg_hook_read_int:   Some(mock_usermsg_read_int),
+            usermsg_hook_read_float: Some(mock_usermsg_read_float),
+            usermsg_hook_recipients: Some(mock_usermsg_recipients),
+            ..mock_event_ops()
+        }
+    }
+
+    /// onPre resolves the name through usermsg_hook_sub (canonicalized), and a dispatched message
+    /// delivers a view with the canonical name + id; a non-subscribed name does not cross-fire.
+    #[test]
+    fn usermsg_on_pre_subscribes_and_dispatch_delivers_view() {
+        USERMSG_SUB_CAPTURE.with(|v| v.borrow_mut().clear());
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("pum");
+        eval_in_context("pum", r#"
+            __s2pkg_usermessages.UserMessages.onPre("FireBullets", function (m) {
+                globalThis.__m_ran = (globalThis.__m_ran || 0) + 1;
+                globalThis.__m_name = m.name;
+                globalThis.__m_id = m.id;
+                globalThis.__m_idx = m.readInt("item_def_index");
+            });
+        "#).unwrap();
+
+        assert!(USERMSG_SUB_CAPTURE.with(|v| v.borrow().iter().any(|s| s == "FireBullets")),
+            "onPre must resolve through usermsg_hook_sub with the caller's name");
+
+        assert_eq!(dispatch_usermsg("TE_FireBullets_Canonical", 452), 0, "no-suppress handler -> Continue");
+        assert_eq!(read_i32_global_in("pum", "__m_ran"), 1);
+        assert_eq!(read_global_string("pum", "__m_name"), "TE_FireBullets_Canonical", "view carries canonical name");
+        assert_eq!(read_i32_global_in("pum", "__m_id"), 452);
+        assert_eq!(read_i32_global_in("pum", "__m_idx"), 9, "readInt routes through the read op");
+
+        // A non-subscribed canonical name must not cross-fire.
+        assert_eq!(dispatch_usermsg("SomethingElse", 7), 0);
+        assert_eq!(read_i32_global_in("pum", "__m_ran"), 1, "unsubscribed name must not run the handler");
+        shutdown();
+    }
+
+    /// The HookResult collapse: Handled(2) from any handler suppresses (dispatch returns 2); a
+    /// Continue-only chain returns 0 (max-by-precedence across handlers).
+    #[test]
+    fn usermsg_dispatch_collapses_hook_results() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("pa");
+        create_plugin_context("pb");
+        eval_in_context("pa", r#"
+            __s2pkg_usermessages.UserMessages.onPre("FireBullets", function (m) { return HookResult.Handled; });
+        "#).unwrap();
+        eval_in_context("pb", r#"
+            __s2pkg_usermessages.UserMessages.onPre("FireBullets", function (m) { return HookResult.Continue; });
+        "#).unwrap();
+
+        assert_eq!(dispatch_usermsg("TE_FireBullets_Canonical", 452), 2,
+            "one Handled + one Continue collapses to Handled(2) -> suppress");
+
+        // With the Handled subscriber's plugin unloaded, only the Continue subscriber remains -> 0.
+        unload_plugin("pa");
+        assert_eq!(dispatch_usermsg("TE_FireBullets_Canonical", 452), 0,
+            "Continue-only chain collapses to Continue(0)");
+        shutdown();
+    }
+
+    /// Degrade: usermsg_hook_sub returning -1 makes onPre THROW at subscribe (plugin-load-loud);
+    /// with NO engine ops at all it also throws (never a silent dead subscription).
+    #[test]
+    fn usermsg_on_pre_throws_on_unresolvable_or_degraded() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("pt");
+        let degraded = eval_in_context_string("pt", r#"
+            try { __s2pkg_usermessages.UserMessages.onPre('SubFail', function () {}); 'no-throw' }
+            catch (e) { 'threw' }
+        "#);
+        assert_eq!(degraded, "threw", "an unresolvable (-1) name must throw at subscribe");
+
+        set_engine_ops(None);
+        create_plugin_context("pt2");
+        let no_op = eval_in_context_string("pt2", r#"
+            try { __s2pkg_usermessages.UserMessages.onPre('FireBullets', function () {}); 'no-throw' }
+            catch (e) { 'threw' }
+        "#);
+        assert_eq!(no_op, "threw", "no engine op at all must throw (never a silent dead subscription)");
+        shutdown();
+    }
+
+    /// View reads route through the read ops; a missing field reads null (not 0/undefined-crash);
+    /// readFloat("origin.x") proves dotted paths cross the ABI verbatim; recipients decode the mask.
+    #[test]
+    fn usermsg_view_reads_route_through_ops_and_null_on_miss() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("pv");
+        eval_in_context("pv", r#"
+            __s2pkg_usermessages.UserMessages.onPre("FireBullets", function (m) {
+                globalThis.__m_result =
+                    String(m.readFloat("origin.x")) + "|" +
+                    String(m.readInt("nope")) + "|" +
+                    JSON.stringify(m.recipients) + "|" +
+                    String(m.readInt("player"));
+            });
+        "#).unwrap();
+        assert_eq!(dispatch_usermsg("TE_FireBullets_Canonical", 452), 0);
+        assert_eq!(read_global_string("pv", "__m_result"), "128.5|null|[1,3]|6390016",
+            "dotted read + null-on-miss + recipients-mask-decode + top-level fixed32 read");
+        shutdown();
+    }
+
+    /// Teardown is the ledger's job: unloading the only subscriber plugin calls usermsg_hook_unsub with
+    /// the id from sub time; while a second subscriber remains, the bit stays (no unsub until last-empty).
+    #[test]
+    fn usermsg_unload_unsubscribes_on_last_empty() {
+        USERMSG_UNSUB_CAPTURE.with(|v| v.borrow_mut().clear());
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("pu_a");
+        create_plugin_context("pu_b");
+        eval_in_context("pu_a", r#"__s2pkg_usermessages.UserMessages.onPre("FireBullets", function () {});"#).unwrap();
+        eval_in_context("pu_b", r#"__s2pkg_usermessages.UserMessages.onPre("FireBullets", function () {});"#).unwrap();
+
+        unload_plugin("pu_a");
+        assert!(USERMSG_UNSUB_CAPTURE.with(|v| v.borrow().is_empty()),
+            "one subscriber still hooks the name -> no unsub");
+
+        unload_plugin("pu_b");
+        assert_eq!(USERMSG_UNSUB_CAPTURE.with(|v| v.borrow().clone()), vec![452],
+            "last subscriber gone -> usermsg_hook_unsub(452)");
         shutdown();
     }
 
@@ -12096,6 +12594,10 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            usermsg_hook_sub: None, usermsg_hook_unsub: None,
+            usermsg_hook_read_int: None, usermsg_hook_read_float: None,
+            usermsg_hook_read_string: None, usermsg_hook_has_field: None,
+            usermsg_hook_recipients: None, usermsg_hook_debug: None,
         }
     }
 
