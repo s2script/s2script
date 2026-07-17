@@ -81,8 +81,8 @@
 |---|---|
 | `core/src/lib.rs` | `pub(crate) mod crash;` |
 | `core/src/ffi.rs` | New C-ABI exports (`s2script_core_crash_breadcrumb`/`_size`/`_set_identity`), panic-hook install in `s2script_core_init` |
-| `core/src/v8host.rs` | `S2EngineOps` tail append (`server_build_number`, later `crash_test_native`), dispatch stamping (`DispatchGuard`), natives `__s2_crash_set_game`/`__s2_server_build`/`__s2_crash_test`, `note_engine_op` at the four `s2_ent_ref_{read,write,read_chain,write_chain}` natives, promise-reject callback, TryCatch instrumentation, periodic-sweep call in `frame_async_drain`, plugin-table clears in `shutdown` |
-| `core/src/loader.rs` | `crash::plugin_loaded/plugin_unloaded` at the load/unload call sites |
+| `core/src/v8host.rs` | `S2EngineOps` tail append (`server_build_number`, later `crash_test_native`), dispatch stamping (`DispatchGuard`, incl. `dispatch_concommand`), the `unload_plugin` plugin_unloaded choke-point hook, natives `__s2_crash_set_game`/`__s2_server_build`/`__s2_crash_test`, `note_engine_op` at the four `s2_ent_ref_{read,write,read_chain,write_chain}` natives, promise-reject callback, TryCatch instrumentation, periodic-sweep call in `frame_async_drain`, plugin-table clears in `shutdown` |
+| `core/src/loader.rs` | `crash::plugin_loaded` on the reconcile-success `else` arm (`:84-93`); unloads are handled by the `unload_plugin` choke point in `v8host.rs` |
 | `core/src/config.rs` | `strip_line_comments` visibility → `pub(crate)` (reused by crash config) |
 | `core/Cargo.toml` | `uuid` dep; `reqwest` `multipart` feature |
 | `shim/include/s2script_core.h` | Ops-struct tail append + the three new core exports |
@@ -99,7 +99,7 @@
 
 **Files:**
 - Create: `core/src/crash/mod.rs`, `core/src/crash/breadcrumb.rs`
-- Modify: `core/src/lib.rs`, `core/src/ffi.rs`, `core/src/v8host.rs`, `core/src/loader.rs:84-93` and `core/src/loader.rs:242,258`, `shim/include/s2script_core.h`, `shim/src/s2script_mm.cpp`, `games/cs2/js/pawn.js`
+- Modify: `core/src/lib.rs`, `core/src/ffi.rs`, `core/src/v8host.rs` (dispatch stamping incl. `dispatch_concommand` + the `unload_plugin` plugin_unloaded choke-point hook), `core/src/loader.rs:84-93` (plugin_loaded on the reconcile-success `else` arm), `shim/include/s2script_core.h`, `shim/src/s2script_mm.cpp`, `games/cs2/js/pawn.js`
 - Test: in-module `#[cfg(test)]` in `core/src/crash/breadcrumb.rs`, plus integration tests appended to the `#[cfg(test)]` mod in `core/src/ffi.rs`
 
 **Interfaces:**
@@ -781,11 +781,14 @@ pub fn unload_plugin(id: &str) {
 }
 ```
 
-`core/src/loader.rs` — add `plugin_loaded` on the SUCCESS path of `load_and_reconcile` (right before its `Ok(())` return, after the context is created and `onLoad` ran without error) — NOT as the first line, so a plugin that fails reconcile never enters the table:
+`core/src/loader.rs` — add `plugin_loaded` on the SUCCESS path of `load_and_reconcile` (`:84-93`). Note this fn returns `()` (there is NO `Result`/`Ok(())`); its body is `load_plugin_js(...); if let Err(e) = reconcile_publishes(...) { warn; unload_plugin(...); }`. Attach an `else` arm to that existing `if let Err`, so only a plugin that reconciled successfully enters the table (a failed one hits the `unload_plugin` teardown, which is idempotent):
 
 ```rust
-    // (immediately before load_and_reconcile's success `Ok(())`)
-    crate::crash::breadcrumb::plugin_loaded(&manifest.id, &manifest.version);
+    if let Err(e) = reconcile_publishes(/* ...existing args, unchanged... */) {
+        // ...existing warn + unload_plugin teardown (unchanged)...
+    } else {
+        crate::crash::breadcrumb::plugin_loaded(&manifest.id, &manifest.version);
+    }
 ```
 
 (this also removes the `#[allow(dead_code)]` on `Manifest.version` — delete that attribute at `core/src/loader.rs:36`.) `plugin_unloaded` is idempotent (a no-op if the id isn't present), so the `:91` failure-teardown calling `unload_plugin` for a never-added plugin is harmless.
