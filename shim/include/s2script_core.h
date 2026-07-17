@@ -267,6 +267,16 @@ typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_
 typedef void  (*s2_usercmd_write_buttons_fn)(uint64_t mask);
 typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.subtick_moves */
 
+/* Round-control slice — APPENDED after transmit_stats; order is the ABI.
+ * gamerules_terminate_round(idx, serial, rules_ptr_off, delay, reason) -> 1 queued / 0 degraded.
+ * (idx, serial) = the rules PROXY entity; rules_ptr_off = the offset of its rules-struct pointer
+ * field (resolved by the game package; no game names cross this ABI). DEFERRED: the shim queues the
+ * call and drains it on the next GameFrame OUTSIDE the JS isolate borrow — the engine call fires the
+ * round-end event machinery synchronously, and an inline call from JS would silently skip every
+ * plugin's round_end handler via the try_borrow re-entrancy guard. reason is bounded 0..22. */
+typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_ptr_off,
+                                                 float delay, int reason);
+
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -384,6 +394,8 @@ typedef struct {
     s2_transmit_set_fn   transmit_set;
     s2_transmit_clear_fn transmit_clear;
     s2_transmit_stats_fn transmit_stats;
+    /* Round-control slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
+    s2_gamerules_terminate_round_fn gamerules_terminate_round;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

@@ -1248,6 +1248,42 @@ static void s2_player_change_team(int idx, int serial, int team) {
 }
 
 // ---------------------------------------------------------------------------
+// gamerules_terminate_round (round-control slice) — force the round to end via the sig-resolved
+// CCSGameRules::TerminateRound(float delay, uint32 reason, void* unk3=0, uint32 unk4=0) (s_pTerminateRound,
+// loaded in Load behind TWO gates: unique-match AND the scope-string semantic check — the borrowed
+// CSSharp/Swiftly sig is unique-but-WRONG on 2000875). DEFERRED EXECUTION: TerminateRound fires the
+// round-end event machinery SYNCHRONOUSLY; called inline from a JS native (inside the core's isolate
+// borrow) the round_end re-entry would be try_borrow-skipped and EVERY plugin would silently miss the
+// event. So the op only arms a single-slot pending request (latest-wins — a round ends once) and
+// Hook_GameFrameRoundDrain (installed eagerly at Load iff the sig resolved; one branch/frame) executes
+// it OUTSIDE the JS borrow. (idx, serial) identify the rules PROXY entity and rules_ptr_off the offset
+// of its rules-struct pointer field — both come from the game package; no game names live here. The
+// proxy is serial-gated at BOTH enqueue (fast feedback) and drain (it can die in between); the fn ptr
+// is .text-range-guarded like ChangeTeam. reason is host-bounded 0..22 (mirrors the engine's own
+// `cmp $0x16` check; in-range legacy holes 2/3/15 pass through — the engine's switch handles them).
+// ---------------------------------------------------------------------------
+typedef void (*TerminateRound_t)(void* rules, float delay, uint32_t reason, void* unk3, uint32_t unk4);
+static TerminateRound_t s_pTerminateRound = nullptr;     // sig-resolved fn ptr (loaded in Load, dual-gated)
+struct PendingTerminate { bool armed; uint32_t proxyHandle; int rulesPtrOff; float delay; int reason; };
+static PendingTerminate s_pendingTerminate = { false, 0, 0, 0.0f, 0 };
+static bool s_termDrainHooked = false;                   // Load-installed, Unload-removed
+
+static int s2_gamerules_terminate_round(int idx, int serial, int rules_ptr_off, float delay, int reason) {
+    if (!s_pTerminateRound) return 0;                    // signature unresolved/failed-semantic -> degrade
+    if (reason < 0 || reason > 22) {
+        META_CONPRINTF("[s2script] terminate_round: reason %d out of range 0..22 — rejected\n", reason);
+        return 0;
+    }
+    if (rules_ptr_off < 0) return 0;
+    CEntityHandle h(idx, serial);
+    if (!s2_deref_handle(static_cast<unsigned int>(h.ToInt()))) return 0;  // stale proxy NOW; re-gated at drain
+    if (s_pendingTerminate.armed)
+        META_CONPRINTF("[s2script] terminate_round: overwriting a pending request (latest wins)\n");
+    s_pendingTerminate = { true, static_cast<uint32_t>(h.ToInt()), rules_ptr_off, delay, reason };
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Usercmd primitive (per-tick input read/modify/block; SM OnPlayerRunCmd parity) — detours
 // CCSPlayer_MovementServices::ProcessUsercmds (self-resolved sig "ProcessUsercmds"; batch ABI + return
 // type + CUserCmd stride confirmed by an offline disassembly spike, 2026-07-14 — see
@@ -2009,6 +2045,49 @@ static ModText FindModuleText(const char* soname) {
         return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
     }, &ctx);
     return ctx.out;
+}
+
+// Full mapped [lo, hi) LOAD extent of the SAME module FindModuleText selects (largest-PF_X-wins,
+// Metamod-proxy-safe). Needed because .rodata (where sig-anchoring C-strings live) sits in a LOAD
+// segment BELOW the PF_X base — a rip-relative string target is OUTSIDE the .text buffer and must be
+// range-guarded against the whole mapping before it is read.
+struct ModBounds { const uint8_t* lo; const uint8_t* hi; };
+static ModBounds FindModuleBounds(const char* soname) {
+    struct Ctx { const char* name; size_t bestX; ModBounds out; } ctx{ soname, 0, { nullptr, nullptr } };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
+        size_t maxX = 0;
+        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type != PT_LOAD) continue;
+            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) maxX = ph.p_filesz;
+            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
+            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
+        }
+        if (maxX > c->bestX) {   // same winner rule as FindModuleText: largest PF_X segment
+            c->bestX = maxX;
+            c->out.lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
+            c->out.hi = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
+        }
+        return 0;
+    }, &ctx);
+    return ctx.out;
+}
+
+// Semantic load-gate for the TerminateRound descriptor (uniqueness is NOT enough — the borrowed
+// CSSharp/Swiftly sig matches UNIQUELY at the WRONG function on build 2000875). The self-derived
+// pattern pins the `48 8D 35` (lea rsi,[rip+disp32]) opcode at fn+0xb and masks only the disp;
+// this follows the disp and verifies the target is the literal scope string "TerminateRound".
+static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, const char* module) {
+    int64_t tgt = s2sig::ResolveLeaDisp(mt.text, mt.size, fnOff + 0xb, /*dispOff=*/3, /*instrLen=*/7);
+    if (tgt == s2sig::kFail) return false;
+    const uint8_t* p = mt.text + tgt;   // typically BELOW mt.text (.rodata precedes .text in the map)
+    ModBounds mb = FindModuleBounds(module);
+    static const char kScope[] = "TerminateRound";   // compare INCLUDING the NUL
+    if (!mb.lo || p < mb.lo || p + sizeof(kScope) > mb.hi) return false;
+    return std::memcmp(p, kScope, sizeof(kScope)) == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -3097,6 +3176,39 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pChangeTeam), (const void*)s_serverText, s_serverTextSize);
                 }   // stOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Round-control slice: resolve CCSGameRules::TerminateRound (GameRules.terminateRound).
+            // DUAL-GATED: unique-match (ResolveSigValidated) AND the scope-string semantic check —
+            // on THIS build the borrowed CSSharp/Swiftly sig is unique yet lands on the WRONG function,
+            // so uniqueness alone must never assign the pointer. Failure of either gate leaves
+            // s_pTerminateRound null -> the op degrades to 0 (degrade-never-crash).
+            auto trit = sigs.find("TerminateRound");
+            if (trit == sigs.end()) {
+                GamedataResult("TerminateRound", false, "signature absent from gamedata");
+            } else {
+                int64_t trOff = ResolveSigValidated("TerminateRound", trit->second);
+                ModText trmt = FindModuleText(trit->second.module.c_str());
+                if (trOff != s2sig::kFail && trmt.text) {
+                    if (!ValidateTerminateRoundScopeString(trmt, trOff, trit->second.module.c_str())) {
+                        GamedataResult("TerminateRound.scope-string", false,
+                            "prologue lea does not reference the 'TerminateRound' scope string "
+                            "(unique-but-WRONG match — the borrowed-sig trap); descriptor disabled");
+                    } else {
+                        GamedataResult("TerminateRound.scope-string", true, nullptr);
+                        s_pTerminateRound = reinterpret_cast<TerminateRound_t>(const_cast<uint8_t*>(trmt.text) + trOff);
+                        s_serverText = trmt.text; s_serverTextSize = trmt.size;
+                        META_CONPRINTF("[s2script] TerminateRound resolved @%p (GameRules.terminateRound)\n",
+                                       reinterpret_cast<void*>(s_pTerminateRound));
+                        // Eager drain-hook install (NOT lazy): adding a SourceHook from inside a frame
+                        // dispatch would mutate the hook chain mid-iteration; one if-not-armed branch
+                        // per frame is negligible.
+                        if (m_server && !s_termDrainHooked) {
+                            SH_ADD_HOOK(ISource2Server, GameFrame, m_server,
+                                        SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+                            s_termDrainHooked = true;
+                        }
+                    }
+                }   // trOff == kFail: ResolveSigValidated already recorded the reason
+            }
             // Slice menu: resolve GetLegacyGameEventListener (per-client event fire; Events.fireToClient).
             // A DIRECT prologue signature self-resolved on OUR libserver.so (CSSharp reaches the per-client
             // listener via this engine function, NOT a CServerSideClient cast). Unresolved ->
@@ -3587,6 +3699,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.transmit_set   = &s2_transmit_set;
     ops.transmit_clear = &s2_transmit_clear;
     ops.transmit_stats = &s2_transmit_stats;
+    // Round-control slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
+    ops.gamerules_terminate_round = &s2_gamerules_terminate_round;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -3652,6 +3766,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFramePost), true);
         m_frameHookInstalled = false;
+    }
+
+    if (s_termDrainHooked && m_server) {
+        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+        s_termDrainHooked = false;
+        s_pendingTerminate.armed = false;
     }
 
     // Remove the FireEvent pre-hook (Slice 5D.3) before tearing down the event listener.
@@ -3799,6 +3920,28 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
 void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) {
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
+    RETURN_META(MRES_IGNORED);
+}
+
+void S2ScriptPlugin::Hook_GameFrameRoundDrain(bool, bool, bool) {
+    if (s_pendingTerminate.armed) {
+        PendingTerminate req = s_pendingTerminate;
+        s_pendingTerminate.armed = false;               // consume before calling (the call re-enters gamerules)
+        void* proxy = s2_deref_handle(req.proxyHandle); // re-gate: the proxy can die between enqueue and drain
+        const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pTerminateRound);
+        if (proxy && s_pTerminateRound && s_serverText && f >= s_serverText && f < s_serverText + s_serverTextSize) {
+            void* rules = *reinterpret_cast<void**>(reinterpret_cast<char*>(proxy) + req.rulesPtrOff);
+            if (rules) {
+                // OUTSIDE the JS isolate borrow: the synchronous round_end flows through the normal
+                // FireEvent pre-hook -> core dispatch -> every plugin's subscribers.
+                s_pTerminateRound(rules, req.delay, static_cast<uint32_t>(req.reason), nullptr, 0);
+            } else {
+                META_CONPRINTF("[s2script] terminate_round: null rules pointer at drain — dropped\n");
+            }
+        } else {
+            META_CONPRINTF("[s2script] terminate_round: stale proxy / fn out of .text at drain — dropped\n");
+        }
+    }
     RETURN_META(MRES_IGNORED);
 }
 
