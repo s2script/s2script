@@ -56,6 +56,7 @@ public:
     // Pre-phase (false) dispatches phase 0; post-phase (true) dispatches phase 1.
     void Hook_GameFramePre(bool simulating, bool first, bool last);
     void Hook_GameFramePost(bool simulating, bool first, bool last);
+    void Hook_GameFrameRoundDrain(bool simulating, bool first, bool last);
 
     // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
     bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);
@@ -79,6 +80,11 @@ public:
     void Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason reason, const char* name,
                                unsigned long long xuid, const char* netid);
     void Hook_ClientSettingsChanged(CPlayerSlot slot);
+
+    // Voice-control slice: throttled voice-packet notify (dispatches client event "voice") + the
+    // listen-matrix rewrite that enforces the per-slot mute (shim-resident flag array, zero FFI).
+    void Hook_ClientVoice(CPlayerSlot slot);
+    bool Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen);
 
     // Map-start hook (clientlist-fakeconvar-onmapstart slice) — POST hook on
     // INetworkServerService::StartupServer (the CSSharp OnMapStart mechanism). Reads the live map

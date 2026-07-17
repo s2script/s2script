@@ -244,8 +244,16 @@ pub type TransmitSetFn = extern "C" fn(index: std::os::raw::c_int, serial: std::
 pub type TransmitClearFn = extern "C" fn(index: std::os::raw::c_int) -> std::os::raw::c_int;
 /// checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}.
 pub type TransmitStatsFn = extern "C" fn(out: *mut u64);
+// --- Round-control slice (APPENDED after transmit_stats; order is the ABI). ENGINE-GENERIC:
+// (proxy idx, serial, rules-ptr field offset, delay, reason) -> 1 queued / 0 degraded. The shim defers
+// the sig-resolved engine call to the next GameFrame OUTSIDE the JS isolate borrow (it fires round_end
+// synchronously). No game names cross the ABI.
+type GamerulesTerminateRoundFn = extern "C" fn(c_int, c_int, c_int, f32, c_int) -> c_int;
+// --- Voice-control slice (APPENDED after gamerules_terminate_round; order is the ABI).
+type VoiceSetMutedFn = extern "C" fn(c_int, c_int) -> c_int;
+type VoiceGetMutedFn = extern "C" fn(c_int) -> c_int;
 
-// UserMessage-interception slice (APPENDED after transmit_stats; order is the ABI). ENGINE-GENERIC:
+// UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI). ENGINE-GENERIC:
 // message NAMES and dotted field PATHS are strings, ids/slots are ints — no CS2 identifier crosses.
 type UsermsgHookSubFn        = extern "C" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int;
 type UsermsgHookUnsubFn      = extern "C" fn(c_int) -> c_int;
@@ -381,7 +389,12 @@ pub struct S2EngineOps {
     pub transmit_set:   Option<TransmitSetFn>,
     pub transmit_clear: Option<TransmitClearFn>,
     pub transmit_stats: Option<TransmitStatsFn>,
-    // --- UserMessage-interception slice (APPENDED after transmit_stats; order is the ABI; do not reorder above) ---
+    // --- Round-control slice (APPENDED after transmit_stats; order is the ABI; do not reorder above) ---
+    pub gamerules_terminate_round: Option<GamerulesTerminateRoundFn>,
+    // Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
+    pub voice_set_muted:        Option<VoiceSetMutedFn>,
+    pub voice_get_muted:        Option<VoiceGetMutedFn>,
+    // --- UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
     pub usermsg_hook_sub:         Option<UsermsgHookSubFn>,
     pub usermsg_hook_unsub:       Option<UsermsgHookUnsubFn>,
     pub usermsg_hook_read_int:    Option<UsermsgHookReadIntFn>,
@@ -1997,6 +2010,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Object.defineProperty(Client.prototype, "ip", { get: function () {
     var a = __s2_client_address(this.slot); if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
   } });
+  // Voice-control slice: server-side voice mute (this client's OUTGOING voice silenced for every
+  // receiver — the shim's SetClientListening rewrite). Framework state: cleared on disconnect. When
+  // the voice descriptor is degraded the setter is an inert no-op (shim logs the named reason) and
+  // reads stay false (get_muted -1/0 both map to false).
+  Object.defineProperty(Client.prototype, "voiceMuted", {
+    get: function () { return __s2_voice_get_muted(this.slot) === 1; },
+    set: function (on) { __s2_voice_set_muted(this.slot, !!on); }
+  });
   var __s2_MAX_CLIENTS = 64;
   function __s2_client_on(event, h) { __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
   var __s2_clients = {
@@ -2006,6 +2027,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     onFullyConnect:    function (h) { __s2_client_on("fullyconnect", h); },
     onDisconnect:      function (h) { __s2_client_on("disconnect", h); },
     onSettingsChanged: function (h) { __s2_client_on("settingschanged", h); },
+    // Fires while a client transmits voice (throttled shim-side to <=1 dispatch/slot/second; the FIRST
+    // packet of a transmission always fires). Never fires for bots.
+    onVoice:           function (h) { __s2_client_on("voice", h); },
     fromSlot: function (slot) { slot = slot | 0; return __s2_client_valid(slot) ? new Client(slot) : null; },
     all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_valid(s)) out.push(new Client(s)); } return out; }
   };
@@ -5279,6 +5303,28 @@ fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
+/// `__s2_gamerules_terminate_round(index, serial, rulesPtrOff, delay, reason) -> 0|1` — queue a
+/// round-termination via the sig-resolved engine op. (index, serial) identify the game-rules PROXY
+/// entity; rulesPtrOff is the offset of its rules-struct pointer field (both supplied by the game
+/// package — engine-generic here). 1 = queued: the shim executes on the NEXT GameFrame, outside the
+/// JS isolate borrow, so the resulting round-end event dispatches to ALL plugins (including the
+/// caller). 0 = degraded (no op / unresolved signature / stale proxy / out-of-range reason).
+fn s2_gamerules_terminate_round(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        if args.length() < 5 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let off = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let delay = args.get(3).number_value(scope).unwrap_or(0.0) as f32;
+        let reason = args.get(4).integer_value(scope).unwrap_or(-1) as c_int;
+        if off < 0 { return; }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.gamerules_terminate_round else { return };
+        rv.set_int32(f(index, serial, off, delay, reason));
+    }));
+}
+
 /// Native `__s2_transmit_set(index, serial, viewerSlots[]) -> boolean` — replace the calling
 /// plugin's visibility rule for the entity: transmit ONLY to the given viewer slots (empty array
 /// = hidden from everyone). The u64 mask is folded core-side from the JS number array (no BigInt
@@ -7311,6 +7357,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_cookie_dispatch_cached", s2_cookie_dispatch_cached);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
+    // Voice-control slice: per-slot voice mute set/get (shim-side flag consulted by the
+    // SetClientListening rewrite hook; JS never sits in that hot path).
+    set_native(scope, global_obj, "__s2_voice_set_muted", s2_voice_set_muted);
+    set_native(scope, global_obj, "__s2_voice_get_muted", s2_voice_get_muted);
     // ban-reason sub-project 2: developer-console print + client IP address.
     set_native(scope, global_obj, "__s2_client_console_print", s2_client_console_print);
     set_native(scope, global_obj, "__s2_client_address", s2_client_address);
@@ -7323,6 +7373,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
+    set_native(scope, global_obj, "__s2_gamerules_terminate_round", s2_gamerules_terminate_round);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
     // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
@@ -8126,6 +8177,35 @@ fn s2_client_kick(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.client_kick else { return };
         if let Ok(creason) = CString::new(reason) { f(slot, creason.as_ptr()); }
+    }));
+}
+
+/// `__s2_voice_set_muted(slot, on)` -> bool. Voice-control slice: set/clear the shim-side per-slot
+/// voice-mute flag (sender -> all receivers, enforced by the shim's SetClientListening rewrite).
+/// Returns false when degraded (no op / bad slot / voice descriptor disabled) — the prelude setter
+/// ignores it (degrade contract: inert no-op; the shim logs the named reason once).
+fn s2_voice_set_muted(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let on = if args.get(1).boolean_value(scope) { 1 } else { 0 };
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.voice_set_muted else { return };
+        rv.set_bool(f(slot, on) != 0);
+    }));
+}
+
+/// `__s2_voice_get_muted(slot)` -> i32 (1 muted / 0 not / -1 degraded-or-invalid). The prelude getter
+/// maps `=== 1` to boolean, so degraded reads are `false` (never a phantom mute).
+fn s2_voice_get_muted(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        if args.length() < 1 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.voice_get_muted else { return };
+        rv.set_int32(f(slot));
     }));
 }
 
@@ -11055,6 +11135,69 @@ mod frame_tests {
         shutdown();
     }
 
+    thread_local! { static VOICE_MUTED_CAPTURE: std::cell::RefCell<[i32; 64]> = std::cell::RefCell::new([0; 64]); }
+    extern "C" fn capture_voice_set_muted(slot: c_int, muted: c_int) -> c_int {
+        if !(0..64).contains(&slot) { return 0; }
+        VOICE_MUTED_CAPTURE.with(|a| a.borrow_mut()[slot as usize] = if muted != 0 { 1 } else { 0 });
+        1
+    }
+    extern "C" fn capture_voice_get_muted(slot: c_int) -> c_int {
+        if !(0..64).contains(&slot) { return -1; }
+        VOICE_MUTED_CAPTURE.with(|a| a.borrow()[slot as usize])
+    }
+
+    /// Voice-control: Client.voiceMuted round-trips through the voice_set_muted/voice_get_muted ops
+    /// (set writes the shim-side flag; get maps 1 -> true, 0 -> false).
+    #[test]
+    fn voice_muted_property_round_trips_through_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            voice_set_muted: Some(capture_voice_set_muted),
+            voice_get_muted: Some(capture_voice_get_muted),
+            ..mock_event_ops()
+        }));
+        VOICE_MUTED_CAPTURE.with(|a| *a.borrow_mut() = [0; 64]);
+        create_plugin_context("pvm");
+        assert_eq!(eval_in_context_string("pvm",
+            "var c = new __s2pkg_clients.Client(5); c.voiceMuted = true; String(c.voiceMuted)"), "true");
+        assert_eq!(VOICE_MUTED_CAPTURE.with(|a| a.borrow()[5]), 1, "op received (5, 1)");
+        assert_eq!(eval_in_context_string("pvm", "c.voiceMuted = false; String(c.voiceMuted)"), "false");
+        assert_eq!(VOICE_MUTED_CAPTURE.with(|a| a.borrow()[5]), 0, "op received (5, 0)");
+        shutdown();
+    }
+
+    /// Voice-control degrade: with no engine ops the setter is a silent no-op and reads are false
+    /// (get_muted degrades to -1, which must NOT read as muted).
+    #[test]
+    fn voice_muted_degrades_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("pvd");
+        assert_eq!(eval_in_context_string("pvd",
+            "var c = new __s2pkg_clients.Client(2); c.voiceMuted = true; String(c.voiceMuted)"), "false");
+        shutdown();
+    }
+
+    /// Voice-control: Clients.onVoice subscribes on the existing CLIENT_MUX under the "voice" name —
+    /// a dispatched "voice" event delivers a Client with the slot; other names don't cross-fire.
+    #[test]
+    fn voice_client_event_dispatches_to_on_voice() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        load_plugin_js("pvv", r#"
+            __s2pkg_clients.Clients.onVoice(function (c) {
+                globalThis.__v_ran  = (globalThis.__v_ran || 0) + 1;
+                globalThis.__v_slot = c.slot;
+            });
+        "#, "{}");
+        dispatch_client_event("voice", 4);
+        assert_eq!(read_i32_global_in("pvv", "__v_ran"), 1, "onVoice handler runs once");
+        assert_eq!(read_i32_global_in("pvv", "__v_slot"), 4, "handler receives the dispatched slot");
+        dispatch_client_event("settingschanged", 4);   // a different name must not re-run it
+        assert_eq!(read_i32_global_in("pvv", "__v_ran"), 1);
+        shutdown();
+    }
+
     /// dispatch_map_start delivers the map name to a Server.onMapStart subscriber (the MAP_MUX reuse +
     /// the string-arg dispatch); mirrors client_event_dispatch_reaches_subscriber.
     #[test]
@@ -11554,6 +11697,9 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            gamerules_terminate_round: None,
+            voice_set_muted: None,
+            voice_get_muted: None,
             usermsg_hook_sub: None, usermsg_hook_unsub: None,
             usermsg_hook_read_int: None, usermsg_hook_read_float: None,
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,
@@ -12594,6 +12740,9 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            gamerules_terminate_round: None,
+            voice_set_muted: None,
+            voice_get_muted: None,
             usermsg_hook_sub: None, usermsg_hook_unsub: None,
             usermsg_hook_read_int: None, usermsg_hook_read_float: None,
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,
@@ -13418,6 +13567,19 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read_buttons())"), "0", "read_buttons degrades to 0n");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write_buttons(5n))"), "undefined", "write_buttons no-throws");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_clear_subtick())"), "undefined", "clear_subtick no-throws");
+        shutdown();
+    }
+
+    /// Round-control slice (degrade-never-crash): with NO engine ops installed,
+    /// `__s2_gamerules_terminate_round` returns 0 (an int, never undefined) and never throws —
+    /// the `GameRules.terminateRound -> false` degrade contract holds without a shim.
+    #[test]
+    fn gamerules_terminate_round_degrades_without_ops() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_gamerules_terminate_round(1, 2, 8, 5.0, 9))"), "0", "degrades to 0 without ops");
+        assert_eq!(eval_in_context_string("p", "String(__s2_gamerules_terminate_round())"), "0", "no-args degrades to 0, no throw");
         shutdown();
     }
 

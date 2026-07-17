@@ -27,6 +27,13 @@ export declare class Client {
   readonly ip: string;
   /** Show `reason` (chat + console) once the client is in-game, then kick after `delaySeconds` (default 5). Intended to be called from a Clients.onConnect handler. */
   kickWithReason(reason: string, delaySeconds?: number): void;
+  /**
+   * Server-side voice mute: while true, this client's OUTGOING voice is silenced for every receiver.
+   * Framework state (not an engine field): cleared automatically on disconnect, persists across map
+   * changes while connected. If the voice descriptor is degraded (hook/validation failure — named
+   * reason in the server log), setting is an inert no-op and reads stay false.
+   */
+  voiceMuted: boolean;
 }
 export declare const Clients: {
   /** Fires when a client connects (all clients incl. bots; carries name/xuid). May be async. */
@@ -41,6 +48,12 @@ export declare const Clients: {
   onDisconnect(handler: (client: Client) => void): void;
   /** Fires when a client's settings (name/cvars) change. */
   onSettingsChanged(handler: (client: Client) => void): void;
+  /**
+   * Fires while a client transmits voice. Throttled to at most one dispatch per client per second;
+   * the FIRST packet of a transmission always fires (a lazy mute-on-talk lands immediately).
+   * Handlers should be idempotent. Never fires for bots.
+   */
+  onVoice(handler: (client: Client) => void): void;
   /** The client in `slot`, or null if the slot is empty. */
   fromSlot(slot: number): Client | null;
   /** Every currently-connected client. */
