@@ -219,6 +219,25 @@
         "resolve": "direct"
       }
     },
+    // CCSPlayerController::SwitchTeam(unsigned int team) — the NON-LETHAL team move (player stays alive,
+    // keeps weapons; the pawn MAY be respawned by the engine). Backs Player.switchTeam (T/CT native;
+    // team 0/1 dispatches to ChangeTeam shim-side, CSSharp/SwiftlyS2 parity). HISTORY: the FIRST
+    // "SwitchTeam" sig we tried (borrowed from CSSharp during the changeteam slice) resolved to the
+    // WRONG function on our build — the deferred m_bSwitchTeamsOnNextRoundReset (halftime-swap) setter,
+    // live-gate-proven no-move (see the ChangeTeam comment above). THIS pattern is the real per-player
+    // function: corroborated by SwiftlyS2 + current CSSharp shipping the identical bytes, RE-VALIDATED
+    // against OUR binary — resolves UNIQUE @va 0x1525f40 on 2000875, adjacent to ChangeTeam (@0x1524770;
+    // vtable siblings). Prologue saves `this` into r12 (49 89 FC) and moves team esi->edi (89 F7),
+    // confirming the (this /*rdi*/, unsigned int team /*esi*/) ABI. DIRECT: the unique match IS the
+    // function entry. The boot gate re-validates uniqueness every load and SCREAMS if the prologue
+    // moves on the update treadmill.
+    "SwitchTeam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 FC 89 F7",
+        "resolve": "direct"
+      }
+    },
     // GetLegacyGameEventListener(int slot) -> IGameEventListener2* : the CS2 engine helper that returns a
     // client's per-client legacy game-event listener (a frameless leaf that loads a global array base,
     // bounds-checks the slot, and indexes it). event_fire_to_client (SourceMod FireToClient parity) calls

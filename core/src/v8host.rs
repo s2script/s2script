@@ -221,6 +221,8 @@ type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_in
 type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
 // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI). (idx, serial, team).
 type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
+// --- switchteam slice (APPENDED after transmit_stats; order is the ABI). (idx, serial, team).
+type PlayerSwitchTeamFn = extern "C" fn(c_int, c_int, c_int);
 
 // --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI). ENGINE-GENERIC:
 // lazily installs the (Task 3, shim-side) per-tick input-processing detour; takes no CS2 names. Task 2 owns ONLY
@@ -370,6 +372,8 @@ pub struct S2EngineOps {
     pub transmit_set:   Option<TransmitSetFn>,
     pub transmit_clear: Option<TransmitClearFn>,
     pub transmit_stats: Option<TransmitStatsFn>,
+    // --- switchteam slice (APPENDED after transmit_stats; order is the ABI; do not reorder above) ---
+    pub player_switch_team: Option<PlayerSwitchTeamFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -5209,6 +5213,25 @@ fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
+/// `__s2_player_switch_team(index, serial, team)` — NON-LETHAL controller team move via the
+/// sig-resolved SwitchTeam engine-op (the player stays alive and keeps weapons; the pawn may be
+/// respawned — vs `__s2_player_change_team` = jointeam semantics). A thin pass-through: the shim
+/// reconstructs + serial-gates the controller from (index, serial), bounds-checks `team` (0..3), and
+/// dispatches 0/1 (None/Spectator) to ChangeTeam (CSSharp/SwiftlyS2 parity). No-op without the op
+/// (unresolved signature) or on a stale ref. Engine-generic here (only the resolving signature is
+/// game-specific).
+fn s2_player_switch_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.player_switch_team else { return };
+        f(index, serial, team);
+    }));
+}
+
 /// Native `__s2_transmit_set(index, serial, viewerSlots[]) -> boolean` — replace the calling
 /// plugin's visibility rule for the entity: transmit ONLY to the given viewer slots (empty array
 /// = hidden from everyone). The u64 mask is folded core-side from the JS number array (no BigInt
@@ -7028,6 +7051,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
+    set_native(scope, global_obj, "__s2_player_switch_team", s2_player_switch_team);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
     // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
@@ -11231,6 +11255,7 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            player_switch_team: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -11447,6 +11472,20 @@ mod frame_tests {
         // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
         let out = eval_std("pct1", r#"
             var r = __s2_player_change_team(5, 7, 1);
+            String(r === undefined);
+        "#);
+        assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// switchteam slice: `__s2_player_switch_team` (and `Player.switchTeam`) no-op with no
+    /// `player_switch_team` op (unresolved signature / every in-isolate test) — never a crash.
+    #[test]
+    fn player_switch_team_degrades_without_op() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
+        let out = eval_std("pst1", r#"
+            var r = __s2_player_switch_team(5, 7, 2);
             String(r === undefined);
         "#);
         assert_eq!(out, "true");
@@ -12096,6 +12135,7 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
+            player_switch_team: None,
         }
     }
 

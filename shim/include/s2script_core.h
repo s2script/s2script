@@ -258,6 +258,12 @@ typedef int (*s2_transmit_clear_fn)(int index);
 /* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
 typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
 
+/* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
+ * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
+ * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
+ * (CSSharp/SwiftlyS2 parity). No-op if the signature is unresolved or the ref is stale. */
+typedef void (*s2_player_switch_team_fn)(int idx, int serial, int team);
+
 /* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
  * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
 typedef int   (*s2_usercmd_hook_install_fn)(void);              /* lazily install the ProcessUsercmds detour; 1 ok / 0 unresolved */
@@ -384,6 +390,8 @@ typedef struct {
     s2_transmit_set_fn   transmit_set;
     s2_transmit_clear_fn transmit_clear;
     s2_transmit_stats_fn transmit_stats;
+    /* switchteam slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
+    s2_player_switch_team_fn player_switch_team;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
