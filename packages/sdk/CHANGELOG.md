@@ -1,5 +1,19 @@
 # @s2script/cli
 
+## 0.3.0
+
+### Minor Changes
+
+- 972103b: transmit: new builtin capability (`@s2script/sdk/transmit`) — per-client entity visibility filtering via a Source2 CheckTransmit post-hook. Declarative rules (`Transmit.setVisibleTo`/`reset`/`resetAll`/`stats`); multiple plugins AND-merge; zero JS in the per-snapshot hot path.
+- c8639f2: UserMessage interception: `UserMessages.onPre(name, handler)` / `UserMessages.off(name)` with a
+  block-scoped `UserMessageView` (typed scalar reads with dotted nested paths, read-only recipients,
+  `debugString` fallback). Returning >= `HookResult.Handled` suppresses the send for every recipient.
+  Fail-closed: an unresolvable name (or a degraded intercept descriptor) throws at subscribe time.
+- bb2891c: Voice control: `Client.voiceMuted` (get/set — server-side mute of the client's outgoing voice for all
+  receivers, enforced by a SetClientListening rewrite hook) and `Clients.onVoice(handler)` (throttled
+  voice-transmission notification). Degrades to an inert no-op with a named reason if the voice
+  descriptor fails validation.
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,5 +1,28 @@
 # @s2script/cs2
 
+## 0.6.0
+
+### Minor Changes
+
+- 4979320: Player.respawn(): respawn a dead player via the self-resolved CCSPlayerController::Respawn
+  (byte-sig + RTTI-vtable-membership load-validated; queued one frame outside the JS isolate borrow
+  so player_spawn reaches every plugin). Alive-guarded, serial-gated, degrades to false.
+- 4050ac1: Round control: GameRules.terminateRound(reason, delay?) (sig-resolved CCSGameRules::TerminateRound,
+  deferred one frame so round_end reaches every plugin), round-clock write surface
+  (setRoundTime/setTimeRemaining/addTimeRemaining + roundStartTime/timeElapsed/timeRemaining reads),
+  Teams score API (cs_team_manager CTeam.m_iScore), and the RoundEndReason/WinPanelFinalEvent const maps.
+- e9a0640: `Player.switchTeam(team)` — non-lethal T/CT team switch (the player stays alive and keeps weapons; the
+  pawn may be respawned) via the self-resolved `CCSPlayerController::SwitchTeam`. None/Spectator
+  dispatches to ChangeTeam (CSSharp/SwiftlyS2 parity). Serial-gated; degrades to a no-op when the
+  signature is unresolved. Closes the TTT-port "role→team without killing the player" gap.
+
+### Patch Changes
+
+- Updated dependencies [972103b]
+- Updated dependencies [c8639f2]
+- Updated dependencies [bb2891c]
+  - @s2script/sdk@0.3.0
+
 ## 0.5.1
 
 ### Patch Changes
