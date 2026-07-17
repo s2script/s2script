@@ -114,6 +114,15 @@
     __s2_player_change_team(this.ref.index, this.ref.serial, 1);
   };
 
+  // player.switchTeam(team) — NON-LETHAL move between T(2)/CT(3) via the sig-resolved
+  // CCSPlayerController::SwitchTeam: the player stays alive and keeps weapons (vs changeTeam =
+  // jointeam semantics). The engine MAY respawn the pawn — re-resolve player.pawn next frame before
+  // pawn writes. team 0/1 dispatches to ChangeTeam shim-side (CSSharp/SwiftlyS2 parity). Serial-gated;
+  // no-op if stale/unresolved.
+  Player.prototype.switchTeam = function (team) {
+    __s2_player_switch_team(this.ref.index, this.ref.serial, team | 0);
+  };
+
   // player.respawn() — respawn this (dead) player via the self-resolved CCSPlayerController::Respawn
   // (byte-sig + RTTI-vtable-membership boot-gated; NEVER CSSharp's borrowed vtable index). QUEUED: the
   // shim executes on the NEXT GameFrame outside the JS isolate borrow, so the resulting player_spawn
@@ -779,8 +788,59 @@
     gameRestart:           grBool("m_bGameRestart"),
     gameStartTime:         grFloat("m_flGameStartTime"),
     matchWaitingForResume: grBool("m_bMatchWaitingForResume"),
-    hasMatchStarted:       grBool("m_bHasMatchStarted")
+    hasMatchStarted:       grBool("m_bHasMatchStarted"),
+    // Round-control slice: m_fRoundStartTime (GameTime_t read as f32 — validated live: ~= gameTime at
+    // round_start). timeElapsed/timeRemaining track ENGINE TRUTH: the engine ends the round at
+    // roundStartTime + m_iRoundTime (freeze is the first freezeTime seconds of that span, NOT a
+    // separate subtraction). An earlier draft mirrored TTT's GetTimeElapsed (which subtracts
+    // freezeTime) — live-gate-caught: that made the HUD/round-end fire freezeTime (~15s) early, so
+    // setTimeRemaining(30) ended the round in 15s. freezeTime is exposed as its own read, not folded in.
+    roundStartTime:        grFloat("m_fRoundStartTime"),
+    timeElapsed: { get: function () {
+      var st = this.roundStartTime;
+      var srv = globalThis.__s2pkg_server;
+      var now = srv && srv.Server ? srv.Server.gameTime : null;
+      if (st === null || now === null || now === 0) return null;
+      return now - st;
+    } },
+    timeRemaining: { get: function () {
+      var rt = this.roundTime, el = this.timeElapsed;
+      if (rt === null || el === null) return null;
+      return rt - el;
+    } }
   });
+
+  // Write m_iRoundTime through the proxy's m_pGameRules chain, then dirty the PROXY at the
+  // m_pGameRules offset (a FLAT offset on the proxy root — the TTT/CSSharp
+  // SetStateChanged(proxy, "CCSGameRulesProxy", "m_pGameRules") pattern) so the change renetworks.
+  // writeInt32Via deliberately does NOT auto-notify; forgetting the notify means the HUD clock never
+  // repaints on clients (the live-gate criterion).
+  GameRulesView.prototype.setRoundTime = function (seconds) {
+    var p = grPath(); if (!p) return false;
+    var o = __s2_schema_offset("CCSGameRules", "m_iRoundTime"); if (o < 0) return false;
+    if (!this.ref.writeInt32Via(p, o, seconds | 0)) return false;
+    this.ref.notifyStateChanged(p[0]);
+    return true;
+  };
+  // TTT SetTimeRemaining: roundTime = elapsed + seconds.
+  GameRulesView.prototype.setTimeRemaining = function (seconds) {
+    var el = this.timeElapsed; if (el === null) return false;
+    return this.setRoundTime(Math.ceil(el + seconds));
+  };
+  // TTT AddTimeRemaining: roundTime += delta.
+  GameRulesView.prototype.addTimeRemaining = function (seconds) {
+    var rt = this.roundTime; if (rt === null) return false;
+    return this.setRoundTime(rt + Math.ceil(seconds));
+  };
+  // Force the round to end (CCSGameRules::TerminateRound via the deferred engine op). QUEUED: executes
+  // on the NEXT engine frame, outside the JS isolate borrow, so round_end reaches EVERY plugin —
+  // including this one. true = queued; false = degraded (unresolved sig / stale proxy / bad reason).
+  GameRulesView.prototype.terminateRound = function (reason, delay) {
+    var p = grPath(); if (!p) return false;
+    if (typeof __s2_gamerules_terminate_round !== "function") return false;
+    var d = (delay === undefined || delay === null) ? 5.0 : +delay;   // 5s = TTT parity default
+    return __s2_gamerules_terminate_round(this.ref.index, this.ref.serial, p[0], d, reason | 0) === 1;
+  };
   var GameRules = (function () {
     // Cache the resolved cs_gamerules proxy (ModSharp/Swiftly cache the gamerules pointer likewise).
     // Serial-gated: on a map change the proxy dies -> isValid() false -> re-scan. Turns get() from an
@@ -796,8 +856,63 @@
         cachedView = new GameRulesView(cachedRef);
         return cachedView;
       }
+      ,
+      terminateRound: function (reason, delay) {
+        var v = this.get();
+        return v ? v.terminateRound(reason, delay) : false;
+      }
     };
   })();
+
+  // Team scoreboard scores — cs_team_manager entities (≈4: Unassigned/Spectator/T/CT) matched by
+  // m_iTeamNum (NEVER by enumeration order), CTeam.m_iScore written flat + notifyStateChanged at the
+  // SAME offset (the TTT SetStateChanged(entry, "CTeam", "m_iScore") pattern). Entities are re-found
+  // per call (cold path) — deliberately NO cache: team entities die on map change, and TTT's own
+  // `_teamManager ??=` cache is a bug we do not replicate.
+  var Teams = {
+    _find: function (team) {
+      var ent = globalThis.__s2pkg_entity;
+      if (!ent || !ent.Entity) return null;
+      var tno = __s2_schema_offset("CBaseEntity", "m_iTeamNum"); if (tno < 0) return null;
+      var refs = ent.Entity.findByClass("cs_team_manager") || [];
+      for (var i = 0; i < refs.length; i++) {
+        if (refs[i].readUInt8(tno) === (team | 0)) return refs[i];
+      }
+      return null;
+    },
+    getScore: function (team) {
+      var ref = Teams._find(team); if (!ref) return null;
+      var o = __s2_schema_offset("CTeam", "m_iScore"); if (o < 0) return null;
+      return ref.readInt32(o);
+    },
+    setScore: function (team, score) {
+      var ref = Teams._find(team); if (!ref) return false;
+      var o = __s2_schema_offset("CTeam", "m_iScore"); if (o < 0) return false;
+      if (!ref.writeInt32(o, score | 0)) return false;
+      ref.notifyStateChanged(o);
+      return true;
+    },
+    addScore: function (team, delta) {
+      var cur = Teams.getScore(team); if (cur === null) return false;
+      return Teams.setScore(team, cur + (delta | 0));
+    }
+  };
+
+  // CS2 round-end reasons ("layout is data, semantics are code" — a name<->number mapping is reviewed
+  // code). Values HINTed by the CSSharp enum and BINARY-VALIDATED against our build: the engine's
+  // `cmp $0x16` bound (max 22 = SurvivalDraw) + every #SFUI_Notice_* switch string present. Gaps
+  // 2/3/15 are removed legacy VIP reasons. Closed-loop re-validated at the live gate (terminateRound
+  // reason vs the engine-emitted round_end.reason).
+  var RoundEndReason = {
+    Unknown: 0, TargetBombed: 1, TerroristsEscaped: 4, CTsPreventEscape: 5,
+    EscapingTerroristsNeutralized: 6, BombDefused: 7, CTsWin: 8, TerroristsWin: 9,
+    RoundDraw: 10, AllHostagesRescued: 11, TargetSaved: 12, HostagesNotRescued: 13,
+    TerroristsNotEscaped: 14, GameCommencing: 16, TerroristsSurrender: 17, CTsSurrender: 18,
+    TerroristsPlanted: 19, CTsReachedHostage: 20, SurvivalWin: 21, SurvivalDraw: 22
+  };
+  // cs_win_panel_round final_event values (HINT: TTT/CSSharp usage; validated at the live gate
+  // against a natural round end's engine-emitted value).
+  var WinPanelFinalEvent = { CTsWin: 2, TerroristsWin: 3 };
 
   // CS2 user-message sugar over the generic @s2script/usermessages builder.
   var FFADE_IN = 1, FFADE_OUT = 2, FFADE_MODULATE = 4, FFADE_STAYOUT = 8, FFADE_PURGE = 16;
@@ -853,5 +968,5 @@
 
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
 })();

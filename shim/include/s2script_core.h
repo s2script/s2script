@@ -258,7 +258,7 @@ typedef int (*s2_transmit_clear_fn)(int index);
 /* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
 typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
 
-/* player-respawn slice — APPENDED after transmit_stats; order is the ABI.
+/* player-respawn slice — APPENDED after usermsg_hook_debug; order is the ABI.
  * player_respawn(idx, serial, alive_off) -> 1 queued / 0 degraded. (idx, serial) = the player's
  * CONTROLLER entity; alive_off = the offset of its "pawn is alive" bool field (resolved by the game
  * package; no game names cross this ABI; < 0 skips the drain-time re-check). DEFERRED: the shim
@@ -275,6 +275,48 @@ typedef void  (*s2_usercmd_write_fn)(int field, double value);
 typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_pb.buttonstate1 */
 typedef void  (*s2_usercmd_write_buttons_fn)(uint64_t mask);
 typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.subtick_moves */
+
+/* Round-control slice — APPENDED after transmit_stats; order is the ABI.
+ * gamerules_terminate_round(idx, serial, rules_ptr_off, delay, reason) -> 1 queued / 0 degraded.
+ * (idx, serial) = the rules PROXY entity; rules_ptr_off = the offset of its rules-struct pointer
+ * field (resolved by the game package; no game names cross this ABI). DEFERRED: the shim queues the
+ * call and drains it on the next GameFrame OUTSIDE the JS isolate borrow — the engine call fires the
+ * round-end event machinery synchronously, and an inline call from JS would silently skip every
+ * plugin's round_end handler via the try_borrow re-entrancy guard. reason is bounded 0..22. */
+typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_ptr_off,
+                                                 float delay, int reason);
+/* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
+ * voice_set_muted: set/clear the per-slot server-side voice mute (sender -> ALL receivers). The flag
+ * lives SHIM-side: the SetClientListening pre-hook consults it allocation-free (O(n^2) per game voice
+ * refresh), so JS only flips state through this op. Returns 1 = recorded + enforceable; 0 = slot out
+ * of range OR the voice descriptor is degraded (hook missing / vtable validation failed) — the flag
+ * is then inert and the shim has logged the named reason.
+ * voice_get_muted: 1 = muted, 0 = not muted, -1 = slot out of range / degraded. */
+typedef int (*s2_voice_set_muted_fn)(int slot, int muted);
+typedef int (*s2_voice_get_muted_fn)(int slot);
+
+/* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
+ * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
+ * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
+ * (CSSharp/SwiftlyS2 parity). No-op if the signature is unresolved or the ref is stale.
+ * APPENDED after voice_get_muted; order is the ABI. */
+typedef void (*s2_player_switch_team_fn)(int idx, int serial, int team);
+
+/* UserMessage-interception slice — APPENDED after player_switch_team; order is the ABI.
+ * usermsg_hook_sub: resolve an unscoped message name (FindNetworkMessagePartial, the live-proven
+ * SayText2 path), VALIDATE the m_MessageId extraction fail-closed (non-null NetMessageInfo, id in
+ * [0,2048), requested name a substring of GetUnscopedName), lazily SH_ADD_HOOK PostEventAbstract on
+ * the first-ever sub, set the id's bitmap bit, write the canonical unscoped name into canonicalOut.
+ * Returns the id, or -1 with a named USERMSG reason logged. All read ops target the BLOCK-SCOPED
+ * current intercepted message (null-guarded; valid only during a dispatch). */
+typedef int (*s2_usermsg_hook_sub_fn)(const char* name, char* canonicalOut, int canonicalLen);
+typedef int (*s2_usermsg_hook_unsub_fn)(int id);
+typedef int (*s2_usermsg_hook_read_int_fn)(const char* path, long long* out);
+typedef int (*s2_usermsg_hook_read_float_fn)(const char* path, double* out);
+typedef int (*s2_usermsg_hook_read_string_fn)(const char* path, char* buf, int buflen);
+typedef int (*s2_usermsg_hook_has_field_fn)(const char* path);
+typedef int (*s2_usermsg_hook_recipients_fn)(unsigned long long* outMask);
+typedef int (*s2_usermsg_hook_debug_fn)(char* buf, int buflen);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -393,7 +435,23 @@ typedef struct {
     s2_transmit_set_fn   transmit_set;
     s2_transmit_clear_fn transmit_clear;
     s2_transmit_stats_fn transmit_stats;
-    /* player-respawn slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
+    /* Round-control slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
+    s2_gamerules_terminate_round_fn gamerules_terminate_round;
+    /* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI. */
+    s2_voice_set_muted_fn  voice_set_muted;
+    s2_voice_get_muted_fn  voice_get_muted;
+    /* switchteam slice — APPENDED after voice_get_muted; order is the ABI; do not reorder above. */
+    s2_player_switch_team_fn player_switch_team;
+    /* UserMessage-interception slice — APPENDED after player_switch_team; order is the ABI. */
+    s2_usermsg_hook_sub_fn         usermsg_hook_sub;
+    s2_usermsg_hook_unsub_fn       usermsg_hook_unsub;
+    s2_usermsg_hook_read_int_fn    usermsg_hook_read_int;
+    s2_usermsg_hook_read_float_fn  usermsg_hook_read_float;
+    s2_usermsg_hook_read_string_fn usermsg_hook_read_string;
+    s2_usermsg_hook_has_field_fn   usermsg_hook_has_field;
+    s2_usermsg_hook_recipients_fn  usermsg_hook_recipients;
+    s2_usermsg_hook_debug_fn       usermsg_hook_debug;
+    /* player-respawn slice — APPENDED after usermsg_hook_debug; order is the ABI; do not reorder above. */
     s2_player_respawn_fn player_respawn;
 } S2EngineOps;
 
@@ -472,6 +530,14 @@ int s2script_core_dispatch_game_event_pre(const char* name);
  * and always still calls the original trampoline (server-authoritative — a suppressed cmd is a ZEROED
  * cmd, not a skipped call). catch_unwind -> 0 (fail-open: a core bug must never corrupt player input). */
 int s2script_core_dispatch_usercmd(int slot);
+/* Shim -> core: called by the PostEventAbstract PRE hook on a bitmap-hit outbound user message
+ * (usermsg-hook slice). name = the message's canonical GetUnscopedName() (the dispatch key), id =
+ * its m_MessageId. The shim sets the block-scoped current-message statics BEFORE this call and nulls
+ * them after — the JS UserMessages.onPre subscribers read the live message via the usermsg_hook_read_*
+ * / recipients / debug ops during this call. Returns the collapsed HookResult (0 Continue .. 3 Stop);
+ * the caller MRES_SUPERCEDEs the send when >= Handled (2). catch_unwind -> 0 (fail-open: a core bug
+ * must never suppress a message it didn't mean to). */
+int s2script_core_dispatch_usermsg(const char* name, int id);
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);

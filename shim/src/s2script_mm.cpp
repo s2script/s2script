@@ -61,6 +61,7 @@
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include <cstring>
 #include <cstdio>
+#include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
 #include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
 #include <fstream>
@@ -102,6 +103,15 @@ SH_DECL_HOOK1_void(ISource2GameClients, ClientFullyConnect, SH_NOATTRIB, 0, CPla
 SH_DECL_HOOK5_void(ISource2GameClients, ClientDisconnect, SH_NOATTRIB, 0, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*); // :587
 SH_DECL_HOOK1_void(ISource2GameClients, ClientSettingsChanged, SH_NOATTRIB, 0, CPlayerSlot);                                                       // :599
 
+// Voice-control slice. ClientVoice (eiface.h:619 "TERROR: A player sent a voice packet") = the 7th
+// sibling notify hook on m_gameClients — fires PER VOICE PACKET, throttled in the handler before the
+// core dispatch. SetClientListening (eiface.h:330) = the CSSharp/Swiftly voice-mute mechanism: a PRE
+// hook on s_pEngine that rewrites bListen->false for a muted sender. CAUTION: it sits in a
+// HAND-PATCHED eiface.h region ('#if 0 Don't really match the binary' + unk301/302) — behaviorally
+// validated at runtime (first-fire sanity + a Get/Set round-trip), named-degrade on mismatch.
+SH_DECL_HOOK1_void(ISource2GameClients, ClientVoice, SH_NOATTRIB, 0, CPlayerSlot);                       // :619
+SH_DECL_HOOK3(IVEngineServer2, SetClientListening, SH_NOATTRIB, 0, bool, CPlayerSlot, CPlayerSlot, bool); // :330
+
 // GameSessionConfiguration_t is only FORWARD-DECLARED across the whole pinned SDK (iserver.h:43,
 // eiface.h:88, iloopmode.h:107, igamesystem.h:43; the one body at iloopmode.h:109 is commented out),
 // and the SH_DECL_HOOK3_void macro below applies __SH_GPI(tt) = { sizeof(tt), ... } (sourcehook.h:1081)
@@ -128,6 +138,14 @@ SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const G
 // hl2sdk at compile time, exactly like the seven ISource2GameClients hooks.
 SH_DECL_HOOK7_void(ISource2GameEntities, CheckTransmit, SH_NOATTRIB, 0, CCheckTransmitInfo**, int,
                    CBitVec<16384>&, CBitVec<16384>&, const Entity2Networkable_t**, const uint16*, int);
+
+// UserMessage-interception slice. The 8-arg PostEventAbstract overload — the EXACT method our send
+// path calls live (s2_client_print :961 / s2_user_message_send :1066), so the vendored-header vtable
+// slot is transitively proven against our binary. Param 7 is `unsigned long` exactly (ABI). SourceHook
+// disambiguates from the 6-arg IRecipientFilter overload by the parameter type list — no numeric index.
+SH_DECL_HOOK8_void(IGameEventSystem, PostEventAbstract, SH_NOATTRIB, 0,
+    CSplitScreenSlot, bool, int, const uint64*,
+    INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t);
 
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
@@ -1071,6 +1089,180 @@ static int s2_user_message_send(const int* slots, int slotCount) {
 }
 
 // ---------------------------------------------------------------------------
+// UserMessage-interception slice. Doctrine: the ONE borrowed layout fact is
+// NetMessageInfo_t::m_MessageId (inetworkserializer.h:53 — never exercised by the send path);
+// validated fail-closed at subscribe (round-trip below) and on an observe-only first fire.
+// Hot path: a bitmap test on the id, MRES_IGNORED on miss before ANY reflection.
+// Block-scoped view statics are SEPARATE from the send builder's s_umInfo/s_umData/s_umMsg above,
+// so a handler that builds+sends a NEW user message mid-hook cannot retarget the intercepted view.
+// ---------------------------------------------------------------------------
+static constexpr int kUserMsgMaxId = 2048;
+static uint64_t s_userMsgSubBits[kUserMsgMaxId / 64] = {0};
+static bool     s_userMsgHookInstalled = false;   // lazy SH_ADD_HOOK on first-ever sub
+static bool     s_userMsgFirstFireDone = false;   // observe-only validation ran on the first subscribed fire
+static bool     s_inUserMsgDispatch = false;      // recursion guard (a mid-hook send re-enters PostEventAbstract)
+static google::protobuf::Message* s_hookMsg = nullptr;      // current intercepted message (block-scoped)
+static const uint64*              s_hookClients = nullptr;  // its recipient mask (null = broadcast); uint64 == the hook param type
+static int                        s_hookClientCount = 0;
+
+static inline bool s2_usermsg_bit(int id) {
+    return id >= 0 && id < kUserMsgMaxId && (s_userMsgSubBits[id >> 6] & (1ull << (id & 63)));
+}
+
+// Dotted-path walk: returns the leaf's parent message + writes the leaf field name. Every sub-message
+// hop is guarded (CPPTYPE_MESSAGE, !is_repeated) — a scalar Get* on a repeated field is a protobuf
+// FATAL that aborts the process (the shipping s2_user_message_set_* guards, mirrored). nullptr on a miss.
+static const google::protobuf::Message* s2_usermsg_walk(const google::protobuf::Message* m,
+                                                        const char* path, std::string& leaf) {
+    if (!m || !path) return nullptr;
+    std::string p(path);
+    const google::protobuf::Message* cur = m;
+    size_t dot;
+    while ((dot = p.find('.')) != std::string::npos) {
+        std::string seg = p.substr(0, dot);
+        p = p.substr(dot + 1);
+        const google::protobuf::Descriptor* d = cur->GetDescriptor();
+        const google::protobuf::Reflection*  r = cur->GetReflection();
+        if (!d || !r) return nullptr;
+        const google::protobuf::FieldDescriptor* f = d->FindFieldByName(seg);
+        if (!f || f->is_repeated()) return nullptr;                                 // repeated hop -> FATAL guard
+        if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) return nullptr;
+        cur = &r->GetMessage(*cur, f);
+        if (!cur) return nullptr;
+    }
+    leaf = p;
+    return cur;
+}
+
+// Subscribe-time validation (spec §2.1): resolve via the live-proven SayText2 path, then require a
+// non-null NetMessageInfo, an id in [0,2048), and the requested name a substring of the canonical
+// unscoped name. Any failure -> named USERMSG reason logged + return -1 (onPre throws plugin-side).
+// On the first-ever OK sub, lazily SH_ADD_HOOK PostEventAbstract on the already-held s_pGameEventSystem.
+static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonicalLen) {
+    if (!name || !s_pNetworkMessages || !s_pGameEventSystem) return -1;
+    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
+    if (!info) { META_CONPRINTF("[s2script] USERMSG sub FAILED: no message matches '%s'\n", name); return -1; }
+    const NetMessageInfo_t* mi = info->GetNetMessageInfo();
+    if (!mi) { META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: "
+                              "GetNetMessageInfo null for '%s'\n", name); return -1; }
+    int id = (int)mi->m_MessageId;
+    const char* canonical = info->GetUnscopedName();
+    if (id < 0 || id >= kUserMsgMaxId || !canonical || !*canonical || !strstr(canonical, name)) {
+        META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: '%s' -> id=%d "
+                       "canonical='%s' (out of range or name mismatch — header layout drift?)\n",
+                       name, id, canonical ? canonical : "(null)");
+        return -1;
+    }
+    if (canonicalOut && canonicalLen > 0) snprintf(canonicalOut, (size_t)canonicalLen, "%s", canonical);
+    if (!s_userMsgHookInstalled) {   // lazy install, idempotent (m_eventHookInstalled pattern; PRE = false)
+        SH_ADD_HOOK(IGameEventSystem, PostEventAbstract, s_pGameEventSystem,
+                    SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_PostEvent), false);
+        s_userMsgHookInstalled = true;
+        META_CONPRINTF("[s2script] usermsg: PostEventAbstract hook installed (lazy, first subscribe)\n");
+    }
+    s_userMsgSubBits[id >> 6] |= (1ull << (id & 63));
+    return id;
+}
+static int s2_usermsg_hook_unsub(int id) {
+    if (id < 0 || id >= kUserMsgMaxId) return 0;
+    s_userMsgSubBits[id >> 6] &= ~(1ull << (id & 63));
+    return 1;
+}
+
+// Read ops — Get* reflection mirrors of the shipping s2_user_message_set_* setters, each null-guarded on
+// the block-scoped s_hookMsg and carrying the is_repeated() FATAL guard on the leaf field.
+static int s2_usermsg_hook_read_int(const char* path, long long* out) {
+    if (!s_hookMsg || !path || !out) return 0;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return 0;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f || f->is_repeated()) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    switch (f->cpp_type()) {
+        // UINT32 is protobuf's cpp_type for BOTH uint32 AND fixed32 (the `player` field is fixed32); widen
+        // as UNSIGNED so an entity-handle's high bits survive (a signed GetInt32 would sign-extend + corrupt).
+        case FD::CPPTYPE_UINT32: *out = (long long)(unsigned long long)r->GetUInt32(*m, f); return 1;
+        case FD::CPPTYPE_INT32:  *out = (long long)r->GetInt32(*m, f);                       return 1;
+        case FD::CPPTYPE_ENUM:   *out = (long long)r->GetEnumValue(*m, f);                   return 1;
+        case FD::CPPTYPE_BOOL:   *out = r->GetBool(*m, f) ? 1 : 0;                           return 1;
+        // int64/uint64/fixed64/sfixed64: DELIBERATELY unsupported. readInt marshals through an f64 (exact only
+        // up to 2^53) and the locked 64-bit doctrine is decimal-string, never a lossy number; no TTT consumer
+        // reads 64-bit (spec §10 deferred). default → 0 → the native returns null, never a truncated int.
+        default: return 0;
+    }
+}
+static int s2_usermsg_hook_read_float(const char* path, double* out) {
+    if (!s_hookMsg || !path || !out) return 0;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return 0;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f || f->is_repeated()) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    if (f->cpp_type() == FD::CPPTYPE_FLOAT)  { *out = (double)r->GetFloat(*m, f); return 1; }
+    if (f->cpp_type() == FD::CPPTYPE_DOUBLE) { *out = r->GetDouble(*m, f);        return 1; }
+    return 0;
+}
+static int s2_usermsg_hook_read_string(const char* path, char* buf, int buflen) {
+    if (!s_hookMsg || !path || !buf || buflen <= 0) return -1;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return -1;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return -1;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f || f->is_repeated()) return -1;
+    if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) return -1;
+    std::string s = r->GetString(*m, f);
+    int n = (int)s.size();
+    if (n > buflen - 1) n = buflen - 1;
+    memcpy(buf, s.data(), (size_t)n);
+    buf[n] = 0;
+    return n;
+}
+static int s2_usermsg_hook_has_field(const char* path) {
+    if (!s_hookMsg) return -1;
+    if (!path) return 0;
+    std::string leaf;
+    const google::protobuf::Message* m = s2_usermsg_walk(s_hookMsg, path, leaf);
+    if (!m) return 0;
+    const google::protobuf::Descriptor* d = m->GetDescriptor();
+    const google::protobuf::Reflection*  r = m->GetReflection();
+    if (!d || !r) return 0;
+    const google::protobuf::FieldDescriptor* f = d->FindFieldByName(leaf);
+    if (!f) return 0;
+    if (f->is_repeated()) return 1;                       // exists-by-definition; can't HasField a repeated (FATAL)
+    if (f->has_presence()) return r->HasField(*m, f) ? 1 : 0;
+    return 1;                                             // implicit-presence scalar: always "there"
+}
+static int s2_usermsg_hook_recipients(unsigned long long* outMask) {
+    if (!s_hookMsg || !outMask) return 0;
+    if (s_hookClients) { *outMask = *s_hookClients; return 1; }   // bit N = slot N (as our send builds it)
+    unsigned long long mask = 0;                                   // broadcast (clients==null): all valid slots
+    for (int s = 0; s < 64; ++s)
+        if (s2_client_valid(s)) mask |= (1ull << (unsigned)s);
+    *outMask = mask;
+    return 1;
+}
+static int s2_usermsg_hook_debug(char* buf, int buflen) {
+    if (!s_hookMsg || !buf || buflen <= 0) return -1;
+    std::string s = s_hookMsg->DebugString();
+    int n = (int)s.size();
+    if (n > buflen - 1) n = buflen - 1;
+    memcpy(buf, s.data(), (size_t)n);
+    buf[n] = 0;
+    return n;
+}
+
+// ---------------------------------------------------------------------------
 // Client SteamID64 engine-op (Slice 6.2).
 //
 // Returns the SteamID64 of the client in `slot` as a decimal string in a static buffer.
@@ -1092,6 +1284,81 @@ static const char* s2_client_steamid(int slot) {
 static void s2_client_kick(int slot, const char* reason) {
     if (!s_pEngine || slot < 0 || slot >= 64) return;
     s_pEngine->KickClient(CPlayerSlot(slot), reason ? reason : "Kicked by admin", NETWORK_DISCONNECT_KICKED);
+}
+
+// ---------------------------------------------------------------------------
+// Voice-control slice. The mute is FRAMEWORK state (CSSharp keeps CPlayer::m_voiceFlag the same way —
+// no engine/schema mute bit exists): a shim-resident flag array consulted by the SetClientListening
+// PRE hook, which rewrites bListen->false whenever the SENDER is muted. The hook fires per
+// (receiver, sender) pair per game voice refresh (up to O(n^2)) — everything here is plain array
+// reads, no FFI/JS/allocations. Doctrine: the vtable slots come from a hand-patched eiface.h region,
+// so enforcement is gated on runtime validation (first-fire arg sanity + a one-shot Get/Set
+// round-trip once two clients are active); any failure -> named degrade, ops return 0/-1.
+// ---------------------------------------------------------------------------
+static uint8_t s_voiceMuted[kMaxClientSlots] = {0};        // 1 = sender muted for all receivers
+static time_t  s_voiceLastNotify[kMaxClientSlots] = {0};   // per-slot ClientVoice throttle (<=1/s)
+static bool    s_voiceNotifyHookInstalled = false;         // ClientVoice POST hook on m_gameClients
+static bool    s_voiceListenHookInstalled = false;         // SetClientListening PRE hook on s_pEngine
+static bool    s_voiceListenSeen = false;                  // first engine call observed (sanity-checked)
+static bool    s_voiceListenValidated = false;             // Get/Set round-trip passed
+static bool    s_voiceListenDegraded = false;              // NAMED degrade: rewrite + ops disabled
+
+// One-shot behavioral validation of the hand-patched Get/SetClientListening vtable slots (the
+// ChangeTeam 102-vs-101 drift lesson): flip one (receiver, sender) listen bit both ways and read it
+// back through the ADJACENT virtual. Runs from Hook_ClientActive once two clients (bots count) are
+// active; retried on every activation until it can run. Skips muted slots so our own pre-hook's
+// rewrite can't fake a mismatch. Pass -> proactive-apply enabled; fail -> named degrade.
+static void MaybeValidateVoiceListening() {
+    if (s_voiceListenValidated || s_voiceListenDegraded || !s_voiceListenHookInstalled || !s_pEngine) return;
+    int a = -1, b = -1;
+    for (int i = 0; i < kMaxClientSlots; i++) {
+        if (!s2_client_valid(i) || s_voiceMuted[i]) continue;
+        if (a < 0) a = i; else { b = i; break; }
+    }
+    if (b < 0) return;   // need two un-muted occupied slots; try again on the next ClientActive
+    // ENGINE PARAM TRANSPOSE (self-resolved on build 2000875, libengine2.so CEngineServer vtable via
+    // RTTI — GetClientListening is slot 90, SetClientListening 91, NEITHER drifted). The engine's
+    // getter and setter address OPPOSITE cells of the per-(owner,bit) listen matrix at client+0xbc8:
+    //   SetClientListening(a,b,v)  writes cell(owner=b, bit=a)
+    //   GetClientListening(a,b)    reads  cell(owner=a, bit=b)
+    // The vendored eiface.h declares both (iReceiver,iSender), but the real getter's params are
+    // reversed vs the setter. So read back Set(a,b)'s cell with Get(b,a). (The mute-enforcement path
+    // s2_voice_set_muted already uses Set the engine's way and is unaffected.)
+    bool orig     = s_pEngine->GetClientListening(CPlayerSlot(b), CPlayerSlot(a));
+    s_pEngine->SetClientListening(CPlayerSlot(a), CPlayerSlot(b), !orig);
+    bool flipped  = s_pEngine->GetClientListening(CPlayerSlot(b), CPlayerSlot(a));
+    s_pEngine->SetClientListening(CPlayerSlot(a), CPlayerSlot(b), orig);
+    bool restored = s_pEngine->GetClientListening(CPlayerSlot(b), CPlayerSlot(a));
+    if (flipped == !orig && restored == orig) {
+        s_voiceListenValidated = true;
+        META_CONPRINTF("[s2script] VOICE VALIDATION: Get/SetClientListening round-trip OK (slots %d,%d)\n", a, b);
+    } else {
+        s_voiceListenDegraded = true;
+        META_CONPRINTF("[s2script] VOICE VALIDATION FAILED: SetClientListening round-trip mismatch "
+                       "(orig=%d flipped=%d restored=%d) — Get/SetClientListening slots moved on this "
+                       "build; voice mute DISABLED (voiceMuted is inert)\n", (int)orig, (int)flipped, (int)restored);
+    }
+}
+
+// voice_set_muted op. Records the flag, then (mute only, only once the round-trip PROVED the vtable
+// slots) proactively forces listen=false for every current receiver so the mute doesn't wait for the
+// engine's next voice refresh. Our own PRE hook sees these calls harmlessly (param already false).
+// Unmute is engine-paced: the game's next refresh restores its own truth (a laggy unmute is benign).
+static int s2_voice_set_muted(int slot, int muted) {
+    if (slot < 0 || slot >= kMaxClientSlots) return 0;
+    s_voiceMuted[slot] = muted ? 1 : 0;
+    if (!s_voiceListenHookInstalled || s_voiceListenDegraded) return 0;   // recorded but inert
+    if (muted && s_voiceListenValidated && s_pEngine) {
+        for (int r = 0; r < kMaxClientSlots; r++) {
+            if (r == slot || !s2_client_valid(r)) continue;
+            s_pEngine->SetClientListening(CPlayerSlot(r), CPlayerSlot(slot), false);
+        }
+    }
+    return 1;
+}
+static int s2_voice_get_muted(int slot) {
+    if (slot < 0 || slot >= kMaxClientSlots) return -1;
+    return s_voiceMuted[slot] ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,6 +1515,38 @@ static void s2_player_change_team(int idx, int serial, int team) {
 }
 
 // ---------------------------------------------------------------------------
+// player_switch_team (switchteam slice) — NON-LETHAL controller team move via
+// CCSPlayerController::SwitchTeam(this, team): the player stays alive and keeps weapons (vs ChangeTeam
+// = jointeam semantics); the pawn MAY be respawned (consumers re-resolve player.pawn next frame). For
+// team <= 1 (None/Spectator) dispatches to s2_player_change_team — CSSharp/SwiftlyS2 parity: the
+// engine SwitchTeam is CS:GO-lineage T/CT-only. Guarded identically to change_team: serial-gate +
+// 0..3 bounds + .text-range check; any failure degrades to a (logged) no-op, never a crash.
+// HISTORY: an earlier borrowed "SwitchTeam" sig hit the WRONG function on our build (the deferred
+// m_bSwitchTeamsOnNextRoundReset halftime swap — live-gate-proven no-move); this sig is the real
+// per-player function, validated UNIQUE @0x1525f40 on 2000875 and re-validated every boot.
+// ABI: void CCSPlayerController::SwitchTeam(this /*rdi*/, unsigned int team /*esi*/).
+// ---------------------------------------------------------------------------
+typedef void (*SwitchTeam_t)(void* thisptr, int team);
+static SwitchTeam_t s_pSwitchTeam = nullptr;             // sig-resolved fn ptr (loaded in Load)
+static void s2_player_switch_team(int idx, int serial, int team) {
+    if (team < 0 || team > 3) return;                    // Unassigned/Spectator/T/CT only
+    if (team <= 1) {                                     // None/Spectator -> ChangeTeam (parity path)
+        s2_player_change_team(idx, serial, team);
+        return;
+    }
+    if (!s_pSwitchTeam) return;                          // signature unresolved -> no-op
+    CEntityHandle h(idx, serial);
+    void* controller = s2_deref_handle(static_cast<unsigned int>(h.ToInt()));  // null if stale/free slot
+    if (!controller) return;
+    const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pSwitchTeam);
+    if (!s_serverText || f < s_serverText || f >= s_serverText + s_serverTextSize) {
+        META_CONPRINTF("[s2script] SwitchTeam fn %p out of libserver .text — no-op\n", (const void*)f);
+        return;
+    }
+    s_pSwitchTeam(controller, team);
+}
+
+// ---------------------------------------------------------------------------
 // player_respawn (player-respawn slice) — re-activate a (dead) player via the sig-resolved
 // CCSPlayerController::Respawn(this) (s_pRespawn, loaded in Load behind TWO gates: unique-match AND
 // the Respawn.vtable-member RTTI check — CSSharp ships a BARE vtable index here, the sm_slay/ChangeTeam
@@ -1294,6 +1593,42 @@ static int s2_player_respawn(int idx, int serial, int alive_off, int hplayerpawn
     // ENQUEUE — the SetPawn+Respawn engine sequence runs at the next GameFrame drain, OUTSIDE the JS isolate
     // borrow, so the resulting player_spawn reaches every plugin's handlers (round-control §4.1 precedent).
     s_pendingRespawn[s_pendingRespawnCount++] = { hv, alive_off, hplayerpawn_off };
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// gamerules_terminate_round (round-control slice) — force the round to end via the sig-resolved
+// CCSGameRules::TerminateRound(float delay, uint32 reason, void* unk3=0, uint32 unk4=0) (s_pTerminateRound,
+// loaded in Load behind TWO gates: unique-match AND the scope-string semantic check — the borrowed
+// CSSharp/Swiftly sig is unique-but-WRONG on 2000875). DEFERRED EXECUTION: TerminateRound fires the
+// round-end event machinery SYNCHRONOUSLY; called inline from a JS native (inside the core's isolate
+// borrow) the round_end re-entry would be try_borrow-skipped and EVERY plugin would silently miss the
+// event. So the op only arms a single-slot pending request (latest-wins — a round ends once) and
+// Hook_GameFrameRoundDrain (installed eagerly at Load iff the sig resolved; one branch/frame) executes
+// it OUTSIDE the JS borrow. (idx, serial) identify the rules PROXY entity and rules_ptr_off the offset
+// of its rules-struct pointer field — both come from the game package; no game names live here. The
+// proxy is serial-gated at BOTH enqueue (fast feedback) and drain (it can die in between); the fn ptr
+// is .text-range-guarded like ChangeTeam. reason is host-bounded 0..22 (mirrors the engine's own
+// `cmp $0x16` check; in-range legacy holes 2/3/15 pass through — the engine's switch handles them).
+// ---------------------------------------------------------------------------
+typedef void (*TerminateRound_t)(void* rules, float delay, uint32_t reason, void* unk3, uint32_t unk4);
+static TerminateRound_t s_pTerminateRound = nullptr;     // sig-resolved fn ptr (loaded in Load, dual-gated)
+struct PendingTerminate { bool armed; uint32_t proxyHandle; int rulesPtrOff; float delay; int reason; };
+static PendingTerminate s_pendingTerminate = { false, 0, 0, 0.0f, 0 };
+static bool s_termDrainHooked = false;                   // Load-installed, Unload-removed
+
+static int s2_gamerules_terminate_round(int idx, int serial, int rules_ptr_off, float delay, int reason) {
+    if (!s_pTerminateRound) return 0;                    // signature unresolved/failed-semantic -> degrade
+    if (reason < 0 || reason > 22) {
+        META_CONPRINTF("[s2script] terminate_round: reason %d out of range 0..22 — rejected\n", reason);
+        return 0;
+    }
+    if (rules_ptr_off < 0) return 0;
+    CEntityHandle h(idx, serial);
+    if (!s2_deref_handle(static_cast<unsigned int>(h.ToInt()))) return 0;  // stale proxy NOW; re-gated at drain
+    if (s_pendingTerminate.armed)
+        META_CONPRINTF("[s2script] terminate_round: overwriting a pending request (latest wins)\n");
+    s_pendingTerminate = { true, static_cast<uint32_t>(h.ToInt()), rules_ptr_off, delay, reason };
     return 1;
 }
 
@@ -2059,6 +2394,49 @@ static ModText FindModuleText(const char* soname) {
         return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
     }, &ctx);
     return ctx.out;
+}
+
+// Full mapped [lo, hi) LOAD extent of the SAME module FindModuleText selects (largest-PF_X-wins,
+// Metamod-proxy-safe). Needed because .rodata (where sig-anchoring C-strings live) sits in a LOAD
+// segment BELOW the PF_X base — a rip-relative string target is OUTSIDE the .text buffer and must be
+// range-guarded against the whole mapping before it is read.
+struct ModBounds { const uint8_t* lo; const uint8_t* hi; };
+static ModBounds FindModuleBounds(const char* soname) {
+    struct Ctx { const char* name; size_t bestX; ModBounds out; } ctx{ soname, 0, { nullptr, nullptr } };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
+        size_t maxX = 0;
+        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type != PT_LOAD) continue;
+            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) maxX = ph.p_filesz;
+            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
+            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
+        }
+        if (maxX > c->bestX) {   // same winner rule as FindModuleText: largest PF_X segment
+            c->bestX = maxX;
+            c->out.lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
+            c->out.hi = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
+        }
+        return 0;
+    }, &ctx);
+    return ctx.out;
+}
+
+// Semantic load-gate for the TerminateRound descriptor (uniqueness is NOT enough — the borrowed
+// CSSharp/Swiftly sig matches UNIQUELY at the WRONG function on build 2000875). The self-derived
+// pattern pins the `48 8D 35` (lea rsi,[rip+disp32]) opcode at fn+0xb and masks only the disp;
+// this follows the disp and verifies the target is the literal scope string "TerminateRound".
+static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, const char* module) {
+    int64_t tgt = s2sig::ResolveLeaDisp(mt.text, mt.size, fnOff + 0xb, /*dispOff=*/3, /*instrLen=*/7);
+    if (tgt == s2sig::kFail) return false;
+    const uint8_t* p = mt.text + tgt;   // typically BELOW mt.text (.rodata precedes .text in the map)
+    ModBounds mb = FindModuleBounds(module);
+    static const char kScope[] = "TerminateRound";   // compare INCLUDING the NUL
+    if (!mb.lo || p < mb.lo || p + sizeof(kScope) > mb.hi) return false;
+    return std::memcmp(p, kScope, sizeof(kScope)) == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2856,6 +3234,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                             SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
                 m_clientLifecycleHooksInstalled = true;
                 META_CONPRINTF("[s2script] client lifecycle hooks installed (6 notify)\n");
+                // Voice-control slice: the 7th sibling — throttled voice-packet notify.
+                SH_ADD_HOOK(ISource2GameClients, ClientVoice, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientVoice), true);   // POST, like CSSharp
+                s_voiceNotifyHookInstalled = true;
+                META_CONPRINTF("[s2script] voice: ClientVoice hook installed (throttled notify)\n");
             } else {
                 m_gameClients = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameClients (%s) — console commands off\n", verStr);
@@ -2934,6 +3317,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 : nullptr;
             if (s_pEngine && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: EngineToServer (%s)\n", verStr);
+                // Voice-control slice: the mute-enforcement rewrite hook. Enforcement stays gated on
+                // the runtime validation (first-fire sanity here, Get/Set round-trip at 2nd
+                // ClientActive) because the eiface vtable region is hand-patched.
+                SH_ADD_HOOK(IVEngineServer2, SetClientListening, s_pEngine,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_SetClientListening), false);  // PRE
+                s_voiceListenHookInstalled = true;
+                META_CONPRINTF("[s2script] voice: SetClientListening hook installed (mute enforcement)\n");
             } else {
                 s_pEngine = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: EngineToServer (%s) — client_print degrades\n", verStr);
@@ -3167,6 +3557,57 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] ChangeTeam resolved @%p (Player.changeTeam; libserver .text=%p+%zu)\n",
                                    reinterpret_cast<void*>(s_pChangeTeam), (const void*)s_serverText, s_serverTextSize);
                 }   // stOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // switchteam slice: resolve CCSPlayerController::SwitchTeam (Player.switchTeam — the
+            // NON-LETHAL T/CT move). Sig corroborated by SwiftlyS2 + CSSharp but VALIDATED on OUR
+            // libserver.so (unique @0x1525f40 on 2000875) — NOT the changeteam-era borrowed sig that
+            // hit the deferred m_bSwitchTeamsOnNextRoundReset function (see the gamedata comment).
+            // Degrade-never-crash: unresolved -> switch_team no-ops (the spectator dispatch to
+            // ChangeTeam still works if that sig resolved).
+            auto swit = sigs.find("SwitchTeam");
+            if (swit == sigs.end()) {
+                GamedataResult("SwitchTeam", false, "signature absent from gamedata");
+            } else {
+                int64_t swOff = ResolveSigValidated("SwitchTeam", swit->second);
+                ModText swmt = FindModuleText(swit->second.module.c_str());
+                if (swOff != s2sig::kFail && swmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pSwitchTeam = reinterpret_cast<SwitchTeam_t>(const_cast<uint8_t*>(swmt.text) + swOff);
+                    META_CONPRINTF("[s2script] SwitchTeam resolved @%p (Player.switchTeam; libserver .text=%p+%zu)\n",
+                                   reinterpret_cast<void*>(s_pSwitchTeam), (const void*)s_serverText, s_serverTextSize);
+                }   // swOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Round-control slice: resolve CCSGameRules::TerminateRound (GameRules.terminateRound).
+            // DUAL-GATED: unique-match (ResolveSigValidated) AND the scope-string semantic check —
+            // on THIS build the borrowed CSSharp/Swiftly sig is unique yet lands on the WRONG function,
+            // so uniqueness alone must never assign the pointer. Failure of either gate leaves
+            // s_pTerminateRound null -> the op degrades to 0 (degrade-never-crash).
+            auto trit = sigs.find("TerminateRound");
+            if (trit == sigs.end()) {
+                GamedataResult("TerminateRound", false, "signature absent from gamedata");
+            } else {
+                int64_t trOff = ResolveSigValidated("TerminateRound", trit->second);
+                ModText trmt = FindModuleText(trit->second.module.c_str());
+                if (trOff != s2sig::kFail && trmt.text) {
+                    if (!ValidateTerminateRoundScopeString(trmt, trOff, trit->second.module.c_str())) {
+                        GamedataResult("TerminateRound.scope-string", false,
+                            "prologue lea does not reference the 'TerminateRound' scope string "
+                            "(unique-but-WRONG match — the borrowed-sig trap); descriptor disabled");
+                    } else {
+                        GamedataResult("TerminateRound.scope-string", true, nullptr);
+                        s_pTerminateRound = reinterpret_cast<TerminateRound_t>(const_cast<uint8_t*>(trmt.text) + trOff);
+                        s_serverText = trmt.text; s_serverTextSize = trmt.size;
+                        META_CONPRINTF("[s2script] TerminateRound resolved @%p (GameRules.terminateRound)\n",
+                                       reinterpret_cast<void*>(s_pTerminateRound));
+                        // Eager drain-hook install (NOT lazy): adding a SourceHook from inside a frame
+                        // dispatch would mutate the hook chain mid-iteration; one if-not-armed branch
+                        // per frame is negligible.
+                        if (m_server && !s_termDrainHooked) {
+                            SH_ADD_HOOK(ISource2Server, GameFrame, m_server,
+                                        SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+                            s_termDrainHooked = true;
+                        }
+                    }
+                }   // trOff == kFail: ResolveSigValidated already recorded the reason
             }
             // player-respawn slice: resolve CCSPlayerController::Respawn (Player.respawn).
             // DUAL-GATED: unique-match (ResolveSigValidated) AND RTTI vtable membership — CSSharp
@@ -3710,7 +4151,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.transmit_set   = &s2_transmit_set;
     ops.transmit_clear = &s2_transmit_clear;
     ops.transmit_stats = &s2_transmit_stats;
-    // player-respawn slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
+    // Round-control slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
+    ops.gamerules_terminate_round = &s2_gamerules_terminate_round;
+    // Voice-control slice — APPENDED after gamerules_terminate_round; order MUST match S2EngineOps.
+    ops.voice_set_muted = &s2_voice_set_muted;
+    ops.voice_get_muted = &s2_voice_get_muted;
+    // switchteam slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
+    ops.player_switch_team = &s2_player_switch_team;
+    // UserMessage-interception slice — APPENDED after player_switch_team; order MUST match S2EngineOps.
+    ops.usermsg_hook_sub         = &s2_usermsg_hook_sub;
+    ops.usermsg_hook_unsub       = &s2_usermsg_hook_unsub;
+    ops.usermsg_hook_read_int    = &s2_usermsg_hook_read_int;
+    ops.usermsg_hook_read_float  = &s2_usermsg_hook_read_float;
+    ops.usermsg_hook_read_string = &s2_usermsg_hook_read_string;
+    ops.usermsg_hook_has_field   = &s2_usermsg_hook_has_field;
+    ops.usermsg_hook_recipients  = &s2_usermsg_hook_recipients;
+    ops.usermsg_hook_debug       = &s2_usermsg_hook_debug;
+    // player-respawn slice — APPENDED after usermsg_hook_debug; order MUST match S2EngineOps.
     ops.player_respawn = &s2_player_respawn;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
@@ -3788,11 +4245,27 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         s_pendingRespawnCount = 0;
     }
 
+    if (s_termDrainHooked && m_server) {
+        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+        s_termDrainHooked = false;
+        s_pendingTerminate.armed = false;
+    }
+
     // Remove the FireEvent pre-hook (Slice 5D.3) before tearing down the event listener.
     if (m_eventHookInstalled && s_pGameEventManager) {
         SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_FireEventPre), false);
         m_eventHookInstalled = false;
+    }
+
+    // Remove the lazy PostEventAbstract pre-hook (usermsg-hook slice — ledger/teardown authority).
+    if (s_userMsgHookInstalled && s_pGameEventSystem) {
+        SH_REMOVE_HOOK(IGameEventSystem, PostEventAbstract, s_pGameEventSystem,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_PostEvent), false);
+        s_userMsgHookInstalled = false;
+        s_userMsgFirstFireDone = false;                       // a later re-arm re-observes + re-validates
+        for (auto& w : s_userMsgSubBits) w = 0;               // clear the subscribed-id bitmap
     }
 
     // Remove the ClientCommand hook (Slice 6.11c).
@@ -3826,6 +4299,19 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_checkTransmitHookInstalled = false;
     }
     s_transmitTable.clear();
+
+    // Voice-control slice: remove both voice hooks. Any forced-false listen values already stored in
+    // the engine are restored by the game's own next voice refresh (engine-paced; see live-gate note).
+    if (s_voiceNotifyHookInstalled && m_gameClients) {
+        SH_REMOVE_HOOK(ISource2GameClients, ClientVoice, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientVoice), true);
+        s_voiceNotifyHookInstalled = false;
+    }
+    if (s_voiceListenHookInstalled && s_pEngine) {
+        SH_REMOVE_HOOK(IVEngineServer2, SetClientListening, s_pEngine,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_SetClientListening), false);
+        s_voiceListenHookInstalled = false;
+    }
 
     // Remove the StartupServer map-start POST hook (clientlist-fakeconvar-onmapstart slice).
     if (m_startupServerHookInstalled && s_pNetworkServerService) {
@@ -3989,6 +4475,28 @@ void S2ScriptPlugin::Hook_GameFrameRespawnDrain(bool, bool, bool) {
     RETURN_META(MRES_IGNORED);
 }
 
+void S2ScriptPlugin::Hook_GameFrameRoundDrain(bool, bool, bool) {
+    if (s_pendingTerminate.armed) {
+        PendingTerminate req = s_pendingTerminate;
+        s_pendingTerminate.armed = false;               // consume before calling (the call re-enters gamerules)
+        void* proxy = s2_deref_handle(req.proxyHandle); // re-gate: the proxy can die between enqueue and drain
+        const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pTerminateRound);
+        if (proxy && s_pTerminateRound && s_serverText && f >= s_serverText && f < s_serverText + s_serverTextSize) {
+            void* rules = *reinterpret_cast<void**>(reinterpret_cast<char*>(proxy) + req.rulesPtrOff);
+            if (rules) {
+                // OUTSIDE the JS isolate borrow: the synchronous round_end flows through the normal
+                // FireEvent pre-hook -> core dispatch -> every plugin's subscribers.
+                s_pTerminateRound(rules, req.delay, static_cast<uint32_t>(req.reason), nullptr, 0);
+            } else {
+                META_CONPRINTF("[s2script] terminate_round: null rules pointer at drain — dropped\n");
+            }
+        } else {
+            META_CONPRINTF("[s2script] terminate_round: stale proxy / fn out of .text at drain — dropped\n");
+        }
+    }
+    RETURN_META(MRES_IGNORED);
+}
+
 // FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
 // to "suppress broadcast", re-call the original with bDontBroadcast=true and SUPERCEDE.
 bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast) {
@@ -4002,6 +4510,56 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
         RETURN_META_VALUE(MRES_SUPERCEDE, ret);                // we fired it ourselves with broadcast off
     }
     RETURN_META_VALUE(MRES_IGNORED, true);                     // original runs; any set* mods already applied
+}
+
+// UserMessage-interception choke point (usermsg-hook slice): every outbound event/message posts through
+// here. Order: recursion guard -> degraded guard -> observe-only FIRST-FIRE validation (never suppresses)
+// -> bitmap gate on m_MessageId (one virtual + one bit test; MRES_IGNORED on miss BEFORE any reflection/
+// strcmp/FFI/alloc/logging) -> name-keyed core dispatch with block-scoped statics -> collapsed HookResult
+// >= Handled(2) => MRES_SUPERCEDE (the message is dropped for every recipient AND any server-side local
+// listener — the live gate watches for server-side fallout; fallback = recall-with-modified-mask).
+void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
+                                    const uint64* clients, INetworkMessageInternal* pEvent,
+                                    const CNetMessage* pData, unsigned long nSize,
+                                    NetChannelBufType_t bufType) {
+    (void)nSlot; (void)bLocalOnly; (void)nSize; (void)bufType;
+    if (s_inUserMsgDispatch) RETURN_META(MRES_IGNORED);   // recursion guard (a mid-hook send re-enters here)
+    // Cheap gate FIRST: one virtual (GetNetMessageInfo) + one bitmap bit test on m_MessageId. A non-subscribed
+    // message costs exactly this before ANY reflection/strcmp/FFI/alloc/logging. Doctrine note on the ONE
+    // borrowed layout fact (NetMessageInfo_t::m_MessageId): it is RANGE-CHECKED fail-closed at subscribe and
+    // used only for this SELF-CONSISTENT pre-filter (subscribe and dispatch read the same offset); the
+    // AUTHORITATIVE dispatch key is GetUnscopedName() (a reliable virtual, no layout dependency). A drifted
+    // offset therefore degrades to at-worst a wasted dispatch the name-mux drops, or a fail-closed subscribe —
+    // never a false suppression.
+    NetMessageInfo_t* mi = pEvent ? pEvent->GetNetMessageInfo() : nullptr;
+    if (!mi || !s2_usermsg_bit((int)mi->m_MessageId)) RETURN_META(MRES_IGNORED);
+    google::protobuf::Message* pb = pData
+        ? reinterpret_cast<google::protobuf::Message*>(const_cast<CNetMessage*>(pData)->AsProto()) : nullptr;
+    if (!pb) RETURN_META(MRES_IGNORED);
+    const char* nm = pEvent->GetUnscopedName();
+    // Observe-only first-fire, gated on the first SUBSCRIBED message that reaches here (deterministic — a
+    // message a plugin actually asked for, NOT the arbitrary first engine post, which could be bodyless and
+    // must never disable anything). Validate reflection is readable, log the operator banner, and NEVER
+    // dispatch/suppress this one fire. A reflection failure skips THIS fire only (per-descriptor; the send
+    // path is untouched and every other subscribed message still works) — it never globally latches.
+    if (!s_userMsgFirstFireDone) {
+        s_userMsgFirstFireDone = true;
+        if (!pb->GetDescriptor() || !pb->GetReflection() || !nm || !*nm) {
+            META_CONPRINTF("[s2script] USERMSG VALIDATION: subscribed message id=%d lacks readable protobuf "
+                           "reflection — this fire skipped (send path unaffected)\n", (int)mi->m_MessageId);
+            RETURN_META(MRES_IGNORED);
+        }
+        META_CONPRINTF("[s2script] USERMSG intercept validated (first subscribed fire: id=%d name=%s)\n",
+                       (int)mi->m_MessageId, nm);
+        RETURN_META(MRES_IGNORED);   // observe-only: the hook goes live on the NEXT subscribed fire
+    }
+    s_hookMsg = pb; s_hookClients = clients; s_hookClientCount = nClientCount;
+    s_inUserMsgDispatch = true;
+    int result = s2script_core_dispatch_usermsg(nm, (int)mi->m_MessageId);
+    s_inUserMsgDispatch = false;
+    s_hookMsg = nullptr; s_hookClients = nullptr; s_hookClientCount = 0;   // block-scope ends here
+    if (result >= 2 /* HookResult.Handled */) RETURN_META(MRES_SUPERCEDE);
+    RETURN_META(MRES_IGNORED);
 }
 
 // Slice 6.11c: a player typed a command at the console. Dispatch the matching registered s2script command
@@ -4042,6 +4600,7 @@ void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, 
 void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
+    MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
     s2script_core_dispatch_client_event("active", s);
     RETURN_META(MRES_IGNORED);
 }
@@ -4055,11 +4614,55 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
     int s = slot.Get();
     s2script_core_dispatch_client_event("disconnect", s);   // dispatch FIRST — handler still sees valid
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonNone;
+    if (s >= 0 && s < kMaxClientSlots) { s_voiceMuted[s] = 0; s_voiceLastNotify[s] = 0; }  // slot-reuse hygiene
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
     s2script_core_dispatch_client_event("settingschanged", slot.Get());
     RETURN_META(MRES_IGNORED);
+}
+
+// Voice-control: ClientVoice fires per RECEIVED voice packet (tens/sec while a client talks — never
+// for bots). Throttle per-slot to <=1 core dispatch per wall-clock second; the first packet of a
+// transmission always dispatches, so a lazy mute-on-talk (the TTT PlayerMuter pattern) lands
+// immediately. Notify-only (POST, MRES_IGNORED); the core side is the existing try_borrow_mut-guarded
+// dispatch_client_event under the name "voice".
+void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
+    int s = slot.Get();
+    if (s >= 0 && s < kMaxClientSlots) {
+        time_t now = time(nullptr);
+        if (now != s_voiceLastNotify[s]) {
+            s_voiceLastNotify[s] = now;
+            s2script_core_dispatch_client_event("voice", s);
+        }
+    }
+    RETURN_META(MRES_IGNORED);
+}
+
+// Voice-control: the enforcement hook (CSSharp voice_manager.cpp:60-63 shape). PRE hook; when the
+// SENDER is muted and the game is about to store listen=true, swap the param to false with
+// MRES_IGNORED + NEWPARAMS — the engine's own implementation still runs and stores our value. HOT
+// PATH: plain array reads only. First fire performs the arg-sanity half of the doctrine validation
+// (out-of-range slots = vtable drift -> named degrade, rewrite disabled) and logs once — that log
+// line is also the live evidence for the engine's refresh cadence.
+bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen) {
+    int r = receiver.Get(), s = sender.Get();
+    if (!s_voiceListenSeen) {
+        s_voiceListenSeen = true;
+        if (r < -1 || r >= kMaxClientSlots || s < -1 || s >= kMaxClientSlots) {
+            s_voiceListenDegraded = true;
+            META_CONPRINTF("[s2script] VOICE VALIDATION FAILED: SetClientListening first fire has "
+                           "out-of-range slots (r=%d s=%d) — vtable drift; voice mute DISABLED\n", r, s);
+        } else {
+            META_CONPRINTF("[s2script] voice: SetClientListening first fire (r=%d s=%d listen=%d)\n",
+                           r, s, (int)bListen);
+        }
+    }
+    if (!s_voiceListenDegraded && bListen && s >= 0 && s < kMaxClientSlots && s_voiceMuted[s]) {
+        RETURN_META_VALUE_NEWPARAMS(MRES_IGNORED, bListen, &IVEngineServer2::SetClientListening,
+                                    (receiver, sender, false));
+    }
+    RETURN_META_VALUE(MRES_IGNORED, bListen);
 }
 
 // POST StartupServer = the map is starting up on a live, named game server (CSSharp reads the map

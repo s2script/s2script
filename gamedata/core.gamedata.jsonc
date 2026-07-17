@@ -219,6 +219,51 @@
         "resolve": "direct"
       }
     },
+    // CCSPlayerController::SwitchTeam(unsigned int team) — the NON-LETHAL team move (player stays alive,
+    // keeps weapons; the pawn MAY be respawned by the engine). Backs Player.switchTeam (T/CT native;
+    // team 0/1 dispatches to ChangeTeam shim-side, CSSharp/SwiftlyS2 parity). HISTORY: the FIRST
+    // "SwitchTeam" sig we tried (borrowed from CSSharp during the changeteam slice) resolved to the
+    // WRONG function on our build — the deferred m_bSwitchTeamsOnNextRoundReset (halftime-swap) setter,
+    // live-gate-proven no-move (see the ChangeTeam comment above). THIS pattern is the real per-player
+    // function: corroborated by SwiftlyS2 + current CSSharp shipping the identical bytes, RE-VALIDATED
+    // against OUR binary — resolves UNIQUE @va 0x1525f40 on 2000875, adjacent to ChangeTeam (@0x1524770;
+    // vtable siblings). Prologue saves `this` into r12 (49 89 FC) and moves team esi->edi (89 F7),
+    // confirming the (this /*rdi*/, unsigned int team /*esi*/) ABI. DIRECT: the unique match IS the
+    // function entry. The boot gate re-validates uniqueness every load and SCREAMS if the prologue
+    // moves on the update treadmill.
+    "SwitchTeam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 FC 89 F7",
+        "resolve": "direct"
+      }
+    },
+    // CCSGameRules::TerminateRound(float delay /*xmm0*/, uint32 reason /*esi*/, void* unk3=0 /*rdx*/,
+    // uint32 unk4=0 /*ecx*/) — force the current round to end with a RoundEndReason. Backs
+    // GameRules.terminateRound. SELF-DERIVED against OUR libserver.so (build 2000875) — do NOT ship the
+    // borrowed CSSharp/Swiftly sig ("55 48 89 E5 41 57 41 56 49 89 FE 41 55 41 54 53 48 81 EC ? ? ? ?
+    // 48 8D 05 ? ? ? ? F3 0F 11 85"): on this build it matches UNIQUELY yet at the WRONG function
+    // (va 0xc75ec0 — treats esi as a POINTER; a uniqueness gate alone would green-light a corrupting
+    // call). The real function (va 0x1384e80 on 2000875) is anchored by: (a) a unique
+    // `lea rsi,[rip+disp]` to the literal "TerminateRound" telemetry-scope string at fn+0xb (exactly 1
+    // xref binary-wide), (b) the sole xref to "TerminateRound: unknown round end ID %i" inside its own
+    // cold branch after `cmp $0x16,%r15d` (the reason-enum bound = 22 = SurvivalDraw), (c) the
+    // CS:GO-inherited reason -> "#SFUI_Notice_*" switch in the body (16 direct callers in the gamerules
+    // TU). This pattern masks the volatile string disp + frame size and keeps the stable `41 89 F7`
+    // reason capture. The boot gate re-validates UNIQUE, and a SECOND semantic descriptor
+    // (TerminateRound.scope-string) verifies the fn+0xb lea really targets "TerminateRound" — the exact
+    // check that separates the real function from the borrowed-sig false positive. Treadmill
+    // re-resolution recipe: xref the two unique strings above. NOT virtual on this build (zero
+    // data-segment refs) — direct call only. TTT/CSSharp's reason-first Linux arg order is a managed-
+    // marshaller artifact; the direct C call is DELAY-FIRST. args 3/4 semantics unknown in every
+    // framework (all pass 0,0) — hardcoded 0, never exposed; revisit if a future build uses them.
+    "TerminateRound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 89 F7 41 56 48 8D 35 ? ? ? ? 41 55 41 54 53 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
     // CCSPlayerController::Respawn(this /*rdi*/) — re-activate a (dead) player's pawn; backs
     // Player.respawn. SELF-RESOLVED against OUR libserver.so (build 2000875), NOT a borrowed constant:
     // CSSharp ships this as a BARE vtable offset ({windows:272, linux:274}, no signature) — the exact
