@@ -123,6 +123,17 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   changeTeam(team: number): void;
   /** Move this player to the Spectator team (= `changeTeam(1)`). */
   spectate(): void;
+  /**
+   * NON-LETHAL team switch between Terrorist (2) and CounterTerrorist (3) via the sig-resolved
+   * CCSPlayerController::SwitchTeam: the player stays alive and keeps their weapons (vs `changeTeam`,
+   * which has jointeam semantics and usually kills). Works on DEAD controllers too (a pure
+   * scoreboard/win-condition team move). CAVEAT: the engine MAY respawn the pawn during the call —
+   * re-resolve `player.pawn` on the next frame before any pawn write. Game events the engine fires
+   * inside the call do not re-dispatch to JS handlers on that frame (re-entrancy skip). For None (0) /
+   * Spectator (1) this dispatches to `changeTeam` (CSSharp/SwiftlyS2 parity) — prefer `spectate()`.
+   * Serial-gated; a no-op if the ref is stale or the signature is unresolved. Bounded 0..3 engine-side.
+   */
+  switchTeam(team: number): void;
 }
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */

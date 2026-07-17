@@ -252,7 +252,9 @@ type GamerulesTerminateRoundFn = extern "C" fn(c_int, c_int, c_int, f32, c_int) 
 // --- Voice-control slice (APPENDED after gamerules_terminate_round; order is the ABI).
 type VoiceSetMutedFn = extern "C" fn(c_int, c_int) -> c_int;
 type VoiceGetMutedFn = extern "C" fn(c_int) -> c_int;
-// --- player-respawn slice (APPENDED after voice_get_muted; order is the ABI). ENGINE-GENERIC:
+// --- switchteam slice (APPENDED after voice_get_muted; order is the ABI). (idx, serial, team).
+type PlayerSwitchTeamFn = extern "C" fn(c_int, c_int, c_int);
+// --- player-respawn slice (APPENDED after player_switch_team; order is the ABI). ENGINE-GENERIC:
 // (controller idx, serial, alive-bool field offset, hplayerpawn handle offset) -> 1 queued / 0 degraded.
 // The shim defers the sig-resolved engine call to the next GameFrame OUTSIDE the JS isolate borrow
 // (it fires player_spawn synchronously). No game names cross the ABI.
@@ -388,7 +390,9 @@ pub struct S2EngineOps {
     // Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
     pub voice_set_muted:        Option<VoiceSetMutedFn>,
     pub voice_get_muted:        Option<VoiceGetMutedFn>,
-    // --- player-respawn slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
+    // --- switchteam slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
+    pub player_switch_team: Option<PlayerSwitchTeamFn>,
+    // --- player-respawn slice (APPENDED after player_switch_team; order is the ABI; do not reorder above) ---
     pub player_respawn: Option<PlayerRespawnFn>,
 }
 
@@ -5262,6 +5266,25 @@ fn s2_gamerules_terminate_round(scope: &mut v8::PinScope, args: v8::FunctionCall
     }));
 }
 
+/// `__s2_player_switch_team(index, serial, team)` — NON-LETHAL controller team move via the
+/// sig-resolved SwitchTeam engine-op (the player stays alive and keeps weapons; the pawn may be
+/// respawned — vs `__s2_player_change_team` = jointeam semantics). A thin pass-through: the shim
+/// reconstructs + serial-gates the controller from (index, serial), bounds-checks `team` (0..3), and
+/// dispatches 0/1 (None/Spectator) to ChangeTeam (CSSharp/SwiftlyS2 parity). No-op without the op
+/// (unresolved signature) or on a stale ref. Engine-generic here (only the resolving signature is
+/// game-specific).
+fn s2_player_switch_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.player_switch_team else { return };
+        f(index, serial, team);
+    }));
+}
+
 /// `__s2_player_respawn(index, serial, aliveOff, hplayerpawnOff) -> 0|1` — queue a player respawn via the
 /// sig-resolved engine op. (index, serial) identify the player's CONTROLLER entity; aliveOff is the
 /// offset of its "pawn is alive" bool field (supplied by the game package — engine-generic here;
@@ -7107,6 +7130,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
     set_native(scope, global_obj, "__s2_gamerules_terminate_round", s2_gamerules_terminate_round);
+    set_native(scope, global_obj, "__s2_player_switch_team", s2_player_switch_team);
     set_native(scope, global_obj, "__s2_player_respawn", s2_player_respawn);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
@@ -11406,6 +11430,7 @@ mod frame_tests {
             gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
+            player_switch_team: None,
             player_respawn: None,
         }));
         create_plugin_context("p");
@@ -11623,6 +11648,20 @@ mod frame_tests {
         // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
         let out = eval_std("pct1", r#"
             var r = __s2_player_change_team(5, 7, 1);
+            String(r === undefined);
+        "#);
+        assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// switchteam slice: `__s2_player_switch_team` (and `Player.switchTeam`) no-op with no
+    /// `player_switch_team` op (unresolved signature / every in-isolate test) — never a crash.
+    #[test]
+    fn player_switch_team_degrades_without_op() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
+        let out = eval_std("pst1", r#"
+            var r = __s2_player_switch_team(5, 7, 2);
             String(r === undefined);
         "#);
         assert_eq!(out, "true");
@@ -12288,6 +12327,7 @@ mod frame_tests {
             gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
+            player_switch_team: None,
             player_respawn: None,
         }
     }

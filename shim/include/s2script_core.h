@@ -258,7 +258,7 @@ typedef int (*s2_transmit_clear_fn)(int index);
 /* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
 typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
 
-/* player-respawn slice — APPENDED after voice_get_muted; order is the ABI.
+/* player-respawn slice — APPENDED after player_switch_team; order is the ABI.
  * player_respawn(idx, serial, alive_off) -> 1 queued / 0 degraded. (idx, serial) = the player's
  * CONTROLLER entity; alive_off = the offset of its "pawn is alive" bool field (resolved by the game
  * package; no game names cross this ABI; < 0 skips the drain-time re-check). DEFERRED: the shim
@@ -294,6 +294,13 @@ typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_
  * voice_get_muted: 1 = muted, 0 = not muted, -1 = slot out of range / degraded. */
 typedef int (*s2_voice_set_muted_fn)(int slot, int muted);
 typedef int (*s2_voice_get_muted_fn)(int slot);
+
+/* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
+ * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
+ * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
+ * (CSSharp/SwiftlyS2 parity). No-op if the signature is unresolved or the ref is stale.
+ * APPENDED after voice_get_muted; order is the ABI. */
+typedef void (*s2_player_switch_team_fn)(int idx, int serial, int team);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -417,7 +424,9 @@ typedef struct {
     /* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI. */
     s2_voice_set_muted_fn  voice_set_muted;
     s2_voice_get_muted_fn  voice_get_muted;
-    /* player-respawn slice — APPENDED after voice_get_muted; order is the ABI; do not reorder above. */
+    /* switchteam slice — APPENDED after voice_get_muted; order is the ABI; do not reorder above. */
+    s2_player_switch_team_fn player_switch_team;
+    /* player-respawn slice — APPENDED after player_switch_team; order is the ABI; do not reorder above. */
     s2_player_respawn_fn player_respawn;
 } S2EngineOps;
 

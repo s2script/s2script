@@ -114,6 +114,15 @@
     __s2_player_change_team(this.ref.index, this.ref.serial, 1);
   };
 
+  // player.switchTeam(team) — NON-LETHAL move between T(2)/CT(3) via the sig-resolved
+  // CCSPlayerController::SwitchTeam: the player stays alive and keeps weapons (vs changeTeam =
+  // jointeam semantics). The engine MAY respawn the pawn — re-resolve player.pawn next frame before
+  // pawn writes. team 0/1 dispatches to ChangeTeam shim-side (CSSharp/SwiftlyS2 parity). Serial-gated;
+  // no-op if stale/unresolved.
+  Player.prototype.switchTeam = function (team) {
+    __s2_player_switch_team(this.ref.index, this.ref.serial, team | 0);
+  };
+
   // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
   //   "#<userid>" -> that player; "@all" -> allConnected; "@me" -> the caller (empty from console);
   //   otherwise a case-insensitive name match (exact wins, else all partials). Empty on no match.
