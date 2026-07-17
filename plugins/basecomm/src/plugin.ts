@@ -3,11 +3,11 @@
 //  - GAG (chat): VERIFIED. A gagged speaker's say/say_team is suppressed server-side by returning
 //    HookResult.Handled from Chat.onMessage (the live-proven Host_Say path). Keyed by SteamID so a gag
 //    doesn't follow a slot to a reconnecting player.
-//  - MUTE (voice): BEST-EFFORT. Sets the schema field m_bHasCommunicationAbuseMute (an existing
-//    generated setter: writeBool + notifyStateChanged). The field-write is proven; whether CS2 actually
-//    suppresses the muted client's voice from it is UNVERIFIED (it may be matchmaking/GC-driven). The
-//    robust path is a CServerSideClient::CLCMsg_VoiceData detour (like the 6.6 damage hook) — a
-//    deferred follow-up. sm_silence = gag + mute.
+//  - MUTE (voice): REAL. Flips Client.voiceMuted — the shim's SetClientListening rewrite silences the
+//    sender's outgoing voice for every receiver (the CSSharp/Swiftly mechanism; supersedes the old
+//    best-effort m_bHasCommunicationAbuseMute plan). The schema flag is still written as a cosmetic
+//    scoreboard indicator only. Keyed by SteamID and re-asserted on putinserver so a mute survives a
+//    reconnect. sm_silence = gag + mute.
 
 import { Commands } from "@s2script/sdk/commands";
 import { Chat } from "@s2script/sdk/chat";
@@ -15,6 +15,7 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, pickPlayer } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
 import { TopMenu } from "@s2script/sdk/topmenu";
+import { Clients } from "@s2script/sdk/clients";
 
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
 const muted = new Set<string>();  // SteamIDs — voice mute requested (best-effort)
@@ -36,7 +37,9 @@ function setGag(p: Player, on: boolean): void {
 }
 
 function setMute(p: Player, on: boolean): void {
-  p.hasCommunicationAbuseMute = on; // best-effort schema write (see header)
+  const c = Clients.fromSlot(p.slot);
+  if (c) c.voiceMuted = on;                 // REAL server-side voice mute (voice-control slice)
+  p.hasCommunicationAbuseMute = on;         // cosmetic scoreboard indicator (best-effort, kept)
   const sid = p.steamId;
   if (!sid) return;
   if (on) muted.add(sid); else muted.delete(sid);
@@ -49,6 +52,12 @@ export function onLoad(): void {
     const p = Player.fromSlot(slot);
     const sid = p ? p.steamId : null;
     return sid && gagged.has(sid) ? HookResult.Handled : HookResult.Continue;
+  });
+
+  // A muted player who reconnects gets a fresh slot with a cleared flag (shim slot hygiene) — re-assert
+  // the SteamID-keyed admin mute once their controller exists.
+  Clients.onPutInServer((c) => {
+    if (muted.has(c.steamId)) c.voiceMuted = true;
   });
 
   Commands.registerAdmin("sm_gag", ADMFLAG.CHAT, (ctx) =>

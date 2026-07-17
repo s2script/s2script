@@ -61,6 +61,7 @@
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include <cstring>
 #include <cstdio>
+#include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
 #include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
 #include <fstream>
@@ -101,6 +102,15 @@ SH_DECL_HOOK4_void(ISource2GameClients, ClientActive, SH_NOATTRIB, 0, CPlayerSlo
 SH_DECL_HOOK1_void(ISource2GameClients, ClientFullyConnect, SH_NOATTRIB, 0, CPlayerSlot);                                                          // :584
 SH_DECL_HOOK5_void(ISource2GameClients, ClientDisconnect, SH_NOATTRIB, 0, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*); // :587
 SH_DECL_HOOK1_void(ISource2GameClients, ClientSettingsChanged, SH_NOATTRIB, 0, CPlayerSlot);                                                       // :599
+
+// Voice-control slice. ClientVoice (eiface.h:619 "TERROR: A player sent a voice packet") = the 7th
+// sibling notify hook on m_gameClients — fires PER VOICE PACKET, throttled in the handler before the
+// core dispatch. SetClientListening (eiface.h:330) = the CSSharp/Swiftly voice-mute mechanism: a PRE
+// hook on s_pEngine that rewrites bListen->false for a muted sender. CAUTION: it sits in a
+// HAND-PATCHED eiface.h region ('#if 0 Don't really match the binary' + unk301/302) — behaviorally
+// validated at runtime (first-fire sanity + a Get/Set round-trip), named-degrade on mismatch.
+SH_DECL_HOOK1_void(ISource2GameClients, ClientVoice, SH_NOATTRIB, 0, CPlayerSlot);                       // :619
+SH_DECL_HOOK3(IVEngineServer2, SetClientListening, SH_NOATTRIB, 0, bool, CPlayerSlot, CPlayerSlot, bool); // :330
 
 // GameSessionConfiguration_t is only FORWARD-DECLARED across the whole pinned SDK (iserver.h:43,
 // eiface.h:88, iloopmode.h:107, igamesystem.h:43; the one body at iloopmode.h:109 is commented out),
@@ -1095,6 +1105,81 @@ static void s2_client_kick(int slot, const char* reason) {
 }
 
 // ---------------------------------------------------------------------------
+// Voice-control slice. The mute is FRAMEWORK state (CSSharp keeps CPlayer::m_voiceFlag the same way —
+// no engine/schema mute bit exists): a shim-resident flag array consulted by the SetClientListening
+// PRE hook, which rewrites bListen->false whenever the SENDER is muted. The hook fires per
+// (receiver, sender) pair per game voice refresh (up to O(n^2)) — everything here is plain array
+// reads, no FFI/JS/allocations. Doctrine: the vtable slots come from a hand-patched eiface.h region,
+// so enforcement is gated on runtime validation (first-fire arg sanity + a one-shot Get/Set
+// round-trip once two clients are active); any failure -> named degrade, ops return 0/-1.
+// ---------------------------------------------------------------------------
+static uint8_t s_voiceMuted[kMaxClientSlots] = {0};        // 1 = sender muted for all receivers
+static time_t  s_voiceLastNotify[kMaxClientSlots] = {0};   // per-slot ClientVoice throttle (<=1/s)
+static bool    s_voiceNotifyHookInstalled = false;         // ClientVoice POST hook on m_gameClients
+static bool    s_voiceListenHookInstalled = false;         // SetClientListening PRE hook on s_pEngine
+static bool    s_voiceListenSeen = false;                  // first engine call observed (sanity-checked)
+static bool    s_voiceListenValidated = false;             // Get/Set round-trip passed
+static bool    s_voiceListenDegraded = false;              // NAMED degrade: rewrite + ops disabled
+
+// One-shot behavioral validation of the hand-patched Get/SetClientListening vtable slots (the
+// ChangeTeam 102-vs-101 drift lesson): flip one (receiver, sender) listen bit both ways and read it
+// back through the ADJACENT virtual. Runs from Hook_ClientActive once two clients (bots count) are
+// active; retried on every activation until it can run. Skips muted slots so our own pre-hook's
+// rewrite can't fake a mismatch. Pass -> proactive-apply enabled; fail -> named degrade.
+static void MaybeValidateVoiceListening() {
+    if (s_voiceListenValidated || s_voiceListenDegraded || !s_voiceListenHookInstalled || !s_pEngine) return;
+    int a = -1, b = -1;
+    for (int i = 0; i < kMaxClientSlots; i++) {
+        if (!s2_client_valid(i) || s_voiceMuted[i]) continue;
+        if (a < 0) a = i; else { b = i; break; }
+    }
+    if (b < 0) return;   // need two un-muted occupied slots; try again on the next ClientActive
+    // ENGINE PARAM TRANSPOSE (self-resolved on build 2000875, libengine2.so CEngineServer vtable via
+    // RTTI — GetClientListening is slot 90, SetClientListening 91, NEITHER drifted). The engine's
+    // getter and setter address OPPOSITE cells of the per-(owner,bit) listen matrix at client+0xbc8:
+    //   SetClientListening(a,b,v)  writes cell(owner=b, bit=a)
+    //   GetClientListening(a,b)    reads  cell(owner=a, bit=b)
+    // The vendored eiface.h declares both (iReceiver,iSender), but the real getter's params are
+    // reversed vs the setter. So read back Set(a,b)'s cell with Get(b,a). (The mute-enforcement path
+    // s2_voice_set_muted already uses Set the engine's way and is unaffected.)
+    bool orig     = s_pEngine->GetClientListening(CPlayerSlot(b), CPlayerSlot(a));
+    s_pEngine->SetClientListening(CPlayerSlot(a), CPlayerSlot(b), !orig);
+    bool flipped  = s_pEngine->GetClientListening(CPlayerSlot(b), CPlayerSlot(a));
+    s_pEngine->SetClientListening(CPlayerSlot(a), CPlayerSlot(b), orig);
+    bool restored = s_pEngine->GetClientListening(CPlayerSlot(b), CPlayerSlot(a));
+    if (flipped == !orig && restored == orig) {
+        s_voiceListenValidated = true;
+        META_CONPRINTF("[s2script] VOICE VALIDATION: Get/SetClientListening round-trip OK (slots %d,%d)\n", a, b);
+    } else {
+        s_voiceListenDegraded = true;
+        META_CONPRINTF("[s2script] VOICE VALIDATION FAILED: SetClientListening round-trip mismatch "
+                       "(orig=%d flipped=%d restored=%d) — Get/SetClientListening slots moved on this "
+                       "build; voice mute DISABLED (voiceMuted is inert)\n", (int)orig, (int)flipped, (int)restored);
+    }
+}
+
+// voice_set_muted op. Records the flag, then (mute only, only once the round-trip PROVED the vtable
+// slots) proactively forces listen=false for every current receiver so the mute doesn't wait for the
+// engine's next voice refresh. Our own PRE hook sees these calls harmlessly (param already false).
+// Unmute is engine-paced: the game's next refresh restores its own truth (a laggy unmute is benign).
+static int s2_voice_set_muted(int slot, int muted) {
+    if (slot < 0 || slot >= kMaxClientSlots) return 0;
+    s_voiceMuted[slot] = muted ? 1 : 0;
+    if (!s_voiceListenHookInstalled || s_voiceListenDegraded) return 0;   // recorded but inert
+    if (muted && s_voiceListenValidated && s_pEngine) {
+        for (int r = 0; r < kMaxClientSlots; r++) {
+            if (r == slot || !s2_client_valid(r)) continue;
+            s_pEngine->SetClientListening(CPlayerSlot(r), CPlayerSlot(slot), false);
+        }
+    }
+    return 1;
+}
+static int s2_voice_get_muted(int slot) {
+    if (slot < 0 || slot >= kMaxClientSlots) return -1;
+    return s_voiceMuted[slot] ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 // client_console_print (ban-reason sub-project 2) — print one line to a client's
 // developer console via IVEngineServer2::ClientPrintf (eiface.h:238, proven live-safe in 6.1b).
 // The bot-skip guard (GetPlayerNetInfo == null) is MANDATORY — a print to a null-netchannel
@@ -1277,6 +1362,42 @@ static void s2_player_switch_team(int idx, int serial, int team) {
         return;
     }
     s_pSwitchTeam(controller, team);
+}
+
+// ---------------------------------------------------------------------------
+// gamerules_terminate_round (round-control slice) — force the round to end via the sig-resolved
+// CCSGameRules::TerminateRound(float delay, uint32 reason, void* unk3=0, uint32 unk4=0) (s_pTerminateRound,
+// loaded in Load behind TWO gates: unique-match AND the scope-string semantic check — the borrowed
+// CSSharp/Swiftly sig is unique-but-WRONG on 2000875). DEFERRED EXECUTION: TerminateRound fires the
+// round-end event machinery SYNCHRONOUSLY; called inline from a JS native (inside the core's isolate
+// borrow) the round_end re-entry would be try_borrow-skipped and EVERY plugin would silently miss the
+// event. So the op only arms a single-slot pending request (latest-wins — a round ends once) and
+// Hook_GameFrameRoundDrain (installed eagerly at Load iff the sig resolved; one branch/frame) executes
+// it OUTSIDE the JS borrow. (idx, serial) identify the rules PROXY entity and rules_ptr_off the offset
+// of its rules-struct pointer field — both come from the game package; no game names live here. The
+// proxy is serial-gated at BOTH enqueue (fast feedback) and drain (it can die in between); the fn ptr
+// is .text-range-guarded like ChangeTeam. reason is host-bounded 0..22 (mirrors the engine's own
+// `cmp $0x16` check; in-range legacy holes 2/3/15 pass through — the engine's switch handles them).
+// ---------------------------------------------------------------------------
+typedef void (*TerminateRound_t)(void* rules, float delay, uint32_t reason, void* unk3, uint32_t unk4);
+static TerminateRound_t s_pTerminateRound = nullptr;     // sig-resolved fn ptr (loaded in Load, dual-gated)
+struct PendingTerminate { bool armed; uint32_t proxyHandle; int rulesPtrOff; float delay; int reason; };
+static PendingTerminate s_pendingTerminate = { false, 0, 0, 0.0f, 0 };
+static bool s_termDrainHooked = false;                   // Load-installed, Unload-removed
+
+static int s2_gamerules_terminate_round(int idx, int serial, int rules_ptr_off, float delay, int reason) {
+    if (!s_pTerminateRound) return 0;                    // signature unresolved/failed-semantic -> degrade
+    if (reason < 0 || reason > 22) {
+        META_CONPRINTF("[s2script] terminate_round: reason %d out of range 0..22 — rejected\n", reason);
+        return 0;
+    }
+    if (rules_ptr_off < 0) return 0;
+    CEntityHandle h(idx, serial);
+    if (!s2_deref_handle(static_cast<unsigned int>(h.ToInt()))) return 0;  // stale proxy NOW; re-gated at drain
+    if (s_pendingTerminate.armed)
+        META_CONPRINTF("[s2script] terminate_round: overwriting a pending request (latest wins)\n");
+    s_pendingTerminate = { true, static_cast<uint32_t>(h.ToInt()), rules_ptr_off, delay, reason };
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -2041,6 +2162,49 @@ static ModText FindModuleText(const char* soname) {
         return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
     }, &ctx);
     return ctx.out;
+}
+
+// Full mapped [lo, hi) LOAD extent of the SAME module FindModuleText selects (largest-PF_X-wins,
+// Metamod-proxy-safe). Needed because .rodata (where sig-anchoring C-strings live) sits in a LOAD
+// segment BELOW the PF_X base — a rip-relative string target is OUTSIDE the .text buffer and must be
+// range-guarded against the whole mapping before it is read.
+struct ModBounds { const uint8_t* lo; const uint8_t* hi; };
+static ModBounds FindModuleBounds(const char* soname) {
+    struct Ctx { const char* name; size_t bestX; ModBounds out; } ctx{ soname, 0, { nullptr, nullptr } };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
+        size_t maxX = 0;
+        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type != PT_LOAD) continue;
+            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) maxX = ph.p_filesz;
+            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
+            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
+        }
+        if (maxX > c->bestX) {   // same winner rule as FindModuleText: largest PF_X segment
+            c->bestX = maxX;
+            c->out.lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
+            c->out.hi = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
+        }
+        return 0;
+    }, &ctx);
+    return ctx.out;
+}
+
+// Semantic load-gate for the TerminateRound descriptor (uniqueness is NOT enough — the borrowed
+// CSSharp/Swiftly sig matches UNIQUELY at the WRONG function on build 2000875). The self-derived
+// pattern pins the `48 8D 35` (lea rsi,[rip+disp32]) opcode at fn+0xb and masks only the disp;
+// this follows the disp and verifies the target is the literal scope string "TerminateRound".
+static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, const char* module) {
+    int64_t tgt = s2sig::ResolveLeaDisp(mt.text, mt.size, fnOff + 0xb, /*dispOff=*/3, /*instrLen=*/7);
+    if (tgt == s2sig::kFail) return false;
+    const uint8_t* p = mt.text + tgt;   // typically BELOW mt.text (.rodata precedes .text in the map)
+    ModBounds mb = FindModuleBounds(module);
+    static const char kScope[] = "TerminateRound";   // compare INCLUDING the NUL
+    if (!mb.lo || p < mb.lo || p + sizeof(kScope) > mb.hi) return false;
+    return std::memcmp(p, kScope, sizeof(kScope)) == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2817,6 +2981,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                             SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
                 m_clientLifecycleHooksInstalled = true;
                 META_CONPRINTF("[s2script] client lifecycle hooks installed (6 notify)\n");
+                // Voice-control slice: the 7th sibling — throttled voice-packet notify.
+                SH_ADD_HOOK(ISource2GameClients, ClientVoice, m_gameClients,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientVoice), true);   // POST, like CSSharp
+                s_voiceNotifyHookInstalled = true;
+                META_CONPRINTF("[s2script] voice: ClientVoice hook installed (throttled notify)\n");
             } else {
                 m_gameClients = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameClients (%s) — console commands off\n", verStr);
@@ -2895,6 +3064,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 : nullptr;
             if (s_pEngine && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: EngineToServer (%s)\n", verStr);
+                // Voice-control slice: the mute-enforcement rewrite hook. Enforcement stays gated on
+                // the runtime validation (first-fire sanity here, Get/Set round-trip at 2nd
+                // ClientActive) because the eiface vtable region is hand-patched.
+                SH_ADD_HOOK(IVEngineServer2, SetClientListening, s_pEngine,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_SetClientListening), false);  // PRE
+                s_voiceListenHookInstalled = true;
+                META_CONPRINTF("[s2script] voice: SetClientListening hook installed (mute enforcement)\n");
             } else {
                 s_pEngine = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: EngineToServer (%s) — client_print degrades\n", verStr);
@@ -3146,6 +3322,39 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] SwitchTeam resolved @%p (Player.switchTeam; libserver .text=%p+%zu)\n",
                                    reinterpret_cast<void*>(s_pSwitchTeam), (const void*)s_serverText, s_serverTextSize);
                 }   // swOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Round-control slice: resolve CCSGameRules::TerminateRound (GameRules.terminateRound).
+            // DUAL-GATED: unique-match (ResolveSigValidated) AND the scope-string semantic check —
+            // on THIS build the borrowed CSSharp/Swiftly sig is unique yet lands on the WRONG function,
+            // so uniqueness alone must never assign the pointer. Failure of either gate leaves
+            // s_pTerminateRound null -> the op degrades to 0 (degrade-never-crash).
+            auto trit = sigs.find("TerminateRound");
+            if (trit == sigs.end()) {
+                GamedataResult("TerminateRound", false, "signature absent from gamedata");
+            } else {
+                int64_t trOff = ResolveSigValidated("TerminateRound", trit->second);
+                ModText trmt = FindModuleText(trit->second.module.c_str());
+                if (trOff != s2sig::kFail && trmt.text) {
+                    if (!ValidateTerminateRoundScopeString(trmt, trOff, trit->second.module.c_str())) {
+                        GamedataResult("TerminateRound.scope-string", false,
+                            "prologue lea does not reference the 'TerminateRound' scope string "
+                            "(unique-but-WRONG match — the borrowed-sig trap); descriptor disabled");
+                    } else {
+                        GamedataResult("TerminateRound.scope-string", true, nullptr);
+                        s_pTerminateRound = reinterpret_cast<TerminateRound_t>(const_cast<uint8_t*>(trmt.text) + trOff);
+                        s_serverText = trmt.text; s_serverTextSize = trmt.size;
+                        META_CONPRINTF("[s2script] TerminateRound resolved @%p (GameRules.terminateRound)\n",
+                                       reinterpret_cast<void*>(s_pTerminateRound));
+                        // Eager drain-hook install (NOT lazy): adding a SourceHook from inside a frame
+                        // dispatch would mutate the hook chain mid-iteration; one if-not-armed branch
+                        // per frame is negligible.
+                        if (m_server && !s_termDrainHooked) {
+                            SH_ADD_HOOK(ISource2Server, GameFrame, m_server,
+                                        SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+                            s_termDrainHooked = true;
+                        }
+                    }
+                }   // trOff == kFail: ResolveSigValidated already recorded the reason
             }
             // Slice menu: resolve GetLegacyGameEventListener (per-client event fire; Events.fireToClient).
             // A DIRECT prologue signature self-resolved on OUR libserver.so (CSSharp reaches the per-client
@@ -3637,7 +3846,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.transmit_set   = &s2_transmit_set;
     ops.transmit_clear = &s2_transmit_clear;
     ops.transmit_stats = &s2_transmit_stats;
-    // switchteam slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
+    // Round-control slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
+    ops.gamerules_terminate_round = &s2_gamerules_terminate_round;
+    // Voice-control slice — APPENDED after gamerules_terminate_round; order MUST match S2EngineOps.
+    ops.voice_set_muted = &s2_voice_set_muted;
+    ops.voice_get_muted = &s2_voice_get_muted;
+    // switchteam slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
     ops.player_switch_team = &s2_player_switch_team;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
@@ -3706,6 +3920,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_frameHookInstalled = false;
     }
 
+    if (s_termDrainHooked && m_server) {
+        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
+        s_termDrainHooked = false;
+        s_pendingTerminate.armed = false;
+    }
+
     // Remove the FireEvent pre-hook (Slice 5D.3) before tearing down the event listener.
     if (m_eventHookInstalled && s_pGameEventManager) {
         SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
@@ -3744,6 +3965,19 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_checkTransmitHookInstalled = false;
     }
     s_transmitTable.clear();
+
+    // Voice-control slice: remove both voice hooks. Any forced-false listen values already stored in
+    // the engine are restored by the game's own next voice refresh (engine-paced; see live-gate note).
+    if (s_voiceNotifyHookInstalled && m_gameClients) {
+        SH_REMOVE_HOOK(ISource2GameClients, ClientVoice, m_gameClients,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientVoice), true);
+        s_voiceNotifyHookInstalled = false;
+    }
+    if (s_voiceListenHookInstalled && s_pEngine) {
+        SH_REMOVE_HOOK(IVEngineServer2, SetClientListening, s_pEngine,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_SetClientListening), false);
+        s_voiceListenHookInstalled = false;
+    }
 
     // Remove the StartupServer map-start POST hook (clientlist-fakeconvar-onmapstart slice).
     if (m_startupServerHookInstalled && s_pNetworkServerService) {
@@ -3854,6 +4088,28 @@ void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) 
     RETURN_META(MRES_IGNORED);
 }
 
+void S2ScriptPlugin::Hook_GameFrameRoundDrain(bool, bool, bool) {
+    if (s_pendingTerminate.armed) {
+        PendingTerminate req = s_pendingTerminate;
+        s_pendingTerminate.armed = false;               // consume before calling (the call re-enters gamerules)
+        void* proxy = s2_deref_handle(req.proxyHandle); // re-gate: the proxy can die between enqueue and drain
+        const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pTerminateRound);
+        if (proxy && s_pTerminateRound && s_serverText && f >= s_serverText && f < s_serverText + s_serverTextSize) {
+            void* rules = *reinterpret_cast<void**>(reinterpret_cast<char*>(proxy) + req.rulesPtrOff);
+            if (rules) {
+                // OUTSIDE the JS isolate borrow: the synchronous round_end flows through the normal
+                // FireEvent pre-hook -> core dispatch -> every plugin's subscribers.
+                s_pTerminateRound(rules, req.delay, static_cast<uint32_t>(req.reason), nullptr, 0);
+            } else {
+                META_CONPRINTF("[s2script] terminate_round: null rules pointer at drain — dropped\n");
+            }
+        } else {
+            META_CONPRINTF("[s2script] terminate_round: stale proxy / fn out of .text at drain — dropped\n");
+        }
+    }
+    RETURN_META(MRES_IGNORED);
+}
+
 // FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
 // to "suppress broadcast", re-call the original with bDontBroadcast=true and SUPERCEDE.
 bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast) {
@@ -3907,6 +4163,7 @@ void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, 
 void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
+    MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
     s2script_core_dispatch_client_event("active", s);
     RETURN_META(MRES_IGNORED);
 }
@@ -3920,11 +4177,55 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
     int s = slot.Get();
     s2script_core_dispatch_client_event("disconnect", s);   // dispatch FIRST — handler still sees valid
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonNone;
+    if (s >= 0 && s < kMaxClientSlots) { s_voiceMuted[s] = 0; s_voiceLastNotify[s] = 0; }  // slot-reuse hygiene
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
     s2script_core_dispatch_client_event("settingschanged", slot.Get());
     RETURN_META(MRES_IGNORED);
+}
+
+// Voice-control: ClientVoice fires per RECEIVED voice packet (tens/sec while a client talks — never
+// for bots). Throttle per-slot to <=1 core dispatch per wall-clock second; the first packet of a
+// transmission always dispatches, so a lazy mute-on-talk (the TTT PlayerMuter pattern) lands
+// immediately. Notify-only (POST, MRES_IGNORED); the core side is the existing try_borrow_mut-guarded
+// dispatch_client_event under the name "voice".
+void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
+    int s = slot.Get();
+    if (s >= 0 && s < kMaxClientSlots) {
+        time_t now = time(nullptr);
+        if (now != s_voiceLastNotify[s]) {
+            s_voiceLastNotify[s] = now;
+            s2script_core_dispatch_client_event("voice", s);
+        }
+    }
+    RETURN_META(MRES_IGNORED);
+}
+
+// Voice-control: the enforcement hook (CSSharp voice_manager.cpp:60-63 shape). PRE hook; when the
+// SENDER is muted and the game is about to store listen=true, swap the param to false with
+// MRES_IGNORED + NEWPARAMS — the engine's own implementation still runs and stores our value. HOT
+// PATH: plain array reads only. First fire performs the arg-sanity half of the doctrine validation
+// (out-of-range slots = vtable drift -> named degrade, rewrite disabled) and logs once — that log
+// line is also the live evidence for the engine's refresh cadence.
+bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen) {
+    int r = receiver.Get(), s = sender.Get();
+    if (!s_voiceListenSeen) {
+        s_voiceListenSeen = true;
+        if (r < -1 || r >= kMaxClientSlots || s < -1 || s >= kMaxClientSlots) {
+            s_voiceListenDegraded = true;
+            META_CONPRINTF("[s2script] VOICE VALIDATION FAILED: SetClientListening first fire has "
+                           "out-of-range slots (r=%d s=%d) — vtable drift; voice mute DISABLED\n", r, s);
+        } else {
+            META_CONPRINTF("[s2script] voice: SetClientListening first fire (r=%d s=%d listen=%d)\n",
+                           r, s, (int)bListen);
+        }
+    }
+    if (!s_voiceListenDegraded && bListen && s >= 0 && s < kMaxClientSlots && s_voiceMuted[s]) {
+        RETURN_META_VALUE_NEWPARAMS(MRES_IGNORED, bListen, &IVEngineServer2::SetClientListening,
+                                    (receiver, sender, false));
+    }
+    RETURN_META_VALUE(MRES_IGNORED, bListen);
 }
 
 // POST StartupServer = the map is starting up on a live, named game server (CSSharp reads the map
