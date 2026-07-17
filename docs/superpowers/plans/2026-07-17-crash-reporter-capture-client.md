@@ -45,7 +45,7 @@
 ## Spec §13 open questions — resolved here
 
 - **D-1 `server_id` derivation:** a random 128-bit hex id generated on first boot and persisted at `<spool>/server_id` (uuid v4, hyphens stripped). Rationale: any derivation from IP/hostname/steam account risks PII and instability across hosting moves; a persisted random id is stable, collision-safe, and carries zero information. If the file cannot be written, `server_id` degrades to `"unknown"` (fail-off).
-- **D-2 fatal-JS definition + dedup vs degrade-per-descriptor:** "fatal JS error" = (a) an exception that escapes a plugin handler into one of the existing per-handler `TryCatch`es (`dispatch_onframe`, `dispatch_game_event`, plus `load_plugin_js`'s eval/onLoad branches — the multiplexer's `Err(())` path), and (b) an unhandled promise rejection via `Isolate::set_promise_reject_callback` (`PromiseRejectWithNoHandler`, cancelled by a later `PromiseHandlerAddedAfterReject`, reported at end of `frame_async_drain`). Dedup is by FNV-1a signature of `(plugin, message, top stack frame)`: first occurrence always reports, then ≥60 s between reports per signature, cap 5 per signature and 100 total per boot. Reporting is **orthogonal** to degrade-per-descriptor: the existing `error_count`/auto-disable machinery is untouched; once a handler auto-disables (10 errors) it stops dispatching, so reporting stops naturally — the rate limiter just keeps the first 10 from spamming.
+- **D-2 fatal-JS definition + dedup vs degrade-per-descriptor:** "fatal JS error" = (a) an exception that escapes a plugin handler into one of the existing per-handler `TryCatch`es (`dispatch_onframe`, `dispatch_game_event`, `dispatch_concommand`, plus `load_plugin_js`'s eval/onLoad branches — the multiplexer's `Err(())` path), and (b) an unhandled promise rejection via `Isolate::set_promise_reject_callback` (`PromiseRejectWithNoHandler`, cancelled by a later `PromiseHandlerAddedAfterReject`, reported at end of `frame_async_drain`). Dedup is by FNV-1a signature of `(plugin, message, top stack frame)`: first occurrence always reports, then ≥60 s between reports per signature, cap 5 per signature and 100 total per boot. Reporting is **orthogonal** to degrade-per-descriptor: the existing `error_count`/auto-disable machinery is untouched; once a handler auto-disables (10 errors) it stops dispatching, so reporting stops naturally — the rate limiter just keeps the first 10 from spamming.
 - **D-3 capture vs upload when disabled:** capture paths always write local spool files; `enabled` gates only the sweep/upload. Rationale: local files carry no more privacy exposure than the core dump the OS already leaves on the operator's own disk, and a crash occurring before opt-in stays diagnosable.
 - **D-4 native "artifacts written" notification:** not needed. The boot sweep is file-discovery-based (`.dmp` + `.dmp.s2meta` pairs in the spool dir); the crashing process is dead and the next boot needs no in-band signal. The C ABI therefore only adds the breadcrumb pointer/size getters and the identity push.
 - **D-5 `detail.faulting_module`:** omitted in sub-project 1 (the field is optional in the schema). The capture client cannot parse minidumps; sub-project 2's symbolication derives it server-side.
@@ -728,18 +728,24 @@ In `dispatch_damage` (`:6621`), after its `g_ctx` clone (`:6631`):
             let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, "damage:onPre");
 ```
 
+In `dispatch_concommand` (`:3722`), after the owning-plugin/context is resolved and before the handler `func.call` (mirror the other stamps — use the command name and owning-plugin id already in scope). This makes a native fault OR a JS throw inside a server-command handler (e.g. `sm_crashtest segv`/`js`) attribute to `command:<name>` — required by Task 6's live-gate breadcrumb check:
+
+```rust
+            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, &format!("command:{}", name));
+```
+
 In `dispatch_map_start` (`:3933`), first line of the function body:
 
 ```rust
     crate::crash::breadcrumb::set_map(map);
 ```
 
-In `dispatch_client_event` — locate `pub(crate) fn dispatch_client_event(name: &str, slot: i32)` and add as the first lines of the body (players tracking, engine-generic):
+In `dispatch_client_event` (`core/src/v8host.rs:3884`, whose first param is `event: &str` — NOT `name`) add as the first lines of the body (players tracking, engine-generic):
 
 ```rust
     {
         let s = crate::crash::breadcrumb::snapshot();
-        match name {
+        match event {
             "putinserver" => crate::crash::breadcrumb::set_players(s.players + 1),
             "disconnect" => crate::crash::breadcrumb::set_players(s.players - 1),
             _ => {}
@@ -764,17 +770,25 @@ In `shutdown` (`:8865`), with the other bulk clears:
 
 (Further ops adopt the same one-liner opportunistically in later slices; the field is best-effort.)
 
-(e) `core/src/loader.rs` — plugin-table maintenance. In `load_and_reconcile` (`:84`), first line:
+(e) Plugin-table maintenance via the single teardown CHOKE POINT, so ALL five unload paths are covered (poll-loop unload `:242`/`:258`, reload-of-`old_id` `:400`, the file-watch VANISHED path `:419`, and the reconcile-failure teardown `:91`) — do NOT hook individual call sites.
+
+`core/src/v8host.rs` — add `plugin_unloaded` as the FIRST line of `unload_plugin` (every unload site funnels through it):
 
 ```rust
+pub fn unload_plugin(id: &str) {
+    crate::crash::breadcrumb::plugin_unloaded(id);
+    // ... existing body unchanged ...
+}
+```
+
+`core/src/loader.rs` — add `plugin_loaded` on the SUCCESS path of `load_and_reconcile` (right before its `Ok(())` return, after the context is created and `onLoad` ran without error) — NOT as the first line, so a plugin that fails reconcile never enters the table:
+
+```rust
+    // (immediately before load_and_reconcile's success `Ok(())`)
     crate::crash::breadcrumb::plugin_loaded(&manifest.id, &manifest.version);
 ```
 
-(this also removes the `#[allow(dead_code)]` on `Manifest.version` — delete that attribute at `core/src/loader.rs:36`). At both `unload_plugin` call sites in the poll loop (`:242` and `:258`), immediately before each `crate::v8host::unload_plugin(&id);`:
-
-```rust
-                    crate::crash::breadcrumb::plugin_unloaded(&id);
-```
+(this also removes the `#[allow(dead_code)]` on `Manifest.version` — delete that attribute at `core/src/loader.rs:36`.) `plugin_unloaded` is idempotent (a no-op if the id isn't present), so the `:91` failure-teardown calling `unload_plugin` for a never-added plugin is harmless.
 
 - [ ] **Step 7: Run the integration test**
 
@@ -838,7 +852,7 @@ static int s2_server_build_number(void) {
 }
 ```
 
-(b) The ops-table assignment at the tail of the `S2EngineOps ops = {};` block (`shim/src/s2script_mm.cpp:3583`, after `ops.gamerules_terminate_round` / the voice ops):
+(b) The ops-table assignment at the tail of the `S2EngineOps ops = {};` block — append after `ops.gamerules_terminate_round` (~`shim/src/s2script_mm.cpp:3703`). (Note: there are NO `ops.voice_*` assignments in the shim — the voice fields are left zero-initialized — so don't hunt for them; C++ named-field assignment order is irrelevant.):
 
 ```cpp
     // Crash-reporter slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
@@ -900,7 +914,10 @@ static std::string CrashSpoolDir() {
     Dl_info info;
     if (dladdr(reinterpret_cast<void*>(&CrashSpoolDir), &info) && info.dli_fname) {
         std::string dir(info.dli_fname);
-        for (int i = 0; i < 1; i++) dir = dir.substr(0, dir.find_last_of('/'));
+        // The .so lives at addons/s2script/bin/linuxsteamrt64/s2script.so — 3 dirname steps reach
+        // the addon root (mirrors s2_db_data_dir()/PluginsDir()). ONE step lands the spool under
+        // bin/ (a :ro mount in docker-compose) → mkdir fails → silent fail-off. Must be 3.
+        for (int i = 0; i < 3; i++) dir = dir.substr(0, dir.find_last_of('/'));
         std::string data = dir + "/data";
         std::string spool = data + "/crashes";
         mkdir(data.c_str(), 0755);            // EEXIST is fine
@@ -910,7 +927,7 @@ static std::string CrashSpoolDir() {
 }
 ```
 
-(Match the dirname-walk depth to `PluginsDir()`'s actual body when editing — read it first; `s2script.so` sits in the addon root, so one `dirname` reaches `addons/s2script/`. Add `#include <sys/stat.h>` and `#include <errno.h>` to the include block at the top of the file if not already present.)
+(The 3-step walk matches `s2_db_data_dir()` (`shim/src/s2script_mm.cpp:1964`), which already resolves `addons/s2script/data` — reuse it directly and append `/crashes` if you prefer. Add `#include <sys/stat.h>` and `#include <errno.h>` to the include block at the top of the file if not already present.)
 
 `games/cs2/js/pawn.js` — add at the very end of the IIFE body (before the closing `})();`):
 
@@ -2067,7 +2084,7 @@ void S2CrashDisarm(void);
 
 Build now fails (no `crash_handler.cpp`, no CMake target) — that is the failing state:
 
-Run: `cmake --build shim/build --target crash_selftest`
+Run: `cmake --build build/shim --target crash_selftest`
 Expected: `unknown target 'crash_selftest'` (or an equivalent configure error).
 
 - [ ] **Step 3: Implement the handler + build wiring**
@@ -2186,10 +2203,21 @@ target_link_libraries(crash_selftest PRIVATE breakpad_client)
 target_compile_definitions(crash_selftest PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
 ```
 
-and add `src/crash_handler.cpp` to the `add_library(s2script SHARED ...)` source list (after `src/ekv.cpp`), plus link it:
+and add `src/crash_handler.cpp` to the `add_library(s2script SHARED ...)` source list (after `src/ekv.cpp`), link Breakpad, and define `S2_HL2SDK_BUILD` (consumed by the Task-1 identity push — without it the shim `#ifndef` fallback silently stamps `gamedata.hl2sdk = "unknown"` in every envelope, degrading the treadmill fingerprint, spec §1/§12):
 
 ```cmake
 target_link_libraries(s2script PRIVATE breakpad_client)
+
+# S2_HL2SDK_BUILD: the pinned hl2sdk submodule SHA, stamped into every crash envelope's
+# gamedata.hl2sdk. Resolved at configure time from the vendored checkout (${HL2SDK} is
+# defined at the top of shim/CMakeLists.txt).
+execute_process(
+    COMMAND git -C ${HL2SDK} rev-parse --short HEAD
+    OUTPUT_VARIABLE S2_HL2SDK_SHA OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT S2_HL2SDK_SHA)
+    set(S2_HL2SDK_SHA "unknown")
+endif()
+target_compile_definitions(s2script PRIVATE S2_HL2SDK_BUILD="${S2_HL2SDK_SHA}")
 ```
 
 (placed after the existing `target_link_libraries(s2script PRIVATE ...)` block).
@@ -2197,8 +2225,8 @@ target_link_libraries(s2script PRIVATE breakpad_client)
 - [ ] **Step 4: Run the selftest — host, then the sniper container**
 
 ```bash
-make shim   # or: cmake -S shim -B shim/build && cmake --build shim/build -j
-./shim/build/crash_selftest /tmp/s2-crash-selftest
+make shim   # builds into build/shim (see Makefile:11) — NOT shim/build
+./build/shim/crash_selftest /tmp/s2-crash-selftest
 ```
 Expected: `OK: SIGSEGV chained, minidump + byte-exact .s2meta written to /tmp/s2-crash-selftest`
 
@@ -2211,9 +2239,14 @@ docker run --rm -v "$PWD:/repo" -w /repo rust:bullseye bash -c \
 ```
 Expected: the same `OK:` line — proves Breakpad compiles + links + runs under glibc 2.31.
 
-- [ ] **Step 5: Signal-safety audit (documented in the PR body)**
+- [ ] **Step 5: Signal-safety audit — VERIFIED against the vendored checkout (documented in the PR body)**
 
-Enumerate every call reachable from `DumpCallback` and confirm async-signal-safe: `memcpy` (pure), `open`/`write`/`close` (POSIX AS-safe list), `descriptor.path()` (returns a pre-built fixed buffer — Breakpad builds the path at arm time, not in the handler). Breakpad's own writer uses `sys_*` syscall wrappers (lss) and a page allocator by design. Confirm NO: `malloc`, `printf`, `std::string`, locks, V8. Record the list in the PR body under "Signal-safety audit".
+Do NOT restate assumptions — open the pinned `third_party/breakpad` source and confirm each of the following against it, citing `third_party/breakpad/...` file:line for each:
+- Every call reachable from our `DumpCallback` is async-signal-safe: `memcpy` (pure), `open`/`write`/`close` (POSIX AS-safe list). Confirm NO `malloc`/`printf`/`std::string`/locks/V8 on our path.
+- **`descriptor.path()` timing** — verify whether the per-crash GUID `.dmp` filename is built at arm time or IN the handler (`MinidumpDescriptor::UpdatePath()`). If in-handler, confirm the generator (`guid_creator`) is AS-safe; if not, precompute the sidecar path at arm time into a fixed buffer instead of deriving it from `descriptor.path()` in the callback.
+- **`memoverride.cpp` / `g_pMemAlloc` hazard** — the shim links `memoverride.cpp` (`shim/CMakeLists.txt:38`), which routes global `operator new`/`delete` through the Valve engine allocator. Any allocation inside Breakpad code linked into `s2script.so` therefore hits the engine allocator IN SIGNAL CONTEXT (deadlock if the fault happened mid-allocation). Confirm Breakpad's minidump writer uses only its own `sys_mmap`-based `PageAllocator` and never global `new` on the crash path; any path that does is a BLOCKER to resolve before merge.
+- **Chaining + sigaltstack** — confirm in the pinned source that returning `false` restores and re-raises to previously-installed handlers (never swallows/suppresses core dumps), and that `install_handler=true` installs on Breakpad's own `sigaltstack` (stack-overflow faults stay catchable).
+Record the audit (call list + these four verifications) in the PR body under "Signal-safety audit". The `crash_selftest` (host + bullseye) is the empirical backstop for chaining + the sidecar write.
 
 - [ ] **Step 6: Arm in Load / disarm in Unload**
 
@@ -2258,7 +2291,7 @@ Also verify the sniper build end-to-end once: `docker run --rm -v "$PWD:/repo" -
 
 **Files:**
 - Create: `core/src/crash/dedup.rs`
-- Modify: `core/src/crash/mod.rs` (`report_js_error` + the pending-rejects drain hook), `core/src/v8host.rs` (promise-reject callback registration + `PENDING_REJECTS` + TryCatch instrumentation at `dispatch_onframe`, `dispatch_game_event`, `load_plugin_js`), `core/src/crash/panic_hook.rs` (adopt signature dedup)
+- Modify: `core/src/crash/mod.rs` (`report_js_error` + the pending-rejects drain hook), `core/src/v8host.rs` (promise-reject callback registration + `PENDING_REJECTS` + TryCatch instrumentation at `dispatch_onframe`, `dispatch_game_event`, `dispatch_concommand`, `load_plugin_js`), `core/src/crash/panic_hook.rs` (adopt signature dedup)
 - Test: in-module in `dedup.rs`; integration tests appended to the `#[cfg(test)]` mod in `core/src/ffi.rs`
 
 **Interfaces:**
@@ -2598,6 +2631,17 @@ and after the onLoad-error `log_warn` (`:8619`) add:
                             crate::crash::report_js_error(id, "onLoad", &msg, "");
 ```
 
+(c2) `dispatch_concommand` (`:3722-3766`) — the server-command handler throw path. This is exactly what `sm_crashtest js` hits; WITHOUT it that harness kind (and any thrown server-command handler) reports nothing. In the existing throw branch (where it currently `log_warn`s), after the warn, mirror (b):
+
+```rust
+                let stack = tc.stack_trace()
+                    .map(|s| s.to_rust_string_lossy(&*tc))
+                    .unwrap_or_default();
+                crate::crash::report_js_error(owner, &format!("command:{}", name), &msg, &stack);
+```
+
+(uses the command `name` + owning-plugin `owner` in scope; if the local bindings differ, match `dispatch_concommand`'s existing throw-branch names — `msg`/`tc` are the exception + TryCatch as at the other sites.)
+
 (d) Promise rejections. New thread-local next to `RESOLVERS` (`:481`):
 
 ```rust
@@ -2731,7 +2775,7 @@ gt submit --no-interactive
 
 **Files:**
 - Create: `examples/crash-test/package.json`, `examples/crash-test/src/plugin.ts`, `examples/crash-test/tsconfig.json`
-- Modify: `core/src/v8host.rs` (`crash_test_native` op append + `__s2_crash_test` native), `shim/include/s2script_core.h` (op append), `shim/src/s2script_mm.cpp` (op impl + tail assignment), `docs/PROGRESS.md`
+- Modify: `core/src/v8host.rs` (`crash_test_native` op append + `__s2_crash_test` native), `shim/include/s2script_core.h` (op append), `shim/src/s2script_mm.cpp` (op impl + tail assignment), `docker/docker-compose.yml` (add `extra_hosts` host-gateway for the live-gate mock endpoint), `docs/PROGRESS.md`
 - Test: cargo test for the gate + config gating; the live gate itself (runbook below)
 
 **Interfaces:**
@@ -2959,9 +3003,14 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers()
 HTTPServer(("0.0.0.0", 8787), H).serve_forever()
 EOF
-# Build + deploy the harness plugin:
-cd examples/crash-test && npx s2script build && cd ../..
+# Build + deploy the harness plugin (the CLI bin is `s2s`; `npx s2script` does not exist — the
+# unscoped npm name was blocked, packaging pivot). Build the SDK CLI, then build the example:
+(cd packages/sdk && npm run build) && node packages/sdk/dist/cli.js build examples/crash-test
 cp examples/crash-test/dist/_demo_crash-test.s2sp dist/addons/s2script/plugins/
+# host.docker.internal is NOT resolvable inside the CS2 container by default on Linux. Add to
+# docker/docker-compose.yml under `services: cs2:` (else every upload fails DNS):
+#     extra_hosts:
+#       - "host.docker.internal:host-gateway"
 make docker-test
 docker exec s2script-cs2 /patch-gameinfo.sh
 docker compose -f docker/docker-compose.yml restart cs2   # NOT --force-recreate
@@ -3030,3 +3079,20 @@ gt submit --no-interactive
 **2. Placeholder scan.** No TBD/TODO/"similar to Task N" remain. Two deliberately-flagged verification points are instructions, not placeholders: Task 6's `Commands.registerServer`-vs-`register` check (the typecheck gate arbitrates; both code paths shown), and Task 5's note that the `CallbackScope` pin-init shape must mirror this file's existing scope construction if the compile error names a different one. Task 1 Step 8's `CrashSpoolDir` dirname-walk depth carries the same read-the-neighbor instruction with the concrete default shown.
 
 **3. Type consistency.** Verified across tasks: `CrashBreadcrumb` field names used by `envelope::render` (Task 2) and `uploader::read_meta` (Task 3) match Task 1's struct; `Detail` variant shapes used in Tasks 2/3/5/6 match Task 2's enum; `CrashConfig` fields used in Tasks 3/5/6 match Task 3; `SpoolItem` shapes produced by Task 4's file naming (`<uuid>.dmp` + `<uuid>.dmp.s2meta`) match `spool::scan`'s suffix logic (`.json` / `.dmp` / `.dmp.s2meta`); the C ABI names (`s2script_core_crash_breadcrumb`, `_size`, `_set_identity` 6-arg form) are identical in `ffi.rs`, the header, and both shim call sites; `server_build_number` / `crash_test_native` append in the same order in the Rust struct, the C header, and the shim assignment tail. One fix applied during review: the panic-hook test in Task 2 asserts a single spool item — it sets a fresh per-test spool dir and clears it after, so Task 5's shared-limiter change (first occurrence always reports) keeps it green.
+
+## Review revisions (adversarial pass, applied)
+
+An independent adversarial review verified ~30 of the plan's line/symbol citations byte-accurate and the full v8 149.4 API surface, then surfaced issues fixed inline here:
+
+- **B1 (blocking) — `CrashSpoolDir` walk depth:** was 1 dirname step; the `.so` is at `addons/s2script/bin/linuxsteamrt64/`, so the spool landed in a `:ro` mount and silently fail-off'd. Now **3 steps** (matches `s2_db_data_dir()`), with the contradictory prose corrected (Task 1 Step 8).
+- **B2 (blocking) — `sm_crashtest js` reported nothing:** the harness throws from a server-command handler, but `dispatch_concommand` was uninstrumented. Added the `report_js_error` call there (Task 5 (c2)) and an `enter_dispatch` `command:<name>` stamp (Task 1 (c)); D-2 + the Modify list updated.
+- **B3 (blocking) — `host.docker.internal` unresolvable in the CS2 container on Linux:** added the `extra_hosts: host-gateway` compose step + `docker-compose.yml` to Task 6's Modify list.
+- **B4 (blocking) — `npx s2script build` does not exist** (bin is `s2s`, unscoped name blocked): replaced with `node packages/sdk/dist/cli.js build` after building the SDK (Task 6 Step 6).
+- **B5 (blocking) — plugin table covered 2 of 5 unload paths → stale plugin lists:** moved `plugin_unloaded` into the single `v8host::unload_plugin` choke point and `plugin_loaded` to the reconcile-SUCCESS path (Task 1 (e)).
+- **S1 — `S2_HL2SDK_BUILD` never defined** (fingerprint silently `"unknown"`): added the `execute_process`/`target_compile_definitions` from the hl2sdk submodule SHA (Task 4 CMake).
+- **S2 — signal-safety audit strengthened:** now requires verifying against the vendored checkout — `descriptor.path()` timing, the `memoverride.cpp`/`g_pMemAlloc` allocation-in-signal-context deadlock hazard, and chaining/sigaltstack — with file:line evidence (Task 4 Step 5).
+- **S3 — wrong build dir** (`build/shim`, not `shim/build`) fixed in Task 4's commands.
+- **S4 — `dispatch_client_event` param is `event`, not `name`** — snippet corrected (Task 1 (c)).
+- **S5 — stale ops-tail comment** referencing nonexistent `ops.voice_*` assignments corrected (Task 1 Step 8(b)).
+
+Deferred (not blocking, tracked for the executor): S6 (`dispatch_game_event_pre` onPre-throw reporting — cheap to add alongside (b) if desired) and the noted nits (redundant config wrapper, `unsafe`-block hygiene on `CallbackScope`, order-coupled process-global test state).
