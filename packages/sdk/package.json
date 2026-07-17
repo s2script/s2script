@@ -1,6 +1,6 @@
 {
   "name": "@s2script/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "s2script SDK — the builtin capability types (imported as @s2script/sdk/entity, …) plus the `s2s` CLI for building Source 2 / CS2 plugins.",
   "type": "module",
   "bin": {
