@@ -276,6 +276,15 @@ typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.su
  * plugin's round_end handler via the try_borrow re-entrancy guard. reason is bounded 0..22. */
 typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_ptr_off,
                                                  float delay, int reason);
+/* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
+ * voice_set_muted: set/clear the per-slot server-side voice mute (sender -> ALL receivers). The flag
+ * lives SHIM-side: the SetClientListening pre-hook consults it allocation-free (O(n^2) per game voice
+ * refresh), so JS only flips state through this op. Returns 1 = recorded + enforceable; 0 = slot out
+ * of range OR the voice descriptor is degraded (hook missing / vtable validation failed) — the flag
+ * is then inert and the shim has logged the named reason.
+ * voice_get_muted: 1 = muted, 0 = not muted, -1 = slot out of range / degraded. */
+typedef int (*s2_voice_set_muted_fn)(int slot, int muted);
+typedef int (*s2_voice_get_muted_fn)(int slot);
 
 typedef struct {
     s2_schema_offset_fn       schema_offset;
@@ -396,6 +405,9 @@ typedef struct {
     s2_transmit_stats_fn transmit_stats;
     /* Round-control slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
     s2_gamerules_terminate_round_fn gamerules_terminate_round;
+    /* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI. */
+    s2_voice_set_muted_fn  voice_set_muted;
+    s2_voice_get_muted_fn  voice_get_muted;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
