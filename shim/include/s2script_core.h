@@ -286,7 +286,14 @@ typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_
 typedef int (*s2_voice_set_muted_fn)(int slot, int muted);
 typedef int (*s2_voice_get_muted_fn)(int slot);
 
-/* UserMessage-interception slice — APPENDED after voice_get_muted; order is the ABI.
+/* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
+ * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
+ * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
+ * (CSSharp/SwiftlyS2 parity). No-op if the signature is unresolved or the ref is stale.
+ * APPENDED after voice_get_muted; order is the ABI. */
+typedef void (*s2_player_switch_team_fn)(int idx, int serial, int team);
+
+/* UserMessage-interception slice — APPENDED after player_switch_team; order is the ABI.
  * usermsg_hook_sub: resolve an unscoped message name (FindNetworkMessagePartial, the live-proven
  * SayText2 path), VALIDATE the m_MessageId extraction fail-closed (non-null NetMessageInfo, id in
  * [0,2048), requested name a substring of GetUnscopedName), lazily SH_ADD_HOOK PostEventAbstract on
@@ -424,7 +431,9 @@ typedef struct {
     /* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI. */
     s2_voice_set_muted_fn  voice_set_muted;
     s2_voice_get_muted_fn  voice_get_muted;
-    /* UserMessage-interception slice — APPENDED after voice_get_muted; order is the ABI. */
+    /* switchteam slice — APPENDED after voice_get_muted; order is the ABI; do not reorder above. */
+    s2_player_switch_team_fn player_switch_team;
+    /* UserMessage-interception slice — APPENDED after player_switch_team; order is the ABI. */
     s2_usermsg_hook_sub_fn         usermsg_hook_sub;
     s2_usermsg_hook_unsub_fn       usermsg_hook_unsub;
     s2_usermsg_hook_read_int_fn    usermsg_hook_read_int;

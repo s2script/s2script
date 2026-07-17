@@ -252,8 +252,10 @@ type GamerulesTerminateRoundFn = extern "C" fn(c_int, c_int, c_int, f32, c_int) 
 // --- Voice-control slice (APPENDED after gamerules_terminate_round; order is the ABI).
 type VoiceSetMutedFn = extern "C" fn(c_int, c_int) -> c_int;
 type VoiceGetMutedFn = extern "C" fn(c_int) -> c_int;
+// --- switchteam slice (APPENDED after voice_get_muted; order is the ABI). (idx, serial, team).
+type PlayerSwitchTeamFn = extern "C" fn(c_int, c_int, c_int);
 
-// UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI). ENGINE-GENERIC:
+// UserMessage-interception slice (APPENDED after player_switch_team; order is the ABI). ENGINE-GENERIC:
 // message NAMES and dotted field PATHS are strings, ids/slots are ints — no CS2 identifier crosses.
 type UsermsgHookSubFn        = extern "C" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int;
 type UsermsgHookUnsubFn      = extern "C" fn(c_int) -> c_int;
@@ -394,7 +396,9 @@ pub struct S2EngineOps {
     // Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
     pub voice_set_muted:        Option<VoiceSetMutedFn>,
     pub voice_get_muted:        Option<VoiceGetMutedFn>,
-    // --- UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
+    // --- switchteam slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
+    pub player_switch_team: Option<PlayerSwitchTeamFn>,
+    // --- UserMessage-interception slice (APPENDED after player_switch_team; order is the ABI; do not reorder above) ---
     pub usermsg_hook_sub:         Option<UsermsgHookSubFn>,
     pub usermsg_hook_unsub:       Option<UsermsgHookUnsubFn>,
     pub usermsg_hook_read_int:    Option<UsermsgHookReadIntFn>,
@@ -5325,6 +5329,25 @@ fn s2_gamerules_terminate_round(scope: &mut v8::PinScope, args: v8::FunctionCall
     }));
 }
 
+/// `__s2_player_switch_team(index, serial, team)` — NON-LETHAL controller team move via the
+/// sig-resolved SwitchTeam engine-op (the player stays alive and keeps weapons; the pawn may be
+/// respawned — vs `__s2_player_change_team` = jointeam semantics). A thin pass-through: the shim
+/// reconstructs + serial-gates the controller from (index, serial), bounds-checks `team` (0..3), and
+/// dispatches 0/1 (None/Spectator) to ChangeTeam (CSSharp/SwiftlyS2 parity). No-op without the op
+/// (unresolved signature) or on a stale ref. Engine-generic here (only the resolving signature is
+/// game-specific).
+fn s2_player_switch_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
+        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.player_switch_team else { return };
+        f(index, serial, team);
+    }));
+}
+
 /// Native `__s2_transmit_set(index, serial, viewerSlots[]) -> boolean` — replace the calling
 /// plugin's visibility rule for the entity: transmit ONLY to the given viewer slots (empty array
 /// = hidden from everyone). The u64 mask is folded core-side from the JS number array (no BigInt
@@ -7374,6 +7397,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
     set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
     set_native(scope, global_obj, "__s2_gamerules_terminate_round", s2_gamerules_terminate_round);
+    set_native(scope, global_obj, "__s2_player_switch_team", s2_player_switch_team);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
     // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
@@ -11700,6 +11724,7 @@ mod frame_tests {
             gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
+            player_switch_team: None,
             usermsg_hook_sub: None, usermsg_hook_unsub: None,
             usermsg_hook_read_int: None, usermsg_hook_read_float: None,
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,
@@ -11920,6 +11945,20 @@ mod frame_tests {
         // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
         let out = eval_std("pct1", r#"
             var r = __s2_player_change_team(5, 7, 1);
+            String(r === undefined);
+        "#);
+        assert_eq!(out, "true");
+        shutdown();
+    }
+
+    /// switchteam slice: `__s2_player_switch_team` (and `Player.switchTeam`) no-op with no
+    /// `player_switch_team` op (unresolved signature / every in-isolate test) — never a crash.
+    #[test]
+    fn player_switch_team_degrades_without_op() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
+        let out = eval_std("pst1", r#"
+            var r = __s2_player_switch_team(5, 7, 2);
             String(r === undefined);
         "#);
         assert_eq!(out, "true");
@@ -12743,6 +12782,7 @@ mod frame_tests {
             gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
+            player_switch_team: None,
             usermsg_hook_sub: None, usermsg_hook_unsub: None,
             usermsg_hook_read_int: None, usermsg_hook_read_float: None,
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,

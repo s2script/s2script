@@ -1515,6 +1515,38 @@ static void s2_player_change_team(int idx, int serial, int team) {
 }
 
 // ---------------------------------------------------------------------------
+// player_switch_team (switchteam slice) — NON-LETHAL controller team move via
+// CCSPlayerController::SwitchTeam(this, team): the player stays alive and keeps weapons (vs ChangeTeam
+// = jointeam semantics); the pawn MAY be respawned (consumers re-resolve player.pawn next frame). For
+// team <= 1 (None/Spectator) dispatches to s2_player_change_team — CSSharp/SwiftlyS2 parity: the
+// engine SwitchTeam is CS:GO-lineage T/CT-only. Guarded identically to change_team: serial-gate +
+// 0..3 bounds + .text-range check; any failure degrades to a (logged) no-op, never a crash.
+// HISTORY: an earlier borrowed "SwitchTeam" sig hit the WRONG function on our build (the deferred
+// m_bSwitchTeamsOnNextRoundReset halftime swap — live-gate-proven no-move); this sig is the real
+// per-player function, validated UNIQUE @0x1525f40 on 2000875 and re-validated every boot.
+// ABI: void CCSPlayerController::SwitchTeam(this /*rdi*/, unsigned int team /*esi*/).
+// ---------------------------------------------------------------------------
+typedef void (*SwitchTeam_t)(void* thisptr, int team);
+static SwitchTeam_t s_pSwitchTeam = nullptr;             // sig-resolved fn ptr (loaded in Load)
+static void s2_player_switch_team(int idx, int serial, int team) {
+    if (team < 0 || team > 3) return;                    // Unassigned/Spectator/T/CT only
+    if (team <= 1) {                                     // None/Spectator -> ChangeTeam (parity path)
+        s2_player_change_team(idx, serial, team);
+        return;
+    }
+    if (!s_pSwitchTeam) return;                          // signature unresolved -> no-op
+    CEntityHandle h(idx, serial);
+    void* controller = s2_deref_handle(static_cast<unsigned int>(h.ToInt()));  // null if stale/free slot
+    if (!controller) return;
+    const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pSwitchTeam);
+    if (!s_serverText || f < s_serverText || f >= s_serverText + s_serverTextSize) {
+        META_CONPRINTF("[s2script] SwitchTeam fn %p out of libserver .text — no-op\n", (const void*)f);
+        return;
+    }
+    s_pSwitchTeam(controller, team);
+}
+
+// ---------------------------------------------------------------------------
 // gamerules_terminate_round (round-control slice) — force the round to end via the sig-resolved
 // CCSGameRules::TerminateRound(float delay, uint32 reason, void* unk3=0, uint32 unk4=0) (s_pTerminateRound,
 // loaded in Load behind TWO gates: unique-match AND the scope-string semantic check — the borrowed
@@ -3455,6 +3487,24 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pChangeTeam), (const void*)s_serverText, s_serverTextSize);
                 }   // stOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // switchteam slice: resolve CCSPlayerController::SwitchTeam (Player.switchTeam — the
+            // NON-LETHAL T/CT move). Sig corroborated by SwiftlyS2 + CSSharp but VALIDATED on OUR
+            // libserver.so (unique @0x1525f40 on 2000875) — NOT the changeteam-era borrowed sig that
+            // hit the deferred m_bSwitchTeamsOnNextRoundReset function (see the gamedata comment).
+            // Degrade-never-crash: unresolved -> switch_team no-ops (the spectator dispatch to
+            // ChangeTeam still works if that sig resolved).
+            auto swit = sigs.find("SwitchTeam");
+            if (swit == sigs.end()) {
+                GamedataResult("SwitchTeam", false, "signature absent from gamedata");
+            } else {
+                int64_t swOff = ResolveSigValidated("SwitchTeam", swit->second);
+                ModText swmt = FindModuleText(swit->second.module.c_str());
+                if (swOff != s2sig::kFail && swmt.text) {  // resolve=="direct": the unique match IS the function start
+                    s_pSwitchTeam = reinterpret_cast<SwitchTeam_t>(const_cast<uint8_t*>(swmt.text) + swOff);
+                    META_CONPRINTF("[s2script] SwitchTeam resolved @%p (Player.switchTeam; libserver .text=%p+%zu)\n",
+                                   reinterpret_cast<void*>(s_pSwitchTeam), (const void*)s_serverText, s_serverTextSize);
+                }   // swOff == kFail: ResolveSigValidated already recorded the reason
+            }
             // Round-control slice: resolve CCSGameRules::TerminateRound (GameRules.terminateRound).
             // DUAL-GATED: unique-match (ResolveSigValidated) AND the scope-string semantic check —
             // on THIS build the borrowed CSSharp/Swiftly sig is unique yet lands on the WRONG function,
@@ -3983,7 +4033,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Voice-control slice — APPENDED after gamerules_terminate_round; order MUST match S2EngineOps.
     ops.voice_set_muted = &s2_voice_set_muted;
     ops.voice_get_muted = &s2_voice_get_muted;
-    // UserMessage-interception slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
+    // switchteam slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
+    ops.player_switch_team = &s2_player_switch_team;
+    // UserMessage-interception slice — APPENDED after player_switch_team; order MUST match S2EngineOps.
     ops.usermsg_hook_sub         = &s2_usermsg_hook_sub;
     ops.usermsg_hook_unsub       = &s2_usermsg_hook_unsub;
     ops.usermsg_hook_read_int    = &s2_usermsg_hook_read_int;
