@@ -19,7 +19,10 @@
     "NetworkMessages": "NetworkMessagesVersion001",
     // ISource2GameClients — backs the ClientCommand hook for player console commands (Slice 6.11c).
     // Interface string from eiface.h INTERFACEVERSION_SERVERGAMECLIENTS.
-    "Source2GameClients": "Source2GameClients001"
+    "Source2GameClients": "Source2GameClients001",
+    // ISource2GameEntities — backs the CheckTransmit POST hook (checktransmit slice: per-client
+    // entity visibility). Interface string from eiface.h INTERFACEVERSION_SERVERGAMEENTS.
+    "Source2GameEntities": "Source2GameEntities001"
   },
   // Byte offsets into engine interface objects — keyed by platform string.
   // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked
@@ -31,6 +34,14 @@
     // entity-system pointer). This is the one entity value that isn't resolved dynamically — a wrong
     // offset reads garbage, so it must be re-confirmed on the update treadmill if entity access breaks.
     "GameEntitySystem": { "linuxsteamrt64": 80 },
+    // CCheckTransmitInfo: byte offset of the which-client int32. hl2sdk's CCheckTransmitInfo is
+    // explicitly incomplete ("TODO" at iservernetworkable.h:44), so this is a borrowed constant —
+    // CSSharp calls it m_nPlayerSlot, Swiftly m_nClientEntityIndex (they DISAGREE on semantics:
+    // slot vs entindex=slot+1). Both the offset AND the semantics are validated at FIRST
+    // CheckTransmit fire (fail-closed: no transmit bits are touched until validation passes; a
+    // persistent mismatch prints a named gamedata FAIL and disables the descriptor). Re-derive on
+    // the update treadmill if transmit filtering reports FAILED; see docs/re-strategy.md.
+    "CheckTransmitInfo_clientEntityIndex": { "linuxsteamrt64": 576 },
     // NOTE: the six 5D.2 engine-identity offsets (NetworkServerService.gameServer /
     // NetworkGameServer.clientCount+clientElems / ServerSideClient.name+signon+userId) were RETIRED in
     // the clientlist-fakeconvar-onmapstart slice — the client ops now use typed SDK virtuals

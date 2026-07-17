@@ -250,6 +250,13 @@ typedef int (*s2_sound_precache_add_fn)(const char* path);
  * `team` (Spectator=1/T=2/CT=3) via the sig-resolved CCSPlayerController::ChangeTeam. No-op if the
  * signature is unresolved or the ref is stale. APPENDED after sound_precache_add; order is the ABI. */
 typedef void (*s2_player_change_team_fn)(int idx, int serial, int team);
+/* checktransmit slice: upsert the merged visibility mask for a serial-gated entity.
+ * Returns 1 on success, 0 on a stale ref / full table / uninstalled hook / disabled descriptor. */
+typedef int (*s2_transmit_set_fn)(int index, int serial, unsigned long long mask);
+/* checktransmit slice: drop the entity's rule entry (1 removed, 0 absent). */
+typedef int (*s2_transmit_clear_fn)(int index);
+/* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
+typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
 
 /* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
  * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
@@ -260,7 +267,7 @@ typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_
 typedef void  (*s2_usercmd_write_buttons_fn)(uint64_t mask);
 typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.subtick_moves */
 
-/* Round-control slice — APPENDED after usercmd_clear_subtick; order is the ABI.
+/* Round-control slice — APPENDED after transmit_stats; order is the ABI.
  * gamerules_terminate_round(idx, serial, rules_ptr_off, delay, reason) -> 1 queued / 0 degraded.
  * (idx, serial) = the rules PROXY entity; rules_ptr_off = the offset of its rules-struct pointer
  * field (resolved by the game package; no game names cross this ABI). DEFERRED: the shim queues the
@@ -383,7 +390,11 @@ typedef struct {
     s2_usercmd_read_buttons_fn  usercmd_read_buttons;
     s2_usercmd_write_buttons_fn usercmd_write_buttons;
     s2_usercmd_clear_subtick_fn usercmd_clear_subtick;
-    /* Round-control slice — APPENDED after usercmd_clear_subtick; order is the ABI; do not reorder above. */
+    /* checktransmit slice — APPENDED after usercmd_clear_subtick; order is the ABI; do not reorder above. */
+    s2_transmit_set_fn   transmit_set;
+    s2_transmit_clear_fn transmit_clear;
+    s2_transmit_stats_fn transmit_stats;
+    /* Round-control slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
     s2_gamerules_terminate_round_fn gamerules_terminate_round;
 } S2EngineOps;
 
