@@ -632,4 +632,22 @@ mod tests {
         crate::crash::set_spool_dir("");
         s2script_core_shutdown();
     }
+
+    #[test]
+    fn crash_test_native_is_gated_by_dev_test_config() {
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        v8host::create_plugin_context("harness");
+        // No ops table + no dev_test config → every kind refuses (returns false), nothing raised.
+        v8host::eval_in_context(
+            "harness",
+            r#"
+                if (__s2_crash_test("segv") !== false) throw new Error("segv must be refused");
+                if (__s2_crash_test("abort") !== false) throw new Error("abort must be refused");
+                if (__s2_crash_test("panic") !== false) throw new Error("panic must be refused");
+                if (__s2_crash_test("bogus") !== false) throw new Error("unknown kind must be refused");
+            "#,
+        )
+        .unwrap();
+        s2script_core_shutdown();
+    }
 }

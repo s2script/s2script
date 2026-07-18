@@ -298,6 +298,9 @@ typedef int (*s2_voice_get_muted_fn)(int slot);
  * server_build_number: the engine build via IVEngineServer2::GetBuildVersion(); 0 if the
  * interface is unavailable. Engine-generic (a Source 2 engine virtual, not a game name). */
 typedef int (*s2_server_build_number_fn)(void);
+/* Crash-harness (dev-only, gated core-side by crashreporter.json dev_test): raise a real
+ * native fault on command. kind: 0 = null volatile write (SIGSEGV), 1 = abort() (SIGABRT). */
+typedef void (*s2_crash_test_native_fn)(int kind);
 
 /* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
  * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
@@ -459,6 +462,8 @@ typedef struct {
     s2_player_respawn_fn player_respawn;
     /* Crash-reporter slice — APPENDED after player_respawn; order is the ABI. */
     s2_server_build_number_fn server_build_number;
+    /* Crash-harness — APPENDED after server_build_number; order is the ABI. */
+    s2_crash_test_native_fn crash_test_native;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

@@ -272,6 +272,8 @@ type UsermsgHookDebugFn      = extern "C" fn(*mut std::os::raw::c_char, c_int) -
 type PlayerRespawnFn = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
 // --- Crash-reporter slice: engine build number (C-ABI; the C header must match exactly). APPENDED after player_respawn. ---
 pub type ServerBuildNumberFn = extern "C" fn() -> c_int;
+// --- Crash-harness (dev-only): raise a native fault on command (C-ABI; header must match) ---
+pub type CrashTestNativeFn = extern "C" fn(kind: c_int);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -418,6 +420,8 @@ pub struct S2EngineOps {
     pub player_respawn: Option<PlayerRespawnFn>,
     // --- Crash-reporter slice — APPENDED after player_respawn; order is the ABI; do not reorder above. ---
     pub server_build_number: Option<ServerBuildNumberFn>,
+    // --- Crash-harness — APPENDED after server_build_number; order is the ABI; do not reorder above. ---
+    pub crash_test_native: Option<CrashTestNativeFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -7347,6 +7351,40 @@ fn s2_server_build(
     }));
 }
 
+/// Native `__s2_crash_test(kind) -> bool` — the deliberate-crash harness (spec §10). REFUSED
+/// (returns false) unless crashreporter.json sets dev_test:true. kinds: "segv"/"abort" raise a
+/// real native fault via the shim op; "panic" raises a Rust panic (recovered by catch_unwind,
+/// reported by the panic hook); "js" is plugin-side (a plain throw) and unknown kinds refuse.
+fn s2_crash_test(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if !crate::crash::config::load().dev_test {
+            log_warn("WARN: __s2_crash_test refused (crashreporter.json dev_test is not true)");
+            return;
+        }
+        let kind = args.get(0).to_rust_string_lossy(scope);
+        match kind.as_str() {
+            "panic" => {
+                rv.set_bool(true);
+                panic!("deliberate crash-harness panic (sm_crashtest panic)");
+            }
+            "segv" | "abort" => {
+                let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.crash_test_native) else {
+                    log_warn("WARN: __s2_crash_test: crash_test_native op unavailable");
+                    return;
+                };
+                rv.set_bool(true);
+                f(if kind == "segv" { 0 } else { 1 }); // does not return
+            }
+            _ => {}
+        }
+    }));
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -7400,6 +7438,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2require", s2require);
     set_native(scope, global_obj, "__s2_crash_set_game", s2_crash_set_game);
     set_native(scope, global_obj, "__s2_server_build", s2_server_build);
+    set_native(scope, global_obj, "__s2_crash_test", s2_crash_test);
     // Inter-plugin interface primitives (Slice 4.5).
     set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
@@ -11943,6 +11982,7 @@ mod frame_tests {
             usermsg_hook_recipients: None, usermsg_hook_debug: None,
             player_respawn: None,
             server_build_number: None,
+            crash_test_native: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -13016,6 +13056,7 @@ mod frame_tests {
             usermsg_hook_recipients: None, usermsg_hook_debug: None,
             player_respawn: None,
             server_build_number: None,
+            crash_test_native: None,
         }
     }
 
