@@ -61,6 +61,7 @@
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
 #include "trace.h"    // Ray-trace slice: Ray_t/CTraceFilterEx/CGameTrace + the TraceShape call
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
+#include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -4245,6 +4246,16 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                          schemaHash.c_str(), s_gdFail, spool.c_str());
         META_CONPRINTF("[s2script] crash identity pushed (gamedata %s, spool %s)\n",
                        gdFp.empty() ? "<none>" : gdFp.c_str(), spool.c_str());
+
+        // Arm Breakpad AFTER core init (spec §6.2) — boot-time crashes from here on are caught.
+        // Fail-off: an empty spool dir leaves the reporter disarmed and the server running.
+        if (!spool.empty() &&
+            S2CrashArm(spool.c_str(), s2script_core_crash_breadcrumb(),
+                       s2script_core_crash_breadcrumb_size())) {
+            META_CONPRINTF("[s2script] crash handler armed (spool %s)\n", spool.c_str());
+        } else {
+            META_CONPRINTF("[s2script] WARN: crash handler NOT armed (spool dir unavailable)\n");
+        }
     }
 
     // Register the @s2script/cs2 package (pawn.js) with the core so each plugin context
@@ -4450,6 +4461,8 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         }
     }
     s_concommandRefs.clear();
+
+    S2CrashDisarm();   // restore previous signal handlers before the core is torn down
 
     s2script_core_shutdown();
     return true;
