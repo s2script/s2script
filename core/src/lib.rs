@@ -14,6 +14,7 @@ mod http;
 mod loader;
 mod multiplexer;
 mod net;
+pub(crate) mod crash;
 mod schema;
 mod schema_catalog;
 mod sqldb;
