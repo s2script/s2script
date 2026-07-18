@@ -35,11 +35,37 @@ fn zero_value(ty: &str) -> serde_json::Value {
     }
 }
 
-/// Strip `//`-to-end-of-line comments (our auto-generated files use them). Naive but safe here — our
-/// values never contain `//` (string values could; a `//` inside a JSON string would be mis-stripped,
-/// which is acceptable for a config file and matches the shim's gamedata JSONC handling).
-fn strip_line_comments(s: &str) -> String {
-    s.lines().map(|l| match l.find("//") { Some(i) => &l[..i], None => l }).collect::<Vec<_>>().join("\n")
+/// Strip `//`-to-end-of-line comments (our auto-generated files use them). Quote-aware: a `//`
+/// inside a JSON string (e.g. a `"http://..."` endpoint value) is NOT treated as a comment start —
+/// only bare `//` outside of any string literal ends the line. Handles `\"` escapes.
+pub(crate) fn strip_line_comments(s: &str) -> String {
+    s.lines()
+        .map(|l| {
+            let bytes = l.as_bytes();
+            let mut in_string = false;
+            let mut escaped = false;
+            let mut i = 0;
+            while i < bytes.len() {
+                let c = bytes[i] as char;
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == '"' {
+                        in_string = false;
+                    }
+                } else if c == '"' {
+                    in_string = true;
+                } else if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '/' {
+                    return &l[..i];
+                }
+                i += 1;
+            }
+            l
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Merge declared defaults with the override JSON (per-key, type-checked). Never fails: a malformed

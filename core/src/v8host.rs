@@ -7842,6 +7842,12 @@ pub(crate) fn config_file_content(id: &str) -> Option<String> {
     Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
 }
 
+/// Crash reporter: read an arbitrary configs/<id>.json via the config_read op (the same shim
+/// path plugins' configs use). pub(crate) so crash::config can reach it without touching ops.
+pub(crate) fn read_engine_config(id: &str) -> Option<String> {
+    config_file_content(id)
+}
+
 /// Re-materialize a plugin's config after its override file changed: re-read the file, merge with
 /// declared defaults, re-inject `globalThis.__s2pkg_config_values`, and fire every `onChange`
 /// handler registered by that plugin (via CONFIG_SUBS) with the updated config object as the arg.
