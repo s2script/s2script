@@ -81,6 +81,9 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   const options: ts.CompilerOptions = {
     strict: true,
     noEmit: true,
+    // Accept explicit `.ts` import extensions (node type-stripping requires them for source-to-source
+    // imports; esbuild strips them at bundle time). Backward-compatible — extensionless imports still resolve.
+    allowImportingTsExtensions: true,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     module: ts.ModuleKind.ESNext,
     target: ts.ScriptTarget.ES2020,
