@@ -2,6 +2,7 @@
 //! No V8 types cross into this module; no game names ever appear here.
 pub mod breadcrumb;
 pub mod envelope;
+pub mod spool;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
