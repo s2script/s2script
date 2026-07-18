@@ -5,6 +5,7 @@ pub mod config;
 pub mod envelope;
 pub mod panic_hook;
 pub mod spool;
+pub mod uploader;
 
 use std::path::PathBuf;
 use std::sync::Mutex;

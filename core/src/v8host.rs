@@ -9652,6 +9652,7 @@ pub(crate) fn frame_async_drain() {
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
     refresh_detour();
+    crate::crash::uploader::periodic_sweep();
 }
 
 /// Unload a plugin at a frame boundary (never mid-dispatch): the ledger reverse-walk teardown

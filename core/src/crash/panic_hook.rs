@@ -47,7 +47,7 @@ fn report(info: &std::panic::PanicHookInfo) {
         },
         Some(crate::crash::envelope::iso8601_utc(now)),
         "", // server_id is patched in by the uploader at upload time (D-1 / Task 3)
-        &crate::crash::envelope::Scrub { map: false, players: false }, // Task 3 threads config
+        &crate::crash::config::scrub(&crate::crash::config::load()),
     );
     if let Ok(json) = serde_json::to_string(&env) {
         let _ = crate::crash::spool::write_incident(&dir, &json);

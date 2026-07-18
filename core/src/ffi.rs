@@ -407,6 +407,7 @@ pub extern "C" fn s2script_core_crash_set_identity(
             &s(fingerprint), &s(generated_at), &s(hl2sdk), &s(schema_build), gd_fail_count > 0,
         );
         crate::crash::set_spool_dir(&s(spool_dir));
+        crate::crash::uploader::boot_sweep();
     });
 }
 
