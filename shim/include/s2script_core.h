@@ -294,6 +294,10 @@ typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_
  * voice_get_muted: 1 = muted, 0 = not muted, -1 = slot out of range / degraded. */
 typedef int (*s2_voice_set_muted_fn)(int slot, int muted);
 typedef int (*s2_voice_get_muted_fn)(int slot);
+/* Crash-reporter slice — APPENDED after voice_get_muted; order is the ABI.
+ * server_build_number: the engine build via IVEngineServer2::GetBuildVersion(); 0 if the
+ * interface is unavailable. Engine-generic (a Source 2 engine virtual, not a game name). */
+typedef int (*s2_server_build_number_fn)(void);
 
 /* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
  * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
@@ -453,6 +457,8 @@ typedef struct {
     s2_usermsg_hook_debug_fn       usermsg_hook_debug;
     /* player-respawn slice — APPENDED after usermsg_hook_debug; order is the ABI; do not reorder above. */
     s2_player_respawn_fn player_respawn;
+    /* Crash-reporter slice — APPENDED after player_respawn; order is the ABI. */
+    s2_server_build_number_fn server_build_number;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -549,6 +555,19 @@ void s2script_core_register_package(const char* name, const char* js);
  * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
  * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */
 void s2script_core_set_plugins_dir(const char* path);
+
+/* Crash reporter: the breadcrumb POD base pointer + byte size. The shim's crash callback
+ * dumps exactly this many raw bytes with a single write() (signal-safe; no field access). */
+const uint8_t* s2script_core_crash_breadcrumb(void);
+uint32_t       s2script_core_crash_breadcrumb_size(void);
+/* Crash reporter: push the treadmill identity block + the crash-spool dir (called once in
+ * Load, after s2script_core_init). gd_fail_count > 0 marks gamedata stale. */
+void s2script_core_crash_set_identity(const char* gamedata_fingerprint,
+                                      const char* gamedata_generated_at,
+                                      const char* hl2sdk_build,
+                                      const char* schema_build,
+                                      int gamedata_fail_count,
+                                      const char* spool_dir);
 
 #ifdef __cplusplus
 }
