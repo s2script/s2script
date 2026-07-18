@@ -32,8 +32,8 @@ pub struct PublishDecl {
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
     pub id: String,
-    /// Carried in the manifest contract; not yet validated (semver enforcement deferred).
-    #[allow(dead_code)]
+    /// Carried in the manifest contract; consumed by the crash-reporter breadcrumb's plugin table
+    /// (semver enforcement itself is still deferred).
     pub version: String,
     #[serde(rename = "apiVersion")]
     pub api_version: String,
@@ -89,6 +89,8 @@ fn load_and_reconcile(manifest: &Manifest, js: &str, cfg: &str) {
             manifest.id, e
         ));
         crate::v8host::unload_plugin(&manifest.id);
+    } else {
+        crate::crash::breadcrumb::plugin_loaded(&manifest.id, &manifest.version);
     }
 }
 

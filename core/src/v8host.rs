@@ -270,6 +270,8 @@ type UsermsgHookDebugFn      = extern "C" fn(*mut std::os::raw::c_char, c_int) -
 // The shim defers the sig-resolved engine call to the next GameFrame OUTSIDE the JS isolate borrow
 // (it fires player_spawn synchronously). No game names cross the ABI.
 type PlayerRespawnFn = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
+// --- Crash-reporter slice: engine build number (C-ABI; the C header must match exactly). APPENDED after player_respawn. ---
+pub type ServerBuildNumberFn = extern "C" fn() -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -414,6 +416,8 @@ pub struct S2EngineOps {
     pub usermsg_hook_debug:       Option<UsermsgHookDebugFn>,
     // --- player-respawn slice (APPENDED after usermsg_hook_debug; order is the ABI; do not reorder above) ---
     pub player_respawn: Option<PlayerRespawnFn>,
+    // --- Crash-reporter slice — APPENDED after player_respawn; order is the ABI; do not reorder above. ---
+    pub server_build_number: Option<ServerBuildNumberFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -501,6 +505,8 @@ thread_local! {
     /// it reads satisfies `frame >= t`.  `NextTick` targets the current count (resolves next drain);
     /// `NextFrame` targets `current + 1` (resolves one drain later).
     static FRAME_COUNTER: std::cell::Cell<u64> = std::cell::Cell::new(0);
+    /// Boot instant for the breadcrumb's uptime field (set once in `init`).
+    static UPTIME_START: std::cell::Cell<Option<Instant>> = std::cell::Cell::new(None);
     /// Pending timer queue (Delay/NextTick/NextFrame).  Holds only `u64` ids; the promise lives
     /// in `RESOLVERS`.  Borrowed briefly in `make_timer_promise`/`frame_async_drain`/`refresh_detour`;
     /// NEVER held across `perform_microtask_checkpoint` (a continuation re-enters it).
@@ -3464,6 +3470,7 @@ fn s2_ent_ref_read(
     mut rv: v8::ReturnValue,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::crash::breadcrumb::note_engine_op("ent_ref_read");
         rv.set_null();
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
@@ -3497,6 +3504,7 @@ fn s2_ent_ref_write(
     mut rv: v8::ReturnValue,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::crash::breadcrumb::note_engine_op("ent_ref_write");
         rv.set_bool(false);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
@@ -3630,6 +3638,7 @@ fn s2_ent_ref_read_floats_chain(scope: &mut v8::PinScope, args: v8::FunctionCall
 /// __s2_ent_ref_read_floats_chain; handles = read KIND_U32 here then __s2_handle_decode in JS.
 fn s2_ent_ref_read_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::crash::breadcrumb::note_engine_op("ent_ref_read_chain");
         rv.set_null();
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
@@ -3672,6 +3681,7 @@ fn s2_ent_ref_read_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 /// Callers: the CS2 fire gate (m_flNextAttack, F32) + flag-clearing on a pointer sub-object (i32/u32/u8).
 fn s2_ent_ref_write_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::crash::breadcrumb::note_engine_op("ent_ref_write_chain");
         rv.set_bool(false);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
@@ -3811,6 +3821,11 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
 
     // Clone the owner's context out of PLUGINS (borrow released) so the handler may re-enter.
     let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.context.clone())) else { return };
+
+    // `owner` is an owned String here (unlike the sibling dispatch fns' `&String` from a snapshot
+    // Vec), so the crash guard takes `&owner` — deviation from the plan's literal `owner` (compiles
+    // only via a reference; the plan's other call sites already hold a `&String`).
+    let _crash_guard = crate::crash::breadcrumb::enter_dispatch(&owner, &format!("command:{}", name));
 
     // Phase 2: enter the OWNER's context and invoke the JS fn.
     HOST.with(|h| {
@@ -3963,6 +3978,14 @@ fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
 /// ContextScope/TryCatch + WARN-on-throw. Notify-only — each handler is called with the single Integer
 /// `slot` and its return is ignored (no suppress/HookResult collapse).
 pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
+    {
+        let s = crate::crash::breadcrumb::snapshot();
+        match event {
+            "putinserver" => crate::crash::breadcrumb::set_players(s.players + 1),
+            "disconnect" => crate::crash::breadcrumb::set_players(s.players - 1),
+            _ => {}
+        }
+    }
     // Phase 1: snapshot — release CLIENT_MUX borrow before entering any context.
     let snap = CLIENT_MUX.with(|m| m.borrow().snapshot(event));
     if snap.is_empty() { return; }
@@ -4012,6 +4035,7 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
 /// WARN-on-throw. Notify-only — each handler is called with the single String `map` and its return
 /// is ignored.
 pub(crate) fn dispatch_map_start(map: &str) {
+    crate::crash::breadcrumb::set_map(map);
     let snap = MAP_MUX.with(|m| m.borrow().snapshot(""));
     if snap.is_empty() { return; }
 
@@ -6851,6 +6875,8 @@ pub(crate) fn dispatch_game_event(name: &str) {
             // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
             let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
 
+            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, &format!("event:{}", name));
+
             // Per-subscriber HandleScope+ContextScope — mirrors dispatch_onframe.
             let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
             let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
@@ -6910,6 +6936,8 @@ pub(crate) fn dispatch_damage() {
         for (owner, gen, handler_g) in &snap {
             if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { continue; }
             let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, "damage:onPre");
 
             let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
             let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
@@ -7275,6 +7303,37 @@ pub(crate) fn dispatch_usermsg(name: &str, id: i32) -> i32 {
     outcome.result as i32
 }
 
+/// Native `__s2_crash_set_game(name, build)` — the engine-generic setter the GAME PACKAGE calls to
+/// stamp the game identity into the crash breadcrumb (core never knows which game; spec §5).
+fn s2_crash_set_game(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let build = args.get(1).uint32_value(scope).unwrap_or(0);
+        crate::crash::breadcrumb::set_game(&name, build);
+    }));
+}
+
+/// Native `__s2_server_build() -> number` — the engine's build number via the appended
+/// `server_build_number` op (IVEngineServer2::GetBuildVersion; engine-generic). 0 = unavailable.
+fn s2_server_build(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let n = ENGINE_OPS
+            .with(|o| o.get())
+            .and_then(|ops| ops.server_build_number)
+            .map(|f| f())
+            .unwrap_or(0);
+        rv.set_int32(n);
+    }));
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -7326,6 +7385,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Per-context identity probe + the CJS require shim.
     set_native(scope, global_obj, "__s2_current_plugin", s2_current_plugin);
     set_native(scope, global_obj, "__s2require", s2require);
+    set_native(scope, global_obj, "__s2_crash_set_game", s2_crash_set_game);
+    set_native(scope, global_obj, "__s2_server_build", s2_server_build);
     // Inter-plugin interface primitives (Slice 4.5).
     set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
@@ -9004,6 +9065,9 @@ pub fn init(logger: LogFn) -> Result<(), String> {
     // than lazily on first `__s2_fetch` call) keeps engine-generic subsystem setup in one place.
     crate::http::init();
 
+    UPTIME_START.with(|t| if t.get().is_none() { t.set(Some(Instant::now())) });
+    crate::crash::breadcrumb::clear_plugins(); // establishes the "core"/"idle" idle stamp
+
     let mut isolate = v8::Isolate::new(v8::CreateParams::default());
 
     // We own the microtask checkpoint: with Explicit policy, await/.then continuations run ONLY
@@ -9122,6 +9186,13 @@ pub(crate) fn dispatch_onframe(
 ) -> multiplexer::DispatchOutcome {
     use crate::multiplexer::{run_chain, DispatchOutcome};
 
+    if phase == Phase::Pre {
+        crate::crash::breadcrumb::note_tick(
+            FRAME_COUNTER.with(|c| c.get()),
+            UPTIME_START.with(|t| t.get().map(|s| s.elapsed().as_secs() as u32).unwrap_or(0)),
+        );
+    }
+
     // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers (KEEPING the owner tag so we
     // can enter each handler's own context), then release.
     let snap4 = FRAME.with(|f| f.borrow().snapshot(phase));
@@ -9149,6 +9220,11 @@ pub(crate) fn dispatch_onframe(
             else {
                 return Ok(HookResult::Continue); // owner's context disposed → skip, not an error
             };
+
+            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(
+                owner,
+                if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
+            );
 
             // Fresh HandleScope + ContextScope on the OWNER's context.
             let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
@@ -9179,6 +9255,11 @@ pub(crate) fn dispatch_onframe(
             let mut tc_storage = v8::TryCatch::new(scope);
             let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
             let tc = &mut tc;
+
+            crate::crash::breadcrumb::note_js_location(
+                owner,
+                v8::Local::new(tc, &jh.func).get_script_line_number().map(|l| l + 1).unwrap_or(0),
+            );
 
             let func = v8::Local::new(tc, &jh.func);
             match func.call(tc, recv, &[ctx_val]) {
@@ -9321,6 +9402,8 @@ pub fn shutdown() {
     BAN_LOADED.with(|c| c.set(false));
     // Reset the cookie cache (clientprefs) so a re-init starts with no stale entries / cached flags.
     crate::cookies::reset();
+    // Reset the crash-breadcrumb plugin table + idle stamp so a re-init starts clean.
+    crate::crash::breadcrumb::clear_plugins();
 }
 
 /// Resolve one pending async `entry` in its OWNING plugin's context, or DROP it (the async-liveness
@@ -9591,6 +9674,7 @@ pub fn unload_all() {
 }
 
 pub(crate) fn unload_plugin(id: &str) {
+    crate::crash::breadcrumb::plugin_unloaded(id);
     // (a) Mark unloading: drop the plugin's OnGameFrame subscriptions (handler Globals) and reconcile
     // the detour.  remove_by_owner returns a DetourChange, but the combined predicate in
     // refresh_detour is the source of truth — call it to apply the transition.
@@ -11759,6 +11843,7 @@ mod frame_tests {
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,
             usermsg_hook_recipients: None, usermsg_hook_debug: None,
             player_respawn: None,
+            server_build_number: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -12831,6 +12916,7 @@ mod frame_tests {
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,
             usermsg_hook_recipients: None, usermsg_hook_debug: None,
             player_respawn: None,
+            server_build_number: None,
         }
     }
 

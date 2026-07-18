@@ -370,6 +370,45 @@ pub extern "C" fn s2script_core_set_plugins_dir(path: *const c_char) {
     });
 }
 
+/// Crash reporter: the breadcrumb POD base pointer. The shim's Breakpad callback reads
+/// `s2script_core_crash_breadcrumb_size()` raw bytes from here with a single write() —
+/// no JSON, no allocation (signal-safe by construction). The pointer targets static
+/// memory in this cdylib (linked -z nodelete), so it stays valid for the process lifetime.
+#[no_mangle]
+pub extern "C" fn s2script_core_crash_breadcrumb() -> *const u8 {
+    crate::crash::breadcrumb::breadcrumb_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn s2script_core_crash_breadcrumb_size() -> u32 {
+    crate::crash::breadcrumb::breadcrumb_size()
+}
+
+/// Crash reporter: the shim pushes the treadmill identity block + the crash-spool dir at Load
+/// (after `s2script_core_init`). `gd_fail_count > 0` marks the gamedata as stale in every
+/// envelope. Null pointers degrade to "" (never crash). Also records the spool dir for the
+/// capture paths (Task 2) and schedules the boot sweep (Task 3).
+#[no_mangle]
+pub extern "C" fn s2script_core_crash_set_identity(
+    fingerprint: *const c_char,
+    generated_at: *const c_char,
+    hl2sdk: *const c_char,
+    schema_build: *const c_char,
+    gd_fail_count: c_int,
+    spool_dir: *const c_char,
+) {
+    let _ = catch_unwind(|| {
+        fn s(p: *const c_char) -> String {
+            if p.is_null() { return String::new(); }
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+        crate::crash::breadcrumb::set_identity(
+            &s(fingerprint), &s(generated_at), &s(hl2sdk), &s(schema_build), gd_fail_count > 0,
+        );
+        crate::crash::set_spool_dir(&s(spool_dir));
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +497,59 @@ mod tests {
         // unsubscribe the last handler must request remove:
         v8host::eval_in_context("p", "_sub.dispose();").unwrap();
         assert!(HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0));
+        s2script_core_shutdown();
+    }
+
+    #[test]
+    fn breadcrumb_ffi_exports_and_dispatch_stamping() {
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        // FFI exports: non-null pointer, size matches the POD, magic readable through the pointer.
+        let ptr = s2script_core_crash_breadcrumb();
+        assert!(!ptr.is_null());
+        assert_eq!(
+            s2script_core_crash_breadcrumb_size() as usize,
+            std::mem::size_of::<crate::crash::breadcrumb::CrashBreadcrumb>()
+        );
+        let magic = unsafe { *(ptr as *const u32) };
+        assert_eq!(magic, crate::crash::breadcrumb::BREADCRUMB_MAGIC);
+
+        // Identity push (shim-side call simulated).
+        let fp = std::ffi::CString::new("fp-1").unwrap();
+        let gen = std::ffi::CString::new("1752710400").unwrap();
+        let sdk = std::ffi::CString::new("dota-abc123").unwrap();
+        let sb = std::ffi::CString::new("schema-77").unwrap();
+        let dir = std::ffi::CString::new("/tmp/spool").unwrap();
+        s2script_core_crash_set_identity(fp.as_ptr(), gen.as_ptr(), sdk.as_ptr(), sb.as_ptr(), 0, dir.as_ptr());
+        let s = crate::crash::breadcrumb::snapshot();
+        assert_eq!(crate::crash::breadcrumb::read_cstr(&s.gamedata_fingerprint), "fp-1");
+        assert_eq!(s.gamedata_stale, 0);
+
+        // A frame dispatch stamps plugin+dispatch and pushes a ring entry.
+        v8host::create_plugin_context("bc_test");
+        v8host::eval_in_context(
+            "bc_test",
+            r#"
+                const { OnGameFrame } = __s2require("@s2script/frame");
+                globalThis._bcsub = OnGameFrame.subscribe(() => {});
+            "#,
+        )
+        .unwrap();
+        let head_before = crate::crash::breadcrumb::snapshot().ring_head;
+        s2script_core_dispatch_game_frame(0, 1, 1, 0);
+        let s2 = crate::crash::breadcrumb::snapshot();
+        assert_ne!(s2.ring_head, head_before, "dispatch must push a ring entry");
+        let last = (s2.ring_head as usize + crate::crash::breadcrumb::RING_LEN - 1)
+            % crate::crash::breadcrumb::RING_LEN;
+        assert_eq!(crate::crash::breadcrumb::read_cstr(&s2.ring[last].plugin), "bc_test");
+        assert_eq!(crate::crash::breadcrumb::read_cstr(&s2.ring[last].dispatch), "OnGameFrame:pre");
+        // After the dispatch returns, the current stamp is restored to core/idle.
+        assert_eq!(crate::crash::breadcrumb::read_cstr(&s2.plugin), "core");
+
+        // The cs2-package setter native is installed in plugin contexts.
+        v8host::eval_in_context("bc_test", "__s2_crash_set_game('cs2', 14099);").unwrap();
+        let s3 = crate::crash::breadcrumb::snapshot();
+        assert_eq!(crate::crash::breadcrumb::read_cstr(&s3.game_name), "cs2");
+        assert_eq!(s3.game_build, 14099);
         s2script_core_shutdown();
     }
 }
