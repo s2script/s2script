@@ -1,14 +1,13 @@
 //! Rust panic → envelope(kind=panic) → spool. The existing catch_unwind in ffi.rs still keeps
 //! the panic from crossing FFI (the process survives); this hook makes it REPORTED instead of
 //! silently swallowed (spec §6.4). The hook chains the previous hook and must itself never panic.
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Once;
 
 static INSTALL: Once = Once::new();
-/// Per-boot cap so a per-frame panicking descriptor cannot fill the spool (Task 5 adds
-/// signature-level dedup on top of this).
-static REPORTED: AtomicU32 = AtomicU32::new(0);
-const MAX_PANICS_PER_BOOT: u32 = 32;
+/// Shared stack-signature rate limiter (dedup by message + location): a per-frame panicking
+/// descriptor cannot spam the spool, and TOTAL_CAP is the per-boot hard backstop (Task 5).
+static PANIC_LIMITER: std::sync::Mutex<Option<crate::crash::dedup::RateLimiter>> =
+    std::sync::Mutex::new(None);
 
 pub fn install() {
     INSTALL.call_once(|| {
@@ -22,7 +21,6 @@ pub fn install() {
 }
 
 fn report(info: &std::panic::PanicHookInfo) {
-    if REPORTED.fetch_add(1, Ordering::Relaxed) >= MAX_PANICS_PER_BOOT { return; }
     let Some(dir) = crate::crash::spool_dir() else { return }; // identity not pushed yet → fail-off
     let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
         (*s).to_string()
@@ -32,11 +30,18 @@ fn report(info: &std::panic::PanicHookInfo) {
         "panic (non-string payload)".to_string()
     };
     let loc = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
-    let backtrace = std::backtrace::Backtrace::force_capture().to_string();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    // Signature-level dedup + rate limit (shared with the JS path); TOTAL_CAP is the boot backstop.
+    let sig = crate::crash::dedup::fnv1a64(&["panic", &msg, &loc]);
+    {
+        let mut g = match PANIC_LIMITER.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        let rl = g.get_or_insert_with(crate::crash::dedup::RateLimiter::new);
+        if !rl.should_report(sig, now.max(0) as u64) { return; }
+    }
+    let backtrace = std::backtrace::Backtrace::force_capture().to_string();
     let bc = crate::crash::breadcrumb::snapshot();
     let env = crate::crash::envelope::render(
         &bc,

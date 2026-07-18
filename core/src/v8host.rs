@@ -517,6 +517,11 @@ thread_local! {
     /// isolate is dropped.  Never held across the checkpoint.
     static RESOLVERS: std::cell::RefCell<std::collections::HashMap<u64, ResolverEntry>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Pending unhandled rejections awaiting end-of-frame confirmation (D-2): promise identity
+    /// hash → (message, stack). kPromiseHandlerAddedAfterReject removes its entry; whatever
+    /// survives to the frame_async_drain flush is reported. Cleared on shutdown.
+    static PENDING_REJECTS: std::cell::RefCell<std::collections::HashMap<i32, (String, String)>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Monotonic async-id allocator (1-based; 0 is reserved as "none").
     static NEXT_ASYNC_ID: std::cell::Cell<u64> = std::cell::Cell::new(1);
     /// Count of in-flight async-FFI jobs (Task 5 populates this); feeds the combined detour predicate.
@@ -3857,6 +3862,10 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
                 .map(|e| e.to_rust_string_lossy(&*tc))
                 .unwrap_or_else(|| "handler threw".into());
             log_warn(&format!("WARN: dispatch_concommand('{}'): {}", name, msg));
+            let stack = tc.stack_trace()
+                .map(|s| s.to_rust_string_lossy(&*tc))
+                .unwrap_or_default();
+            crate::crash::report_js_error(&owner, &format!("command:{}", name), &msg, &stack);
         }
     });
 }
@@ -6914,6 +6923,10 @@ pub(crate) fn dispatch_game_event(name: &str) {
                     .map(|e| e.to_rust_string_lossy(&*tc))
                     .unwrap_or_else(|| "handler threw".into());
                 log_warn(&format!("WARN: dispatch_game_event('{}'): handler '{}': {}", name, owner, msg));
+                let stack = tc.stack_trace()
+                    .map(|s| s.to_rust_string_lossy(&*tc))
+                    .unwrap_or_default();
+                crate::crash::report_js_error(owner, &format!("event:{}", name), &msg, &stack);
             }
             // tc, tc_storage, scope drop here — TryCatch absorbs any pending exception.
         }
@@ -7641,6 +7654,44 @@ pub(crate) fn current_plugin(scope: &mut v8::PinScope) -> Option<String> {
         .get_current_context()
         .get_slot::<PluginId>()
         .map(|p| p.0.clone())
+}
+
+/// Isolate-wide promise-reject callback (registered once in `init`). Runs inside V8 while our
+/// code is on the stack (during a checkpoint/eval), so a CallbackScope is the ONLY legal scope.
+/// Never touches HOST (already borrowed by the caller); only the PENDING_REJECTS map.
+unsafe extern "C" fn promise_reject_cb(msg: v8::PromiseRejectMessage) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        use v8::PromiseRejectEvent::*;
+        let mut storage = unsafe { v8::CallbackScope::new(&msg) };
+        let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+        let scope = &mut scope;
+        let promise = msg.get_promise();
+        let id = promise.get_identity_hash().get();
+        match msg.get_event() {
+            PromiseRejectWithNoHandler => {
+                let (text, stack) = match msg.get_value() {
+                    Some(v) => {
+                        let text = v.to_rust_string_lossy(scope);
+                        let stack = v8::Local::<v8::Object>::try_from(v)
+                            .ok()
+                            .and_then(|o| {
+                                let k = v8::String::new(scope, "stack")?;
+                                o.get(scope, k.into())
+                            })
+                            .map(|s| s.to_rust_string_lossy(scope))
+                            .unwrap_or_default();
+                        (text, stack)
+                    }
+                    None => ("unhandled rejection".to_string(), String::new()),
+                };
+                PENDING_REJECTS.with(|m| m.borrow_mut().insert(id, (text, stack)));
+            }
+            PromiseHandlerAddedAfterReject => {
+                PENDING_REJECTS.with(|m| { m.borrow_mut().remove(&id); });
+            }
+            PromiseRejectAfterResolved | PromiseResolveAfterResolved => {}
+        }
+    }));
 }
 
 /// Native `__s2_current_plugin() -> string`.  Minimal per-context probe installed by
@@ -9012,6 +9063,7 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                         .map(|e| e.to_rust_string_lossy(&*tc))
                         .unwrap_or_else(|| "unknown error".into());
                     log_warn(&format!("WARN: load_plugin_js('{}'): eval error: {}", id, msg));
+                    crate::crash::report_js_error(id, "load", &msg, "");
                     break 'blk None;
                 }
             };
@@ -9043,6 +9095,7 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                                 .map(|e| e.to_rust_string_lossy(&*tc))
                                 .unwrap_or_else(|| "onLoad threw".into());
                             log_warn(&format!("WARN: load_plugin_js('{}'): onLoad error: {}", id, msg));
+                            crate::crash::report_js_error(id, "onLoad", &msg, "");
                         }
                     }
                 }
@@ -9079,6 +9132,11 @@ pub fn init(logger: LogFn) -> Result<(), String> {
     // We own the microtask checkpoint: with Explicit policy, await/.then continuations run ONLY
     // when we call perform_microtask_checkpoint() in frame_async_drain (once per frame).
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+
+    // D-2: isolate-wide fatal-JS capture for unhandled promise rejections. The callback records
+    // rejections into PENDING_REJECTS; the frame_async_drain flush reports whatever survived the
+    // end-of-frame microtask checkpoint (a later .catch cancels its entry).
+    isolate.set_promise_reject_callback(promise_reject_cb);
 
     // Build the context inside a nested block so the HandleScope borrow on
     // `isolate` is released before we move `isolate` into `Host`.
@@ -9269,8 +9327,22 @@ pub(crate) fn dispatch_onframe(
 
             let func = v8::Local::new(tc, &jh.func);
             match func.call(tc, recv, &[ctx_val]) {
-                // Exception thrown (or otherwise empty): treat as an error for this id.
-                None => Err(()),
+                // Exception thrown (or otherwise empty): report (kind=js) then count the error.
+                None => {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "uncaught exception".into());
+                    let stack = tc.stack_trace()
+                        .map(|s| s.to_rust_string_lossy(&*tc))
+                        .unwrap_or_default();
+                    crate::crash::report_js_error(
+                        owner,
+                        if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
+                        &msg,
+                        &stack,
+                    );
+                    Err(())
+                }
                 Some(ret) => {
                     if ret.is_undefined() {
                         Ok(HookResult::Continue)
@@ -9317,6 +9389,9 @@ pub fn shutdown() {
     // handles must be reset while the isolate is still alive (HOST still owns it here).
     TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new());
     RESOLVERS.with(|m| m.borrow_mut().clear());
+    // PENDING_REJECTS holds only Strings (no Globals), so drop order vs the isolate is not
+    // load-bearing — this clear is hygiene for a clean re-init.
+    PENDING_REJECTS.with(|m| m.borrow_mut().clear());
     // Clear CONCOMMANDS BEFORE dropping the isolate — same discipline as RESOLVERS: the map holds
     // Global<Function>s into the isolate; dropping them while the isolate is alive is required.
     CONCOMMANDS.with(|m| m.borrow_mut().clear());
@@ -9652,6 +9727,23 @@ pub(crate) fn frame_async_drain() {
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
     refresh_detour();
+    // D-2: whatever unhandled rejections survived the checkpoint are now final — report them.
+    let pending: Vec<(String, String)> =
+        PENDING_REJECTS.with(|m| m.borrow_mut().drain().map(|(_, v)| v).collect());
+    for (message, stack) in pending {
+        // Owner attribution for a rejection is best-effort: the rejecting plugin's dispatch has
+        // already unwound, so attribute to the breadcrumb's ring-latest plugin.
+        let bc = crate::crash::breadcrumb::snapshot();
+        let last = (bc.ring_head as usize + crate::crash::breadcrumb::RING_LEN - 1)
+            % crate::crash::breadcrumb::RING_LEN;
+        let owner = crate::crash::breadcrumb::read_cstr(&bc.ring[last].plugin);
+        crate::crash::report_js_error(
+            if owner.is_empty() { "unknown" } else { &owner },
+            "unhandled-rejection",
+            &message,
+            &stack,
+        );
+    }
     crate::crash::uploader::periodic_sweep();
 }
 
