@@ -6,3 +6,6 @@
 	path = third_party/metamod-source
 	url = https://github.com/alliedmodders/metamod-source
 	branch = master
+[submodule "third_party/breakpad"]
+	path = third_party/breakpad
+	url = https://chromium.googlesource.com/breakpad/breakpad
