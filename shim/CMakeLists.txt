@@ -33,6 +33,8 @@ add_library(s2script SHARED
     # plain libc malloc/free (verified), NOT g_pMemAlloc. ekv.cpp is the ONLY TU that includes
     # entitykeyvalues.h; everything else sees void*.
     src/ekv.cpp
+    # Crash-reporter slice: Breakpad arming + the async-signal-safe .s2meta sidecar writer.
+    src/crash_handler.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier1/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
@@ -41,6 +43,61 @@ add_library(s2script SHARED
                                              # apply gc-sections to this TU (its global new/delete
                                              # operators must survive) — list it separately below.
 )
+
+# --- Crash reporter (Breakpad, vendored) ---------------------------------------------------
+# The Linux client only: exception_handler + the in-process minidump writer. Compiled as a
+# static lib with the SAME Valve ABI define as the shim; linked into s2script.so (gc-sections
+# drops the unused microdump/core-dump paths). Verified to build under Steam Runtime 3
+# (glibc 2.31) in the rust:bullseye sniper container.
+enable_language(ASM)
+# Breakpad's guid_creator uses pthread_once. On the Steam-Runtime-3 sniper toolchain (glibc 2.31)
+# pthread is a separate library (host glibc >= 2.34 folds it into libc), so link it explicitly and
+# let it propagate (PUBLIC) to both s2script.so and the crash_selftest executable.
+find_package(Threads REQUIRED)
+set(BREAKPAD ${CMAKE_SOURCE_DIR}/../third_party/breakpad/src)
+add_library(breakpad_client STATIC
+    ${BREAKPAD}/client/linux/crash_generation/crash_generation_client.cc
+    ${BREAKPAD}/client/linux/dump_writer_common/thread_info.cc
+    ${BREAKPAD}/client/linux/dump_writer_common/ucontext_reader.cc
+    ${BREAKPAD}/client/linux/handler/exception_handler.cc
+    ${BREAKPAD}/client/linux/handler/minidump_descriptor.cc
+    ${BREAKPAD}/client/linux/log/log.cc
+    ${BREAKPAD}/client/linux/microdump_writer/microdump_writer.cc
+    ${BREAKPAD}/client/linux/minidump_writer/linux_dumper.cc
+    ${BREAKPAD}/client/linux/minidump_writer/linux_ptrace_dumper.cc
+    ${BREAKPAD}/client/linux/minidump_writer/minidump_writer.cc
+    ${BREAKPAD}/client/linux/minidump_writer/pe_file.cc
+    ${BREAKPAD}/client/minidump_file_writer.cc
+    ${BREAKPAD}/common/convert_UTF.cc
+    ${BREAKPAD}/common/md5.cc
+    ${BREAKPAD}/common/string_conversion.cc
+    ${BREAKPAD}/common/linux/breakpad_getcontext.S
+    ${BREAKPAD}/common/linux/elf_core_dump.cc
+    ${BREAKPAD}/common/linux/elfutils.cc
+    ${BREAKPAD}/common/linux/file_id.cc
+    ${BREAKPAD}/common/linux/guid_creator.cc
+    ${BREAKPAD}/common/linux/linux_libc_support.cc
+    ${BREAKPAD}/common/linux/memory_mapped_file.cc
+    ${BREAKPAD}/common/linux/safe_readlink.cc
+)
+target_include_directories(breakpad_client PUBLIC ${BREAKPAD})
+target_link_libraries(breakpad_client PUBLIC Threads::Threads)
+set_target_properties(breakpad_client PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(breakpad_client PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+# Breakpad's memory_allocator.h uses std::max_align_t but only includes <stddef.h> (which declares
+# ::max_align_t, not the std:: one). Newer host libstdc++ pulls std::max_align_t in transitively, but
+# the Steam-Runtime-3 sniper toolchain (bullseye gcc 10) does not — force-include <cstddef> so the
+# vendored source compiles unpatched on both. (The submodule stays pristine.)
+target_compile_options(breakpad_client PRIVATE
+    -ffunction-sections -fdata-sections
+    # C++ only — the .S assembly TU (breakpad_getcontext.S) must not force-include a C++ header.
+    "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstddef>")
+
+# The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).
+add_executable(crash_selftest src/crash_selftest.cpp src/crash_handler.cpp)
+target_include_directories(crash_selftest PRIVATE src)
+target_link_libraries(crash_selftest PRIVATE breakpad_client)
+target_compile_definitions(crash_selftest PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
 
 target_include_directories(s2script PRIVATE
     src
@@ -96,6 +153,21 @@ target_link_libraries(s2script PRIVATE
     ${HL2SDK}/lib/linux64/release/libprotobuf.a
 )
 target_include_directories(s2script PRIVATE include)
+
+# Crash reporter: link the vendored Breakpad client (its PUBLIC include dir reaches
+# src/crash_handler.cpp during compilation).
+target_link_libraries(s2script PRIVATE breakpad_client)
+
+# S2_HL2SDK_BUILD: the pinned hl2sdk submodule SHA, stamped into every crash envelope's
+# gamedata.hl2sdk. Resolved at configure time from the vendored checkout (${HL2SDK} is
+# defined at the top of shim/CMakeLists.txt).
+execute_process(
+    COMMAND git -C ${HL2SDK} rev-parse --short HEAD
+    OUTPUT_VARIABLE S2_HL2SDK_SHA OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT S2_HL2SDK_SHA)
+    set(S2_HL2SDK_SHA "unknown")
+endif()
+target_compile_definitions(s2script PRIVATE S2_HL2SDK_BUILD="${S2_HL2SDK_SHA}")
 
 # EKV slice: split the SDK TUs into per-function sections and GC unreachable ones at link time,
 # so never-called KV3 paths (ToString/CBufferString/CUtlBuffer serialization, V_StringTo* array
