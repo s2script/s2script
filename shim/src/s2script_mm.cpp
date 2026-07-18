@@ -1433,6 +1433,14 @@ static int s2_server_build_number(void) {
     return s_pEngine ? s_pEngine->GetBuildVersion() : 0;
 }
 
+// Crash-harness op (spec §10): a REAL fault in shim code, so the live gate exercises the exact
+// Breakpad path a production crash takes. Only reachable through the dev_test-gated core native.
+static void s2_crash_test_native(int kind) {
+    if (kind == 1) abort();
+    volatile int* p = nullptr;
+    *p = 42; // SIGSEGV
+}
+
 // ---------------------------------------------------------------------------
 // cvar_get (Slice 6.7) — a cvar's current value as a string, TIER1-FREE. The clean SDK accessors
 // (ConVarData::ValueOrDefault, ConVarRefAbstract::GetString→CUtlString) are NON-inline → they'd
@@ -4199,6 +4207,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.player_respawn = &s2_player_respawn;
     // Crash-reporter slice — APPENDED after player_respawn; order MUST match S2EngineOps.
     ops.server_build_number = &s2_server_build_number;
+    // Crash-harness — APPENDED after server_build_number; order MUST match S2EngineOps.
+    ops.crash_test_native = &s2_crash_test_native;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
