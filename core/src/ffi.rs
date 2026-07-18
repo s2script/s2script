@@ -554,4 +554,82 @@ mod tests {
         assert_eq!(s3.game_build, 14099);
         s2script_core_shutdown();
     }
+
+    #[test]
+    fn throwing_frame_handler_spools_a_js_incident_once() {
+        let d = std::env::temp_dir().join(format!("s2crash-js-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        crate::crash::set_spool_dir(d.to_str().unwrap());
+        v8host::create_plugin_context("thrower");
+        v8host::eval_in_context(
+            "thrower",
+            r#"
+                const { OnGameFrame } = __s2require("@s2script/frame");
+                globalThis._t = OnGameFrame.subscribe(() => { throw new Error("js-boom"); });
+            "#,
+        )
+        .unwrap();
+        // Two frames: the second identical throw is deduped (same signature, <60s apart).
+        s2script_core_dispatch_game_frame(0, 1, 1, 0);
+        s2script_core_dispatch_game_frame(0, 1, 0, 0);
+        let items = crate::crash::spool::scan(&d);
+        assert_eq!(items.len(), 1, "dedup: one incident for a repeated identical throw");
+        let crate::crash::spool::SpoolItem::Envelope(p) = &items[0] else { panic!("expected envelope") };
+        let env: crate::crash::envelope::Envelope =
+            serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        assert_eq!(env.kind, "js");
+        assert_eq!(env.breadcrumb.plugin, "thrower");
+        match env.detail {
+            crate::crash::envelope::Detail::Js { message, stack, .. } => {
+                assert!(message.contains("js-boom"));
+                assert!(stack.contains("js-boom") || !stack.is_empty());
+            }
+            other => panic!("wrong detail: {:?}", other),
+        }
+        crate::crash::set_spool_dir("");
+        s2script_core_shutdown();
+    }
+
+    #[test]
+    fn unhandled_rejection_spools_a_js_incident() {
+        let d = std::env::temp_dir().join(format!("s2crash-rej-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        crate::crash::set_spool_dir(d.to_str().unwrap());
+        v8host::create_plugin_context("rejector");
+        v8host::eval_in_context("rejector", "Promise.reject(new Error('rej-boom'));").unwrap();
+        // The drain performs the microtask checkpoint AND flushes pending rejections.
+        s2script_core_dispatch_game_frame(1, 1, 0, 1); // Post phase → frame_async_drain
+        let items = crate::crash::spool::scan(&d);
+        assert_eq!(items.len(), 1);
+        let crate::crash::spool::SpoolItem::Envelope(p) = &items[0] else { panic!("expected envelope") };
+        let env: crate::crash::envelope::Envelope =
+            serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        assert_eq!(env.kind, "js");
+        match env.detail {
+            crate::crash::envelope::Detail::Js { message, .. } => assert!(message.contains("rej-boom")),
+            other => panic!("wrong detail: {:?}", other),
+        }
+        crate::crash::set_spool_dir("");
+        s2script_core_shutdown();
+    }
+
+    #[test]
+    fn handled_rejection_is_not_reported() {
+        let d = std::env::temp_dir().join(format!("s2crash-rej2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        crate::crash::set_spool_dir(d.to_str().unwrap());
+        v8host::create_plugin_context("handled");
+        // .catch attached synchronously — kPromiseHandlerAddedAfterReject cancels the pending report.
+        v8host::eval_in_context("handled", "Promise.reject(new Error('nope')).catch(() => {});").unwrap();
+        s2script_core_dispatch_game_frame(1, 1, 0, 1);
+        assert!(crate::crash::spool::scan(&d).is_empty(), "a handled rejection must not report");
+        crate::crash::set_spool_dir("");
+        s2script_core_shutdown();
+    }
 }
