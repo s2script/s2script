@@ -53,6 +53,8 @@
 #include <libgen.h>   // dirname
 #include <link.h>       // dl_iterate_phdr, ElfW
 #include <sys/mman.h>   // mprotect — Sound slice: patch the CGameRulesGameSystem vtable slot (precache)
+#include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
+#include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
 #include <unistd.h>     // sysconf(_SC_PAGESIZE) — the mprotect page span
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
@@ -1424,6 +1426,12 @@ static float s2_server_game_time() {
     return g ? g->curtime : 0.0f;
 }
 
+// Crash-reporter slice: the engine build number (IVEngineServer2::GetBuildVersion — a typed SDK
+// virtual on the already-acquired s_pEngine; engine-generic). 0 = interface unavailable (degrade).
+static int s2_server_build_number(void) {
+    return s_pEngine ? s_pEngine->GetBuildVersion() : 0;
+}
+
 // ---------------------------------------------------------------------------
 // cvar_get (Slice 6.7) — a cvar's current value as a string, TIER1-FREE. The clean SDK accessors
 // (ConVarData::ValueOrDefault, ConVarRefAbstract::GetString→CUtlString) are NON-inline → they'd
@@ -2175,6 +2183,25 @@ static std::string PluginsDir() {
     }
     // Fallback: relative to the server's cwd.
     return "addons/s2script/plugins";
+}
+
+// CrashSpoolDir: addons/s2script/data/crashes, resolved relative to the plugin .so via dladdr
+// (mirrors PluginsDir). Created (mkdir -p equivalent, two levels) if absent; "" on any failure
+// (fail-off — crash reporting then stays disarmed).
+static std::string CrashSpoolDir() {
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(&CrashSpoolDir), &info) && info.dli_fname) {
+        std::string dir(info.dli_fname);
+        // The .so lives at addons/s2script/bin/linuxsteamrt64/s2script.so — 3 dirname steps reach
+        // the addon root (mirrors s2_db_data_dir()/PluginsDir()). ONE step lands the spool under
+        // bin/ (a :ro mount in docker-compose) → mkdir fails → silent fail-off. Must be 3.
+        for (int i = 0; i < 3; i++) dir = dir.substr(0, dir.find_last_of('/'));
+        std::string data = dir + "/data";
+        std::string spool = data + "/crashes";
+        mkdir(data.c_str(), 0755);            // EEXIST is fine
+        if (mkdir(spool.c_str(), 0755) == 0 || errno == EEXIST) return spool;
+    }
+    return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -4169,12 +4196,55 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.usermsg_hook_debug       = &s2_usermsg_hook_debug;
     // player-respawn slice — APPENDED after usermsg_hook_debug; order MUST match S2EngineOps.
     ops.player_respawn = &s2_player_respawn;
+    // Crash-reporter slice — APPENDED after player_respawn; order MUST match S2EngineOps.
+    ops.server_build_number = &s2_server_build_number;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
+    }
+
+    // --- Crash reporter: identity + spool-dir push (fail-off: any miss degrades to "") ---
+    {
+        // FNV-1a 64 over a file's bytes; also reused for the registered game-package JS below.
+        auto fnv64hex = [](const std::string& bytes) -> std::string {
+            uint64_t h = 0xcbf29ce484222325ULL;
+            for (unsigned char c : bytes) { h ^= c; h *= 0x100000001b3ULL; }
+            char out[17];
+            snprintf(out, sizeof out, "%016llx", (unsigned long long)h);
+            return std::string(out);
+        };
+        auto slurp = [](const std::string& path) -> std::string {
+            FILE* f = fopen(path.c_str(), "rb");
+            if (!f) return std::string();
+            fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+            std::string s(sz > 0 ? (size_t)sz : 0, '\0');
+            if (sz > 0 && fread(&s[0], 1, (size_t)sz, f) != (size_t)sz) s.clear();
+            fclose(f);
+            return s;
+        };
+        std::string gdPath = GamedataPath();
+        std::string gdBytes = slurp(gdPath);
+        std::string gdFp = gdBytes.empty() ? "" : fnv64hex(gdBytes);
+        char gdMtime[32] = "";
+        struct stat st{};
+        if (stat(gdPath.c_str(), &st) == 0)
+            snprintf(gdMtime, sizeof gdMtime, "%lld", (long long)st.st_mtime);
+        std::string schemaHash;
+        {
+            std::string js = slurp(Cs2JsPath());   // the deployed pawn.js concat carries the
+            if (!js.empty()) schemaHash = fnv64hex(js);  // generated schema accessors (D-6)
+        }
+        std::string spool = CrashSpoolDir();
+#ifndef S2_HL2SDK_BUILD
+#define S2_HL2SDK_BUILD "unknown"
+#endif
+        s2script_core_crash_set_identity(gdFp.c_str(), gdMtime, S2_HL2SDK_BUILD,
+                                         schemaHash.c_str(), s_gdFail, spool.c_str());
+        META_CONPRINTF("[s2script] crash identity pushed (gamedata %s, spool %s)\n",
+                       gdFp.empty() ? "<none>" : gdFp.c_str(), spool.c_str());
     }
 
     // Register the @s2script/cs2 package (pawn.js) with the core so each plugin context

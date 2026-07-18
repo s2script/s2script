@@ -969,4 +969,11 @@
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
   globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+
+  // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
+  // game package supplies the value IN; core never knows the game). Best-effort: absent natives
+  // (an older core) degrade silently.
+  if (typeof __s2_crash_set_game === "function" && typeof __s2_server_build === "function") {
+    __s2_crash_set_game("cs2", __s2_server_build());
+  }
 })();
