@@ -11,6 +11,7 @@ pub extern "C" fn s2script_core_init(
     ops: *const S2EngineOps,
 ) -> c_int {
     catch_unwind(|| {
+        crate::crash::panic_hook::install();
         v8host::set_hook_request(request_hook);
         // Copy the engine-ops table by value: the shim passes a pointer to a stack-local struct
         // that dies when its Load() returns, so we must NOT retain the pointer.  Null → no ops

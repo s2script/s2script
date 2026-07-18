@@ -38,3 +38,5 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # runtime from http.rs. rustls + ring + webpki-roots (matches reqwest/tungstenite — no aws-lc-rs, no
 # system OpenSSL). Runtime queries only (no `macros` feature, which needs a compile-time DATABASE_URL).
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "mysql", "postgres"] }
+# Crash reporter: incident ids + the persisted server id (v4 = random; getrandom-backed).
+uuid = { version = "1", features = ["v4"] }
