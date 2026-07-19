@@ -6,6 +6,17 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The `changes` job runs dorny/paths-filter, which on a pull_request calls the GitHub
+# "list PR files" API — that needs pull-requests:read. checkout needs contents:read.
+# Declaring permissions at the workflow level narrows GITHUB_TOKEN to exactly these and
+# applies to every job here (and to the called _build.yml, which only needs contents:read).
+# Without this block the default token is contents-only and paths-filter fails with
+# "Resource not accessible by integration", collapsing `changes` and the `ci-ok` gate.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   # Path-filters which of the expensive jobs actually need to run. 'deps' (the
   # lockfile guard) deliberately has NO filter below and always runs — it is the
