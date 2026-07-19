@@ -136,6 +136,36 @@ The runtime's plugins/ scan is non-recursive, so nothing in this disabled/ subdi
 To enable one, move its .s2sp up one level into plugins/ (the runtime then hot-loads it).
 EOF
 
+# --- Default configs: generate each shipped plugin's default file, then drop the canonical framework
+#     config files alongside, so operators unzip into a ready-to-edit configs/ dir. bans.json and
+#     crashreporter.json are intentionally NOT emitted (runtime-managed / opt-in respectively). ---
+CONFIGS_DIR="$STAGE/addons/s2script/configs"
+mkdir -p "$CONFIGS_DIR"
+
+# The plugin-scoped `s2s config gen` reads a staged .s2sp's manifest. Ensure the CLI is built.
+CLI_JS="packages/sdk/dist/cli.js"
+if [ ! -f "$CLI_JS" ]; then
+    echo "=== build @s2script/sdk CLI (for config gen) ==="
+    if [ ! -d node_modules ]; then npm install --no-fund --no-audit; fi
+    ( cd packages/sdk && npm run build )
+fi
+
+# (a) plugin defaults — over the STAGED enabled and STAGED disabled .s2sp (both already copied above,
+#     so this is layout-independent). Disabled plugins' configs ship too, so an operator who enables
+#     one already has its file.
+shopt -s nullglob
+config_s2sp=("$STAGE"/addons/s2script/plugins/*.s2sp "$STAGE"/addons/s2script/plugins/disabled/*.s2sp)
+shopt -u nullglob
+if [ "${#config_s2sp[@]}" -gt 0 ]; then
+    node "$CLI_JS" config gen "${config_s2sp[@]}" --out "$CONFIGS_DIR"
+fi
+
+# (b) canonical framework config files — ONE source (core/config-templates/, shared with the runtime
+#     include_str! templates). A shell copy here; the published CLI is plugin-scoped and never ships these.
+for f in admins admin_groups admin_overrides databases; do
+    cp "core/config-templates/$f.json" "$CONFIGS_DIR/$f.json"
+done
+
 printf '%s\n' "$VERSION" > "$STAGE/addons/s2script/VERSION"
 
 # Zip with addons/ at the archive root (unzip into game/csgo/).
