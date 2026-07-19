@@ -3,6 +3,7 @@ import { runGenSchema } from "./schemagen/gen.ts";
 import { runGenEvents } from "./eventgen/gen.ts";
 import { runGenNav } from "./navgen/gen.ts";
 import { createPlugin } from "./create/create.ts";
+import { runConfigGen } from "./config/gen.ts";
 import { resolvePackagesDir } from "./packages-resolve.ts";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -25,6 +26,23 @@ function parseFlag(args: string[], name: string): string | undefined {
 
 function hasFlag(args: string[], name: string): boolean {
   return args.includes(name);
+}
+
+/** Positional args, skipping `-`/`--` flags and the value that follows a `--flag value` in
+ *  `flagsWithValue` (a `--flag=value` form carries its own value and consumes no positional). */
+function positionals(args: string[], flagsWithValue: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith("--")) {
+      const name = a.split("=")[0]!;
+      if (flagsWithValue.includes(name) && !a.includes("=")) i++; // consume the value token
+      continue;
+    }
+    if (a.startsWith("-")) continue;
+    out.push(a);
+  }
+  return out;
 }
 
 if (command === "gen-schema") {
@@ -78,6 +96,22 @@ if (command === "gen-schema") {
     console.error(String(e instanceof Error ? e.message : e));
     process.exit(1);
   }
+} else if (command === "config" && argv[1] === "gen") {
+  const args = argv.slice(2);
+  const outDir = parseFlag(args, "--out") ?? process.cwd();
+  const s2sps = positionals(args, ["--out"]);
+  if (s2sps.length === 0) {
+    console.error("Usage: s2s config gen <plugin.s2sp...> --out <dir>");
+    process.exit(1);
+  }
+  try {
+    const { written, skipped } = runConfigGen(s2sps, outDir);
+    for (const w of written) console.log(`config gen: wrote ${w}`);
+    for (const s of skipped) console.log(`config gen: ${s} declares no config — skipped`);
+  } catch (e) {
+    console.error(String(e instanceof Error ? e.message : e));
+    process.exit(1);
+  }
 } else if (command === "build" && argv[1]) {
   const args = argv.slice(1);
   const dir = args.find((a) => !a.startsWith("-"))!;
@@ -99,6 +133,7 @@ if (command === "gen-schema") {
       "  s2s create [path] [--game cs2|none] [--name <pkg>] [--template minimal]\n" +
       "             [--install npm|pnpm|yarn|bun|none] [--no-install] [-y]\n" +
       "  s2s build <dir> [--packages-dir <path>]\n" +
+      "  s2s config gen <plugin.s2sp...> --out <dir>\n" +
       "  s2s gen-schema [--check]\n" +
       "  s2s gen-events [--check]\n" +
       "  s2s gen-nav [--check]"
