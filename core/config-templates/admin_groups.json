@@ -1,0 +1,3 @@
+{
+  "_help": "Group name -> { flags, immunity, overrides }. flags: SM letters (\"bcdefg\") or names ([\"kick\",\"ban\"]); immunity: integer; overrides: { command: flag | \"\" for anyone }. e.g. \"Full Admins\": { \"flags\": \"bcdefgjk\", \"immunity\": 50 }"
+}

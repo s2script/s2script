@@ -896,6 +896,29 @@ pub(crate) fn refresh_detour() {
     });
 }
 
+// Canonical framework config templates — the ONE source (no generated copy, no drift gate). Written
+// verbatim to the operator's configs/ file on first boot when it is absent (see the admin loader and
+// the db loader in INJECTED_STD_PRELUDE). Kept as raw JSON files so they are diffable + reviewable.
+pub(crate) const ADMINS_TEMPLATE: &str = include_str!("../config-templates/admins.json");
+pub(crate) const ADMIN_GROUPS_TEMPLATE: &str = include_str!("../config-templates/admin_groups.json");
+pub(crate) const ADMIN_OVERRIDES_TEMPLATE: &str = include_str!("../config-templates/admin_overrides.json");
+pub(crate) const DATABASES_TEMPLATE: &str = include_str!("../config-templates/databases.json");
+
+/// Build the JS that injects `globalThis.__s2_TEMPLATES` (name -> file-content string). Each value is
+/// `serde_json::to_string`'d — a JSON string literal is also a valid JS string literal — so the exact
+/// file bytes cross into V8 unaltered. Evaluated in every plugin context just BEFORE the engine
+/// prelude, so the admin/db loaders can read the template they should write on first boot.
+fn config_templates_prelude() -> String {
+    let s = |t: &str| serde_json::to_string(t).unwrap_or_else(|_| "\"{}\\n\"".to_string());
+    format!(
+        "globalThis.__s2_TEMPLATES = {{ \"admins\": {}, \"admin_groups\": {}, \"admin_overrides\": {}, \"databases\": {} }};",
+        s(ADMINS_TEMPLATE),
+        s(ADMIN_GROUPS_TEMPLATE),
+        s(ADMIN_OVERRIDES_TEMPLATE),
+        s(DATABASES_TEMPLATE),
+    )
+}
+
 /// The injected engine-generic prelude, evaluated per plugin context AFTER the native
 /// primitives are in place.  Builds the five module globals over the `__s2_*` natives
 /// (whose internal names are unchanged) and stashes them at `globalThis.__s2pkg_<name>` for the
@@ -1895,18 +1918,21 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     }
   }
 
-  var __s2_GROUPS_TEMPLATE = '{\n  "_help": "Group name -> { flags, immunity, overrides }. flags: SM letters (\\"bcdefg\\") or names ([\\"kick\\",\\"ban\\"]); immunity: integer; overrides: { command: flag | \\"\\" for anyone }. e.g. \\"Full Admins\\": { \\"flags\\": \\"bcdefgjk\\", \\"immunity\\": 50 }"\n}\n';
-  var __s2_ADMINS_TEMPLATE = '{\n  "_help": "SteamID64 -> [\\"flag\\",...] (flags only), or { groups:[\\"Group\\"], flags:[...], immunity:N }. Flags: reservation generic kick ban unban slay changemap convars config chat vote password rcon cheats root (or SM letters a-n,z)."\n}\n';
-  var __s2_OVERRIDES_TEMPLATE = '{\n  "_help": "command -> required flag (name or SM letter), or \\"\\" for everyone. e.g. \\"sm_slap\\": \\"generic\\", \\"sm_who\\": \\"\\""\n}\n';
-  function __s2_admin_readOrTemplate(name, template) {
+  // Framework templates live in core/config-templates/*.json, injected at globalThis.__s2_TEMPLATES
+  // (name -> file-content string) before this prelude runs. ONE source, no inline literals here.
+  function __s2_admin_readOrTemplate(name) {
     var t = __s2_config_read_raw(name);
-    if (t == null) { __s2_config_write_raw(name, template); return "{}"; }
+    if (t == null) {
+      var template = (globalThis.__s2_TEMPLATES && globalThis.__s2_TEMPLATES[name]) || "{}\n";
+      __s2_config_write_raw(name, template);
+      return "{}";
+    }
     return t;
   }
   function __s2_admin_reloadAll(pushCore) {
-    __s2_admin_parseGroups(__s2_admin_readOrTemplate("admin_groups", __s2_GROUPS_TEMPLATE));
-    __s2_admin_parseAdmins(__s2_admin_readOrTemplate("admins", __s2_ADMINS_TEMPLATE), pushCore);
-    if (pushCore) __s2_admin_parseOverrides(__s2_admin_readOrTemplate("admin_overrides", __s2_OVERRIDES_TEMPLATE));
+    __s2_admin_parseGroups(__s2_admin_readOrTemplate("admin_groups"));
+    __s2_admin_parseAdmins(__s2_admin_readOrTemplate("admins"), pushCore);
+    if (pushCore) __s2_admin_parseOverrides(__s2_admin_readOrTemplate("admin_overrides"));
   }
 
   // ---- AdminInfo + the Admin API ----
@@ -2184,7 +2210,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function __s2_db_loadConfig() {
     var text = __s2_config_read_raw("databases");
     if (text == null) {
-      __s2_config_write_raw("databases", '{\n  "_help": "connection name -> { driver: \\"mysql\\"|\\"postgres\\", host, port, user, password, database }. Names not listed here default to a local SQLite file. e.g. \\"stats\\": { \\"driver\\": \\"mysql\\", \\"host\\": \\"db\\", \\"port\\": 3306, \\"user\\": \\"cs2\\", \\"password\\": \\"...\\", \\"database\\": \\"stats\\" }"\n}\n');
+      var template = (globalThis.__s2_TEMPLATES && globalThis.__s2_TEMPLATES.databases) || "{}\n";
+      __s2_config_write_raw("databases", template);
       return;
     }
     var obj; try { obj = JSON.parse(text); } catch (e) { console.log("[s2script] WARN: databases.json malformed — all connections default to sqlite"); return; }
@@ -7795,6 +7822,9 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             // natives and stash them at `globalThis.__s2pkg_*` for `__s2require`).
             let global_obj = ctx_local.global(scope);
             install_natives(scope, global_obj);
+            // Framework config templates (__s2_TEMPLATES) must exist before the engine prelude, whose
+            // admin/db loaders read them to write the operator's file on first boot.
+            run_prelude(scope, "config-templates", &config_templates_prelude());
             run_prelude(scope, "engine-prelude", INJECTED_STD_PRELUDE);
             // @s2script/cs2: provided externally at runtime via register_injected_package
             // (the shim calls s2script_core_register_package at load — see ffi.rs).
@@ -13493,6 +13523,28 @@ mod frame_tests {
         // A path that runs off the end of a leaf → zero-value (no throw).
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('sect.inner.nope'))"), "0");
         assert_eq!(eval_in_context_string("p", "__s2pkg_config.config.getString('sect.missing')"), "");
+        shutdown();
+    }
+
+    /// C3: the canonical framework templates are injected at globalThis.__s2_TEMPLATES, each value
+    /// equals its include_str! source and parses as JSON with a string `_help`; the admin loader
+    /// still resolves through the template path (reload does not throw).
+    #[test]
+    fn config_framework_templates_injected_and_used() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        // __s2_TEMPLATES.admins equals the canonical file byte-for-byte (via include_str!).
+        assert_eq!(eval_in_context_string("p", "globalThis.__s2_TEMPLATES.admins"), super::ADMINS_TEMPLATE);
+        // Every template parses as JSON with a string _help.
+        for name in ["admins", "admin_groups", "admin_overrides", "databases"] {
+            let expr = format!("String(typeof JSON.parse(globalThis.__s2_TEMPLATES.{})._help)", name);
+            assert_eq!(eval_in_context_string("p", &expr), "string", "template {} must parse with a string _help", name);
+        }
+        // The admin cache still resolves through the template path: reload() calls
+        // __s2_admin_readOrTemplate, which reads __s2_TEMPLATES. With no ops the file is absent →
+        // template written (a no-op without ops) → parse "{}" → no throw.
+        assert_eq!(eval_in_context_string("p", "(function(){ __s2pkg_admin.Admin.reload(); return 'ok'; })()"), "ok");
         shutdown();
     }
 

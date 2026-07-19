@@ -1,0 +1,3 @@
+{
+  "_help": "SteamID64 -> [\"flag\",...] (flags only), or { groups:[\"Group\"], flags:[...], immunity:N }. Flags: reservation generic kick ban unban slay changemap convars config chat vote password rcon cheats root (or SM letters a-n,z)."
+}

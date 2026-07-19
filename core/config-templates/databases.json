@@ -1,0 +1,3 @@
+{
+  "_help": "connection name -> { driver: \"mysql\"|\"postgres\", host, port, user, password, database }. Names not listed here default to a local SQLite file. e.g. \"stats\": { \"driver\": \"mysql\", \"host\": \"db\", \"port\": 3306, \"user\": \"cs2\", \"password\": \"...\", \"database\": \"stats\" }"
+}
