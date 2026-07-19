@@ -7,7 +7,37 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # Path-filters which of the expensive jobs actually need to run. 'deps' (the
+  # lockfile guard) deliberately has NO filter below and always runs — it is the
+  # current required status check and must never go missing on a path-filtered PR.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.filter.outputs.native }}
+      js: ${{ steps.filter.outputs.js }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            native:
+              - 'core/**'
+              - 'shim/**'
+              - 'Cargo.*'
+              - 'third_party/**'
+              - 'gamedata/**'
+              - 'games/**'
+            js:
+              - 'plugins/**'
+              - 'packages/**'
+              - 'examples/**'
+              - 'disabled/**'
+              - 'plugins/disabled/**'
+
   build:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +80,8 @@ jobs:
   # typecheck gate + the core-boundary name-leak self-test. Globbed so a future
   # check-*-generated.sh script needs no CI edit to start running here.
   gates-node:
+    needs: changes
+    if: needs.changes.outputs.js == 'true' || needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +104,8 @@ jobs:
   # Rust-side gate: core must never import games/* (the game→core dependency
   # direction is enforced here, cheaply, without a full shim build).
   gates-rust:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,3 +114,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: core boundary check
         run: ./scripts/check-core-boundary.sh
+
+  # Fail-closed aggregator: the ONE required check a future branch-protection flip
+  # points at instead of the individual (now path-filtered, sometimes-skipped) jobs.
+  # 'if: always()' makes it run even when an upstream job is skipped by the path
+  # filter — a skipped result is fine (nothing needed that job); a failure or
+  # cancellation is not.
+  ci-ok:
+    needs: [changes, build, gates-node, gates-rust, deps]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: gate
+        run: |
+          results='${{ join(needs.*.result, ',') }}'
+          echo "results: $results"
+          case "$results" in *failure*|*cancelled*) echo "required job failed/cancelled"; exit 1 ;; esac
+          echo ok
