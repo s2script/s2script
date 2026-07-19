@@ -12,7 +12,17 @@ permissions:
   contents: write
 
 jobs:
+  # Fail-fast host-side release-profile sanity check (shared with ci.yml's cheap
+  # debug build) — catches a broken core/shim build in ~minutes, before spinning
+  # up the much heavier bullseye Docker sniper build below.
+  build:
+    uses: ./.github/workflows/_build.yml
+    with:
+      profile: release
+      core_lib_dir: release
+
   release:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
