@@ -29,7 +29,17 @@ let failNotified = false; // debounces the misconfiguration log so a persistent 
 
 const logErr = (e: unknown) => console.log("[nextmap] error: " + e);
 
-// maplist.txt parsing — copied verbatim from disabled/rockthevote/src/plugin.ts (colon-split
+// nextmap OWNS its rotation source: it auto-generates this maplist.txt template when the file is
+// absent, so it is fully standalone and does NOT depend on nominations having created it. The
+// template is write-if-absent (idempotent) and its parsed pool is identical to the nominations
+// template, so the two plugins co-own the same file harmlessly (whichever loads first writes it).
+const MAPLIST_TEMPLATE =
+  "// s2script maplist — one map per line (used by nextmap rotation + nominations).\n" +
+  "// Workshop maps: name:workshopId  (e.g. awp_lego_2:3070284539)\n" +
+  "// Lines starting with // or # are ignored.\n" +
+  "de_dust2\nde_inferno\nde_mirage\nde_nuke\nde_ancient\nde_anubis\n";
+
+// maplist.txt parsing — copied verbatim from plugins/disabled/rockthevote/src/plugin.ts (colon-split
 // "name:workshopId", `//`/`#`/blank skip, skip an empty-name entry).
 function parseMaplist(text: string): MapEntry[] {
   const out: MapEntry[] = [];
@@ -45,8 +55,11 @@ function parseMaplist(text: string): MapEntry[] {
 }
 
 function loadPool(): MapEntry[] {
-  const t = config.readFile("maplist.txt");
-  return t === null ? [] : parseMaplist(t);
+  // Own the list source: create the template if absent (write-if-absent = idempotent), else read it.
+  // A later read failure still degrades gracefully to an empty pool (rotationNext then returns null).
+  let text = config.readFile("maplist.txt");
+  if (text === null) { config.writeFile("maplist.txt", MAPLIST_TEMPLATE); text = MAPLIST_TEMPLATE; }
+  return parseMaplist(text);
 }
 
 /** The map that follows `map` in the pool (wraps around); null if the pool is empty. */
@@ -115,6 +128,8 @@ function pollTick(): void {
 }
 
 export function onLoad(): void {
+  loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the
+                // rotation before the first map-end — nextmap owns this, independent of nominations.
   OnGameFrame.subscribe(pollTick);
 
   Events.on("round_end", () => {
@@ -136,6 +151,9 @@ export function onLoad(): void {
     ctx.reply("Next map set to " + entry.name);
   });
 
+  // DESCOPED: SM's sm_maphistory (list the recently-played maps) is intentionally not implemented —
+  // it would require reading the map_history the nominations plugin owns in the shared mapvote DB,
+  // coupling standalone nextmap back to nominations. nextmap tracks no play history of its own.
   console.log("[nextmap] onLoad — sm_setnextmap registered");
 }
 
