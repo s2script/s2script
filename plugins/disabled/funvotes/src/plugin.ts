@@ -12,8 +12,12 @@ import { Vote } from "@s2script/sdk/votes";
 import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/sdk/server";
 
-/** Start a Yes/No vote; on Yes (winner === 0, options[0] === "Yes"), run `onPass`. Refuses (via
- *  `reply`) if a vote is already active — never queues, SM parity ("one vote at a time"). */
+/** Start a Yes/No vote; on pass, run `onPass`. Refuses (via `reply`) if a vote is already active —
+ *  never queues, SM parity ("one vote at a time").
+ *
+ *  Pass semantics (SM parity): NOT plurality. A vote passes when the Yes SHARE of the votes cast is
+ *  at least funvote_ratio (default 0.60). With no votes cast (total === 0) the share is 0 → it fails.
+ *  options[0] === "Yes", so counts[0] is the Yes tally. */
 function startYesNo(reply: (m: string) => void, question: string, onPass: () => void): void {
   if (Vote.isActive()) { reply("A vote is already running."); return; }
   Vote.start({
@@ -22,11 +26,15 @@ function startYesNo(reply: (m: string) => void, question: string, onPass: () => 
     duration: config.getInt("funvote_duration"),
     showLiveTally: config.getBool("funvote_show_tally"),
     onEnd: (r) => {
-      if (r.winner === 0) {
-        Chat.toAll("[Vote] Passed: " + question);
+      const yes = r.counts[0] ?? 0;
+      const share = r.total > 0 ? yes / r.total : 0;
+      const ratio = config.getFloat("funvote_ratio");
+      const pct = (x: number) => Math.round(x * 100) + "%";
+      if (share >= ratio) {
+        Chat.toAll("[Vote] Passed (" + pct(share) + " ≥ " + pct(ratio) + " Yes): " + question);
         onPass();
       } else {
-        Chat.toAll("[Vote] Failed: " + question);
+        Chat.toAll("[Vote] Failed (" + pct(share) + " < " + pct(ratio) + " Yes): " + question);
       }
     },
   });
@@ -44,6 +52,10 @@ export function onLoad(): void {
     startYesNo(ctx.reply, (on ? "Disable" : "Enable") + " Friendly Fire?", () => Server.setCvar("mp_friendlyfire", on ? "0" : "1"));
   });
 
+  // DEVIATION FROM SM: SourceMod's sm_votegravity can present MULTIPLE gravity options in one
+  // multi-choice vote (e.g. `sm_votegravity 200 400 800`). We keep it a single-value Yes/No vote
+  // (one gravity value → pass/fail), which composes with the shared startYesNo helper. Multi-option
+  // funvotes are a future item if demand appears.
   Commands.registerAdmin("sm_votegravity", ADMFLAG.VOTE, ctx => {
     const v = ctx.arg(0);
     if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { ctx.reply("Usage: sm_votegravity <number>"); return; }
@@ -62,6 +74,10 @@ export function onLoad(): void {
     });
   });
 
+  // DESCOPED: SM's sm_voteburn (vote to ignite a player) is intentionally not implemented — it
+  // needs a player-ignite primitive that does not exist in the framework yet, and this slice does
+  // NOT invent RE work. Revisit once an ignite/entity-fire capability lands (like pawn.slay for
+  // sm_voteslay).
   console.log("[funvotes] onLoad — votealltalk/voteff/votegravity/voteslay registered");
 }
 
