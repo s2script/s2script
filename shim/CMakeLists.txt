@@ -10,6 +10,12 @@ set(HL2SDK ${CMAKE_SOURCE_DIR}/../third_party/hl2sdk)
 set(MMS    ${CMAKE_SOURCE_DIR}/../third_party/metamod-source)
 set(AMTL   ${MMS}/third_party/amtl)
 
+# Cargo profile directory the resident core (libs2script_core.so) was built into. `make shim` and
+# scripts/build-sniper.sh always build core as --release, so this defaults to "release" and is
+# unaffected. CI's cheap PR build compiles core in debug (no --release, much faster) and passes
+# -DS2_CORE_LIB_DIR=debug at configure time so the shim links the matching artifact.
+set(S2_CORE_LIB_DIR "release" CACHE STRING "cargo profile dir the core .so was built into (release|debug)")
+
 add_library(s2script SHARED
     src/s2script_mm.cpp
     # Entity lifecycle listeners slice: the isolated IEntityListener TU (mirrors ekv.cpp's isolation
@@ -149,7 +155,7 @@ target_compile_options(s2script PRIVATE
 # Self-contained (no undefined deps), so it does NOT reintroduce the tier1 dlopen cascade (5D.1). Built
 # with Valve's ABI (_GLIBCXX_USE_CXX11_ABI=0, set above), matching the game's in-process runtime.
 target_link_libraries(s2script PRIVATE
-    ${CMAKE_SOURCE_DIR}/../target/release/libs2script_core.so
+    ${CMAKE_SOURCE_DIR}/../target/${S2_CORE_LIB_DIR}/libs2script_core.so
     ${HL2SDK}/lib/linux64/release/libprotobuf.a
 )
 target_include_directories(s2script PRIVATE include)
