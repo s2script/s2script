@@ -11,6 +11,11 @@
         "default": 20,
         "description": "Seconds a funvote (AllTalk/FriendlyFire/Gravity/Slay) stays open."
       },
+      "funvote_ratio": {
+        "type": "float",
+        "default": 0.6,
+        "description": "Fraction of votes cast that must be Yes for a funvote to pass (SM behavior; 0.6 = 60%)."
+      },
       "funvote_show_tally": {
         "type": "bool",
         "default": true,
