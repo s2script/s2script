@@ -26,6 +26,11 @@
         "default": 5,
         "description": "Distinct maps that must play before a map is RTV-eligible again."
       },
+      "rtv_initialdelay": {
+        "type": "int",
+        "default": 30,
+        "description": "Seconds after a map starts during which player RTV is refused (SM rtv_initialdelay; sm_forcertv bypasses it)."
+      },
       "rtv_vote_duration": {
         "type": "int",
         "default": 20,
