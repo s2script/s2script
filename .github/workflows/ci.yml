@@ -7,13 +7,19 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
-      - name: cargo build
-        run: cargo build --release
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (debug — cheap PR build)
+        run: cargo build
+      - name: cargo test
+        run: cargo test -p s2script-core
       - name: core boundary check
         run: ./scripts/check-core-boundary.sh
+      - uses: hendrikmuhs/ccache-action@v1
       - name: build shim
         run: |
-          cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release
+          cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
+            -DS2_CORE_LIB_DIR=debug \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/shim -j
 
   # Guards against package-lock.json drifting out of sync with the workspace
