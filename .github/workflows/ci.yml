@@ -44,3 +44,39 @@ jobs:
           cache: npm
       - name: npm ci (package-lock.json in sync)
         run: npm ci
+
+  # The full JS/TS gate suite: codegen freshness (schema/nav/events/csitem — each
+  # regenerates and diffs against the committed output) + the 5E.1 plugin/example
+  # typecheck gate + the core-boundary name-leak self-test. Globbed so a future
+  # check-*-generated.sh script needs no CI edit to start running here.
+  gates-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: codegen freshness (glob check-*-generated.sh)
+        run: |
+          set -e
+          for f in scripts/check-*-generated.sh; do echo "== $f =="; bash "$f"; done
+      - name: plugin/example typecheck (5E.1 gate)
+        run: bash ./scripts/check-plugins-typecheck.sh
+      - name: core-boundary name-leak self-test
+        run: bash ./scripts/test-boundary-nameleak.sh
+
+  # Rust-side gate: core must never import games/* (the game→core dependency
+  # direction is enforced here, cheaply, without a full shim build).
+  gates-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: core boundary check
+        run: ./scripts/check-core-boundary.sh
