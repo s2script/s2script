@@ -47,7 +47,7 @@ pub struct Manifest {
     #[serde(default)]
     pub publishes: std::collections::HashMap<String, PublishDecl>,
     #[serde(default)]
-    pub config: std::collections::HashMap<String, crate::config::ConfigDecl>,
+    pub config: std::collections::HashMap<String, crate::config::ConfigEntry>,
 }
 
 /// The major apiVersion this host speaks.  A plugin whose declared apiVersion major differs is
