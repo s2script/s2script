@@ -1,5 +1,7 @@
 /** @s2script/config — typed access to the plugin's materialized config. NO runtime code. */
-export type Config = Record<string, string | number | boolean>;
+/** A materialized config value: a scalar, or a nested section object of further values. */
+export type ConfigValue = string | number | boolean | { [k: string]: ConfigValue };
+export type Config = Record<string, ConfigValue>;
 export declare const config: {
   getString(key: string): string;
   getInt(key: string): number;
