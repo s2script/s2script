@@ -32,8 +32,11 @@ let votedThisMap = false;
 let pendingMap: MapEntry | null = null;
 let currentMap = "";
 let frameCounter = 0; // throttles the map-change poll to ~once/sec
+let mapStartMs = Date.now(); // when the current map began — the rtv_initialdelay window counts from here
 
-// The shared "mapvote" SQLite DB (nominations owns the schema/tables — this plugin only reads).
+// The shared "mapvote" SQLite DB. This plugin runs standalone: it CREATEs the schema itself
+// (IF NOT EXISTS — harmless alongside nominations, which owns the same identical schema), then
+// reads the map_history (cooldown) + nominations (ballot) tables it needs.
 let db: Database | null = null;
 
 const logErr = (e: unknown) => console.log("[rockthevote] error: " + e);
@@ -179,6 +182,13 @@ function requestRtv(slot: number): void {
     Chat.toSlot(slot, voteRunning ? "[RTV] A vote is already running." : "[RTV] A vote already happened this map.");
     return;
   }
+  // rtv_initialdelay — refuse player RTV during a map's opening window (SM parity; sm_forcertv bypasses it).
+  const initialDelayMs = Math.max(0, config.getInt("rtv_initialdelay")) * 1000;
+  const remainingMs = initialDelayMs - (Date.now() - mapStartMs);
+  if (remainingMs > 0) {
+    Chat.toSlot(slot, "[RTV] RockTheVote is not open yet (" + Math.ceil(remainingMs / 1000) + "s).");
+    return;
+  }
   const pc = playerCount();
   const need = Math.ceil(config.getFloat("rtv_threshold") * pc);
   if (rtvVoters.has(slot)) {
@@ -208,6 +218,7 @@ function pollTick(): void {
   const m = Server.mapName;
   if (m && m !== currentMap) { // map changed — reset all per-map RTV state
     currentMap = m;
+    mapStartMs = Date.now();   // restart the rtv_initialdelay window for the new map
     rtvVoters.clear();
     voteRunning = false;
     votedThisMap = false;
@@ -223,7 +234,15 @@ function pollTick(): void {
 export function onLoad(): void {
   OnGameFrame.subscribe(pollTick);
 
-  Database.open("mapvote").then(d => { db = d; }).catch(logErr); // nominations owns CREATE TABLE
+  Database.open("mapvote").then(async (d) => {
+    // Standalone-safe: create our own schema idempotently. IF NOT EXISTS makes this harmless
+    // alongside nominations (whichever plugin loads first wins; the two CREATE statements are
+    // byte-identical). Without this, running rockthevote WITHOUT nominations left the tables
+    // absent → every cooldown/ballot query threw → buildBallot could never produce options.
+    await d.execute("CREATE TABLE IF NOT EXISTS map_history(id INTEGER PRIMARY KEY AUTOINCREMENT, map TEXT NOT NULL, played_at INTEGER NOT NULL)", []);
+    await d.execute("CREATE TABLE IF NOT EXISTS nominations(map TEXT PRIMARY KEY, nominator INTEGER NOT NULL)", []);
+    db = d;   // publish only after the tables exist — buildBallot/cooldownSet guard on `!db`
+  }).catch(logErr);
 
   Events.on("round_end", () => {
     if (!pendingMap) return;
