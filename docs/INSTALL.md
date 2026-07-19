@@ -58,7 +58,7 @@ The release ships the SourceMod-parity suite from `plugins/` (demos live under `
 
 `adminhelp` · `adminmenu` · `antiflood` · `basebans` · `basechat` · `basecomm` · `basecommands` · `basetriggers` · `basevotes` · `clientprefs` · `funcommands` · `playercommands` · `reservedslots`
 
-Opt-in plugins under `disabled/` (nominations, rockthevote, nextmap, funvotes) are **not** in the zip — build and drop them yourself if you want them.
+Opt-in plugins under `plugins/disabled/` (nominations, rockthevote, nextmap, funvotes) are **not** in the zip — build and drop them yourself if you want them.
 
 ## Add more plugins
 

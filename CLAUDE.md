@@ -103,7 +103,7 @@ games/cs2/   CS2 game-package prelude (pawn.js + generated schema/nav accessors)
 packages/    npm-published: @s2script/sdk (builtin capability .d.ts as @s2script/sdk/<cap> subpaths + the `s2s` CLI) and @s2script/cs2 (game types).
 plugins/     The base-plugin suite (SourceMod parity) — ships in the runtime zip.
 examples/    Demo plugins (not shipped).
-disabled/    Opt-in plugins; the loader skips top-level `disabled/`. Operators move a .s2sp up one level to enable.
+plugins/disabled/  Opt-in plugins; the loader's non-recursive scan skips the `plugins/disabled/` subdir. Operators move a .s2sp up one level (into `plugins/`) to enable.
 gamedata/    Regenerable engine facts: byte-signatures, offsets, schema/event/item catalogs (data, not code).
 docs/        ARCHITECTURE.md · INSTALL.md · re-strategy.md · PROGRESS.md · superpowers/{specs,plans}/.
 scripts/     Build, gate (check-*.sh), sniper build, rcon.py, package/release.
@@ -132,7 +132,7 @@ Slices 0 → the async-network category are complete and each proven on a live C
 - **Menus & votes** — `@s2script/menu` (chat + WASD center backends); adminmenu / TopMenu; basevotes / funvotes / rockthevote / nominations / nextmap.
 - **Crash reporting (capture client)** — an Accelerator/Breakpad equivalent living in `shim`+`core` (runtime infra, **not** a plugin), armed at boot, engine-generic. A signal-safe breadcrumb (culprit plugin + dispatch + engine-op) + the treadmill fingerprint (gamedata `stale` + live CS2 build); three capture paths (native fault via vendored **Breakpad** minidump, fatal JS error, Rust panic — the panic `catch_unwind` used to swallow silently is now reported) → one frozen `schema_version:1` incident envelope → disk spool + **upload-on-next-boot** (multipart-with-minidump); opt-in `crashreporter.json`. Live-gate proven end-to-end. Backend + symbol pipeline are separate future cycles (spec #2/#3).
 
-**Base plugins that ship:** basecommands · basechat · playercommands · antiflood · adminhelp · basecomm · basebans · reservedslots · basetriggers · funcommands (+ clientprefs). Opt-in under `disabled/`: nominations · rockthevote · funvotes · nextmap.
+**Base plugins that ship:** basecommands · basechat · playercommands · antiflood · adminhelp · basecomm · basebans · reservedslots · basetriggers · funcommands (+ clientprefs). Opt-in under `plugins/disabled/`: nominations · rockthevote · funvotes · nextmap.
 
 **Deferred/next queue** (as of the last logged slice): crash-reporter **backend** (spec #2: authenticated ingest → minidump symbolication against a per-build symbol store → grouping/dedup → per-operator + fleet dashboard → treadmill correlation) + the CI **symbol pipeline** (spec #3: `dump_syms` per release); dropActiveWeapon sig-resolve → typed EKV setters (Vector/Color/EHandle) → translations → zone polish (viz / in-game editor / tags). Do **not** build ahead of an agreed slice; each deferred item is logged with its reason in `docs/PROGRESS.md`.
 

@@ -8,8 +8,8 @@
 #                                                 # versions to match a release tag
 #
 # When VERSION (or $1) is set — typically the GitHub Release tag without a
-# leading v — every plugins/*/package.json (and disabled/*/) is rewritten to
-# that version BEFORE build so the .s2sp manifest matches the runtime zip.
+# leading v — every plugins/*/package.json (and plugins/disabled/*/) is rewritten
+# to that version BEFORE build so the .s2sp manifest matches the runtime zip.
 # npm @s2script/* packages are independent (Changesets); plugins track the tag.
 #
 # Requires Node. Builds the local CLI first, then typechecks+bundles each plugin.
@@ -27,7 +27,8 @@ TAG_VERSION="${VERSION:-${1:-}}"
 TAG_VERSION="${TAG_VERSION#v}"
 if [ -n "$TAG_VERSION" ]; then
     echo "=== stamp plugin versions → $TAG_VERSION ==="
-    for d in plugins/*/ disabled/*/; do
+    # plugins/*/ also globs the bare plugins/disabled/ dir; the package.json guard skips it.
+    for d in plugins/*/ plugins/disabled/*/; do
         [ -f "$d/package.json" ] || continue
         node -e '
           const fs = require("fs");
@@ -53,7 +54,8 @@ CLI="node packages/sdk/dist/cli.js"
 fail=0
 built=0
 
-for d in plugins/*/; do
+# plugins/*/ also globs the bare plugins/disabled/ dir; the package.json guard skips it.
+for d in plugins/*/ plugins/disabled/*/; do
     [ -f "$d/package.json" ] || continue
     name=$(basename "$d")
     # Safety: never ship *-demo from plugins/ (demos belong in examples/)
@@ -81,4 +83,5 @@ if [ "$built" -eq 0 ]; then
 fi
 
 echo "PASS: built $built base plugin(s)"
-find plugins -maxdepth 3 -type f -name '*.s2sp' | sort
+# maxdepth 4 so opt-in plugins under plugins/disabled/*/dist/ are listed too.
+find plugins -maxdepth 4 -type f -name '*.s2sp' | sort

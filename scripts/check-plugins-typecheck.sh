@@ -4,9 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
-for base in examples plugins disabled; do
-  [ -d "$base" ] || continue
-  for d in "$base"/*/; do
+# plugins/*/ also globs the bare plugins/disabled/ dir; the package.json guard skips it.
+# An unmatched glob stays literal and is skipped by the same guard (no set -e trip).
+for d in examples/*/ plugins/*/ plugins/disabled/*/; do
     [ -f "$d/package.json" ] || continue
     echo "=== typecheck $d ==="
     if ! node --experimental-strip-types --no-warnings -e "
@@ -16,6 +16,5 @@ for base in examples plugins disabled; do
         console.log('  OK');
       });
     "; then fail=1; fi
-  done
 done
 [ "$fail" = 0 ] && echo "PASS: all plugins and examples typecheck" || { echo "FAIL: a plugin or example has type errors"; exit 1; }
