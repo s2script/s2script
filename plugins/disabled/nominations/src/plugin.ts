@@ -59,8 +59,17 @@ async function nominatedSet(): Promise<Set<string>> {
   return new Set(rows.map(r => String(r.map)));
 }
 
+// The current map is ALWAYS excluded from nomination — explicitly, not merely as a side effect of
+// map_cooldown>=1 recording it in map_history (which fails to exclude it when map_cooldown is 0).
+// Compared case-insensitively (maplist.txt names are operator-written; Server.mapName is the live map).
+function isCurrentMap(name: string): boolean {
+  const cur = Server.mapName;
+  return cur !== "" && name.toLowerCase() === cur.toLowerCase();
+}
+
 async function nominate(slot: number, name: string): Promise<void> {
   if (!db) { Chat.toSlot(slot, "[nominations] not ready."); return; }
+  if (isCurrentMap(name)) { Chat.toSlot(slot, "[nominations] " + name + " is the current map."); return; }
   if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " was played too recently."); return; }
   if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " is already nominated."); return; }
   await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
@@ -80,7 +89,8 @@ function mapMenu(slot: number, entries: MapEntry[], title: string): void {
 async function nominateMenu(slot: number): Promise<void> {
   const pool = loadPool();
   const cd = await cooldownSet(), nom = await nominatedSet();
-  const options = pool.filter(m => !cd.has(m.name) && !nom.has(m.name));
+  // Menu exclusion set = cooldown ∪ already-nominated ∪ the current map (the last is explicit — see isCurrentMap).
+  const options = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
   if (options.length === 0) { Chat.toSlot(slot, "[nominations] No maps available to nominate right now."); return; }
   mapMenu(slot, options, "Nominate a map");
 }
@@ -116,6 +126,10 @@ export function onLoad(): void {
   // Record the current map + every later transition (plugins persist across a changelevel).
   OnGameFrame.subscribe(pollMapChange);
 
+  // DESCOPED: SM's sm_nominate_addmap (an admin command that force-adds a map to the nomination
+  // list at runtime) is intentionally not implemented. maplist.txt is the authoritative,
+  // operator-edited pool; there is no runtime pool-mutation surface. Revisit only if an admin
+  // "nominate on a player's behalf / add off-pool map" need is proven.
   Commands.register("sm_nominate", (ctx) => {
     const slot = ctx.callerSlot;
     if (slot < 0) { ctx.reply("Nominate in-game."); return; }
