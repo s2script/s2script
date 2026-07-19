@@ -107,6 +107,35 @@ Drop additional .s2sp archives here to load them.
 The runtime watches this directory (top-level only) and hot-loads / reloads / unloads on change.
 EOF
 
+# Opt-in plugins ship UNDER plugins/disabled/ but are NOT loaded: the runtime's
+# read_dir scan of plugins/ is non-recursive, so anything in the disabled/ subdir
+# is skipped. An operator enables one by moving its .s2sp up one level into plugins/.
+mkdir -p "$STAGE/addons/s2script/plugins/disabled"
+find "$STAGE/addons/s2script/plugins/disabled" -maxdepth 1 -type f -name '*.s2sp' -delete
+
+disabled_count=0
+shopt -s nullglob
+for s2sp in plugins/disabled/*/dist/*.s2sp; do
+    # Skip any *-demo that somehow remained under plugins/disabled/
+    case "$s2sp" in
+        */*-demo/*) continue ;;
+    esac
+    cp "$s2sp" "$STAGE/addons/s2script/plugins/disabled/"
+    disabled_count=$((disabled_count + 1))
+done
+shopt -u nullglob
+
+if [ "$disabled_count" -eq 0 ]; then
+    echo "ERROR: no opt-in plugin .s2sp files under plugins/disabled/ — run scripts/build-base-plugins.sh" >&2
+    exit 1
+fi
+
+cat > "$STAGE/addons/s2script/plugins/disabled/README.txt" <<EOF
+Opt-in plugins ($disabled_count) — NOT loaded by default.
+The runtime's plugins/ scan is non-recursive, so nothing in this disabled/ subdir loads.
+To enable one, move its .s2sp up one level into plugins/ (the runtime then hot-loads it).
+EOF
+
 printf '%s\n' "$VERSION" > "$STAGE/addons/s2script/VERSION"
 
 # Zip with addons/ at the archive root (unzip into game/csgo/).
@@ -119,6 +148,7 @@ rm -f "$ZIP_PATH"
 echo ""
 echo "release: $ZIP_PATH"
 echo "base plugins included: $plugin_count"
+echo "opt-in plugins (plugins/disabled/, not loaded): $disabled_count"
 echo -n "sha256: "
 sha256sum "$ZIP_PATH" | awk '{print $1}'
 echo "layout:"
