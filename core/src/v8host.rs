@@ -465,7 +465,7 @@ struct PluginInstance {
     /// The plugin's declared config fields (from its manifest).  Stored at load so
     /// `re_materialize_config` can re-run materialization without the manifest.
     /// Starts empty; populated by `store_config_decls` right after `load_plugin_js`.
-    config_decls: std::collections::HashMap<String, crate::config::ConfigDecl>,
+    config_decls: std::collections::HashMap<String, crate::config::ConfigEntry>,
 }
 
 /// A pending async resolver (`Delay`/`NextTick`/`NextFrame`/`threadSleep`) plus the OWNING plugin's
@@ -1182,11 +1182,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   };
   // --- Slice 5E.2: config module (typed getters over __s2pkg_config_values; zero-value fallback) ---
+  // A dotted key ("section.child") walks nested section objects; a plain key reads the top level.
+  function __s2_config_walk(k) {
+    var v = globalThis.__s2pkg_config_values;
+    if (v == null) return undefined;
+    var parts = String(k).split(".");
+    for (var i = 0; i < parts.length; i++) {
+      if (v == null || typeof v !== "object") return undefined;
+      v = v[parts[i]];
+    }
+    return v;
+  }
   var __s2_config = {
-    getString: function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v == null ? "" : String(v); },
-    getInt:    function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : (v | 0); },   // int = 32-bit (SourceMod ConVar parity); `v | 0` truncates by design
-    getFloat:  function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return (v == null || typeof v !== "number") ? 0 : v; },
-    getBool:   function (k) { var v = globalThis.__s2pkg_config_values; v = v && v[k]; return v === true; },
+    getString: function (k) { var v = __s2_config_walk(k); return v == null ? "" : String(v); },
+    getInt:    function (k) { var v = __s2_config_walk(k); return (v == null || typeof v !== "number") ? 0 : (v | 0); },   // int = 32-bit (SourceMod ConVar parity); `v | 0` truncates by design
+    getFloat:  function (k) { var v = __s2_config_walk(k); return (v == null || typeof v !== "number") ? 0 : v; },
+    getBool:   function (k) { var v = __s2_config_walk(k); return v === true; },
     onChange:  function (h) { __s2_config_on_change(h); },
     readFile:  function (name) { return __s2_config_read_file(String(name)); },
     writeFile: function (name, content) { __s2_config_write_file(String(name), String(content)); },
@@ -7885,7 +7896,7 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
 /// Materialize a plugin's config (defaults ⊕ the override file read via the `config_read` op;
 /// auto-generate the file via `config_write` if absent) and return the values JSON to inject.
 /// Degrade: no ops → defaults only, no auto-write, still returns the defaults JSON.
-pub(crate) fn materialize_for_load(id: &str, decls: &std::collections::HashMap<String, crate::config::ConfigDecl>) -> String {
+pub(crate) fn materialize_for_load(id: &str, decls: &std::collections::HashMap<String, crate::config::ConfigEntry>) -> String {
     if decls.is_empty() { return "{}".to_string(); }
     let ops = ENGINE_OPS.with(|o| o.get());
     let cid = std::ffi::CString::new(id).ok();
@@ -7912,7 +7923,7 @@ pub(crate) fn materialize_for_load(id: &str, decls: &std::collections::HashMap<S
 
 /// Store config decls on a plugin's `PluginInstance` (called from the loader right after
 /// `load_plugin_js` so `re_materialize_config` can re-run without needing the manifest).
-pub(crate) fn store_config_decls(id: &str, decls: std::collections::HashMap<String, crate::config::ConfigDecl>) {
+pub(crate) fn store_config_decls(id: &str, decls: std::collections::HashMap<String, crate::config::ConfigEntry>) {
     PLUGINS.with(|p| {
         if let Some(pi) = p.borrow_mut().get_mut(id) {
             pi.config_decls = decls;
@@ -13463,6 +13474,28 @@ mod frame_tests {
         shutdown();
     }
 
+    /// A dotted getter key walks nested section objects; a partial/missing path yields the zero-value.
+    #[test]
+    fn config_getters_walk_dotted_sections() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__s2pkg_config_values = { top: 1, sect: { inner: 5, deeper: { leaf: "x" } } };
+        "#).unwrap();
+        // Dotted keys walk into the nested section objects.
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('sect.inner'))"), "5");
+        assert_eq!(eval_in_context_string("p", "__s2pkg_config.config.getString('sect.deeper.leaf')"), "x");
+        // A top-level plain key still works.
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('top'))"), "1");
+        // A section object read as a scalar → zero-value (typeof object, not number/true).
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('sect'))"), "0");
+        // A path that runs off the end of a leaf → zero-value (no throw).
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_config.config.getInt('sect.inner.nope'))"), "0");
+        assert_eq!(eval_in_context_string("p", "__s2pkg_config.config.getString('sect.missing')"), "");
+        shutdown();
+    }
+
     /// `re_materialize_config` re-injects `__s2pkg_config_values` (from materialized defaults
     /// when no ops are wired) and fires every `onChange` handler with the updated config object.
     #[test]
@@ -13473,11 +13506,11 @@ mod frame_tests {
 
         // Store config decls: one string key with default "hello".
         let mut decls = std::collections::HashMap::new();
-        decls.insert("greeting".to_string(), crate::config::ConfigDecl {
+        decls.insert("greeting".to_string(), crate::config::ConfigEntry::Decl(crate::config::ConfigDecl {
             r#type: "string".to_string(),
             default: serde_json::json!("hello"),
-            description: None,
-        });
+            ..Default::default()
+        }));
         store_config_decls("p", decls);
 
         // Inject a pre-existing value that differs from the default (to show re_materialize replaces it).
@@ -13516,11 +13549,11 @@ mod frame_tests {
         set_engine_ops(None);
         create_plugin_context("p");
         let mut decls = std::collections::HashMap::new();
-        decls.insert("x".to_string(), crate::config::ConfigDecl {
+        decls.insert("x".to_string(), crate::config::ConfigEntry::Decl(crate::config::ConfigDecl {
             r#type: "int".to_string(),
             default: serde_json::json!(42),
-            description: None,
-        });
+            ..Default::default()
+        }));
         store_config_decls("p", decls);
         // No onChange subscribed → must not panic.
         re_materialize_config("p");
