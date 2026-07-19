@@ -1,0 +1,3 @@
+{
+  "_help": "command -> required flag (name or SM letter), or \"\" for everyone. e.g. \"sm_slap\": \"generic\", \"sm_who\": \"\""
+}
