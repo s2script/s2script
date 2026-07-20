@@ -4136,6 +4136,28 @@ pub(crate) fn dispatch_map_start(map: &str) {
     });
 }
 
+/// E1 repair sweep (north-star §7, the E0-V4 contingency): armed by the map-start books
+/// clear, runs ONCE at the next SIMULATING frame — reconciles the books against a
+/// chunk-walk snapshot of live identity slots (system-owned memory only; the shim's
+/// ent_snapshot op). Covers entities created before StartupServer POST / before the
+/// listener attached (first boot map, preallocated controllers). Fail-closed: with no
+/// op the books stay purely listener-fed and an unseen entity reads null.
+/// ASSUMPTION TO CONFIRM AT THE LIVE GATE (E0-V4): the first simulating frame is a
+/// verified-clean moment — the new map's entity system is live and populated.
+pub(crate) fn entity_repair_sweep_if_armed(simulating: bool) {
+    if !simulating { return; }
+    if !crate::entity_live::take_repair_armed() { return; }
+    let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+    let Some(snapshot) = ops.ent_snapshot else { return };
+    const CAP: usize = 32768;   // MAX_TOTAL_ENTITIES ceiling (CS2: 16k entries + headroom)
+    let mut idxs = vec![0i32; CAP];
+    let mut sers = vec![0i32; CAP];
+    let n = snapshot(idxs.as_mut_ptr(), sers.as_mut_ptr(), CAP as i32);
+    let n = (n.max(0) as usize).min(CAP);
+    let pairs: Vec<(i32, i32)> = (0..n).map(|i| (idxs[i], sers[i])).collect();
+    crate::entity_live::repair_reconcile(&pairs);
+}
+
 /// Deliver a precache-manifest-build notification to the `Sound.onPrecache` subscribers. Called
 /// from ffi.rs's `s2script_core_dispatch_precache` (the shim's CGameRulesGameSystem::
 /// OnPrecacheResource MANUAL hook, which stashes the live IResourceManifest* around this call so
@@ -11599,6 +11621,36 @@ mod frame_tests {
         FAKE_ENT_INDEX.with(|c| c.set(idx));
         FAKE_ENT_PTR.with(|c| c.set(ent as *const FakeEnt as *const u8));
         (idx, serial)
+    }
+
+    thread_local! { static SNAPSHOT_PAIRS: std::cell::RefCell<Vec<(i32, i32)>> = std::cell::RefCell::new(Vec::new()); }
+    extern "C" fn fake_ent_snapshot(oi: *mut c_int, os: *mut c_int, cap: c_int) -> c_int {
+        SNAPSHOT_PAIRS.with(|p| {
+            let p = p.borrow();
+            let n = p.len().min(cap as usize);
+            for i in 0..n { unsafe { *oi.add(i) = p[i].0; *os.add(i) = p[i].1; } }
+            p.len() as c_int
+        })
+    }
+
+    /// E1: the map-start-armed repair sweep reconciles the books from the identity-chunk
+    /// snapshot at the FIRST SIMULATING frame — and only then (a non-simulating frame
+    /// leaves it armed).
+    #[test]
+    fn repair_sweep_runs_once_on_first_simulating_frame() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps { ent_snapshot: Some(fake_ent_snapshot), ..mock_event_ops() }));
+        SNAPSHOT_PAIRS.with(|p| *p.borrow_mut() = vec![(1, 11), (64, 3)]);
+        crate::entity_live::clear_for_map_transition();          // arm (what map start does)
+        entity_repair_sweep_if_armed(false);                     // NOT simulating → stays armed
+        assert_eq!(crate::entity_live::len(), 0);
+        entity_repair_sweep_if_armed(true);                      // simulating → reconcile
+        assert!(crate::entity_live::lookup(1).is_some() && crate::entity_live::lookup(64).is_some());
+        SNAPSHOT_PAIRS.with(|p| p.borrow_mut().clear());
+        entity_repair_sweep_if_armed(true);                      // disarmed → no second sweep
+        assert_eq!(crate::entity_live::len(), 2, "sweep is one-shot per arming");
+        shutdown();
     }
 
     /// dispatch_entity_event delivers to the matching kind+class subscriber AND the "*" wildcard, with

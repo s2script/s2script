@@ -55,6 +55,9 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
 ) -> c_int {
     catch_unwind(|| {
         let phase = if phase == 0 { Phase::Pre } else { Phase::Post };
+        // E1: reconcile the entity books before any JS runs this frame (one-shot,
+        // armed at map start, fires on the first simulating frame).
+        if phase == Phase::Pre { v8host::entity_repair_sweep_if_armed(simulating != 0); }
         let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
         if phase == Phase::Post {
             v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
