@@ -28,6 +28,13 @@ import type { Weapon } from "./weapon";
  */
 export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly ref: EntityRef;
+  /**
+   * SourceMod/CSSharp-sense validity: the pawn is live (serial-gated) AND fully spawned (out of the
+   * engine EF_IN_STAGING_LIST). Prefer this over `ref.isValid()` for any pawn WRITE — a staged-but-live
+   * pawn passes `ref.isValid()` yet segfaults on SetModel/SetParent. Falls back to liveness if the
+   * staging-flag read is unavailable.
+   */
+  readonly isValid: boolean;
   /** The player controlling this pawn, or null if stale/absent. */
   readonly controller: Player | null;
   /** World-space position (via the CGameSceneNode pointer chain), or null if stale. */
