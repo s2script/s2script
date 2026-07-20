@@ -2,8 +2,6 @@
 //! Pure logic — no V8, no CS2 identifiers. The V8 context lives in v8host, keyed by the
 //! same plugin id string. This module is the teardown authority and async-liveness guard.
 
-use std::collections::HashMap;
-
 // ---------------------------------------------------------------------------
 // Resource
 // ---------------------------------------------------------------------------
@@ -153,63 +151,50 @@ pub struct PluginEntry {
 // Registry
 // ---------------------------------------------------------------------------
 
-/// Maps plugin id strings to their current `PluginEntry`.
-/// The V8 `Global<Context>` lives in `v8host`, keyed by the same id.
+/// Maps plugin id strings to their current entry. Backed by the shared liveness
+/// primitive (E1): one instance of the SAME mechanism the entity books use —
+/// separate table, separate axis (a map change must never invalidate plugins).
 pub struct Registry {
-    entries: HashMap<String, PluginEntry>,
-    next_gen: u64,
+    table: crate::liveness::LiveTable<String, PluginLedger>,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            next_gen: 0,
-        }
+        Self { table: crate::liveness::LiveTable::new(0) }
     }
 
     /// Insert (or re-insert on reload) a plugin. Returns the assigned generation.
-    /// A re-insert of an existing id bumps the generation — that IS reload.
+    /// A re-insert of an existing id mints a fresh generation — that IS reload.
     pub fn insert(&mut self, id: impl Into<String>) -> u64 {
-        let id = id.into();
-        let gen = self.next_gen;
-        self.next_gen += 1;
-        self.entries.insert(
-            id,
-            PluginEntry {
-                generation: gen,
-                ledger: PluginLedger::new(),
-            },
-        );
-        gen
+        self.table.insert(id.into(), PluginLedger::new())
     }
 
     /// Remove a plugin. Returns the `PluginEntry` so the caller can walk the
     /// ledger for teardown. Returns `None` if not present.
     pub fn remove(&mut self, id: &str) -> Option<PluginEntry> {
-        self.entries.remove(id)
+        self.table
+            .remove(&id.to_string())
+            .map(|(generation, ledger)| PluginEntry { generation, ledger })
     }
 
     /// Returns `true` iff the plugin is present AND its generation matches.
     pub fn is_live(&self, id: &str, generation: u64) -> bool {
-        self.entries
-            .get(id)
-            .map_or(false, |e| e.generation == generation)
+        self.table.is_live(&id.to_string(), generation)
     }
 
     /// Mutable access to a plugin's ledger (for recording resources).
     pub fn ledger_mut(&mut self, id: &str) -> Option<&mut PluginLedger> {
-        self.entries.get_mut(id).map(|e| &mut e.ledger)
+        self.table.get_mut(&id.to_string()).map(|(_, m)| m)
     }
 
     /// All currently registered plugin ids.
     pub fn ids(&self) -> Vec<String> {
-        self.entries.keys().cloned().collect()
+        self.table.keys()
     }
 
     /// The current generation for `id`, if present.
     pub fn generation_of(&self, id: &str) -> Option<u64> {
-        self.entries.get(id).map(|e| e.generation)
+        self.table.get(&id.to_string()).map(|(g, _)| g)
     }
 }
 
@@ -256,6 +241,18 @@ mod tests {
         assert_eq!(entry.ledger.timers, vec![7]);
         assert!(!r.is_live("a", g), "removed plugin is not live");
         assert!(r.remove("a").is_none());
+    }
+
+    #[test]
+    fn generations_come_from_one_shared_monotonic_counter_starting_at_zero() {
+        let mut r = Registry::new();
+        let a = r.insert("a");
+        let b = r.insert("b");
+        let a2 = r.insert("a");                  // reload of a
+        assert_eq!(a, 0, "first generation is 0 (async-resolver unwrap_or(0) compat)");
+        assert!(b > a && a2 > b, "one shared counter across ids: {a} {b} {a2}");
+        assert_eq!(r.generation_of("b"), Some(b));
+        assert_eq!(r.ids().len(), 2);
     }
 
     #[test]
