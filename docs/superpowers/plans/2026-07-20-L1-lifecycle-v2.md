@@ -26,6 +26,17 @@
 - Do NOT touch: EntityRef shape (E1's job), `s2s build` bundling/manifest derivation (B1), ESLint (B2), the 13 pre-existing CLI test failures (schema-runtime + player-identity — known, unrelated).
 - Docs: append nothing to CLAUDE.md's Current state; PROGRESS.md entry only after the (held) live gate.
 
+## Resolved decisions (2026-07-20 — human-reviewed; these settle the "Open questions" tail)
+
+1. **`ctx.clients.onSay` is Client-first:** `onSay((client: Client, text: string, teamOnly: boolean) => HookResult)` — every `ctx.clients.*` handler hands a `Client`, so `onSay` must too (not a bare slot). Update the port of basecomm's gag path accordingly (resolve steamId off the `Client`).
+2. **`Events.off` is REMOVED.** No manual unsubscribe. Persistent subs tear down via the ledger; dynamic subs use `ctx.createScope()` → `scope.dispose()`. Delete `off` from the SDK surface and any consumer (there are none in the shipped suite — verify).
+3. **Unmet hard dependency = load anyway (lazy).** If a declared hard dep is not published within the wait window, the plugin still reaches `Active`; the hard-dep proxy throws `InterfaceUnavailable` on first call (the existing contract). Do NOT fail the load. (Chosen for consistency with the established inter-plugin proxy model.)
+4. **Load timeout = 30 s (`LOAD_TIMEOUT_FRAMES = 1920`)** before a never-settling factory promise → `Failed`. Keep as planned.
+5. **`Cmd` → `UserCmdView` rename accepted** (avoids collision with the command-invocation object now named `cmd`).
+6. **`UserMessages.onPre` stays the documented advanced-boundary exception** — raw usermessage hooking is NOT on the clean `ctx`; the send-side `Hud.*` is the positive API (a later slice builds `Hud`).
+7. **Buffered publish:** a produced interface becomes visible at the producer's `Active` transition, topo-ordered. Keep as planned.
+8. **`HOST_API_VERSION_MAJOR` 1→2** confirmed (breaking `.d.ts` = major host-contract bump; orthogonal to the 0.x npm semver).
+
 ## Parallelization map
 
 ```
