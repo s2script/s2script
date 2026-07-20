@@ -363,6 +363,64 @@ static const char* s2_entity_name(int index, int serial) {
 }
 
 // ---------------------------------------------------------------------------
+// E1 engine-op: resolve (index, engine_serial) -> CEntityInstance*, validating ENTIRELY
+// in the system-owned identity chunk (the s2_deref_handle idiom, by pair instead of by
+// packed handle). Instance memory is NEVER read to decide liveness — the exact inversion
+// of the retired core-side entity_resolve_ptr (which read the serial through the
+// instance it was about to return: a use-after-free deciding UAF-safety).
+// ---------------------------------------------------------------------------
+static void* s2_ent_resolve(int index, int serial) {
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return nullptr;
+    if (index < 0 || index >= MAX_TOTAL_ENTITIES) return nullptr;
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[index / MAX_ENTITIES_IN_LIST];
+    if (!chunk_base) return nullptr;
+    CEntityIdentity* id = &chunk_base[index % MAX_ENTITIES_IN_LIST];
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return nullptr;
+    if (id->GetRefEHandle().GetSerialNumber() != serial) return nullptr;  // stale slot reuse
+    return id->m_pInstance;   // may be null (removal in progress) — caller treats null as not-live
+}
+
+// E1 engine-op: identity m_flags read from the SLOT (never instance+0x10). -1 = stale/absent.
+// Backs pawn.isValid's EF_IN_STAGING_LIST check without touching instance memory; the flag's
+// bit value stays in the game package (engine-generic: raw flags cross the ABI).
+static long long s2_ent_identity_flags(int index, int serial) {
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return -1;
+    if (index < 0 || index >= MAX_TOTAL_ENTITIES) return -1;
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[index / MAX_ENTITIES_IN_LIST];
+    if (!chunk_base) return -1;
+    CEntityIdentity* id = &chunk_base[index % MAX_ENTITIES_IN_LIST];
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return -1;
+    if (id->GetRefEHandle().GetSerialNumber() != serial) return -1;
+    return (long long)(unsigned int)id->m_flags;
+}
+
+// E1 engine-op: books repair sweep — every live identity slot's (index, serial); the
+// s2_entity_find_by_class walk minus the class filter. Returns the TOTAL found (the
+// caller detects truncation when total > cap). System-owned chunk memory only.
+static int s2_ent_snapshot(int* outIndices, int* outSerials, int cap) {
+    if (!outIndices || !outSerials || cap <= 0) return 0;
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return 0;
+    int found = 0;
+    for (int idx = 0; idx < MAX_TOTAL_ENTITIES; ++idx) {
+        CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[idx / MAX_ENTITIES_IN_LIST];
+        if (!chunk_base) continue;
+        CEntityIdentity* id = &chunk_base[idx % MAX_ENTITIES_IN_LIST];
+        if (id->m_flags & EF_IS_INVALID_EHANDLE) continue;
+        if (!id->m_pInstance) continue;
+        if (found < cap) {
+            CEntityHandle h = id->GetRefEHandle();
+            outIndices[found] = h.GetEntryIndex();
+            outSerials[found] = h.GetSerialNumber();
+        }
+        ++found;
+    }
+    return found;
+}
+
+// ---------------------------------------------------------------------------
 // Engine-op: resolve a packed entity handle (u32) → CEntityInstance* or null.
 // Signature-free chunk walk (recon Q4): mirrors s2_ent_by_index but adds serial
 // validation via CEntityIdentity::GetRefEHandle() (inline, entityidentity.h:74).
@@ -3951,6 +4009,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     s_pAddListenerEntity = reinterpret_cast<AddRemoveListenerFn>(const_cast<uint8_t*>(alemt.text) + aleOff);
                     META_CONPRINTF("[s2script] AddListenerEntity resolved @%p (entity lifecycle listeners)\n",
                                    reinterpret_cast<void*>(s_pAddListenerEntity));
+                    // E1: the entity books are load-bearing for ALL entity access now — the
+                    // listener is wanted from boot, not only after a JS Entity.on* subscribe.
+                    // (Registration still happens at StartupServer POST via
+                    // EnsureEntityListenerRegistered — the entity system doesn't exist yet here.)
+                    s_wantEntityListener = true;
                 }
             }
             auto rleit = sigs.find("RemoveListenerEntity");
@@ -4209,6 +4272,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.server_build_number = &s2_server_build_number;
     // Crash-harness — APPENDED after server_build_number; order MUST match S2EngineOps.
     ops.crash_test_native = &s2_crash_test_native;
+    // E1 entity-liveness slice (APPENDED after crash_test_native; order is the ABI).
+    ops.ent_resolve        = &s2_ent_resolve;
+    ops.ent_identity_flags = &s2_ent_identity_flags;
+    ops.ent_snapshot       = &s2_ent_snapshot;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

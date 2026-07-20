@@ -274,6 +274,14 @@ type PlayerRespawnFn = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
 pub type ServerBuildNumberFn = extern "C" fn() -> c_int;
 // --- Crash-harness (dev-only): raise a native fault on command (C-ABI; header must match) ---
 pub type CrashTestNativeFn = extern "C" fn(kind: c_int);
+// --- E1 entity-liveness slice (APPENDED after crash_test_native; order is the ABI). ENGINE-GENERIC:
+// slot-side identity-CHUNK validation — (index, engine_serial) in; instance ptr / identity flags /
+// a live-(index,serial) snapshot out. No game names cross the ABI. `ent_resolve` is the ONLY
+// pointer-yielding resolver core may use after E1 (the s2_deref_handle idiom: liveness decided in
+// system-owned chunk memory, never through the instance).
+pub type EntResolveFn       = extern "C" fn(c_int, c_int) -> *mut c_void;
+pub type EntIdentityFlagsFn = extern "C" fn(c_int, c_int) -> i64;
+pub type EntSnapshotFn      = extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -422,6 +430,10 @@ pub struct S2EngineOps {
     pub server_build_number: Option<ServerBuildNumberFn>,
     // --- Crash-harness — APPENDED after server_build_number; order is the ABI; do not reorder above. ---
     pub crash_test_native: Option<CrashTestNativeFn>,
+    // --- E1 entity-liveness slice (APPENDED after crash_test_native; order is the ABI; do not reorder above) ---
+    pub ent_resolve:        Option<EntResolveFn>,
+    pub ent_identity_flags: Option<EntIdentityFlagsFn>,
+    pub ent_snapshot:       Option<EntSnapshotFn>,
 }
 
 /// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
@@ -12024,6 +12036,9 @@ mod frame_tests {
             player_respawn: None,
             server_build_number: None,
             crash_test_native: None,
+            ent_resolve: None,
+            ent_identity_flags: None,
+            ent_snapshot: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -13098,6 +13113,9 @@ mod frame_tests {
             player_respawn: None,
             server_build_number: None,
             crash_test_native: None,
+            ent_resolve: None,
+            ent_identity_flags: None,
+            ent_snapshot: None,
         }
     }
 

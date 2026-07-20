@@ -301,6 +301,10 @@ typedef int (*s2_server_build_number_fn)(void);
 /* Crash-harness (dev-only, gated core-side by crashreporter.json dev_test): raise a real
  * native fault on command. kind: 0 = null volatile write (SIGSEGV), 1 = abort() (SIGABRT). */
 typedef void (*s2_crash_test_native_fn)(int kind);
+/* E1 entity-liveness slice — slot-side identity-chunk validation (engine-generic). */
+typedef void*     (*s2_ent_resolve_fn)(int index, int serial);
+typedef long long (*s2_ent_identity_flags_fn)(int index, int serial);
+typedef int       (*s2_ent_snapshot_fn)(int* out_indices, int* out_serials, int cap);
 
 /* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
  * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
@@ -464,6 +468,10 @@ typedef struct {
     s2_server_build_number_fn server_build_number;
     /* Crash-harness — APPENDED after server_build_number; order is the ABI. */
     s2_crash_test_native_fn crash_test_native;
+    /* E1 entity-liveness slice — MUST remain in this order; mirrors S2EngineOps in core/src/v8host.rs */
+    s2_ent_resolve_fn        ent_resolve;        /* (index, engine_serial) -> CEntityInstance* | NULL — identity-CHUNK validated */
+    s2_ent_identity_flags_fn ent_identity_flags; /* (index, engine_serial) -> m_flags (>=0) | -1 stale/absent */
+    s2_ent_snapshot_fn       ent_snapshot;       /* fill live (index, serial) pairs; returns TOTAL found (may exceed cap) */
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
