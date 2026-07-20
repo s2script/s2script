@@ -124,21 +124,29 @@ export default plugin(async (ctx) => {
 - **Registration is unrepresentable outside load.** Registration verbs are **not importable**; they exist only as members of `ctx`. A handler cannot subscribe because nothing in its scope can — "subscribe-at-load" stops being a *rule* and becomes the *shape of the API*. The only residual escape (capturing `ctx` in a handler closure) is (a) sealed at runtime when the phase leaves `Loading` and (b) a trivially *local* lint (`no-ctx-escape`), not a whole-program analysis.
 - **Fail loud, not silent.** A throwing factory → `Failed` (named reason, clean teardown of the partial ledger), **not** the current swallow-and-continue that produces zombies. *(Locked decision.)*
 
-### 4.3 The `ctx` surface and the teachable line
+### 4.3 The `ctx` surface — subject-first, two orthogonal axes
 
-> **If it registers a persistent handler, it's a method on `ctx` (load-only). If it's a one-shot action, a query, or data, it stays a free import (call anytime).**
+Two rules give the whole mental model:
+- **The namespace tells you the *subject*** (what you're reacting to).
+- **The return type tells you the *power*** — a handler returning `void` is a pure notification; one returning `HookResult` can modify or block. This replaces SourceMod's Pre/Post *mode enum* (and its "does returning `Plugin_Handled` here even do anything?" ambiguity) with a compiler-visible distinction you can see in autocomplete.
 
-| Moves onto `ctx` (registration, load-only) | Stays a free import (action / data, anytime) |
+Registration lives ONLY on `ctx` (load-only; unrepresentable elsewhere). The everyday surface is five subjects plus the inter-plugin/config verbs:
+
+| `ctx` subject | Members (return `void` unless marked `→HookResult`) |
 |---|---|
-| `ctx.events.on` / `.onPre` | `Events.fire` / `fireToClient` |
-| `ctx.clients.on{Connect,PutInServer,Active,FullyConnect,Disconnect,SettingsChanged}` | `Client.fromSlot`, `ctx.clients.all()` |
-| `ctx.commands.register{,Admin,Server}` | `Player.fromSlot` / `.target`, `pickPlayer` |
-| `ctx.chat.onMessage` | `Chat.to` / `Chat.toAll` (prints) |
-| `ctx.damage.onPre` | entity accessors, schema reads, `createEntity` |
-| `ctx.server.onMapStart` (+ future `onMapEnd`) | `Server.command`, cvars |
-| `ctx.entities.on{Create,Spawn,Delete,Output}` | `Database.open`, `fetch`, math, `HookResult`, `ADMFLAG` |
-| `ctx.frame.each`, `ctx.usercmd.onRun`, `ctx.sound.onPrecache`, `ctx.config.onChange` | |
-| `ctx.publish(...)`, `ctx.use("dep")` / `ctx.tryUse("dep")` | |
+| **`ctx.events`** | `.on(name,h)`, `.onPre(name,h) →HookResult` — the 272-event catalog (`player_hurt` = damage *values*, `round_start`, `player_death`, …) |
+| **`ctx.clients`** | client forwards, lifecycle *and* actions: `.onConnect`→`.onDisconnect` (the 6), `.onSay →HookResult` (= `OnClientSayCommand`), `.onRunCmd →HookResult` |
+| **`ctx.entities`** | `.onCreate`, `.onSpawn`, `.onDelete`, `.onOutput →HookResult`, `.onDamage →HookResult` (global `OnTakeDamage` analog) |
+| **`ctx.server`** | `.onMapStart`, `.onGameFrame`, `.onPrecache` (+ future `.onMapEnd`) |
+| **`ctx.commands`** | `.register`, `.registerAdmin`, `.registerServer` |
+| inter-plugin / config | `ctx.config.onChange`, `ctx.publish(...)`, `ctx.use("dep")` / `ctx.tryUse("dep")` |
+
+Everything else is an **ambient free import** (an action/query/data, callable anytime — never a subscription), from `@s2script/sdk` subpaths: `Chat.to`/`Chat.toAll`; **`Hud.fade`/`.shake`/`.hint`/`.text`** (send-side screen/HUD effects, intent-named — deliberately NOT `Player.fade`, which would read as entity-alpha; `@s2script/sdk/hud`); `Player.fromSlot`/`.target`, `Client.fromSlot`, `Events.fire`, `Database.open`, `fetch`, math, `HookResult`, `ADMFLAG`, entity accessors.
+
+**Deliberately dropped / deferred:**
+- **No `ctx.intercept` bucket.** SourceMod never segregated "blocking hooks"; blocking is a return-type capability on a *subject* forward (`ctx.clients.onSay`, `ctx.entities.onDamage`), not a place you go. Grouping by mechanism (detour/SDKHook) leaks an implementation detail.
+- **No thin single-method namespaces** — `damage`/`chat`/`usercmd`/`sound` fold into their subject; `frame`/`precache` become `ctx.server.*`.
+- **User-message *hooking* is deferred.** The common needs are already wrapped (chat → `Chat`, menus → `@s2script/sdk/menu`) or cvar-configurable (e.g. the friendly-fire HUD text); raw interception stays behind the advanced/`unsafe` boundary, never on `ctx`. Only the *send* side (`Hud.*`) is built.
 
 ### 4.4 The one deliberate escape hatch (dynamic subscriptions)
 
@@ -156,6 +164,8 @@ Teardown is currently **three-way**: (1) the ledger reverse-walk (`v8host.rs:100
 ### 4.7 Breakage (accepted)
 
 Every plugin's export shape (`export function onLoad` → `export default plugin(factory)`); the SDK `.d.ts` restructure (registration verbs move to `ctx` namespaces; non-registration APIs stay ambient — the subscription *model* is kept per the standing constraint, only *when/how registration is legal* changes); `onLoad(prev)` → `ctx.previous`; loader → async phase machine + topological load order; the `s2s create` template + 5E.1 gate fixtures + docs. The base-plugin suite is the acceptance test (`clientprefs`/`zones` get *simpler* — the `dbReady` hack and null guards delete). External consumers (s2s-ttt) rewrite their entry shape.
+
+**Packaging convention (locked; do NOT introduce new packages).** Everything is ONE package — **`@s2script/sdk`** — with capabilities as *subpaths* (`@s2script/sdk/chat`, `/clients`, `/commands`, `/db`, `/events`, `/hud`, …), exactly as the shipped plugins already import. **`@s2script/cs2`** is the only other package, reserved for CS2-specific surface (`Player`, `pawn`, schema, and any HUD effect that is irreducibly CS2). A new capability (e.g. `Hud`) is a new **subpath of `@s2script/sdk`**, never a standalone `@s2script/<name>` package. In the new model these subpaths keep the ambient/type exports (e.g. `@s2script/sdk/clients` → the `Client` type + `Clients.fromSlot`; `@s2script/sdk/hud` → the `Hud.fade/shake/hint` send actions); the *registration verbs* they export today relocate to `ctx`. (Note: CLAUDE.md's older per-capability-package taxonomy — `@s2script/entity`/`frame`/`timers`/… — predates the `@s2script/sdk` consolidation and is stale; the subpath layout above is authoritative.)
 
 ---
 
@@ -225,6 +235,9 @@ Every base plugin (`basecommands`, `basechat`, `playercommands`, `antiflood`, `a
 5. A throwing factory **fails loud → `Failed`**, replacing today's swallow-and-continue zombie.
 6. `apiVersion` is **derived/stamped at build**, not authored.
 7. Sequence: **E0 → E1** (urgent, independent) then **L1 → B1 → B2**. One north-star doc (this), per-slice specs follow.
+8. `ctx` is **subject-first** (`events`/`clients`/`entities`/`server`/`commands`), and **the return type carries the block/modify power** (`void` = notify, `→HookResult` = intercept). No `ctx.intercept` bucket; no thin single-method namespaces. Chat = `ctx.clients.onSay`; damage-values = `ctx.events.on("player_hurt")`; damage-block = `ctx.entities.onDamage`.
+9. Screen/HUD effects are **ambient intent-verbs under `Hud.*`** (`fade`/`shake`/`hint`/`text`), NOT `Player.*` (avoids the entity-alpha ambiguity). **User-message hooking is deferred** to the advanced/`unsafe` boundary — only the send side is built.
+10. **Packaging: one package `@s2script/sdk` + capability subpaths; `@s2script/cs2` for CS2-specific only. No new `@s2script/*` packages** (`Hud` is `@s2script/sdk/hud`, a subpath). CLAUDE.md's older per-capability-package taxonomy is stale.
 
 ---
 
