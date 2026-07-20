@@ -5,18 +5,26 @@
 import type { HookResultValue } from "./events";
 
 /**
- * A serial-gated handle to a live entity. Wraps the `__s2_ent_ref_*` natives; the raw
- * entity pointer never crosses to JS. All accessors degrade safely (return null/false)
- * when the entity slot has been reused or the ops table is absent.
+ * A host-liveness-gated handle to a live entity. `id` is a HOST-MINTED monotonic liveness
+ * id — liveness is decided by the host's books (fed by engine create/delete notifications,
+ * cleared at map transition), NEVER by reading the entity's own memory. Every access
+ * re-resolves: books first, then identity-slot validation, instance last. A stale ref
+ * degrades to null/false — including across a changelevel.
+ *
+ * The framework mints every `EntityRef`; plugin code never constructs one (the constructor
+ * is intentionally not part of the public surface — a hand-built ref is the "raw ref across
+ * time" footgun). Obtain refs from the engine (events, `findByClass`, `readHandle`, …).
  */
 export declare class EntityRef {
   readonly index: number;
-  readonly serial: number;
+  /** The host-minted liveness id for this ref (books key). Not the raw engine serial. */
+  readonly id: number;
   /** This entity's targetname (`CEntityIdentity::m_name`) — e.g. a map trigger's `"map_start"`. `""` if
    *  the entity has no targetname; `null` if the ref is stale/invalid. */
   readonly name: string | null;
-  constructor(index: number, serial: number);
-  /** True iff the slot's current serial still matches the captured serial. */
+  /** @internal The host mints refs; this is not part of the public API surface. */
+  private constructor();
+  /** True iff the host's books say live AND the identity slot still matches. */
   isValid(): boolean;
   /** Read an i32 at `offset` bytes into the entity, or null if the ref is stale. */
   readInt32(offset: number): number | null;
@@ -68,9 +76,9 @@ export declare class EntityRef {
    *  is null. */
   readFloatsChain(ptrOffs: number[], finalOff: number, count: number): number[] | null;
   /** Follow a pointer chain (each an offset), then read a scalar at `finalOff`. null if the root is stale or any
-   *  hop is null. `readHandleVia` decodes a handle field → a serial-gated EntityRef; vectors use readFloatsChain. */
+   *  hop is null. `readHandleVia` decodes a handle field → a liveness-gated EntityRef; vectors use readFloatsChain. */
   readInt32Via(pathOffs: number[], finalOff: number): number | null;
-  /** Write an int32 at the end of a pointer chain (each hop deref'd, serial-gated at the root). Returns
+  /** Write an int32 at the end of a pointer chain (each hop deref'd, liveness-gated at the root). Returns
    *  false on a stale ref or a null hop. Used to clear a flag on a pointer-referenced sub-object. */
   writeInt32Via(pathOffs: number[], finalOff: number, value: number): boolean;
   readInt8Via(pathOffs: number[], finalOff: number): number | null;
@@ -83,7 +91,7 @@ export declare class EntityRef {
   readUInt64Via(pathOffs: number[], finalOff: number): bigint | null;
   readInt64Via(pathOffs: number[], finalOff: number): bigint | null;
   readHandleVia(pathOffs: number[], finalOff: number): EntityRef | null;
-  /** Write a scalar through a pointer chain (write mirror of `read*Via`). Serial-gated at the root;
+  /** Write a scalar through a pointer chain (write mirror of `read*Via`). Liveness-gated at the root;
    *  returns false on a stale ref, an unresolved hop, or a bad offset/kind. Does NOT notifyStateChanged —
    *  the caller decides (many sub-object fields, e.g. the fire gate, are server-authoritative).
    *  (`writeInt32Via` is declared above alongside `readInt32Via`.) */
@@ -109,7 +117,7 @@ export declare class EntityRef {
    *  `trigger_multiple` needs a model to build the physics volume that fires touch. Returns false
    *  if the op is unavailable or the ref is stale. */
   setModel(name: string): boolean;
-  /** Read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live serial-gated EntityRefs.
+  /** Read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live liveness-gated EntityRefs.
    *  Follows the pointer chain, reads count@+0 / elements@+8, caps at maxCount. [] if stale/unresolved. */
   readHandleVector(ptrOffs: number[], vectorOff: number, maxCount?: number): EntityRef[];
   /** Fire an entity input (e.g. "Kill"/"Ignite"/"SetHealth"/"Enable"/"Open"/"FireUser1"/"AddOutput")
@@ -156,7 +164,7 @@ export declare const Entity: {
   onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
   /**
    * Fire when the engine CREATES an entity of `className` (`"*"` = all) — earliest hook; the entity is
-   * barely constructed, schema fields may be zero/default. The handler receives the serial-gated
+   * barely constructed, schema fields may be zero/default. The handler receives the liveness-gated
    * `entity` (may be `null`) plus its `className`. Prefer `onSpawn` to read fields.
    */
   onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
@@ -167,10 +175,10 @@ export declare const Entity: {
   onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /**
    * Fire as the engine DELETES an entity of `className` (`"*"` = all). The entity is still readable
-   * during the synchronous handler; a stashed ref reads `null` once the slot is freed (serial gate),
+   * during the synchronous handler; a stashed ref reads `null` once the slot is freed (liveness gate),
    * never garbage.
    */
   onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /** Find every entity whose designer-name (class) exactly matches `className`. Returns serial-gated refs. */
+  /** Find every entity whose designer-name (class) exactly matches `className`. Returns liveness-gated refs. */
   findByClass(className: string): EntityRef[];
 };

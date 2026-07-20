@@ -84,8 +84,8 @@ export function onLoad(): void {
     const atk = info.attacker;
     const vic = info.victim;
     console.log("[basecommands] damage onPre: damage=" + info.damage + " type=" + info.damageType
-      + " victim=" + (vic ? vic.index + "/" + vic.serial : "none")
-      + " attacker=" + (atk ? atk.index + "/" + atk.serial : "none"));
+      + " victim=" + (vic ? vic.index + "/" + vic.id : "none")
+      + " attacker=" + (atk ? atk.index + "/" + atk.id : "none"));
     info.damage = info.damage / 2;   // modify: halve the damage (set to 0 would block)
   });
 

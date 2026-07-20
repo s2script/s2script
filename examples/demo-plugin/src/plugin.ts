@@ -16,7 +16,7 @@ export function onLoad(prev?: State): void {
   const pawnAlive = pawn ? pawn.isValid() : null;   // serial-gated: true while alive, false if it died in the gap
   console.log("[demo] onLoad — reloads=" + reloads + " hadPrev=" + (prev !== undefined)
     + " pawnAlive=" + String(pawnAlive)
-    + (pawn ? " pawnRef=" + pawn.index + "/" + pawn.serial : ""));
+    + (pawn ? " pawnRef=" + pawn.index + "/" + pawn.id : ""));
   // Track the first live player's pawn ref so the NEXT reload proves EntityRef survival across the gap.
   const p = Player.all()[0];
   if (p && p.pawn) { pawn = p.pawn.ref; }

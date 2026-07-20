@@ -1,6 +1,6 @@
 /**
  * @s2script/cs2 — the Weapon entity object (CCSWeaponBase), hand-written on top of the generated field
- * accessors. EntityRef-backed + serial-gated exactly like Pawn/Player. Re-exported from ./index.
+ * accessors. EntityRef-backed + liveness-gated exactly like Pawn/Player. Re-exported from ./index.
  */
 import type { EntityRef } from "@s2script/sdk/entity";
 import type { CCSWeaponBase } from "./schema.generated";

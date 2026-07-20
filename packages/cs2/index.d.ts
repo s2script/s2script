@@ -22,14 +22,14 @@ export { Weapon } from "./weapon";
 import type { Weapon } from "./weapon";
 
 /**
- * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the serial-gated ref.
+ * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the liveness-gated ref.
  * `controller` is the typed reverse hop (shadows the raw generated m_hController handle).
  * Nav props (sceneNode, weaponServices, movementServices, aimPunchServices) are generated from nav-targets.json.
  */
 export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly ref: EntityRef;
   /**
-   * SourceMod/CSSharp-sense validity: the pawn is live (serial-gated) AND fully spawned (out of the
+   * SourceMod/CSSharp-sense validity: the pawn is live (liveness-gated) AND fully spawned (out of the
    * engine EF_IN_STAGING_LIST). Prefer this over `ref.isValid()` for any pawn WRITE — a staged-but-live
    * pawn passes `ref.isValid()` yet segfaults on SetModel/SetParent. Falls back to liveness if the
    * staging-flag read is unavailable.
@@ -56,7 +56,7 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   moveType: number | null;
   /** The currently-pressed button mask (low 32 bits; IN_USE/E = 32). 0 if the mask is unreadable. */
   readonly buttons: number;
-  /** Kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale). */
+  /** Kill this pawn via the sig-resolved CommitSuicide engine op (liveness-gated; no-op if stale). */
   slay(): void;
   /** Give this pawn a named item/weapon (e.g. CsItem.AK47 or a raw "weapon_*" string). Returns the created
    *  Weapon, or null if unresolved/failed/stale. */
@@ -89,7 +89,7 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
    * unreadable (stale ref). `distance` defaults to 8192.
    */
   aimTrace(opts?: { distance?: number; mask?: number; ignoreEntity?: EntityRef }): TraceHit | null;
-  /** Play a named CS2 SoundEvent from this pawn (the serial-gated source entity; a stale ref emits
+  /** Play a named CS2 SoundEvent from this pawn (the liveness-gated source entity; a stale ref emits
    *  nothing). Returns the engine sound GUID (nonzero) or 0. Bot recipients are always skipped. */
   emitSound(name: string, opts?: { recipients?: number[]; volume?: number }): number;
 }
@@ -100,7 +100,7 @@ export declare const Pawn: {
 
 /**
  * A CS2 player (the persistent controller entity): the generated CCSPlayerController schema fields
- * (team/score/ping/…) + the serial-gated controller ref. `pawn` is the typed body (shadows the raw
+ * (team/score/ping/…) + the liveness-gated controller ref. `pawn` is the typed body (shadows the raw
  * generated m_hPawn handle). Referenced by slot (0-based); a stored Player degrades to null on reuse.
  */
 export interface Player extends Omit<CCSPlayerController, "pawn"> {
@@ -228,7 +228,7 @@ export declare const Beam: {
   draw(start: Vector, end: Vector, opts?: { color?: [number, number, number, number]; width?: number }): BeamHandle | null;
 };
 
-/** A live read view over CCSGameRules (via the cs_gamerules proxy). Every field is serial-gated at the
+/** A live read view over CCSGameRules (via the cs_gamerules proxy). Every field is liveness-gated at the
  *  proxy root and reads null if the proxy is gone (e.g. between maps). */
 export interface GameRulesView {
   readonly warmupPeriod: boolean | null;
@@ -264,7 +264,7 @@ export interface GameRulesView {
    *  queued; false when degraded (unresolved signature, stale proxy, or reason outside 0..22). */
   terminateRound(reason: number, delay?: number): boolean;
 }
-/** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (serial-gated
+/** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (liveness-gated
  *  cache); returns null when no proxy exists (e.g. pre-map-load). */
 export declare const GameRules: {
   get(): GameRulesView | null;

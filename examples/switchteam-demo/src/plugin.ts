@@ -23,7 +23,7 @@ export function onLoad(): void {
     const uid = p.userId;
     const before = p.teamNum ?? -1;
     const pawnBefore = p.pawn;
-    const refBefore = pawnBefore ? `${pawnBefore.ref.index}:${pawnBefore.ref.serial}` : "none";
+    const refBefore = pawnBefore ? `${pawnBefore.ref.index}:${pawnBefore.ref.id}` : "none";
     const hpBefore = pawnBefore ? (pawnBefore.health ?? -1) : -1;
     const wepBefore = pawnBefore ? pawnBefore.weapons.length : -1;
     const target = before === 2 ? 3 : 2;
@@ -35,7 +35,7 @@ export function onLoad(): void {
     delay(600).then(() => {
       const after = Player.fromUserId(uid); // the pawn may have been respawned — re-resolve (TTT pattern)
       const pawn = after ? after.pawn : null;
-      const refAfter = pawn ? `${pawn.ref.index}:${pawn.ref.serial}` : "none";
+      const refAfter = pawn ? `${pawn.ref.index}:${pawn.ref.id}` : "none";
       console.log(`[switchteam-demo] AFTER slot=${p.slot} team=${TEAM(after ? after.teamNum : null)} ` +
                   `alive=${after ? after.pawnIsAlive : null} hp=${pawn ? pawn.health : null} ` +
                   `weapons=${pawn ? pawn.weapons.length : -1} pawnRef=${refAfter} respawned=${refAfter !== refBefore} ` +

@@ -42,7 +42,7 @@
   // connection follow. Offsets stay live-resolved (layout-is-data).
   Player.fromSlot = function (slot) {
     var idx = slot + 1;                                          // controller entity index
-    var ref = new EntityRef(idx, __s2_ent_current_serial(idx));
+    var ref = new EntityRef(idx, __s2_ent_id_for_index(idx));
     if (!ref.isValid()) return null;                            // the controller entity must exist
     var poff = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
     if (poff < 0 || ref.readHandle(poff) === null) return null; // occupied iff the controller has a live pawn
@@ -70,7 +70,7 @@
   // (unlike Player.fromSlot, which pawn-gates for the in-game-only Player.all()).
   Player._fromSlotUnchecked = function (slot) {
     var idx = slot + 1;                                          // controller entity index
-    var ref = new EntityRef(idx, __s2_ent_current_serial(idx));
+    var ref = new EntityRef(idx, __s2_ent_id_for_index(idx));
     return ref.isValid() ? new Player(ref) : null;
   };
   // Player.fromUserId(userId) — engine-userid lookup -> Player (pawnless-safe), or null.
@@ -107,11 +107,11 @@
   // player.changeTeam(team) — move this player's controller between teams (Spectator=1/T=2/CT=3) via the
   // sig-resolved CCSPlayerController::ChangeTeam engine op (serial-gated; no-op if stale/unresolved).
   Player.prototype.changeTeam = function (team) {
-    __s2_player_change_team(this.ref.index, this.ref.serial, team | 0);
+    __s2_player_change_team(this.ref.index, this.ref.id, team | 0);
   };
   // player.spectate() — move this player to the Spectator team (SM parity; = changeTeam(1)).
   Player.prototype.spectate = function () {
-    __s2_player_change_team(this.ref.index, this.ref.serial, 1);
+    __s2_player_change_team(this.ref.index, this.ref.id, 1);
   };
 
   // player.switchTeam(team) — NON-LETHAL move between T(2)/CT(3) via the sig-resolved
@@ -120,7 +120,7 @@
   // pawn writes. team 0/1 dispatches to ChangeTeam shim-side (CSSharp/SwiftlyS2 parity). Serial-gated;
   // no-op if stale/unresolved.
   Player.prototype.switchTeam = function (team) {
-    __s2_player_switch_team(this.ref.index, this.ref.serial, team | 0);
+    __s2_player_switch_team(this.ref.index, this.ref.id, team | 0);
   };
 
   // player.respawn() — respawn this (dead) player via the self-resolved CCSPlayerController::Respawn
@@ -146,7 +146,7 @@
     // the CS2 schema strings stay here in the game package, never in core/shim (opaque int over the ABI).
     var aliveOff = __s2_schema_offset("CCSPlayerController", "m_bPawnIsAlive");
     var hplayerpawnOff = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
-    return __s2_player_respawn(this.ref.index, this.ref.serial, aliveOff, hplayerpawnOff) === 1;
+    return __s2_player_respawn(this.ref.index, this.ref.id, aliveOff, hplayerpawnOff) === 1;
   };
 
   // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
@@ -227,7 +227,7 @@
 
   // pawn.slay() — kill this pawn via the sig-resolved CommitSuicide engine op (serial-gated; no-op if stale).
   Pawn.prototype.slay = function () {
-    __s2_pawn_commit_suicide(this.ref.index, this.ref.serial);
+    __s2_pawn_commit_suicide(this.ref.index, this.ref.id);
   };
 
   // pawn.setVelocity(x,y,z) — best-effort velocity write (serial-gated). Writes m_vecAbsVelocity's
@@ -252,7 +252,7 @@
   Pawn.prototype.giveNamedItem = function (name) {
     var off = __s2_schema_offset("CBasePlayerPawn", "m_pItemServices");
     if (off < 0) return null;
-    var ref = __s2_give_named_item(this.ref.index, this.ref.serial, off, String(name));
+    var ref = __s2_give_named_item(this.ref.index, this.ref.id, off, String(name));
     return ref ? new Weapon(ref) : null;
   };
 
@@ -419,12 +419,13 @@
     var PAWN_HANDLE = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
     if (PAWN_HANDLE < 0) return null;
     var ctrlIndex = slot + 1;
-    var ctrl = new EntityRef(ctrlIndex, __s2_ent_current_serial(ctrlIndex));
+    var ctrl = new EntityRef(ctrlIndex, __s2_ent_id_for_index(ctrlIndex));
     if (!ctrl.isValid()) return null;
     var handle = ctrl.readInt32(PAWN_HANDLE);
     if (handle === null) return null;
-    var decoded = __s2_handle_decode(handle >>> 0);
-    var pawn = new EntityRef(decoded[0], decoded[1]);
+    var d = __s2_handle_adopt(handle >>> 0);
+    if (!d) return null;                       // dangling m_hPlayerPawn can never mint a live ref
+    var pawn = new EntityRef(d[0], d[1]);
     return pawn.isValid() ? new Pawn(pawn) : null;
   };
 
@@ -853,7 +854,7 @@
     var p = grPath(); if (!p) return false;
     if (typeof __s2_gamerules_terminate_round !== "function") return false;
     var d = (delay === undefined || delay === null) ? 5.0 : +delay;   // 5s = TTT parity default
-    return __s2_gamerules_terminate_round(this.ref.index, this.ref.serial, p[0], d, reason | 0) === 1;
+    return __s2_gamerules_terminate_round(this.ref.index, this.ref.id, p[0], d, reason | 0) === 1;
   };
   var GameRules = (function () {
     // Cache the resolved cs_gamerules proxy (ModSharp/Swiftly cache the gamerules pointer likewise).

@@ -47,7 +47,7 @@
   Weapon.prototype.remove = function () {
     if (!this.ref.isValid()) return false;
     var owner = this.owner;
-    if (owner) __s2_remove_player_item(owner.ref.index, owner.ref.serial, this.ref.index, this.ref.serial);
+    if (owner) __s2_remove_player_item(owner.ref.index, owner.ref.id, this.ref.index, this.ref.id);
     return this.ref.remove();
   };
 

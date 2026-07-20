@@ -38,7 +38,7 @@ Commands.register("sm_tspawn", (ctx) => {
   if (!e) { ctx.reply("[transmit] createEntity failed"); return; }
   e.teleport([origin.x, origin.y, origin.z + 72], [0, 0, 0], null);
   prop = e;
-  ctx.reply("[transmit] spawned at human slot " + boundSlot + " idx=" + e.index + " serial=" + e.serial +
+  ctx.reply("[transmit] spawned at human slot " + boundSlot + " idx=" + e.index + " id=" + e.id +
     " pos=" + Math.round(origin.x) + "," + Math.round(origin.y) + "," + Math.round(origin.z + 72));
 });
 
