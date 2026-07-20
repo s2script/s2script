@@ -111,6 +111,10 @@ pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) {
         let map_str = if map.is_null() { "" } else {
             (unsafe { CStr::from_ptr(map) }).to_str().unwrap_or("")
         };
+        // E1: the implicit entity epoch — clear the books UNCONDITIONALLY before the JS
+        // dispatch (which early-returns when no Server.onMapStart subscribers exist),
+        // and arm the one-shot repair sweep (consumed at the next simulating frame).
+        crate::entity_live::clear_for_map_transition();
         v8host::dispatch_map_start(map_str);
     });
 }
@@ -136,7 +140,29 @@ pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class
         if kind.is_null() || class_name.is_null() { return; }
         let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return };
         let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return };
+        // THE BOOKS FEED (north-star §3.1, critical): unconditional, BEFORE and
+        // independent of the JS mux dispatch below — dispatch_entity_event early-returns
+        // when no subscribers exist and skips under the HOST try_borrow_mut re-entrancy
+        // guard, but a create/delete witnessed while JS is on-stack must still update
+        // the books (e.g. a plugin's own synchronous createEntity).
+        let decoded = if handle == -1 { None } else {
+            let (idx, ser) = crate::entity::decode_handle(handle as u32);
+            if idx >= 0 && ser >= 0 { Some((idx, ser)) } else { None }
+        };
+        if let Some((idx, ser)) = decoded {
+            match kind_str {
+                "create" => { crate::entity_live::on_created(idx, ser); }
+                "spawn"  => { crate::entity_live::on_spawned(idx, ser); }
+                _ => {}
+            }
+        }
         v8host::dispatch_entity_event(kind_str, class_str, handle as i32);
+        // Delete is booked AFTER the dispatch: an onDelete handler may still resolve
+        // the dying entity (slot-validated stage 2 stays the guard); the moment this
+        // FFI entry returns, the books say dead — fail-closed for any stashed ref.
+        if let Some((idx, ser)) = decoded {
+            if kind_str == "delete" { crate::entity_live::on_deleted(idx, ser); }
+        }
     });
 }
 
@@ -648,6 +674,53 @@ mod tests {
             "#,
         )
         .unwrap();
+        s2script_core_shutdown();
+    }
+
+    /// E1: the books feed lives in THIS ffi entry, unconditionally — with ZERO JS
+    /// subscribers (dispatch_entity_event early-returns) the books must still update.
+    #[test]
+    fn entity_event_feed_updates_books_with_no_subscribers() {
+        crate::entity_live::reset_for_tests();
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        let create = std::ffi::CString::new("create").unwrap();
+        let spawn  = std::ffi::CString::new("spawn").unwrap();
+        let delete = std::ffi::CString::new("delete").unwrap();
+        let cls    = std::ffi::CString::new("prop_physics").unwrap();
+        let handle = ((7u32) << crate::entity::HANDLE_ENTRY_BITS) | 42u32; // (index 42, serial 7)
+
+        s2script_core_dispatch_entity_event(create.as_ptr(), cls.as_ptr(), handle as c_int);
+        let (id, ser) = crate::entity_live::lookup(42).expect("create fed the books");
+        assert!(id >= 1); assert_eq!(ser, 7);
+
+        s2script_core_dispatch_entity_event(spawn.as_ptr(), cls.as_ptr(), handle as c_int);
+        assert_eq!(crate::entity_live::lookup(42), Some((id, 7)), "matching spawn keeps the id");
+
+        // a stale delete (wrong serial) must NOT evict:
+        let stale = ((9u32) << crate::entity::HANDLE_ENTRY_BITS) | 42u32;
+        s2script_core_dispatch_entity_event(delete.as_ptr(), cls.as_ptr(), stale as c_int);
+        assert!(crate::entity_live::lookup(42).is_some());
+
+        s2script_core_dispatch_entity_event(delete.as_ptr(), cls.as_ptr(), handle as c_int);
+        assert_eq!(crate::entity_live::lookup(42), None, "matching delete removed the entry");
+
+        // the -1 no-entity sentinel must not touch the books (and must not panic):
+        s2script_core_dispatch_entity_event(create.as_ptr(), cls.as_ptr(), -1);
+        assert_eq!(crate::entity_live::len(), 0);
+        s2script_core_shutdown();
+    }
+
+    /// E1: map start clears the whole table (the implicit epoch) + arms the repair sweep,
+    /// unconditionally — before/independent of the Server.onMapStart JS dispatch.
+    #[test]
+    fn map_start_clears_books_and_arms_repair_sweep() {
+        crate::entity_live::reset_for_tests();
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        crate::entity_live::on_created(3, 5);
+        let map = std::ffi::CString::new("de_vertigo").unwrap();
+        s2script_core_dispatch_map_start(map.as_ptr());
+        assert_eq!(crate::entity_live::len(), 0, "the epoch: books cleared at map start");
+        assert!(crate::entity_live::take_repair_armed(), "map start arms the repair sweep");
         s2script_core_shutdown();
     }
 }
