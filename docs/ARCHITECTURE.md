@@ -142,14 +142,96 @@ PluginLedger { hookSubscriptions, commandRegistrations, timers, pendingAsync,
 
 ### 2.6 Handle/wrapper system (the use-after-free killer)
 
-The #1 real-world crash: a plugin holds an entity wrapper, the entity dies, the plugin reads it → garbage/corruption.
+The #1 real-world crash: a plugin holds an entity wrapper, the entity dies (or a map
+transition frees it out from under a held ref), the plugin reads it → garbage/corruption.
+The pre-E1 design tried to answer "is this entity alive" by reading the *entity's own*
+memory (a serial stored on the instance); a changelevel frees that memory before the
+books are told, so a stale `EntityRef` dereferenced freed storage → deterministic SEGV.
 
-- **Never store a raw pointer — store a handle.** Source 2's `CHandle<T>` (index + serial). Validate by comparing stored serial to the slot's current serial. Mismatch → entity gone. The engine's own authoritative staleness check.
-- **Resolve-on-every-touch.** The wrapper stores the packed handle; every access resolves → validates → reads/writes.
-- **Two access tiers:** **safe accessors return `T | null`** (`player.pawn` is `CCSPlayerPawn | null`; `pawn.health` on a possibly-dead ref is a *compile error* — `IsValidEntity` enforced at compile time); **block-scoped `lock()`** for hot paths (resolves+validates once, guaranteed-live view for the *synchronous block only*; cannot be stored or cross an `await`/tick; make escaping awkward and lint-catchable).
-- **The await hazard:** an `EntityRef` surviving `await` is *fine* (handle re-resolves, safe no-op on mismatch); a `lock()` surviving `await` is *not* — hence block-scoping. The line is drawn exactly at the async boundary.
-- **Wrapper cache** keyed by full handle (index+serial): same live entity → same wrapper (reference identity, usable as map keys). Evicted on `OnEntityDeleted` with **core bookkeeping ordered before plugin dispatch** so even a death handler gets a safe dead ref.
-- **Generalizes to all resources:** timers, DB connections, file handles, subscriptions, **and inter-plugin proxies (§2.9)** — SourceMod's `Handle` generalized. The `CHandle`/`EntityRef` *primitive* is core/std; the *typed `CCSPlayerPawn` wrapper* is `@s2script/cs2`.
+**Doctrine (locked in E1): liveness is decided by the HOST'S BOOKS — populated by
+engine notifications, cleared by transitions — never by reading the referent's own
+memory.** The referent (an entity, a plugin) can be freed, reused, or gone; the books
+are the one thing the host fully controls, so they are the one thing trusted to answer
+"is this still the thing I captured".
+
+- **`liveness.rs` — the shared primitive.** `LiveTable<K, M>`: `key → (host-minted
+  monotonic id, meta)`. `insert` mints a fresh id for `key`, which *is* the invalidation
+  of whatever id that key held before (a same-key re-create can never collide with a
+  stale holder). The id allocator never resets — not on remove, not on `clear()` — that
+  monotonicity is the anti-aliasing guarantee. Two separate instances share this module
+  and stay separate tables: `plugin::Registry` (plugin generations) and `entity_live`
+  (entity liveness). A plugin reload must not invalidate entities; a map change must not
+  invalidate plugins — they are deliberately independent tables, not one shared map.
+- **`entity_live.rs` — the entity books.** `LIVE: index → (host-id, engine_serial)`,
+  thread_local (game-thread only, like every v8host-adjacent table). Fed by the shim's
+  `IEntityListener` through the ffi entry, **unconditionally, before and independent of
+  the JS mux dispatch** — a create/delete witnessed while JS is on-stack (e.g. a
+  plugin's own synchronous `createEntity`) still updates the books even though the mux
+  early-returns with no subscribers, because liveness bookkeeping must never depend on
+  whether anyone happened to be listening. `onCreated`/`onSpawned` book *before* the JS
+  dispatch; `onDeleted` books *after* — a handler may still read the dying,
+  slot-validated entity during its own delete notification, and the ref goes dead the
+  moment the FFI entry returns. The whole table is cleared at map start (the implicit
+  epoch — no counter is stamped; a cleared table with a fresh monotonic allocator *is*
+  the epoch boundary).
+- **`EntityRef = {index, id}`.** `id` is the host-minted `LiveTable` id (u64, JS-safe as
+  f64 up to 2^53 mints) — never the engine's own serial, which never crosses to JS.
+- **3-stage resolution, cheapest and safest first** (`entity_resolve_ptr`): (1) THE
+  BOOKS — `engine_serial_for(index, id)`; a miss returns null with zero engine memory
+  touched. (2) Defense-in-depth — the shim's `ent_resolve` op re-validates the stored
+  engine serial against the system-owned identity chunk (never instance memory) before
+  returning the live pointer. (3) Only the calling native derefs the instance, and only
+  block-scoped within that one native call — the raw pointer is used and discarded
+  entirely inside Rust; it never crosses the JS boundary. Errors at any stage fall
+  toward `null`, never toward a deref.
+- **The map-start clear + one-shot repair sweep.** The books are the *only* liveness
+  authority, so a create witnessed before the listener attaches (first-boot map,
+  preallocated controllers) or before `StartupServer` completes would otherwise never
+  appear. The map-start clear arms a one-shot repair sweep that fires at the first
+  simulating frame: it reconciles the books against a chunk-walk snapshot of live
+  identity slots (the shim's `ent_snapshot` op — system-owned memory, never an instance
+  read), upserting anything the listener feed missed and evicting anything stale. This
+  is a safety net over the listener feed, not a replacement for it — it runs once per
+  map, not per frame.
+- **The wire form.** An `EntityRef` crossing the inter-plugin structured-copy boundary
+  (§2.9) or a reload state-handoff (§2.5) is tagged `{__s2ref: [index, id]}`; the
+  receiving context's reviver rehydrates it into a live `EntityRef` bound to *its own*
+  natives, never a plain data blob. The old engine-serial-keyed wire tag is retired —
+  the host id is the only thing worth carrying across a context boundary, because it's
+  the only thing the target context's books can re-validate against.
+- **Minting is restricted, not free-form.** Two natives mint a books-backed ref from
+  engine-side data, and both are designed so a dangling handle can never mint a live
+  one: `__s2_ent_id_for_index(index)` looks up the books' current id for a slot (no id
+  ⇒ not live, mint nothing); `__s2_handle_adopt(handle)` decodes a raw engine
+  `CEntityHandle` and calls `entity_live::adopt`, which only returns an id when the
+  handle's engine serial matches what the books currently hold for that index — a stale
+  handle field read off a dead entity adopts to `null`. The public `EntityRef`
+  constructor is **not** part of the typed `.d.ts` surface (a plugin cannot hand-build a
+  ref); only the game-package prelude, which owns both minting natives, constructs one.
+- **Resolve-on-every-touch.** The wrapper stores `{index, id}`; every access re-runs the
+  3-stage resolution — validates then reads/writes. No cached "is it alive" bit outlives
+  a single native call.
+- **Two access tiers:** **safe accessors return `T | null`** (`player.pawn` is
+  `CCSPlayerPawn | null`; `pawn.health` on a possibly-dead ref is a *compile error* —
+  `IsValidEntity` enforced at compile time); **block-scoped `lock()`** for hot paths
+  (resolves+validates once, guaranteed-live view for the *synchronous block only*;
+  cannot be stored or cross an `await`/tick; make escaping awkward and lint-catchable).
+- **Identity-derived reads (e.g. `pawn.isValid`) stay off the instance too.** CS2
+  pre-allocates all 64 controller entities, so "the entity exists" doesn't mean "fully
+  spawned" — SourceMod/CSSharp-sense validity also checks the engine's staging flag.
+  That flag is read from the system-owned identity *slot* (`ent_identity_flags`, gated
+  by the same books-first `(index, id)` check), not by walking a pointer chain into the
+  instance — the E0-era `[16]→48` chain was itself a crash site on a stale ref.
+- **The await hazard:** an `EntityRef` surviving `await` is *fine* (re-resolves through
+  the books on next touch, safe no-op on mismatch); a `lock()` surviving `await` is
+  *not* — hence block-scoping. The line is drawn exactly at the async boundary.
+- **Wrapper cache** keyed by `(index, id)`: same live entity → same wrapper (reference
+  identity, usable as map keys). Evicted on `OnEntityDeleted` with **core bookkeeping
+  ordered before plugin dispatch** so even a death handler gets a safe dead ref.
+- **Generalizes to all resources:** timers, DB connections, file handles, subscriptions,
+  **and inter-plugin proxies (§2.9)** — SourceMod's `Handle` generalized, and now backed
+  by the same `liveness.rs` primitive as plugin generations. The `EntityRef` *primitive*
+  is core/std; the *typed `CCSPlayerPawn` wrapper* is `@s2script/cs2`.
 
 ### 2.7 Package format, authoring & file ownership
 
