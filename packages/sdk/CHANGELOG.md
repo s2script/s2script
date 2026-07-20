@@ -1,5 +1,23 @@
 # @s2script/cli
 
+## 0.4.0
+
+### Minor Changes
+
+- bd40c35: config: new `s2s config gen <plugin.s2sp...> --out <dir>` command. It reads each staged `.s2sp`'s
+  baked manifest and emits the operator's default config file — commented JSONC (defaults + a
+  `// type — description` line per decl, sections nested) byte-compatible with the core's
+  `generate_default_jsonc`, at a filename that matches the runtime's ConfigPath sanitizer exactly
+  (`@s2script/funvotes` -> `_s2script_funvotes.json`). Plugin-scoped: it knows nothing about the
+  framework templates, which the release script ships separately.
+- 4db1f4f: config: sectioned config blocks + enriched validation. `s2script.config` entries may now nest into
+  sections (any entry without a string-valued `type` key is a section, recursed), and decls gain
+  `min`/`max` (int/float, mutually exclusive with `enum`), `enum` (string/int), `group`/`label`, and
+  `sensitive` (masked in display, still written to the file). `validateConfigBlock` enforces all of
+  these plus the ban on `.` in key names. The `@s2script/config` `Config` type widens to a recursive
+  `Record<string, ConfigValue>` so nested sections type-check; this is an additive `.d.ts` widening
+  (no apiVersion bump — plugins that used the flat scalar shape still type-check).
+
 ## 0.3.0
 
 ### Minor Changes
