@@ -211,16 +211,16 @@
     }, enumerable: true, configurable: true,
   });
 
-  // pawn.isValid — SourceMod/CSSharp-sense validity: the pawn is live (serial-gated) AND fully spawned
-  // (out of the engine EF_IN_STAGING_LIST). ref.isValid() alone is liveness-only — it stays true for a
-  // pawn still in the staging list, whose SetModel/SetParent asserts "not staged" and hard-segfaults.
-  // Staging bit: CEntityIdentity via m_pEntity(@0x10) -> m_flags(@48), bit 2 (1<<2). If the flags read
-  // is unavailable (null), fall back to liveness (do not over-block a live pawn).
+  // pawn.isValid — SourceMod/CSSharp-sense validity: live per the HOST'S BOOKS (+ slot
+  // check) AND fully spawned (out of the engine EF_IN_STAGING_LIST). The staging bit is
+  // read from the identity SLOT via ref.identityFlags() — the pre-E1 readInt32Via([16],48)
+  // instance chain (the changelevel-UAF crash site) is gone. If the flags read is
+  // unavailable (null), fall back to liveness (do not over-block a live pawn).
   Object.defineProperty(Pawn.prototype, "isValid", {
     get: function () {
       if (!this.ref.isValid()) return false;
-      var flags = this.ref.readInt32Via([16], 48);
-      return flags === null ? true : (flags & 4) === 0;
+      var flags = this.ref.identityFlags();
+      return flags === null ? true : (flags & 4) === 0;   // EF_IN_STAGING_LIST = 1<<2 (CS2 fact)
     },
     enumerable: true, configurable: true,
   });

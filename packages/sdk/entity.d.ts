@@ -101,6 +101,8 @@ export declare class EntityRef {
   readHandle(offset: number): EntityRef | null;
   /** Notify the engine that the field at `offset` changed (triggers network replication). No-op if stale. */
   notifyStateChanged(offset: number): void;
+  /** Raw identity-slot flags (engine m_flags), or null when stale/unavailable. Bit meanings are game-specific. */
+  identityFlags(): number | null;
   /** DispatchSpawn this created entity. With keyvalues, the entity's own Spawn() parses them (the
    *  SourceMod DispatchKeyValue / CSSharp DispatchSpawn(kv) mechanism). Returns false if stale,
    *  unresolved, or the keyvalue map is rejected (non-finite number, unsupported value type, empty

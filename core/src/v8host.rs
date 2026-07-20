@@ -287,8 +287,8 @@ pub type EntSnapshotFn      = extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
     pub schema_offset: Option<SchemaOffsetFn>,
-    pub ent_by_index: Option<EntByIndexFn>,
-    pub deref_handle: Option<DerefHandleFn>, // unused since 5A (EntityRef path supersedes deref_handle)
+    pub ent_by_index: Option<EntByIndexFn>, // unused since E1 (kept for ABI order)
+    pub deref_handle: Option<DerefHandleFn>, // unused since E1 (kept for ABI order)
     pub ent_state_changed: Option<EntStateChangedFn>,
     pub concommand_register: Option<ConCommandRegisterFn>,
     /// Schema enumeration engine-op (5B.1): the shim walks the SchemaSystem and streams classes/fields
@@ -435,12 +435,6 @@ pub struct S2EngineOps {
     pub ent_identity_flags: Option<EntIdentityFlagsFn>,
     pub ent_snapshot:       Option<EntSnapshotFn>,
 }
-
-/// Byte offset within a `CEntityInstance` of its `CEntityIdentity*` (spike-confirmed).
-// TODO(gamedata): migrate to a regenerable gamedata file.
-const ENT_IDENTITY_PTR_OFFSET: i32 = 0x10; // spike-confirmed (2026-07-01-slice-5a-spike-findings.md)
-/// Byte offset within a `CEntityIdentity` of the `CEntityHandle` uint32 (index+serial) (spike-confirmed).
-const ENT_IDENTITY_HANDLE_OFFSET: i32 = 0x10; // spike-confirmed (2026-07-01-slice-5a-spike-findings.md)
 
 static PLATFORM_INIT: Once = Once::new();
 
@@ -1035,6 +1029,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return d ? new EntityRef(d[0], d[1]) : null;
     },
     notifyStateChanged: function (offset) { __s2_ent_ref_state_changed(this.index, this.id, offset); },
+    // E1: raw CEntityIdentity::m_flags from the identity SLOT (books-gated; never
+    // instance memory). null = stale/unavailable. Flag bit meanings are game facts —
+    // interpret them in the game package, not here.
+    identityFlags: function () { return __s2_ent_identity_flags(this.index, this.id); },
   };
   // --- Entity-creation lifecycle slice: spawn/teleport/remove over the entity_* engine ops. Kept as
   //     separate prototype assignments (not folded into the object literal above) to minimize the diff. ---
@@ -6757,6 +6755,21 @@ fn s2_entity_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+/// Native `__s2_ent_identity_flags(index, id) -> number | null`. CEntityIdentity::m_flags
+/// read from the identity SLOT via the ent_identity_flags op (books-translated id →
+/// engine serial; chunk-validated shim-side) — NEVER via instance+0x10. The E1
+/// replacement for the retired readInt32Via([16], 48) staging-flag chain.
+fn s2_ent_identity_flags(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.ent_identity_flags else { return };
+        let flags = func(index, serial);
+        if flags >= 0 { rv.set_double(flags as f64); }
+    }));
+}
+
 /// Native `__s2_client_language(slot) -> string | null`. Mirrors `s2_client_name` exactly, calling
 /// `client_language` (the client's `cl_language` cvar) instead.
 fn s2_client_language(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -7715,6 +7728,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // entity_name slice: EntityRef.name reads CEntityIdentity::m_name (sibling of entity_find_by_class's
     // m_designerName read on the same identity).
     set_native(scope, global_obj, "__s2_entity_name", s2_entity_name);
+    // E1 entity-liveness slice: identity-slot flags (books-gated) for pawn.isValid's staging check.
+    set_native(scope, global_obj, "__s2_ent_identity_flags", s2_ent_identity_flags);
     // checktransmit slice: declarative per-client entity visibility rules (@s2script/transmit).
     set_native(scope, global_obj, "__s2_transmit_set", s2_transmit_set);
     set_native(scope, global_obj, "__s2_transmit_reset", s2_transmit_reset);
@@ -11699,6 +11714,34 @@ mod frame_tests {
         "#));
         assert_eq!(eval_in_context_string("alias", "__old"), "false", "old id never revives");
         assert_eq!(eval_in_context_string("alias", "__new"), "true");
+        shutdown();
+    }
+
+    thread_local! { static FAKE_FLAGS: std::cell::Cell<i64> = std::cell::Cell::new(-1); }
+    extern "C" fn fake_ent_identity_flags(idx: c_int, serial: c_int) -> i64 {
+        if (idx, serial) == FAKE_RESOLVE_KEY.with(|c| c.get()) { FAKE_FLAGS.with(|c| c.get()) } else { -1 }
+    }
+
+    /// E1: identityFlags reads the SLOT (books-translated) — live flags cross; a stale ref
+    /// or missing op degrades to null. This is the primitive pawn.isValid's staging check
+    /// rides on, with the [16]->48 instance chain gone.
+    #[test]
+    fn identity_flags_is_slot_side_and_books_gated() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        let id = arm_fake_entity(9, 4);
+        FAKE_FLAGS.with(|c| c.set(0x104));            // arbitrary flags incl. bit 2 (staging)
+        set_engine_ops(Some(S2EngineOps {
+            ent_identity_flags: Some(fake_ent_identity_flags), ..mock_event_ops() }));
+        create_plugin_context("fl");
+        eval_in_context_string("fl", &format!(r#"
+            var E = __s2require("@s2script/sdk/entity").EntityRef;
+            globalThis.__live  = String(new E(9, {id}).identityFlags());
+            globalThis.__stale = String(new E(9, {id} + 1).identityFlags());
+            "ok"
+        "#));
+        assert_eq!(eval_in_context_string("fl", "__live"), "260");
+        assert_eq!(eval_in_context_string("fl", "__stale"), "null", "books gate the flags read");
         shutdown();
     }
 
