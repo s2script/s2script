@@ -9,6 +9,7 @@ pub mod interfaces;
 pub mod plugin;
 pub(crate) mod entity;
 pub(crate) mod liveness;
+pub(crate) mod entity_live;
 mod event_mux;
 mod ffi;
 mod http;
