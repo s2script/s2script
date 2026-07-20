@@ -986,56 +986,55 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // --- Slice 5A/5B.2: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
   var K = { I32: 1, F32: 2, BOOL: 3, I8: 4, I16: 5, U8: 6, U16: 7, U32: 8, U64: 9, I64: 10, F64: 11 }; // mirrors core KIND_*
-  function EntityRef(index, serial) { this.index = index; this.serial = serial; }
+  function EntityRef(index, id) { this.index = index; this.id = id; }
   EntityRef.prototype = {
-    isValid:          function ()      { return __s2_ent_ref_valid(this.index, this.serial); },
-    readInt32:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.I32); },
-    writeInt32:       function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.I32, v); },
-    readFloat32:      function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.F32); },
-    writeFloat32:     function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.F32, v); },
-    readBool:         function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.BOOL); },
-    writeBool:        function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.BOOL, v); },
-    readInt8:         function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.I8); },
-    readInt16:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.I16); },
-    readUInt8:        function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U8); },
-    readUInt16:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U16); },
-    readUInt32:       function (o)     { return __s2_ent_ref_read(this.index, this.serial, o, K.U32); },
-    writeInt8:        function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.I8, v); },
-    writeInt16:       function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.I16, v); },
-    writeUInt8:       function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.U8, v); },
-    writeUInt16:      function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.U16, v); },
-    writeUInt32:      function (o, v)  { return __s2_ent_ref_write(this.index, this.serial, o, K.U32, v); },
-    readUInt64:       function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.U64); },
-    readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.I64); },
-    readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.serial, o, K.F64); },
-    readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.serial, o, maxLen); },
-    writeString:      function (o, maxLen, s) { return __s2_ent_ref_write_string(this.index, this.serial, o, maxLen, String(s)); },
-    readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.serial, o, count); },
-    readFloatsChain: function (chain, finalOff, count) { return __s2_ent_ref_read_floats_chain(this.index, this.serial, chain, finalOff, count); },
-    readInt32Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I32); },
-    writeInt32Via: function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.serial, c, o, K.I32, v); },
-    readInt8Via:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I8); },
-    readInt16Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I16); },
-    readUInt8Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U8); },
-    readUInt16Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U16); },
-    readUInt32Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U32); },
-    readFloat32Via:function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.F32); },
-    readBoolVia:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.BOOL); },
-    readUInt64Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U64); },
-    readInt64Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.I64); },
-    writeFloat32Via:function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.serial, c, o, K.F32, v); },
-    writeBoolVia:   function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.serial, c, o, K.BOOL, v); },
-    readHandleVia: function (c, o) { var h = __s2_ent_ref_read_chain(this.index, this.serial, c, o, K.U32);
-      if (h === null) return null; var d = __s2_handle_decode(h >>> 0); var ref = new EntityRef(d[0], d[1]);
-      return ref.isValid() ? ref : null; },   // mirror readHandle: an empty/stale handle -> null (not a dead ref)
+    isValid:          function ()      { return __s2_ent_ref_valid(this.index, this.id); },
+    readInt32:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I32); },
+    writeInt32:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I32, v); },
+    readFloat32:      function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.F32); },
+    writeFloat32:     function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.F32, v); },
+    readBool:         function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.BOOL); },
+    writeBool:        function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.BOOL, v); },
+    readInt8:         function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I8); },
+    readInt16:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I16); },
+    readUInt8:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U8); },
+    readUInt16:       function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U16); },
+    readUInt32:       function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U32); },
+    writeInt8:        function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I8, v); },
+    writeInt16:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I16, v); },
+    writeUInt8:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.U8, v); },
+    writeUInt16:      function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.U16, v); },
+    writeUInt32:      function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.U32, v); },
+    readUInt64:       function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.U64); },
+    readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.I64); },
+    readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.F64); },
+    readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.id, o, maxLen); },
+    writeString:      function (o, maxLen, s) { return __s2_ent_ref_write_string(this.index, this.id, o, maxLen, String(s)); },
+    readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.id, o, count); },
+    readFloatsChain: function (chain, finalOff, count) { return __s2_ent_ref_read_floats_chain(this.index, this.id, chain, finalOff, count); },
+    readInt32Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I32); },
+    writeInt32Via: function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.id, c, o, K.I32, v); },
+    readInt8Via:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I8); },
+    readInt16Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I16); },
+    readUInt8Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.U8); },
+    readUInt16Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.U16); },
+    readUInt32Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.U32); },
+    readFloat32Via:function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.F32); },
+    readBoolVia:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.BOOL); },
+    readUInt64Via: function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.U64); },
+    readInt64Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I64); },
+    writeFloat32Via:function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.id, c, o, K.F32, v); },
+    writeBoolVia:   function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.id, c, o, K.BOOL, v); },
+    readHandleVia: function (c, o) { var h = __s2_ent_ref_read_chain(this.index, this.id, c, o, K.U32);
+      if (h === null) return null; var d = __s2_handle_adopt(h >>> 0);
+      return d ? new EntityRef(d[0], d[1]) : null; },   // books-adopted; a dangling handle mints null
     readHandle: function (o) {
-      var h = __s2_ent_ref_read(this.index, this.serial, o, K.U32);
+      var h = __s2_ent_ref_read(this.index, this.id, o, K.U32);
       if (h === null) return null;
-      var d = __s2_handle_decode(h >>> 0);
-      var ref = new EntityRef(d[0], d[1]);
-      return ref.isValid() ? ref : null;
+      var d = __s2_handle_adopt(h >>> 0);
+      return d ? new EntityRef(d[0], d[1]) : null;
     },
-    notifyStateChanged: function (offset) { __s2_ent_ref_state_changed(this.index, this.serial, offset); },
+    notifyStateChanged: function (offset) { __s2_ent_ref_state_changed(this.index, this.id, offset); },
   };
   // --- Entity-creation lifecycle slice: spawn/teleport/remove over the entity_* engine ops. Kept as
   //     separate prototype assignments (not folded into the object literal above) to minimize the diff. ---
@@ -1076,29 +1075,29 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return { keys: keys, types: types, values: values };
   }
   EntityRef.prototype.spawn = function (keyvalues) {
-    if (keyvalues === undefined || keyvalues === null) return __s2_entity_spawn(this.index, this.serial);
+    if (keyvalues === undefined || keyvalues === null) return __s2_entity_spawn(this.index, this.id);
     if (typeof keyvalues !== "object") return false;
     var m = __s2_ekv_marshal(keyvalues);
     if (m === null) return false;
-    if (m.keys.length === 0) return __s2_entity_spawn(this.index, this.serial);
-    return __s2_entity_spawn_kv(this.index, this.serial, m.keys, m.types, m.values);
+    if (m.keys.length === 0) return __s2_entity_spawn(this.index, this.id);
+    return __s2_entity_spawn_kv(this.index, this.id, m.keys, m.types, m.values);
   };
   EntityRef.prototype.teleport = function (origin, angles, velocity) {
-    return __s2_entity_teleport(this.index, this.serial,
+    return __s2_entity_teleport(this.index, this.id,
       origin ? [origin[0], origin[1], origin[2]] : null,
       angles ? [angles[0], angles[1], angles[2]] : null,
       velocity ? [velocity[0], velocity[1], velocity[2]] : null);
   };
-  EntityRef.prototype.remove = function () { return __s2_entity_remove(this.index, this.serial); };
+  EntityRef.prototype.remove = function () { return __s2_entity_remove(this.index, this.id); };
   // Zones real-trigger slice: register this entity's collision bounds in the spatial partition so a
   // runtime-created trigger fires touch. Serial-gated; returns false if the op is unavailable/stale.
-  EntityRef.prototype.activateCollision = function () { return __s2_collision_activate(this.index, this.serial); };
+  EntityRef.prototype.activateCollision = function () { return __s2_collision_activate(this.index, this.id); };
   // Zones real-trigger slice: give this entity a model (and its collision) via CBaseEntity::SetModel.
   // A runtime trigger_multiple needs a model to build the physics volume that fires touch.
-  EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.serial, String(name)); };
+  EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.id, String(name)); };
   // Targetname (CEntityIdentity::m_name) — e.g. a map trigger's "map_start". null if stale; "" if unnamed.
   Object.defineProperty(EntityRef.prototype, "name", {
-    get: function () { var n = __s2_entity_name(this.index, this.serial); return n == null ? null : n; }
+    get: function () { var n = __s2_entity_name(this.index, this.id); return n == null ? null : n; }
   });
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
   // With keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is a LIVE,
@@ -1116,17 +1115,17 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Item slice: read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live serial-gated
   // EntityRefs. Each element is decoded + validated core-side; the raw pointer never crosses to JS.
   EntityRef.prototype.readHandleVector = function (ptrOffs, vectorOff, maxCount) {
-    return __s2_entity_read_handle_vector(this.index, this.serial, ptrOffs || [], vectorOff, maxCount || 64);
+    return __s2_entity_read_handle_vector(this.index, this.id, ptrOffs || [], vectorOff, maxCount || 64);
   };
   // Entity-I/O slice: fire an input (e.g. "Kill"/"Ignite"/"FireUser1") via AddEntityIOEvent — the
   // game's own input-firing path (delay 0 = the same-tick I/O pump). value is the input's string
   // argument (Source parses it per the input's field type); activator/caller are optional EntityRefs.
   EntityRef.prototype.acceptInput = function (input, value, activator, caller, delay) {
     return __s2_entity_fire_input(
-      this.index, this.serial, String(input),
+      this.index, this.id, String(input),
       (value === undefined || value === null) ? "" : String(value),
-      activator ? activator.index : -1, activator ? activator.serial : -1,
-      caller ? caller.index : -1, caller ? caller.serial : -1,
+      activator ? activator.index : -1, activator ? activator.id : -1,
+      caller ? caller.index : -1, caller ? caller.id : -1,
       delay || 0);
   };
   // Entity-I/O slice: hook an entity output (e.g. "OnTrigger"/"OnPressed"/"OnStartTouch"). classname/
@@ -1148,13 +1147,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
   // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
-  // plain data. `__entref__` is a reserved wire key. Used by iface_to_json / iface_from_json.
+  // plain data. `__s2ref` is the E1 wire key — [index, HOST-id]. Old `__entref__` (engine-serial)
+  // blobs deliberately revive as inert plain data (the stale-data contract). Used by iface_to_json /
+  // iface_from_json.
   globalThis.__s2_entref_replacer = function (key, value) {
-    return (value instanceof EntityRef) ? { __entref__: [value.index, value.serial] } : value;
+    return (value instanceof EntityRef) ? { __s2ref: [value.index, value.id] } : value;
   };
   globalThis.__s2_entref_reviver = function (key, value) {
-    return (value && typeof value === "object" && Array.isArray(value.__entref__))
-      ? new EntityRef(value.__entref__[0], value.__entref__[1])
+    return (value && typeof value === "object" && Array.isArray(value.__s2ref))
+      ? new EntityRef(value.__s2ref[0], value.__s2ref[1])
       : value;
   };
   // --- Slice 5C.3: math value types (Vector, QAngle) — pure JS, no engine ops ---
@@ -1442,18 +1443,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // the native side evaluates rules per snapshot; NO JS runs in the CheckTransmit hot path.
   var Transmit = {
     setVisibleTo: function (entity, viewers) {
-      if (!entity || typeof entity.index !== "number" || typeof entity.serial !== "number") return false;
+      if (!entity || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
       if (!Array.isArray(viewers)) throw new TypeError("viewers must be an array of player slots");
       for (var i = 0; i < viewers.length; i++) {
         var s = viewers[i];
         if (typeof s !== "number" || (s | 0) !== s || s < 0 || s >= 64)
           throw new RangeError("viewer slot out of range [0,64): " + s);
       }
-      return __s2_transmit_set(entity.index, entity.serial, viewers);
+      return __s2_transmit_set(entity.index, entity.id, viewers);
     },
     reset: function (entity) {
-      if (!entity || typeof entity.index !== "number" || typeof entity.serial !== "number") return false;
-      return __s2_transmit_reset(entity.index, entity.serial);
+      if (!entity || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
+      return __s2_transmit_reset(entity.index, entity.id);
     },
     resetAll: function () { __s2_transmit_reset_all(); },
     stats: function () { return __s2_transmit_stats(); }
@@ -1595,9 +1596,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     if (o < 0) return null;
     var h = __s2_damage_read_int(o) >>> 0;
     if (h === 0 || h === 0xFFFFFFFF) return null;            // empty/invalid handle
-    var d = __s2_handle_decode(h);
-    var ref = new EntityRef(d[0], d[1]);
-    return ref.isValid() ? ref : null;                       // stale -> null
+    var d = __s2_handle_adopt(h);
+    return d ? new EntityRef(d[0], d[1]) : null;             // books-adopted; dangling/stale -> null
   }
   Object.defineProperties(DamageInfo.prototype, {
     // m_flDamage: read the damage; SETTING it modifies the live info (set to 0 to block).
@@ -1617,9 +1617,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       get: function () {
         var h = __s2_damage_victim() >>> 0;
         if (h === 0 || h === 0xFFFFFFFF) return null;
-        var d = __s2_handle_decode(h);
-        var ref = new EntityRef(d[0], d[1]);
-        return ref.isValid() ? ref : null;
+        var d = __s2_handle_adopt(h);
+        return d ? new EntityRef(d[0], d[1]) : null;
       }, enumerable: true, configurable: true,
     },
   });
@@ -1681,8 +1680,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     };
     function ignoreOf(opts) {
       var e = opts && opts.ignoreEntity;
-      return (e && typeof e.index === "number" && typeof e.serial === "number")
-        ? { idx: e.index, serial: e.serial } : { idx: -1, serial: -1 };
+      return (e && typeof e.index === "number" && typeof e.id === "number")
+        ? { idx: e.index, id: e.id } : { idx: -1, id: 0 };
     }
     function maskOf(opts) { return (opts && typeof opts.mask === "number") ? opts.mask : TraceMask.ShotPhysics; }
     function excludeOf(opts) { return (opts && typeof opts.exclude === "number") ? opts.exclude : 0; }
@@ -1691,7 +1690,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         var ig = ignoreOf(opts);
         return __s2_trace(
           [start.x, start.y, start.z], [end.x, end.y, end.z], [0, 0, 0], [0, 0, 0],
-          maskOf(opts), excludeOf(opts), ig.idx, ig.serial
+          maskOf(opts), excludeOf(opts), ig.idx, ig.id
         );
       },
       ray: function (start, angles, distance, opts) {
@@ -1703,7 +1702,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         var ig = ignoreOf(opts);
         return __s2_trace(
           [start.x, start.y, start.z], [end.x, end.y, end.z], [mins.x, mins.y, mins.z], [maxs.x, maxs.y, maxs.z],
-          maskOf(opts), excludeOf(opts), ig.idx, ig.serial
+          maskOf(opts), excludeOf(opts), ig.idx, ig.id
         );
       },
     };
@@ -2153,10 +2152,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_sound = {
     emit: function (name, opts) {
       opts = opts || {};
-      var idx = 0, serial = -1;                    // worldspawn / global-2D default
+      var idx = 0, id = 0;                          // worldspawn / global-2D default (id 0 = no serial gate)
       var e = opts.entity;
-      if (e && typeof e.index === "number" && typeof e.serial === "number") {
-        idx = e.index | 0; serial = e.serial | 0;
+      if (e && typeof e.index === "number" && typeof e.id === "number") {
+        idx = e.index | 0; id = e.id;              // raw number (no | 0 — a host-id can exceed 2^31)
       }
       var slots = opts.recipients;
       if (!Array.isArray(slots)) {
@@ -2164,7 +2163,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
       }
       var vol = (opts.volume == null) ? 1.0 : +opts.volume;
-      return __s2_sound_emit(String(name), idx, serial, slots, vol);
+      return __s2_sound_emit(String(name), idx, id, slots, vol);
     },
     onPrecache: function (h) {
       __s2_precache_subscribe(function () {
@@ -3432,70 +3431,47 @@ fn s2_schema_offset(
 }
 
 // ---------------------------------------------------------------------------
-// Slice 5A: (index, serial) entity natives — serial-gated read/write/valid/decode.
+// E1 entity-liveness: (index, host-id) entity natives — BOOKS-FIRST resolution.
 //
-// Raw pointers are used and discarded ENTIRELY WITHIN `entity_current_serial` and
-// `entity_resolve_ptr` — they NEVER cross to JS.  Only numbers/null/boolean/the
-// decode array cross the JS boundary.  This is the core of the EntityRef serial-
-// safety contract (spec §handle/EntityRef).
+// Liveness is decided by the HOST'S BOOKS (`entity_live`), never by reading the
+// entity's own (possibly freed) memory. A JS `EntityRef` carries `{index, id}` where
+// `id` is a host-minted u64 (f64-safe on the wire); the old engine serial never
+// crosses to JS. Raw pointers are used and discarded ENTIRELY WITHIN
+// `entity_resolve_ptr` — they NEVER cross the JS boundary.  Only numbers/null/boolean/
+// the decode array cross.  This is the core of the EntityRef liveness contract
+// (north-star §3.1, Candidate D).
 // ---------------------------------------------------------------------------
 
-/// Current serial for an entity index via the engine's identity, or -1 if the slot is empty / no ops.
-/// The raw pointer is used and discarded HERE — it never crosses to JS.
-fn entity_current_serial(index: i32) -> i32 {
-    let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
-    let Some(by_index) = ops.ent_by_index else { return -1 };
-    let ent = by_index(index) as *const u8;
-    if ent.is_null() { return -1; }
-    let identity = crate::entity::read_ptr(ent, ENT_IDENTITY_PTR_OFFSET);
-    if identity.is_null() { return -1; }
-    let handle = crate::entity::read_u32(identity, ENT_IDENTITY_HANDLE_OFFSET);
-    let (_idx, serial) = crate::entity::decode_handle(handle);
-    serial
-}
-
-/// Resolve (index, serial) to a live entity pointer, or null if the serial no longer matches.
-/// A SINGLE `ent_by_index` lookup: the current serial is read from the SAME pointer that is returned,
-/// so the validated serial and the returned pointer are guaranteed to be the same entity — no
-/// double-lookup, no TOCTOU window. The raw pointer stays in Rust; callers read/write through it and
-/// discard it within the native, so it never crosses to JS.
-/// SAFETY: entity natives run synchronously within a game frame; no entity is destroyed between the
-/// serial read and the caller's deref on this same pointer.
-fn entity_resolve_ptr(index: i32, serial: i32) -> *mut u8 {
+/// Resolve (index, host-id) to a live entity pointer, or null. Resolution order
+/// (north-star §3.1 — cheapest & safest first):
+///   1. THE BOOKS: `engine_serial_for(index, id)` (LIVE[index].id == id), else null.
+///      No engine memory touched.
+///   2. Defense-in-depth: the shim validates the stored engine serial in the
+///      system-owned identity CHUNK (`ent_resolve`, the s2_deref_handle idiom) and
+///      returns m_pInstance — instance memory is never read to decide liveness.
+///   3. Only the CALLER derefs the instance, block-scoped within one native.
+/// The raw pointer stays in Rust — it never crosses to JS. Errors fall toward null,
+/// never toward a deref.
+fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
+    let Some(engine_serial) = crate::entity_live::engine_serial_for(index, id) else {
+        return std::ptr::null_mut();
+    };
     let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return std::ptr::null_mut() };
-    let Some(by_index) = ops.ent_by_index else { return std::ptr::null_mut() };
-    let ent = by_index(index) as *mut u8;
-    if ent.is_null() {
-        return std::ptr::null_mut();
-    }
-    let identity = crate::entity::read_ptr(ent as *const u8, ENT_IDENTITY_PTR_OFFSET);
-    if identity.is_null() {
-        return std::ptr::null_mut();
-    }
-    let handle = crate::entity::read_u32(identity, ENT_IDENTITY_HANDLE_OFFSET);
-    let (_idx, cur_serial) = crate::entity::decode_handle(handle);
-    if !crate::entity::resolve(cur_serial, serial) {
-        return std::ptr::null_mut();
-    }
-    ent
+    let Some(resolve) = ops.ent_resolve else { return std::ptr::null_mut() };
+    resolve(index, engine_serial) as *mut u8
 }
 
-/// Native `__s2_ent_current_serial(index) -> number`.
-/// Returns the current serial for an entity slot, or -1 if the slot is empty / no ops.
-fn s2_ent_current_serial(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_int32(-1);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        rv.set_int32(entity_current_serial(index));
-    }));
+/// (index-arg, id-arg) → (index, stored engine serial), for shim ops that serial-gate
+/// internally. None = the books say not-live — the op is never called (fail-closed).
+fn ent_op_serial(scope: &mut v8::PinScope, idx_arg: v8::Local<v8::Value>, id_arg: v8::Local<v8::Value>) -> Option<(i32, i32)> {
+    let index = idx_arg.integer_value(scope).unwrap_or(-1) as i32;
+    let id = js_ent_id(scope, id_arg);
+    let serial = crate::entity_live::engine_serial_for(index, id)?;
+    Some((index, serial))
 }
 
-/// Native `__s2_ent_ref_valid(index, serial) -> boolean`.
-/// True iff the slot's current serial matches the captured serial (entity is still alive).
+/// Native `__s2_ent_ref_valid(index, id) -> boolean`.
+/// True iff the books say (index, id) is live (and the slot re-validates in the identity chunk).
 fn s2_ent_ref_valid(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -3504,8 +3480,8 @@ fn s2_ent_ref_valid(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
-        rv.set_bool(crate::entity::resolve(entity_current_serial(index), serial));
+        let id = js_ent_id(scope, args.get(1));
+        rv.set_bool(!entity_resolve_ptr(index, id).is_null());
     }));
 }
 
@@ -3532,10 +3508,10 @@ fn s2_ent_ref_read(
         crate::crash::breadcrumb::note_engine_op("ent_ref_read");
         rv.set_null();
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let kind = args.get(3).integer_value(scope).unwrap_or(0);
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }               // invalid → null (already set)
         let p = ent as *const u8;
         match kind {
@@ -3566,10 +3542,10 @@ fn s2_ent_ref_write(
         crate::crash::breadcrumb::note_engine_op("ent_ref_write");
         rv.set_bool(false);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let kind = args.get(3).integer_value(scope).unwrap_or(0);
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }               // invalid → false (already set)
         match kind {
             KIND_I32  => crate::entity::write_i32(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
@@ -3596,10 +3572,10 @@ fn s2_ent_ref_read_string(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let max_len = args.get(3).integer_value(scope).unwrap_or(0) as i32;
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }                 // invalid → null (already set)
         let s = crate::entity::read_string(ent as *const u8, off, max_len);
         if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
@@ -3618,11 +3594,11 @@ fn s2_ent_ref_write_string(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let max_len = args.get(3).integer_value(scope).unwrap_or(0) as i32;
         let s = args.get(4).to_rust_string_lossy(scope);
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }                 // invalid → false (already set)
         crate::entity::write_string(ent, off, max_len, s.as_bytes());
         rv.set_bool(true);
@@ -3640,12 +3616,12 @@ fn s2_ent_ref_read_floats(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let count = args.get(3).integer_value(scope).unwrap_or(0) as i32;
         if count <= 0 || count > 4 { return; }          // only small fixed vectors (Vector..Vector4D)
         if off < 0 { return; }                           // schema-miss sentinel (-1) → null (not a partial read)
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }                     // stale/invalid → null (already set)
         let p = ent as *const u8;
         let arr = v8::Array::new(scope, count);
@@ -3666,13 +3642,13 @@ fn s2_ent_ref_read_floats_chain(scope: &mut v8::PinScope, args: v8::FunctionCall
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
         let count = args.get(4).integer_value(scope).unwrap_or(0) as i32;
         if count <= 0 || count > 4 || final_off < 0 { return; }
         // args[2] must be an array of pointer offsets:
         let Ok(chain) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }                     // stale/invalid root → null (already set)
         let mut p = ent as *const u8;
         for i in 0..chain.length() {
@@ -3700,12 +3676,12 @@ fn s2_ent_ref_read_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         crate::crash::breadcrumb::note_engine_op("ent_ref_read_chain");
         rv.set_null();
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
         let kind = args.get(4).integer_value(scope).unwrap_or(0);
         if final_off < 0 { return; }
         let Ok(path) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }
         let mut p = ent as *const u8;
         for i in 0..path.length() {
@@ -3743,12 +3719,12 @@ fn s2_ent_ref_write_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         crate::crash::breadcrumb::note_engine_op("ent_ref_write_chain");
         rv.set_bool(false);
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
         let kind = args.get(4).integer_value(scope).unwrap_or(0);
         if final_off < 0 { return; }
         let Ok(path) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }
         let mut p = ent as *const u8;
         for i in 0..path.length() {
@@ -3783,9 +3759,9 @@ fn s2_ent_ref_state_changed(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
-        let ent = entity_resolve_ptr(index, serial);
+        let ent = entity_resolve_ptr(index, id);
         if ent.is_null() { return; }               // invalid → no-op
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(func) = ops.ent_state_changed else { return };
@@ -3817,7 +3793,6 @@ fn s2_handle_decode(
 
 /// Parse a JS EntityRef id (f64 on the wire; host-minted u64). 0 = invalid/never-live.
 /// Integral, ≥1, ≤2^53 (exact-f64 range) — anything else fails closed.
-#[allow(dead_code)]
 fn js_ent_id(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
     let n = v.number_value(scope).unwrap_or(0.0);
     if !n.is_finite() || n < 1.0 || n > 9_007_199_254_740_992.0 || n.fract() != 0.0 { return 0; }
@@ -4276,7 +4251,11 @@ pub(crate) fn dispatch_entity_event(kind: &str, class_name: &str, handle: i32) {
                 v8::null(tc).into()
             } else {
                 let (idx, ser) = crate::entity::decode_handle(handle as u32);
-                if entity_resolve_ptr(idx, ser).is_null() { v8::null(tc).into() } else { build_entity_ref(tc, idx, ser) }
+                // Books-adopt (delete dispatches still adopt — the ffi entry removes AFTER dispatch, Task 4).
+                match crate::entity_live::adopt(idx, ser) {
+                    Some(id) => build_entity_ref(tc, idx, id),
+                    None => v8::null(tc).into(),
+                }
             };
             let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
                 Some(s) => s.into(),
@@ -5438,8 +5417,7 @@ fn s2_convar_register(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 fn s2_pawn_commit_suicide(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.pawn_commit_suicide else { return };
         f(index, serial);
@@ -5453,8 +5431,7 @@ fn s2_pawn_commit_suicide(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 3 { return; }
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.player_change_team else { return };
@@ -5472,8 +5449,7 @@ fn s2_gamerules_terminate_round(scope: &mut v8::PinScope, args: v8::FunctionCall
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_int32(0);
         if args.length() < 5 { return; }
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
         let delay = args.get(3).number_value(scope).unwrap_or(0.0) as f32;
         let reason = args.get(4).integer_value(scope).unwrap_or(-1) as c_int;
@@ -5494,8 +5470,7 @@ fn s2_gamerules_terminate_round(scope: &mut v8::PinScope, args: v8::FunctionCall
 fn s2_player_switch_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 3 { return; }
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.player_switch_team else { return };
@@ -5514,8 +5489,7 @@ fn s2_player_respawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_int32(0);
         if args.length() < 2 { return; }
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as c_int;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as c_int;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let alive_off = if args.length() >= 3 { args.get(2).integer_value(scope).unwrap_or(-1) as c_int } else { -1 };
         let hplayerpawn_off = if args.length() >= 4 { args.get(3).integer_value(scope).unwrap_or(-1) as c_int } else { -1 };
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
@@ -5533,9 +5507,7 @@ fn s2_player_respawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
 fn s2_transmit_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
-        if index < 0 || serial < 0 { return; }
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return };
         let mut mask: u64 = 0;
         for i in 0..arr.length() {
@@ -5580,8 +5552,7 @@ fn s2_transmit_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
 fn s2_transmit_reset(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let removed = TRANSMIT_RULES.with(|r| {
             let mut map = r.borrow_mut();
@@ -5793,11 +5764,11 @@ fn build_vector<'s>(scope: &mut v8::PinScope<'s, '_>, x: f32, y: f32, z: f32) ->
     }
 }
 
-/// Construct `new EntityRef(index, serial)` via the injected `__s2pkg_entity.EntityRef` constructor
-/// (the DamageInfo.victim / readHandle pattern — a raw handle never crosses to JS, only a decoded,
-/// serial-gated `(index, serial)` pair the resulting `EntityRef` re-validates on every field access).
-/// Falls back to `null` if `@s2script/entity` isn't installed on this context.
-fn build_entity_ref<'s>(scope: &mut v8::PinScope<'s, '_>, index: i32, serial: i32) -> v8::Local<'s, v8::Value> {
+/// Construct `new EntityRef(index, id)` via the injected `__s2pkg_entity.EntityRef` constructor —
+/// `id` is the HOST-MINTED books id (an f64 on the wire), never a raw engine serial. The framework
+/// mints refs by adopting a decoded handle / slot into the books (a raw handle/serial never crosses
+/// to JS). Falls back to `null` if `@s2script/entity` isn't installed on this context.
+fn build_entity_ref<'s>(scope: &mut v8::PinScope<'s, '_>, index: i32, id: u64) -> v8::Local<'s, v8::Value> {
     let val: Option<v8::Local<'s, v8::Value>> = (|| {
         let global = scope.get_current_context().global(scope);
         let pkg_key = v8::String::new(scope, "__s2pkg_entity")?;
@@ -5807,8 +5778,8 @@ fn build_entity_ref<'s>(scope: &mut v8::PinScope<'s, '_>, index: i32, serial: i3
         let ctor_val = pkg.get(scope, ctor_key.into())?;
         let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
         let idx_v = v8::Integer::new(scope, index);
-        let ser_v = v8::Integer::new(scope, serial);
-        ctor.new_instance(scope, &[idx_v.into(), ser_v.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+        let id_v = v8::Number::new(scope, id as f64);
+        ctor.new_instance(scope, &[idx_v.into(), id_v.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
     })();
     match val {
         Some(v) => v,
@@ -5842,8 +5813,10 @@ fn s2_trace(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
         // `number_value` -> `u64` round-trips exactly.
         let interacts_with    = args.get(4).number_value(scope).unwrap_or(0.0) as u64;
         let interacts_exclude = args.get(5).number_value(scope).unwrap_or(0.0) as u64;
-        let ignore_idx    = args.get(6).integer_value(scope).unwrap_or(-1) as c_int;
-        let ignore_serial = args.get(7).integer_value(scope).unwrap_or(-1) as c_int;
+        // E1: arg 6/7 = the ignore entity's (index, host-id); translate to the engine serial the
+        // trace_shape op expects. A miss (no ignore entity / dead ref) → (-1, -1) = "no ignore entity".
+        let (ignore_idx, ignore_serial) = ent_op_serial(scope, args.get(6), args.get(7))
+            .map_or((-1 as c_int, -1 as c_int), |(i, s)| (i as c_int, s as c_int));
 
         let ops = ENGINE_OPS.with(|o| o.get());
         let (did_hit, fraction, endpos, normal, all_solid, hit_ent_handle) =
@@ -5871,10 +5844,9 @@ fn s2_trace(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
             v8::null(scope).into()
         } else {
             let (index, serial) = crate::entity::decode_handle(hit_ent_handle as u32);
-            if entity_resolve_ptr(index, serial).is_null() {
-                v8::null(scope).into() // a same-frame stale handle (defensive) -> null, not a dead ref
-            } else {
-                build_entity_ref(scope, index, serial)
+            match crate::entity_live::adopt(index, serial) {
+                Some(id) => build_entity_ref(scope, index, id),   // books-adopted (raw serial never crosses)
+                None => v8::null(scope).into(),                   // absent/mismatched books → null (fail-closed)
             }
         };
         let end_pos_val = build_vector(scope, endpos[0], endpos[1], endpos[2]);
@@ -5941,8 +5913,9 @@ fn s2_entity_create(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
             let handle = func(cname.as_ptr());
             if handle != 0 {
                 let (index, serial) = crate::entity::decode_handle(handle as u32);
-                if !entity_resolve_ptr(index, serial).is_null() {
-                    rv.set(build_entity_ref(scope, index, serial));
+                // The create listener fed the books synchronously via the ffi entry — adoption is the proof.
+                if let Some(id) = crate::entity_live::adopt(index, serial) {
+                    rv.set(build_entity_ref(scope, index, id));
                 }
             }
         }
@@ -5971,8 +5944,8 @@ fn s2_entity_find_by_class(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
         let mut w: u32 = 0;
         for i in 0..n {
             let (index, serial) = (idxs[i], sers[i]);
-            if !entity_resolve_ptr(index, serial).is_null() {
-                let r = build_entity_ref(scope, index, serial);
+            if let Some(id) = crate::entity_live::adopt(index, serial) {
+                let r = build_entity_ref(scope, index, id);
                 arr.set_index(scope, w, r);
                 w += 1;
             }
@@ -6250,8 +6223,7 @@ fn s2_usermsg_debug(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgumen
 fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let ops = ENGINE_OPS.with(|o| o.get());
         if let Some(func) = ops.and_then(|o| o.entity_spawn) { rv.set_bool(func(index, serial) != 0); }
     }));
@@ -6263,8 +6235,7 @@ fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
 fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let ops = ENGINE_OPS.with(|o| o.get());
         if let Some(func) = ops.and_then(|o| o.collision_activate) { rv.set_bool(func(index, serial) != 0); }
     }));
@@ -6277,8 +6248,7 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 fn s2_ent_set_model(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let name = args.get(2).to_rust_string_lossy(scope);
         let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
         let ops = ENGINE_OPS.with(|o| o.get());
@@ -6301,7 +6271,13 @@ fn s2_sound_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let name = args.get(0).to_rust_string_lossy(scope);
         let Ok(c_name) = std::ffi::CString::new(name) else { return };
         let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
-        let ent_serial = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
+        // E1: arg 2 = the source entity's host-id. id 0 = worldspawn / no-entity sentinel → engine
+        // serial -1 ("no serial gate", entIndex used directly shim-side). An id present but not live
+        // is a dead entity → fail closed (rv stays 0, no emit).
+        let ent_id = js_ent_id(scope, args.get(2));
+        let ent_serial = if ent_id == 0 { -1 } else {
+            match crate::entity_live::engine_serial_for(ent_index, ent_id) { Some(s) => s, None => return }
+        };
         let mut slots: Vec<i32> = Vec::new();
         if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(3)) {
             let n = arr.length();
@@ -6341,8 +6317,7 @@ fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 fn s2_entity_teleport(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let origin = read_vec3_opt(scope, args.get(2));
         let angles = read_vec3_opt(scope, args.get(3));
         let vel    = read_vec3_opt(scope, args.get(4));
@@ -6361,8 +6336,7 @@ fn s2_entity_teleport(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 fn s2_entity_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let ops = ENGINE_OPS.with(|o| o.get());
         if let Some(func) = ops.and_then(|o| o.entity_remove) { rv.set_bool(func(index, serial) != 0); }
     }));
@@ -6375,14 +6349,13 @@ fn s2_entity_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
 fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let input = args.get(2).to_rust_string_lossy(scope);
         let value = args.get(3).to_rust_string_lossy(scope);
-        let act_idx = args.get(4).integer_value(scope).unwrap_or(-1) as i32;
-        let act_serial = args.get(5).integer_value(scope).unwrap_or(-1) as i32;
-        let caller_idx = args.get(6).integer_value(scope).unwrap_or(-1) as i32;
-        let caller_serial = args.get(7).integer_value(scope).unwrap_or(-1) as i32;
+        // E1: optional activator/caller (args 4/5, 6/7) — a JS -1 / id-0 / translation miss all
+        // collapse to (-1, -1) = "no activator/caller" (the shim passes null).
+        let (act_idx, act_serial) = ent_op_serial(scope, args.get(4), args.get(5)).unwrap_or((-1, -1));
+        let (caller_idx, caller_serial) = ent_op_serial(scope, args.get(6), args.get(7)).unwrap_or((-1, -1));
         let delay = args.get(8).number_value(scope).unwrap_or(0.0) as f32;
         let Ok(input_c) = std::ffi::CString::new(input) else { return };
         let Ok(value_c) = std::ffi::CString::new(value) else { return };
@@ -6403,8 +6376,7 @@ fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 fn s2_entity_spawn_kv(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let keys_arr = match v8::Local::<v8::Array>::try_from(args.get(2)) { Ok(a) => a, Err(_) => return };
         let types_arr = match v8::Local::<v8::Array>::try_from(args.get(3)) { Ok(a) => a, Err(_) => return };
         let vals_arr = match v8::Local::<v8::Array>::try_from(args.get(4)) { Ok(a) => a, Err(_) => return };
@@ -6520,8 +6492,7 @@ fn s2_entity_listener_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 fn s2_give_named_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let name = args.get(3).to_rust_string_lossy(scope);
         let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
@@ -6530,7 +6501,7 @@ fn s2_give_named_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
             let handle = func(index, serial, off, cname.as_ptr());
             if handle != 0 {
                 let (i, s) = crate::entity::decode_handle(handle as u32);
-                if !entity_resolve_ptr(i, s).is_null() { rv.set(build_entity_ref(scope, i, s)); }
+                if let Some(id) = crate::entity_live::adopt(i, s) { rv.set(build_entity_ref(scope, i, id)); }
             }
         }
     }));
@@ -6545,12 +6516,11 @@ fn s2_give_named_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 fn s2_entity_subobj_vcall(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
         let vtable_index = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
-        let arg_idx = args.get(4).integer_value(scope).unwrap_or(-1) as i32;
-        let arg_serial = args.get(5).integer_value(scope).unwrap_or(-1) as i32;
+        // E1: optional second entity arg (args 4/5) — a JS -1 / id-0 / translation miss → (-1, -1) = "no arg".
+        let (arg_idx, arg_serial) = ent_op_serial(scope, args.get(4), args.get(5)).unwrap_or((-1, -1));
         let ops = ENGINE_OPS.with(|o| o.get());
         if let Some(func) = ops.and_then(|o| o.entity_subobj_vcall) {
             rv.set_bool(func(index, serial, off, vtable_index, arg_idx, arg_serial) != 0);
@@ -6565,10 +6535,8 @@ fn s2_entity_subobj_vcall(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 fn s2_remove_player_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        let pawn_idx = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let pawn_serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
-        let weapon_idx = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let weapon_serial = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
+        let Some((pawn_idx, pawn_serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let Some((weapon_idx, weapon_serial)) = ent_op_serial(scope, args.get(2), args.get(3)) else { return };
         let ops = ENGINE_OPS.with(|o| o.get());
         if let Some(func) = ops.and_then(|o| o.remove_player_item) {
             rv.set_bool(func(pawn_idx, pawn_serial, weapon_idx, weapon_serial) != 0);
@@ -6584,12 +6552,11 @@ fn s2_remove_player_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 /// itself clamped to `[0, 256]`). Degrades to `[]` with no op / a stale root / an unresolved chain.
 fn s2_entity_read_handle_vector(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let serial = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+        let arr = v8::Array::new(scope, 0);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { rv.set(arr.into()); return };
         let ptr_offs = read_int_array(scope, args.get(2));      // Vec<i32>, [] if not an array
         let vector_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
         let max_count = (args.get(4).integer_value(scope).unwrap_or(0) as i32).clamp(0, 256);
-        let arr = v8::Array::new(scope, 0);
         let ops = ENGINE_OPS.with(|o| o.get());
         if let Some(func) = ops.and_then(|o| o.entity_read_handle_vector) {
             let mut out = vec![0i32; max_count as usize];
@@ -6597,8 +6564,8 @@ fn s2_entity_read_handle_vector(scope: &mut v8::PinScope, args: v8::FunctionCall
             let mut w = 0u32;
             for k in 0..(n.max(0) as usize).min(max_count as usize) {
                 let (i, s) = crate::entity::decode_handle(out[k] as u32);
-                if !entity_resolve_ptr(i, s).is_null() {
-                    let er = build_entity_ref(scope, i, s);
+                if let Some(id) = crate::entity_live::adopt(i, s) {
+                    let er = build_entity_ref(scope, i, id);
                     arr.set_index(scope, w, er);
                     w += 1;
                 }
@@ -6780,9 +6747,7 @@ fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
 fn s2_entity_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
-        if args.length() < 2 { return; }
-        let index  = args.get(0).int32_value(scope).unwrap_or(-1);
-        let serial = args.get(1).int32_value(scope).unwrap_or(-1);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(func) = ops.entity_name else { return };
         let ptr = func(index, serial);
@@ -7326,13 +7291,19 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
                 v8::null(tc).into()
             } else {
                 let (ai, aser) = crate::entity::decode_handle(act_handle as u32);
-                if entity_resolve_ptr(ai, aser).is_null() { v8::null(tc).into() } else { build_entity_ref(tc, ai, aser) }
+                match crate::entity_live::adopt(ai, aser) {
+                    Some(id) => build_entity_ref(tc, ai, id),
+                    None => v8::null(tc).into(),
+                }
             };
             let caller_val: v8::Local<v8::Value> = if caller_handle == -1 {
                 v8::null(tc).into()
             } else {
                 let (ci, cser) = crate::entity::decode_handle(caller_handle as u32);
-                if entity_resolve_ptr(ci, cser).is_null() { v8::null(tc).into() } else { build_entity_ref(tc, ci, cser) }
+                match crate::entity_live::adopt(ci, cser) {
+                    Some(id) => build_entity_ref(tc, ci, id),
+                    None => v8::null(tc).into(),
+                }
             };
 
             let ev_obj = v8::Object::new(tc);
@@ -7528,7 +7499,6 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // The five Slice-3 raw-pointer natives (entity-by-index, deref-handle, ent-read/write-i32,
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.
     // __s2_ent_ref_read_i32/__s2_ent_ref_write_i32 (introduced in Slice 5A) were retired in 5B.2 → generic __s2_ent_ref_read/write.
-    set_native(scope, global_obj, "__s2_ent_current_serial", s2_ent_current_serial);
     set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
     set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
@@ -10824,7 +10794,7 @@ mod frame_tests {
         unload_plugin("er");                                   // captures { ref: <tagged EntityRef> }
         load_plugin_js("er", JS, "{}");                        // revives → live EntityRef
         assert_eq!(eval_in_context_string("er", "String(globalThis.__revived instanceof __s2pkg_entity.EntityRef)"), "true");
-        assert_eq!(eval_in_context_string("er", "globalThis.__revived.index + ',' + globalThis.__revived.serial"), "1,7");
+        assert_eq!(eval_in_context_string("er", "globalThis.__revived.index + ',' + globalThis.__revived.id"), "1,7");
         shutdown();
     }
 
@@ -11434,11 +11404,12 @@ mod frame_tests {
     /// `__s2_handle_decode` is pure bit-math and works without ops.
     #[test]
     fn ent_ref_natives_degrade_without_engine_ops() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         set_engine_ops(None);                 // no ops table → every entity op is a safe miss
         create_plugin_context("p");
-        // current_serial → -1 ; valid → false ; read → null ; write → false ; state_changed → no-op/undefined
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_current_serial(1))"), "-1");
+        // id_for_index → 0 (empty books) ; valid → false ; read → null ; write → false ; state_changed → no-op/undefined
+        assert_eq!(eval_in_context_string("p", "String(__s2_ent_id_for_index(1))"), "0");
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_valid(1, 7))"), "false");
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1, 7, 8, 1))"), "null");
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write(1, 7, 8, 1, 5))"), "false");
@@ -11656,34 +11627,79 @@ mod frame_tests {
     thread_local! { static ENTITY_INSTALL_CALLS: std::cell::Cell<i32> = std::cell::Cell::new(0); }
     extern "C" fn capture_entity_install() -> c_int { ENTITY_INSTALL_CALLS.with(|c| c.set(c.get() + 1)); 1 }
 
-    // --- Fake resolvable-entity plumbing for the live-EntityRef dispatch test ---
-    // A leaked (test-only, tiny) entity whose identity-pointer field (offset 0x10 = ENT_IDENTITY_PTR_OFFSET)
-    // points to a leaked identity whose handle field (offset 0x10 = ENT_IDENTITY_HANDLE_OFFSET) encodes
-    // (idx, serial). #[repr(C)] + a 0x10-byte pad prefix gives natural alignment for read_ptr/read_u32's
-    // direct derefs. `fake_ent_by_index` returns the entity for the armed index; leaking keeps the raw
-    // pointers valid for the extern "C" callback (a real CEntityInstance is likewise long-lived).
-    #[repr(C)]
-    struct FakeIdent { pad: [u8; 0x10], handle: u32 }
-    #[repr(C)]
-    struct FakeEnt { pad: [u8; 0x10], ident: *const u8 }
+    // --- E1 fake slot-side plumbing: a fake `ent_resolve` op + a books seed. Replaces the retired
+    // FakeEnt/FakeIdent instance-identity fakes (nothing reads instance identity anymore — resolution
+    // is books + slot op). The fake resolver answers for exactly one armed (index, engine_serial). ---
     thread_local! {
-        static FAKE_ENT_INDEX: std::cell::Cell<i32> = std::cell::Cell::new(-1);
-        static FAKE_ENT_PTR: std::cell::Cell<*const u8> = std::cell::Cell::new(std::ptr::null());
+        static FAKE_RESOLVE_KEY: std::cell::Cell<(i32, i32)> = std::cell::Cell::new((-1, -1));
+        static FAKE_RESOLVE_PTR: std::cell::Cell<*mut std::os::raw::c_void> =
+            std::cell::Cell::new(std::ptr::null_mut());
     }
-    extern "C" fn fake_ent_by_index(idx: c_int) -> *mut std::os::raw::c_void {
-        if idx == FAKE_ENT_INDEX.with(|c| c.get()) { FAKE_ENT_PTR.with(|c| c.get()) as *mut std::os::raw::c_void }
+    extern "C" fn fake_ent_resolve(idx: c_int, serial: c_int) -> *mut std::os::raw::c_void {
+        if (idx, serial) == FAKE_RESOLVE_KEY.with(|c| c.get()) { FAKE_RESOLVE_PTR.with(|c| c.get()) }
         else { std::ptr::null_mut() }
     }
-    /// Leak a fake entity+identity that `entity_resolve_ptr(idx, serial)` resolves for `handle`, arm
-    /// `fake_ent_by_index` for its index, and return the decoded (idx, serial). Derived via the public
-    /// `decode_handle` so it stays correct regardless of `HANDLE_ENTRY_BITS`.
-    fn arm_fake_entity(handle: u32) -> (i32, i32) {
-        let (idx, serial) = crate::entity::decode_handle(handle);
-        let ident: &'static FakeIdent = Box::leak(Box::new(FakeIdent { pad: [0; 0x10], handle }));
-        let ent: &'static FakeEnt = Box::leak(Box::new(FakeEnt { pad: [0; 0x10], ident: ident as *const FakeIdent as *const u8 }));
-        FAKE_ENT_INDEX.with(|c| c.set(idx));
-        FAKE_ENT_PTR.with(|c| c.set(ent as *const FakeEnt as *const u8));
-        (idx, serial)
+    /// Seed the books + arm the fake slot resolver for (index, serial). Returns the minted host id.
+    /// The backing buffer is a leaked 4KB zeroed block (writable, long-lived).
+    fn arm_fake_entity(index: i32, serial: i32) -> u64 {
+        let id = crate::entity_live::on_created(index, serial);
+        let buf: &'static mut [u8; 4096] = Box::leak(Box::new([0u8; 4096]));
+        FAKE_RESOLVE_KEY.with(|c| c.set((index, serial)));
+        FAKE_RESOLVE_PTR.with(|c| c.set(buf.as_mut_ptr() as *mut std::os::raw::c_void));
+        id
+    }
+
+    /// E1 ACCEPTANCE (unit form of the changelevel repro): a ref held across a map start
+    /// resolves null/false/dead — even though the ENGINE-side slot still reads live (the
+    /// fake resolver still answers). Stage 1 (the books) wins; the old design green-lit
+    /// exactly this case into a UAF.
+    #[test]
+    fn stale_ref_after_map_start_is_null_not_uaf() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        let _id = arm_fake_entity(42, 7);
+        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
+        create_plugin_context("cl");
+        eval_in_context_string("cl", r#"
+            var E = __s2require("@s2script/sdk/entity").EntityRef;
+            globalThis.__ref = new E(42, __s2_ent_id_for_index(42));
+            globalThis.__before = __ref.isValid() + ":" + (__ref.readInt32(8) !== null);
+            "ok"
+        "#);
+        assert_eq!(eval_in_context_string("cl", "globalThis.__before"), "true:true",
+                   "live before the transition (books + fake slot agree)");
+        // The implicit entity epoch — exactly what `s2script_core_dispatch_map_start` does to the
+        // books UNCONDITIONALLY before the JS dispatch (Task 4). The fake engine slot STILL resolves
+        // (simulating freed-but-unchanged memory) — the books alone must kill the ref.
+        crate::entity_live::clear_for_map_transition();
+        assert_eq!(eval_in_context_string("cl", "String(__ref.isValid())"), "false");
+        assert_eq!(eval_in_context_string("cl", "String(__ref.readInt32(8))"), "null");
+        assert_eq!(eval_in_context_string("cl", "String(__ref.writeInt32(8, 5))"), "false");
+        shutdown();
+    }
+
+    /// E1 ACCEPTANCE: cross-map (index, serial) aliasing is impossible — the SAME engine
+    /// pair re-created after a clear gets a FRESH host id; a ref captured before the
+    /// transition stays dead (Candidate D's win over the bare (index,serial) table).
+    #[test]
+    fn same_index_serial_on_new_map_does_not_revive_old_refs() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        let old_id = arm_fake_entity(64, 3);
+        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
+        crate::entity_live::clear_for_map_transition();          // the epoch (map start)
+        let new_id = crate::entity_live::on_created(64, 3);      // same pair, new map
+        assert!(new_id > old_id);
+        create_plugin_context("alias");
+        eval_in_context_string("alias", &format!(r#"
+            var E = __s2require("@s2script/sdk/entity").EntityRef;
+            globalThis.__old = String(new E(64, {old_id}).isValid());
+            globalThis.__new = String(new E(64, {new_id}).isValid());
+            "ok"
+        "#));
+        assert_eq!(eval_in_context_string("alias", "__old"), "false", "old id never revives");
+        assert_eq!(eval_in_context_string("alias", "__new"), "true");
+        shutdown();
     }
 
     thread_local! { static SNAPSHOT_PAIRS: std::cell::RefCell<Vec<(i32, i32)>> = std::cell::RefCell::new(Vec::new()); }
@@ -11771,30 +11787,32 @@ mod frame_tests {
         shutdown();
     }
 
-    /// dispatch_entity_event delivers a LIVE (non-null, serial-gated) EntityRef when the handle resolves:
-    /// with a fake `ent_by_index` wired, the "no entity" (-1 / resolve-null) path is bypassed, so
-    /// `build_entity_ref` runs and the handler receives an EntityRef whose `isValid()===true` and whose
-    /// index/serial match the handle. Exercises the non-null branch the other three tests (handle=-1)
-    /// never hit; complements the live gate (which observed `valid=true`).
+    /// dispatch_entity_event delivers a LIVE (non-null, books-adopted) EntityRef when the handle
+    /// adopts: with the books seeded (via arm_fake_entity) and the fake `ent_resolve` slot op wired,
+    /// the mint site adopts the decoded handle and the handler receives an EntityRef whose
+    /// `isValid()===true` and whose `index`/`id` match the books. Exercises the non-null branch the
+    /// other three tests (handle=-1) never hit; complements the live gate (which observed `valid=true`).
     #[test]
     fn entity_event_dispatch_delivers_live_entityref() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         let handle: u32 = 0x0001_8005;                       // decodes to a live (idx>0, serial>0)
-        let (idx, serial) = arm_fake_entity(handle);
+        let (idx, serial) = crate::entity::decode_handle(handle);
         assert!(idx > 0 && serial > 0, "chosen handle must decode to a live (idx>0, serial>0), got ({idx},{serial})");
-        set_engine_ops(Some(S2EngineOps { ent_by_index: Some(fake_ent_by_index), ..mock_event_ops() }));
+        let id = arm_fake_entity(idx, serial);               // seed the books + arm the fake slot resolver
+        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
         create_plugin_context("pel4");
         eval_in_context_string("pel4", r#"
             globalThis.__got = "none";
             __s2pkg_entity.Entity.onSpawn("weapon_ak47", function (e, cls) {
                 globalThis.__got = (e === null) ? "null"
-                    : ("live:" + cls + ":" + e.isValid() + ":" + e.index + ":" + e.serial);
+                    : ("live:" + cls + ":" + e.isValid() + ":" + e.index + ":" + e.id);
             });
             "ok"
         "#);
         dispatch_entity_event("spawn", "weapon_ak47", handle as i32);
         assert_eq!(eval_in_context_string("pel4", "globalThis.__got"),
-                   format!("live:weapon_ak47:true:{idx}:{serial}"));
+                   format!("live:weapon_ak47:true:{idx}:{id}"));
         shutdown();
     }
 
@@ -11994,7 +12012,7 @@ mod frame_tests {
             const { EntityRef } = require("@s2script/entity");
             const r = require("@x/ent").getRef();
             globalThis.__isRef  = String(r instanceof EntityRef);        // "true" — rehydrated
-            globalThis.__idx    = String(r.index) + "," + String(r.serial); // "1,7" — data crossed
+            globalThis.__idx    = String(r.index) + "," + String(r.id); // "1,7" — data crossed
             globalThis.__valid  = String(r.isValid());                   // "false" (no ops) — it's callable
             globalThis.__read   = String(r.readInt32(8));                // "null"  (no ops)
         "#, "{}");
@@ -12024,7 +12042,7 @@ mod frame_tests {
             const g = require("@x/ent");
             globalThis.__seen = "none";
             g.on("spawned", function (r) {
-                globalThis.__seen = (r instanceof EntityRef) ? (r.index + "," + r.serial) : "plain";
+                globalThis.__seen = (r instanceof EntityRef) ? (r.index + "," + r.id) : "plain";
             });
         "#, "{}");
         // EntityRef is a closure var inside the CJS wrapper; use the globalThis prelude reference.
@@ -12673,12 +12691,14 @@ mod frame_tests {
     /// `Object.keys` insertion order, deterministic.
     #[test]
     fn entity_spawn_kv_marshal_capture_matches_expected_arrays() {
+        crate::entity_live::reset_for_tests();
         EKV_CAPTURE.lock().unwrap().clear();
         let _ = init(dummy_logger());
+        crate::entity_live::on_created(1, 7);          // seed the books so (1, id) resolves
         set_engine_ops(Some(S2EngineOps { entity_spawn_kv: Some(capture_spawn_kv), ..mock_event_ops() }));
         create_plugin_context("p");
         let out = eval_in_context_string("p", r#"
-            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            const r = new (__s2pkg_entity.EntityRef)(1, __s2_ent_id_for_index(1));
             String(r.spawn({ name: "bob", health: 42, scale: 1.5, enabled: true, big: 3000000000 }))
         "#);
         assert_eq!(out, "true");
@@ -12699,12 +12719,14 @@ mod frame_tests {
     /// from "no op wired".
     #[test]
     fn entity_spawn_kv_marshal_rejects_oversized_strings() {
+        crate::entity_live::reset_for_tests();
         EKV_CAPTURE.lock().unwrap().clear();
         let _ = init(dummy_logger());
+        crate::entity_live::on_created(1, 7);          // seed the books so the normal-length spawn resolves
         set_engine_ops(Some(S2EngineOps { entity_spawn_kv: Some(capture_spawn_kv), ..mock_event_ops() }));
         create_plugin_context("p");
         let out = eval_in_context_string("p", r#"
-            const r = new (__s2pkg_entity.EntityRef)(1, 7);
+            const r = new (__s2pkg_entity.EntityRef)(1, __s2_ent_id_for_index(1));
             const big = "x".repeat(2050);   // beyond the real ~2048-byte engine abort bound
             const cjk = "字".repeat(500); // .length 500 (UNDER the JS .length cap) but 1500 UTF-8 bytes
             const ok  = "x".repeat(100);    // comfortably under the cap
@@ -12735,12 +12757,15 @@ mod frame_tests {
     /// returns its guid (struct-update over mock_event_ops, the entity_spawn_kv capture precedent).
     #[test]
     fn sound_emit_marshals_args_to_op() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         SOUND_EMIT_CALLS.lock().unwrap().clear();
+        let id = crate::entity_live::on_created(42, 99);   // books: index 42 → engine serial 99
         set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
         create_plugin_context("psm");
+        // arg 2 is now the host-id; the native translates it to the engine serial 99 the op captures.
         let out = eval_in_context_string("psm",
-            "String(__s2_sound_emit('Weapon_AK47.Single', 42, 99, [3, 5], 0.5))");
+            &format!("String(__s2_sound_emit('Weapon_AK47.Single', 42, {id}, [3, 5], 0.5))"));
         assert_eq!(out, "7");
         let calls = SOUND_EMIT_CALLS.lock().unwrap();
         assert_eq!(calls.len(), 1);
@@ -12777,13 +12802,15 @@ mod frame_tests {
     /// recipients passed through; volume passed through. And the module resolves via require.
     #[test]
     fn sound_module_emit_explicit_opts() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         SOUND_EMIT_CALLS.lock().unwrap().clear();
+        crate::entity_live::on_created(42, 99);        // books: index 42 → engine serial 99
         set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
         load_plugin_js("psx", r#"
             const { Sound } = require("@s2script/sound");
             globalThis.__g = Sound.emit("UI.PlayerPing",
-                { entity: { index: 42, serial: 99 }, recipients: [3, 5], volume: 0.5 });
+                { entity: { index: 42, id: __s2_ent_id_for_index(42) }, recipients: [3, 5], volume: 0.5 });
         "#, "{}");
         assert_eq!(eval_in_context_string("psx", "String(globalThis.__g)"), "7");
         let calls = SOUND_EMIT_CALLS.lock().unwrap();
@@ -12842,12 +12869,14 @@ mod frame_tests {
     /// setVisibleTo folds the viewer-slot array into a u64 mask and pushes (index, serial, mask).
     #[test]
     fn transmit_set_folds_viewer_slots_into_mask() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        crate::entity_live::on_created(7, 42);         // books: index 7 → engine serial 42
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("tm1");
         let out = eval_in_context_string("tm1",
-            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 7, serial: 42}, [0, 5, 63]))");
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 7, id: __s2_ent_id_for_index(7)}, [0, 5, 63]))");
         assert_eq!(out, "true");
         let calls = TRANSMIT_SET_CALLS.lock().unwrap();
         assert_eq!(calls.len(), 1);
@@ -12859,12 +12888,14 @@ mod frame_tests {
     /// Empty viewer array = hidden from everyone = mask 0.
     #[test]
     fn transmit_set_empty_array_masks_zero() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        crate::entity_live::on_created(3, 1);          // books: index 3 → engine serial 1
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("tm2");
         let out = eval_in_context_string("tm2",
-            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 3, serial: 1}, []))");
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 3, id: __s2_ent_id_for_index(3)}, []))");
         assert_eq!(out, "true");
         assert_eq!(TRANSMIT_SET_CALLS.lock().unwrap()[0], (3, 1, 0u64));
         shutdown();
@@ -12878,7 +12909,7 @@ mod frame_tests {
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("tm3");
         let out = eval_in_context_string("tm3",
-            "(function(){ try { __s2pkg_transmit.Transmit.setVisibleTo({index:1,serial:1},[64]); return 'no-throw'; } catch (e) { return e.constructor.name; } })()");
+            "(function(){ try { __s2pkg_transmit.Transmit.setVisibleTo({index:1,id:1},[64]); return 'no-throw'; } catch (e) { return e.constructor.name; } })()");
         assert_eq!(out, "RangeError");
         assert_eq!(TRANSMIT_SET_CALLS.lock().unwrap().len(), 0);
         shutdown();
@@ -12887,15 +12918,17 @@ mod frame_tests {
     /// Two plugins with rules on the same (index, serial) AND-merge: the pushed mask is the intersection.
     #[test]
     fn transmit_rules_and_merge_across_plugins() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        crate::entity_live::on_created(5, 9);          // books: index 5 → engine serial 9 (both owners share it)
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("tma");
         create_plugin_context("tmb");
         eval_in_context_string("tma",
-            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [0, 1]))");
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 5, id: __s2_ent_id_for_index(5)}, [0, 1]))");
         eval_in_context_string("tmb",
-            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [1, 2]))");
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 5, id: __s2_ent_id_for_index(5)}, [1, 2]))");
         let calls = TRANSMIT_SET_CALLS.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0], (5, 9, 0b11u64));          // tma alone
@@ -12907,18 +12940,20 @@ mod frame_tests {
     /// reset() removes only the caller's rule; the remaining merge is re-pushed; the LAST reset clears.
     #[test]
     fn transmit_reset_recomputes_then_clears() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         TRANSMIT_SET_CALLS.lock().unwrap().clear();
         TRANSMIT_CLEAR_CALLS.lock().unwrap().clear();
+        crate::entity_live::on_created(5, 9);          // books: index 5 → engine serial 9
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("tra");
         create_plugin_context("trb");
-        eval_in_context_string("tra", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [0, 1])");
-        eval_in_context_string("trb", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [1, 2])");
-        let out = eval_in_context_string("tra", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 9}))");
+        eval_in_context_string("tra", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, id: __s2_ent_id_for_index(5)}, [0, 1])");
+        eval_in_context_string("trb", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, id: __s2_ent_id_for_index(5)}, [1, 2])");
+        let out = eval_in_context_string("tra", "String(__s2pkg_transmit.Transmit.reset({index: 5, id: __s2_ent_id_for_index(5)}))");
         assert_eq!(out, "true");
         assert_eq!(TRANSMIT_SET_CALLS.lock().unwrap().last().copied(), Some((5, 9, 0b110u64))); // trb alone
-        let out = eval_in_context_string("trb", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 9}))");
+        let out = eval_in_context_string("trb", "String(__s2pkg_transmit.Transmit.reset({index: 5, id: __s2_ent_id_for_index(5)}))");
         assert_eq!(out, "true");
         assert_eq!(TRANSMIT_CLEAR_CALLS.lock().unwrap().as_slice(), &[5]);
         shutdown();
@@ -12927,13 +12962,16 @@ mod frame_tests {
     /// reset() with a serial that doesn't match the recorded rule returns false and pushes nothing.
     #[test]
     fn transmit_reset_serial_mismatch_is_false() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         TRANSMIT_SET_CALLS.lock().unwrap().clear();
         TRANSMIT_CLEAR_CALLS.lock().unwrap().clear();
+        let id = crate::entity_live::on_created(5, 9);
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("trm");
-        eval_in_context_string("trm", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 9}, [0])");
-        let out = eval_in_context_string("trm", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 8}))");
+        eval_in_context_string("trm", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, id: __s2_ent_id_for_index(5)}, [0])");
+        // reset with a STALE id (never minted) — the books say not-live, so reset is false and clears nothing.
+        let out = eval_in_context_string("trm", &format!("String(__s2pkg_transmit.Transmit.reset({{index: 5, id: {}}}))", id + 1000));
         assert_eq!(out, "false");
         assert_eq!(TRANSMIT_CLEAR_CALLS.lock().unwrap().len(), 0);
         shutdown();
@@ -12942,11 +12980,13 @@ mod frame_tests {
     /// Unloading a plugin clears its rules (the ledger walk): last owner gone -> transmit_clear pushed.
     #[test]
     fn transmit_unload_clears_owner_rules() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         TRANSMIT_CLEAR_CALLS.lock().unwrap().clear();
+        crate::entity_live::on_created(11, 2);         // books: index 11 → engine serial 2
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("tun");
-        eval_in_context_string("tun", "__s2pkg_transmit.Transmit.setVisibleTo({index: 11, serial: 2}, [0])");
+        eval_in_context_string("tun", "__s2pkg_transmit.Transmit.setVisibleTo({index: 11, id: __s2_ent_id_for_index(11)}, [0])");
         unload_plugin("tun");
         assert_eq!(TRANSMIT_CLEAR_CALLS.lock().unwrap().as_slice(), &[11]);
         shutdown();
@@ -12956,19 +12996,22 @@ mod frame_tests {
     /// (the op validated the new serial is the live one, so the old one is a dead entity's rule).
     #[test]
     fn transmit_stale_serial_evicted_on_new_set() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         TRANSMIT_SET_CALLS.lock().unwrap().clear();
+        let ida = crate::entity_live::on_created(5, 1);      // books: index 5 → serial 1 (tsa's live entity)
         set_engine_ops(Some(transmit_test_ops()));
         create_plugin_context("tsa");
         create_plugin_context("tsb");
-        eval_in_context_string("tsa", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 1}, [0])");
-        eval_in_context_string("tsb", "__s2pkg_transmit.Transmit.setVisibleTo({index: 5, serial: 2}, [1])");
+        eval_in_context_string("tsa", &format!("__s2pkg_transmit.Transmit.setVisibleTo({{index: 5, id: {ida}}}, [0])"));
+        let idb = crate::entity_live::on_created(5, 2);      // slot 5 reused (serial 2) — invalidates ida in the books
+        eval_in_context_string("tsb", &format!("__s2pkg_transmit.Transmit.setVisibleTo({{index: 5, id: {idb}}}, [1])"));
         let calls = TRANSMIT_SET_CALLS.lock().unwrap();
         // Second push must NOT be ANDed with tsa's stale-serial mask.
         assert_eq!(calls[1], (5, 2, 1u64 << 1));
         drop(calls);
-        // And tsa's stale entry is gone: resetting it now reports false.
-        let out = eval_in_context_string("tsa", "String(__s2pkg_transmit.Transmit.reset({index: 5, serial: 1}))");
+        // And tsa's stale entry is gone (evicted) + its ref is now dead: resetting it reports false.
+        let out = eval_in_context_string("tsa", &format!("String(__s2pkg_transmit.Transmit.reset({{index: 5, id: {ida}}}))"));
         assert_eq!(out, "false");
         shutdown();
     }
@@ -12976,11 +13019,13 @@ mod frame_tests {
     /// Missing ops (old shim) degrade to false — never a throw.
     #[test]
     fn transmit_set_missing_op_degrades_false() {
+        crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
+        crate::entity_live::on_created(1, 1);      // live ref, so we reach the (absent) op
         set_engine_ops(Some(mock_event_ops()));   // no transmit ops
         create_plugin_context("tmo");
         let out = eval_in_context_string("tmo",
-            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 1, serial: 1}, [0]))");
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 1, id: __s2_ent_id_for_index(1)}, [0]))");
         assert_eq!(out, "false");
         shutdown();
     }
@@ -12995,11 +13040,13 @@ mod frame_tests {
             transmit_stats: Some(mock_transmit_stats),
             ..mock_event_ops()
         }));
+        crate::entity_live::reset_for_tests();
+        crate::entity_live::on_created(1, 1);      // live ref, so we reach the rejecting op
         create_plugin_context("trj");
         let out = eval_in_context_string("trj",
-            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 1, serial: 1}, [0]))");
+            "String(__s2pkg_transmit.Transmit.setVisibleTo({index: 1, id: __s2_ent_id_for_index(1)}, [0]))");
         assert_eq!(out, "false");
-        let out = eval_in_context_string("trj", "String(__s2pkg_transmit.Transmit.reset({index: 1, serial: 1}))");
+        let out = eval_in_context_string("trj", "String(__s2pkg_transmit.Transmit.reset({index: 1, id: __s2_ent_id_for_index(1)}))");
         assert_eq!(out, "false");   // nothing was recorded
         shutdown();
     }
