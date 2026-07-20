@@ -3815,6 +3815,45 @@ fn s2_handle_decode(
     }));
 }
 
+/// Parse a JS EntityRef id (f64 on the wire; host-minted u64). 0 = invalid/never-live.
+/// Integral, ≥1, ≤2^53 (exact-f64 range) — anything else fails closed.
+#[allow(dead_code)]
+fn js_ent_id(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
+    let n = v.number_value(scope).unwrap_or(0.0);
+    if !n.is_finite() || n < 1.0 || n > 9_007_199_254_740_992.0 || n.fract() != 0.0 { return 0; }
+    n as u64
+}
+
+/// Native `__s2_ent_id_for_index(index) -> number`. The books id for a slot-derived
+/// index (Player.fromSlot / Pawn.forSlot), or 0 when the books say not-live. Books
+/// only — no engine memory. Replaces the retired `__s2_ent_current_serial` idiom.
+fn s2_ent_id_for_index(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        if let Some((id, _)) = crate::entity_live::lookup(index) { rv.set_double(id as f64); }
+    }));
+}
+
+/// Native `__s2_handle_adopt(handleU32) -> [index, id] | null`. THE raw-handle minting
+/// path: decode (pure bit-math) then adopt from the books — engine-serial match yields
+/// the table's host id; mismatch/absent → null. A dangling handle field can never mint
+/// a live ref (north-star §3.1).
+fn s2_handle_adopt(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let handle = args.get(0).integer_value(scope).unwrap_or(0) as u32;
+        let (index, serial) = crate::entity::decode_handle(handle);
+        let Some(id) = crate::entity_live::adopt(index, serial) else { return };
+        let arr = v8::Array::new(scope, 2);
+        let iv = v8::Integer::new(scope, index);
+        let dv = v8::Number::new(scope, id as f64);
+        arr.set_index(scope, 0, iv.into());
+        arr.set_index(scope, 1, dv.into());
+        rv.set(arr.into());
+    }));
+}
+
 /// Native `__s2_concommand(name: string, fn: (slot: number, argString: string) => void, flags?: number)`.
 /// Stores the JS callback `Global<Function>` keyed by command name in `CONCOMMANDS`, records the optional
 /// admin-flag mask (`flags`, default 0) in `COMMAND_META` (backing `Commands.list()` / `sm_help`), then
@@ -7501,6 +7540,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_ent_ref_write_chain", s2_ent_ref_write_chain);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
+    set_native(scope, global_obj, "__s2_ent_id_for_index", s2_ent_id_for_index);
+    set_native(scope, global_obj, "__s2_handle_adopt", s2_handle_adopt);
     // ConCommand registration.
     set_native(scope, global_obj, "__s2_concommand", s2_concommand);
     // Schema dump (5B.1): drives the shim's schema_enumerate op into a Catalog and writes JSON.
@@ -11404,6 +11445,28 @@ mod frame_tests {
         // handle_decode is PURE (no ops needed). BITS-agnostic assertion: 64 < 2^7 <= 2^HANDLE_ENTRY_BITS,
         // so index==64, serial==0 for any real bit-split (the exact split is validated live in the gate).
         assert_eq!(eval_in_context_string("p", "var d=__s2_handle_decode(64); d[0]+','+d[1]"), "64,0");
+        shutdown();
+    }
+
+    /// E1: the two minting natives — index-minting via the books id, handle-minting via
+    /// adoption. A dangling/mismatched handle can never mint; an absent index mints 0.
+    #[test]
+    fn minting_natives_are_books_backed() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(None);                                   // books-only paths: no ops needed
+        let id = crate::entity_live::on_created(42, 7);
+        create_plugin_context("mint");
+        assert_eq!(eval_in_context_string("mint", "String(__s2_ent_id_for_index(42))"), id.to_string());
+        assert_eq!(eval_in_context_string("mint", "String(__s2_ent_id_for_index(43))"), "0");
+        let good = ((7u32) << crate::entity::HANDLE_ENTRY_BITS) | 42u32;
+        let stale = ((9u32) << crate::entity::HANDLE_ENTRY_BITS) | 42u32;
+        assert_eq!(
+            eval_in_context_string("mint", &format!("var a=__s2_handle_adopt({good}); a ? a[0]+','+a[1] : 'null'")),
+            format!("42,{id}"));
+        assert_eq!(
+            eval_in_context_string("mint", &format!("String(__s2_handle_adopt({stale}))")),
+            "null", "a stale handle field can never mint a live ref");
         shutdown();
     }
 
