@@ -8,6 +8,7 @@ mod db;
 pub mod interfaces;
 pub mod plugin;
 pub(crate) mod entity;
+pub(crate) mod liveness;
 mod event_mux;
 mod ffi;
 mod http;
