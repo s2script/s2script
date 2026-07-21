@@ -6,7 +6,6 @@
     "@s2script/sdk": "^0.1.0"
   },
   "s2script": {
-    "apiVersion": "2.x",
     "pluginDependencies": {
       "@demo/greeter": "^1.0.0"
     }

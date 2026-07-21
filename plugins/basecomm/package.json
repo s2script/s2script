@@ -2,8 +2,5 @@
   "name": "@s2script/basecomm",
   "version": "0.1.0",
   "private": true,
-  "main": "src/plugin.ts",
-  "s2script": {
-    "apiVersion": "2.x"
-  }
+  "main": "src/plugin.ts"
 }

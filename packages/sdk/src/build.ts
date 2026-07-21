@@ -17,6 +17,7 @@ import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
 import { assertPublishesTypes } from "./publish-gate.ts";
 import { derivePublishes } from "./publishes.ts";
+import { STAMPED_API_VERSION } from "./api-version.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -66,7 +67,16 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   }
 
   const { name, version } = pkg;
-  const apiVersion = s2.apiVersion ?? "";
+  // --- apiVersion is DERIVED at build (north-star §5.2, locked decision #6). The SDK stamps the
+  // host major it types; an authored s2script.apiVersion is vestigial and ignored (warn so authors
+  // delete it). The loader's major gate stays as the runtime backstop for stale .s2sp files.
+  if (s2.apiVersion !== undefined) {
+    console.warn(
+      `WARN: ${pkgPath}: s2script.apiVersion is ignored — s2s build derives apiVersion from the ` +
+        `SDK (stamping ${JSON.stringify(STAMPED_API_VERSION)}). Remove the field.`,
+    );
+  }
+  const apiVersion = STAMPED_API_VERSION;
   const pluginDependencies = s2.pluginDependencies ?? {};
   const optionalPluginDependencies = s2.optionalPluginDependencies ?? {};
   const config = s2.config ?? undefined;

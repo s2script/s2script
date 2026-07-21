@@ -1,8 +1,5 @@
 {
   "name": "@demo/usercmd-demo",
   "version": "1.0.0",
-  "main": "src/plugin.ts",
-  "s2script": {
-    "apiVersion": "2.x"
-  }
+  "main": "src/plugin.ts"
 }

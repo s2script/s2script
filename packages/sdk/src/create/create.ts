@@ -232,9 +232,6 @@ function packageJsonContent(
           build: "s2s build .",
         },
         devDependencies,
-        s2script: {
-          apiVersion: "2.x",
-        },
       },
       null,
       2,

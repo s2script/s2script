@@ -4,7 +4,6 @@
   "private": true,
   "main": "src/plugin.ts",
   "s2script": {
-    "apiVersion": "2.x",
     "config": {
       "reserved_slots": {
         "type": "int",
