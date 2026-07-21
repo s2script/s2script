@@ -17,12 +17,3 @@ export interface DamageInfo {
   /** The victim — the entity taking damage (the hooked `this`), or null if stale. */
   readonly victim: EntityRef | null;
 }
-
-export declare const Damage: {
-  /**
-   * Register a pre-damage hook. The handler reads/modifies the DamageInfo in place (damage=0 blocks).
-   *
-   * @deprecated moved to ctx.entities.onDamage (L1 lifecycle v2) — removed after the port fan-out
-   */
-  onPre(handler: (info: DamageInfo) => void): void;
-};

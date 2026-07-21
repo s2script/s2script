@@ -7,6 +7,6 @@
     "@s2script/cs2": "^0.5.0"
   },
   "s2script": {
-    "apiVersion": "1.x"
+    "apiVersion": "2.x"
   }
 }

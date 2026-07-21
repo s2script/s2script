@@ -1,10 +1,11 @@
-import { publishInterface } from "@s2script/sdk/interfaces";
+import { plugin } from "@s2script/sdk/plugin";
 import type { OtherName } from "../api";
 
-const impl: OtherName = {
-  pong(): boolean {
-    return true;
-  },
-};
-
-publishInterface("@demo/other-name", impl);
+export default plugin((ctx) => {
+  const impl: OtherName = {
+    pong(): boolean {
+      return true;
+    },
+  };
+  ctx.publish("@demo/other-name", impl);
+});

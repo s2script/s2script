@@ -14,18 +14,6 @@ export interface TopMenuSnapshot {
   items: { id: string; category: string; name: string; flags: number }[];
 }
 export declare const TopMenu: {
-  /**
-   * Register a category (idempotent; order = first-registration order).
-   *
-   * @deprecated moved to ctx.topmenu.addCategory (L1 lifecycle v2) — removed after the port fan-out
-   */
-  addCategory(name: string): void;
-  /**
-   * Register/replace an item under a category (auto-creates the category).
-   *
-   * @deprecated moved to ctx.topmenu.addItem (L1 lifecycle v2) — removed after the port fan-out
-   */
-  addItem(category: string, item: TopMenuItem): void;
   /** All categories + item metadata (no handlers) — the adminmenu renderer reads this. */
   snapshot(): TopMenuSnapshot;
   /** Fire an item's onSelect (dispatched post-frame to the owner's context). */

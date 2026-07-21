@@ -2,7 +2,6 @@
  * @s2script/entity — author-time type stubs for the injected entity API.
  * NO runtime code: the engine injects the implementation at load time.
  */
-import type { HookResultValue } from "./events";
 
 /**
  * A host-liveness-gated handle to a live entity. `id` is a HOST-MINTED monotonic liveness
@@ -156,38 +155,7 @@ export interface OutputEvent {
   delay: number;
 }
 
-/**
- * Hook Source 2 entity outputs (`func_button`→`OnPressed`, `trigger_multiple`→`OnStartTouch`,
- * `logic_relay`→`OnTrigger`, …) via a `FireOutputInternal` detour. `classname`/`output` accept `"*"`
- * wildcards. The handler runs SYNCHRONOUSLY (may block): returning a `HookResultValue >= Handled`
- * (2/3) SUPPRESSES the output — the original `FireOutputInternal` call is skipped.
- */
 export declare const Entity: {
-  /** @deprecated moved to ctx.entities.onOutput (L1 lifecycle v2) — removed after the port fan-out */
-  onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
-  /**
-   * Fire when the engine CREATES an entity of `className` (`"*"` = all) — earliest hook; the entity is
-   * barely constructed, schema fields may be zero/default. The handler receives the liveness-gated
-   * `entity` (may be `null`) plus its `className`. Prefer `onSpawn` to read fields.
-   *
-   * @deprecated moved to ctx.entities.onCreate (L1 lifecycle v2) — removed after the port fan-out
-   */
-  onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /**
-   * Fire after the engine SPAWNS an entity of `className` (`"*"` = all) — `Spawn()` has run, so schema
-   * fields/keyvalues are populated. The useful hook for reading state.
-   *
-   * @deprecated moved to ctx.entities.onSpawn (L1 lifecycle v2) — removed after the port fan-out
-   */
-  onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /**
-   * Fire as the engine DELETES an entity of `className` (`"*"` = all). The entity is still readable
-   * during the synchronous handler; a stashed ref reads `null` once the slot is freed (liveness gate),
-   * never garbage.
-   *
-   * @deprecated moved to ctx.entities.onDelete (L1 lifecycle v2) — removed after the port fan-out
-   */
-  onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns liveness-gated refs. */
   findByClass(className: string): EntityRef[];
 };

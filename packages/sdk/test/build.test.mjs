@@ -33,7 +33,7 @@ test("build produces a .s2sp with derived manifest + cjs plugin.js", async () =>
   // plugin.js must exist and be a CJS bundle with @s2script/* left as external require()
   const js = zip.readAsText("plugin.js");
   assert.ok(
-    js.includes('require("@s2script/sdk/frame")'),
+    js.includes('require("@s2script/sdk/plugin")'),
     `@s2script/* must be left external as a cjs require — got:\n${js.slice(0, 500)}`
   );
 });

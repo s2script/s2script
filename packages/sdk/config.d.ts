@@ -7,12 +7,6 @@ export declare const config: {
   getInt(key: string): number;
   getFloat(key: string): number;
   getBool(key: string): boolean;
-  /**
-   * Opt into live-reload: the handler fires with the re-materialized config when the file changes.
-   *
-   * @deprecated moved to ctx.config.onChange (L1 lifecycle v2) — removed after the port fan-out
-   */
-  onChange(handler: (cfg: Config) => void): void;
   /** Read a raw file from the configs dir (name includes its extension, e.g. "maplist.txt"). null if absent. */
   readFile(name: string): string | null;
   /** Write a raw file to the configs dir (creates/overwrites). */

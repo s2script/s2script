@@ -22,8 +22,6 @@ export interface CommandInvocation {
    * `@s2script/translations` — degrades to the raw `key` if it isn't loaded. */
   replyT(key: string, ...args: (string | number)[]): void;
 }
-/** @deprecated renamed CommandInvocation (L1); removed in the cleanup task */
-export type CommandContext = CommandInvocation;
 /** A parsed chat trigger: which command + args, and whether it was the silent (`/`) trigger. */
 export interface ChatTrigger {
   /** `true` = the silent trigger (`/`, hidden); `false` = the public trigger (`!`). */
@@ -35,12 +33,6 @@ export interface ChatTrigger {
 }
 
 export declare const Commands: {
-  /** @deprecated moved to ctx.commands.register (L1 lifecycle v2) — removed after the port fan-out */
-  register(name: string, handler: (cmd: CommandInvocation) => void): void;
-  /** @deprecated moved to ctx.commands.registerServer (L1 lifecycle v2) — removed after the port fan-out */
-  registerServer(name: string, handler: (cmd: CommandInvocation) => void): void;
-  /** @deprecated moved to ctx.commands.registerAdmin (L1 lifecycle v2) — removed after the port fan-out */
-  registerAdmin(name: string, flags: number, handler: (cmd: CommandInvocation) => void): void;
   /** Invoke a registered command by name in THIS plugin (applying its gating). Returns true if it exists. */
   dispatch(name: string, slot: number, argString: string): boolean;
   /** Parse a chat message for a trigger (`!`/`/`). Returns the parsed trigger, or null if it's ordinary chat. */

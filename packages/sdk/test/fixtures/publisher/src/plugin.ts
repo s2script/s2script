@@ -1,10 +1,11 @@
-import { publishInterface } from "@s2script/sdk/interfaces";
+import { plugin } from "@s2script/sdk/plugin";
 import type { Publisher } from "../api";
 
-const impl: Publisher = {
-  ping(): boolean {
-    return true;
-  },
-};
-
-publishInterface("@demo/publisher", impl);
+export default plugin((ctx) => {
+  const impl: Publisher = {
+    ping(): boolean {
+      return true;
+    },
+  };
+  ctx.publish("@demo/publisher", impl);
+});

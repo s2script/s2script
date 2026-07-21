@@ -28,12 +28,4 @@ export declare const Sound: {
    *  function / stale source entity / an empty `recipients` array). An all-bot-skipped recipient
    *  set still emits to nobody (a real engine call, may return a nonzero GUID). */
   emit(name: string, opts?: SoundEmitOptions): number;
-  /**
-   * Subscribe to the session resource-manifest build (fires at map load / mapchange). Register
-   * custom .vsndevts/.vsnd content here so a later emit can play it. A plugin hot-loaded mid-map
-   * gets its first fire at the NEXT map change.
-   *
-   * @deprecated moved to ctx.server.onPrecache (L1 lifecycle v2) — removed after the port fan-out
-   */
-  onPrecache(handler: (ctx: PrecacheContext) => void): void;
 };

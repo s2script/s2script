@@ -26,23 +26,6 @@ export declare const HookResult: { readonly Continue: 0; readonly Changed: 1; re
 export type HookResultValue = 0 | 1 | 2 | 3;
 
 export declare const Events: {
-  /** @deprecated moved to ctx.events.on (L1 lifecycle v2) — removed after the port fan-out */
-  on(name: string, handler: (ev: GameEvent) => void): void;
-  /**
-   * Unsubscribe from a game event by name.
-   *
-   * **Note:** `off` removes ALL of the calling plugin's handlers for the given event name —
-   * handler identity is NOT compared. This matches the engine-op semantics: the mux removes
-   * every subscription the current plugin holds for `name` in one call. Avoid double-subscribing
-   * the same name with different handlers if you need selective removal.
-   *
-   * @deprecated dropped (L1 lifecycle v2) — no ctx replacement. Persistent subs tear down via the
-   * ledger at unload; dynamic subs use `ctx.createScope()` -> `scope.dispose()`. Removed after the
-   * port fan-out.
-   */
-  off(name: string, handler: (ev: GameEvent) => void): void;
-  /** @deprecated moved to ctx.events.onPre (L1 lifecycle v2) — removed after the port fan-out */
-  onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
   /** Fire a game event. Returns the engine FireEvent result. */
   fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
   /** Fire a game event to ONE client (SourceMod FireToClient). Same field type-inference as `fire`. Returns false on miss. */
