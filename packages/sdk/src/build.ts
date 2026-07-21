@@ -16,8 +16,9 @@ import { resolve, join } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
 import { assertPublishesTypes } from "./publish-gate.ts";
-import { derivePublishes } from "./publishes.ts";
+import { derivePublishes, hashContract } from "./publishes.ts";
 import { STAMPED_API_VERSION } from "./api-version.ts";
+import { localContractPath } from "./contracts.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -129,6 +130,19 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     manifest.publishes = derivedPublishes;
   }
   if (config !== undefined) manifest.config = config;
+
+  // --- compiledAgainst (B1): hash every verified contract copy this consumer typechecked
+  // against. The loader compares these to the producer's published typesSha256 at load
+  // (fail-fast) and per-call (late-producer backstop).
+  const compiledAgainst: Record<string, string> = {};
+  for (const dep of [
+    ...Object.keys(pluginDependencies),
+    ...Object.keys(optionalPluginDependencies),
+  ]) {
+    const contractPath = localContractPath(absDir, dep);
+    if (contractPath !== null) compiledAgainst[dep] = hashContract(contractPath);
+  }
+  if (Object.keys(compiledAgainst).length > 0) manifest.compiledAgainst = compiledAgainst;
 
   // --- Zip manifest.json + plugin.js ---
   const zip = new AdmZip();

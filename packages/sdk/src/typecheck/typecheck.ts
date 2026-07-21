@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { resolvePackagesDir } from "../packages-resolve.ts";
 import { sharedProgramOptions } from "../tsconfig-shared.ts";
+import { localContractPath } from "../contracts.ts";
 
 export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
 export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; }
@@ -72,12 +73,25 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   const localDts = localDeclarationFiles(absDir);
   const locallyDeclared = declaredModules(localDts);
 
+  // B1: a dep with a verified contract copy (.s2script/types/<dep>/index.d.ts) resolves to REAL
+  // types via an exact `paths` entry — never the ambient `any` stub. This is what makes the
+  // manifest's compiledAgainst hash a statement about types the build actually checked.
+  const allDeclaredDeps = [
+    ...Object.keys(s2.pluginDependencies ?? {}),
+    ...Object.keys(s2.optionalPluginDependencies ?? {}),
+  ];
+  const contractPaths: Record<string, string[]> = {};
+  for (const d of allDeclaredDeps) {
+    const p = localContractPath(absDir, d);
+    if (p !== null) contractPaths[d] = [p];
+  }
+
   const deps = [
     ...Object.keys(s2.pluginDependencies ?? {}),
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
     // Never stub a module the plugin declares itself — a shorthand `declare module "X";` and a
     // full `declare module "X" { … }` for the same X collide.
-  ].filter((d) => !isAlwaysResolved(d) && !locallyDeclared.has(d));
+  ].filter((d) => !isAlwaysResolved(d) && !locallyDeclared.has(d) && contractPaths[d] === undefined);
 
   const options: ts.CompilerOptions = {
     // Accept explicit `.ts` import extensions (node type-stripping requires them for source-to-source
@@ -91,6 +105,7 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       // sdk imports.
       "@s2script/sdk/*": ["sdk/*.d.ts"],
       "@s2script/*": ["*/index.d.ts"],
+      ...contractPaths,
     },
   };
 

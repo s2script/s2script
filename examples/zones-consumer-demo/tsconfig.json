@@ -1,4 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src", "../../packages/globals/globals.d.ts"]
+  "compilerOptions": {
+    "baseUrl": "../../packages",
+    "paths": {
+      "@s2script/sdk/*": ["sdk/*.d.ts"],
+      "@s2script/zones": ["../examples/zones-consumer-demo/.s2script/types/@s2script/zones/index.d.ts"],
+      "@s2script/*": ["*/index.d.ts"]
+    }
+  },
+  "include": ["src", "../../packages/sdk/globals.d.ts"]
 }

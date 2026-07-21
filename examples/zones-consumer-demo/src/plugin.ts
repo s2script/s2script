@@ -5,16 +5,12 @@
 // Topological activation guarantees the @s2script/zones producer is Active before this consumer's
 // factory runs, so the old poll-until-producer deferral is gone — subscribe once, synchronously.
 import { plugin } from "@s2script/sdk/plugin";
-import type { Zones } from "../../../plugins/zones/api";
-// TYPES come straight from the producer's contract, so they cannot drift from it.
-// @s2script/zones is published by a PLUGIN, so it has no packagesDir stub for the typecheck gate
-// to resolve (the contract-grammar slice deleted packages/zones — design spec §6); the gate's
-// ambient fallback types the VALUES above as `any`, and an ambient `declare module` cannot carry
-// these types (TS forbids relative re-exports inside one). Reaching across the monorepo is honest
-// for a demo and zero-drift; a real consumer outside this repo does `s2script add @s2script/zones`
-// and gets .s2script/types/@s2script/zones/index.d.ts instead (spec §4.6, plan 2). Replace this
-// import when that lands — tracked in the spec's §10.
-import type { ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "../../../plugins/zones/api";
+// TYPES come from the verified contract copy (.s2script/types/@s2script/zones/index.d.ts — a
+// byte-copy of the producer's api.d.ts). `s2s build` typechecks against it AND hashes it into
+// manifest.compiledAgainst, so if the producer's contract drifts, this consumer is refused at
+// load instead of marshalling across a stale contract (B1). Refresh with:
+//   cp plugins/zones/api.d.ts examples/zones-consumer-demo/.s2script/types/@s2script/zones/index.d.ts
+import type { Zones, ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "@s2script/zones";
 import { Player } from "@s2script/cs2";
 
 export default plugin((ctx) => {

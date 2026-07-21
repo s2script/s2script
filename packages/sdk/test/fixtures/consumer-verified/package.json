@@ -1,0 +1,10 @@
+{
+  "name": "@demo/consumer-verified",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "pluginDependencies": {
+      "@demo/greeter": "^1.0.0"
+    }
+  }
+}
