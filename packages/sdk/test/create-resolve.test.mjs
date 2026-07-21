@@ -108,10 +108,19 @@ test("create --yes scaffolds a CS2 plugin that typechecks against monorepo packa
   assert.equal(pkg.devDependencies["@s2script/cli"], undefined);
   assert.match(pkg.devDependencies["@s2script/sdk"], /^file:/);
   assert.match(pkg.devDependencies["@s2script/cs2"], /^file:/);
+  assert.match(pkg.devDependencies["@s2script/eslint-plugin"], /^file:/);
+  assert.ok(pkg.devDependencies.eslint);
+  assert.ok(existsSync(join(tmp, "eslint.config.mjs")));
 
   // Typecheck with explicit monorepo packagesDir (no node_modules install)
   const tc = typecheckPlugin(tmp, { packagesDir });
   assert.equal(tc.ok, true, JSON.stringify(tc.diagnostics));
+
+  // The scaffolded eslint.config.mjs imports "@s2script/eslint-plugin" as a real ESM bare
+  // specifier — unlike typecheck's in-memory `paths` override, ESLint's own config loader uses
+  // real Node module resolution. createPlugin (--no-install, in-tree file: deps) already links
+  // node_modules/@s2script -> the monorepo packages/ dir for exactly this reason.
+  assert.ok(existsSync(join(tmp, "node_modules", "@s2script", "eslint-plugin")));
 
   const out = await buildPlugin(tmp, packagesDir);
   assert.match(out, /\.s2sp$/);
@@ -147,15 +156,25 @@ test("versionSpecFrom carets a clean semver and degrades to latest on any failur
 });
 
 test("registryDevDeps pins sdk to the CLI version and resolves other packages live", () => {
-  const resolve = (pkg) => (pkg === "@s2script/cs2" ? "^0.5.0" : "latest");
+  const resolve = (pkg) => {
+    if (pkg === "@s2script/cs2") return "^0.5.0";
+    if (pkg === "@s2script/eslint-plugin") return "^0.9.0";
+    return "latest";
+  };
   const deps = registryDevDeps("cs2", "0.1.0", resolve);
   // sdk stays tied to the CLI's own version...
   assert.equal(deps["@s2script/sdk"], "^0.1.0");
-  // ...but cs2 is whatever the registry resolver returned — NOT ^0.1.0 (the bug).
+  // ...but cs2/eslint-plugin are whatever the registry resolver returned — NOT ^0.1.0 (the bug).
   assert.equal(deps["@s2script/cs2"], "^0.5.0");
+  assert.equal(deps["@s2script/eslint-plugin"], "^0.9.0");
 });
 
-test("registryDevDeps for game=none includes only the sdk", () => {
-  const deps = registryDevDeps("none", "0.1.0", () => "unused");
-  assert.deepEqual(deps, { "@s2script/sdk": "^0.1.0" });
+test("registryDevDeps for game=none includes the sdk and eslint-plugin", () => {
+  const deps = registryDevDeps("none", "0.1.0", (pkg) =>
+    pkg === "@s2script/eslint-plugin" ? "^0.9.0" : "unused",
+  );
+  assert.deepEqual(deps, {
+    "@s2script/sdk": "^0.1.0",
+    "@s2script/eslint-plugin": "^0.9.0",
+  });
 });

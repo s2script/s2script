@@ -4,6 +4,7 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
 } from "node:fs";
 import { dirname, join, resolve, basename } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -127,9 +128,9 @@ function assertInstall(v: string | undefined): InstallChoice | undefined {
  *  build CLI (bin `s2s`); the game types are the separate `@s2script/cs2`. */
 function createPackageNames(game: GameChoice): string[] {
   if (game === "cs2") {
-    return ["sdk", "cs2"];
+    return ["sdk", "cs2", "eslint-plugin"];
   }
-  return ["sdk"];
+  return ["sdk", "eslint-plugin"];
 }
 
 /** Resolve a published package's current version from the registry, as a caret range.
@@ -200,6 +201,18 @@ export default plugin((ctx) => {
 `;
 }
 
+/** Aligned with packages/sdk's own eslint dependency — bump the two together. */
+const ESLINT_RANGE = "^10.7.0";
+
+function eslintConfig(): string {
+  return `import s2script from "@s2script/eslint-plugin";
+
+// The SAME pinned rules \`s2s build\` enforces — the editor's ESLint extension picks this up,
+// so a violation is a red squiggle before you ever build (green editor => green build).
+export default s2script.configs.recommended({ tsconfigRootDir: import.meta.dirname });
+`;
+}
+
 function tsconfigJson(): string {
   return (
     JSON.stringify(
@@ -220,7 +233,10 @@ function packageJsonContent(
   localPackagesDir: string | undefined,
 ): string {
   const fileDeps = localPackagesDir ? fileDevDeps(localPackagesDir, game) : undefined;
-  const devDependencies = fileDeps ?? registryDevDeps(game, version);
+  const devDependencies: Record<string, string> = {
+    ...(fileDeps ?? registryDevDeps(game, version)),
+    eslint: ESLINT_RANGE,
+  };
   return (
     JSON.stringify(
       {
@@ -245,6 +261,18 @@ dist/
 *.s2sp
 .DS_Store
 `;
+}
+
+/** In-tree dev without a real install (`file:` devDeps + `--no-install`): the scaffold's own
+ *  `eslint.config.mjs` is a real ESM module that Node resolves with genuine module resolution
+ *  (unlike the typecheck gate's in-memory `paths` override), so it needs a real
+ *  `node_modules/@s2script` to find `@s2script/eslint-plugin` even without running `npm install`.
+ *  A single directory symlink to the monorepo `packages/` mirrors what an install would produce. */
+function linkLocalPackagesForNoInstall(targetPath: string, localPackagesDir: string): void {
+  const nm = join(targetPath, "node_modules");
+  mkdirSync(nm, { recursive: true });
+  const dest = join(nm, "@s2script");
+  if (!existsSync(dest)) symlinkSync(localPackagesDir, dest);
 }
 
 function runInstall(dir: string, pm: InstallChoice): void {
@@ -332,6 +360,7 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
     packageJsonContent(name, game, version, localPackagesDir),
   );
   writeFileSync(join(targetPath, "tsconfig.json"), tsconfigJson());
+  writeFileSync(join(targetPath, "eslint.config.mjs"), eslintConfig());
   writeFileSync(join(targetPath, "src", "plugin.ts"), pluginSource(game));
   writeFileSync(join(targetPath, ".gitignore"), gitignore());
 
@@ -339,6 +368,8 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
   if (install !== "none") {
     runInstall(targetPath, install);
     installed = true;
+  } else if (localPackagesDir) {
+    linkLocalPackagesForNoInstall(targetPath, localPackagesDir);
   }
 
   return {

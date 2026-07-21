@@ -81,6 +81,9 @@
     "./net": {
       "types": "./net.d.ts"
     },
+    "./plugin": {
+      "types": "./plugin.d.ts"
+    },
     "./plugins": {
       "types": "./plugins.d.ts"
     },
