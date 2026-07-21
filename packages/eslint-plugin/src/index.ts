@@ -5,6 +5,7 @@
  */
 import { noCtxEscape } from "./rules/no-ctx-escape.ts";
 import { noFloatingPromiseInFactory } from "./rules/no-floating-promise-in-factory.ts";
+import { noBigintInInterfacePayloads } from "./rules/no-bigint-in-interface-payloads.ts";
 import { noAwaitInRawView } from "./rules/no-await-in-raw-view.ts";
 
 const plugin = {
@@ -12,6 +13,7 @@ const plugin = {
   rules: {
     "no-ctx-escape": noCtxEscape,
     "no-floating-promise-in-factory": noFloatingPromiseInFactory,
+    "no-bigint-in-interface-payloads": noBigintInInterfacePayloads,
     "no-await-in-raw-view": noAwaitInRawView,
   } as Record<string, unknown>,
   configs: {} as {
