@@ -3,6 +3,23 @@
 //! same plugin id string. This module is the teardown authority and async-liveness guard.
 
 // ---------------------------------------------------------------------------
+// Phase
+// ---------------------------------------------------------------------------
+
+/// The plugin lifecycle phase (design spec §5). Stored on the v8host `PluginInstance`;
+/// pure data here (no V8). A plugin starts `Loading` at context creation, reaches `Active`
+/// once its awaited factory has settled and its buffered registrations have been armed, moves
+/// to `Unloading` during teardown, and a never-Active load that fails ends as `Failed` (its
+/// context is disposed and the reason retained for `sm plugins list`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Loading,
+    Active,
+    Unloading,
+    Failed,
+}
+
+// ---------------------------------------------------------------------------
 // Resource
 // ---------------------------------------------------------------------------
 
@@ -211,6 +228,16 @@ impl Default for Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase_is_copy_eq() {
+        assert_eq!(Phase::Loading, Phase::Loading);
+        assert_ne!(Phase::Active, Phase::Failed);
+        // Copy: assigning does not move.
+        let p = Phase::Active;
+        let q = p;
+        assert_eq!(p, q);
+    }
 
     #[test]
     fn teardown_is_reverse_acquisition_order() {

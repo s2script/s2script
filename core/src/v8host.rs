@@ -461,6 +461,10 @@ struct PluginId(String);
 /// before the `Global<Context>`, while the isolate is still alive).  Task 6 walks the ledger to
 /// call `onUnload` off `exports` before disposing the context.
 struct PluginInstance {
+    /// The plugin's settled `PluginHooks` object (`{ onUnload?, state? }`) once its factory settled
+    /// OK — stored by `__s2_load_settled`. `None` until the factory settles (or if it returns no
+    /// hooks). Declared FIRST so Rust drops it BEFORE `context` (teardown discipline: inner Globals
+    /// released before the `Global<Context>`). (Field kept named `exports` to minimize churn.)
     exports: Option<v8::Global<v8::Object>>,
     context: v8::Global<v8::Context>,
     /// The plugin's REGISTRY-assigned generation (set together with the REGISTRY entry at
@@ -472,7 +476,30 @@ struct PluginInstance {
     /// `re_materialize_config` can re-run materialization without the manifest.
     /// Starts empty; populated by `store_config_decls` right after `load_plugin_js`.
     config_decls: std::collections::HashMap<String, crate::config::ConfigEntry>,
+    /// Lifecycle phase (design spec §5). Starts `Loading` at `create_plugin_context`; reaches
+    /// `Active` in `finalize_loading_plugins` once the factory settled + the ctx armed; `Unloading`
+    /// during teardown.
+    phase: crate::plugin::Phase,
 }
+
+/// One in-flight factory load (design spec §5). Tracks the frame the load started (for the timeout),
+/// its settle state, and whether a reload was queued while it was still loading.
+struct LoadingEntry {
+    started_frame: u64,
+    state: SettleState,
+    pending_reload: bool,
+}
+
+/// The settle state of an in-flight factory load.
+enum SettleState {
+    InFlight,
+    Settled,
+    Failed(String),
+}
+
+/// Load timeout: a factory promise that never settles within ~30s (at 64Hz) → `Failed`
+/// (design spec §5.2, resolved decision #4).
+pub(crate) const LOAD_TIMEOUT_FRAMES: u64 = 1920;
 
 /// A pending async resolver (`Delay`/`NextTick`/`NextFrame`/`threadSleep`) plus the OWNING plugin's
 /// `(id, generation)` captured at creation.  `owner` is `None` for a resolver created from a
@@ -736,6 +763,22 @@ thread_local! {
     /// Reload) and revived via `iface_from_json`; cleared by the loader on a final removal (Vanished);
     /// reset on `shutdown`. It holds a plain `String`, so it survives the old context's disposal.
     static PENDING_HANDOFF: std::cell::RefCell<std::collections::HashMap<String, String>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// L1 lifecycle v2: in-flight factory loads (id → LoadingEntry). A plugin sits here between
+    /// `create_plugin_context` and its `Active`/`Failed` transition in `finalize_loading_plugins`.
+    /// Reset on `shutdown`.
+    static LOADING: std::cell::RefCell<std::collections::HashMap<String, LoadingEntry>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// L1 lifecycle v2: plugins whose load FAILED (context already disposed) — reason kept for
+    /// `sm plugins list` (spec §5/§8). Cleared for an id on a fresh `create_plugin_context`, and in
+    /// bulk on `shutdown`.
+    static FAILED_PLUGINS: std::cell::RefCell<std::collections::HashMap<String, String>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// L1 lifecycle v2: id → manifest version, set by the loader before `load_plugin_js` so the
+    /// `Active`-transition breadcrumb (fired in `finalize_loading_plugins`) can carry it without the
+    /// manifest. Reset on `shutdown`.
+    static MANIFEST_VERSIONS: std::cell::RefCell<std::collections::HashMap<String, String>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
 
     /// Slice 6.2: the host-global admin cache — two tiers (file admins.json ⊕ runtime Admin.add), each
@@ -2487,6 +2530,136 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     registerTallyRenderer: function (r) { __s2_vote_tallyRenderer = r; },
   };
   globalThis.__s2pkg_votes = { Vote: Vote };
+
+  // --- L1 lifecycle v2: the plugin() artifact + load-scoped ctx (design spec §1/§3/§4) ---
+  // The SDK's @s2script/sdk/plugin subpath resolves (via the existing @s2script/ strip) to this.
+  globalThis.__s2pkg_plugin = { plugin: function (factory) { return { __s2plugin: 1, factory: factory }; } };
+
+  function __s2_make_ctx() {
+    var pending = [];      // registration thunks, replayed at arm (Active)
+    var armed = false;
+    var sealed = false;
+    var scopes = [];
+    // The load-window reg: buffer while Loading, run immediately once armed, throw once sealed.
+    function ctxReg(thunk) {
+      if (sealed) throw new Error("s2script: registration outside the load window - use a Scope from ctx.createScope()");
+      if (armed) { thunk(); } else { pending.push(thunk); }
+    }
+    // Build one subjects bundle over `regFn`. `track` is null for ctx (plugin-lifetime) or the
+    // scope's tracker (ids + disposers). `viaId` forwards the native's returned sub id to the tracker
+    // (tolerant of natives that still return undefined until T3 makes them return ids).
+    function makeSubjects(track, regFn) {
+      var t = track || { ids: function () {}, disposer: function (d) {} };
+      function viaId(call) { return function () { var id = call.apply(null, arguments); if (typeof id === "number") t.ids(id); }; }
+      var Ev = __s2pkg_events.Events, Cl = __s2pkg_clients.Clients, En = __s2pkg_entity.Entity;
+      var Sv = __s2pkg_server.Server, Fr = __s2pkg_frame.OnGameFrame, Ck = __s2pkg_cookies.Cookies;
+      var Uc = __s2pkg_usercmd.UserCmd, Dm = __s2pkg_damage.Damage, Ch = __s2pkg_chat.Chat, Sn = __s2pkg_sound.Sound;
+      return {
+        events: {
+          on:    function (n, h) { regFn(viaId(function () { return Ev.on(n, h); })); },
+          onPre: function (n, h) { regFn(viaId(function () { return Ev.onPre(n, h); })); },
+        },
+        clients: {
+          onConnect:         function (h) { regFn(viaId(function () { return Cl.onConnect(h); })); },
+          onPutInServer:     function (h) { regFn(viaId(function () { return Cl.onPutInServer(h); })); },
+          onActive:          function (h) { regFn(viaId(function () { return Cl.onActive(h); })); },
+          onFullyConnect:    function (h) { regFn(viaId(function () { return Cl.onFullyConnect(h); })); },
+          onDisconnect:      function (h) { regFn(viaId(function () { return Cl.onDisconnect(h); })); },
+          onSettingsChanged: function (h) { regFn(viaId(function () { return Cl.onSettingsChanged(h); })); },
+          onVoice:           function (h) { regFn(viaId(function () { return Cl.onVoice(h); })); },
+          onCookiesCached:   function (h) { regFn(viaId(function () { return Ck.onCached(h); })); },
+          onSay:             function (h) { regFn(viaId(function () { return Ch.onMessage(h); })); },
+          onRunCmd:          function (h) { regFn(viaId(function () { return Uc.onRun(h); })); },
+        },
+        entities: {
+          onCreate: function (c, h) { regFn(viaId(function () { return En.onCreate(c, h); })); },
+          onSpawn:  function (c, h) { regFn(viaId(function () { return En.onSpawn(c, h); })); },
+          onDelete: function (c, h) { regFn(viaId(function () { return En.onDelete(c, h); })); },
+          onOutput: function (c, o, h) { regFn(viaId(function () { return En.onOutput(c, o, h); })); },
+          onDamage: function (h) { regFn(viaId(function () { return Dm.onPre(h); })); },
+        },
+        server: {
+          onGameFrame: function (fn, opts) { regFn(function () { var d = Fr.subscribe(fn, opts || {}); if (d && d.dispose) t.disposer(d.dispose); }); },
+          onMapStart:  function (h) { regFn(viaId(function () { return Sv.onMapStart(h); })); },
+          onPrecache:  function (h) { regFn(viaId(function () { return Sn.onPrecache(h); })); },
+        },
+      };
+    }
+    var ctx = makeSubjects(null, ctxReg);
+    ctx.id = __s2_current_plugin();
+    ctx.previous = __s2_handoff_take();
+    ctx.commands = {
+      register:       function (n, h)    { ctxReg(function () { __s2pkg_commands.Commands.register(n, h); }); },
+      registerServer: function (n, h)    { ctxReg(function () { __s2pkg_commands.Commands.registerServer(n, h); }); },
+      registerAdmin:  function (n, f, h) { ctxReg(function () { __s2pkg_commands.Commands.registerAdmin(n, f, h); }); },
+    };
+    ctx.config  = { onChange: function (h) { ctxReg(function () { __s2pkg_config.config.onChange(h); }); } };
+    ctx.topmenu = {
+      addCategory: function (n)    { ctxReg(function () { __s2pkg_topmenu.TopMenu.addCategory(n); }); },
+      addItem:     function (c, i) { ctxReg(function () { __s2pkg_topmenu.TopMenu.addItem(c, i); }); },
+    };
+    ctx.publish = function (name, impl) {
+      ctxReg(function () { __s2_iface_publish(name, impl); });
+      return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
+    };
+    function handleFor(name) {
+      return new Proxy({}, { get: function (_t, prop) {
+        if (prop === "on") return function (ev, h) { ctxReg(function () { __s2_iface_on(name, ev, h); }); };
+        if (typeof prop !== "string") return undefined;
+        return function () { return __s2_iface_call(name, prop, Array.prototype.slice.call(arguments)); };
+      }});
+    }
+    ctx.use = function (name) {
+      if (sealed) throw new Error("s2script: ctx.use outside the load window");
+      var kind = __s2_iface_dep_kind(name);
+      if (kind !== "hard") throw new Error("s2script: ctx.use('" + name + "') requires a pluginDependencies entry (declared: " + kind + ")");
+      return handleFor(name);
+    };
+    ctx.tryUse = function (name) {
+      if (sealed) throw new Error("s2script: ctx.tryUse outside the load window");
+      var kind = __s2_iface_dep_kind(name);
+      if (kind !== "optional") throw new Error("s2script: ctx.tryUse('" + name + "') requires an optionalPluginDependencies entry (declared: " + kind + ")");
+      return __s2_iface_is_published(name) ? handleFor(name) : null;
+    };
+    ctx.createScope = function () {
+      if (sealed) throw new Error("s2script: createScope outside the load window");
+      var ids = [], disposers = [], disposed = false;
+      var tracker = { ids: function (i) { ids.push(i); }, disposer: function (d) { disposers.push(d); } };
+      // The scope reg: buffer while Loading (replayed at arm), register immediately once armed.
+      function scopeReg(thunk) { if (!armed) { pending.push(thunk); } else { thunk(); } }
+      var scope = makeSubjects(tracker, scopeReg);
+      scope.clear = function () {
+        if (typeof __s2_scope_dispose === "function") __s2_scope_dispose(ids.slice());   // T3
+        ids.length = 0;
+        var ds = disposers.slice(); disposers.length = 0;
+        for (var i = 0; i < ds.length; i++) { try { ds[i](); } catch (e) {} }
+      };
+      scope.dispose = function () { if (disposed) return; scope.clear(); disposed = true; };
+      Object.defineProperty(scope, "disposed", { get: function () { return disposed; } });
+      scopes.push(scope);
+      return scope;
+    };
+    globalThis.__s2_ctx_arm = function () {
+      var p = pending; pending = []; armed = true;
+      for (var i = 0; i < p.length; i++) { p[i](); }   // a throw here aborts the arm → Failed (host TryCatch)
+      sealed = true;
+    };
+    globalThis.__s2_ctx_seal = function () { sealed = true; pending = []; };
+    return ctx;
+  }
+
+  globalThis.__s2_run_factory = function (def) {
+    var ctx = __s2_make_ctx();
+    var out;
+    try { out = def.factory(ctx); }
+    catch (e) { __s2_load_failed(String((e && e.stack) || e)); return; }
+    if (out && typeof out.then === "function") {
+      out.then(function (hooks) { __s2_load_settled(hooks); },
+               function (e) { __s2_load_failed(String((e && e.stack) || e)); });
+    } else {
+      __s2_load_settled(out);
+    }
+  };
 })();
 "#;
 
@@ -7542,6 +7715,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_schema_dump", s2_schema_dump);
     // Per-context identity probe + the CJS require shim.
     set_native(scope, global_obj, "__s2_current_plugin", s2_current_plugin);
+    // L1 lifecycle v2: awaited-factory settle + reload-handoff consume (design spec §5).
+    set_native(scope, global_obj, "__s2_load_settled", s2_load_settled);
+    set_native(scope, global_obj, "__s2_load_failed", s2_load_failed);
+    set_native(scope, global_obj, "__s2_handoff_take", s2_handoff_take);
     set_native(scope, global_obj, "__s2require", s2require);
     set_native(scope, global_obj, "__s2_crash_set_game", s2_crash_set_game);
     set_native(scope, global_obj, "__s2_server_build", s2_server_build);
@@ -7861,6 +8038,79 @@ fn s2_current_plugin(
     }));
 }
 
+/// `__s2_load_settled(hooks?)` — the plugin factory settled OK (design spec §5). Stores the returned
+/// `PluginHooks` object (if any) on the `PluginInstance` (via `exports`) and marks the load `Settled`;
+/// `finalize_loading_plugins` then arms + reconciles + moves it to `Active`. A second call for the same
+/// id (state no longer `InFlight`) is ignored.
+fn s2_load_settled(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(id) = current_plugin(scope) else { return };
+        if args.length() >= 1 {
+            if let Ok(obj) = v8::Local::<v8::Object>::try_from(args.get(0)) {
+                let g = v8::Global::new(scope.as_ref(), obj);
+                PLUGINS.with(|p| {
+                    if let Some(pi) = p.borrow_mut().get_mut(&id) {
+                        pi.exports = Some(g);
+                    }
+                });
+            }
+        }
+        LOADING.with(|l| {
+            if let Some(e) = l.borrow_mut().get_mut(&id) {
+                if matches!(e.state, SettleState::InFlight) {
+                    e.state = SettleState::Settled;
+                }
+            }
+        });
+    }));
+}
+
+/// `__s2_load_failed(message)` — the plugin factory threw or its promise rejected (design spec §5).
+/// Marks the load `Failed(message)`; `finalize_loading_plugins` then tears it down (never runs it).
+fn s2_load_failed(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(id) = current_plugin(scope) else { return };
+        let msg = if args.length() >= 1 {
+            args.get(0).to_rust_string_lossy(scope)
+        } else {
+            "factory failed".into()
+        };
+        LOADING.with(|l| {
+            if let Some(e) = l.borrow_mut().get_mut(&id) {
+                if matches!(e.state, SettleState::InFlight) {
+                    e.state = SettleState::Failed(msg);
+                }
+            }
+        });
+    }));
+}
+
+/// `__s2_handoff_take() -> unknown` — consume this plugin's reload-handoff blob (if a prior unload
+/// captured one via `state()`) and revive it in THIS (new) context via `iface_from_json` (JSON.parse +
+/// the EntityRef reviver). Consume-once. Backs `ctx.previous` (the 5E.3 mechanics moved off
+/// `onLoad(prev)`). No blob → `undefined`.
+fn s2_handoff_take(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(id) = current_plugin(scope) else { return };
+        let Some(blob) = PENDING_HANDOFF.with(|h| h.borrow_mut().remove(&id)) else { return };
+        if let Some(v) = iface_from_json(scope, &blob) {
+            rv.set(v);
+        }
+    }));
+}
+
 /// Create a fresh per-plugin `v8::Context` on the shared isolate (borrowed from `HOST`), stamp it
 /// with the plugin id via `set_slot::<PluginId>`, install the FULL per-context API (all natives +
 /// `__s2require`) and evaluate the injected engine-generic prelude + any registered game preludes,
@@ -7912,6 +8162,8 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
         // Register in REGISTRY first so we can stamp the assigned generation onto the PluginInstance
         // (kept in lockstep — a resolver tags itself with this same generation via resolver_owner_tag).
         let generation = REGISTRY.with(|r| r.borrow_mut().insert(id));
+        // A fresh load clears any prior FAILED reason for this id (spec §5).
+        FAILED_PLUGINS.with(|f| { f.borrow_mut().remove(id); });
         PLUGINS.with(|p| {
             p.borrow_mut().insert(
                 id.to_string(),
@@ -7920,11 +8172,18 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
                     context: g_ctx,
                     generation,
                     config_decls: std::collections::HashMap::new(),
+                    phase: crate::plugin::Phase::Loading,
                 },
             )
         });
         generation
     })
+}
+
+/// The current lifecycle phase of `id`, or `None` if unknown (never loaded / disposed). Used by
+/// tests and `unload_plugin`'s phase-aware entry.
+pub(crate) fn plugin_phase(id: &str) -> Option<crate::plugin::Phase> {
+    PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.phase))
 }
 
 /// Dispose a plugin's context: drop its `Global<Context>` (making the context GC-eligible while
@@ -9135,18 +9394,33 @@ fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::db::
     }
 }
 
-/// Load a built plugin bundle `plugin_js` under plugin id `id` (the spike-PROVEN CJS wrapper).
+/// The result of STARTING a plugin load (L1 lifecycle v2). The load's TRANSITION (arm → Active, or
+/// teardown → Failed) happens later, in `finalize_loading_plugins` (the sync fast-path runs it inline
+/// at the tail of `load_plugin_js`; an async factory settles on a later `frame_async_drain`).
+enum LoadStart {
+    /// The artifact was valid; the factory was driven and an in-flight `LOADING` entry registered.
+    Started,
+    /// The bundle is not a `plugin()` artifact (legacy `onLoad` shape or a malformed default export)
+    /// — fail loud, tear down the fresh context (never run it).
+    Refused(String),
+    /// Host not initialized / context missing — nothing to do.
+    Aborted,
+}
+
+/// Load a built plugin bundle `plugin_js` under plugin id `id` (the L1 lifecycle-v2 artifact path).
 ///
 /// Steps: (1) `create_plugin_context(id)` — a fresh per-plugin context with the full injected API
-/// (`__s2require` + the engine-generic prelude + any registered game preludes); (2) evaluate the CJS wrapper
-/// `(function(require,module,exports){…})(require, module, module.exports)` in that context and
-/// CAPTURE the RETURNED `module.exports` (esbuild REASSIGNS `module.exports`, so the return value
-/// — not the `exports` arg — is the plugin's real export object; spike [risk]); (3) call
-/// `exports.onLoad()` if present; (4) store the exports `Global<Object>` on the `PluginInstance`
-/// (Task 6 reads `onUnload` off it at teardown; it is dropped before the context).
+/// (`__s2require` + the engine-generic prelude + any registered game preludes); (2) evaluate the CJS
+/// wrapper `(function(require,module,exports){…})(require, module, module.exports)` in that context
+/// and CAPTURE the RETURNED `module.exports`; (3) require `module.exports.default` to be a `plugin()`
+/// definition (`{ __s2plugin: 1, factory }`) — fail LOUD otherwise (locked decision #5); (4) register
+/// an in-flight `LOADING` entry and drive `globalThis.__s2_run_factory(def)`. The factory runs against
+/// a load-scoped `ctx`; its settle (`__s2_load_settled`/`__s2_load_failed`) marks the `LOADING` state,
+/// and `finalize_loading_plugins` performs the actual arm-at-Active / teardown-on-Failed transition —
+/// inline here for a synchronous factory (the whole base suite), or on a later drain for an async one.
 ///
-/// Degrade-never-crash: a compile/run/onLoad error logs a named WARN and returns; no exception
-/// propagates (the whole JS run is under a `TryCatch`).
+/// Degrade-never-crash: a compile/run error logs a named WARN and tears down; no exception propagates
+/// (the whole JS run is under a `TryCatch`).
 pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str) {
     // Defensive guard: if the plugin is already loaded (e.g. the caller is performing a
     // reload but did not call unload_plugin first), tear it down now so the old handler
@@ -9165,7 +9439,7 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
     create_plugin_context(id);
 
     // Inject the materialized config as a per-context global BEFORE the plugin evals (so config reads
-    // in onLoad see it). @s2script/config's getters read globalThis.__s2pkg_config_values.
+    // in the factory see it). @s2script/config's getters read globalThis.__s2pkg_config_values.
     let _ = eval_in_context(id, &format!("globalThis.__s2pkg_config_values = {};", config_values_json));
 
     // The spike's PROVEN wrapper — the outer arrow-IIFE returns `module.exports` so `script.run`
@@ -9175,18 +9449,18 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
         plugin_js
     );
 
-    HOST.with(|h| {
+    let start = HOST.with(|h| -> LoadStart {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else {
             log_warn("WARN: load_plugin_js called before init");
-            return;
+            return LoadStart::Aborted;
         };
 
         // Clone the plugin's Global<Context> out of PLUGINS (cheap refcount bump); release the
         // borrow before opening the HandleScope on HOST.isolate.
         let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) else {
             log_warn(&format!("WARN: load_plugin_js('{}'): context missing after create", id));
-            return;
+            return LoadStart::Aborted;
         };
 
         let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
@@ -9195,16 +9469,15 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
         let ctx_local = v8::Local::new(hs, &g_ctx);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-        // (2)+(3) Compile+run the wrapper, capture module.exports, call onLoad — all under one
-        // TryCatch so a throwing plugin can't leak a pending exception into later frames.
-        let exports_global: Option<v8::Global<v8::Object>> = 'blk: {
+        // Compile+run the wrapper, detect the plugin() artifact, drive the factory — all under one
+        // TryCatch so a throwing bundle can't leak a pending exception into later frames.
+        let start: LoadStart = 'blk: {
             let mut tc_storage = v8::TryCatch::new(scope);
             let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
             let tc = &mut tc;
 
             let Some(code) = v8::String::new(tc, &wrapper) else {
-                log_warn(&format!("WARN: load_plugin_js('{}'): failed to intern source", id));
-                break 'blk None;
+                break 'blk LoadStart::Refused("failed to intern source".into());
             };
             let ret = match v8::Script::compile(tc, code, None).and_then(|s| s.run(tc)) {
                 Some(r) => r,
@@ -9215,56 +9488,101 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                         .unwrap_or_else(|| "unknown error".into());
                     log_warn(&format!("WARN: load_plugin_js('{}'): eval error: {}", id, msg));
                     crate::crash::report_js_error(id, "load", &msg, "");
-                    break 'blk None;
+                    break 'blk LoadStart::Refused(format!("eval error: {}", msg));
                 }
             };
-            // The wrapper returns `module.exports` — must be an object (spike fact 2).
+            // The wrapper returns `module.exports` — must be an object.
             let Ok(exports) = v8::Local::<v8::Object>::try_from(ret) else {
-                log_warn(&format!("WARN: load_plugin_js('{}'): module.exports is not an object", id));
-                break 'blk None;
+                break 'blk LoadStart::Refused("module.exports is not an object".into());
             };
 
-            // Call onLoad() if the plugin exported one (a throwing onLoad is caught here).
-            if let Some(k) = v8::String::new(tc, "onLoad") {
-                if let Some(v) = exports.get(tc, k.into()) {
-                    if let Ok(f) = v8::Local::<v8::Function>::try_from(v) {
-                        let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                        // Slice 5E.3: consume this id's reload-handoff blob (if a prior unload captured
-                        // one) and revive it in THIS (new) context via iface_from_json (JSON.parse + the
-                        // EntityRef reviver → live serial-gated refs). Pass it as onLoad's single arg;
-                        // consume-once (remove regardless of revival/throw). No blob → onLoad() (prev
-                        // is JS `undefined`).
-                        let prev = PENDING_HANDOFF.with(|h| h.borrow_mut().remove(id))
-                            .and_then(|blob| iface_from_json(tc, &blob));
-                        let call_args: Vec<v8::Local<v8::Value>> = match prev {
-                            Some(p) => vec![p],
-                            None => vec![],
-                        };
-                        if f.call(tc, recv, &call_args).is_none() {
-                            let msg = tc
-                                .exception()
-                                .map(|e| e.to_rust_string_lossy(&*tc))
-                                .unwrap_or_else(|| "onLoad threw".into());
-                            log_warn(&format!("WARN: load_plugin_js('{}'): onLoad error: {}", id, msg));
-                            crate::crash::report_js_error(id, "onLoad", &msg, "");
-                        }
-                    }
-                }
+            // (3) The artifact: module.exports.default must be a plugin() definition (spec §1.1).
+            let def_obj: Option<v8::Local<v8::Object>> = v8::String::new(tc, "default")
+                .and_then(|k| exports.get(tc, k.into()))
+                .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok());
+            let is_plugin = def_obj
+                .map(|o| {
+                    let tag_ok = v8::String::new(tc, "__s2plugin")
+                        .and_then(|k| o.get(tc, k.into()))
+                        .and_then(|t| t.int32_value(tc))
+                        .map(|n| n == 1)
+                        .unwrap_or(false);
+                    let factory_ok = v8::String::new(tc, "factory")
+                        .and_then(|k| o.get(tc, k.into()))
+                        .map(|f| f.is_function())
+                        .unwrap_or(false);
+                    tag_ok && factory_ok
+                })
+                .unwrap_or(false);
+
+            if !is_plugin {
+                // Fail loud (locked decision #5): a legacy onLoad shape or a malformed default export.
+                let has_legacy = v8::String::new(tc, "onLoad")
+                    .and_then(|k| exports.get(tc, k.into()))
+                    .map(|v| v.is_function())
+                    .unwrap_or(false);
+                let reason = if has_legacy {
+                    "legacy plugin shape (export onLoad) - rebuild with @s2script/sdk >= 0.2: export default plugin(factory)"
+                } else {
+                    "default export is not a plugin() definition"
+                };
+                log_warn(&format!("WARN: load('{}'): {}", id, reason));
+                crate::crash::report_js_error(id, "load", reason, "");
+                break 'blk LoadStart::Refused(reason.to_string());
             }
+            let def = def_obj.expect("is_plugin implies def_obj is Some");
 
-            // (4) Capture module.exports for teardown (Task 6 reads onUnload off it).  `tc.as_ref()`
-            // yields the isolate ref (AsRef<Isolate> for the TryCatch pinned ref).
-            Some(v8::Global::new(tc.as_ref(), exports))
-        };
-
-        if let Some(g) = exports_global {
-            PLUGINS.with(|p| {
-                if let Some(pi) = p.borrow_mut().get_mut(id) {
-                    pi.exports = Some(g);
-                }
+            // Register the in-flight load BEFORE running the factory (a SYNC settle mutates this entry).
+            LOADING.with(|l| {
+                l.borrow_mut().insert(
+                    id.to_string(),
+                    LoadingEntry {
+                        started_frame: FRAME_COUNTER.with(|c| c.get()),
+                        state: SettleState::InFlight,
+                        pending_reload: false,
+                    },
+                )
             });
-        }
+
+            // Drive the factory: globalThis.__s2_run_factory(def). It builds the load-scoped ctx,
+            // calls def.factory(ctx), and settles via __s2_load_settled / __s2_load_failed.
+            let global = tc.get_current_context().global(tc);
+            let run_ok = v8::String::new(tc, "__s2_run_factory")
+                .and_then(|k| global.get(tc, k.into()))
+                .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+                .map(|run_f| {
+                    let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                    run_f.call(tc, recv, &[def.into()]).is_some()
+                })
+                .unwrap_or(false);
+            if !run_ok {
+                let msg = tc
+                    .exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "factory driver threw".into());
+                LOADING.with(|l| {
+                    if let Some(e) = l.borrow_mut().get_mut(id) {
+                        e.state = SettleState::Failed(msg);
+                    }
+                });
+            }
+            LoadStart::Started
+        };
+        start
     });
+
+    match start {
+        // Sync fast-path: a synchronous factory is already Settled, so this arms + reconciles + goes
+        // Active within this same call (preserving today's synchronous-load semantics). An async
+        // factory stays InFlight and finalizes on a later frame_async_drain.
+        LoadStart::Started => finalize_loading_plugins(),
+        // Fail loud: record the reason + tear down the fresh (never-Active) context (HOST released).
+        LoadStart::Refused(reason) => {
+            FAILED_PLUGINS.with(|f| { f.borrow_mut().insert(id.to_string(), reason); });
+            unload_partial(id);
+        }
+        LoadStart::Aborted => {}
+    }
 }
 
 pub fn init(logger: LogFn) -> Result<(), String> {
@@ -9626,6 +9944,10 @@ pub fn shutdown() {
     TRANSMIT_RULES.with(|r| r.borrow_mut().clear());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
+    // Reset the L1 lifecycle-v2 load state (in-flight loads, failed reasons, manifest versions).
+    LOADING.with(|l| l.borrow_mut().clear());
+    FAILED_PLUGINS.with(|f| f.borrow_mut().clear());
+    MANIFEST_VERSIONS.with(|m| m.borrow_mut().clear());
     // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
     // loaded must not persist across an init cycle).
     SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
@@ -9900,6 +10222,10 @@ pub(crate) fn frame_async_drain() {
         );
     }
     crate::crash::uploader::periodic_sweep();
+    // L1 lifecycle v2: drive in-flight factory loads to Active/Failed. Runs HOST-free, AFTER the
+    // microtask checkpoint above ran any async factory continuations (which settled their LOADING
+    // entries), so an async plugin transitions on the same drain its promise resolved.
+    finalize_loading_plugins();
 }
 
 /// Register every builtin owner-scoped subscription store into the `owner_stores` registry
@@ -10145,6 +10471,24 @@ pub fn unload_all() {
 
 pub(crate) fn unload_plugin(id: &str) {
     crate::crash::breadcrumb::plugin_unloaded(id);
+
+    // Phase-aware entry (design spec §5.4): a plugin still LOADING never reached Active — it has no
+    // hooks to run and its subs are still buffered (nothing to sweep). Seal its ctx, drop the LOADING
+    // entry, and walk the PARTIAL ledger (any DB conn / timer / import acquired before it was unloaded).
+    if matches!(plugin_phase(id), Some(crate::plugin::Phase::Loading)) {
+        let _ = eval_in_context(id, "globalThis.__s2_ctx_seal && globalThis.__s2_ctx_seal();");
+        LOADING.with(|l| { l.borrow_mut().remove(id); });
+        unload_partial(id);
+        return;
+    }
+
+    // Active/Unloading: mark Unloading, then the full teardown.
+    PLUGINS.with(|p| {
+        if let Some(pi) = p.borrow_mut().get_mut(id) {
+            pi.phase = crate::plugin::Phase::Unloading;
+        }
+    });
+
     // (a) Sweep every owner-scoped subscription store in registration order (design spec §6). This
     // replaces the hand-maintained cascade: each store's `remove_by_owner` closure (registered in
     // `register_builtin_stores`) drops the plugin's handler Globals / rules and runs its own follow-up
@@ -10155,15 +10499,36 @@ pub(crate) fn unload_plugin(id: &str) {
     crate::owner_stores::sweep_owner(id);
     refresh_detour();
 
-    // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
-    // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.
+    // (b) state() handoff + best-effort onUnload in the plugin's OWN context.
+    capture_state_and_run_onunload(id);
+
+    // (c)–(e) ledger reverse-walk + iface cleanup + exports/context drop.
+    teardown_ledger_and_dispose(id);
+}
+
+/// Teardown for a never-Active plugin (a Failed load, or an unload while still Loading — design spec
+/// §5.4). Sweeps the owner-scoped stores (a no-op for still-buffered subs), then walks the PARTIAL
+/// ledger + disposes the context. Skips `state()`/`onUnload` — the plugin was never Active.
+fn unload_partial(id: &str) {
+    crate::owner_stores::sweep_owner(id);
+    refresh_detour();
+    teardown_ledger_and_dispose(id);
+}
+
+/// Capture the reload-handoff via the plugin's `state()` hook, then run its `onUnload()` — both off
+/// the settled `PluginHooks` object (`pi.exports`), in the plugin's OWN context. Clone the context +
+/// hooks out of PLUGINS (borrow released) so the hooks may re-enter PLUGINS/FRAME/etc. without a
+/// double borrow. `state()` runs FIRST (serialize via `iface_to_json` → `PENDING_HANDOFF`, WARN on a
+/// non-serializable return); `onUnload()`'s return is IGNORED (WARN once if it returns non-undefined —
+/// use `state()` for the handoff).
+fn capture_state_and_run_onunload(id: &str) {
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
-        let Some((g_ctx, Some(exports))) =
+        let Some((g_ctx, Some(hooks))) =
             PLUGINS.with(|p| p.borrow().get(id).map(|pi| (pi.context.clone(), pi.exports.clone())))
         else {
-            return; // no context or no captured exports → nothing to call
+            return; // no context or no settled hooks → nothing to call
         };
 
         let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
@@ -10176,43 +10541,68 @@ pub(crate) fn unload_plugin(id: &str) {
         let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
         let tc = &mut tc;
 
-        let exports_local = v8::Local::new(tc, &exports);
-        if let Some(k) = v8::String::new(tc, "onUnload") {
-            if let Some(v) = exports_local.get(tc, k.into()) {
-                if let Ok(f) = v8::Local::<v8::Function>::try_from(v) {
-                    let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                    match f.call(tc, recv, &[]) {
-                        Some(ret) => {
-                            // Slice 5E.3: capture the onUnload return as the reload-handoff blob.
-                            // Serialize in THIS (old) context via iface_to_json (JSON.stringify + the
-                            // EntityRef replacer) so the string survives the context's disposal. A
-                            // null/undefined return means "no state to carry"; a non-serializable one
-                            // (function, cycle) → iface_to_json None → WARN + no handoff.
-                            if !ret.is_undefined() && !ret.is_null() {
-                                match iface_to_json(tc, ret) {
-                                    Some(blob) => PENDING_HANDOFF.with(|h| {
-                                        h.borrow_mut().insert(id.to_string(), blob);
-                                    }),
-                                    None => log_warn(&format!(
-                                        "WARN: unload_plugin('{}'): onUnload return not serializable — no state handoff",
-                                        id
-                                    )),
-                                }
-                            }
-                        }
-                        None => {
-                            let msg = tc
-                                .exception()
-                                .map(|e| e.to_rust_string_lossy(&*tc))
-                                .unwrap_or_else(|| "onUnload threw".into());
-                            log_warn(&format!("WARN: unload_plugin('{}'): onUnload error: {}", id, msg));
+        let hooks_local = v8::Local::new(tc, &hooks);
+        let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+
+        // (1) state() FIRST — its serializable return becomes the reload-handoff blob.
+        if let Some(f) = v8::String::new(tc, "state")
+            .and_then(|k| hooks_local.get(tc, k.into()))
+            .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+        {
+            match f.call(tc, recv, &[]) {
+                Some(ret) => {
+                    if !ret.is_undefined() && !ret.is_null() {
+                        match iface_to_json(tc, ret) {
+                            Some(blob) => PENDING_HANDOFF.with(|h| {
+                                h.borrow_mut().insert(id.to_string(), blob);
+                            }),
+                            None => log_warn(&format!(
+                                "WARN: unload_plugin('{}'): state() return not serializable — no state handoff",
+                                id
+                            )),
                         }
                     }
+                }
+                None => {
+                    let msg = tc
+                        .exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "state() threw".into());
+                    log_warn(&format!("WARN: unload_plugin('{}'): state() error: {}", id, msg));
+                }
+            }
+        }
+
+        // (2) onUnload() — return IGNORED (use state() for the handoff).
+        if let Some(f) = v8::String::new(tc, "onUnload")
+            .and_then(|k| hooks_local.get(tc, k.into()))
+            .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+        {
+            match f.call(tc, recv, &[]) {
+                Some(ret) => {
+                    if !ret.is_undefined() {
+                        log_warn(&format!(
+                            "WARN: unload_plugin('{}'): onUnload return is ignored - use state() for the reload handoff",
+                            id
+                        ));
+                    }
+                }
+                None => {
+                    let msg = tc
+                        .exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "onUnload threw".into());
+                    log_warn(&format!("WARN: unload_plugin('{}'): onUnload error: {}", id, msg));
                 }
             }
         }
     });
+}
 
+/// The ledger reverse-walk + iface cleanup + exports/context drop shared by `unload_plugin` (Active)
+/// and `unload_partial` (never-Active). `REGISTRY.remove` yields the entry (also making `is_live` false
+/// for any lingering resolver of this generation).
+fn teardown_ledger_and_dispose(id: &str) {
     // (c) Ledger reverse-walk: the teardown authority.  REGISTRY.remove yields the entry (also makes
     // is_live false for any lingering resolver of this generation).
     if let Some(entry) = REGISTRY.with(|r| r.borrow_mut().remove(id)) {
@@ -10306,6 +10696,114 @@ pub(crate) fn unload_plugin(id: &str) {
     dispose_plugin_context(id);
 }
 
+/// A snapshot of a `LOADING` entry's settle state (owned — `SettleState::Failed(String)` is not
+/// `Clone`, so `finalize_loading_plugins` snapshots into this before releasing the LOADING borrow).
+enum SettleSnapshot {
+    Settled,
+    Failed(String),
+    InFlight,
+}
+
+/// Drive every in-flight load to its transition (design spec §5). Called (1) at the tail of
+/// `frame_async_drain` — after the microtask checkpoint that runs factory continuations — and (2)
+/// inline at the tail of `load_plugin_js` for the SYNC fast-path (a synchronous factory is already
+/// `Settled`, so it arms + reconciles + goes Active within the same call). Must be called HOST-free.
+pub(crate) fn finalize_loading_plugins() {
+    let frame = FRAME_COUNTER.with(|c| c.get());
+    let snapshot: Vec<(String, SettleSnapshot, bool, u64)> = LOADING.with(|l| {
+        l.borrow()
+            .iter()
+            .map(|(id, e)| {
+                let s = match &e.state {
+                    SettleState::Settled => SettleSnapshot::Settled,
+                    SettleState::Failed(m) => SettleSnapshot::Failed(m.clone()),
+                    SettleState::InFlight => SettleSnapshot::InFlight,
+                };
+                (id.clone(), s, e.pending_reload, e.started_frame)
+            })
+            .collect()
+    });
+
+    for (id, state, pending_reload, started) in snapshot {
+        match state {
+            SettleSnapshot::Settled => {
+                // (1) arm: replay buffered registrations + seal the ctx. A registration that throws
+                // while arming aborts the arm (host TryCatch → eval_in_context Err) → Failed.
+                let arm_ok = eval_in_context(&id, "globalThis.__s2_ctx_arm && globalThis.__s2_ctx_arm();").is_ok();
+                if !arm_ok {
+                    fail_load(&id, "a registration failed while arming at Active");
+                    continue_or_reload(&id, pending_reload);
+                    continue;
+                }
+                // (2) publishes reconciliation MOVES here from the loader (design spec §4).
+                if let Err(e) = reconcile_publishes(&id) {
+                    fail_load(&id, &format!("publishes: {}", e));
+                    continue_or_reload(&id, pending_reload);
+                    continue;
+                }
+                // (3) Active.
+                PLUGINS.with(|p| {
+                    if let Some(pi) = p.borrow_mut().get_mut(&id) {
+                        pi.phase = crate::plugin::Phase::Active;
+                    }
+                });
+                LOADING.with(|l| { l.borrow_mut().remove(&id); });
+                if let Some(version) = plugin_manifest_version(&id) {
+                    crate::crash::breadcrumb::plugin_loaded(&id, &version);
+                }
+                log_warn(&format!("[plugins] '{}' Active", id));
+                if pending_reload {
+                    crate::loader::request_reload(&id);
+                }
+            }
+            SettleSnapshot::Failed(msg) => {
+                fail_load(&id, &msg);
+                continue_or_reload(&id, pending_reload);
+            }
+            SettleSnapshot::InFlight if frame.saturating_sub(started) > LOAD_TIMEOUT_FRAMES => {
+                let _ = eval_in_context(&id, "globalThis.__s2_ctx_seal && globalThis.__s2_ctx_seal();");
+                fail_load(&id, "factory did not settle within ~30s (LOAD_TIMEOUT_FRAMES)");
+                continue_or_reload(&id, pending_reload);
+            }
+            _ => {}
+        }
+    }
+
+    crate::loader::start_unblocked_waiters(); // T4 provides the real body; a no-op stub until then.
+}
+
+/// Fail a never-Active load: WARN + report + record the reason + drop the LOADING entry + tear down
+/// the fresh (never-Active) context. The plugin is NOT running.
+fn fail_load(id: &str, reason: &str) {
+    log_warn(&format!(
+        "WARN: load('{}') FAILED: {} - tearing down (the plugin is NOT running)",
+        id, reason
+    ));
+    crate::crash::report_js_error(id, "factory", reason, "");
+    FAILED_PLUGINS.with(|f| { f.borrow_mut().insert(id.to_string(), reason.to_string()); });
+    LOADING.with(|l| { l.borrow_mut().remove(id); });
+    unload_partial(id);
+}
+
+/// After a failed/timed-out load, if a reload was queued while it was loading, request it now. The
+/// `pending_reload` flag is only ever set by T4's waiting-loads machinery, so this is a no-op today.
+fn continue_or_reload(id: &str, pending_reload: bool) {
+    if pending_reload {
+        crate::loader::request_reload(id);
+    }
+}
+
+/// The manifest version for `id` (set by the loader before load), for the `Active` breadcrumb.
+fn plugin_manifest_version(id: &str) -> Option<String> {
+    MANIFEST_VERSIONS.with(|m| m.borrow().get(id).cloned())
+}
+
+/// Record a plugin's manifest version (called by the loader before `load_plugin_js`), so the
+/// `Active`-transition breadcrumb in `finalize_loading_plugins` can carry it without the manifest.
+pub(crate) fn set_plugin_version(id: &str, version: &str) {
+    MANIFEST_VERSIONS.with(|m| { m.borrow_mut().insert(id.to_string(), version.to_string()); });
+}
+
 /// Slice 5E.3: drop any pending reload-handoff blob for `id` WITHOUT consuming it — called by the
 /// loader on a FINAL removal (Vanished) so a deleted plugin's captured state is discarded rather than
 /// handed to a future re-add of the same id.
@@ -10329,6 +10827,33 @@ mod frame_tests {
     // A no-op logger for tests that don't care about log output.
     extern "C" fn dummy_log_fn(_l: c_int, _m: *const c_char) {}
     fn dummy_logger() -> LogFn { dummy_log_fn }
+
+    /// L1 lifecycle v2: wrap `body` as a `plugin()` artifact whose (synchronous) factory body is
+    /// `body`. `ctx` is in scope inside `body`. This is the new-shape bundle every test loads.
+    fn def_js(body: &str) -> String {
+        format!(
+            "module.exports.default = {{ __s2plugin: 1, factory: function (ctx) {{ {} }} }};",
+            body
+        )
+    }
+
+    /// Load a plugin whose factory body is `body` (the common test path — a synchronous factory that
+    /// reaches Active within the single `load_plugin_js` call via the sync fast-path).
+    fn load_body(id: &str, body: &str, cfg: &str) {
+        load_plugin_js(id, &def_js(body), cfg);
+    }
+
+    /// Set up a plugin context and run `body` in it directly (NO factory / no arm / no finalize) —
+    /// for unit tests that exercise a native's side effects (e.g. `__s2_iface_publish` via
+    /// `publishInterface`) and then assert on core state (`reconcile_publishes`, IFACES) decoupled
+    /// from the load→arm→reconcile transition. The plugin stays in the `Loading` phase.
+    fn eval_setup(id: &str, body: &str) {
+        create_plugin_context(id);
+        // Raw eval (unlike the CJS wrapper) has no `require` binding — inject one so bodies may
+        // `require("@s2script/interfaces")` exactly as they would inside a plugin bundle.
+        let full = format!("const require = globalThis.__s2_require;\n{}", body);
+        eval_in_context(id, &full).expect("eval_setup body ran");
+    }
 
     // Read `globalThis[name]` as a String from the current (HOST) isolate/context.  Still used by
     // the ConCommand dispatch test, which exercises the shared HOST context.
@@ -10727,7 +11252,7 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
         // Register the raw native from a PLUGIN context (dispatch is now owner-tracked; registering
         // from the shared HOST context would produce owner="legacy" with no REGISTRY entry → skipped).
-        load_plugin_js("cc_test", r#"
+        load_body("cc_test", r#"
             globalThis.__cc = null;
             __s2_concommand("s2_test", function (slot, args) { globalThis.__cc = slot + ":" + args; });
         "#, "{}");
@@ -10745,7 +11270,7 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
         // Load a plugin whose body: (1) confirms the list is empty BEFORE any registration, then
         // (2) registers two commands with distinct flag masks (2nd arg is the callback, 3rd is the flags).
-        load_plugin_js("cl_test", r#"
+        load_body("cl_test", r#"
             globalThis.__cl_empty = __s2_commands_list();               // must be "[]" — nothing registered yet
             __s2_concommand("s2_open", function () {}, 0);              // 0 = anyone
             __s2_concommand("s2_admin", function () {}, 6);             // an ADMFLAG bit mask
@@ -10769,7 +11294,7 @@ mod frame_tests {
     #[test]
     fn load_plugin_js_runs_module_body() {
         init(dummy_logger()).unwrap();
-        load_plugin_js("probe", "globalThis.__loaded = 41 + 1;", "{}");
+        load_body("probe", "globalThis.__loaded = 41 + 1;", "{}");
         assert_eq!(read_i32_global_in("probe", "__loaded"), 42);
         shutdown();
     }
@@ -10780,15 +11305,11 @@ mod frame_tests {
     #[test]
     fn load_plugin_js_runs_onload_and_tags_subscription() {
         init(dummy_logger()).unwrap();
-        // Minimal CJS bundle: require the injected API, subscribe, export onLoad.
-        let plugin_js = r#"
-            const { OnGameFrame } = require("@s2script/frame");
-            const { delay } = require("@s2script/timers");
-            module.exports.onLoad = function () {
-                OnGameFrame.subscribe(function () { globalThis.__ticks = (globalThis.__ticks||0)+1; });
-            };
-        "#;
-        load_plugin_js("demo", plugin_js, "{}");
+        // L1 lifecycle v2: the factory subscribes via ctx.server.onGameFrame (buffered until Active,
+        // replayed at arm on the sync fast-path). Its handler runs once per frame, tagged to "demo".
+        load_body("demo", r#"
+            ctx.server.onGameFrame(function () { globalThis.__ticks = (globalThis.__ticks||0)+1; });
+        "#, "{}");
         // One frame → the demo's handler ran, tagged to "demo".
         dispatch_game_frame_pre_post();  // helper: Pre then Post dispatch (drives the multiplexer)
         assert_eq!(read_i32_global_in("demo", "__ticks"), 1);
@@ -10848,8 +11369,7 @@ mod frame_tests {
         HOOKS.lock().unwrap().clear();
         set_hook_request(Some(record_hook));
         init(dummy_logger()).unwrap();
-        load_plugin_js("demo", r#"const {OnGameFrame}=require("@s2script/frame");
-            module.exports.onLoad=()=>OnGameFrame.subscribe(()=>{globalThis.__n=(globalThis.__n||0)+1;});"#, "{}");
+        load_body("demo", r#"ctx.server.onGameFrame(function(){globalThis.__n=(globalThis.__n||0)+1;});"#, "{}");
         dispatch_game_frame_pre_post();
         // The subscribe (the only subscriber) requested the detour INSTALL.
         assert!(
@@ -10871,102 +11391,97 @@ mod frame_tests {
         set_hook_request(None);
     }
 
-    /// Slice 5E.3: unload_plugin captures a serializable onUnload() return into PENDING_HANDOFF; a
-    /// non-serializable return is dropped with a WARN (no entry); a throwing onUnload leaves no entry.
+    /// L1 lifecycle v2: unload_plugin captures a serializable state() return into PENDING_HANDOFF; a
+    /// non-serializable return is dropped with a WARN (no entry); a throwing state() leaves no entry.
     #[test]
-    fn unload_captures_onunload_return_as_handoff_blob() {
+    fn unload_captures_state_return_as_handoff_blob() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
         // (a) serializable return → captured
-        load_plugin_js("cap", r#"
-            module.exports.onUnload = function(){ return { count: 7, name: "hi" }; };
-        "#, "{}");
+        load_body("cap", r#"return { state: function(){ return { count: 7, name: "hi" }; } };"#, "{}");
         unload_plugin("cap");
         let blob = PENDING_HANDOFF.with(|h| h.borrow().get("cap").cloned());
         let blob = blob.expect("handoff blob captured");
         assert!(blob.contains("\"count\":7"), "blob has the state: {blob}");
 
         // (b) non-serializable return (a function) → no entry
-        load_plugin_js("nos", r#"
-            module.exports.onUnload = function(){ return function(){}; };
-        "#, "{}");
+        load_body("nos", r#"return { state: function(){ return function(){}; } };"#, "{}");
         unload_plugin("nos");
         assert!(PENDING_HANDOFF.with(|h| h.borrow().get("nos").is_none()), "non-serializable → no blob");
 
-        // (c) throwing onUnload → no entry
-        load_plugin_js("thr", r#"
-            module.exports.onUnload = function(){ throw new Error("boom"); };
-        "#, "{}");
+        // (c) throwing state() → no entry
+        load_body("thr", r#"return { state: function(){ throw new Error("boom"); } };"#, "{}");
         unload_plugin("thr");
-        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("thr").is_none()), "throwing onUnload → no blob");
+        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("thr").is_none()), "throwing state() → no blob");
         shutdown();
     }
 
-    /// Slice 5E.3: a same-id reload carries state — onUnload's return revives into onLoad(prev). Covers
-    /// the primitive/nested round-trip, first-load undefined, a live EntityRef revival, and consume-once.
+    /// L1 lifecycle v2: a same-id reload carries state — state()'s return revives into ctx.previous.
+    /// Covers the primitive/nested round-trip, first-load undefined, and consume-once.
     #[test]
-    fn reload_hands_off_state_to_onload_prev() {
+    fn reload_hands_off_state_to_ctx_previous() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        // A plugin that seeds a counter from prev on load and bumps it on unload.
+        // A plugin that seeds a counter from ctx.previous on load and bumps it in state() on unload.
         const JS: &str = r#"
             var count = 0;
-            module.exports.onLoad   = function(prev){ if (prev) { count = prev.count; }
-                                                      globalThis.__count = count;
-                                                      globalThis.__hadPrev = (prev !== undefined); };
-            module.exports.onUnload = function(){ return { count: count + 1 }; };
+            if (ctx.previous) { count = ctx.previous.count; }
+            globalThis.__count = count;
+            globalThis.__hadPrev = (ctx.previous !== undefined);
+            return { state: function(){ return { count: count + 1 }; } };
         "#;
-        // First load → onLoad(undefined)
-        load_plugin_js("rh", JS, "{}");
+        // First load → ctx.previous undefined
+        load_body("rh", JS, "{}");
         assert_eq!(eval_in_context_string("rh", "String(globalThis.__hadPrev)"), "false", "first load: no prev");
         assert_eq!(eval_in_context_string("rh", "String(globalThis.__count)"), "0");
-        // Reload: unload (captures {count:1}) then load again (consumes → onLoad(prev))
+        // Reload: unload (captures {count:1}) then load again (consumes → ctx.previous)
         unload_plugin("rh");
-        load_plugin_js("rh", JS, "{}");
+        load_body("rh", JS, "{}");
         assert_eq!(eval_in_context_string("rh", "String(globalThis.__hadPrev)"), "true", "reload: prev present");
         assert_eq!(eval_in_context_string("rh", "String(globalThis.__count)"), "1", "count carried across the reload");
         // Consume-once: the blob is gone, so a fresh load with no new unload sees undefined again.
         unload_plugin("rh");                                   // captures {count:2}
-        load_plugin_js("rh", JS, "{}");                        // consumes → count=2
+        load_body("rh", JS, "{}");                             // consumes → count=2
         assert_eq!(eval_in_context_string("rh", "String(globalThis.__count)"), "2");
         assert!(PENDING_HANDOFF.with(|h| h.borrow().get("rh").is_none()), "blob consumed");
         shutdown();
     }
 
-    /// Slice 5E.3: an EntityRef in the handoff state revives into a live, serial-gated EntityRef bound
-    /// to the NEW context (reusing the inter-plugin reviver).
+    /// L1 lifecycle v2: an EntityRef in the handoff state revives into a live, serial-gated EntityRef
+    /// bound to the NEW context (reusing the inter-plugin reviver).
     #[test]
     fn reload_revives_entityref_in_state() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
         const JS: &str = r#"
-            module.exports.onLoad   = function(prev){ globalThis.__revived = prev && prev.ref; };
-            module.exports.onUnload = function(){ return { ref: new (__s2pkg_entity.EntityRef)(1, 7) }; };
+            globalThis.__revived = ctx.previous && ctx.previous.ref;
+            return { state: function(){ return { ref: new (__s2pkg_entity.EntityRef)(1, 7) }; } };
         "#;
-        load_plugin_js("er", JS, "{}");
+        load_body("er", JS, "{}");
         unload_plugin("er");                                   // captures { ref: <tagged EntityRef> }
-        load_plugin_js("er", JS, "{}");                        // revives → live EntityRef
+        load_body("er", JS, "{}");                             // revives → live EntityRef
         assert_eq!(eval_in_context_string("er", "String(globalThis.__revived instanceof __s2pkg_entity.EntityRef)"), "true");
         assert_eq!(eval_in_context_string("er", "globalThis.__revived.index + ',' + globalThis.__revived.id"), "1,7");
         shutdown();
     }
 
-    /// Slice 5E.3: a throwing onLoad(prev) degrades (WARN) without crashing the reload.
+    /// L1 lifecycle v2: a factory that throws when it sees ctx.previous → Failed (fail loud), but the
+    /// handoff blob was already consumed by ctx.previous (__s2_handoff_take) before the throw.
     #[test]
-    fn reload_onload_throw_degrades_no_crash() {
+    fn reload_factory_throw_consumes_handoff_no_crash() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        load_plugin_js("ot", r#"
-            module.exports.onLoad   = function(prev){ if (prev) throw new Error("boom"); };
-            module.exports.onUnload = function(){ return { x: 1 }; };
-        "#, "{}");
-        unload_plugin("ot");
-        load_plugin_js("ot", r#"
-            module.exports.onLoad   = function(prev){ if (prev) throw new Error("boom"); };
-            module.exports.onUnload = function(){ return { x: 1 }; };
-        "#, "{}");
-        // No panic; the blob was consumed despite the throw.
-        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("ot").is_none()), "blob consumed even though onLoad threw");
+        const JS: &str = r#"
+            if (ctx.previous) throw new Error("boom");
+            return { state: function(){ return { x: 1 }; } };
+        "#;
+        load_body("ot", JS, "{}");                             // first load: no prev → Active, state set
+        unload_plugin("ot");                                   // captures {x:1}
+        load_body("ot", JS, "{}");                             // ctx.previous={x:1} consumed, then throws → Failed
+        // No panic; the blob was consumed despite the throw; the plugin failed (not running).
+        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("ot").is_none()), "blob consumed even though factory threw");
+        assert!(FAILED_PLUGINS.with(|f| f.borrow().contains_key("ot")), "throwing reload factory → Failed");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("ot")), "failed load's context disposed");
         shutdown();
     }
 
@@ -10976,8 +11491,8 @@ mod frame_tests {
     #[test]
     fn delay_continuation_for_unloaded_plugin_is_dropped() {
         init(dummy_logger()).unwrap();
-        load_plugin_js("demo", r#"const {delay}=require("@s2script/timers");
-            module.exports.onLoad=()=>{ (async()=>{ await delay(30); globalThis.__resumed=true; })(); };"#, "{}");
+        load_body("demo", r#"const {delay}=require("@s2script/timers");
+            (async()=>{ await delay(30); globalThis.__resumed=true; })();"#, "{}");
         unload_plugin("demo");                     // unload BEFORE the deadline
         std::thread::sleep(std::time::Duration::from_millis(40));
         frame_async_drain();                       // must NOT run the continuation into a disposed context
@@ -10995,7 +11510,7 @@ mod frame_tests {
     /// - generation advanced (old generation is stale, new generation is live)
     ///
     /// The defensive guard in `load_plugin_js` is the mechanism under test here: when
-    /// `load_plugin_js("demo", v2_js)` is called while "demo" is still in PLUGINS, it detects
+    /// `load_body("demo", v2_js)` is called while "demo" is still in PLUGINS, it detects
     /// the existing instance, calls `unload_plugin("demo")` first (teardown: removes the v1
     /// handler, disposes the context), then loads v2 in a fresh context.
     #[test]
@@ -11003,13 +11518,8 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
 
         // v1: subscribes an OnGameFrame handler that writes "v1" to a global.
-        let v1_js = r#"
-            const { OnGameFrame } = require("@s2script/frame");
-            module.exports.onLoad = function () {
-                OnGameFrame.subscribe(function () { globalThis.__v = "v1"; });
-            };
-        "#;
-        load_plugin_js("demo", v1_js, "{}");
+        let v1_js = r#"ctx.server.onGameFrame(function () { globalThis.__v = "v1"; });"#;
+        load_body("demo", v1_js, "{}");
         dispatch_game_frame_pre_post();
         assert_eq!(read_string_global_in("demo", "__v"), "v1", "v1 handler ran before reload");
 
@@ -11017,15 +11527,9 @@ mod frame_tests {
         let old_gen = PLUGINS
             .with(|p| p.borrow().get("demo").expect("demo loaded").generation);
 
-        // RELOAD: call load_plugin_js with the same id — the defensive guard fires.
-        // v2 writes "v2" to the global.
-        let v2_js = r#"
-            const { OnGameFrame } = require("@s2script/frame");
-            module.exports.onLoad = function () {
-                OnGameFrame.subscribe(function () { globalThis.__v = "v2"; });
-            };
-        "#;
-        load_plugin_js("demo", v2_js, "{}");
+        // RELOAD: call load_body with the same id — the defensive guard fires. v2 writes "v2".
+        let v2_js = r#"ctx.server.onGameFrame(function () { globalThis.__v = "v2"; });"#;
+        load_body("demo", v2_js, "{}");
 
         // Old generation is now stale (unload bumped or removed it).
         assert!(
@@ -11057,6 +11561,146 @@ mod frame_tests {
             "new generation must be live"
         );
 
+        shutdown();
+    }
+
+    // === L1 lifecycle v2: the phase machine + typed-artifact load path (design spec §5) ===
+
+    /// A synchronous factory reaches Active within the single `load_plugin_js` call (the sync
+    /// fast-path), and its (buffered) registration is armed by then.
+    #[test]
+    fn sync_factory_reaches_active_in_one_call() {
+        init(dummy_logger()).unwrap();
+        load_body("s", r#"ctx.events.on('round_start', function(){});"#, "{}");
+        assert_eq!(plugin_phase("s"), Some(crate::plugin::Phase::Active));
+        assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 1);
+        shutdown();
+    }
+
+    /// An ASYNC factory stays Loading until its promise settles; its ctx.events.on is BUFFERED (not
+    /// armed) until the Active transition on a later drain.
+    #[test]
+    fn buffered_registration_does_not_arm_before_active() {
+        init(dummy_logger()).unwrap();
+        load_body("ap", r#"
+            ctx.events.on('round_start', function(){});
+            return new Promise(function(res){ globalThis.__resolve = res; });
+        "#, "{}");
+        // Still Loading; the buffered registration has NOT reached EVENT_MUX yet.
+        assert_eq!(plugin_phase("ap"), Some(crate::plugin::Phase::Loading));
+        assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 0);
+        // Resolve the factory promise, then drain: the .then runs (__s2_load_settled), finalize arms.
+        let _ = eval_in_context("ap", "globalThis.__resolve();");
+        frame_async_drain();
+        assert_eq!(plugin_phase("ap"), Some(crate::plugin::Phase::Active));
+        assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 1);
+        shutdown();
+    }
+
+    /// A factory that throws fails LOUD — no zombie: reason recorded in FAILED_PLUGINS, no PLUGINS
+    /// entry (context disposed), and the buffered sub never armed (EVENT_MUX empty).
+    #[test]
+    fn throwing_factory_fails_loud_no_zombie() {
+        init(dummy_logger()).unwrap();
+        load_body("tf", r#"
+            ctx.events.on('round_start', function(){});
+            throw new Error("boom-factory");
+        "#, "{}");
+        assert!(FAILED_PLUGINS.with(|f| f.borrow().get("tf").map(|r| r.contains("boom-factory")).unwrap_or(false)),
+            "failed reason recorded");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("tf")), "context disposed — no zombie");
+        assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 0, "buffered sub never armed");
+        assert!(plugin_phase("tf").is_none());
+        shutdown();
+    }
+
+    /// A factory whose promise rejects → Failed, reason carries the rejection message.
+    #[test]
+    fn async_rejection_fails() {
+        init(dummy_logger()).unwrap();
+        load_body("ar", r#"return Promise.reject(new Error("nope-async"));"#, "{}");
+        assert_eq!(plugin_phase("ar"), Some(crate::plugin::Phase::Loading));
+        frame_async_drain();
+        assert!(FAILED_PLUGINS.with(|f| f.borrow().get("ar").map(|r| r.contains("nope-async")).unwrap_or(false)),
+            "rejection reason recorded");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("ar")));
+        shutdown();
+    }
+
+    /// A legacy `export onLoad` bundle (no plugin() default) is REFUSED with a named reason.
+    #[test]
+    fn legacy_shape_refused() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js("legacy", "module.exports.onLoad=()=>{};", "{}");
+        assert!(FAILED_PLUGINS.with(|f| f.borrow().get("legacy").map(|r| r.contains("legacy plugin shape")).unwrap_or(false)),
+            "legacy shape refused with a named reason");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("legacy")));
+        shutdown();
+    }
+
+    /// After Active the ctx is SEALED: a leaked reference used to register outside the load window
+    /// throws (never silently registers).
+    #[test]
+    fn sealed_ctx_throws() {
+        init(dummy_logger()).unwrap();
+        load_body("seal", r#"globalThis.LEAK = ctx;"#, "{}");
+        assert_eq!(plugin_phase("seal"), Some(crate::plugin::Phase::Active));
+        let _ = eval_in_context("seal",
+            "try { LEAK.events.on('x', function(){}); globalThis.T='no' } catch(e) { globalThis.T='threw' }");
+        assert_eq!(eval_in_context_string("seal", "String(globalThis.T)"), "threw");
+        shutdown();
+    }
+
+    /// A factory whose promise never settles → Failed once past LOAD_TIMEOUT_FRAMES.
+    #[test]
+    fn load_timeout_fails() {
+        init(dummy_logger()).unwrap();
+        load_body("to", r#"return new Promise(function(){});"#, "{}");
+        assert_eq!(plugin_phase("to"), Some(crate::plugin::Phase::Loading));
+        // Advance the frame counter past the timeout, then finalize.
+        FRAME_COUNTER.with(|c| c.set(LOAD_TIMEOUT_FRAMES + 5));
+        finalize_loading_plugins();
+        assert!(FAILED_PLUGINS.with(|f| f.borrow().get("to").map(|r| r.contains("did not settle")).unwrap_or(false)),
+            "timeout reason recorded");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("to")));
+        shutdown();
+    }
+
+    /// state() → ctx.previous round-trips a value across a same-id reload.
+    #[test]
+    fn state_and_previous_roundtrip() {
+        init(dummy_logger()).unwrap();
+        load_body("rt", r#"
+            globalThis.__seen = ctx.previous ? ctx.previous.n : -1;
+            return { state: function(){ return { n: 7 }; } };
+        "#, "{}");
+        assert_eq!(eval_in_context_string("rt", "String(globalThis.__seen)"), "-1", "first load: no previous");
+        unload_plugin("rt");
+        load_body("rt", r#"
+            globalThis.__seen = ctx.previous ? ctx.previous.n : -1;
+            return { state: function(){ return { n: 7 }; } };
+        "#, "{}");
+        assert_eq!(eval_in_context_string("rt", "String(globalThis.__seen)"), "7", "reload sees state()'s n via ctx.previous");
+        shutdown();
+    }
+
+    /// Unloading a plugin still Loading seals its ctx, drops the LOADING entry, and walks its PARTIAL
+    /// ledger (the delay timer it acquired) — no state() capture (it was never Active).
+    #[test]
+    fn unload_while_loading_seals_and_walks_partial_ledger() {
+        init(dummy_logger()).unwrap();
+        load_body("ul", r#"
+            const {delay}=require("@s2script/timers");
+            delay(10);
+            return new Promise(function(){});
+        "#, "{}");
+        assert_eq!(plugin_phase("ul"), Some(crate::plugin::Phase::Loading));
+        assert!(!RESOLVERS.with(|m| m.borrow().is_empty()), "the delay timer's resolver is ledgered");
+        unload_plugin("ul");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("ul")), "context disposed");
+        assert!(RESOLVERS.with(|m| m.borrow().is_empty()), "partial-ledger walk dropped the delay resolver");
+        assert!(PENDING_HANDOFF.with(|h| h.borrow().get("ul").is_none()), "never Active → no state() capture");
+        assert!(LOADING.with(|l| l.borrow().get("ul").is_none()), "LOADING entry dropped");
         shutdown();
     }
 
@@ -11194,10 +11838,10 @@ mod frame_tests {
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"
+        eval_setup("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/greeter", { greet: function () { return "hi"; } });
-        "#, "{}");
+        "#);
         assert!(reconcile_publishes("prod").is_ok());
         shutdown();
     }
@@ -11210,10 +11854,10 @@ mod frame_tests {
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"
+        eval_setup("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/greetr", { greet: function () { return "hi"; } });
-        "#, "{}");
+        "#);
         let err = reconcile_publishes("prod").expect_err("a declared-but-unpublished name must fail");
         // A typo trips BOTH directions, and the pair is the diagnosis: you typed @x/greetr,
         // you declared @x/greeter. The message must name both, not just whichever is checked first.
@@ -11226,7 +11870,7 @@ mod frame_tests {
     fn reconcile_publishes_ok_for_a_plugin_that_declares_nothing() {
         let _ = init(dummy_logger());
         set_plugin_publishes("plain", std::collections::HashMap::new());
-        load_plugin_js("plain", r#"module.exports.onLoad = function () {};"#, "{}");
+        eval_setup("plain", "");
         assert!(reconcile_publishes("plain").is_ok(), "publishing nothing is not a mismatch");
         shutdown();
     }
@@ -11238,10 +11882,10 @@ mod frame_tests {
         // nothing to say — without the undeclared-attempt record this plugin would run on with
         // its interface silently unpublished, and consumers would meet InterfaceUnavailable.
         set_plugin_publishes("forgetful", std::collections::HashMap::new());
-        load_plugin_js("forgetful", r#"
+        eval_setup("forgetful", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/forgotten", { a: function () { return 1; } });
-        "#, "{}");
+        "#);
         let err = reconcile_publishes("forgetful").expect_err("an undeclared publish must fail the load");
         assert!(err.contains("@x/forgotten"), "error names the interface: {}", err);
         assert!(!IFACES.with(|r| r.borrow().lookup("@x/forgotten").is_some()));
@@ -11252,10 +11896,10 @@ mod frame_tests {
     fn undeclared_publish_record_is_cleared_on_unload() {
         let _ = init(dummy_logger());
         set_plugin_publishes("retry", std::collections::HashMap::new());
-        load_plugin_js("retry", r#"
+        eval_setup("retry", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/oops", { a: function () { return 1; } });
-        "#, "{}");
+        "#);
         assert!(reconcile_publishes("retry").is_err());
         unload_plugin("retry");
         // A fixed reload must not inherit the previous attempt's failure.
@@ -11263,10 +11907,10 @@ mod frame_tests {
             "@x/oops".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
-        load_plugin_js("retry", r#"
+        eval_setup("retry", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/oops", { a: function () { return 1; } });
-        "#, "{}");
+        "#);
         assert!(reconcile_publishes("retry").is_ok(), "the stale undeclared record must not persist");
         shutdown();
     }
@@ -11282,10 +11926,10 @@ mod frame_tests {
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
         set_plugin_publishes("forgetful", std::collections::HashMap::new());
-        load_plugin_js("forgetful", r#"
+        eval_setup("forgetful", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/undeclared", { a: function () { return 1; } });
-        "#, "{}");
+        "#);
         assert!(!PLUGIN_PUBLISHES.with(|p| p.borrow().is_empty()),
             "precondition: PLUGIN_PUBLISHES populated");
         assert!(!UNDECLARED_PUBLISHES.with(|p| p.borrow().is_empty()),
@@ -11305,16 +11949,16 @@ mod frame_tests {
         let decl = crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() };
         set_plugin_publishes("first", [("@x/dup".to_string(), decl.clone())].into_iter().collect());
         set_plugin_publishes("second", [("@x/dup".to_string(), decl)].into_iter().collect());
-        load_plugin_js("first", r#"
+        eval_setup("first", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/dup", { a: function () { return 1; } });
-        "#, "{}");
+        "#);
         // `second`'s publish is refused (the incumbent holds the name), so reconciliation must
         // fail it rather than let it run as a live plugin whose declared interface isn't its own.
-        load_plugin_js("second", r#"
+        eval_setup("second", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/dup", { a: function () { return 2; } });
-        "#, "{}");
+        "#);
         assert!(reconcile_publishes("first").is_ok(), "the incumbent is consistent");
         let err = reconcile_publishes("second").expect_err("the loser must fail its load");
         assert!(err.contains("@x/dup"), "error names the interface: {}", err);
@@ -11343,10 +11987,10 @@ mod frame_tests {
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.4.0".into(), types_sha256: "abc".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"
+        eval_setup("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/greeter", { greet: function (n) { return "hi " + n.who; } });
-        "#, "{}");
+        "#);
         let v = IFACES.with(|r| r.borrow().lookup("@x/greeter").map(|e| e.version.clone()));
         assert_eq!(v, Some("1.4.0".to_string()));
         shutdown();
@@ -11386,12 +12030,12 @@ mod frame_tests {
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         // Producer publishes via the plugin path so the prelude publishInterface is exercised.
-        load_plugin_js("prod", r#"
+        load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/greeter",{ greet:function(n){ return "hi "+n.who; } });
         "#, "{}");
         // Consumer resolves a hard proxy and calls across (arg + return structured-copied).
-        load_plugin_js("cons", r#"
+        load_body("cons", r#"
             const g = require("@x/greeter");
             globalThis.__test_out = g.greet({ who: "world" });
         "#, "{}");
@@ -11399,7 +12043,7 @@ mod frame_tests {
 
         // Producer-absent hard dep → InterfaceUnavailable (caught by the wrapper TryCatch → WARN).
         set_plugin_imports("lonely", vec![("@missing".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
-        load_plugin_js("lonely", r#"
+        load_body("lonely", r#"
             try { require("@missing").foo(); globalThis.__err = "no throw"; }
             catch (e) { globalThis.__err = String(e); }
         "#, "{}");
@@ -11407,12 +12051,12 @@ mod frame_tests {
 
         // Optional dep, not published → require returns null.
         set_plugin_imports("optc", vec![("@absent".into(), "^1.0.0".into(), crate::interfaces::Kind::Optional)]);
-        load_plugin_js("optc", r#"globalThis.__opt = (require("@absent") === null) ? "null" : "proxy";"#, "{}");
+        load_body("optc", r#"globalThis.__opt = (require("@absent") === null) ? "null" : "proxy";"#, "{}");
         assert_eq!(read_global_string("optc", "__opt"), "null");
 
         // Non-serializable (cyclic) arg → InterfaceValueNotSerializable (JSON.stringify throws → None → throw).
         set_plugin_imports("cyc", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
-        load_plugin_js("cyc", r#"
+        load_body("cyc", r#"
             const g = require("@x/greeter");
             const a = {}; a.self = a;
             try { g.greet(a); globalThis.__e2 = "no throw"; }
@@ -11426,12 +12070,12 @@ mod frame_tests {
             "@x/boom".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prodBoom", r#"
+        load_body("prodBoom", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/boom", { boom: function(){ throw new Error("kaboom"); } });
         "#, "{}");
         set_plugin_imports("consBoom", vec![("@x/boom".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
-        load_plugin_js("consBoom", r#"
+        load_body("consBoom", r#"
             const g = require("@x/boom");
             try { g.boom(); globalThis.__boom = "no throw"; } catch (e) { globalThis.__boom = String(e); }
         "#, "{}");
@@ -11444,12 +12088,12 @@ mod frame_tests {
             "@x/void".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prodVoid", r#"
+        load_body("prodVoid", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/void", { poke: function(){ /* returns undefined */ } });
         "#, "{}");
         set_plugin_imports("consVoid", vec![("@x/void".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
-        load_plugin_js("consVoid", r#"
+        load_body("consVoid", r#"
             const g = require("@x/void");
             try { globalThis.__void = (g.poke() === undefined) ? "undefined" : "value"; }
             catch (e) { globalThis.__void = "threw:" + String(e); }
@@ -11468,11 +12112,11 @@ mod frame_tests {
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"
+        load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             globalThis.__h = publishInterface("@x/greeter",{ greet:function(){return "";} });
         "#, "{}");
-        load_plugin_js("cons", r#"
+        load_body("cons", r#"
             const g = require("@x/greeter");
             globalThis.__seen = [];
             g.on("greeted", function (p) { globalThis.__seen.push(p.slot); });
@@ -11493,9 +12137,9 @@ mod frame_tests {
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
+        load_body("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             publishInterface("@x/greeter",{greet:function(){return "ok";}});"#, "{}");
-        load_plugin_js("cons", r#"const g=require("@x/greeter");
+        load_body("cons", r#"const g=require("@x/greeter");
             globalThis.call=function(){ try { return g.greet(); } catch(e){ return String(e); } };
             globalThis.__before=call();"#, "{}");
         assert_eq!(read_global_string("cons", "__before"), "ok");
@@ -11518,9 +12162,9 @@ mod frame_tests {
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
+        load_body("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             globalThis.__h=publishInterface("@x/greeter",{greet:function(){return "";}});"#, "{}");
-        load_plugin_js("cons", r#"const g=require("@x/greeter"); g.on("greeted",function(){});"#, "{}");
+        load_body("cons", r#"const g=require("@x/greeter"); g.on("greeted",function(){});"#, "{}");
         assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/greeter").unwrap().subscribers.len()), 1);
         unload_plugin("cons");
         assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/greeter").unwrap().subscribers.len()), 0);
@@ -11538,11 +12182,11 @@ mod frame_tests {
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"const {publishInterface}=require("@s2script/interfaces");
+        load_body("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             publishInterface("@x/greeter",{greet:function(){return "still-here";}});"#, "{}");
         // consumer's onUnload calls the producer — must still work because producer outlives it.
-        load_plugin_js("cons", r#"const g=require("@x/greeter");
-            module.exports.onUnload=function(){ globalThis.__unload_result = g.greet(); };"#, "{}");
+        load_body("cons", r#"const g=require("@x/greeter");
+            return { onUnload: function(){ globalThis.__unload_result = g.greet(); } };"#, "{}");
         unload_all();
         // If the producer had been torn down first, greet() would have thrown; the consumer's
         // onUnload observed a live producer.
@@ -11644,7 +12288,7 @@ mod frame_tests {
     fn client_dispatch_delivers_client_with_slot() {
         let _ = init(dummy_logger());
         set_engine_ops(None);
-        load_plugin_js("pcl", r#"
+        load_body("pcl", r#"
             __s2pkg_clients.Clients.onConnect(function (c) {
                 globalThis.__cl_ran  = (globalThis.__cl_ran || 0) + 1;
                 globalThis.__cl_slot = c.slot;
@@ -11721,7 +12365,7 @@ mod frame_tests {
     fn voice_client_event_dispatches_to_on_voice() {
         let _ = init(dummy_logger());
         set_engine_ops(None);
-        load_plugin_js("pvv", r#"
+        load_body("pvv", r#"
             __s2pkg_clients.Clients.onVoice(function (c) {
                 globalThis.__v_ran  = (globalThis.__v_ran || 0) + 1;
                 globalThis.__v_slot = c.slot;
@@ -12004,7 +12648,7 @@ mod frame_tests {
     fn entity_ref_degrades_without_ops() {
         let _ = init(dummy_logger());
         set_engine_ops(None);
-        load_plugin_js("er", r#"
+        load_body("er", r#"
             const { EntityRef } = require("@s2script/entity");
             const ref = new EntityRef(1, 7);
             globalThis.__valid = String(ref.isValid());       // "false"
@@ -12035,7 +12679,7 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1,7,8,999))"), "null"); // unknown kind
         assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write(1,7,8,2,1.5))"), "false");
         // EntityRef typed methods degrade (proving they're wired + route a kind):
-        load_plugin_js("er2", r#"
+        load_body("er2", r#"
             const { EntityRef } = require("@s2script/entity");
             const ref = new EntityRef(1, 7);
             globalThis.__f = String(ref.readFloat32(8));
@@ -12163,7 +12807,7 @@ mod frame_tests {
                  noRequire: (typeof require === "undefined"),
                };"#,
         );
-        load_plugin_js("p", r#"
+        load_body("p", r#"
             const cs2 = require("@s2script/cs2");
             globalThis.__ok = String(cs2 !== null && cs2.hasEntityRef === true && cs2.noRequire === true);
         "#, "{}");
@@ -12183,13 +12827,13 @@ mod frame_tests {
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         // Producer returns an EntityRef from a method.
-        load_plugin_js("prod", r#"
+        load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             const { EntityRef } = require("@s2script/entity");
             publishInterface("@x/ent", { getRef: function(){ return new EntityRef(1, 7); } });
         "#, "{}");
         // Consumer receives it: must be a LIVE EntityRef (methods present), not plain data.
-        load_plugin_js("cons", r#"
+        load_body("cons", r#"
             const { EntityRef } = require("@s2script/entity");
             const r = require("@x/ent").getRef();
             globalThis.__isRef  = String(r instanceof EntityRef);        // "true" — rehydrated
@@ -12213,12 +12857,12 @@ mod frame_tests {
             "@x/ent".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"
+        load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             const { EntityRef } = require("@s2script/entity");
             globalThis.__h = publishInterface("@x/ent", { noop: function(){} });
         "#, "{}");
-        load_plugin_js("cons", r#"
+        load_body("cons", r#"
             const { EntityRef } = require("@s2script/entity");
             const g = require("@x/ent");
             globalThis.__seen = "none";
@@ -12240,11 +12884,11 @@ mod frame_tests {
             "@x/data".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
-        load_plugin_js("prod", r#"
+        load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/data", { echo: function(){ return { a: 1, b: "hi", c: [1,2,3] }; } });
         "#, "{}");
-        load_plugin_js("cons", r#"
+        load_body("cons", r#"
             const d = require("@x/data").echo();
             globalThis.__out = d.a + "," + d.b + "," + d.c.join("-");
         "#, "{}");
@@ -12386,7 +13030,7 @@ mod frame_tests {
         let _ = init(dummy_logger());
         // Use load_plugin_js (the CJS wrapper where `require` is defined + the prelude has run),
         // then read the results back — this exercises the full require→__s2require→module-global path.
-        load_plugin_js("mods", r#"
+        load_body("mods", r#"
             globalThis.__t_entity  = typeof require("@s2script/entity").EntityRef;            // "function"
             globalThis.__t_frame   = typeof require("@s2script/frame").OnGameFrame;            // "object"
             globalThis.__t_timers  = typeof require("@s2script/timers").delay;                 // "function"
@@ -12988,7 +13632,7 @@ mod frame_tests {
         SOUND_EMIT_CALLS.lock().unwrap().clear();
         crate::entity_live::on_created(42, 99);        // books: index 42 → engine serial 99
         set_engine_ops(Some(S2EngineOps { sound_emit: Some(mock_sound_emit), ..mock_event_ops() }));
-        load_plugin_js("psx", r#"
+        load_body("psx", r#"
             const { Sound } = require("@s2script/sound");
             globalThis.__g = Sound.emit("UI.PlayerPing",
                 { entity: { index: 42, id: __s2_ent_id_for_index(42) }, recipients: [3, 5], volume: 0.5 });
@@ -13480,7 +14124,7 @@ mod frame_tests {
         set_engine_ops(Some(mock_event_ops()));
 
         // Plugin subscribes to player_death using the raw __s2_event_subscribe native.
-        load_plugin_js("pev", r#"
+        load_body("pev", r#"
             __s2_event_subscribe("player_death", function(ev) {
                 globalThis.__ev_ran    = (globalThis.__ev_ran || 0) + 1;
                 globalThis.__ev_name   = ev.name;
@@ -13539,7 +14183,7 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
         set_engine_ops(Some(mock_event_ops()));
 
-        load_plugin_js("p1", r#"
+        load_body("p1", r#"
             __s2_event_subscribe("player_hurt", function(ev) {
                 globalThis.__p1_ran = (globalThis.__p1_ran || 0) + 1;
             });
@@ -13547,7 +14191,7 @@ mod frame_tests {
         // First subscriber → engine-op called once.
         assert_eq!(EV_SUBSCRIBED.lock().unwrap().iter().filter(|n| *n == "player_hurt").count(), 1);
 
-        load_plugin_js("p2", r#"
+        load_body("p2", r#"
             __s2_event_subscribe("player_hurt", function(ev) {
                 globalThis.__p2_ran = (globalThis.__p2_ran || 0) + 1;
             });
@@ -13597,7 +14241,7 @@ mod frame_tests {
     #[test]
     fn events_module_provides_game_event_constructor() {
         let _ = init(dummy_logger());
-        load_plugin_js("gec", r#"
+        load_body("gec", r#"
             const { GameEvent } = require("@s2script/events");
             const ev = new GameEvent("round_start");
             globalThis.__ev_name = ev.name;
@@ -13622,7 +14266,7 @@ mod frame_tests {
         set_engine_ops(Some(mock_event_ops()));
 
         // Plugin subscribes then immediately unsubscribes from the same module body.
-        load_plugin_js("pev", r#"
+        load_body("pev", r#"
             globalThis.__ev_ran = 0;
             __s2_event_subscribe("test_event", function(ev) {
                 globalThis.__ev_ran = (globalThis.__ev_ran || 0) + 1;
@@ -13665,13 +14309,13 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
         set_engine_ops(Some(mock_event_ops()));
 
-        load_plugin_js("p1", r#"
+        load_body("p1", r#"
             globalThis.__p1_ran = 0;
             __s2_event_subscribe("test_event", function(ev) {
                 globalThis.__p1_ran = (globalThis.__p1_ran || 0) + 1;
             });
         "#, "{}");
-        load_plugin_js("p2", r#"
+        load_body("p2", r#"
             globalThis.__p2_ran = 0;
             __s2_event_subscribe("test_event", function(ev) {
                 globalThis.__p2_ran = (globalThis.__p2_ran || 0) + 1;
@@ -13724,7 +14368,7 @@ mod frame_tests {
         init(dummy_logger()).unwrap();
         set_engine_ops(Some(mock_event_ops()));
 
-        load_plugin_js("ep", r#"
+        load_body("ep", r#"
             var evMod = require("@s2script/events");
             var handler = function(ev) {
                 globalThis.__saw = ev.name + ":" + ev.getInt("attacker");
@@ -14543,7 +15187,7 @@ mod frame_tests {
     #[test]
     fn cookie_natives_round_trip() {
         let _ = init(dummy_logger());
-        load_plugin_js("ck", r#"
+        load_body("ck", r#"
             __s2_cookie_load("S1", "a", "1", 111);    // loaded, not dirty
             __s2_cookie_set("S1", "b", "2", 222);     // set, dirty
             __s2_cookie_mark_cached("S1");
@@ -14561,7 +15205,7 @@ mod frame_tests {
     #[test]
     fn cookie_natives_empty_string_and_get_time() {
         let _ = init(dummy_logger());
-        load_plugin_js("ck2", r#"
+        load_body("ck2", r#"
             __s2_cookie_set("S2", "empty", "", 12345);
             var missing = __s2_cookie_get("S2", "nope");
             var empty = __s2_cookie_get("S2", "empty");
@@ -14579,7 +15223,7 @@ mod frame_tests {
     #[test]
     fn clientprefs_module_get_set_default_and_bot_skip() {
         let _ = init(dummy_logger());
-        load_plugin_js("cp", r#"
+        load_body("cp", r#"
             var { Cookies } = require("@s2script/cookies");
             var c = Cookies.register("hud", { default: "white" });
             var real = { steamId: "S9" };
@@ -14599,7 +15243,7 @@ mod frame_tests {
     #[test]
     fn clientprefs_module_empty_string_and_get_time() {
         let _ = init(dummy_logger());
-        load_plugin_js("cp2", r#"
+        load_body("cp2", r#"
             var { Cookies } = require("@s2script/cookies");
             var c = Cookies.register("nickname", { default: "Anonymous" });
             var real = { steamId: "S10" };
@@ -14621,7 +15265,7 @@ mod frame_tests {
     #[test]
     fn cookie_set_authid_native_writes_cache_and_queues_offline_write() {
         let _ = init(dummy_logger());
-        load_plugin_js("ck3", r#"
+        load_body("ck3", r#"
             __s2_cookie_set_authid("S11", "k", "v", 999);
             var cached = __s2_cookie_get("S11", "k");
             var writes = __s2_cookie_take_offline_writes();
@@ -14638,7 +15282,7 @@ mod frame_tests {
     #[test]
     fn clientprefs_module_set_authid_offline_and_bot_skip() {
         let _ = init(dummy_logger());
-        load_plugin_js("cp3", r#"
+        load_body("cp3", r#"
             var { Cookies } = require("@s2script/cookies");
             var c = Cookies.register("hud", { default: "white" });
             Cookies.setAuthId("S12", c, "blue");
@@ -14661,7 +15305,7 @@ mod frame_tests {
     #[test]
     fn cookie_cached_dispatch_fans_out_queued_slots() {
         let _ = init(dummy_logger());
-        load_plugin_js("ck4", r#"
+        load_body("ck4", r#"
             __s2_cookie_on_cached(function (slot) {
                 globalThis.__ck_ran = (globalThis.__ck_ran || 0) + 1;
                 globalThis.__ck_slot = slot;
@@ -14698,7 +15342,7 @@ mod frame_tests {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
         // A plugin registers sm_test; capture the ctx it receives.
-        load_plugin_js("cmd", r#"
+        load_body("cmd", r#"
             var C = __s2pkg_commands.Commands;
             C.register("sm_test", function (ctx) {
                 globalThis.__seen = ctx.callerSlot + "|" + ctx.args.join(",") + "|" + ctx.argString;
@@ -14718,7 +15362,7 @@ mod frame_tests {
                    "argCount|arg(0)|argInt(1)|argFloat(1)|argsFrom(2)|arg(99)=''|argInt(99,7)=7");
         assert!(LOG.lock().unwrap().iter().any(|m| m.contains("console-reply")), "console reply routed to log");
         // A throwing handler is caught (no panic).
-        load_plugin_js("cmd2", r#" __s2pkg_commands.Commands.register("sm_boom", function(){ throw new Error("x"); }); "#, "{}");
+        load_body("cmd2", r#" __s2pkg_commands.Commands.register("sm_boom", function(){ throw new Error("x"); }); "#, "{}");
         dispatch_concommand("sm_boom", -1, "");   // must not panic
         // Unload drops the command → a later dispatch is a no-op.
         unload_plugin("cmd");
@@ -14732,7 +15376,7 @@ mod frame_tests {
     fn chat_triggers_parse_and_dispatch() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        load_plugin_js("ct", r#"
+        load_body("ct", r#"
             var C = __s2pkg_commands.Commands;
             globalThis.__ran = "";
             C.register("sm_test", function (ctx) { globalThis.__ran = ctx.callerSlot + ":" + ctx.argString; });
@@ -14759,7 +15403,7 @@ mod frame_tests {
     fn chat_dispatch_host_say_parses_and_suppresses() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        load_plugin_js("hs", r#"
+        load_body("hs", r#"
             var C = __s2pkg_commands.Commands;
             globalThis.__ran = "";
             C.register("sm_test", function (ctx) { globalThis.__ran = ctx.callerSlot + ":" + ctx.argString; });
@@ -14790,7 +15434,7 @@ mod frame_tests {
     fn chat_message_subscriber_suppresses_on_handled() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        load_plugin_js("cm", r#"
+        load_body("cm", r#"
             var Chat = __s2pkg_chat.Chat;
             globalThis.__got = null;
             globalThis.__block = false;
@@ -14833,7 +15477,7 @@ mod frame_tests {
     fn command_trio_server_and_admin_gating() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
-        load_plugin_js("t", r#"
+        load_body("t", r#"
             var C = __s2pkg_commands.Commands;
             C.registerServer("sm_srv", function(ctx){ globalThis.__srv = ctx.callerSlot; });
             C.registerAdmin("sm_adm", 512 /*CHAT=1<<9*/, function(ctx){ globalThis.__adm = ctx.callerSlot; });
@@ -14902,7 +15546,7 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_engine_ops(Some(db_ops()));
         let name = unique_db_name("t3_roundtrip");
-        load_plugin_js("dbp", &format!(r#"
+        load_body("dbp", &format!(r#"
             globalThis.__out = "pending";
             __s2_sqlite_open("{name}").then(function (h) {{
                 return __s2_sqlite_execute(h, "CREATE TABLE kv (k TEXT, v TEXT)", []).then(function () {{
@@ -14937,7 +15581,7 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_engine_ops(Some(db_ops()));
         let name = unique_db_name("t3_badsql");
-        load_plugin_js("dbp2", &format!(r#"
+        load_body("dbp2", &format!(r#"
             globalThis.__out = "pending";
             __s2_sqlite_open("{name}").then(function (h) {{
                 return __s2_sqlite_query(h, "SELECT * FROM nope", []);
@@ -14965,7 +15609,7 @@ mod frame_tests {
     fn sqlite_open_degrades_without_data_dir_op() {
         let _ = init(dummy_logger());
         set_engine_ops(None); // no ops at all -> db_data_dir() returns None -> open() rejects
-        load_plugin_js("dbp3", r#"
+        load_body("dbp3", r#"
             globalThis.__out = "pending";
             __s2_sqlite_open("whatever").then(function () {
                 globalThis.__out = "should-not-resolve";
@@ -14989,7 +15633,7 @@ mod frame_tests {
     fn db_module_resolves_with_expected_shape() {
         let _ = init(dummy_logger());
         set_engine_ops(Some(db_ops()));
-        load_plugin_js("dbshape", r#"
+        load_body("dbshape", r#"
             var { Database } = require("@s2script/db");
             globalThis.__out = (typeof Database.open === "function") + "," + (typeof Database.registerDriver === "function");
         "#, "{}");
@@ -15006,7 +15650,7 @@ mod frame_tests {
         let _ = init(dummy_logger());
         set_engine_ops(Some(db_ops()));
         let name = unique_db_name("t4_roundtrip");
-        load_plugin_js("dbmod", &format!(r#"
+        load_body("dbmod", &format!(r#"
             var {{ Database }} = require("@s2script/db");
             globalThis.__out = "pending";
             Database.open("{name}").then(function (db) {{
@@ -15042,7 +15686,7 @@ mod frame_tests {
     fn db_module_register_driver_seam_overrides_by_name() {
         let _ = init(dummy_logger());
         set_engine_ops(Some(db_ops()));
-        load_plugin_js("dbdrv", r#"
+        load_body("dbdrv", r#"
             var { Database } = require("@s2script/db");
             globalThis.__out = "pending";
             Database.registerDriver({
@@ -15125,7 +15769,7 @@ mod frame_tests {
     fn fetch_native_resolves_on_a_later_drain_with_the_response_payload() {
         init(dummy_logger()).unwrap();
         let port = spawn_local_http_server("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
-        load_plugin_js(
+        load_body(
             "fetchp",
             &format!(
                 r#"
@@ -15162,7 +15806,7 @@ mod frame_tests {
     fn fetch_native_404_resolves_with_ok_false() {
         init(dummy_logger()).unwrap();
         let port = spawn_local_http_server("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
-        load_plugin_js(
+        load_body(
             "fetch404",
             &format!(
                 r#"
@@ -15196,7 +15840,7 @@ mod frame_tests {
     #[test]
     fn fetch_native_bad_host_rejects_the_promise() {
         init(dummy_logger()).unwrap();
-        load_plugin_js(
+        load_body(
             "fetchbad",
             r#"
             globalThis.__out = "pending";
@@ -15232,7 +15876,7 @@ mod frame_tests {
     #[test]
     fn http_module_resolves_with_expected_shape() {
         init(dummy_logger()).unwrap();
-        load_plugin_js(
+        load_body(
             "httpshape",
             r#"
             var { fetch } = require("@s2script/http");
@@ -15254,7 +15898,7 @@ mod frame_tests {
         let port = spawn_local_http_server(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9\r\n\r\n{\"a\":\"b\"}",
         );
-        load_plugin_js(
+        load_body(
             "httpmod",
             &format!(
                 r#"
@@ -15333,7 +15977,7 @@ mod frame_tests {
     fn ws_connect_send_on_message_round_trips_the_echo() {
         init(dummy_logger()).unwrap();
         let port = spawn_local_ws_echo_server();
-        load_plugin_js(
+        load_body(
             "wsp",
             &format!(
                 r#"
@@ -15371,7 +16015,7 @@ mod frame_tests {
     #[test]
     fn ws_connect_bad_host_rejects_the_promise() {
         init(dummy_logger()).unwrap();
-        load_plugin_js(
+        load_body(
             "wsbad",
             r#"
             globalThis.__out = "pending";
@@ -15408,7 +16052,7 @@ mod frame_tests {
         let port = spawn_local_ws_echo_server();
 
         // Plugin A opens the only connection.
-        load_plugin_js(
+        load_body(
             "wsOwnerA",
             &format!(
                 r#"
@@ -15434,7 +16078,7 @@ mod frame_tests {
         assert!(a_id >= 0, "plugin A's connect never resolved");
 
         // Plugin B never opened anything — it tries to subscribe directly to A's numeric conn id.
-        load_plugin_js("wsOwnerB", r#"globalThis.__spied = "none";"#, "{}");
+        load_body("wsOwnerB", r#"globalThis.__spied = "none";"#, "{}");
         eval_in_context(
             "wsOwnerB",
             &format!(r#"__s2_ws_on({a_id}, "message", function (m) {{ globalThis.__spied = m; }});"#, a_id = a_id),
@@ -15469,7 +16113,7 @@ mod frame_tests {
     #[test]
     fn ws_module_resolves_with_expected_shape() {
         init(dummy_logger()).unwrap();
-        load_plugin_js(
+        load_body(
             "wsshape",
             r#"
             var { WebSocket } = require("@s2script/ws");
@@ -15490,7 +16134,7 @@ mod frame_tests {
     fn ws_module_connect_send_on_message_round_trip() {
         init(dummy_logger()).unwrap();
         let port = spawn_local_ws_echo_server();
-        load_plugin_js(
+        load_body(
             "wsmod",
             &format!(
                 r#"
@@ -15531,7 +16175,7 @@ mod frame_tests {
     fn ws_module_self_close_fires_on_close() {
         init(dummy_logger()).unwrap();
         let port = spawn_local_ws_echo_server();
-        load_plugin_js(
+        load_body(
             "wsclose",
             &format!(
                 r#"
@@ -15599,7 +16243,7 @@ mod frame_tests {
     fn net_tcp_connect_send_data_round_trips_the_echo() {
         init(dummy_logger()).unwrap();
         let port = spawn_local_tcp_echo_server();
-        load_plugin_js(
+        load_body(
             "netp",
             &format!(
                 r#"
@@ -15642,7 +16286,7 @@ mod frame_tests {
     #[test]
     fn net_connect_bad_port_rejects_the_promise() {
         init(dummy_logger()).unwrap();
-        load_plugin_js(
+        load_body(
             "netbad",
             r#"
             globalThis.__out = "pending";
@@ -15694,7 +16338,7 @@ mod frame_tests {
     fn net_udp_empty_datagram_round_trips_as_zero_length_uint8array() {
         init(dummy_logger()).unwrap();
         let port = spawn_local_udp_echo_server();
-        load_plugin_js(
+        load_body(
             "netudp",
             &format!(
                 r#"
@@ -15987,7 +16631,7 @@ mod frame_tests {
     #[test]
     fn topmenu_add_snapshot_and_owner_scoped() {
         init(dummy_logger()).unwrap();
-        load_plugin_js("tm_a", r#"
+        load_body("tm_a", r#"
             var { TopMenu } = globalThis.__s2pkg_topmenu;
             TopMenu.addCategory("Player Commands");
             TopMenu.addItem("Player Commands", { id: "a:kick", name: "Kick", flags: 8, onSelect: function(){} });
@@ -16012,7 +16656,7 @@ mod frame_tests {
     #[test]
     fn topmenu_select_dispatches_to_owner_post_drain() {
         init(dummy_logger()).unwrap();
-        load_plugin_js("tm_b", r#"
+        load_body("tm_b", r#"
             var { TopMenu } = globalThis.__s2pkg_topmenu;
             globalThis.__tm_picked = null;
             TopMenu.addItem("Player Commands", { id: "b:kick", name: "Kick", flags: 8,
@@ -16034,7 +16678,7 @@ mod frame_tests {
     #[test]
     fn topmenu_unload_drops_owner_items() {
         init(dummy_logger()).unwrap();
-        load_plugin_js("tm_c", r#"
+        load_body("tm_c", r#"
             var { TopMenu } = globalThis.__s2pkg_topmenu;
             TopMenu.addItem("Player Commands", { id: "c:ban", name: "Ban", flags: 2, onSelect: function(){} });
         "#, "{}");
@@ -16050,7 +16694,7 @@ mod frame_tests {
         // snapshot must return items in REGISTRATION order (by seq), not random HashMap order — the spec
         // commits the MVP to insertion order + stable-across-restarts. Register many so a HashMap would
         // very likely scramble them.
-        load_plugin_js("tm_ord", r#"
+        load_body("tm_ord", r#"
             var { TopMenu } = globalThis.__s2pkg_topmenu;
             ["zeta","alpha","mike","bravo","yankee","charlie","delta","echo"].forEach(function (n, i) {
                 TopMenu.addItem("Player Commands", { id: "ord:" + i, name: n, flags: 0, onSelect: function(){} });

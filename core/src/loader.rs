@@ -69,29 +69,18 @@ fn api_version_compatible(api_version: &str) -> bool {
     matches!(parse_api_major(api_version), Some(m) if m == HOST_API_VERSION_MAJOR)
 }
 
-/// Load a plugin's JS, then reconcile its manifest `publishes` (design spec §4.3).
+/// Start a plugin's load (L1 lifecycle v2). Records the manifest version (for the `Active`
+/// breadcrumb), then STARTS the awaited-factory load. The plugin's actual transition
+/// (arm-at-Active or teardown-on-Failure) and its `publishes` reconciliation now happen inside
+/// `v8host::finalize_loading_plugins` — inline on the synchronous fast-path (the whole base suite)
+/// or on a later `frame_async_drain` for an async factory. A `publishes` mismatch there fails the
+/// load (WARN + teardown), so a typo'd `publishInterface` name never runs green — the silent drift
+/// this design exists to remove.
 ///
-/// A plugin that declares an interface it does not end up owning FAILS ITS LOAD: WARN + teardown,
-/// so it does not run at all. Without this, a typo'd `publishInterface` name loads green and the
-/// gap only surfaces later, in a consumer, as `InterfaceUnavailable` — the silent drift this
-/// design exists to remove.
-///
-/// Degrade per-descriptor: only THIS plugin is refused; the framework keeps running. Same posture
-/// as the apiVersion gate above, which likewise declines to load a plugin it cannot honour.
-///
-/// The caller records the watch entry either way — a `publishes` mismatch is deterministic, so
-/// re-trying it every poll would only spam. Editing the plugin bumps its mtime and re-tries.
-fn load_and_reconcile(manifest: &Manifest, js: &str, cfg: &str) {
+/// Degrade per-descriptor: only THIS plugin is refused; the framework keeps running.
+fn start_load(manifest: &Manifest, js: &str, cfg: &str) {
+    crate::v8host::set_plugin_version(&manifest.id, &manifest.version);
     crate::v8host::load_plugin_js(&manifest.id, js, cfg);
-    if let Err(e) = crate::v8host::reconcile_publishes(&manifest.id) {
-        crate::v8host::log_warn(&format!(
-            "WARN: load('{}'): {} — refusing the load (the plugin is NOT running)",
-            manifest.id, e
-        ));
-        crate::v8host::unload_plugin(&manifest.id);
-    } else {
-        crate::crash::breadcrumb::plugin_loaded(&manifest.id, &manifest.version);
-    }
 }
 
 /// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects.
@@ -227,6 +216,11 @@ pub(crate) fn request_reload(id: &str) -> bool {
     if known { PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Reload(id.to_string()))); }
     known
 }
+/// L1 lifecycle v2: start any loads whose dependency wait window has cleared. Called at the tail of
+/// `v8host::finalize_loading_plugins` once a plugin reaches Active (a producer becoming available may
+/// unblock waiting consumers). No-op stub until T4 builds the topo/waiting/timeout machinery.
+pub(crate) fn start_unblocked_waiters() {}
+
 /// Enqueue a load of a suppressed (previously `sm plugins unload`ed) plugin. False if not suppressed.
 pub(crate) fn request_load(id: &str) -> bool {
     let suppressed = SUPPRESSED.with(|s| s.borrow().values().any(|v| v == id));
@@ -261,7 +255,7 @@ fn drain_pending_ops() {
                         crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                         crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                         let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                        load_and_reconcile(&manifest, &js, &cfg);
+                        start_load(&manifest, &js, &cfg);
                         crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
                         WATCH_STATE.with(|ws| { ws.borrow_mut().insert(path.clone(), WatchedPlugin { mtime, id: manifest.id }); });
@@ -375,7 +369,7 @@ pub(crate) fn poll_plugins() {
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                    load_and_reconcile(&manifest, &js, &cfg);
+                    start_load(&manifest, &js, &cfg);
                     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
@@ -403,7 +397,7 @@ pub(crate) fn poll_plugins() {
                     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
                     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
                     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                    load_and_reconcile(&manifest, &js, &cfg);
+                    start_load(&manifest, &js, &cfg);
                     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                     inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
                 }
