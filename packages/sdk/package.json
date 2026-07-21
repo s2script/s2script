@@ -14,7 +14,9 @@
   "dependencies": {
     "esbuild": "^0.25.0",
     "adm-zip": "^0.5.16",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "eslint": "^10.7.0",
+    "@s2script/eslint-plugin": "0.1.0"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.7"

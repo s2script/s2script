@@ -1,0 +1,5 @@
+{
+  "name": "@demo/lint-violation",
+  "version": "0.1.0",
+  "main": "src/plugin.ts"
+}

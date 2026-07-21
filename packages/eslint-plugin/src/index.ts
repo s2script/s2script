@@ -7,6 +7,7 @@ import { noCtxEscape } from "./rules/no-ctx-escape.ts";
 import { noFloatingPromiseInFactory } from "./rules/no-floating-promise-in-factory.ts";
 import { noBigintInInterfacePayloads } from "./rules/no-bigint-in-interface-payloads.ts";
 import { noAwaitInRawView } from "./rules/no-await-in-raw-view.ts";
+import { recommended, buildConfig } from "./configs.ts";
 
 const plugin = {
   meta: { name: "@s2script/eslint-plugin", version: "0.1.0" },
@@ -20,6 +21,11 @@ const plugin = {
     recommended?: (opts?: { tsconfigRootDir?: string }) => unknown[];
     build?: (programs: unknown[]) => unknown[];
   },
+};
+
+plugin.configs = {
+  recommended: (opts?: { tsconfigRootDir?: string }) => recommended(plugin, opts),
+  build: (programs: unknown[]) => buildConfig(plugin, programs),
 };
 
 export default plugin;

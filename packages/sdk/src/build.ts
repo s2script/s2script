@@ -20,6 +20,7 @@ import { derivePublishes, hashContract, expandPublishes } from "./publishes.ts";
 import { STAMPED_API_VERSION } from "./api-version.ts";
 import { localContractPath } from "./contracts.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
+import { lintPlugin } from "./lint/lint.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -67,6 +68,14 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     throw new Error(`typecheck failed (${tc.diagnostics.length} error(s)):\n${formatDiagnostics(tc.diagnostics)}`);
   }
   const scan = scanPluginProgram(tc.program!, absDir);
+
+  // --- Residual-rule lint gate (B2): the pinned eslint-plugin-s2script rules, in-process,
+  //     AFTER tsc (spec §5.3). Errors abort the build — no .s2sp. Warnings pass through.
+  const lint = await lintPlugin(absDir, tc.program!);
+  if (!lint.ok) {
+    throw new Error(`lint failed (${lint.errorCount} error(s)):\n${lint.output}`);
+  }
+  if (lint.output.trim().length > 0) console.warn(lint.output);
 
   // --- publishes: reconciliation IS generation (north-star §5.2). The name-set comes from code;
   //     "self" is auto-derived; an authored block must agree exactly; dynamic names are refused. ---
