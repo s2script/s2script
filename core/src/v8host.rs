@@ -10906,6 +10906,18 @@ pub(crate) fn is_failed(id: &str) -> bool {
     FAILED_PLUGINS.with(|f| f.borrow().contains_key(id))
 }
 
+/// Mark a plugin FAILED without it ever loading (loader refusals: apiVersion major, and — B1 —
+/// a `compiledAgainst` typesSha256 mismatch). Shows as `failed` in `sm plugins list`; cleared by
+/// the next successful load (load_plugin_js clears on fresh load) or by `clear_failed`.
+pub(crate) fn set_failed(id: &str, reason: &str) {
+    FAILED_PLUGINS.with(|f| { f.borrow_mut().insert(id.to_string(), reason.to_string()); });
+}
+
+/// Drop a FAILED entry (loader: the file vanished — a removed plugin is not `failed`, it is gone).
+pub(crate) fn clear_failed(id: &str) {
+    FAILED_PLUGINS.with(|f| { f.borrow_mut().remove(id); });
+}
+
 /// Every plugin id whose load FAILED (for `sm plugins list`'s `failed` state).
 pub(crate) fn failed_plugin_ids() -> Vec<String> {
     FAILED_PLUGINS.with(|f| f.borrow().keys().cloned().collect())

@@ -473,10 +473,18 @@ pub(crate) fn poll_plugins() {
             Action::Load { path, mtime } => match read_file_and_parse(&path) {
                 Ok((manifest, js)) => {
                     if !api_version_compatible(&manifest.api_version) {
-                        crate::v8host::log_warn(&format!(
-                            "WARN: poll_plugins: refusing {:?}: apiVersion {:?} incompatible with host major {}",
-                            path, manifest.api_version, HOST_API_VERSION_MAJOR
-                        ));
+                        let reason = format!(
+                            "apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)",
+                            manifest.api_version, HOST_API_VERSION_MAJOR
+                        );
+                        crate::v8host::log_warn(&format!("WARN: poll_plugins: refusing {:?}: {}", path, reason));
+                        crate::v8host::set_failed(&manifest.id, &reason);
+                        // Remember the refusal by path+mtime: with a WATCH_STATE row the next scan
+                        // diffs this file as UNCHANGED (no action, no re-WARN). A rebuilt file has a
+                        // new mtime -> Reload action -> re-evaluated. This is the re-warn-bug fix.
+                        WATCH_STATE.with(|ws| {
+                            ws.borrow_mut().insert(path.clone(), WatchedPlugin { mtime, id: manifest.id.clone() });
+                        });
                         continue;
                     }
                     order_input.push((
@@ -503,9 +511,15 @@ pub(crate) fn poll_plugins() {
                     Ok((manifest, js)) => {
                         if !api_version_compatible(&manifest.api_version) {
                             crate::v8host::log_warn(&format!(
-                                "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {}",
+                                "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {} - keeping the running version",
                                 path, manifest.api_version, HOST_API_VERSION_MAJOR
                             ));
+                            // Failed-reload doctrine (same as the typecheck gate): the RUNNING version
+                            // stays untouched. Bump the stored mtime so this WARN fires once per
+                            // file version instead of every scan.
+                            WATCH_STATE.with(|ws| {
+                                if let Some(wp) = ws.borrow_mut().get_mut(&path) { wp.mtime = mtime; }
+                            });
                             continue;
                         }
                         order_input.push((
@@ -528,6 +542,7 @@ pub(crate) fn poll_plugins() {
                 let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
                 if !was_waiting { crate::v8host::unload_plugin(&id); }
                 crate::v8host::clear_pending_handoff(&id);   // Slice 5E.3: a final removal discards any captured handoff
+                crate::v8host::clear_failed(&id);            // B1: a removed refused/failed file is gone, not `failed`
                 removes.push(path);
             }
         }
@@ -937,5 +952,42 @@ mod tests {
         let m: Manifest = serde_json::from_str(json).expect("parse");
         assert_eq!(m.publishes["@community/mapchooser"].version, "1.2.0");
         assert!(!m.publishes.contains_key("@edge/mce"));
+    }
+
+    /// B1: a refused (apiVersion-incompatible) .s2sp is remembered by path+mtime — one WARN,
+    /// a `failed` state, and NO re-processing on later scans until the file changes.
+    #[test]
+    fn refused_load_is_remembered_by_path_and_mtime() {
+        let dir = std::env::temp_dir().join(format!("s2s-refuse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mk tempdir");
+        let bytes = make_test_s2sp(
+            r#"{"id":"@old/one","version":"0.1.0","apiVersion":"1.x"}"#,
+            "module.exports={};",
+        );
+        let p = dir.join("old.s2sp");
+        std::fs::write(&p, &bytes).expect("write s2sp");
+        PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
+
+        // At least one real scan regardless of the throttle counter's current phase.
+        for _ in 0..(POLL_THROTTLE as usize + 1) { poll_plugins(); }
+
+        assert!(
+            WATCH_STATE.with(|ws| ws.borrow().contains_key(&p)),
+            "refusal must be remembered as a WATCH_STATE row (path+mtime) — no rescan-and-rewarn"
+        );
+        assert!(crate::v8host::is_failed("@old/one"), "refusal is operator-visible as `failed`");
+
+        // Unchanged file ⇒ the diff yields NO action (this IS warn-once, structurally).
+        let mtime_before = WATCH_STATE.with(|ws| ws.borrow().get(&p).map(|w| w.mtime));
+        for _ in 0..(POLL_THROTTLE as usize + 1) { poll_plugins(); }
+        let mtime_after = WATCH_STATE.with(|ws| ws.borrow().get(&p).map(|w| w.mtime));
+        assert_eq!(mtime_before, mtime_after, "second scan must not re-process the refused file");
+
+        // Cleanup so later tests on this (single) test thread see no leftovers.
+        WATCH_STATE.with(|ws| { ws.borrow_mut().remove(&p); });
+        crate::v8host::clear_failed("@old/one");
+        PLUGINS_DIR.with(|d| *d.borrow_mut() = None);
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
