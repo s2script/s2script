@@ -15,10 +15,11 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
-import { assertPublishesTypes } from "./publish-gate.ts";
-import { derivePublishes, hashContract } from "./publishes.ts";
+import { assertPublishesTypes, hasPublishes } from "./publish-gate.ts";
+import { derivePublishes, hashContract, expandPublishes } from "./publishes.ts";
 import { STAMPED_API_VERSION } from "./api-version.ts";
 import { localContractPath } from "./contracts.ts";
+import { scanPluginProgram } from "./publish-scan.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -49,22 +50,82 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   const pkgPath = join(absDir, "package.json");
   const pkg: PluginPackageJson = JSON.parse(readFileSync(pkgPath, "utf8"));
 
-  // --- publishes ⇒ types gate (before we spend cycles on tsc/esbuild) ---
-  const gate = assertPublishesTypes(pkg, absDir);
-  if (!gate.ok) {
-    throw new Error(`publish gate failed: ${gate.error}`);
+  const s2 = pkg.s2script ?? {};
+
+  // --- Cheap fail-fast: config block shape (no program needed). ---
+  const config = s2.config ?? undefined;
+  if (config !== undefined) {
+    const cfgErrs = validateConfigBlock(config);
+    if (cfgErrs.length) throw new Error(`invalid s2script.config:\n  ${cfgErrs.join("\n  ")}`);
   }
 
-  // --- Derive + validate the publishes block BEFORE tsc/esbuild (fail fast). derivePublishes
-  //     throws on a RANGE (which needs the registry — spec §4.6, §10), so a plugin with an
-  //     unresolvable publishes map is rejected before it pays for a full typecheck + bundle. ---
-  const s2 = pkg.s2script ?? {};
-  const derivedPublishes = derivePublishes(s2.publishes, pkg.name, pkg.version, gate.typesPath);
-
-  // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on error. ---
+  // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on
+  //     error. Runs FIRST now: the program it builds feeds the publishes/use derivation (B1)
+  //     and the lint gate (B2). ---
   const tc = typecheckPlugin(absDir, packagesDir !== undefined ? { packagesDir } : undefined);
   if (!tc.ok) {
     throw new Error(`typecheck failed (${tc.diagnostics.length} error(s)):\n${formatDiagnostics(tc.diagnostics)}`);
+  }
+  const scan = scanPluginProgram(tc.program!, absDir);
+
+  // --- publishes: reconciliation IS generation (north-star §5.2). The name-set comes from code;
+  //     "self" is auto-derived; an authored block must agree exactly; dynamic names are refused. ---
+  if (scan.dynamicPublishSites.length > 0) {
+    throw new Error(
+      `ctx.publish name must be a string literal (the manifest publishes block is derived from code):\n  ` +
+        scan.dynamicPublishSites.join("\n  "),
+    );
+  }
+  let effectivePublishes = s2.publishes;
+  if (!hasPublishes(effectivePublishes)) {
+    if (scan.publishNames.length === 1 && scan.publishNames[0] === pkg.name) {
+      effectivePublishes = "self"; // generated: code publishes exactly this package's own contract
+    } else if (scan.publishNames.length > 0) {
+      throw new Error(
+        `code publishes ${JSON.stringify(scan.publishNames)} but s2script.publishes is missing — ` +
+          `a contract named differently from the package needs an authored entry with a concrete version`,
+      );
+    }
+  } else {
+    const authoredNames = Object.keys(expandPublishes(effectivePublishes, pkg.name, pkg.version)).sort();
+    const codeNames = [...scan.publishNames].sort();
+    if (JSON.stringify(authoredNames) !== JSON.stringify(codeNames)) {
+      throw new Error(
+        `publishes drift: package.json declares ${JSON.stringify(authoredNames)} but the code's ` +
+          `ctx.publish calls are ${JSON.stringify(codeNames)} — fix whichever is wrong (the manifest ` +
+          `is generated from code; the loader re-verifies at Active)`,
+      );
+    }
+  }
+
+  // --- publishes ⇒ types gate + hash (unchanged mechanics, now fed the EFFECTIVE block). ---
+  const gate = assertPublishesTypes({ ...pkg, s2script: { ...s2, publishes: effectivePublishes as never } }, absDir);
+  if (!gate.ok) {
+    throw new Error(`publish gate failed: ${gate.error}`);
+  }
+  const derivedPublishes = derivePublishes(
+    effectivePublishes as never, pkg.name, pkg.version, gate.typesPath,
+  );
+
+  // --- Dependency advisories (lint-grade, WARN not error — spec §5.2 table, last row). ---
+  const pluginDependencies = s2.pluginDependencies ?? {};
+  const optionalPluginDependencies = s2.optionalPluginDependencies ?? {};
+  const declaredDeps = new Set([
+    ...Object.keys(pluginDependencies),
+    ...Object.keys(optionalPluginDependencies),
+  ]);
+  for (const used of scan.useNames) {
+    if (!declaredDeps.has(used)) {
+      console.warn(
+        `WARN: ctx.use/tryUse(${JSON.stringify(used)}) is not declared under s2script.pluginDependencies/` +
+          `optionalPluginDependencies — it will throw at runtime`,
+      );
+    }
+  }
+  for (const dep of declaredDeps) {
+    if (!scan.useNames.includes(dep)) {
+      console.warn(`WARN: dependency ${JSON.stringify(dep)} is declared but never ctx.use()d`);
+    }
   }
 
   const { name, version } = pkg;
@@ -78,13 +139,6 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     );
   }
   const apiVersion = STAMPED_API_VERSION;
-  const pluginDependencies = s2.pluginDependencies ?? {};
-  const optionalPluginDependencies = s2.optionalPluginDependencies ?? {};
-  const config = s2.config ?? undefined;
-  if (config !== undefined) {
-    const cfgErrs = validateConfigBlock(config);
-    if (cfgErrs.length) throw new Error(`invalid s2script.config:\n  ${cfgErrs.join("\n  ")}`);
-  }
 
   // Every builtin package + every inter-plugin dependency name is esbuild-external (resolved at
   // runtime by core, never bundled).

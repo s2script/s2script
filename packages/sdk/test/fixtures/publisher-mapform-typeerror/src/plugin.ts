@@ -1,16 +1,15 @@
-import { publishInterface } from "@s2script/interfaces";
+import { plugin } from "@s2script/sdk/plugin";
 import type { Contract } from "../api";
 
-const impl: Contract = {
-  ping(): boolean {
-    return true;
-  },
-};
-
-// Deliberate type error: this fixture exists to prove the RANGE publishes is rejected BEFORE the
-// typecheck gate runs. A string is not assignable to number, so tsc would fail here — but the range
-// rejection must fire first (fail fast), so this error must NOT surface.
-const deliberateTypeError: number = "not a number";
-void deliberateTypeError;
-
-publishInterface("@community/contract", impl);
+export default plugin((ctx) => {
+  const impl: Contract = {
+    ping(): boolean {
+      return true;
+    },
+  };
+  // B1 reordered the build: the typecheck gate now runs FIRST (it feeds the publishes/use
+  // derivation), so the old "range rejected BEFORE typecheck" fail-fast ordering no longer exists.
+  // This fixture typechecks clean and publishes exactly the authored interface name, so the RANGE
+  // "^1.0.0" is what the build rejects — surfaced as "is a RANGE", never as "typecheck failed".
+  ctx.publish("@community/contract", impl);
+});

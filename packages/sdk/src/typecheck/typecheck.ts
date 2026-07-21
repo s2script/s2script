@@ -7,7 +7,7 @@ import { sharedProgramOptions } from "../tsconfig-shared.ts";
 import { localContractPath } from "../contracts.ts";
 
 export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
-export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; }
+export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; program?: ts.Program; }
 
 /** Every `.d.ts` the plugin ships under `src/` (non-recursive: matches the scaffold's layout).
  *  These are the plugin's own ambient declarations and belong in its typecheck. */
@@ -132,7 +132,7 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       }
       return { file, line, col, code: d.code, message: ts.flattenDiagnosticMessageText(d.messageText, "\n") };
     });
-    return { ok: out.length === 0, diagnostics: out };
+    return { ok: out.length === 0, diagnostics: out, program };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

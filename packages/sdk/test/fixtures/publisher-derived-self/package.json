@@ -1,0 +1,6 @@
+{
+  "name": "@demo/derived-self",
+  "version": "1.2.0",
+  "main": "src/plugin.ts",
+  "types": "api.d.ts"
+}
