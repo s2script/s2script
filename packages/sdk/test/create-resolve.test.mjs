@@ -130,7 +130,7 @@ test("create --game none scaffolds an engine-generic plugin", async () => {
     yes: true,
   });
   const src = (await import("node:fs")).readFileSync(join(tmp, "src", "plugin.ts"), "utf8");
-  assert.match(src, /OnGameFrame/);
+  assert.match(src, /ctx\.server\.onGameFrame/);
   assert.match(src, /delay/);
   const tc = typecheckPlugin(tmp, { packagesDir });
   assert.equal(tc.ok, true, JSON.stringify(tc.diagnostics));

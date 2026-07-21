@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdtempSy
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { resolvePackagesDir } from "../packages-resolve.ts";
+import { sharedProgramOptions } from "../tsconfig-shared.ts";
 
 export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
 export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; }
@@ -79,16 +80,9 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   ].filter((d) => !isAlwaysResolved(d) && !locallyDeclared.has(d));
 
   const options: ts.CompilerOptions = {
-    strict: true,
-    noEmit: true,
     // Accept explicit `.ts` import extensions (node type-stripping requires them for source-to-source
     // imports; esbuild strips them at bundle time). Backward-compatible — extensionless imports still resolve.
-    allowImportingTsExtensions: true,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    module: ts.ModuleKind.ESNext,
-    target: ts.ScriptTarget.ES2020,
-    lib: ["lib.es2020.d.ts"],
-    types: [],
+    ...sharedProgramOptions(ts),
     baseUrl: packagesDir,
     paths: {
       // Builtins are `@s2script/sdk/<cap>` → packages/sdk/<cap>.d.ts. The `@s2script/*` fallback
@@ -98,7 +92,6 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       "@s2script/sdk/*": ["sdk/*.d.ts"],
       "@s2script/*": ["*/index.d.ts"],
     },
-    skipLibCheck: true,
   };
 
   // Globals live at the consolidated path (the legacy packages/globals/ dir is deleted).

@@ -11,6 +11,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isPackagesDir } from "../packages-resolve.ts";
+import { sharedCompilerOptionsJson } from "../tsconfig-shared.ts";
 
 export type GameChoice = "cs2" | "none";
 export type TemplateChoice = "minimal";
@@ -173,35 +174,29 @@ function fileDevDeps(packagesDir: string, game: GameChoice): Record<string, stri
 
 function pluginSource(game: GameChoice): string {
   if (game === "cs2") {
-    return `import { Commands } from "@s2script/sdk/commands";
+    return `import { plugin } from "@s2script/sdk/plugin";
 import { Chat } from "@s2script/sdk/chat";
 
-export function onLoad(): void {
-  Commands.register("hello", (ctx) => {
-    ctx.reply("hello from s2script");
-    if (ctx.callerSlot >= 0) {
-      Chat.toSlot(ctx.callerSlot, "hello from s2script");
+export default plugin((ctx) => {
+  ctx.commands.register("hello", (cmd) => {
+    cmd.reply("hello from s2script");
+    if (cmd.callerSlot >= 0) {
+      Chat.toSlot(cmd.callerSlot, "hello from s2script");
     }
   });
-}
-
-export function onUnload(): void {}
+});
 `;
   }
-  return `import { OnGameFrame } from "@s2script/sdk/frame";
+  return `import { plugin } from "@s2script/sdk/plugin";
 import { delay } from "@s2script/sdk/timers";
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   let n = 0;
-  OnGameFrame.subscribe(() => {
+  ctx.server.onGameFrame(() => {
     n += 1;
   });
-  void delay(1000).then(() => {
-    console.log("s2script plugin alive; frames so far:", n);
-  });
-}
-
-export function onUnload(): void {}
+  void delay(1000).then(() => console.log("s2script plugin alive; frames so far:", n));
+});
 `;
 }
 
@@ -209,16 +204,7 @@ function tsconfigJson(): string {
   return (
     JSON.stringify(
       {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          moduleResolution: "bundler",
-          module: "ESNext",
-          target: "ES2020",
-          lib: ["ES2020"],
-          types: [],
-          skipLibCheck: true,
-        },
+        compilerOptions: sharedCompilerOptionsJson,
         include: ["src", "node_modules/@s2script/sdk/globals.d.ts"],
       },
       null,
@@ -247,7 +233,7 @@ function packageJsonContent(
         },
         devDependencies,
         s2script: {
-          apiVersion: "1.x",
+          apiVersion: "2.x",
         },
       },
       null,
