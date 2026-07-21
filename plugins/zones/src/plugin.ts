@@ -5,18 +5,16 @@
 // DETECTION BACKEND: REAL ENGINE TRIGGERS. Each zone is a runtime `trigger_multiple` whose collision is an
 // arbitrary box built from the zone bounds (createEntity -> SetModel registers the touch aggregate ->
 // SetSolid(SOLID_BBOX) reshapes it to the box). The engine's own touch system fires OnStartTouch/OnEndTouch,
-// which we hook via Entity.onOutput -> enter/leave. This replaces the previous ~8Hz origin-polling backend:
-// engine-accurate edges, no per-frame position math, and it can see non-player entities too. A tiny poll
-// remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
+// which we hook via ctx.entities.onOutput -> enter/leave. This replaces the previous ~8Hz origin-polling
+// backend: engine-accurate edges, no per-frame position math, and it can see non-player entities too. A tiny
+// poll remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
 // engine-maintained inside-set).
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Database } from "@s2script/sdk/db";
 import { Server } from "@s2script/sdk/server";
 import { config } from "@s2script/sdk/config";
-import { OnGameFrame } from "@s2script/sdk/frame";
-import { publishInterface, PublishHandle } from "@s2script/sdk/interfaces";
-import { Entity } from "@s2script/sdk/entity";
+import type { PublishHandle } from "@s2script/sdk/interfaces";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
 import { Vector } from "@s2script/sdk/math";
 import { Chat } from "@s2script/sdk/chat";
@@ -25,7 +23,6 @@ import type { Zones } from "../api";
 interface Vec3 { x: number; y: number; z: number; }
 interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set<number>; trigger: TriggerZoneHandle | null; }
 
-let db: Database | null = null;
 let currentMap = "";
 const zones = new Map<string, Zone>();
 let iface: PublishHandle | null = null;
@@ -37,10 +34,6 @@ function emitDeleted(name: string): void { if (iface) iface.emit("deleted", { zo
 // system isn't live yet — it crashes), so we NEVER create a trigger inline: we queue the zone here and
 // build it on the next OnGameFrame, when the map is fully live. loadMap + upsertZone both queue.
 const pendingTriggers = new Set<string>();
-
-// Resolves once Database.open() + CREATE TABLE + the initial load have settled (success OR failure).
-let dbReadyResolve: () => void = () => {};
-const dbReady: Promise<void> = new Promise<void>((r) => { dbReadyResolve = r; });
 
 function sanitizeName(n: string): string { return (n || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64); }
 function sanitizeTag(t: string): string { return (t || "").toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 32); }
@@ -101,6 +94,11 @@ const IN_USE = 32;   // in_buttons.h (E)
 interface EditSession { name: string; cornerA: Vec3 | null; prevMask: number; expiresAt: number; preview: BeamHandle[]; }
 const edits = new Map<number, EditSession>();   // keyed by 0-based player slot
 
+// The editor poll lives on a ctx Scope, allocated + driven inside the factory; these module-level hooks let
+// the module-scoped session helpers (startMarking/cancelEdit) arm/idle that scope without reaching into it.
+let ensureEditPoll: () => void = () => {};
+let releaseEditPollIfIdle: () => void = () => {};
+
 function clearPreview(s: EditSession): void {
   for (const b of s.preview) { try { b.remove(); } catch { /* stale/already-gone */ } }
   s.preview = [];
@@ -110,6 +108,7 @@ function cancelEdit(slot: number, notice?: string): void {
   if (!s) return;
   clearPreview(s);
   edits.delete(slot);
+  releaseEditPollIfIdle();
   if (notice) Chat.toSlot(slot, notice);
 }
 function clearAllEdits(): void { for (const slot of Array.from(edits.keys())) cancelEdit(slot); }
@@ -125,6 +124,7 @@ function startMarking(slot: number, name: string): boolean {
   cancelEdit(slot);   // replace any prior session (and remove its preview)
   const verb = zones.has(name) ? "Editing" : "Creating";
   edits.set(slot, { name, cornerA: null, prevMask: pw.buttons, expiresAt: Date.now() + 60_000, preview: [] });
+  ensureEditPoll();
   Chat.toSlot(slot, `[zones] ${verb} zone '${name}': walk to a corner and press E; press E again at the opposite corner. (60s timeout; sm_zone_edit cancel to abort)`);
   return true;
 }
@@ -154,70 +154,57 @@ function playerByPawnIndex(idx: number): { slot: number; userId: number } | null
   return null;
 }
 
-async function loadMap(map: string): Promise<void> {
-  clearAllBeams();
-  clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
-  clearAllTriggers();
-  currentMap = map;
-  for (const name of zones.keys()) emitDeleted(name);   // map change: the old map's zones are cleared
-  zones.clear();
-  if (!db) return;
-  const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
-  for (const r of rows) {
-    const name = String(r.name);
-    zones.set(name, {
-      name,
-      min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
-      max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
-      tags: parseTags(r.tags),
-      inside: new Set<number>(),
-      trigger: null,
-    });
-    pendingTriggers.add(name);   // build on the next frame (entity system live)
-    emitCreated(zones.get(name)!);
-  }
-  console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
-}
+export default plugin(async (ctx) => {
+  // A DB failure now FAILS the load (fail-loud) rather than running a non-persistent, half-alive plugin.
+  const db = await Database.open("zones");
+  await db.execute(
+    "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, tags TEXT, PRIMARY KEY (map, name))");
+  try { await db.execute("ALTER TABLE zones ADD COLUMN tags TEXT"); } catch { /* duplicate column name — already migrated */ }
 
-async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: string[]): Promise<void> {
-  await dbReady;   // guarantee the DB is open (or failed) before we mutate
-  const prev = zones.get(name);
-  const t = tags !== undefined ? tags : (prev ? prev.tags : []);
-  zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
-  pendingTriggers.add(name);   // (re)build the trigger on the next frame
-  emitCreated(zones.get(name)!);
-  if (db) await db.execute(
-    "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, t.join(",")]);
-}
-
-function dropZone(name: string): void {
-  const z = zones.get(name);
-  if (z) removeTrigger(z);
-  zones.delete(name);
-  emitDeleted(name);
-  pendingTriggers.delete(name);
-  hideZone(name);
-  if (db) db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
-}
-
-export function onLoad(): void {
-  (async () => {
-    try {
-      db = await Database.open("zones");
-      await db.execute(
-        "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, tags TEXT, PRIMARY KEY (map, name))");
-      try { await db.execute("ALTER TABLE zones ADD COLUMN tags TEXT"); } catch { /* duplicate column name — already migrated */ }
-      await loadMap(Server.mapName);
-      console.log("[zones] onLoad — DB ready (real-trigger backend)");
-    } catch (e) {
-      console.log(`[zones] init error (zones will not persist): ${e}`);
-    } finally {
-      dbReadyResolve();
+  async function loadMap(map: string): Promise<void> {
+    clearAllBeams();
+    clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
+    clearAllTriggers();
+    currentMap = map;
+    for (const name of zones.keys()) emitDeleted(name);   // map change: the old map's zones are cleared
+    zones.clear();
+    const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
+    for (const r of rows) {
+      const name = String(r.name);
+      zones.set(name, {
+        name,
+        min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
+        max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
+        tags: parseTags(r.tags),
+        inside: new Set<number>(),
+        trigger: null,
+      });
+      pendingTriggers.add(name);   // build on the next frame (entity system live)
+      emitCreated(zones.get(name)!);
     }
-  })();
+    console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
+  }
 
-  Server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
+  async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: string[]): Promise<void> {
+    const prev = zones.get(name);
+    const t = tags !== undefined ? tags : (prev ? prev.tags : []);
+    zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+    pendingTriggers.add(name);   // (re)build the trigger on the next frame
+    emitCreated(zones.get(name)!);
+    await db.execute(
+      "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, t.join(",")]);
+  }
+
+  function dropZone(name: string): void {
+    const z = zones.get(name);
+    if (z) removeTrigger(z);
+    zones.delete(name);
+    emitDeleted(name);
+    pendingTriggers.delete(name);
+    hideZone(name);
+    db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
+  }
 
   const zonesImpl: Zones = {
     createZone(name: string, min: Vec3, max: Vec3): boolean {
@@ -258,16 +245,22 @@ export function onLoad(): void {
       if (!z || !Array.isArray(tags)) return false;
       const t = tags.map((x) => sanitizeTag(String(x))).filter((x) => x.length > 0);
       z.tags = t;
-      if (db) db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [t.join(","), currentMap, nm]).catch(() => {});
+      db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [t.join(","), currentMap, nm]).catch(() => {});
       return true;
     },
   };
-  iface = publishInterface("@s2script/zones", zonesImpl);
+
+  await loadMap(Server.mapName);
+  console.log("[zones] onLoad — DB ready (real-trigger backend)");
+
+  ctx.server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
+
+  iface = ctx.publish<Zones>("@s2script/zones", zonesImpl);
   console.log("[zones] publishing @s2script/zones");
 
-  // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. Entity.onOutput fires for
+  // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. onOutput fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.
-  Entity.onOutput("trigger_multiple", "OnStartTouch", (ev) => {
+  ctx.entities.onOutput("trigger_multiple", "OnStartTouch", (ev) => {
     if (!ev.caller || !ev.activator || !iface) return;
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;
@@ -276,7 +269,7 @@ export function onLoad(): void {
     z.inside.add(who.slot);
     iface.emit("enter", { zone: z.name, slot: who.slot, userId: who.userId });
   });
-  Entity.onOutput("trigger_multiple", "OnEndTouch", (ev) => {
+  ctx.entities.onOutput("trigger_multiple", "OnEndTouch", (ev) => {
     if (!ev.caller || !ev.activator || !iface) return;
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;
@@ -289,7 +282,7 @@ export function onLoad(): void {
   // Per-frame: (1) build any queued triggers now that the entity system is live; (2) a light STAY re-emit
   // for players the engine reports as currently inside (no position tests — just the engine-maintained set).
   let frame = 0;
-  OnGameFrame.subscribe(() => {
+  ctx.server.onGameFrame(() => {
     if (shown.size > 0) {
       const now = Date.now();
       for (const [name, entry] of shown) if (entry.expiresAt > 0 && now >= entry.expiresAt) hideZone(name);
@@ -309,10 +302,24 @@ export function onLoad(): void {
         iface.emit("stay", { zone: z.name, slot, userId: uid.get(slot) ?? -1 });
   });
 
-  // Dedicated editor poll: rising-edge E detection + a live rubber-band preview. A SECOND subscription that
-  // early-returns when no session is active (so it costs nothing when nobody is editing).
-  OnGameFrame.subscribe(() => {
-    if (edits.size === 0) return;
+  // Dedicated editor poll on a disposable Scope: it exists only while someone is editing. startMarking arms
+  // it (ensureEditPoll); cancelEdit releases it when the last session ends (releaseEditPollIfIdle). This
+  // replaces the old always-on second subscription that early-returned when no session was active.
+  const editPoll = ctx.createScope();
+  let editPollArmed = false;
+  ensureEditPoll = () => {
+    if (editPollArmed) return;
+    editPollArmed = true;
+    editPoll.server.onGameFrame(pollEditSessions);
+  };
+  releaseEditPollIfIdle = () => {
+    if (edits.size === 0 && editPollArmed) { editPoll.clear(); editPollArmed = false; }
+  };
+
+  // Rising-edge E detection + a live rubber-band preview. Runs only while `edits` is non-empty (the Scope is
+  // cleared otherwise). Clearing the scope from inside its own handler is safe — __s2_scope_dispose only
+  // prunes mux rows and the current dispatch snapshot already ran.
+  function pollEditSessions(): void {
     const now = Date.now();
     for (const [slot, s] of edits) {
       if (now >= s.expiresAt) { cancelEdit(slot, "[zones] Edit session timed out."); continue; }
@@ -357,89 +364,89 @@ export function onLoad(): void {
           .catch((e) => Chat.toSlot(slot, `[zones] Save failed: ${e}`));
       }
     }
-  });
+  }
 
   // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)
-  Commands.registerAdmin("sm_zone_add", ADMFLAG.GENERIC, (ctx) => {
-    const name = sanitizeName(ctx.args[0] || "");
-    if (!name) { ctx.reply("Usage: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)"); return; }
+  ctx.commands.registerAdmin("sm_zone_add", ADMFLAG.GENERIC, (cmd) => {
+    const name = sanitizeName(cmd.args[0] || "");
+    if (!name) { cmd.reply("Usage: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)"); return; }
     let box: { min: Vec3; max: Vec3 } | null = null;
-    if (ctx.args.length >= 7) {
-      const n = ctx.args.slice(1, 7).map((s) => parseFloat(s));
-      if (n.some((v) => !isFinite(v))) { ctx.reply("Invalid coordinates."); return; }
+    if (cmd.args.length >= 7) {
+      const n = cmd.args.slice(1, 7).map((s) => parseFloat(s));
+      if (n.some((v) => !isFinite(v))) { cmd.reply("Invalid coordinates."); return; }
       box = normBox({ x: n[0], y: n[1], z: n[2] }, { x: n[3], y: n[4], z: n[5] });
-    } else if (ctx.args.length === 1) {
+    } else if (cmd.args.length === 1) {
       // Bare in-game form: start the interactive E-mark session (same as sm_zone_edit).
-      if (ctx.callerSlot < 0) { ctx.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
-      if (!startMarking(ctx.callerSlot, name)) ctx.reply("No position — spawn in first, or give explicit coords.");
+      if (cmd.callerSlot < 0) { cmd.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
+      if (!startMarking(cmd.callerSlot, name)) cmd.reply("No position — spawn in first, or give explicit coords.");
       return;
     } else {
       // name + size (2..6 args): box around you (in-game). length is 2..6 here, so args[1] (the size) always exists.
-      if (ctx.callerSlot < 0) { ctx.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
-      const pw = Pawn.forSlot(ctx.callerSlot);
+      if (cmd.callerSlot < 0) { cmd.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
+      const pw = Pawn.forSlot(cmd.callerSlot);
       const o = pw ? pw.origin : null;
-      if (!o) { ctx.reply("No position — spawn in first, or give explicit coords."); return; }
-      const size = Math.abs(parseFloat(ctx.args[1])) || 128;
+      if (!o) { cmd.reply("No position — spawn in first, or give explicit coords."); return; }
+      const size = Math.abs(parseFloat(cmd.args[1])) || 128;
       box = normBox({ x: o.x - size, y: o.y - size, z: o.z - size }, { x: o.x + size, y: o.y + size, z: o.z + size });
     }
-    if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { ctx.reply("Zero-volume zone rejected."); return; }
+    if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { cmd.reply("Zero-volume zone rejected."); return; }
     const b = box;
     upsertZone(name, b)
-      .then(() => ctx.reply(`Zone '${name}' saved (${b.min.x.toFixed(0)},${b.min.y.toFixed(0)},${b.min.z.toFixed(0)})-(${b.max.x.toFixed(0)},${b.max.y.toFixed(0)},${b.max.z.toFixed(0)})`))
-      .catch((e) => ctx.reply(`Save failed: ${e}`));
+      .then(() => cmd.reply(`Zone '${name}' saved (${b.min.x.toFixed(0)},${b.min.y.toFixed(0)},${b.min.z.toFixed(0)})-(${b.max.x.toFixed(0)},${b.max.y.toFixed(0)},${b.max.z.toFixed(0)})`))
+      .catch((e) => cmd.reply(`Save failed: ${e}`));
   });
 
   // sm_zone_edit <name> — in-game: press E at two opposite corners; a live rubber-band box tracks between.
-  Commands.registerAdmin("sm_zone_edit", ADMFLAG.GENERIC, (ctx) => {
-    if (ctx.callerSlot < 0) { ctx.reply("sm_zone_edit is in-game only (it marks corners at your position)."); return; }
-    const raw = ctx.args[0] || "";
+  ctx.commands.registerAdmin("sm_zone_edit", ADMFLAG.GENERIC, (cmd) => {
+    if (cmd.callerSlot < 0) { cmd.reply("sm_zone_edit is in-game only (it marks corners at your position)."); return; }
+    const raw = cmd.args[0] || "";
     if (!raw || raw === "cancel") {
-      if (edits.has(ctx.callerSlot)) { cancelEdit(ctx.callerSlot); ctx.reply("Zone edit cancelled."); }
-      else ctx.reply("Usage: sm_zone_edit <name>  |  sm_zone_edit cancel");
+      if (edits.has(cmd.callerSlot)) { cancelEdit(cmd.callerSlot); cmd.reply("Zone edit cancelled."); }
+      else cmd.reply("Usage: sm_zone_edit <name>  |  sm_zone_edit cancel");
       return;
     }
     const name = sanitizeName(raw);
-    if (!name) { ctx.reply("Invalid zone name."); return; }
-    if (!startMarking(ctx.callerSlot, name)) ctx.reply("No position — spawn in first.");
+    if (!name) { cmd.reply("Invalid zone name."); return; }
+    if (!startMarking(cmd.callerSlot, name)) cmd.reply("No position — spawn in first.");
   });
 
-  Commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (ctx) => {
-    const name = sanitizeName(ctx.args[0] || "");
-    if (!name || !zones.has(name)) { ctx.reply(`No zone '${name}' on this map.`); return; }
+  ctx.commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (cmd) => {
+    const name = sanitizeName(cmd.args[0] || "");
+    if (!name || !zones.has(name)) { cmd.reply(`No zone '${name}' on this map.`); return; }
     dropZone(name);
-    ctx.reply(`Zone '${name}' deleted.`);
+    cmd.reply(`Zone '${name}' deleted.`);
   });
 
-  Commands.registerAdmin("sm_zone_tag", ADMFLAG.GENERIC, (ctx) => {
-    const name = sanitizeName(ctx.args[0] || "");
+  ctx.commands.registerAdmin("sm_zone_tag", ADMFLAG.GENERIC, (cmd) => {
+    const name = sanitizeName(cmd.args[0] || "");
     const z = zones.get(name);
-    if (!name || !z) { ctx.reply(`No zone '${name}' on this map. Usage: sm_zone_tag <name> [tag...] (no tags = clear)`); return; }
-    const tags = ctx.args.slice(1).map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
+    if (!name || !z) { cmd.reply(`No zone '${name}' on this map. Usage: sm_zone_tag <name> [tag...] (no tags = clear)`); return; }
+    const tags = cmd.args.slice(1).map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
     z.tags = tags;
-    if (db) db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [tags.join(","), currentMap, name]).catch(() => {});
-    ctx.reply(tags.length > 0 ? `Zone '${name}' tags: ${tags.join(", ")}` : `Zone '${name}' tags cleared.`);
+    db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [tags.join(","), currentMap, name]).catch(() => {});
+    cmd.reply(tags.length > 0 ? `Zone '${name}' tags: ${tags.join(", ")}` : `Zone '${name}' tags cleared.`);
   });
 
-  Commands.registerAdmin("sm_zone_list", ADMFLAG.GENERIC, (ctx) => {
-    const filter = ctx.args.length > 0 ? sanitizeTag(ctx.args[0]) : "";
+  ctx.commands.registerAdmin("sm_zone_list", ADMFLAG.GENERIC, (cmd) => {
+    const filter = cmd.args.length > 0 ? sanitizeTag(cmd.args[0]) : "";
     const list = filter ? zonesByTag(filter) : Array.from(zones.values());
-    ctx.reply(filter ? `Zones on ${currentMap} tagged '${filter}': ${list.length}` : `Zones on ${currentMap}: ${list.length}`);
+    cmd.reply(filter ? `Zones on ${currentMap} tagged '${filter}': ${list.length}` : `Zones on ${currentMap}: ${list.length}`);
     for (const z of list)
-      ctx.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) tags=[${z.tags.join(",")}] inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
+      cmd.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) tags=[${z.tags.join(",")}] inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
   });
 
-  Commands.registerAdmin("sm_zone_export", ADMFLAG.GENERIC, (ctx) => {
+  ctx.commands.registerAdmin("sm_zone_export", ADMFLAG.GENERIC, (cmd) => {
     const out: Record<string, { min: number[]; max: number[]; tags: string[] }> = {};
     for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z], tags: z.tags };
     config.writeFile(zonesFile(currentMap), JSON.stringify(out, null, 2));
-    ctx.reply(`Exported ${zones.size} zone(s) to ${zonesFile(currentMap)}.`);
+    cmd.reply(`Exported ${zones.size} zone(s) to ${zonesFile(currentMap)}.`);
   });
 
-  Commands.registerAdmin("sm_zone_import", ADMFLAG.GENERIC, (ctx) => {
+  ctx.commands.registerAdmin("sm_zone_import", ADMFLAG.GENERIC, (cmd) => {
     const raw = config.readFile(zonesFile(currentMap));
-    if (!raw) { ctx.reply(`No zones file for ${currentMap}.`); return; }
+    if (!raw) { cmd.reply(`No zones file for ${currentMap}.`); return; }
     let parsed: Record<string, { min: number[]; max: number[]; tags?: string[] }>;
-    try { parsed = JSON.parse(raw); } catch { ctx.reply("Zones file is not valid JSON."); return; }
+    try { parsed = JSON.parse(raw); } catch { cmd.reply("Zones file is not valid JSON."); return; }
     let n = 0;
     const pend: Promise<void>[] = [];
     for (const key of Object.keys(parsed)) {
@@ -451,39 +458,35 @@ export function onLoad(): void {
       pend.push(upsertZone(name, box, tags));
       n++;
     }
-    Promise.all(pend).then(() => ctx.reply(`Imported ${n} zone(s).`)).catch((err) => ctx.reply(`Import error: ${err}`));
+    Promise.all(pend).then(() => cmd.reply(`Imported ${n} zone(s).`)).catch((err) => cmd.reply(`Import error: ${err}`));
   });
 
-  Commands.registerAdmin("sm_zone_show", ADMFLAG.GENERIC, (ctx) => {
-    const arg = ctx.args[0] || "";
-    if (!arg) { ctx.reply("Usage: sm_zone_show <name|all> [seconds] (default 30; 0 = persistent)"); return; }
-    const seconds = ctx.args.length > 1 ? Math.max(0, ctx.argFloat(1, 30)) : 30;
+  ctx.commands.registerAdmin("sm_zone_show", ADMFLAG.GENERIC, (cmd) => {
+    const arg = cmd.args[0] || "";
+    if (!arg) { cmd.reply("Usage: sm_zone_show <name|all> [seconds] (default 30; 0 = persistent)"); return; }
+    const seconds = cmd.args.length > 1 ? Math.max(0, cmd.argFloat(1, 30)) : 30;
     if (arg === "all") {
       for (const z of zones.values()) showZone(z, seconds);
-      ctx.reply(`Showing ${zones.size} zone(s)` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+      cmd.reply(`Showing ${zones.size} zone(s)` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
       return;
     }
     const z = zones.get(sanitizeName(arg));
-    if (!z) { ctx.reply(`No zone '${sanitizeName(arg)}' on this map.`); return; }
+    if (!z) { cmd.reply(`No zone '${sanitizeName(arg)}' on this map.`); return; }
     showZone(z, seconds);
-    ctx.reply(`Showing '${z.name}'` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+    cmd.reply(`Showing '${z.name}'` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
   });
-  Commands.registerAdmin("sm_zone_hide", ADMFLAG.GENERIC, (ctx) => {
-    const arg = ctx.args[0] || "all";
-    if (arg === "all") { const n = shown.size; clearAllBeams(); ctx.reply(`Hid ${n} zone(s).`); return; }
+  ctx.commands.registerAdmin("sm_zone_hide", ADMFLAG.GENERIC, (cmd) => {
+    const arg = cmd.args[0] || "all";
+    if (arg === "all") { const n = shown.size; clearAllBeams(); cmd.reply(`Hid ${n} zone(s).`); return; }
     const name = sanitizeName(arg);
-    if (!shown.has(name)) { ctx.reply(`Zone '${name}' is not shown.`); return; }
+    if (!shown.has(name)) { cmd.reply(`Zone '${name}' is not shown.`); return; }
     hideZone(name);
-    ctx.reply(`Hid '${name}'.`);
+    cmd.reply(`Hid '${name}'.`);
   });
 
   console.log("[zones] onLoad — commands registered (real-trigger backend)");
-}
 
-// Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
-// (created entities are game-world-owned, not auto-ledgered). onLoad rebuilds them from the DB.
-export function onUnload(): void {
-  clearAllBeams();
-  clearAllEdits();
-  clearAllTriggers();
-}
+  // Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
+  // (created entities are game-world-owned, not auto-ledgered). The next load rebuilds them from the DB.
+  return { onUnload() { clearAllBeams(); clearAllEdits(); clearAllTriggers(); } };
+});

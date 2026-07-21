@@ -1,9 +1,10 @@
 // @s2script/antiflood — the first non-command base plugin: a passive chat-flood moderator over the
-// raw-chat subscriber (Chat.onMessage). A client spamming say/say_team is throttled by a pure
+// raw-chat subscriber (ctx.clients.onSay). A client spamming say/say_team is throttled by a pure
 // leaky-bucket model; a flooded message is suppressed by returning HookResult.Handled, and the client
 // gets a throttled "slow down" notice (SM parity). Config-driven (flood_time / max_tokens),
-// live-reloadable via config.onChange.
+// live-reloadable via ctx.config.onChange.
 
+import { plugin } from "@s2script/sdk/plugin";
 import { Chat } from "@s2script/sdk/chat";
 import { config } from "@s2script/sdk/config";
 import { HookResult } from "@s2script/sdk/events";
@@ -14,14 +15,14 @@ interface SlotState { tokens: number; lastTime: number; lastNotify: number; }
 const state = new Map<number, SlotState>();
 const NOTIFY_INTERVAL = 2.0; // seconds — throttle the "slow down" notice so it isn't itself spammy
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   // Log tuning changes so an admin editing the config file sees them take effect (also opts this
   // plugin into the loader's live-reload watch, so getFloat/getInt below read fresh values).
-  config.onChange(() => {
+  ctx.config.onChange(() => {
     console.log("[antiflood] config changed — flood_time=" + config.getFloat("flood_time") + " max_tokens=" + config.getInt("max_tokens"));
   });
 
-  Chat.onMessage((slot, _text, _teamonly) => {
+  ctx.clients.onSay((slot, _text, _teamonly) => {
     const floodTime = config.getFloat("flood_time");
     if (floodTime <= 0) return HookResult.Continue; // disabled
 
@@ -45,6 +46,4 @@ export function onLoad(): void {
   });
 
   console.log("[antiflood] onLoad — chat flood protection active (flood_time=" + config.getFloat("flood_time") + " max_tokens=" + config.getInt("max_tokens") + ")");
-}
-
-export function onUnload(): void { console.log("[antiflood] onUnload"); }
+});

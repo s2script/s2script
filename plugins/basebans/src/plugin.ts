@@ -13,13 +13,12 @@
 //  immediately; the onConnect handler is the RECONNECT enforcement + is where a 3rd party would query
 //  their own ban store instead of ours.
 
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Bans } from "@s2script/sdk/bans";
 import { Clients } from "@s2script/sdk/clients";
 import { Player, pickPlayer } from "@s2script/cs2";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
-import { TopMenu } from "@s2script/sdk/topmenu";
 
 // The message a banned player sees (chat + console) — shared by the immediate sm_ban path and the
 // reconnect enforcement so the wording is identical.
@@ -29,40 +28,40 @@ function banMessage(reason: string, until: number): string {
   return "[SM] You are banned: " + (reason || "No reason") + " (" + expiry + ")";
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   // sm_ban <target> <minutes> [reason] — ADMFLAG.BAN
   // Resolves the target live, validates the SteamID, adds the ban, and kicks the player.
   // NO_MULTI: banning is destructive — a single target only.
-  Commands.registerAdmin("sm_ban", ADMFLAG.BAN, (ctx) => {
-    const target = ctx.arg(0);
+  ctx.commands.registerAdmin("sm_ban", ADMFLAG.BAN, (cmd) => {
+    const target = cmd.arg(0);
     if (!target) {
-      ctx.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
+      cmd.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
       return;
     }
-    if (!/^\d+$/.test(ctx.arg(1))) {
+    if (!/^\d+$/.test(cmd.arg(1))) {
       // A missing OR non-numeric minutes arg must NOT silently become a permanent ban
       // (argInt falls back to 0 = permanent for NaN). Require explicit digits; "0" = permanent.
-      ctx.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
+      cmd.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
       return;
     }
-    const minutes = ctx.argInt(1);
-    const reason = ctx.argsFrom(2);
+    const minutes = cmd.argInt(1);
+    const reason = cmd.argsFrom(2);
 
-    const targets = Player.target(target, ctx.callerSlot, true);
+    const targets = Player.target(target, cmd.callerSlot, true);
     if (targets.length === 0) {
-      ctx.reply("[SM] No matching players.");
+      cmd.reply("[SM] No matching players.");
       return;
     }
     // NO_MULTI: banning is destructive — single target only, do NOT allow @all or ambiguous names.
     if (targets.length > 1) {
-      ctx.reply("[SM] '" + target + "' matches multiple players; be more specific.");
+      cmd.reply("[SM] '" + target + "' matches multiple players; be more specific.");
       return;
     }
 
     const p = targets[0];
     const sid = p.steamId;
     if (!sid || sid === "0") {
-      ctx.reply("[SM] Cannot ban " + p.playerName + " (no SteamID — bot or unauthenticated).");
+      cmd.reply("[SM] Cannot ban " + p.playerName + " (no SteamID — bot or unauthenticated).");
       return;
     }
 
@@ -78,48 +77,48 @@ export function onLoad(): void {
       ? " for " + minutes + " minute" + (minutes === 1 ? "" : "s")
       : " permanently";
     const reasonStr = reason ? " (" + reason + ")" : "";
-    ctx.reply("[SM] Banned " + p.playerName + durStr + reasonStr + ".");
+    cmd.reply("[SM] Banned " + p.playerName + durStr + reasonStr + ".");
   });
 
   // sm_unban <steamid> — ADMFLAG.UNBAN
   // Removes a ban by SteamID64. No live player required — offline bans supported.
-  Commands.registerAdmin("sm_unban", ADMFLAG.UNBAN, (ctx) => {
-    const sid = ctx.arg(0);
+  ctx.commands.registerAdmin("sm_unban", ADMFLAG.UNBAN, (cmd) => {
+    const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
-      ctx.reply("[SM] Usage: sm_unban <steamid64>");
+      cmd.reply("[SM] Usage: sm_unban <steamid64>");
       return;
     }
     const was = Bans.remove(sid);
-    ctx.reply(was ? "[SM] Unbanned " + sid + "." : "[SM] " + sid + " was not banned.");
+    cmd.reply(was ? "[SM] Unbanned " + sid + "." : "[SM] " + sid + " was not banned.");
   });
 
   // sm_addban <steamid> <minutes> [reason] — ADMFLAG.BAN
   // Adds an offline ban by SteamID64 without a live player (e.g. from logs or a server roster).
-  Commands.registerAdmin("sm_addban", ADMFLAG.BAN, (ctx) => {
-    const sid = ctx.arg(0);
+  ctx.commands.registerAdmin("sm_addban", ADMFLAG.BAN, (cmd) => {
+    const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
-      ctx.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
+      cmd.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
       return;
     }
-    if (!/^\d+$/.test(ctx.arg(1))) {
+    if (!/^\d+$/.test(cmd.arg(1))) {
       // Missing or non-numeric minutes → usage, not a silent permanent ban (see sm_ban).
-      ctx.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
+      cmd.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
       return;
     }
-    const minutes = ctx.argInt(1);
-    const reason = ctx.argsFrom(2);
+    const minutes = cmd.argInt(1);
+    const reason = cmd.argsFrom(2);
 
     Bans.add(sid, minutes, reason);
 
     const durStr = minutes > 0 ? " (" + minutes + " min)" : " (permanent)";
     const reasonStr = reason ? " " + reason : "";
-    ctx.reply("[SM] Added ban for " + sid + durStr + reasonStr + ".");
+    cmd.reply("[SM] Added ban for " + sid + durStr + reasonStr + ".");
   });
 
   // Connect-time enforcement: admit -> show reason (chat + console) -> kick. Runs for every connecting
   // client; a banned SteamID64 gets kickWithReason (delivered once they're in-game, then kicked ~5s later).
-  // A 3rd-party ban system would register its OWN Clients.onConnect here, querying its store instead of Bans.
-  Clients.onConnect((c) => {
+  // A 3rd-party ban system would register its OWN ctx.clients.onConnect here, querying its store instead of Bans.
+  ctx.clients.onConnect((c) => {
     if (c.isBot) return;                                   // bots have steamId "0" — never banned
     const b = Bans.get(c.steamId);
     if (!b) return;
@@ -129,9 +128,9 @@ export function onLoad(): void {
   });
 
   // adminmenu — Kick + Ban proof items, same ADMFLAG as their text commands, via pickPlayer.
-  TopMenu.addItem("Player Commands", { id: "basebans:kick", name: "Kick", flags: ADMFLAG.KICK,
+  ctx.topmenu.addItem("Player Commands", { id: "basebans:kick", name: "Kick", flags: ADMFLAG.KICK,
     onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick("Kicked by admin")) });
-  TopMenu.addItem("Player Commands", { id: "basebans:ban", name: "Ban", flags: ADMFLAG.BAN,
+  ctx.topmenu.addItem("Player Commands", { id: "basebans:ban", name: "Ban", flags: ADMFLAG.BAN,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       const sid = t.steamId, uid = t.userId, name = t.playerName || "player";
       if (!sid || sid === "0") {   // bot / unauthenticated — never ban (sm_ban parity: a "0" entry is shared)
@@ -162,6 +161,4 @@ export function onLoad(): void {
     }) });
 
   console.log("[basebans] onLoad - sm_ban/sm_unban/sm_addban + connect enforcement registered");
-}
-
-export function onUnload(): void { console.log("[basebans] onUnload"); }
+});

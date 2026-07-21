@@ -8,6 +8,7 @@
 //   timeleft uses mp_timelimit (cvar) + Server.gameTime (map time / curtime), which includes warmup/freeze
 //   so it can differ from the HUD by the warmup — approximate, fine for an info trigger.
 
+import { plugin } from "@s2script/sdk/plugin";
 import { Chat } from "@s2script/sdk/chat";
 import { Server } from "@s2script/sdk/server";
 import { HookResult } from "@s2script/sdk/events";
@@ -36,8 +37,8 @@ function nextMap(): string {
   return "Next map: " + (next ? next : "Pending");
 }
 
-export function onLoad(): void {
-  Chat.onMessage((_slot, text, _teamonly) => {
+export default plugin((ctx) => {
+  ctx.clients.onSay((_slot, text, _teamonly) => {
     const t = text.trim().toLowerCase();
     let answer: string | null = null;
     if (t === "timeleft") answer = timeLeft();
@@ -46,7 +47,7 @@ export function onLoad(): void {
     else if (t === "nextmap") answer = nextMap();
     if (answer !== null) {
       const a = answer;
-      // Chat.onMessage is a PRE-hook (runs before the say is broadcast), so a synchronous reply would
+      // ctx.clients.onSay is a PRE-hook (runs before the say is broadcast), so a synchronous reply would
       // appear BEFORE the player's trigger word. Defer one frame so the word broadcasts first, then the answer.
       nextFrame().then(() => Chat.toAll(a));
     }
@@ -54,8 +55,4 @@ export function onLoad(): void {
   });
 
   console.log("[basetriggers] onLoad — timeleft/thetime/currentmap/nextmap");
-}
-
-export function onUnload(): void {
-  console.log("[basetriggers] onUnload");
-}
+});

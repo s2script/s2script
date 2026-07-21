@@ -4,7 +4,7 @@
 // Task 1 (this file): all 4 commands (sm_votealltalk/sm_voteff/sm_votegravity/sm_voteslay) +
 // the shared Yes/No vote helper.
 
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Chat } from "@s2script/sdk/chat";
 import { config } from "@s2script/sdk/config";
@@ -41,34 +41,34 @@ function startYesNo(reply: (m: string) => void, question: string, onPass: () => 
   reply("Vote started.");
 }
 
-export function onLoad(): void {
-  Commands.registerAdmin("sm_votealltalk", ADMFLAG.VOTE, ctx => {
+export default plugin((ctx) => {
+  ctx.commands.registerAdmin("sm_votealltalk", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("sv_alltalk"));
-    startYesNo(ctx.reply, (on ? "Disable" : "Enable") + " AllTalk?", () => Server.setCvar("sv_alltalk", on ? "0" : "1"));
+    startYesNo(cmd.reply, (on ? "Disable" : "Enable") + " AllTalk?", () => Server.setCvar("sv_alltalk", on ? "0" : "1"));
   });
 
-  Commands.registerAdmin("sm_voteff", ADMFLAG.VOTE, ctx => {
+  ctx.commands.registerAdmin("sm_voteff", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("mp_friendlyfire"));
-    startYesNo(ctx.reply, (on ? "Disable" : "Enable") + " Friendly Fire?", () => Server.setCvar("mp_friendlyfire", on ? "0" : "1"));
+    startYesNo(cmd.reply, (on ? "Disable" : "Enable") + " Friendly Fire?", () => Server.setCvar("mp_friendlyfire", on ? "0" : "1"));
   });
 
   // DEVIATION FROM SM: SourceMod's sm_votegravity can present MULTIPLE gravity options in one
   // multi-choice vote (e.g. `sm_votegravity 200 400 800`). We keep it a single-value Yes/No vote
   // (one gravity value → pass/fail), which composes with the shared startYesNo helper. Multi-option
   // funvotes are a future item if demand appears.
-  Commands.registerAdmin("sm_votegravity", ADMFLAG.VOTE, ctx => {
-    const v = ctx.arg(0);
-    if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { ctx.reply("Usage: sm_votegravity <number>"); return; }
-    startYesNo(ctx.reply, "Set gravity to " + v + "?", () => Server.setCvar("sv_gravity", v));
+  ctx.commands.registerAdmin("sm_votegravity", ADMFLAG.VOTE, cmd => {
+    const v = cmd.arg(0);
+    if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { cmd.reply("Usage: sm_votegravity <number>"); return; }
+    startYesNo(cmd.reply, "Set gravity to " + v + "?", () => Server.setCvar("sv_gravity", v));
   });
 
-  Commands.registerAdmin("sm_voteslay", ADMFLAG.VOTE, ctx => {
-    const targets = Player.target(ctx.arg(0), ctx.callerSlot, true);
-    if (targets.length === 0) { ctx.reply("No matching players"); return; }
-    if (targets.length > 1) { ctx.reply("Multiple players match — be specific"); return; }
+  ctx.commands.registerAdmin("sm_voteslay", ADMFLAG.VOTE, cmd => {
+    const targets = Player.target(cmd.arg(0), cmd.callerSlot, true);
+    if (targets.length === 0) { cmd.reply("No matching players"); return; }
+    if (targets.length > 1) { cmd.reply("Multiple players match — be specific"); return; }
     const uid = targets[0].userId;
     const name = targets[0].playerName ?? "player";
-    startYesNo(ctx.reply, "Slay " + name + "?", () => {
+    startYesNo(cmd.reply, "Slay " + name + "?", () => {
       const p = Player.fromUserId(uid);   // re-resolve at end (pick-time slot/pawn may be stale)
       if (p && p.pawn) p.pawn.slay();
     });
@@ -79,8 +79,4 @@ export function onLoad(): void {
   // NOT invent RE work. Revisit once an ignite/entity-fire capability lands (like pawn.slay for
   // sm_voteslay).
   console.log("[funvotes] onLoad — votealltalk/voteff/votegravity/voteslay registered");
-}
-
-export function onUnload(): void {
-  console.log("[funvotes] onUnload");
-}
+});

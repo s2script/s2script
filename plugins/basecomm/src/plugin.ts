@@ -9,12 +9,10 @@
 //    scoreboard indicator only. Keyed by SteamID and re-asserted on putinserver so a mute survives a
 //    reconnect. sm_silence = gag + mute.
 
-import { Commands } from "@s2script/sdk/commands";
-import { Chat } from "@s2script/sdk/chat";
+import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, pickPlayer } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
-import { TopMenu } from "@s2script/sdk/topmenu";
 import { Clients } from "@s2script/sdk/clients";
 
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
@@ -45,9 +43,9 @@ function setMute(p: Player, on: boolean): void {
   if (on) muted.add(sid); else muted.delete(sid);
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   // Suppress chat from a gagged speaker (both say and say_team route through Host_Say).
-  Chat.onMessage((slot, _text, _teamonly) => {
+  ctx.clients.onSay((slot, _text, _teamonly) => {
     if (gagged.size === 0) return HookResult.Continue;
     const p = Player.fromSlot(slot);
     const sid = p ? p.steamId : null;
@@ -56,28 +54,26 @@ export function onLoad(): void {
 
   // A muted player who reconnects gets a fresh slot with a cleared flag (shim slot hygiene) — re-assert
   // the SteamID-keyed admin mute once their controller exists.
-  Clients.onPutInServer((c) => {
+  ctx.clients.onPutInServer((c) => {
     if (muted.has(c.steamId)) c.voiceMuted = true;
   });
 
-  Commands.registerAdmin("sm_gag", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Gagged", "sm_gag <target>", (p) => setGag(p, true), true));
-  Commands.registerAdmin("sm_ungag", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Ungagged", "sm_ungag <target>", (p) => setGag(p, false), false));
-  Commands.registerAdmin("sm_mute", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Muted", "sm_mute <target>", (p) => setMute(p, true), true));
-  Commands.registerAdmin("sm_unmute", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Unmuted", "sm_unmute <target>", (p) => setMute(p, false), false));
-  Commands.registerAdmin("sm_silence", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Silenced", "sm_silence <target>", (p) => { setGag(p, true); setMute(p, true); }, true));
-  Commands.registerAdmin("sm_unsilence", ADMFLAG.CHAT, (ctx) =>
-    forTargets(ctx.arg(0), ctx.callerSlot, (m) => ctx.reply(m), "Unsilenced", "sm_unsilence <target>", (p) => { setGag(p, false); setMute(p, false); }, false));
+  ctx.commands.registerAdmin("sm_gag", ADMFLAG.CHAT, (cmd) =>
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Gagged", "sm_gag <target>", (p) => setGag(p, true), true));
+  ctx.commands.registerAdmin("sm_ungag", ADMFLAG.CHAT, (cmd) =>
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Ungagged", "sm_ungag <target>", (p) => setGag(p, false), false));
+  ctx.commands.registerAdmin("sm_mute", ADMFLAG.CHAT, (cmd) =>
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Muted", "sm_mute <target>", (p) => setMute(p, true), true));
+  ctx.commands.registerAdmin("sm_unmute", ADMFLAG.CHAT, (cmd) =>
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Unmuted", "sm_unmute <target>", (p) => setMute(p, false), false));
+  ctx.commands.registerAdmin("sm_silence", ADMFLAG.CHAT, (cmd) =>
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Silenced", "sm_silence <target>", (p) => { setGag(p, true); setMute(p, true); }, true));
+  ctx.commands.registerAdmin("sm_unsilence", ADMFLAG.CHAT, (cmd) =>
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Unsilenced", "sm_unsilence <target>", (p) => { setGag(p, false); setMute(p, false); }, false));
 
   // adminmenu — Gag proof item, same ADMFLAG as sm_gag, via pickPlayer + the shared setGag routine.
-  TopMenu.addItem("Player Commands", { id: "basecomm:gag", name: "Gag", flags: ADMFLAG.CHAT,
+  ctx.topmenu.addItem("Player Commands", { id: "basecomm:gag", name: "Gag", flags: ADMFLAG.CHAT,
     onSelect: adminSlot => pickPlayer(adminSlot, t => setGag(t, true)) });
 
   console.log("[basecomm] onLoad - gag/ungag/mute/unmute/silence/unsilence registered");
-}
-
-export function onUnload(): void { console.log("[basecomm] onUnload"); }
+});

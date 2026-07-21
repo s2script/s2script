@@ -4,7 +4,7 @@
   "private": true,
   "main": "src/plugin.ts",
   "s2script": {
-    "apiVersion": "1.x",
+    "apiVersion": "2.x",
     "config": {
       "map_cooldown": {
         "type": "int",

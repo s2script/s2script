@@ -1,6 +1,6 @@
+import { plugin } from "@s2script/sdk/plugin";
 import { TopMenu } from "@s2script/sdk/topmenu";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
-import { Commands } from "@s2script/sdk/commands";
 import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 
 // Pure helpers (no side effects) — module-level.
@@ -18,21 +18,21 @@ function showCategory(slot: number, category: string, flags: number): void {
   m.display(slot, 30);
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   // Fix the standard category order (items land in these; a plugin may add more).
-  TopMenu.addCategory("Player Commands");
-  TopMenu.addCategory("Server Commands");
-  TopMenu.addCategory("Voting Commands");
+  ctx.topmenu.addCategory("Player Commands");
+  ctx.topmenu.addCategory("Server Commands");
+  ctx.topmenu.addCategory("Voting Commands");
 
-  Commands.register("sm_admin", ctx => {
-    const slot = ctx.callerSlot;
-    if (slot < 0) { ctx.reply("Run sm_admin in-game."); return; }
+  ctx.commands.register("sm_admin", (cmd) => {
+    const slot = cmd.callerSlot;
+    if (slot < 0) { cmd.reply("Run sm_admin in-game."); return; }
     const admin = Admin.forSlot(slot);
-    if (!admin) { ctx.reply("No access."); return; }
+    if (!admin) { cmd.reply("No access."); return; }
     const snap = TopMenu.snapshot();
     // Only categories with >=1 visible item.
     const cats = snap.categories.filter(c => itemsFor(c, admin.flags).length > 0);
-    if (cats.length === 0) { ctx.reply("No admin actions available."); return; }
+    if (cats.length === 0) { cmd.reply("No admin actions available."); return; }
     const m = new Menu("Admin Menu");
     m.style = MenuStyle.Center;
     m.freezePlayer = true;   // WASD nav — freeze movement while the menu is open
@@ -42,6 +42,4 @@ export function onLoad(): void {
   });
 
   console.log("[adminmenu] onLoad — sm_admin registered");
-}
-
-export function onUnload(): void { console.log("[adminmenu] onUnload"); }
+});

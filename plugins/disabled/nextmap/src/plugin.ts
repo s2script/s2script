@@ -7,12 +7,10 @@
 // Task 2 (this file, current state): round_end (mp_maxrounds) + mp_timelimit detection, and the
 // real changeToNext body (delayed, validated changelevel/host_workshop_map).
 
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
-import { OnGameFrame } from "@s2script/sdk/frame";
 import { Server } from "@s2script/sdk/server";
 import { config } from "@s2script/sdk/config";
-import { Events } from "@s2script/sdk/events";
 import { delay } from "@s2script/sdk/timers";
 import { Chat } from "@s2script/sdk/chat";
 
@@ -127,36 +125,32 @@ function pollTick(): void {
   }
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the
                 // rotation before the first map-end — nextmap owns this, independent of nominations.
-  OnGameFrame.subscribe(pollTick);
+  ctx.server.onGameFrame(pollTick);
 
-  Events.on("round_end", () => {
+  ctx.events.on("round_end", () => {
     if (changing) return;
     roundsPlayed++;
     const max = parseInt(Server.getCvar("mp_maxrounds"), 10);
     if (max > 0 && roundsPlayed >= max) changeToNext();
   });
 
-  Commands.registerAdmin("sm_setnextmap", ADMFLAG.CHANGEMAP, ctx => {
-    const m = ctx.arg(0);
-    if (!m) { ctx.reply("Usage: sm_setnextmap <map>"); return; }
+  ctx.commands.registerAdmin("sm_setnextmap", ADMFLAG.CHANGEMAP, cmd => {
+    const m = cmd.arg(0);
+    if (!m) { cmd.reply("Usage: sm_setnextmap <map>"); return; }
     const inList = loadPool().find(e => e.name === m);
     const entry = inList ?? (Server.isMapValid(m) ? { name: m, workshopId: null } : null);
-    if (!entry) { ctx.reply("'" + m + "' is not a valid map"); return; }
-    if (!isValidEntry(entry)) { ctx.reply("Invalid map name"); return; }
+    if (!entry) { cmd.reply("'" + m + "' is not a valid map"); return; }
+    if (!isValidEntry(entry)) { cmd.reply("Invalid map name"); return; }
     override = entry;
     Server.setCvar("nextlevel", entry.name);
-    ctx.reply("Next map set to " + entry.name);
+    cmd.reply("Next map set to " + entry.name);
   });
 
   // DESCOPED: SM's sm_maphistory (list the recently-played maps) is intentionally not implemented —
   // it would require reading the map_history the nominations plugin owns in the shared mapvote DB,
   // coupling standalone nextmap back to nominations. nextmap tracks no play history of its own.
   console.log("[nextmap] onLoad — sm_setnextmap registered");
-}
-
-export function onUnload(): void {
-  console.log("[nextmap] onUnload");
-}
+});

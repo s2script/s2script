@@ -12,7 +12,7 @@
 //   "kick an existing non-reserved player to make room for a connecting reserved one" variant is deferred
 //   (needs victim selection / a ping primitive we don't have yet).
 
-import { Clients } from "@s2script/sdk/clients";
+import { plugin } from "@s2script/sdk/plugin";
 import { Server } from "@s2script/sdk/server";
 import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Player } from "@s2script/cs2";
@@ -21,8 +21,8 @@ import { config } from "@s2script/sdk/config";
 const KICK_MESSAGE =
   "[SM] This server has reserved slots — you were disconnected to keep a slot open for a reserved player.";
 
-export function onLoad(): void {
-  Clients.onActive((c) => {
+export default plugin((ctx) => {
+  ctx.clients.onActive((c) => {
     const reserved = config.getInt("reserved_slots");
     if (reserved <= 0) return; // disabled
     if (c.isBot) return; // bots are never reservation-gated
@@ -39,8 +39,4 @@ export function onLoad(): void {
   console.log(
     "[reservedslots] onLoad — reserved_slots=" + config.getInt("reserved_slots") + " maxPlayers=" + Server.maxPlayers,
   );
-}
-
-export function onUnload(): void {
-  console.log("[reservedslots] onUnload");
-}
+});

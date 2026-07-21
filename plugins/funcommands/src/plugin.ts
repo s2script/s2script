@@ -9,7 +9,8 @@
 //   DEFERRED: sm_burn (an ignite game-function, no framework sig to port),
 //   sm_beacon (a particle/temp-entity subsystem). Both are documented follow-ups.
 
-import { Commands, CommandContext } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
+import { CommandInvocation } from "@s2script/sdk/commands";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Pawn, Fade } from "@s2script/cs2";
 import { delay } from "@s2script/sdk/timers";
@@ -23,27 +24,27 @@ const NONE = 0;
 // defaults to the caller (self) — SM behavior — unless run from the console, which must name a target.
 // Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
 // caller); filterImmunity=false for a reversal/benign command (no filter — e.g. un-freezing).
-function forEachPawn(ctx: CommandContext, usage: string, verb: string, fn: (p: Player, pw: Pawn) => void, filterImmunity: boolean): void {
-  let pattern = ctx.arg(0);
+function forEachPawn(cmd: CommandInvocation, usage: string, verb: string, fn: (p: Player, pw: Pawn) => void, filterImmunity: boolean): void {
+  let pattern = cmd.arg(0);
   if (!pattern) {
-    if (ctx.callerSlot < 0) { ctx.reply("[SM] Usage: " + usage); return; } // console must name a target
+    if (cmd.callerSlot < 0) { cmd.reply("[SM] Usage: " + usage); return; } // console must name a target
     pattern = "@me"; // in-game with no arg → self
   }
-  const targets = Player.target(pattern, ctx.callerSlot, filterImmunity);
-  if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
+  const targets = Player.target(pattern, cmd.callerSlot, filterImmunity);
+  if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
   let n = 0;
   for (const p of targets) {
     const pw = p.pawn;
     if (pw) { fn(p, pw); n++; }
   }
-  ctx.reply("[SM] " + verb + " " + n + " player" + (n === 1 ? "" : "s") + ".");
+  cmd.reply("[SM] " + verb + " " + n + " player" + (n === 1 ? "" : "s") + ".");
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   // sm_gravity <target> [factor] — factor multiplies the player's gravity (1 = normal, <1 floaty, >1 heavy).
-  Commands.registerAdmin("sm_gravity", ADMFLAG.SLAY, (ctx) => {
-    const factor = ctx.argFloat(1, 1.0);
-    forEachPawn(ctx, "sm_gravity <target> [factor]", "Set gravity for", (_p, pw) => {
+  ctx.commands.registerAdmin("sm_gravity", ADMFLAG.SLAY, (cmd) => {
+    const factor = cmd.argFloat(1, 1.0);
+    forEachPawn(cmd, "sm_gravity <target> [factor]", "Set gravity for", (_p, pw) => {
       pw.gravityScale = factor;
       pw.actualGravityScale = factor;
     }, true);
@@ -51,25 +52,25 @@ export function onLoad(): void {
 
   // sm_blind <target> [seconds] — full black-screen fade (CUserMessageFade) via the generic
   // @s2script/usermessages reflection path (Fade.blind). Replaces the flashbang-field approach.
-  Commands.registerAdmin("sm_blind", ADMFLAG.SLAY, (ctx) => {
-    const secs = ctx.argFloat(1, 2);   // sm_blind <target> [seconds]: args[0]=target (forEachPawn), args[1]=seconds
+  ctx.commands.registerAdmin("sm_blind", ADMFLAG.SLAY, (cmd) => {
+    const secs = cmd.argFloat(1, 2);   // sm_blind <target> [seconds]: args[0]=target (forEachPawn), args[1]=seconds
     const durMs = (secs > 0 ? secs : 2) * 1000;
-    forEachPawn(ctx, "sm_blind <target> [seconds]", "Blinded", (p, _pw) => {
+    forEachPawn(cmd, "sm_blind <target> [seconds]", "Blinded", (p, _pw) => {
       Fade.blind(p.slot, durMs);
     }, true);
   });
 
   // sm_noclip <target> — toggle noclip (WALK <-> NOCLIP).
-  Commands.registerAdmin("sm_noclip", ADMFLAG.SLAY, (ctx) => {
-    forEachPawn(ctx, "sm_noclip <target>", "Toggled noclip for", (_p, pw) => {
+  ctx.commands.registerAdmin("sm_noclip", ADMFLAG.SLAY, (cmd) => {
+    forEachPawn(cmd, "sm_noclip <target>", "Toggled noclip for", (_p, pw) => {
       pw.moveType = pw.moveType === NOCLIP ? WALK : NOCLIP;
     }, true);
   });
 
   // sm_freeze <target> [seconds] — freeze in place; auto-unfreeze after [seconds] (0 = until sm_unfreeze).
-  Commands.registerAdmin("sm_freeze", ADMFLAG.SLAY, (ctx) => {
-    const secs = ctx.argFloat(1, 0);
-    forEachPawn(ctx, "sm_freeze <target> [seconds]", "Froze", (p, pw) => {
+  ctx.commands.registerAdmin("sm_freeze", ADMFLAG.SLAY, (cmd) => {
+    const secs = cmd.argFloat(1, 0);
+    forEachPawn(cmd, "sm_freeze <target> [seconds]", "Froze", (p, pw) => {
       pw.moveType = NONE;
       if (secs > 0) {
         const slot = p.slot;
@@ -82,15 +83,11 @@ export function onLoad(): void {
   });
 
   // sm_unfreeze <target> — restore movement.
-  Commands.registerAdmin("sm_unfreeze", ADMFLAG.SLAY, (ctx) => {
-    forEachPawn(ctx, "sm_unfreeze <target>", "Unfroze", (_p, pw) => {
+  ctx.commands.registerAdmin("sm_unfreeze", ADMFLAG.SLAY, (cmd) => {
+    forEachPawn(cmd, "sm_unfreeze <target>", "Unfroze", (_p, pw) => {
       pw.moveType = WALK;
     }, false);
   });
 
   console.log("[funcommands] onLoad — gravity/noclip/freeze/unfreeze/blind registered (burn/beacon deferred)");
-}
-
-export function onUnload(): void {
-  console.log("[funcommands] onUnload");
-}
+});

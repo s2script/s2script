@@ -1,4 +1,4 @@
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { Chat } from "@s2script/sdk/chat";
 import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Player, ChatColors, Activity } from "@s2script/cs2";
@@ -45,31 +45,31 @@ function resolveOne(pattern: string, callerSlot: number, reply: (m: string) => v
   return matches[0];
 }
 
-export function onLoad(): void {
-  Commands.registerAdmin("sm_say", ADMFLAG.CHAT, (ctx) => {
-    const msg = ctx.argString.trim();
-    if (!msg) { ctx.reply("Usage: sm_say <message>"); return; }
-    doSay(ctx.callerSlot, msg);
+export default plugin((ctx) => {
+  ctx.commands.registerAdmin("sm_say", ADMFLAG.CHAT, (cmd) => {
+    const msg = cmd.argString.trim();
+    if (!msg) { cmd.reply("Usage: sm_say <message>"); return; }
+    doSay(cmd.callerSlot, msg);
   });
 
-  Commands.registerAdmin("sm_chat", ADMFLAG.CHAT, (ctx) => {
-    const msg = ctx.argString.trim();
-    if (!msg) { ctx.reply("Usage: sm_chat <message>"); return; }
-    doAdminChat(ctx.callerSlot, msg);
+  ctx.commands.registerAdmin("sm_chat", ADMFLAG.CHAT, (cmd) => {
+    const msg = cmd.argString.trim();
+    if (!msg) { cmd.reply("Usage: sm_chat <message>"); return; }
+    doAdminChat(cmd.callerSlot, msg);
   });
 
-  Commands.registerAdmin("sm_psay", ADMFLAG.CHAT, (ctx) => {
-    const s = ctx.argString.trim();
+  ctx.commands.registerAdmin("sm_psay", ADMFLAG.CHAT, (cmd) => {
+    const s = cmd.argString.trim();
     const sp = s.indexOf(" ");
-    if (sp < 0) { ctx.reply("Usage: sm_psay <target> <message>"); return; }
+    if (sp < 0) { cmd.reply("Usage: sm_psay <target> <message>"); return; }
     const targetPat = s.slice(0, sp), msg = s.slice(sp + 1).trim();
-    if (!msg) { ctx.reply("Usage: sm_psay <target> <message>"); return; }
-    const t = resolveOne(targetPat, ctx.callerSlot, (m) => ctx.reply(m));
-    if (t) doPsay(ctx.callerSlot, t, msg);
+    if (!msg) { cmd.reply("Usage: sm_psay <target> <message>"); return; }
+    const t = resolveOne(targetPat, cmd.callerSlot, (m) => cmd.reply(m));
+    if (t) doPsay(cmd.callerSlot, t, msg);
   });
 
   // SourceMod @ chat triggers, over the raw-chat subscriber.
-  Chat.onMessage((slot, text, teamonly) => {
+  ctx.clients.onSay((slot, text, teamonly) => {
     if (text[0] !== "@") return HookResult.Continue;
     const admin = Admin.forSlot(slot);
     if (!admin || !admin.hasFlags(ADMFLAG.CHAT)) return HookResult.Continue; // non-admin @ = normal chat
@@ -87,4 +87,4 @@ export function onLoad(): void {
     else doSay(slot, body);
     return HookResult.Handled;
   });
-}
+});

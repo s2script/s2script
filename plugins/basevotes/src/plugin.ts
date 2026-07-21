@@ -1,10 +1,9 @@
+import { plugin } from "@s2script/sdk/plugin";
 import { Vote } from "@s2script/sdk/votes";
-import { Commands } from "@s2script/sdk/commands";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Chat } from "@s2script/sdk/chat";
 import { config } from "@s2script/sdk/config";
 import { Player, pickPlayer } from "@s2script/cs2";
-import { TopMenu } from "@s2script/sdk/topmenu";
 
 // Parse a command arg string into quoted (or bare) tokens: sm_vote "Kick Rex?" Yes No
 function parseTokens(s: string): string[] {
@@ -33,34 +32,32 @@ function startKickVote(userId: number, name: string): boolean {
   });
 }
 
-export function onLoad(): void {
-  Commands.registerAdmin("sm_vote", ADMFLAG.VOTE, (ctx) => {
-    const toks = parseTokens(ctx.argString);
-    if (toks.length < 3) { ctx.reply('Usage: sm_vote "Question" "Opt1" "Opt2" ...'); return; }
+export default plugin((ctx) => {
+  ctx.commands.registerAdmin("sm_vote", ADMFLAG.VOTE, (cmd) => {
+    const toks = parseTokens(cmd.argString);
+    if (toks.length < 3) { cmd.reply('Usage: sm_vote "Question" "Opt1" "Opt2" ...'); return; }
     const question = toks[0], options = toks.slice(1, 10);   // up to 9 options (single-digit chat)
     if (!Vote.start({ question, options, duration: config.getInt("vote_duration"), showLiveTally: config.getBool("show_live_tally"),
                       onEnd: (r) => { Chat.toAll(r.winner === null ? "[Vote] No decision." : "[Vote] Result: " + options[r.winner]); } })) {
-      ctx.reply("[SM] A vote is already in progress.");
+      cmd.reply("[SM] A vote is already in progress.");
     }
   });
 
-  Commands.registerAdmin("sm_votekick", ADMFLAG.VOTE, (ctx) => {
-    const targetStr = ctx.arg(0);
-    if (!targetStr) { ctx.reply("Usage: sm_votekick <target>"); return; }
-    const targets = Player.target(targetStr, ctx.callerSlot, true);
-    if (targets.length === 0) { ctx.reply("[SM] No matching players."); return; }
-    if (targets.length > 1) { ctx.reply("[SM] Ambiguous target."); return; }
+  ctx.commands.registerAdmin("sm_votekick", ADMFLAG.VOTE, (cmd) => {
+    const targetStr = cmd.arg(0);
+    if (!targetStr) { cmd.reply("Usage: sm_votekick <target>"); return; }
+    const targets = Player.target(targetStr, cmd.callerSlot, true);
+    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length > 1) { cmd.reply("[SM] Ambiguous target."); return; }
     const p = targets[0];
-    if (Vote.isActive()) { ctx.reply("[SM] A vote is already in progress."); return; }
+    if (Vote.isActive()) { cmd.reply("[SM] A vote is already in progress."); return; }
     startKickVote(p.userId, p.playerName ?? "player");
   });
 
-  TopMenu.addItem("Voting Commands", { id: "basevotes:votekick", name: "Vote Kick", flags: ADMFLAG.VOTE,
+  ctx.topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: "Vote Kick", flags: ADMFLAG.VOTE,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, "[SM] A vote is already in progress.");
     }) });
 
   console.log("[basevotes] onLoad — sm_vote/sm_votekick registered");
-}
-
-export function onUnload(): void { console.log("[basevotes] onUnload"); }
+});

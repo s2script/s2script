@@ -1,7 +1,6 @@
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { config } from "@s2script/sdk/config";
 import { Database } from "@s2script/sdk/db";
-import { OnGameFrame } from "@s2script/sdk/frame";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
 import { Server } from "@s2script/sdk/server";
 import { Player } from "@s2script/cs2";
@@ -44,104 +43,94 @@ function resolveMap(input: string, pool: MapEntry[]): MapEntry[] {
   return pool.filter(m => m.name.toLowerCase().includes(needle));
 }
 
-let db: Database | null = null;
-let currentMap = "";     // the map we've claimed/recorded ("" until the DB is ready + first poll)
-let frameCounter = 0;    // throttles the map-change poll to ~once/sec
+export default plugin(async (ctx) => {
+  let currentMap = "";     // the map we've claimed/recorded ("" until the DB is ready + first poll)
+  let frameCounter = 0;    // throttles the map-change poll to ~once/sec
 
-async function cooldownSet(): Promise<Set<string>> {
-  if (!db) return new Set();
-  const rows = await db.query("SELECT map FROM map_history GROUP BY map ORDER BY MAX(id) DESC LIMIT ?", [Math.max(0, config.getInt("map_cooldown"))]);
-  return new Set(rows.map(r => String(r.map)));
-}
-async function nominatedSet(): Promise<Set<string>> {
-  if (!db) return new Set();
-  const rows = await db.query("SELECT map FROM nominations", []);
-  return new Set(rows.map(r => String(r.map)));
-}
+  async function cooldownSet(): Promise<Set<string>> {
+    const rows = await db.query("SELECT map FROM map_history GROUP BY map ORDER BY MAX(id) DESC LIMIT ?", [Math.max(0, config.getInt("map_cooldown"))]);
+    return new Set(rows.map(r => String(r.map)));
+  }
+  async function nominatedSet(): Promise<Set<string>> {
+    const rows = await db.query("SELECT map FROM nominations", []);
+    return new Set(rows.map(r => String(r.map)));
+  }
 
-// The current map is ALWAYS excluded from nomination — explicitly, not merely as a side effect of
-// map_cooldown>=1 recording it in map_history (which fails to exclude it when map_cooldown is 0).
-// Compared case-insensitively (maplist.txt names are operator-written; Server.mapName is the live map).
-function isCurrentMap(name: string): boolean {
-  const cur = Server.mapName;
-  return cur !== "" && name.toLowerCase() === cur.toLowerCase();
-}
+  // The current map is ALWAYS excluded from nomination — explicitly, not merely as a side effect of
+  // map_cooldown>=1 recording it in map_history (which fails to exclude it when map_cooldown is 0).
+  // Compared case-insensitively (maplist.txt names are operator-written; Server.mapName is the live map).
+  function isCurrentMap(name: string): boolean {
+    const cur = Server.mapName;
+    return cur !== "" && name.toLowerCase() === cur.toLowerCase();
+  }
 
-async function nominate(slot: number, name: string): Promise<void> {
-  if (!db) { Chat.toSlot(slot, "[nominations] not ready."); return; }
-  if (isCurrentMap(name)) { Chat.toSlot(slot, "[nominations] " + name + " is the current map."); return; }
-  if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " was played too recently."); return; }
-  if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " is already nominated."); return; }
-  await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
-  await db.execute("INSERT INTO nominations(map, nominator) VALUES(?, ?)", [name, slot]);
-  const p = Player.fromSlot(slot);
-  Chat.toAll("[nominations] " + ((p && p.playerName) ? p.playerName : "A player") + " nominated " + name + ".");
-}
+  async function nominate(slot: number, name: string): Promise<void> {
+    if (isCurrentMap(name)) { Chat.toSlot(slot, "[nominations] " + name + " is the current map."); return; }
+    if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " was played too recently."); return; }
+    if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " is already nominated."); return; }
+    await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
+    await db.execute("INSERT INTO nominations(map, nominator) VALUES(?, ?)", [name, slot]);
+    const p = Player.fromSlot(slot);
+    Chat.toAll("[nominations] " + ((p && p.playerName) ? p.playerName : "A player") + " nominated " + name + ".");
+  }
 
-function mapMenu(slot: number, entries: MapEntry[], title: string): void {
-  const m = new Menu(title);
-  m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
-  for (const e of entries) m.addItem(e.name, e.name);
-  m.onSelect(e => { nominate(e.slot, e.info).catch(logErr); });   // nominate re-validates
-  m.display(slot, 30);
-}
+  function mapMenu(slot: number, entries: MapEntry[], title: string): void {
+    const m = new Menu(title);
+    m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
+    for (const e of entries) m.addItem(e.name, e.name);
+    m.onSelect(e => { nominate(e.slot, e.info).catch(logErr); });   // nominate re-validates
+    m.display(slot, 30);
+  }
 
-async function nominateMenu(slot: number): Promise<void> {
-  const pool = loadPool();
-  const cd = await cooldownSet(), nom = await nominatedSet();
-  // Menu exclusion set = cooldown ∪ already-nominated ∪ the current map (the last is explicit — see isCurrentMap).
-  const options = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
-  if (options.length === 0) { Chat.toSlot(slot, "[nominations] No maps available to nominate right now."); return; }
-  mapMenu(slot, options, "Nominate a map");
-}
+  async function nominateMenu(slot: number): Promise<void> {
+    const pool = loadPool();
+    const cd = await cooldownSet(), nom = await nominatedSet();
+    // Menu exclusion set = cooldown ∪ already-nominated ∪ the current map (the last is explicit — see isCurrentMap).
+    const options = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
+    if (options.length === 0) { Chat.toSlot(slot, "[nominations] No maps available to nominate right now."); return; }
+    mapMenu(slot, options, "Nominate a map");
+  }
 
-async function recordMapStart(map: string): Promise<void> {
-  if (!db) return;
-  const last = await db.query("SELECT map FROM map_history ORDER BY id DESC LIMIT 1", []);
-  if (last.length && String(last[0].map) === map) return;         // already recorded (a reload) -> keep nominations
-  await db.execute("INSERT INTO map_history(map, played_at) VALUES(?, ?)", [map, Math.floor(Date.now() / 1000)]);
-  await db.execute("DELETE FROM nominations", []);                // new map -> fresh nominations
-}
+  async function recordMapStart(map: string): Promise<void> {
+    const last = await db.query("SELECT map FROM map_history ORDER BY id DESC LIMIT 1", []);
+    if (last.length && String(last[0].map) === map) return;         // already recorded (a reload) -> keep nominations
+    await db.execute("INSERT INTO map_history(map, played_at) VALUES(?, ?)", [map, Math.floor(Date.now() / 1000)]);
+    await db.execute("DELETE FROM nominations", []);                // new map -> fresh nominations
+  }
 
-// Plugins persist across a changelevel — the shim has no level-init reload hook, so onLoad fires
-// once per plugin-load, NOT per map. Poll Server.mapName (throttled) to catch map transitions.
-function pollMapChange(): void {
-  if (!db) return;                        // wait until the DB + tables are ready (db is set last)
-  if (++frameCounter < 64) return;        // ~once/sec at 64-tick
-  frameCounter = 0;
-  const m = Server.mapName;
-  if (!m || m === currentMap) return;     // no change
-  currentMap = m;                          // claim synchronously so overlapping polls don't re-fire
-  recordMapStart(m).catch(logErr);
-}
+  // Plugins persist across a changelevel — the shim has no level-init reload hook, so onLoad fires
+  // once per plugin-load, NOT per map. Poll Server.mapName (throttled) to catch map transitions.
+  function pollMapChange(): void {
+    if (++frameCounter < 64) return;        // ~once/sec at 64-tick
+    frameCounter = 0;
+    const m = Server.mapName;
+    if (!m || m === currentMap) return;     // no change
+    currentMap = m;                          // claim synchronously so overlapping polls don't re-fire
+    recordMapStart(m).catch(logErr);
+  }
 
-export function onLoad(): void {
   loadPool();   // eager: auto-generate maplist.txt now so the operator can edit it before anyone nominates
-  Database.open("mapvote").then(async (d) => {
-    await d.execute("CREATE TABLE IF NOT EXISTS map_history(id INTEGER PRIMARY KEY AUTOINCREMENT, map TEXT NOT NULL, played_at INTEGER NOT NULL)", []);
-    await d.execute("CREATE TABLE IF NOT EXISTS nominations(map TEXT PRIMARY KEY, nominator INTEGER NOT NULL)", []);
-    db = d;   // publish only after the tables exist — pollMapChange/nominate guard on `!db`
-  }).catch((e) => console.log("[nominations] db init failed: " + e));
+  const db = await Database.open("mapvote");
+  await db.execute("CREATE TABLE IF NOT EXISTS map_history(id INTEGER PRIMARY KEY AUTOINCREMENT, map TEXT NOT NULL, played_at INTEGER NOT NULL)", []);
+  await db.execute("CREATE TABLE IF NOT EXISTS nominations(map TEXT PRIMARY KEY, nominator INTEGER NOT NULL)", []);
 
   // Record the current map + every later transition (plugins persist across a changelevel).
-  OnGameFrame.subscribe(pollMapChange);
+  ctx.server.onGameFrame(pollMapChange);
 
   // DESCOPED: SM's sm_nominate_addmap (an admin command that force-adds a map to the nomination
   // list at runtime) is intentionally not implemented. maplist.txt is the authoritative,
   // operator-edited pool; there is no runtime pool-mutation surface. Revisit only if an admin
   // "nominate on a player's behalf / add off-pool map" need is proven.
-  Commands.register("sm_nominate", (ctx) => {
-    const slot = ctx.callerSlot;
-    if (slot < 0) { ctx.reply("Nominate in-game."); return; }
-    const arg = ctx.arg(0);
+  ctx.commands.register("sm_nominate", (cmd) => {
+    const slot = cmd.callerSlot;
+    if (slot < 0) { cmd.reply("Nominate in-game."); return; }
+    const arg = cmd.arg(0);
     if (!arg) { nominateMenu(slot).catch(logErr); return; }
     const matches = resolveMap(arg, loadPool());
-    if (matches.length === 0) ctx.reply("No map matching '" + arg + "'.");
+    if (matches.length === 0) cmd.reply("No map matching '" + arg + "'.");
     else if (matches.length === 1) nominate(slot, matches[0].name).catch(logErr);
     else mapMenu(slot, matches, "Did you mean...");   // disambiguate
   });
 
   console.log("[nominations] onLoad — sm_nominate registered");
-}
-
-export function onUnload(): void { console.log("[nominations] onUnload"); }
+});
