@@ -163,22 +163,29 @@ export interface OutputEvent {
  * (2/3) SUPPRESSES the output — the original `FireOutputInternal` call is skipped.
  */
 export declare const Entity: {
+  /** @deprecated moved to ctx.entities.onOutput (L1 lifecycle v2) — removed after the port fan-out */
   onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
   /**
    * Fire when the engine CREATES an entity of `className` (`"*"` = all) — earliest hook; the entity is
    * barely constructed, schema fields may be zero/default. The handler receives the liveness-gated
    * `entity` (may be `null`) plus its `className`. Prefer `onSpawn` to read fields.
+   *
+   * @deprecated moved to ctx.entities.onCreate (L1 lifecycle v2) — removed after the port fan-out
    */
   onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /**
    * Fire after the engine SPAWNS an entity of `className` (`"*"` = all) — `Spawn()` has run, so schema
    * fields/keyvalues are populated. The useful hook for reading state.
+   *
+   * @deprecated moved to ctx.entities.onSpawn (L1 lifecycle v2) — removed after the port fan-out
    */
   onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /**
    * Fire as the engine DELETES an entity of `className` (`"*"` = all). The entity is still readable
    * during the synchronous handler; a stashed ref reads `null` once the slot is freed (liveness gate),
    * never garbage.
+   *
+   * @deprecated moved to ctx.entities.onDelete (L1 lifecycle v2) — removed after the port fan-out
    */
   onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns liveness-gated refs. */

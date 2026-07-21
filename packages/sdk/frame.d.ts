@@ -8,6 +8,6 @@ export interface SubscribeOptions {
 }
 
 export declare const OnGameFrame: {
-  /** Register a callback that fires every game frame. */
+  /** @deprecated moved to ctx.server.onGameFrame; this module is deleted in the cleanup task */
   subscribe(fn: () => void, opts?: SubscribeOptions): void;
 };

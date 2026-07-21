@@ -17,6 +17,8 @@ export declare const Chat: {
    * Subscribe to raw player chat. The handler receives the speaker's `slot`, the raw `text`, and
    * `teamonly`. Returning `>= HookResult.Handled` (2) suppresses the broadcast (SM-parity). Non-command
    * chat lines are delivered here; the `@`-trigger layer subscribes through this.
+   *
+   * @deprecated moved to ctx.clients.onSay (L1 lifecycle v2) — removed after the port fan-out
    */
   onMessage(handler: (slot: number, text: string, teamonly: boolean) => HookResultValue | void): void;
 };

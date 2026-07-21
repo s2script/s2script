@@ -8,11 +8,12 @@ import type { QAngle } from "./math";
 import type { HookResultValue } from "./events";
 
 /**
- * A block-scoped view of the CURRENT tick's usercmd (valid only during a `UserCmd.onRun` handler —
- * a stashed `Cmd` used after the handler returns, or across an `await`, reads/writes nothing).
- * There is exactly ONE `Cmd` instance for the whole process; every handler call operates on it.
+ * A block-scoped view of the CURRENT tick's usercmd (valid only during a `ctx.clients.onRunCmd`
+ * handler — a stashed `UserCmdView` used after the handler returns, or across an `await`,
+ * reads/writes nothing). There is exactly ONE `UserCmdView` instance for the whole process; every
+ * handler call operates on it.
  */
-export interface Cmd {
+export interface UserCmdView {
   /** +forward / -back. Normalized to roughly [-1, 1] (not the legacy ±450 units). */
   forwardMove: number;
   /**
@@ -37,6 +38,9 @@ export interface Cmd {
   clearSubtickMoves(): void;
 }
 
+/** @deprecated renamed UserCmdView (L1); removed in the cleanup task */
+export type Cmd = UserCmdView;
+
 export declare const UserCmd: {
   /**
    * Subscribe to the per-tick input hook. The handler runs SYNCHRONOUSLY during the engine's
@@ -46,6 +50,8 @@ export declare const UserCmd: {
    * Return a `HookResultValue >= Handled` to SUPPRESS this tick's input (the game processes a
    * zeroed/idle command instead); return `Continue`/`undefined` to let the (possibly modified)
    * command through unblocked.
+   *
+   * @deprecated moved to ctx.clients.onRunCmd (L1 lifecycle v2) — removed after the port fan-out
    */
-  onRun(handler: (cmd: Cmd, ctx: { slot: number }) => HookResultValue | void): void;
+  onRun(handler: (cmd: UserCmdView, ctx: { slot: number }) => HookResultValue | void): void;
 };

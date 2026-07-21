@@ -29,6 +29,8 @@ export interface PublishHandle {
  * enumerates `impl`'s own function properties; non-function properties are ignored.
  *
  * Auto-ledgered: the interface is withdrawn (and hard-dep consumers degraded) on unload.
+ *
+ * @deprecated moved to ctx.publish (L1 lifecycle v2) — removed after the port fan-out
  */
 export declare function publishInterface<T extends object>(
   name: string,

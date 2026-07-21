@@ -36,22 +36,28 @@ export declare class Client {
   voiceMuted: boolean;
 }
 export declare const Clients: {
-  /** Fires when a client connects (all clients incl. bots; carries name/xuid). May be async. */
+  /** @deprecated moved to ctx.clients.onConnect (L1 lifecycle v2) — removed after the port fan-out */
   onConnect(handler: (client: Client) => void | Promise<void>): void;
-  /** Fires when a client is put in the server (controller/pawn context now exists). May be async. */
+  /** @deprecated moved to ctx.clients.onPutInServer (L1 lifecycle v2) — removed after the port fan-out */
   onPutInServer(handler: (client: Client) => void | Promise<void>): void;
-  /** Fires when a client goes active (spawned / in-game). May be async. */
+  /** @deprecated moved to ctx.clients.onActive (L1 lifecycle v2) — removed after the port fan-out */
   onActive(handler: (client: Client) => void | Promise<void>): void;
-  /** Fires when a client is fully connected. May be async. */
+  /** @deprecated moved to ctx.clients.onFullyConnect (L1 lifecycle v2) — removed after the port fan-out */
   onFullyConnect(handler: (client: Client) => void | Promise<void>): void;
-  /** Fires when a client disconnects. Only `.slot` is guaranteed live here — capture identity earlier if needed. */
+  /**
+   * Fires when a client disconnects. Only `.slot` is guaranteed live here — capture identity earlier if needed.
+   *
+   * @deprecated moved to ctx.clients.onDisconnect (L1 lifecycle v2) — removed after the port fan-out
+   */
   onDisconnect(handler: (client: Client) => void): void;
-  /** Fires when a client's settings (name/cvars) change. */
+  /** @deprecated moved to ctx.clients.onSettingsChanged (L1 lifecycle v2) — removed after the port fan-out */
   onSettingsChanged(handler: (client: Client) => void): void;
   /**
    * Fires while a client transmits voice. Throttled to at most one dispatch per client per second;
    * the FIRST packet of a transmission always fires (a lazy mute-on-talk lands immediately).
    * Handlers should be idempotent. Never fires for bots.
+   *
+   * @deprecated moved to ctx.clients.onVoice (L1 lifecycle v2) — removed after the port fan-out
    */
   onVoice(handler: (client: Client) => void): void;
   /** The client in `slot`, or null if the slot is empty. */

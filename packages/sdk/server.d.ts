@@ -32,6 +32,8 @@ export declare const Server: {
    * polling `Server.mapName` on OnGameFrame). Boot-loaded plugins receive the first map's fire;
    * a plugin hot-loaded mid-map does NOT get a synthetic fire for the current map — read
    * `Server.mapName` at load. Torn down automatically on plugin unload.
+   *
+   * @deprecated moved to ctx.server.onMapStart (L1 lifecycle v2) — removed after the port fan-out
    */
   onMapStart(handler: (mapName: string) => void): void;
   /** The server's configured max client count (`GetMaxClients()`). `0` if unavailable. */
