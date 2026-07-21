@@ -4671,7 +4671,7 @@ fn iface_from_json<'s>(scope: &mut v8::PinScope<'s, '_>, json: &str) -> Option<v
 /// Store a plugin's declared inter-plugin imports (from its manifest) so `iface_dep_kind` /
 /// `iface_is_published` can categorise `require`. Called by the loader BEFORE `load_plugin_js` runs
 /// the module eval. Cleared in `unload_plugin` (Task 7).
-pub fn set_plugin_imports(id: &str, decls: Vec<(String, String, crate::interfaces::Kind)>) {
+pub fn set_plugin_imports(id: &str, decls: Vec<crate::interfaces::ImportSpec>) {
     IFACES.with(|r| r.borrow_mut().set_imports(id, decls));
 }
 
@@ -4968,7 +4968,7 @@ fn s2_iface_publish(
         // second producer's functions would otherwise shadow the incumbent's in IFACE_METHODS,
         // which is keyed by name).
         if let Err(e) = IFACES.with(|r| {
-            r.borrow_mut().publish(&name, &decl.version, &owner, generation, method_names)
+            r.borrow_mut().publish(&name, &decl.version, &decl.types_sha256, &owner, generation, method_names)
         }) {
             log_warn(&format!("WARN: iface_publish('{}'): {}", name, e));
             return;
@@ -5037,6 +5037,7 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         match target {
             crate::interfaces::CallTarget::Unavailable => { throw_named(scope, "InterfaceUnavailable", &name); return; }
             crate::interfaces::CallTarget::VersionMismatch => { throw_named(scope, "InterfaceVersionMismatch", &name); return; }
+            crate::interfaces::CallTarget::TypesMismatch => { throw_named(scope, "InterfaceTypesMismatch", &name); return; }
             crate::interfaces::CallTarget::Ok => {}
         }
 
@@ -10930,6 +10931,12 @@ pub(crate) fn iface_published(name: &str) -> bool {
     IFACES.with(|r| r.borrow().producer_of(name).is_some())
 }
 
+/// The published contract hash for `name` (empty string = producer ships none), None when
+/// unpublished. The loader's `verify_compiled_against` (B1) fail-fast gate reads this.
+pub(crate) fn iface_published_types_sha256(name: &str) -> Option<String> {
+    IFACES.with(|r| r.borrow().lookup(name).map(|e| e.types_sha256.clone()))
+}
+
 /// Slice 5E.3: drop any pending reload-handoff blob for `id` WITHOUT consuming it — called by the
 /// loader on a FINAL removal (Vanished) so a deleted plugin's captured state is discarded rather than
 /// handed to a future re-add of the same id.
@@ -11930,7 +11937,7 @@ mod frame_tests {
     #[test]
     fn iface_publish_records_methods_and_dep_kind() {
         let _ = init(dummy_logger());
-        set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -12180,7 +12187,7 @@ mod frame_tests {
     #[test]
     fn consumer_calls_producer_method_structured_copy() {
         let _ = init(dummy_logger());
-        set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -12198,7 +12205,7 @@ mod frame_tests {
         assert_eq!(read_global_string("cons", "__test_out"), "hi world");
 
         // Producer-absent hard dep → InterfaceUnavailable (caught by the wrapper TryCatch → WARN).
-        set_plugin_imports("lonely", vec![("@missing".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("lonely", vec![crate::interfaces::ImportSpec::new("@missing", "^1.0.0", crate::interfaces::Kind::Hard)]);
         load_body("lonely", r#"
             try { require("@missing").foo(); globalThis.__err = "no throw"; }
             catch (e) { globalThis.__err = String(e); }
@@ -12206,12 +12213,12 @@ mod frame_tests {
         assert!(read_global_string("lonely", "__err").contains("InterfaceUnavailable"));
 
         // Optional dep, not published → require returns null.
-        set_plugin_imports("optc", vec![("@absent".into(), "^1.0.0".into(), crate::interfaces::Kind::Optional)]);
+        set_plugin_imports("optc", vec![crate::interfaces::ImportSpec::new("@absent", "^1.0.0", crate::interfaces::Kind::Optional)]);
         load_body("optc", r#"globalThis.__opt = (require("@absent") === null) ? "null" : "proxy";"#, "{}");
         assert_eq!(read_global_string("optc", "__opt"), "null");
 
         // Non-serializable (cyclic) arg → InterfaceValueNotSerializable (JSON.stringify throws → None → throw).
-        set_plugin_imports("cyc", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cyc", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         load_body("cyc", r#"
             const g = require("@x/greeter");
             const a = {}; a.self = a;
@@ -12230,7 +12237,7 @@ mod frame_tests {
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/boom", { boom: function(){ throw new Error("kaboom"); } });
         "#, "{}");
-        set_plugin_imports("consBoom", vec![("@x/boom".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("consBoom", vec![crate::interfaces::ImportSpec::new("@x/boom", "^1.0.0", crate::interfaces::Kind::Hard)]);
         load_body("consBoom", r#"
             const g = require("@x/boom");
             try { g.boom(); globalThis.__boom = "no throw"; } catch (e) { globalThis.__boom = String(e); }
@@ -12248,7 +12255,7 @@ mod frame_tests {
             const { publishInterface } = require("@s2script/interfaces");
             publishInterface("@x/void", { poke: function(){ /* returns undefined */ } });
         "#, "{}");
-        set_plugin_imports("consVoid", vec![("@x/void".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("consVoid", vec![crate::interfaces::ImportSpec::new("@x/void", "^1.0.0", crate::interfaces::Kind::Hard)]);
         load_body("consVoid", r#"
             const g = require("@x/void");
             try { globalThis.__void = (g.poke() === undefined) ? "undefined" : "value"; }
@@ -12263,7 +12270,7 @@ mod frame_tests {
     #[test]
     fn producer_emit_forwards_to_live_consumer_only() {
         let _ = init(dummy_logger());
-        set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -12288,7 +12295,7 @@ mod frame_tests {
     #[test]
     fn producer_unload_invalidates_consumer_proxy() {
         let _ = init(dummy_logger());
-        set_plugin_imports("cons", vec![("@x/greeter".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -12308,12 +12315,38 @@ mod frame_tests {
         shutdown();
     }
 
+    /// B1: consumer compiled against hash "bbb…" but the producer publishes "aaa…" — every call
+    /// throws InterfaceTypesMismatch (the late-producer backstop; load-time refusal is loader-side).
+    #[test]
+    fn iface_call_throws_types_mismatch_when_compiled_hash_differs() {
+        let _ = init(dummy_logger());
+        set_plugin_publishes("tm_prod", [(
+            "@x/tm".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "aaa111".into() },
+        )].into_iter().collect());
+        load_body("tm_prod",
+            r#"const {publishInterface}=require("@s2script/interfaces");
+               publishInterface("@x/tm",{ping:function(){return 1;}});"#, "{}");
+        set_plugin_imports("tm_cons", vec![crate::interfaces::ImportSpec {
+            name: "@x/tm".into(), range: "^1.0.0".into(), kind: crate::interfaces::Kind::Hard,
+            compiled_types_sha256: Some("bbb222".into()),
+        }]);
+        load_body("tm_cons",
+            r#"const h=require("@x/tm");
+               globalThis.__tmcall=function(){ try { return String(h.ping()); } catch(e){ return String(e); } };"#, "{}");
+        let out = eval_in_context_string("tm_cons", "globalThis.__tmcall()");
+        assert!(out.contains("InterfaceTypesMismatch"), "got: {}", out);
+        unload_plugin("tm_cons");
+        unload_plugin("tm_prod");
+        shutdown();
+    }
+
     /// Task 7: consumer unload removes its subscriber rows from the producer's list and from
     /// IFACE_SUBS, so a later emit reaches nobody.
     #[test]
     fn consumer_unload_removes_subscriber() {
         let _ = init(dummy_logger());
-        set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -12333,7 +12366,7 @@ mod frame_tests {
     #[test]
     fn unload_all_runs_consumers_before_producers() {
         let _ = init(dummy_logger());
-        set_plugin_imports("cons", vec![("@x/greeter".into(),"^1.0.0".into(),crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -12977,7 +13010,7 @@ mod frame_tests {
     fn iface_call_return_rehydrates_entityref() {
         let _ = init(dummy_logger());
         set_engine_ops(None); // degrade path: a real EntityRef -> isValid()==false, readInt32()==null
-        set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/ent", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/ent".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -13008,7 +13041,7 @@ mod frame_tests {
     fn iface_emit_payload_rehydrates_entityref() {
         let _ = init(dummy_logger());
         set_engine_ops(None);
-        set_plugin_imports("cons", vec![("@x/ent".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/ent", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/ent".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
@@ -13035,7 +13068,7 @@ mod frame_tests {
     #[test]
     fn non_entityref_payload_round_trips_unchanged() {
         let _ = init(dummy_logger());
-        set_plugin_imports("cons", vec![("@x/data".into(), "^1.0.0".into(), crate::interfaces::Kind::Hard)]);
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/data", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/data".to_string(),
             crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },

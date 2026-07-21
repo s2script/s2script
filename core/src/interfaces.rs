@@ -11,7 +11,7 @@ pub enum Kind { Hard, Optional }
 
 /// What `v8host::iface_call` should do for a (consumer, interface, method) triple.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallTarget { Ok, Unavailable, VersionMismatch }
+pub enum CallTarget { Ok, Unavailable, VersionMismatch, TypesMismatch }
 
 #[derive(Debug, Clone)]
 pub struct Subscriber {
@@ -24,13 +24,35 @@ pub struct Subscriber {
 #[derive(Debug, Clone)]
 pub struct InterfaceEntry {
     pub version: String,
+    /// sha256 of the contract .d.ts the producer published (manifest publishes[*].typesSha256;
+    /// "" when the producer predates B1 or ships no hash — then nothing is verified).
+    pub types_sha256: String,
     pub producer_id: String,
     pub producer_gen: u64,
     pub method_names: Vec<String>,
     pub subscribers: Vec<Subscriber>,
 }
 
-struct ImportDecl { range: String, kind: Kind }
+/// One declared inter-plugin import, as the loader hands it over from the manifest.
+#[derive(Debug, Clone)]
+pub struct ImportSpec {
+    pub name: String,
+    pub range: String,
+    pub kind: Kind,
+    /// sha256 (hex) of the producer-contract bytes this consumer COMPILED against
+    /// (manifest `compiledAgainst`). None when the consumer shipped no verified copy
+    /// — unverified imports keep the pre-B1 contract (no hash check).
+    pub compiled_types_sha256: Option<String>,
+}
+
+impl ImportSpec {
+    /// Hash-less spec (the dominant/test case).
+    pub fn new(name: &str, range: &str, kind: Kind) -> Self {
+        Self { name: name.into(), range: range.into(), kind, compiled_types_sha256: None }
+    }
+}
+
+struct ImportDecl { range: String, kind: Kind, compiled_types_sha256: Option<String> }
 
 pub struct InterfaceRegistry {
     ifaces: HashMap<String, InterfaceEntry>,
@@ -68,6 +90,7 @@ impl InterfaceRegistry {
         &mut self,
         name: &str,
         version: &str,
+        types_sha256: &str,
         producer_id: &str,
         producer_gen: u64,
         method_names: Vec<String>,
@@ -87,6 +110,7 @@ impl InterfaceRegistry {
         let subscribers = self.ifaces.get(name).map(|e| e.subscribers.clone()).unwrap_or_default();
         self.ifaces.insert(name.to_string(), InterfaceEntry {
             version: version.to_string(),
+            types_sha256: types_sha256.to_string(),
             producer_id: producer_id.to_string(),
             producer_gen,
             method_names,
@@ -108,9 +132,11 @@ impl InterfaceRegistry {
         names
     }
 
-    pub fn set_imports(&mut self, plugin_id: &str, decls: Vec<(String, String, Kind)>) {
+    pub fn set_imports(&mut self, plugin_id: &str, decls: Vec<ImportSpec>) {
         let map = decls.into_iter()
-            .map(|(name, range, kind)| (name, ImportDecl { range, kind }))
+            .map(|s| (s.name, ImportDecl {
+                range: s.range, kind: s.kind, compiled_types_sha256: s.compiled_types_sha256,
+            }))
             .collect();
         self.imports.insert(plugin_id.to_string(), map);
     }
@@ -123,10 +149,6 @@ impl InterfaceRegistry {
         self.imports.get(plugin_id).and_then(|m| m.get(name)).map(|d| d.kind)
     }
 
-    fn import_range(&self, plugin_id: &str, name: &str) -> Option<&str> {
-        self.imports.get(plugin_id).and_then(|m| m.get(name)).map(|d| d.range.as_str())
-    }
-
     pub fn is_available(&self, plugin_id: &str, name: &str) -> bool {
         matches!(self.call_target_inner(plugin_id, name, None), CallTarget::Ok)
     }
@@ -136,9 +158,21 @@ impl InterfaceRegistry {
     }
 
     fn call_target_inner(&self, plugin_id: &str, name: &str, method: Option<&str>) -> CallTarget {
-        let Some(range) = self.import_range(plugin_id, name) else { return CallTarget::Unavailable };
+        let Some(decl) = self.imports.get(plugin_id).and_then(|m| m.get(name)) else {
+            return CallTarget::Unavailable;
+        };
         let Some(entry) = self.ifaces.get(name) else { return CallTarget::Unavailable };
-        if !version_satisfies(range, &entry.version) { return CallTarget::VersionMismatch; }
+        if !version_satisfies(&decl.range, &entry.version) { return CallTarget::VersionMismatch; }
+        // B1 typesSha256 verify (north-star §5.2): the consumer compiled against a specific
+        // contract; if the producer's published hash differs, every call is unsound — refuse
+        // loudly rather than marshal across a drifted contract. Verified only when BOTH sides
+        // carry a hash (fail-open for pre-B1 artifacts; the doctrine gate is at load, this is
+        // the always-on backstop for late-arriving producers).
+        if let (Some(expected), false) = (&decl.compiled_types_sha256, entry.types_sha256.is_empty()) {
+            if !expected.is_empty() && *expected != entry.types_sha256 {
+                return CallTarget::TypesMismatch;
+            }
+        }
         if let Some(m) = method {
             if !entry.method_names.iter().any(|n| n == m) { return CallTarget::Unavailable; }
         }
@@ -254,7 +288,7 @@ mod tests {
     #[test]
     fn publish_then_lookup() {
         let mut r = reg();
-        r.publish("@x/if", "1.2.0", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
+        r.publish("@x/if", "1.2.0", "", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
         let e = r.lookup("@x/if").expect("published");
         assert_eq!(e.version, "1.2.0");
         assert_eq!(e.producer_id, "prod");
@@ -265,9 +299,9 @@ mod tests {
     #[test]
     fn remove_by_producer_drops_all_its_interfaces() {
         let mut r = reg();
-        r.publish("@a", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
-        r.publish("@b", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
-        r.publish("@c", "1.0.0", "other", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@a", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@b", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@c", "1.0.0", "", "other", 0, vec![]).expect("test-setup publish must succeed");
         let mut removed = r.remove_by_producer("prod");
         removed.sort();
         assert_eq!(removed, vec!["@a".to_string(), "@b".to_string()]);
@@ -279,37 +313,37 @@ mod tests {
     fn dep_kind_and_availability() {
         let mut r = reg();
         r.set_imports("cons", vec![
-            ("@hard".into(), "^1.0.0".into(), Kind::Hard),
-            ("@opt".into(), "^1.0.0".into(), Kind::Optional),
+            ImportSpec::new("@hard", "^1.0.0", Kind::Hard),
+            ImportSpec::new("@opt", "^1.0.0", Kind::Optional),
         ]);
         assert_eq!(r.dep_kind("cons", "@hard"), Some(Kind::Hard));
         assert_eq!(r.dep_kind("cons", "@opt"), Some(Kind::Optional));
         assert_eq!(r.dep_kind("cons", "@undeclared"), None);
         // not published yet → not available
         assert!(!r.is_available("cons", "@hard"));
-        r.publish("@hard", "1.5.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@hard", "1.5.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         assert!(r.is_available("cons", "@hard"));
         // published but incompatible version → not available
-        r.publish("@opt", "2.0.0", "prod2", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@opt", "2.0.0", "", "prod2", 0, vec![]).expect("test-setup publish must succeed");
         assert!(!r.is_available("cons", "@opt"));
     }
 
     #[test]
     fn call_target_reports_unavailable_mismatch_ok() {
         let mut r = reg();
-        r.set_imports("cons", vec![("@x".into(), "^1.0.0".into(), Kind::Hard)]);
+        r.set_imports("cons", vec![ImportSpec::new("@x", "^1.0.0", Kind::Hard)]);
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::Unavailable);
-        r.publish("@x", "1.2.0", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
+        r.publish("@x", "1.2.0", "", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::Ok);
         assert_eq!(r.call_target("cons", "@x", "missingMethod"), CallTarget::Unavailable);
-        r.publish("@x", "3.0.0", "prod", 1, vec!["greet".into()]).expect("test-setup publish must succeed");   // republished incompatible
+        r.publish("@x", "3.0.0", "", "prod", 1, vec!["greet".into()]).expect("test-setup publish must succeed");   // republished incompatible
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::VersionMismatch);
     }
 
     #[test]
     fn subscribers_add_and_remove_by_consumer() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@x", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         assert!(r.add_subscriber("@x", Subscriber { sub_id: 1, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() }));
         assert!(r.add_subscriber("@x", Subscriber { sub_id: 2, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() }));
         // adding to a missing interface → false
@@ -323,7 +357,7 @@ mod tests {
     #[test]
     fn live_subscriber_ids_filters_by_event_and_liveness() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@x", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 1, consumer_id: "live".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 2, consumer_id: "dead".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 3, consumer_id: "live".into(), consumer_gen: 0, event: "other".into() });
@@ -335,8 +369,8 @@ mod tests {
     #[test]
     fn unload_order_puts_consumers_before_producers() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
-        r.set_imports("cons", vec![("@x".into(), "^1.0.0".into(), Kind::Hard)]);
+        r.publish("@x", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.set_imports("cons", vec![ImportSpec::new("@x", "^1.0.0", Kind::Hard)]);
         // input order must not matter:
         assert_eq!(r.unload_order(&["prod".into(), "cons".into()]), vec!["cons".to_string(), "prod".to_string()]);
         assert_eq!(r.unload_order(&["cons".into(), "prod".into()]), vec!["cons".to_string(), "prod".to_string()]);
@@ -346,15 +380,15 @@ mod tests {
     fn producer_of_returns_id_and_generation() {
         let mut r = reg();
         assert!(r.producer_of("@x").is_none());
-        r.publish("@x", "1.0.0", "prod", 3, vec![]).expect("test-setup publish must succeed");
+        r.publish("@x", "1.0.0", "", "prod", 3, vec![]).expect("test-setup publish must succeed");
         assert_eq!(r.producer_of("@x"), Some(("prod".to_string(), 3)));
     }
 
     #[test]
     fn clear_empties_ifaces_and_imports() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
-        r.set_imports("cons", vec![("@x".into(), "^1.0.0".into(), Kind::Hard)]);
+        r.publish("@x", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.set_imports("cons", vec![ImportSpec::new("@x", "^1.0.0", Kind::Hard)]);
         r.clear();
         assert!(r.lookup("@x").is_none());
         assert_eq!(r.dep_kind("cons", "@x"), None);
@@ -363,7 +397,7 @@ mod tests {
     #[test]
     fn remove_subscribers_by_consumer_on_drops_only_matching_name_event() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@x", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 1, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 2, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
         r.add_subscriber("@x", Subscriber { sub_id: 3, consumer_id: "cons".into(), consumer_gen: 0, event: "other".into() });
@@ -381,7 +415,7 @@ mod tests {
     #[test]
     fn consumer_of_sub_returns_owner() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec![]).expect("test-setup publish must succeed");
+        r.publish("@x", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 42, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
         assert_eq!(r.consumer_of_sub("@x", 42), Some("cons".to_string()));
         assert_eq!(r.consumer_of_sub("@x", 99), None);  // sub_id not found
@@ -391,9 +425,9 @@ mod tests {
     #[test]
     fn republish_preserves_existing_subscribers() {
         let mut r = reg();
-        r.publish("@x", "1.0.0", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
+        r.publish("@x", "1.0.0", "", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
         r.add_subscriber("@x", Subscriber { sub_id: 5, consumer_id: "cons".into(), consumer_gen: 0, event: "greeted".into() });
-        r.publish("@x", "1.1.0", "prod", 0, vec!["greet".into(), "wave".into()]).expect("test-setup publish must succeed"); // in-place update
+        r.publish("@x", "1.1.0", "", "prod", 0, vec!["greet".into(), "wave".into()]).expect("test-setup publish must succeed"); // in-place update
         let e = r.lookup("@x").unwrap();
         assert_eq!(e.version, "1.1.0");
         assert_eq!(e.method_names, vec!["greet".to_string(), "wave".to_string()]);
@@ -403,12 +437,12 @@ mod tests {
     #[test]
     fn republish_by_the_same_producer_succeeds_and_keeps_subscribers() {
         let mut r = InterfaceRegistry::new();
-        r.publish("@c/mapchooser", "1.2.0", "@edge/mce", 1, vec!["pick".into()]).expect("first");
+        r.publish("@c/mapchooser", "1.2.0", "", "@edge/mce", 1, vec!["pick".into()]).expect("first");
         r.add_subscriber("@c/mapchooser", Subscriber {
             sub_id: 7, consumer_id: "@x/rtv".into(), consumer_gen: 1, event: "changed".into(),
         });
         // Same producer republishing (hot-reload) is allowed and preserves subscribers.
-        r.publish("@c/mapchooser", "1.3.0", "@edge/mce", 2, vec!["pick".into()]).expect("republish");
+        r.publish("@c/mapchooser", "1.3.0", "", "@edge/mce", 2, vec!["pick".into()]).expect("republish");
         let e = r.lookup("@c/mapchooser").expect("entry");
         assert_eq!(e.version, "1.3.0");
         assert_eq!(e.subscribers.len(), 1, "republish must keep subscribers");
@@ -417,9 +451,9 @@ mod tests {
     #[test]
     fn a_second_live_producer_of_the_same_interface_is_rejected() {
         let mut r = InterfaceRegistry::new();
-        r.publish("@c/mapchooser", "1.2.0", "@edge/mce", 1, vec!["pick".into()]).expect("first");
+        r.publish("@c/mapchooser", "1.2.0", "", "@edge/mce", 1, vec!["pick".into()]).expect("first");
         // A DIFFERENT producer claiming the same live name: implementations are alternatives.
-        let err = r.publish("@c/mapchooser", "1.2.0", "@stock/mapchooser", 1, vec!["pick".into()])
+        let err = r.publish("@c/mapchooser", "1.2.0", "", "@stock/mapchooser", 1, vec!["pick".into()])
             .expect_err("second producer must be rejected");
         assert!(err.contains("@c/mapchooser"), "error names the interface: {}", err);
         assert!(err.contains("@edge/mce"), "error names the incumbent producer: {}", err);
@@ -430,9 +464,9 @@ mod tests {
     #[test]
     fn a_new_producer_may_claim_a_name_after_the_incumbent_unloads() {
         let mut r = InterfaceRegistry::new();
-        r.publish("@c/mapchooser", "1.2.0", "@edge/mce", 1, vec!["pick".into()]).expect("first");
+        r.publish("@c/mapchooser", "1.2.0", "", "@edge/mce", 1, vec!["pick".into()]).expect("first");
         r.remove_by_producer("@edge/mce");
-        r.publish("@c/mapchooser", "1.2.0", "@stock/mapchooser", 1, vec!["pick".into()])
+        r.publish("@c/mapchooser", "1.2.0", "", "@stock/mapchooser", 1, vec!["pick".into()])
             .expect("free after unload");
         assert_eq!(r.lookup("@c/mapchooser").expect("entry").producer_id, "@stock/mapchooser");
     }
@@ -462,5 +496,39 @@ mod tests {
         // The one thing major-only DOES get right.
         assert!(!version_satisfies("^1.0.0", "2.0.0"));
         assert!(!version_satisfies("^2.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn call_target_types_mismatch_when_compiled_hash_differs() {
+        let mut r = InterfaceRegistry::new();
+        r.publish("@x/if", "1.0.0", "aaa111", "prod", 1, vec!["m".into()]).expect("publish");
+        r.set_imports("cons", vec![ImportSpec {
+            name: "@x/if".into(), range: "^1.0.0".into(), kind: Kind::Hard,
+            compiled_types_sha256: Some("bbb222".into()),
+        }]);
+        assert_eq!(r.call_target("cons", "@x/if", "m"), CallTarget::TypesMismatch);
+    }
+
+    #[test]
+    fn call_target_ok_when_hash_matches_absent_or_unpublished() {
+        let mut r = InterfaceRegistry::new();
+        r.publish("@x/if", "1.0.0", "aaa111", "prod", 1, vec!["m".into()]).expect("publish");
+        // Matching hash -> Ok.
+        r.set_imports("c1", vec![ImportSpec {
+            name: "@x/if".into(), range: "^1.0.0".into(), kind: Kind::Hard,
+            compiled_types_sha256: Some("aaa111".into()),
+        }]);
+        assert_eq!(r.call_target("c1", "@x/if", "m"), CallTarget::Ok);
+        // Consumer shipped no hash (no local contract copy) -> unverified, Ok (today's contract).
+        r.set_imports("c2", vec![ImportSpec::new("@x/if", "^1.0.0", Kind::Hard)]);
+        assert_eq!(r.call_target("c2", "@x/if", "m"), CallTarget::Ok);
+        // Producer published no hash (empty string) -> nothing to verify against, Ok.
+        let mut r2 = InterfaceRegistry::new();
+        r2.publish("@y/if", "1.0.0", "", "prod", 1, vec!["m".into()]).expect("publish");
+        r2.set_imports("c3", vec![ImportSpec {
+            name: "@y/if".into(), range: "^1.0.0".into(), kind: Kind::Hard,
+            compiled_types_sha256: Some("bbb222".into()),
+        }]);
+        assert_eq!(r2.call_target("c3", "@y/if", "m"), CallTarget::Ok);
     }
 }

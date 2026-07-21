@@ -46,6 +46,12 @@ pub struct Manifest {
     /// from HERE — a plugin may never type a version string (spec §4.3).
     #[serde(default)]
     pub publishes: std::collections::HashMap<String, PublishDecl>,
+    /// B1: interface-name → sha256 of the contract bytes this plugin COMPILED against
+    /// (`s2s build` hashes the consumer's `.s2script/types/<iface>/index.d.ts` copy).
+    /// Verified against the producer's published typesSha256 at load (fail-fast) and
+    /// per-call (late-producer backstop). Empty for pre-B1 or copy-less consumers.
+    #[serde(rename = "compiledAgainst", default)]
+    pub compiled_against: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub config: std::collections::HashMap<String, crate::config::ConfigEntry>,
 }
@@ -92,9 +98,45 @@ fn deps_satisfied(manifest: &Manifest) -> bool {
     manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n))
 }
 
+/// B1 (north-star §5.2): fail-fast contract-drift gate. A consumer that compiled against a
+/// dependency contract whose hash differs from what the producer CURRENTLY publishes is refused
+/// at load — completing "fails at typecheck AND again at load". Producer-absent deps are not
+/// checked here (lazy hard-dep contract); if such a producer appears later with a different
+/// hash, every call throws `InterfaceTypesMismatch` (interfaces.rs backstop).
+fn verify_compiled_against(manifest: &Manifest) -> Result<(), String> {
+    let mut names: Vec<&String> = manifest.compiled_against.keys().collect();
+    names.sort(); // deterministic first-error
+    for iface in names {
+        let built = &manifest.compiled_against[iface];
+        if built.is_empty() { continue; }
+        let Some(published) = crate::v8host::iface_published_types_sha256(iface) else { continue };
+        if !published.is_empty() && published != *built {
+            return Err(format!(
+                "contract drift on '{}': compiled against typesSha256 {}… but the producer publishes {}… — refresh .s2script/types/{}/index.d.ts from the producer and rebuild",
+                iface,
+                &built[..12.min(built.len())],
+                &published[..12.min(published.len())],
+                iface
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Materialize + start a plugin's load and record it in WATCH_STATE. Shared by the poll file scan,
 /// the reload path, and `start_unblocked_waiters` (the parked-then-unblocked path).
 fn begin_load(manifest: &Manifest, js: &str, path: &Path, mtime: SystemTime) {
+    // B1: typesSha256 fail-fast. Refusal is remembered exactly like an apiVersion refusal:
+    // WATCH_STATE row (path+mtime => warn once) + FAILED state (operator-visible). A rebuilt
+    // file (new mtime) retries.
+    if let Err(reason) = verify_compiled_against(manifest) {
+        crate::v8host::log_warn(&format!("WARN: poll_plugins: refusing {:?}: {}", path, reason));
+        crate::v8host::set_failed(&manifest.id, &reason);
+        WATCH_STATE.with(|ws| {
+            ws.borrow_mut().insert(path.to_path_buf(), WatchedPlugin { mtime, id: manifest.id.clone() });
+        });
+        return;
+    }
     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(manifest));
     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
@@ -115,13 +157,19 @@ fn begin_load(manifest: &Manifest, js: &str, path: &Path, mtime: SystemTime) {
 /// `.s2sp` that still carries a builtin under its old `@s2script/<cap>` name flows through as a
 /// phantom Hard dep — behaviorally benign: `call_target_inner` is lazy (Unavailable only at CALL
 /// time, never at load) and `__s2require` is prelude-first, so the phantom is never called.
-fn imports_from_manifest(m: &Manifest) -> Vec<(String, String, crate::interfaces::Kind)> {
+fn imports_from_manifest(m: &Manifest) -> Vec<crate::interfaces::ImportSpec> {
     let mut out = Vec::new();
     for (name, range) in &m.plugin_dependencies {
-        out.push((name.clone(), range.clone(), crate::interfaces::Kind::Hard));
+        out.push(crate::interfaces::ImportSpec {
+            name: name.clone(), range: range.clone(), kind: crate::interfaces::Kind::Hard,
+            compiled_types_sha256: m.compiled_against.get(name).cloned(),
+        });
     }
     for (name, range) in &m.optional_plugin_dependencies {
-        out.push((name.clone(), range.clone(), crate::interfaces::Kind::Optional));
+        out.push(crate::interfaces::ImportSpec {
+            name: name.clone(), range: range.clone(), kind: crate::interfaces::Kind::Optional,
+            compiled_types_sha256: m.compiled_against.get(name).cloned(),
+        });
     }
     out
 }
@@ -361,13 +409,8 @@ fn drain_pending_ops() {
                 match read_file_and_parse(&path) {
                     Ok((manifest, js)) => {
                         crate::v8host::unload_plugin(&id);   // no-op if not currently loaded
-                        crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
-                        crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
-                        let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                        start_load(&manifest, &js, &cfg);
-                        crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
                         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-                        WATCH_STATE.with(|ws| { ws.borrow_mut().insert(path.clone(), WatchedPlugin { mtime, id: manifest.id }); });
+                        begin_load(&manifest, &js, &path, mtime);
                         crate::v8host::log_warn(&format!("[plugins] reloaded '{}' (sm plugins reload)", id));
                     }
                     Err(e) => crate::v8host::log_warn(&format!("[plugins] reload '{}' failed: {}", id, e)),
@@ -899,8 +942,29 @@ mod tests {
         let imports = imports_from_manifest(&m);
         // Builtins are no longer skipped — they become phantom Hard deps (lazy, never called).
         assert_eq!(imports.len(), 2, "both builtin deps flow through post-deletion");
-        assert!(imports.iter().all(|(_, _, k)| matches!(k, crate::interfaces::Kind::Hard)));
-        assert!(imports.iter().any(|(n, _, _)| n == "@s2script/entity"));
+        assert!(imports.iter().all(|i| matches!(i.kind, crate::interfaces::Kind::Hard)));
+        assert!(imports.iter().any(|i| i.name == "@s2script/entity"));
+    }
+
+    #[test]
+    fn manifest_parses_compiled_against_and_flows_into_imports() {
+        let json = r#"{"id":"@demo/c","version":"0.1.0","apiVersion":"2.x",
+            "pluginDependencies":{"@x/if":"^1.0.0","@x/other":"^1.0.0"},
+            "compiledAgainst":{"@x/if":"deadbeef"}}"#;
+        let m: Manifest = serde_json::from_str(json).expect("parse");
+        assert_eq!(m.compiled_against.get("@x/if").map(String::as_str), Some("deadbeef"));
+        let imports = imports_from_manifest(&m);
+        let with = imports.iter().find(|i| i.name == "@x/if").expect("present");
+        assert_eq!(with.compiled_types_sha256.as_deref(), Some("deadbeef"));
+        let without = imports.iter().find(|i| i.name == "@x/other").expect("present");
+        assert_eq!(without.compiled_types_sha256, None);
+    }
+
+    #[test]
+    fn manifest_without_compiled_against_defaults_empty() {
+        let json = r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"2.x"}"#;
+        let m: Manifest = serde_json::from_str(json).expect("parse");
+        assert!(m.compiled_against.is_empty());
     }
 
     #[test]
