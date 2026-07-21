@@ -1,5 +1,38 @@
 # @s2script/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- cb50b95: B1 (build ⊇ load): `s2s build` now DERIVES the manifest — `apiVersion` is stamped from the SDK's
+  host-major constant (authored values ignored with a warning), the `publishes` name-set is derived
+  from `ctx.publish` calls (drift is a build error; `"self"` auto-derives), dependency-usage
+  advisories warn on declared-vs-used mismatches, and a `.s2script/types/<iface>/index.d.ts`
+  verified contract copy gives a consumer REAL dependency types plus a `compiledAgainst` hash that
+  the host verifies at load (contract drift now fails fast at load AND per-call).
+
+  B2: new `@s2script/eslint-plugin` — `no-ctx-escape`, `no-floating-promise-in-factory`,
+  `no-bigint-in-interface-payloads`, `no-await-in-raw-view` — pinned by the SDK, scaffolded by
+  `s2s create` (`eslint.config.mjs`), and executed in-process by `s2s build` after the tsc gate
+  against the gate's own `ts.Program`. Lint errors refuse the `.s2sp`.
+
+- ddcb4c6: BREAKING (pre-1.0 minor): `EntityRef` is now `{index, id}` — `id` is a host-minted
+  liveness id replacing the raw engine `serial` on the public surface. Liveness is
+  decided by the host's books (listener-fed, cleared per map), never by entity memory;
+  stale refs — including across a changelevel — deterministically resolve to
+  `null`/`false`. The inter-plugin/handoff wire format is `{__s2ref: [index, id]}`;
+  pre-E1 `{__entref__}` blobs revive as inert data. The `EntityRef` constructor is no
+  longer part of the public typed surface — the framework mints every ref.
+- 6cec7d0: L1 lifecycle v2: the plugin is a typed artifact. New `@s2script/sdk/plugin` subpath
+  (`plugin()`, `PluginContext`, `Scope`, `PluginHooks`); every registration verb moves to `ctx`;
+  `CommandContext`→`CommandInvocation` (param naming: `cmd`); usercmd `Cmd`→`UserCmdView`;
+  apiVersion major is now 2.x. Old ambient registration verbs are deprecated and removed in-series.
+
+### Patch Changes
+
+- Updated dependencies [cb50b95]
+  - @s2script/eslint-plugin@0.2.0
+
 ## 0.4.0
 
 ### Minor Changes

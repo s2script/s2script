@@ -1,6 +1,6 @@
 {
   "name": "@s2script/eslint-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "s2script residual safety rules — the small, local checks the type system cannot carry (no-ctx-escape, no-floating-promise-in-factory, no-bigint-in-interface-payloads, no-await-in-raw-view). Pinned by @s2script/sdk so the SAME engine+rules run in the editor and inside `s2s build`.",
   "type": "module",
   "main": "dist/index.js",
