@@ -890,6 +890,25 @@ pub(crate) fn next_sub_id() -> u64 {
     })
 }
 
+/// Native `__s2_scope_dispose(ids: number[])` (L1 lifecycle v2, Task 3). A `ctx.createScope()`'s
+/// `clear()`/`dispose()` hands its tracked subscription ids here; the call sweeps every owner-scoped
+/// store's `remove_by_ids` (the same self-registered registry `unload_plugin` walks by owner), so a
+/// Scope tears down its subs without a per-store JS API. Degrade-never-crash: a non-array arg or an
+/// empty list is a no-op.
+fn s2_scope_dispose(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(0)) else { return };
+        let mut ids = Vec::with_capacity(arr.length() as usize);
+        for i in 0..arr.length() {
+            if let Some(v) = arr.get_index(scope, i) {
+                if let Some(n) = v.number_value(scope) { ids.push(n as u64); }
+            }
+        }
+        crate::owner_stores::sweep_ids(&ids);
+    }));
+}
+
 /// Unload/resetAll teardown: drop every rule owned by `owner`, re-pushing each affected index.
 fn transmit_remove_owner(owner: &str) {
     let indices: Vec<i32> = TRANSMIT_RULES.with(|r| {
@@ -1184,13 +1203,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // output accept "*" wildcards. handler(ev) may return a HookResult >= Handled to suppress the output
   // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
   var Entity = {
-    onOutput: function (classname, output, handler) { __s2_output_subscribe(String(classname), String(output), handler); },
+    onOutput: function (classname, output, handler) { return __s2_output_subscribe(String(classname), String(output), handler); },
     // Entity lifecycle listeners: fire when the engine creates/spawns/deletes an entity of `className`
     // ("*" = all). The handler gets (entity, className): `entity` is a serial-gated EntityRef (may be
     // null for a barely-constructed onCreate / a dying onDelete); `className` is always valid.
-    onCreate: function (className, handler) { __s2_entity_listener_on("create", String(className), handler); },
-    onSpawn:  function (className, handler) { __s2_entity_listener_on("spawn",  String(className), handler); },
-    onDelete: function (className, handler) { __s2_entity_listener_on("delete", String(className), handler); },
+    onCreate: function (className, handler) { return __s2_entity_listener_on("create", String(className), handler); },
+    onSpawn:  function (className, handler) { return __s2_entity_listener_on("spawn",  String(className), handler); },
+    onDelete: function (className, handler) { return __s2_entity_listener_on("delete", String(className), handler); },
     // Find every entity whose designer-name (class) exactly matches className. Returns serial-gated
     // EntityRefs (empty array on no-op/degrade). Broadly reusable (gamerules proxy, props, triggers...).
     findByClass: function (className) {
@@ -1239,9 +1258,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   GameEvent.prototype.setUint64 = function (k, v) { __s2_event_set_uint64(k, String(v)); };   // decimal string
   // --- Slice 5D.1 Task 2 / 5D.3: Events.on/off/onPre/fire — prelude module object for @s2script/events. ---
   var Events = {
-    on:    function (name, handler) { __s2_event_subscribe(name, handler); },
+    on:    function (name, handler) { return __s2_event_subscribe(name, handler); },
     off:   function (name, handler) { __s2_event_unsubscribe(name, handler); },
-    onPre: function (name, handler) { __s2_event_subscribe_pre(name, handler); },
+    onPre: function (name, handler) { return __s2_event_subscribe_pre(name, handler); },
     // shared: apply { key: value } to the current event (create must have run). Type-infer as in `fire`.
     _applyFields: function (fields) {
       if (!fields) return;
@@ -1604,7 +1623,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // Slice 6.13b: subscribe to raw player chat. The handler gets (slot, text, teamonly) and may return
     // a HookResult (>= Handled suppresses the broadcast). Delivered from the Host_Say detour for every
     // non-command chat line; the `@`-trigger layer (a later slice) subscribes through this.
-    onMessage: function (handler) { __s2_chat_on_message(handler); },
+    onMessage: function (handler) { return __s2_chat_on_message(handler); },
   };
   globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
   // --- Slice 6.4: server module (command / isMapValid; engine-generic server control) ---
@@ -1634,7 +1653,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // Fires on every StartupServer (boot-loaded plugins get the first map); a plugin hot-loaded
     // mid-map should read Server.mapName at load for the CURRENT map. Handlers may be async
     // (fire-and-forget). Auto-ledgered per plugin; torn down on unload.
-    onMapStart: function (h) { __s2_map_start_subscribe(h); },
+    onMapStart: function (h) { return __s2_map_start_subscribe(h); },
     get maxPlayers() { return __s2_server_max_clients(); },   // GetMaxClients(); 0 if unavailable
     get mapName() { return __s2_server_map_name(); },         // GetMapName(); "" if unavailable
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
@@ -1674,7 +1693,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       }, enumerable: true, configurable: true,
     },
   });
-  var Damage = { onPre: function (handler) { __s2_damage_subscribe(handler); } };
+  var Damage = { onPre: function (handler) { return __s2_damage_subscribe(handler); } };
   globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
   // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
   //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
@@ -1700,7 +1719,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     set viewAngles(a) { __s2_usercmd_write(3, +a.x); __s2_usercmd_write(4, +a.y); __s2_usercmd_write(5, +a.z); },
     clearSubtickMoves: function () { __s2_usercmd_clear_subtick(); },
   };
-  var UserCmd = { onRun: function (handler) { __s2_usercmd_subscribe(handler); } };
+  var UserCmd = { onRun: function (handler) { return __s2_usercmd_subscribe(handler); } };
   // Cmd is exposed on the package object (NOT as a plugin-facing named export — it's a type-only
   // interface in index.d.ts) purely so dispatch_usercmd (core-side) can fetch this exact singleton
   // via globalThis.__s2pkg_usercmd.Cmd each dispatch.
@@ -2145,17 +2164,17 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     set: function (on) { __s2_voice_set_muted(this.slot, !!on); }
   });
   var __s2_MAX_CLIENTS = 64;
-  function __s2_client_on(event, h) { __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
+  function __s2_client_on(event, h) { return __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
   var __s2_clients = {
-    onConnect:         function (h) { __s2_client_on("connect", h); },
-    onPutInServer:     function (h) { __s2_client_on("putinserver", h); },
-    onActive:          function (h) { __s2_client_on("active", h); },
-    onFullyConnect:    function (h) { __s2_client_on("fullyconnect", h); },
-    onDisconnect:      function (h) { __s2_client_on("disconnect", h); },
-    onSettingsChanged: function (h) { __s2_client_on("settingschanged", h); },
+    onConnect:         function (h) { return __s2_client_on("connect", h); },
+    onPutInServer:     function (h) { return __s2_client_on("putinserver", h); },
+    onActive:          function (h) { return __s2_client_on("active", h); },
+    onFullyConnect:    function (h) { return __s2_client_on("fullyconnect", h); },
+    onDisconnect:      function (h) { return __s2_client_on("disconnect", h); },
+    onSettingsChanged: function (h) { return __s2_client_on("settingschanged", h); },
     // Fires while a client transmits voice (throttled shim-side to <=1 dispatch/slot/second; the FIRST
     // packet of a transmission always fires). Never fires for bots.
-    onVoice:           function (h) { __s2_client_on("voice", h); },
+    onVoice:           function (h) { return __s2_client_on("voice", h); },
     fromSlot: function (slot) { slot = slot | 0; return __s2_client_valid(slot) ? new Client(slot) : null; },
     all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_valid(s)) out.push(new Client(s)); } return out; }
   };
@@ -2218,7 +2237,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return __s2_sound_emit(String(name), idx, id, slots, vol);
     },
     onPrecache: function (h) {
-      __s2_precache_subscribe(function () {
+      return __s2_precache_subscribe(function () {
         h({ add: function (p) { return __s2_sound_precache_add(String(p)); } });
       });
     },
@@ -2372,7 +2391,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       // Guard: fromSlot is null if the client disconnected in the load->fan-out window, so only fire
       // for a still-connected Client (the .d.ts promises a non-null Client). A departed client's
       // "cookies cached" notification is moot.
-      __s2_cookie_on_cached(function (slot) { var c = globalThis.__s2pkg_clients.Clients.fromSlot(slot); if (c) h(c); });
+      return __s2_cookie_on_cached(function (slot) { var c = globalThis.__s2pkg_clients.Clients.fromSlot(slot); if (c) h(c); });
     },
   };
   globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
@@ -2629,7 +2648,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       function scopeReg(thunk) { if (!armed) { pending.push(thunk); } else { thunk(); } }
       var scope = makeSubjects(tracker, scopeReg);
       scope.clear = function () {
-        if (typeof __s2_scope_dispose === "function") __s2_scope_dispose(ids.slice());   // T3
+        __s2_scope_dispose(ids.slice());   // T3: sweep this scope's sub ids out of every store
         ids.length = 0;
         var ds = disposers.slice(); disposers.length = 0;
         for (var i = 0; i < ds.length; i++) { try { ds[i](); } catch (e) {} }
@@ -5210,7 +5229,7 @@ fn s2_iface_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
 fn s2_event_subscribe(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    mut rv: v8::ReturnValue,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
@@ -5223,7 +5242,8 @@ fn s2_event_subscribe(
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
 
         // Subscribe: if this is the FIRST for the name, call the engine-op event_subscribe.
-        let first = EVENT_MUX.with(|m| m.borrow_mut().subscribe(&name, next_sub_id(), owner, generation, handler_g));
+        let sub_id = next_sub_id();
+        let first = EVENT_MUX.with(|m| m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g));
         if first {
             if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
                 if let Some(func) = ops.event_subscribe {
@@ -5233,6 +5253,8 @@ fn s2_event_subscribe(
                 }
             }
         }
+        // T3: return the sub id so ctx/scope's `viaId` can track it for Scope disposal.
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -5299,14 +5321,16 @@ fn s2_event_get_float(
 
 /// `__s2_damage_subscribe(handler)` — subscribe a JS fn to `Damage.onPre` (Slice 6.6). Owner-tracked;
 /// the shim detour is installed at Load, so no per-subscribe engine registration is needed.
-fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        DAMAGE_MUX.with(|m| { m.borrow_mut().subscribe("onPre", next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        DAMAGE_MUX.with(|m| { m.borrow_mut().subscribe("onPre", sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -5316,7 +5340,7 @@ fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 /// engine op so the shim lazily installs its per-tick input-processing detour — mirrors `s2_entity_listener_on`'s
 /// lazy-install trigger (zero overhead when no plugin subscribes). Degrade-never-crash: no op → the
 /// subscribe still records, the engine just never delivers.
-fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
@@ -5324,12 +5348,14 @@ fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let first_ever = USERCMD_MUX.with(|m| m.borrow().is_empty());
-        USERCMD_MUX.with(|m| { m.borrow_mut().subscribe("onRun", next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        USERCMD_MUX.with(|m| { m.borrow_mut().subscribe("onRun", sub_id, owner, generation, handler_g); });
         if first_ever {
             if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usercmd_hook_install) {
                 let _ = func();
             }
         }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -5410,14 +5436,16 @@ fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallba
 /// handler receives `(slot, text, teamonly)` at dispatch and may return a HookResult to suppress the
 /// broadcast. Fixed mux key "" (chat has no name dimension); the "first subscriber" signal is ignored
 /// (no per-name engine-op to toggle).
-fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -5426,7 +5454,7 @@ fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 /// are installed unconditionally at Load, so there is no per-name engine-op — the "first subscriber"
 /// signal is ignored. The handler receives the raw `slot` at dispatch; the `@s2script/clients` JS
 /// wrapper builds a `Client` from it. Notify-only (the return is ignored).
-fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
         let event = args.get(0).to_rust_string_lossy(scope);
@@ -5435,20 +5463,24 @@ fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         // Capture the calling plugin's (id, generation) for liveness-gated dispatch.
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
 /// `__s2_map_start_subscribe(handler)` — subscribe a JS fn to the map-start event. Owner-tracked
 /// (mirrors `__s2_chat_on_message`); fixed mux key "". The handler receives the map name string.
-fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        MAP_MUX.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        MAP_MUX.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -5456,14 +5488,16 @@ fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 /// Owner-tracked (mirrors `__s2_map_start_subscribe`); fixed mux key "". The handler is called
 /// with no args during `dispatch_precache`; the `@s2script/sound` prelude wrapper constructs the
 /// block-scoped PrecacheContext.
-fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        PRECACHE_MUX.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        PRECACHE_MUX.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -5471,14 +5505,16 @@ fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 /// Owner-tracked (mirrors `__s2_client_subscribe`); fixed mux key "" (cookies-cached has no name
 /// dimension, like `Chat.onMessage`). The handler receives the raw `slot` at dispatch; the
 /// `@s2script/cookies` prelude wraps it into a `Client` via `Clients.fromSlot`.
-fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -6595,7 +6631,7 @@ fn s2_entity_spawn_kv(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 /// (entity-I/O slice); owner-tracked in `OUTPUT_MUX` keyed `"<classname>\0<output>"`. The
 /// `FireOutputInternal` detour is installed unconditionally at shim Load, so no per-subscribe engine
 /// registration is needed (mirrors `s2_damage_subscribe`/`s2_chat_on_message`).
-fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 3 { return; }
         let classname = args.get(0).to_rust_string_lossy(scope);
@@ -6605,7 +6641,9 @@ fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{}\0{}", classname, output);
-        OUTPUT_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        OUTPUT_MUX.with(|m| { m.borrow_mut().subscribe(&key, sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -6630,7 +6668,7 @@ fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 /// (the mux was empty), calls the `entity_listener_install` engine op so the shim lazily registers its
 /// IEntityListener (zero cost when no plugin subscribes). Degrade-never-crash: no op → the subscribe
 /// still records, the engine just never delivers.
-fn s2_entity_listener_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_entity_listener_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 3 { return; }
         let kind = args.get(0).to_rust_string_lossy(scope);
@@ -6641,12 +6679,14 @@ fn s2_entity_listener_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{}\0{}", kind, class_name);
         let first_ever = ENTITY_MUX.with(|m| m.borrow().is_empty());
-        ENTITY_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        ENTITY_MUX.with(|m| { m.borrow_mut().subscribe(&key, sub_id, owner, generation, handler_g); });
         if first_ever {
             if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.entity_listener_install) {
                 let _ = func();
             }
         }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -6994,7 +7034,7 @@ fn s2_translations_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 // ---------------------------------------------------------------------------
 
 /// Native `__s2_event_subscribe_pre(name, handler)` — register a pre-hook (can block/modify).
-fn s2_event_subscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_event_subscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
@@ -7003,12 +7043,14 @@ fn s2_event_subscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let was_empty = EVENT_MUX_PRE.with(|m| m.borrow().is_empty());
-        EVENT_MUX_PRE.with(|m| { m.borrow_mut().subscribe(&name, next_sub_id(), owner, generation, handler_g); });
+        let sub_id = next_sub_id();
+        EVENT_MUX_PRE.with(|m| { m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g); });
         if was_empty {   // first pre-sub across ALL names → install the global FireEvent hook
             if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
                 if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 1); }
             }
         }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -7215,6 +7257,27 @@ pub(crate) fn dispatch_game_event(name: &str) {
 /// per-subscriber liveness + context + TryCatch. Each handler gets `new DamageInfo()` (a block-scoped
 /// accessor over the current damage) and reads/modifies it in place; blocking = the handler setting
 /// damage to 0.
+/// Zero the live CTakeDamageInfo damage — the block power behind a `ctx.entities.onDamage` handler
+/// returning `>= HookResult.Handled` (locked decision #8). Reuses the exact write path the JS
+/// `DamageInfo.damage = 0` setter takes: resolve `m_flDamage`'s schema offset, then the
+/// `damage_write_float` engine op with `0.0`. (CTakeDamageInfo is a Source 2 engine type, not a
+/// game-specific one — engine-generic, like the rest of the damage module.) No-op if the offset is
+/// unresolved or the op is absent (degrade-never-crash).
+fn zero_current_damage() {
+    let live_raw = |c: &str, f: &str| -> i32 {
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
+        let Some(func) = ops.schema_offset else { return -1 };
+        let (Ok(cc), Ok(cf)) = (CString::new(c), CString::new(f)) else { return -1 };
+        func(cc.as_ptr(), cf.as_ptr())
+    };
+    let live_log = |_msg: &str| {};
+    let off = SCHEMA_OFFSETS.with(|c| c.borrow_mut().resolve("CTakeDamageInfo", "m_flDamage", live_raw, live_log));
+    if off < 0 { return; }
+    if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.damage_write_float) {
+        func(off, 0.0);
+    }
+}
+
 pub(crate) fn dispatch_damage() {
     let snap = DAMAGE_MUX.with(|m| m.borrow().snapshot("onPre"));
     if snap.is_empty() { return; }
@@ -7255,11 +7318,23 @@ pub(crate) fn dispatch_damage() {
             let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
             let info_val: v8::Local<v8::Value> = info_arg.unwrap_or_else(|| v8::undefined(tc).into());
 
-            if func.call(tc, recv, &[info_val]).is_none() {
-                let msg = tc.exception()
-                    .map(|e| e.to_rust_string_lossy(&*tc))
-                    .unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: dispatch_damage: handler '{}': {}", owner, msg));
+            match func.call(tc, recv, &[info_val]) {
+                None => {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: dispatch_damage: handler '{}': {}", owner, msg));
+                }
+                Some(ret) => {
+                    // Return-type block power (locked decision #8): a handler returning
+                    // >= HookResult.Handled (2) zeroes the live damage and stops the chain.
+                    if let Some(n) = ret.int32_value(tc) {
+                        if n >= 2 {
+                            zero_current_damage();
+                            break;
+                        }
+                    }
+                }
             }
         }
     });
@@ -7719,6 +7794,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_load_settled", s2_load_settled);
     set_native(scope, global_obj, "__s2_load_failed", s2_load_failed);
     set_native(scope, global_obj, "__s2_handoff_take", s2_handoff_take);
+    set_native(scope, global_obj, "__s2_scope_dispose", s2_scope_dispose);
     set_native(scope, global_obj, "__s2require", s2require);
     set_native(scope, global_obj, "__s2_crash_set_game", s2_crash_set_game);
     set_native(scope, global_obj, "__s2_server_build", s2_server_build);
@@ -11704,6 +11780,36 @@ mod frame_tests {
         shutdown();
     }
 
+    /// L1 Task 3: `scope.clear()` disposes ONLY the scope's subscriptions (via the sub ids the
+    /// subscribe natives now return), leaving the plugin-lifetime `ctx` subs intact. Both a ctx sub
+    /// and a scope sub fire before `clear()`; after `clear()` only the ctx sub fires and EVENT_MUX
+    /// keeps exactly the one ctx row.
+    #[test]
+    fn scope_clear_removes_only_scope_subs() {
+        init(dummy_logger()).unwrap();
+        load_body("sc", r#"
+            ctx.events.on('round_start', function () { globalThis.PLUGIN_HITS = (globalThis.PLUGIN_HITS|0) + 1; });
+            var s = ctx.createScope();
+            s.events.on('round_start', function () { globalThis.SCOPE_HITS = (globalThis.SCOPE_HITS|0) + 1; });
+            globalThis.S = s;
+        "#, "{}");
+        assert_eq!(plugin_phase("sc"), Some(crate::plugin::Phase::Active));
+        assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 2, "ctx + scope subs both registered");
+
+        dispatch_game_event("round_start");
+        assert_eq!(eval_in_context_string("sc", "String(globalThis.PLUGIN_HITS|0)"), "1");
+        assert_eq!(eval_in_context_string("sc", "String(globalThis.SCOPE_HITS|0)"), "1");
+
+        // Dispose the scope's subs by id; the ctx sub survives.
+        let _ = eval_in_context("sc", "globalThis.S.clear();");
+        assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 1, "only the ctx sub remains");
+
+        dispatch_game_event("round_start");
+        assert_eq!(eval_in_context_string("sc", "String(globalThis.PLUGIN_HITS|0)"), "2", "ctx sub still fires");
+        assert_eq!(eval_in_context_string("sc", "String(globalThis.SCOPE_HITS|0)"), "1", "scope sub gone after clear()");
+        shutdown();
+    }
+
     // Evaluate `src` in a named plugin context and return the result via `coerce`.
     // Mirrors the borrow discipline of `load_plugin_js`: clone the Global<Context> out of PLUGINS
     // before opening the HandleScope on HOST.isolate, run under a TryCatch.
@@ -14913,6 +15019,50 @@ mod frame_tests {
         dispatch_damage();
         assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgFired)"), "1", "the onPre handler ran");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgVal)"), "0", "info.damage reads 0 without an engine op");
+        shutdown();
+    }
+
+    // L1 Task 4 (onDamage return collapse) recording seams: a fixed m_flDamage offset + a
+    // damage_write_float that records its (offset, value) so a test can assert the live damage was zeroed.
+    static DMG_WRITE_REC: std::sync::Mutex<Option<(i32, f32)>> = std::sync::Mutex::new(None);
+    extern "C" fn rec_damage_write_float(offset: c_int, value: f32) {
+        *DMG_WRITE_REC.lock().unwrap() = Some((offset, value));
+    }
+    extern "C" fn fake_dmg_schema_offset(_cls: *const c_char, _field: *const c_char) -> c_int { 68 }
+
+    /// L1 Task 4: an `onDamage` handler returning `>= HookResult.Handled` stops the chain — the second
+    /// subscriber never runs (mirrors the return-collapse semantic, observable without engine ops).
+    #[test]
+    fn damage_onpre_handled_return_stops_chain() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0; \
+            __s2pkg_damage.Damage.onPre(function(){ globalThis.__a++; return HookResult.Handled; }); \
+            __s2pkg_damage.Damage.onPre(function(){ globalThis.__b++; return HookResult.Continue; });").unwrap();
+        dispatch_damage();
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1", "first handler ran");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "0", "chain stopped after Handled");
+        shutdown();
+    }
+
+    /// L1 Task 4: an `onDamage` handler returning `>= HookResult.Handled` zeroes the live damage via
+    /// the same `damage_write_float` op path the JS `info.damage = 0` setter uses.
+    #[test]
+    fn damage_onpre_handled_return_zeroes_live_damage() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        *DMG_WRITE_REC.lock().unwrap() = None;
+        set_engine_ops(Some(S2EngineOps {
+            schema_offset: Some(fake_dmg_schema_offset),
+            damage_write_float: Some(rec_damage_write_float),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("p");
+        eval_in_context("p", "__s2pkg_damage.Damage.onPre(function (info) { return HookResult.Handled; });").unwrap();
+        dispatch_damage();
+        assert_eq!(*DMG_WRITE_REC.lock().unwrap(), Some((68, 0.0)),
+            "onDamage >= Handled zeroed m_flDamage (offset 68) through the damage_write_float op");
         shutdown();
     }
 
