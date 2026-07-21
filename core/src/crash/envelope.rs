@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(env.kind, "panic");
         assert_eq!(env.occurred_at.as_deref(), Some("2025-07-17T00:00:00Z"));
         assert_eq!(env.s2script.version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(env.s2script.api_version, "1");
+        assert_eq!(env.s2script.api_version, "2");
         assert_eq!(env.gamedata.fingerprint, "fp-x");
         assert!(!env.gamedata.stale);
         assert_eq!(env.game.name, "cs2");

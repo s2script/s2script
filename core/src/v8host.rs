@@ -5816,11 +5816,13 @@ fn s2_transmit_stats(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgume
     }));
 }
 
-/// `__s2_plugins_list() -> string` — JSON array of `{id, loaded}` for `sm plugins list` / `Plugins.list()`.
+/// `__s2_plugins_list() -> string` — JSON array of `{id, loaded, state}` for `sm plugins list` /
+/// `Plugins.list()`. `state` is one of running|loading|waiting|failed|unloaded (L1 lifecycle v2);
+/// `loaded` is kept and is exactly `state === "running"`.
 fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let items: Vec<serde_json::Value> = crate::loader::plugin_list().into_iter()
-            .map(|(id, suppressed)| serde_json::json!({ "id": id, "loaded": !suppressed }))
+            .map(|(id, state)| serde_json::json!({ "id": id, "loaded": state == "running", "state": state }))
             .collect();
         let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
         if let Some(js) = v8::String::new(scope, &json) { rv.set(js.into()); }
@@ -10878,6 +10880,42 @@ fn plugin_manifest_version(id: &str) -> Option<String> {
 /// `Active`-transition breadcrumb in `finalize_loading_plugins` can carry it without the manifest.
 pub(crate) fn set_plugin_version(id: &str, version: &str) {
     MANIFEST_VERSIONS.with(|m| { m.borrow_mut().insert(id.to_string(), version.to_string()); });
+}
+
+/// The current frame count (loader-facing getter over `FRAME_COUNTER`). Used by the loader's WAITING
+/// window (`start_unblocked_waiters`) and topo batch to bound the hard-dependency wait.
+pub(crate) fn current_frame() -> u64 {
+    FRAME_COUNTER.with(|c| c.get())
+}
+
+/// True while `id` has an in-flight factory load (between `create_plugin_context` and its
+/// `Active`/`Failed` transition). The loader uses this to coalesce a reload-while-Loading into a
+/// queued `pending_reload` rather than an unload+load race (design spec §5.3).
+pub(crate) fn is_loading(id: &str) -> bool {
+    LOADING.with(|l| l.borrow().contains_key(id))
+}
+
+/// Queue a reload for a plugin that is still Loading: the reload fires from `continue_or_reload` once
+/// the in-flight load reaches its transition, instead of tearing down a half-loaded context.
+pub(crate) fn queue_pending_reload(id: &str) {
+    LOADING.with(|l| { if let Some(e) = l.borrow_mut().get_mut(id) { e.pending_reload = true; } });
+}
+
+/// True if `id`'s load FAILED (context disposed) — backs the `failed` state in `sm plugins list`.
+pub(crate) fn is_failed(id: &str) -> bool {
+    FAILED_PLUGINS.with(|f| f.borrow().contains_key(id))
+}
+
+/// Every plugin id whose load FAILED (for `sm plugins list`'s `failed` state).
+pub(crate) fn failed_plugin_ids() -> Vec<String> {
+    FAILED_PLUGINS.with(|f| f.borrow().keys().cloned().collect())
+}
+
+/// True if an interface `name` currently has a producer (published AND live), regardless of any
+/// consumer's version range. The loader's topo/WAITING gate uses this to decide whether a hard
+/// dependency is satisfied before starting a consumer's load.
+pub(crate) fn iface_published(name: &str) -> bool {
+    IFACES.with(|r| r.borrow().producer_of(name).is_some())
 }
 
 /// Slice 5E.3: drop any pending reload-handoff blob for `id` WITHOUT consuming it — called by the

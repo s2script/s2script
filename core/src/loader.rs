@@ -53,7 +53,7 @@ pub struct Manifest {
 /// The major apiVersion this host speaks.  A plugin whose declared apiVersion major differs is
 /// refused at load (degrade-never-crash: WARN + skip) — spec §5.  Bumping the host's breaking
 /// contract bumps this constant.
-pub(crate) const HOST_API_VERSION_MAJOR: u32 = 1;
+pub(crate) const HOST_API_VERSION_MAJOR: u32 = 2;
 
 /// Parse the leading integer (semver major) from a plugin's declared apiVersion string.
 /// Tolerates a leading range operator: "1.x", "1.0.0", "^1.2.3", "~1.0" all → Some(1).
@@ -81,6 +81,28 @@ fn api_version_compatible(api_version: &str) -> bool {
 fn start_load(manifest: &Manifest, js: &str, cfg: &str) {
     crate::v8host::set_plugin_version(&manifest.id, &manifest.version);
     crate::v8host::load_plugin_js(&manifest.id, js, cfg);
+}
+
+/// True when every hard `pluginDependencies` interface of `manifest` is currently published (design
+/// spec §4). An in-batch producer that went Active synchronously has already published its interface
+/// by the consumer's turn (topo order), so this single check subsumes the "producer earlier in the
+/// batch AND Active" gate; an async (still-Loading) producer is NOT yet published, so its consumer
+/// parks in WAITING.
+fn deps_satisfied(manifest: &Manifest) -> bool {
+    manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n))
+}
+
+/// Materialize + start a plugin's load and record it in WATCH_STATE. Shared by the poll file scan,
+/// the reload path, and `start_unblocked_waiters` (the parked-then-unblocked path).
+fn begin_load(manifest: &Manifest, js: &str, path: &Path, mtime: SystemTime) {
+    crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(manifest));
+    crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
+    let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
+    start_load(manifest, js, &cfg);
+    crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
+    WATCH_STATE.with(|ws| {
+        ws.borrow_mut().insert(path.to_path_buf(), WatchedPlugin { mtime, id: manifest.id.clone() });
+    });
 }
 
 /// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects.
@@ -184,18 +206,64 @@ thread_local! {
     /// Paths manually unloaded via `sm plugins unload` (path → id). `poll_plugins` must NOT auto-reload
     /// a suppressed file; `sm plugins load` un-suppresses it so the next scan loads it fresh.
     static SUPPRESSED: std::cell::RefCell<HashMap<PathBuf, String>> = std::cell::RefCell::new(HashMap::new());
+    /// L1 lifecycle v2: plugins parked because a hard dependency was not yet published (id → parsed
+    /// load). Re-checked every frame by `start_unblocked_waiters`: started once every hard-dep
+    /// interface is published, or forced to load anyway after `LOAD_TIMEOUT_FRAMES` (resolved
+    /// decision #3 — an unmet hard dep loads lazily; the proxy throws `InterfaceUnavailable` at call).
+    static WAITING: std::cell::RefCell<HashMap<String, WaitingLoad>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// A parsed load parked pending its hard dependencies (L1 lifecycle v2).
+struct WaitingLoad {
+    path: PathBuf,
+    mtime: SystemTime,
+    manifest: Manifest,
+    js: String,
+    since_frame: u64,
 }
 
 /// A command-requested plugin lifecycle op (Slice 6.12), keyed by plugin id.
 enum PendingOp { Unload(String), Reload(String), Load(String) }
 
-/// Every loaded/suppressed plugin: (id, suppressed?). Backs `Plugins.list()` / `sm plugins list`.
-pub(crate) fn plugin_list() -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> =
-        WATCH_STATE.with(|ws| ws.borrow().values().map(|wp| (wp.id.clone(), false)).collect());
-    SUPPRESSED.with(|s| out.extend(s.borrow().values().map(|id| (id.clone(), true))));
-    out.sort();
-    out
+/// Every known plugin: `(id, state)` where state is one of
+/// `running | loading | waiting | failed | unloaded` (L1 lifecycle v2). Backs `Plugins.list()` /
+/// `sm plugins list`. Sorted by id (BTreeMap collapses the WATCH_STATE / WAITING / FAILED / SUPPRESSED
+/// sources; the last-wins priority below is deliberate: a suppressed file reads `unloaded` even if a
+/// stale WATCH_STATE row lingers, and a parked/failed row wins over a bare `running` classification).
+pub(crate) fn plugin_list() -> Vec<(String, String)> {
+    use std::collections::BTreeMap;
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+
+    // WATCH_STATE rows: a live/parked/failed on-disk plugin.
+    WATCH_STATE.with(|ws| {
+        for wp in ws.borrow().values() {
+            let id = &wp.id;
+            let state = if WAITING.with(|w| w.borrow().contains_key(id)) {
+                "waiting"
+            } else if crate::v8host::is_failed(id) {
+                "failed"
+            } else if crate::v8host::is_loading(id) {
+                "loading"
+            } else {
+                "running"
+            };
+            out.insert(id.clone(), state.to_string());
+        }
+    });
+    // Parked plugins not represented in WATCH_STATE (defensive).
+    WAITING.with(|w| for id in w.borrow().keys() {
+        out.entry(id.clone()).or_insert_with(|| "waiting".to_string());
+    });
+    // Failed plugins whose WATCH_STATE row was never inserted (defensive).
+    for id in crate::v8host::failed_plugin_ids() {
+        out.entry(id).or_insert_with(|| "failed".to_string());
+    }
+    // Suppressed (manually unloaded) files win: on disk but not running.
+    SUPPRESSED.with(|s| for id in s.borrow().values() {
+        out.insert(id.clone(), "unloaded".to_string());
+    });
+
+    out.into_iter().collect()
 }
 
 /// Find the path of a currently-loaded plugin by id.
@@ -216,10 +284,38 @@ pub(crate) fn request_reload(id: &str) -> bool {
     if known { PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Reload(id.to_string()))); }
     known
 }
-/// L1 lifecycle v2: start any loads whose dependency wait window has cleared. Called at the tail of
-/// `v8host::finalize_loading_plugins` once a plugin reaches Active (a producer becoming available may
-/// unblock waiting consumers). No-op stub until T4 builds the topo/waiting/timeout machinery.
-pub(crate) fn start_unblocked_waiters() {}
+/// L1 lifecycle v2: start any parked loads whose hard-dependency wait window has cleared. Called at
+/// the tail of `v8host::finalize_loading_plugins` (a producer reaching Active may unblock consumers,
+/// and every frame's drain re-checks the timeout). A parked plugin starts when every hard dep is
+/// published, or is forced to load anyway once past `LOAD_TIMEOUT_FRAMES` (resolved decision #3).
+///
+/// Re-entrancy: each ready plugin is removed from WAITING BEFORE `begin_load`, and `begin_load`'s
+/// synchronous fast-path re-enters `finalize_loading_plugins` → back here; removing first bounds the
+/// recursion by the (finite, shrinking) WAITING set.
+pub(crate) fn start_unblocked_waiters() {
+    let frame = crate::v8host::current_frame();
+    let ready: Vec<String> = WAITING.with(|w| {
+        w.borrow()
+            .iter()
+            .filter_map(|(id, wl)| {
+                let unblocked = wl.manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n));
+                let expired = frame.saturating_sub(wl.since_frame) > crate::v8host::LOAD_TIMEOUT_FRAMES;
+                (unblocked || expired).then(|| id.clone())
+            })
+            .collect()
+    });
+    for id in ready {
+        let Some(wl) = WAITING.with(|w| w.borrow_mut().remove(&id)) else { continue };
+        let unblocked = wl.manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n));
+        if !unblocked {
+            crate::v8host::log_warn(&format!(
+                "WARN: '{}': hard dependency producer not Active after ~30s - loading anyway (calls will throw InterfaceUnavailable until it appears)",
+                id
+            ));
+        }
+        begin_load(&wl.manifest, &wl.js, &wl.path, wl.mtime);
+    }
+}
 
 /// Enqueue a load of a suppressed (previously `sm plugins unload`ed) plugin. False if not suppressed.
 pub(crate) fn request_load(id: &str) -> bool {
@@ -234,15 +330,28 @@ fn drain_pending_ops() {
     for op in ops {
         match op {
             PendingOp::Unload(id) => {
+                // A parked (WAITING) plugin was never started: drop it from WAITING and do NOT run the
+                // (never-Active) teardown; a loaded one gets the normal unload (L1 lifecycle v2).
+                let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
                 if let Some(path) = path_of_loaded(&id) {
-                    crate::v8host::unload_plugin(&id);
+                    if !was_waiting { crate::v8host::unload_plugin(&id); }
                     crate::v8host::clear_pending_handoff(&id);
                     WATCH_STATE.with(|ws| { ws.borrow_mut().remove(&path); });
                     SUPPRESSED.with(|s| { s.borrow_mut().insert(path, id.clone()); });  // don't auto-reload
                     crate::v8host::log_warn(&format!("[plugins] unloaded '{}' (sm plugins unload)", id));
+                } else if was_waiting {
+                    crate::v8host::clear_pending_handoff(&id);
+                    crate::v8host::log_warn(&format!("[plugins] unloaded parked '{}' (sm plugins unload)", id));
                 }
             }
             PendingOp::Reload(id) => {
+                // Reload-while-Loading: coalesce into a queued reload rather than tearing down a
+                // half-loaded context (L1 lifecycle v2 §5.3); it fires when the in-flight load settles.
+                if crate::v8host::is_loading(&id) {
+                    crate::v8host::queue_pending_reload(&id);
+                    crate::v8host::log_warn(&format!("[plugins] reload '{}' queued (still loading)", id));
+                    continue;
+                }
                 // Un-suppress if needed, then let the next file scan re-load it fresh (mtime bump not
                 // required — for a loaded plugin we do the reload inline; for a suppressed one, unsuppress).
                 let path = path_of_loaded(&id).or_else(||
@@ -351,9 +460,13 @@ pub(crate) fn poll_plugins() {
     // Compute the action list while briefly borrowing WATCH_STATE; release before any V8 call.
     let actions = compute_actions(&current);
 
-    // Execute actions; collect state mutations (no WATCH_STATE borrow held here).
-    let mut inserts: Vec<(PathBuf, WatchedPlugin)> = Vec::new();
+    // L1 lifecycle v2: parse every Load/Reload up front, then start them in TOPOLOGICAL order so an
+    // interface's producer reaches Active before its hard-dep consumers (a consumer whose producer is
+    // still Loading parks in WAITING). Unloads run first (borrow-free); WATCH_STATE mutations are
+    // applied inline by `begin_load`/the park path.
     let mut removes: Vec<PathBuf> = Vec::new();
+    let mut parsed: HashMap<String, ParsedLoad> = HashMap::new();
+    let mut order_input: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
 
     for action in actions {
         match action {
@@ -366,72 +479,104 @@ pub(crate) fn poll_plugins() {
                         ));
                         continue;
                     }
-                    crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
-                    crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
-                    let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                    start_load(&manifest, &js, &cfg);
-                    crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
-                    inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
+                    order_input.push((
+                        manifest.id.clone(),
+                        manifest.plugin_dependencies.keys().cloned().collect(),
+                        manifest.publishes.keys().cloned().collect(),
+                    ));
+                    parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, old_id: None });
                 }
                 Err(e) => {
-                    crate::v8host::log_warn(&format!(
-                        "WARN: poll_plugins: failed to load {:?}: {}",
-                        path, e
-                    ));
+                    crate::v8host::log_warn(&format!("WARN: poll_plugins: failed to load {:?}: {}", path, e));
                 }
             },
 
-            Action::Reload { path, mtime, old_id } => match read_file_and_parse(&path) {
-                Ok((manifest, js)) => {
-                    if !api_version_compatible(&manifest.api_version) {
-                        crate::v8host::log_warn(&format!(
-                            "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {}",
-                            path, manifest.api_version, HOST_API_VERSION_MAJOR
+            Action::Reload { path, mtime, old_id } => {
+                // Reload-while-Loading: coalesce into a queued reload instead of tearing down a
+                // half-loaded context (L1 §5.3). Bump the tracked mtime so the poll doesn't re-fire.
+                if crate::v8host::is_loading(&old_id) {
+                    crate::v8host::queue_pending_reload(&old_id);
+                    WATCH_STATE.with(|ws| { if let Some(wp) = ws.borrow_mut().get_mut(&path) { wp.mtime = mtime; } });
+                    continue;
+                }
+                match read_file_and_parse(&path) {
+                    Ok((manifest, js)) => {
+                        if !api_version_compatible(&manifest.api_version) {
+                            crate::v8host::log_warn(&format!(
+                                "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {}",
+                                path, manifest.api_version, HOST_API_VERSION_MAJOR
+                            ));
+                            continue;
+                        }
+                        order_input.push((
+                            manifest.id.clone(),
+                            manifest.plugin_dependencies.keys().cloned().collect(),
+                            manifest.publishes.keys().cloned().collect(),
                         ));
-                        continue;
+                        parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, old_id: Some(old_id) });
                     }
-                    // RELOAD discipline (T7): explicit unload of the old id BEFORE load.
-                    // `load_plugin_js` also carries a defensive guard, but we unload here
-                    // explicitly so the intent is clear and the ledger is the authority.
-                    crate::v8host::unload_plugin(&old_id);
-                    crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(&manifest));
-                    crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
-                    let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-                    start_load(&manifest, &js, &cfg);
-                    crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
-                    inserts.push((path, WatchedPlugin { mtime, id: manifest.id }));
+                    Err(e) => {
+                        crate::v8host::log_warn(&format!("WARN: poll_plugins: failed to reload {:?}: {}", path, e));
+                        // Leave the old entry in WATCH_STATE (old mtime) so the next poll detects this
+                        // as "changed" and retries once the file is valid.
+                    }
                 }
-                Err(e) => {
-                    crate::v8host::log_warn(&format!(
-                        "WARN: poll_plugins: failed to reload {:?}: {}",
-                        path, e
-                    ));
-                    // Leave the old entry in WATCH_STATE (old mtime) so the next poll
-                    // detects this as "changed" and retries once the file is valid.
-                }
-            },
+            }
 
             Action::Unload { path, id } => {
-                crate::v8host::unload_plugin(&id);
+                // A parked (never-started) plugin just drops from WAITING; a loaded one gets teardown.
+                let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
+                if !was_waiting { crate::v8host::unload_plugin(&id); }
                 crate::v8host::clear_pending_handoff(&id);   // Slice 5E.3: a final removal discards any captured handoff
                 removes.push(path);
             }
         }
     }
 
-    // Apply state mutations (re-borrow WATCH_STATE now that all V8 calls are done).
+    // Start (or park) the parsed batch in dependency order.
+    let frame = crate::v8host::current_frame();
+    for id in topo_order(&order_input) {
+        let Some(pl) = parsed.remove(&id) else { continue };
+        // RELOAD discipline: explicit unload of the old id BEFORE (re)load, so the ledger is authority.
+        if let Some(old_id) = &pl.old_id { crate::v8host::unload_plugin(old_id); }
+
+        if deps_satisfied(&pl.manifest) {
+            begin_load(&pl.manifest, &pl.js, &pl.path, pl.mtime);
+        } else {
+            // Park: record in WATCH_STATE (so mtime edits still retrigger) + WAITING (spec §4).
+            WATCH_STATE.with(|ws| {
+                ws.borrow_mut().insert(pl.path.clone(), WatchedPlugin { mtime: pl.mtime, id: pl.manifest.id.clone() });
+            });
+            crate::v8host::log_warn(&format!(
+                "[plugins] '{}' WAITING on unpublished hard dependency (will load when its producer is Active, or after ~30s)",
+                pl.manifest.id
+            ));
+            WAITING.with(|w| {
+                w.borrow_mut().insert(pl.manifest.id.clone(), WaitingLoad {
+                    path: pl.path, mtime: pl.mtime, manifest: pl.manifest, js: pl.js, since_frame: frame,
+                });
+            });
+        }
+    }
+
+    // Apply the deferred WATCH_STATE removals (unloads/vanished).
     WATCH_STATE.with(|ws| {
         let mut state = ws.borrow_mut();
-        for (path, wp) in inserts {
-            state.insert(path, wp);
-        }
-        for path in removes {
-            state.remove(&path);
-        }
+        for path in removes { state.remove(&path); }
     });
 
     // Poll config file changes for opted-in plugins (Slice 5E.2).
     poll_watched_configs();
+}
+
+/// A parsed `.s2sp` awaiting its turn in the topo-ordered load batch (L1 lifecycle v2).
+struct ParsedLoad {
+    path: PathBuf,
+    mtime: SystemTime,
+    manifest: Manifest,
+    js: String,
+    /// `Some(old_id)` when this parse came from a Reload — the old instance is unloaded first.
+    old_id: Option<String>,
 }
 
 /// Check each watched plugin's config file for content changes.  When a change is detected,
@@ -536,6 +681,74 @@ fn compute_actions(current: &HashMap<PathBuf, SystemTime>) -> Vec<Action> {
     })
 }
 
+/// Order a load batch so an interface's producer loads before its hard-dep consumers (design spec §4).
+///
+/// Input is one `(id, hard-dep interface names, published interface names)` tuple per plugin in the
+/// batch. Edges run producer → consumer for every hard dep whose interface is published by another
+/// plugin IN THIS SAME BATCH (a dep already satisfied by an earlier poll has no in-batch producer and
+/// so imposes no edge). Kahn's algorithm with a stable lexicographic tie-break by id; on a dependency
+/// cycle we WARN and fall back to lexicographic id order (degrade-never-crash — the hard-dep proxy is
+/// lazy, so a mis-ordered pair still runs, throwing `InterfaceUnavailable` only at call time).
+fn topo_order(batch: &[(String, Vec<String>, Vec<String>)]) -> Vec<String> {
+    // iface name → the in-batch producer's id.
+    let mut producer_of: HashMap<&str, &str> = HashMap::new();
+    for (id, _deps, publishes) in batch {
+        for iface in publishes {
+            producer_of.insert(iface.as_str(), id.as_str());
+        }
+    }
+
+    // Adjacency (producer → consumers) + indegree per id.
+    let mut consumers_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut indegree: HashMap<&str, usize> = batch.iter().map(|(id, _, _)| (id.as_str(), 0usize)).collect();
+    for (id, deps, _publishes) in batch {
+        for dep in deps {
+            if let Some(&producer) = producer_of.get(dep.as_str()) {
+                if producer == id.as_str() { continue; } // a plugin depending on its own interface: no edge
+                consumers_of.entry(producer).or_default().push(id.as_str());
+                *indegree.entry(id.as_str()).or_default() += 1;
+            }
+        }
+    }
+
+    // Kahn's with a lexicographic ready-set (stable, deterministic order).
+    let mut order: Vec<String> = Vec::with_capacity(batch.len());
+    let mut ready: Vec<&str> = indegree.iter().filter(|(_, &d)| d == 0).map(|(&id, _)| id).collect();
+    ready.sort_unstable();
+    while let Some(&next) = ready.first() {
+        ready.remove(0);
+        order.push(next.to_string());
+        if let Some(cs) = consumers_of.get(next) {
+            let mut newly_ready: Vec<&str> = Vec::new();
+            for &c in cs {
+                if let Some(d) = indegree.get_mut(c) {
+                    *d = d.saturating_sub(1);
+                    if *d == 0 { newly_ready.push(c); }
+                }
+            }
+            for c in newly_ready { ready.push(c); }
+            ready.sort_unstable();
+        }
+    }
+
+    if order.len() != batch.len() {
+        // A cycle: append every not-yet-emitted id in lexicographic order.
+        let mut remaining: Vec<&str> = batch
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .filter(|id| !order.iter().any(|o| o == id))
+            .collect();
+        remaining.sort_unstable();
+        crate::v8host::log_warn(&format!(
+            "WARN: plugin load batch has a hard-dependency cycle ({:?}) - loading in name order; interface calls throw InterfaceUnavailable until each producer is Active",
+            remaining
+        ));
+        for id in remaining { order.push(id.to_string()); }
+    }
+
+    order
+}
+
 /// Read a `.s2sp` file from disk then parse it via `read_s2sp`.
 fn read_file_and_parse(path: &Path) -> Result<(Manifest, String), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read failed: {}", e))?;
@@ -595,12 +808,12 @@ mod tests {
     fn read_s2sp_extracts_manifest_and_plugin_js() {
         // Build an in-memory .s2sp: zip { manifest.json, plugin.js }.
         let bytes = make_test_s2sp(
-            r#"{"id":"@demo/hello","version":"0.1.0","apiVersion":"1.x"}"#,
-            "module.exports.onLoad=()=>{};",
+            r#"{"id":"@demo/hello","version":"0.1.0","apiVersion":"2.x"}"#,
+            "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
         );
         let (m, js) = read_s2sp(&bytes).expect("valid s2sp");
         assert_eq!(m.id, "@demo/hello");
-        assert!(js.contains("onLoad"));
+        assert!(js.contains("factory"));
     }
 
     /// A `.s2sp` without `manifest.json` is rejected with an error mentioning "manifest".
@@ -618,15 +831,15 @@ mod tests {
 
     #[test]
     fn api_version_compatible_accepts_matching_major() {
-        assert!(api_version_compatible("1.x"));
-        assert!(api_version_compatible("1.0.0"));
-        assert!(api_version_compatible("^1.2.3"));
-        assert!(api_version_compatible("~1.0"));
+        assert!(api_version_compatible("2.x"));
+        assert!(api_version_compatible("2.0.0"));
+        assert!(api_version_compatible("^2.1.0"));
+        assert!(api_version_compatible("~2.0"));
     }
 
     #[test]
     fn api_version_incompatible_rejects_wrong_or_missing_major() {
-        assert!(!api_version_compatible("2.x"));
+        assert!(!api_version_compatible("1.x"));
         assert!(!api_version_compatible("0.9.0"));
         assert!(!api_version_compatible("x"));
         assert!(!api_version_compatible(""));
@@ -635,10 +848,10 @@ mod tests {
     #[test]
     fn manifest_parses_both_dependency_maps() {
         let bytes = make_test_s2sp(
-            r#"{"id":"@demo/consumer","version":"0.1.0","apiVersion":"1.x",
+            r#"{"id":"@demo/consumer","version":"0.1.0","apiVersion":"2.x",
                 "pluginDependencies":{"@s2script/entity":"^1.0.0","@demo/greeter":"^1.0.0"},
                 "optionalPluginDependencies":{"@demo/extra":"^1.0.0"}}"#,
-            "module.exports={};",
+            "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
         );
         let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
         assert_eq!(m.plugin_dependencies.get("@demo/greeter").map(String::as_str), Some("^1.0.0"));
@@ -648,8 +861,8 @@ mod tests {
     #[test]
     fn manifest_defaults_missing_dependency_maps_to_empty() {
         let bytes = make_test_s2sp(
-            r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"1.x"}"#,
-            "module.exports={};",
+            r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"2.x"}"#,
+            "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
         );
         let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
         assert!(m.plugin_dependencies.is_empty());
@@ -663,7 +876,7 @@ mod tests {
         // lazy (Unavailable at CALL time, never at load) and __s2require is prelude-first, so the phantom
         // is never called. The manifest must still parse and its imports flatten without panic.
         let bytes = make_test_s2sp(
-            r#"{"id":"@legacy/plugin","version":"0.1.0","apiVersion":"1.x",
+            r#"{"id":"@legacy/plugin","version":"0.1.0","apiVersion":"2.x",
                 "pluginDependencies":{"@s2script/entity":"^0.2.0","@s2script/math":"^0.1.0"}}"#,
             "module.exports.onLoad=()=>{};",
         );
@@ -678,7 +891,7 @@ mod tests {
     #[test]
     fn manifest_parses_derived_publishes_block() {
         let json = r#"{
-            "id":"@s2script/zones","version":"1.2.0","apiVersion":"1.x",
+            "id":"@s2script/zones","version":"1.2.0","apiVersion":"2.x",
             "publishes":{"@s2script/zones":{"version":"1.2.0","typesSha256":"abc123"}}
         }"#;
         let m: Manifest = serde_json::from_str(json).expect("parse");
@@ -689,16 +902,36 @@ mod tests {
 
     #[test]
     fn manifest_without_publishes_yields_an_empty_map() {
-        let json = r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"1.x"}"#;
+        let json = r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"2.x"}"#;
         let m: Manifest = serde_json::from_str(json).expect("parse");
         assert!(m.publishes.is_empty());
+    }
+
+    #[test]
+    fn load_batch_orders_producers_before_consumers() {
+        // c depends (hard) on iface "@x/if" which p publishes; order must put p first regardless of name order.
+        let batch = vec![
+            ("c".to_string(), vec!["@x/if".to_string()], vec![]),                      // (id, hard dep ifaces, publishes)
+            ("p".to_string(), vec![], vec!["@x/if".to_string()]),
+        ];
+        let order = topo_order(&batch);
+        assert_eq!(order, vec!["p".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn topo_cycle_falls_back_to_name_order() {
+        let batch = vec![
+            ("a".into(), vec!["@b/if".into()], vec!["@a/if".into()]),
+            ("b".into(), vec!["@a/if".into()], vec!["@b/if".into()]),
+        ];
+        assert_eq!(topo_order(&batch), vec!["a".to_string(), "b".to_string()]); // + a WARN
     }
 
     #[test]
     fn manifest_publishes_may_name_a_different_interface_than_the_package() {
         // @edge/mce publishes @community/mapchooser — the decoupling this grammar exists for.
         let json = r#"{
-            "id":"@edge/mce","version":"3.1.0","apiVersion":"1.x",
+            "id":"@edge/mce","version":"3.1.0","apiVersion":"2.x",
             "publishes":{"@community/mapchooser":{"version":"1.2.0","typesSha256":"deadbeef"}}
         }"#;
         let m: Manifest = serde_json::from_str(json).expect("parse");

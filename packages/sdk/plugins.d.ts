@@ -2,8 +2,18 @@
 export interface PluginInfo {
   /** the plugin id (from its manifest). */
   readonly id: string;
-  /** true = running; false = manually unloaded (on disk but not running, via `unload`). */
+  /** true = running; false = not running (loading, waiting, failed, or manually unloaded). Exactly
+   * `state === "running"`. */
   readonly loaded: boolean;
+  /** the plugin's lifecycle state (L1 lifecycle v2):
+   * - `"running"`  — Active (factory settled, armed).
+   * - `"loading"`  — an in-flight factory load (async factory not yet settled).
+   * - `"waiting"`  — parked until a hard-dependency producer is published (or a ~30s timeout).
+   * - `"failed"`   — the load failed (bad artifact, throwing/rejecting factory, publishes mismatch,
+   *                  or a load timeout); the plugin is NOT running.
+   * - `"unloaded"` — on disk but manually unloaded via `unload` (not auto-reloaded until `load`/`reload`).
+   */
+  readonly state: "running" | "loading" | "waiting" | "failed" | "unloaded";
 }
 export declare const Plugins: {
   /** Every loaded/unloaded plugin. */
