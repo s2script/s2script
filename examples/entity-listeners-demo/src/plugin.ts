@@ -10,43 +10,42 @@
 // relay SYNCHRONOUSLY inside a command handler, which already holds the isolate borrow, so the engine's
 // OnEntityCreated/Spawned callbacks re-enter the dispatch and are gracefully SKIPPED (never a crash).
 // So the self-spawn does NOT log — that's by design; watch the "*" loggers for engine-driven events.
-import { Commands } from "@s2script/sdk/commands";
-import { createEntity, Entity } from "@s2script/sdk/entity";
+import { plugin } from "@s2script/sdk/plugin";
+import { createEntity } from "@s2script/sdk/entity";
 
-// Exact-class subscriptions for logic_relay (fire only when the engine creates/spawns/deletes one
-// OUTSIDE a JS borrow — e.g. an entity placed by the map, or a console `ent_create`).
-Entity.onCreate("logic_relay", (e, cls) => {
-  console.log("[entlisten] onCreate " + cls + " entity=" + (e ? "EntityRef" : "null"));
-});
-Entity.onSpawn("logic_relay", (e, cls) => {
-  console.log("[entlisten] onSpawn " + cls + " entity=" + (e ? ("EntityRef(valid=" + !!(e && e.isValid()) + ")") : "null"));
-});
-Entity.onDelete("logic_relay", (e, cls) => {
-  console.log("[entlisten] onDelete " + cls + " entity=" + (e ? "EntityRef" : "null"));
-});
+export default plugin((ctx) => {
+  // Exact-class subscriptions for logic_relay (fire only when the engine creates/spawns/deletes one
+  // OUTSIDE a JS borrow — e.g. an entity placed by the map, or a console `ent_create`).
+  ctx.entities.onCreate("logic_relay", (e, cls) => {
+    console.log("[entlisten] onCreate " + cls + " entity=" + (e ? "EntityRef" : "null"));
+  });
+  ctx.entities.onSpawn("logic_relay", (e, cls) => {
+    console.log("[entlisten] onSpawn " + cls + " entity=" + (e ? ("EntityRef(valid=" + !!(e && e.isValid()) + ")") : "null"));
+  });
+  ctx.entities.onDelete("logic_relay", (e, cls) => {
+    console.log("[entlisten] onDelete " + cls + " entity=" + (e ? "EntityRef" : "null"));
+  });
 
-// Global "*" loggers — prove each of the three kinds + the wildcard for ENGINE-driven lifecycle. Each
-// capped so a map-load / round-restart burst stays readable; `valid` shows the EntityRef resolves live.
-let nCreate = 0, nSpawn = 0, nDelete = 0;
-Entity.onCreate("*", (_e, cls) => { if (++nCreate <= 15) console.log("[entlisten] * onCreate: " + cls); });
-Entity.onSpawn("*", (e, cls) => { if (++nSpawn <= 15) console.log("[entlisten] * onSpawn: " + cls + " valid=" + !!(e && e.isValid())); });
-Entity.onDelete("*", (_e, cls) => { if (++nDelete <= 15) console.log("[entlisten] * onDelete: " + cls); });
+  // Global "*" loggers — prove each of the three kinds + the wildcard for ENGINE-driven lifecycle. Each
+  // capped so a map-load / round-restart burst stays readable; `valid` shows the EntityRef resolves live.
+  let nCreate = 0, nSpawn = 0, nDelete = 0;
+  ctx.entities.onCreate("*", (_e, cls) => { if (++nCreate <= 15) console.log("[entlisten] * onCreate: " + cls); });
+  ctx.entities.onSpawn("*", (e, cls) => { if (++nSpawn <= 15) console.log("[entlisten] * onSpawn: " + cls + " valid=" + !!(e && e.isValid())); });
+  ctx.entities.onDelete("*", (_e, cls) => { if (++nDelete <= 15) console.log("[entlisten] * onDelete: " + cls); });
 
-Commands.register("sm_entlisten", (ctx) => {
-  // Demonstrates the re-entrancy limit (see the header note): createEntity + spawn run SYNCHRONOUSLY
-  // under the command's isolate borrow, so their onCreate/onSpawn callbacks are gracefully SKIPPED
-  // (never a crash). remove() defers deletion to end-of-frame, so whether onDelete fires is
-  // engine-timing-dependent — don't rely on this path. Engine-driven lifecycle (the "*" loggers,
-  // e.g. via a round restart) is the reliable, intended use case.
-  const relay = createEntity("logic_relay");
-  if (!relay) { ctx.reply("[entlisten] createEntity failed"); return; }
-  relay.spawn();
-  relay.remove();
-  ctx.reply("[entlisten] self-spawned+removed a logic_relay (onCreate/onSpawn re-entrancy-skipped by " +
-    "design); trigger a round restart / bot lifecycle to see the '*' loggers fire for engine-driven entities");
-});
+  ctx.commands.register("sm_entlisten", (cmd) => {
+    // Demonstrates the re-entrancy limit (see the header note): createEntity + spawn run SYNCHRONOUSLY
+    // under the command's isolate borrow, so their onCreate/onSpawn callbacks are gracefully SKIPPED
+    // (never a crash). remove() defers deletion to end-of-frame, so whether onDelete fires is
+    // engine-timing-dependent — don't rely on this path. Engine-driven lifecycle (the "*" loggers,
+    // e.g. via a round restart) is the reliable, intended use case.
+    const relay = createEntity("logic_relay");
+    if (!relay) { cmd.reply("[entlisten] createEntity failed"); return; }
+    relay.spawn();
+    relay.remove();
+    cmd.reply("[entlisten] self-spawned+removed a logic_relay (onCreate/onSpawn re-entrancy-skipped by " +
+      "design); trigger a round restart / bot lifecycle to see the '*' loggers fire for engine-driven entities");
+  });
 
-export function onLoad(): void {
   console.log("[entity-listeners-demo] onLoad — sm_entlisten registered; * onCreate/onSpawn/onDelete logging armed");
-}
-export function onUnload(): void {}
+});

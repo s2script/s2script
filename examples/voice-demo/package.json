@@ -2,5 +2,5 @@
   "name": "@demo/voice-demo",
   "version": "0.1.0",
   "main": "src/plugin.ts",
-  "s2script": { "apiVersion": "1.x" }
+  "s2script": { "apiVersion": "2.x" }
 }

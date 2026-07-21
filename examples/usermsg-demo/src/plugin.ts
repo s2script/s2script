@@ -5,9 +5,9 @@
 // bit-split both ways (14/15-bit index) so the live gate settles the packing + pawn-vs-controller
 // questions before any TTT consumer ships on it. All message/field names are CS2 knowledge and live
 // HERE, never in core/shim (vendored proto: third_party/hl2sdk/game/shared/cs/cs_gameevents.proto).
+import { plugin } from "@s2script/sdk/plugin";
 import { UserMessages } from "@s2script/sdk/usermessages";
 import { HookResult, type HookResultValue } from "@s2script/sdk/events";
-import { Commands } from "@s2script/sdk/commands";
 
 let blockRadio = false;   // BombPlantSuppressor shape (TTT blanket-blocks ALL radio text)
 let blockShots = false;   // SuppressedRound shape
@@ -31,15 +31,14 @@ UserMessages.onPre("CMsgTEFireBullets", (m): HookResultValue | void => {
   if (blockShots) return HookResult.Handled;      // SilentAWP/SuppressedRound suppress path
 });
 
-Commands.register("sm_umtest", (ctx) => {
-  const what = ctx.arg(0), on = ctx.arg(1) !== "0";
-  if (what === "radio") blockRadio = on;
-  else if (what === "shots") blockShots = on;
-  else { ctx.reply("[usermsg-demo] usage: sm_umtest <radio|shots> <0|1>"); return; }
-  ctx.reply("[usermsg-demo] block " + what + " = " + on);
-});
+export default plugin((ctx) => {
+  ctx.commands.register("sm_umtest", (cmd) => {
+    const what = cmd.arg(0), on = cmd.arg(1) !== "0";
+    if (what === "radio") blockRadio = on;
+    else if (what === "shots") blockShots = on;
+    else { cmd.reply("[usermsg-demo] usage: sm_umtest <radio|shots> <0|1>"); return; }
+    cmd.reply("[usermsg-demo] block " + what + " = " + on);
+  });
 
-export function onLoad(): void {
   console.log("[usermsg-demo] onLoad — RadioText + TEFireBullets hooks armed; sm_umtest registered");
-}
-export function onUnload(): void {}   // no manual off — teardown is the ledger's job (proves it)
+});

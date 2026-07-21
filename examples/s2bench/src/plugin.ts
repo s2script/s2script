@@ -4,7 +4,7 @@
 // subtracted timer baseline. NO loop-amortization multipliers. Throwaway informational tool.
 // Run: `s2bench` (rcon/console).
 
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { createEntity, Entity, EntityRef } from "@s2script/sdk/entity";
 import { GameRules } from "@s2script/cs2";
 import { Server } from "@s2script/sdk/server";
@@ -138,7 +138,7 @@ function runBench(reply: (m: string) => void): void {
   running = false;
 }
 
-export function onLoad(): void {
-  Commands.register("s2bench", (ctx) => { runBench((m) => ctx.reply(m)); });
+export default plugin((ctx) => {
+  ctx.commands.register("s2bench", (cmd) => { runBench((m) => cmd.reply(m)); });
   console.log("[s2bench] onLoad — run `s2bench` (direct per-op timing)");
-}
+});

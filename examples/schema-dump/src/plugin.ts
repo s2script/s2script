@@ -1,4 +1,4 @@
-import { OnGameFrame } from "@s2script/sdk/frame";
+import { plugin } from "@s2script/sdk/plugin";
 
 // Dev/treadmill plugin: once a map is live and the SchemaSystem is populated, dump the whole
 // class/field/type catalog to JSON via the __s2_schema_dump native, then stop. The committed
@@ -9,12 +9,11 @@ import { OnGameFrame } from "@s2script/sdk/frame";
 // NOT part of the typed @s2script/* surface, so we declare it ambiently here.
 declare const __s2_schema_dump: (path: string) => boolean;
 
-let done = false;
-let ticks = 0;
-
-export function onLoad(): void {
+export default plugin((ctx) => {
   console.log("[schema-dump] onLoad — will dump once the schema is live");
-  OnGameFrame.subscribe(() => {
+  let done = false;
+  let ticks = 0;
+  ctx.server.onGameFrame(() => {
     if (done) return;
     if (ticks++ < 128) return;                 // let a map load + the schema populate
     // Path is relative to the server process CWD; the native writes it and returns true only when
@@ -23,8 +22,4 @@ export function onLoad(): void {
     console.log("[schema-dump] dump " + (ok ? "OK -> /tmp/schema-catalog.json" : "not ready, retrying"));
     if (ok) done = true;
   });
-}
-
-export function onUnload(): void {
-  console.log("[schema-dump] onUnload");
-}
+});

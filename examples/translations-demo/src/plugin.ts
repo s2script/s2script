@@ -1,9 +1,9 @@
 // translations-demo — proves @s2script/translations: a seed English default, positional {1} formatting,
 // the default-language switch reading translations/de/trdemo.phrases.json live, and the key fallback.
+import { plugin } from "@s2script/sdk/plugin";
 import { Translations } from "@s2script/sdk/translations";
-import { Commands } from "@s2script/sdk/commands";
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   Translations.load("trdemo", { Greeting: "Hello {1}", Bye: "Goodbye {1}", OnlyEn: "English only" });
 
   // default (root / English) — slot -1 uses the server default ("" = root)
@@ -16,7 +16,7 @@ export function onLoad(): void {
   console.log(`[translations-demo] de fallback-to-seed: ${Translations.translate(-1, "OnlyEn")}`);  // English only (de miss -> seed)
   Translations.setDefaultLanguage("");
 
-  // ctx.replyT from the console
-  Commands.register("sm_trhello", (ctx) => { ctx.replyT("Greeting", "admin"); });
+  // cmd.replyT from the console
+  ctx.commands.register("sm_trhello", (cmd) => { cmd.replyT("Greeting", "admin"); });
   console.log("[translations-demo] onLoad — sm_trhello registered");
-}
+});

@@ -6,7 +6,7 @@
 // pawn found via Pawn.forSlot (schema-based, self-healing), which is exactly what "@all" would
 // have resolved to anyway. Revert to Player.target once the client-list offsets are regenerated
 // for the current CS2 patch.
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { CsItem, Pawn } from "@s2script/cs2";
 
 const MAX_SLOTS = 12;
@@ -20,27 +20,29 @@ function livePawns(): Array<{ slot: number; pawn: NonNullable<ReturnType<typeof 
   return out;
 }
 
-Commands.register("sm_give", (ctx) => {
-  const weapon = ctx.args[0] || CsItem.AK47;
-  let n = 0;
-  for (const { pawn } of livePawns()) {
-    const w = pawn.giveNamedItem(weapon);
-    if (w && w.isValid()) n++;
-  }
-  ctx.reply("[items] gave " + weapon + " to " + n + " player(s)");
-});
-Commands.register("sm_weapons", (ctx) => {
-  for (const { slot, pawn } of livePawns()) {
-    ctx.reply("[items] " + slot + " has " + pawn.weapons.length + " weapon(s)");
-  }
-});
-Commands.register("sm_strip", (ctx) => {
-  let n = 0;
-  for (const { pawn } of livePawns()) { if (pawn.stripWeapons()) n++; }
-  ctx.reply("[items] stripped " + n + " player(s)");
-});
-Commands.register("sm_drop", (ctx) => {
-  let n = 0;
-  for (const { pawn } of livePawns()) { if (pawn.dropActiveWeapon()) n++; }
-  ctx.reply("[items] dropped for " + n + " player(s)");
+export default plugin((ctx) => {
+  ctx.commands.register("sm_give", (cmd) => {
+    const weapon = cmd.args[0] || CsItem.AK47;
+    let n = 0;
+    for (const { pawn } of livePawns()) {
+      const w = pawn.giveNamedItem(weapon);
+      if (w && w.isValid()) n++;
+    }
+    cmd.reply("[items] gave " + weapon + " to " + n + " player(s)");
+  });
+  ctx.commands.register("sm_weapons", (cmd) => {
+    for (const { slot, pawn } of livePawns()) {
+      cmd.reply("[items] " + slot + " has " + pawn.weapons.length + " weapon(s)");
+    }
+  });
+  ctx.commands.register("sm_strip", (cmd) => {
+    let n = 0;
+    for (const { pawn } of livePawns()) { if (pawn.stripWeapons()) n++; }
+    cmd.reply("[items] stripped " + n + " player(s)");
+  });
+  ctx.commands.register("sm_drop", (cmd) => {
+    let n = 0;
+    for (const { pawn } of livePawns()) { if (pawn.dropActiveWeapon()) n++; }
+    cmd.reply("[items] dropped for " + n + " player(s)");
+  });
 });

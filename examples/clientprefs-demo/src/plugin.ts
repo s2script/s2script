@@ -3,6 +3,7 @@
 // (demo_boots); (2) the OFFLINE setAuthId path (authid_boots — persisted ONLY by the clientprefs
 // plugin's OnGameFrame drain, via a separate SteamID the demo never flushes itself); (3) empty-string
 // round-trip; (4) getTime.
+import { plugin } from "@s2script/sdk/plugin";
 import { Database } from "@s2script/sdk/db";
 import { Cookies } from "@s2script/sdk/cookies";
 
@@ -12,7 +13,7 @@ declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
 const FAKE = "76561199999999999";          // demo_boots — the demo owns its flush
 const FAKE_OFFLINE = "76561199888888888";  // authid_boots — persisted ONLY by the plugin's offline drain
 
-export async function onLoad(): Promise<void> {
+export default plugin(async (ctx) => {
   try {
     const db = await Database.open("clientprefs");
     await db.execute("CREATE TABLE IF NOT EXISTS cookies (steamid TEXT, name TEXT, value TEXT, updated INTEGER, PRIMARY KEY (steamid, name))");
@@ -51,6 +52,4 @@ export async function onLoad(): Promise<void> {
   } catch (e) {
     console.log("[clientprefs-demo] onLoad ERROR: " + String(e));
   }
-}
-
-export function onUnload(): void { console.log("[clientprefs-demo] onUnload"); }
+});

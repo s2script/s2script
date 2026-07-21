@@ -16,15 +16,15 @@
 // a NATURAL round end (mp_ignore_round_win_conditions 0, timer expiry) validates the shipped
 // RoundEndReason/WinPanelFinalEvent values against engine-emitted events.
 
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { Events } from "@s2script/sdk/events";
 import { Server } from "@s2script/sdk/server";
 import { GameRules, Teams, RoundEndReason, WinPanelFinalEvent } from "@s2script/cs2";
 
 let lastTerminateReason: number | null = null;
 
-export function onLoad(): void {
-  Events.on("round_end", (e) => {
+export default plugin((ctx) => {
+  ctx.events.on("round_end", (e) => {
     const reason = e.getInt("reason");
     const winner = e.getInt("winner");
     const ours = lastTerminateReason !== null;
@@ -33,54 +33,54 @@ export function onLoad(): void {
     lastTerminateReason = null;
   });
 
-  Events.on("cs_win_panel_round", (e) => {
+  ctx.events.on("cs_win_panel_round", (e) => {
     console.log(`[round-demo] cs_win_panel_round final_event=${e.getInt("final_event")} (expect ${WinPanelFinalEvent.CTsWin}=CT / ${WinPanelFinalEvent.TerroristsWin}=T on a natural end)`);
   });
 
-  Events.on("round_start", () => {
+  ctx.events.on("round_start", () => {
     const gr = GameRules.get();
     if (!gr) { console.log("[round-demo] round_start: no gamerules proxy"); return; }
     console.log(`[round-demo] round_start roundTime=${gr.roundTime} roundStartTime=${gr.roundStartTime} gameTime=${Server.gameTime} timeElapsed=${gr.timeElapsed} timeRemaining=${gr.timeRemaining}`);
   });
 
-  Commands.register("sm_endround", (ctx) => {
-    const reason = ctx.argInt(0, RoundEndReason.TerroristsWin);
-    const delay = ctx.argInt(1, 5);
+  ctx.commands.register("sm_endround", (cmd) => {
+    const reason = cmd.argInt(0, RoundEndReason.TerroristsWin);
+    const delay = cmd.argInt(1, 5);
     lastTerminateReason = reason;
     const ok = GameRules.terminateRound(reason, delay);
     if (!ok) lastTerminateReason = null;
-    ctx.reply(`endround reason=${reason} delay=${delay} queued=${ok} (round_end log follows next frame if queued)`);
+    cmd.reply(`endround reason=${reason} delay=${delay} queued=${ok} (round_end log follows next frame if queued)`);
   });
 
-  Commands.register("sm_settime", (ctx) => {
-    const sec = ctx.argInt(0, 60);
+  ctx.commands.register("sm_settime", (cmd) => {
+    const sec = cmd.argInt(0, 60);
     const gr = GameRules.get();
     const ok = gr ? gr.setTimeRemaining(sec) : false;
-    if (!gr) { ctx.reply("settime: no gamerules"); return; }
+    if (!gr) { cmd.reply("settime: no gamerules"); return; }
     const rt = gr.roundTime, rst = gr.roundStartTime, now = Server.gameTime;
     const hud = (rt !== null && rst !== null) ? rt - (now - rst) : null;
-    ctx.reply(`settime ${sec}: ok=${ok} roundTime=${rt} timeRemaining=${gr.timeRemaining} | freezeTime=${gr.freezeTime} roundStartTime=${rst} gameTime=${now} timeElapsed=${gr.timeElapsed} hud(rt-(now-rst))=${hud}`);
+    cmd.reply(`settime ${sec}: ok=${ok} roundTime=${rt} timeRemaining=${gr.timeRemaining} | freezeTime=${gr.freezeTime} roundStartTime=${rst} gameTime=${now} timeElapsed=${gr.timeElapsed} hud(rt-(now-rst))=${hud}`);
   });
 
-  Commands.register("sm_addtime", (ctx) => {
-    const sec = ctx.argInt(0, 30);
+  ctx.commands.register("sm_addtime", (cmd) => {
+    const sec = cmd.argInt(0, 30);
     const gr = GameRules.get();
     const ok = gr ? gr.addTimeRemaining(sec) : false;
-    ctx.reply(`addtime ${sec}: ok=${ok} roundTime=${gr ? gr.roundTime : null} timeRemaining=${gr ? gr.timeRemaining : null}`);
+    cmd.reply(`addtime ${sec}: ok=${ok} roundTime=${gr ? gr.roundTime : null} timeRemaining=${gr ? gr.timeRemaining : null}`);
   });
 
-  Commands.register("sm_teamscore", (ctx) => {
-    const team = ctx.argInt(0, 2);
-    const score = ctx.argInt(1, 10);
+  ctx.commands.register("sm_teamscore", (cmd) => {
+    const team = cmd.argInt(0, 2);
+    const score = cmd.argInt(1, 10);
     const ok = Teams.setScore(team, score);
-    ctx.reply(`teamscore team=${team} -> ${score}: ok=${ok} readback=${Teams.getScore(team)}`);
+    cmd.reply(`teamscore team=${team} -> ${score}: ok=${ok} readback=${Teams.getScore(team)}`);
   });
 
-  Commands.register("sm_winpanel", (ctx) => {
-    const fe = ctx.argInt(0, WinPanelFinalEvent.TerroristsWin);
+  ctx.commands.register("sm_winpanel", (cmd) => {
+    const fe = cmd.argInt(0, WinPanelFinalEvent.TerroristsWin);
     const fired = Events.fire("cs_win_panel_round", { final_event: fe }, false);
-    ctx.reply(`winpanel final_event=${fe} fired=${fired} (client-visible panel is the check; our own JS logger will NOT fire — expected)`);
+    cmd.reply(`winpanel final_event=${fe} fired=${fired} (client-visible panel is the check; our own JS logger will NOT fire — expected)`);
   });
 
   console.log("[round-demo] onLoad — sm_endround / sm_settime / sm_addtime / sm_teamscore / sm_winpanel registered");
-}
+});

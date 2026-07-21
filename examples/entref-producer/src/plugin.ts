@@ -1,4 +1,4 @@
-import { publishInterface } from "@s2script/sdk/interfaces";
+import { plugin } from "@s2script/sdk/plugin";
 import { Pawn } from "@s2script/cs2";
 import type { Ent } from "../api";
 
@@ -8,7 +8,7 @@ import type { Ent } from "../api";
 // round-trips as a live ref, not a dead copy). pawnHealth(slot) is a producer-side schema read so
 // the consumer can show a real number while the pawn lives WITHOUT needing a schema offset itself
 // (typed cs2 accessors over a wired ref come in 5B).
-export function onLoad(): void {
+export default plugin((ctx) => {
   console.log("[producer] onLoad — publishing @demo/ent");
   // Typed against the contract; the host injects the version from the manifest's `publishes`.
   const impl: Ent = {
@@ -18,7 +18,5 @@ export function onLoad(): void {
     // a schema offset itself (typed cs2 accessors over a wired ref come in 5B).
     pawnHealth(slot: number) { const p = Pawn.forSlot(slot); return p ? p.health : null; },
   };
-  publishInterface("@demo/ent", impl);
-}
-
-export function onUnload(): void { console.log("[producer] onUnload"); }
+  ctx.publish<Ent>("@demo/ent", impl);
+});

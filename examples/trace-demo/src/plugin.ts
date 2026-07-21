@@ -1,7 +1,7 @@
 // Live-gate demo for @s2script/trace on CS2 2000870 — validates the SDK Ray_t/CGameTrace layouts
 // against the running engine. Uses Pawn.forSlot (schema-based, self-healing) not Player.allConnected
 // (client-list OFFSETS are stale on 2000870 — a separate offset-treadmill item).
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { Trace } from "@s2script/sdk/trace";
 import { Vector } from "@s2script/sdk/math";
 import { Pawn } from "@s2script/cs2";
@@ -10,11 +10,11 @@ function fmt(v: { x: number; y: number; z: number }): string {
   return "(" + v.x.toFixed(1) + "," + v.y.toFixed(1) + "," + v.z.toFixed(1) + ")";
 }
 
-export function onLoad(): void {
-  Commands.register("sm_trace", (ctx) => {
+export default plugin((ctx) => {
+  ctx.commands.register("sm_trace", (cmd) => {
     let pawn: ReturnType<typeof Pawn.forSlot> = null;
     for (let slot = 0; slot < 12; slot++) { const pw = Pawn.forSlot(slot); if (pw && pw.origin) { pawn = pw; break; } }
-    if (!pawn) { console.log("[trace] no live pawn via forSlot(0..11)"); ctx.reply("no live pawn"); return; }
+    if (!pawn) { console.log("[trace] no live pawn via forSlot(0..11)"); cmd.reply("no live pawn"); return; }
     const o = pawn.origin!;
     console.log("[trace] pawn origin=" + fmt(o));
 
@@ -32,8 +32,7 @@ export function onLoad(): void {
     console.log("[trace] AIM: " + (aim ? ("didHit=" + aim.didHit + " endPos=" + fmt(aim.endPos) +
       " normal=" + fmt(aim.normal) + " ent=" + (aim.entity ? aim.entity.index : "null") +
       " fraction=" + aim.fraction.toFixed(3)) : "null"));
-    ctx.reply("trace done — see server log");
+    cmd.reply("trace done — see server log");
   });
   console.log("[trace-demo] onLoad — sm_trace registered");
-}
-export function onUnload(): void {}
+});

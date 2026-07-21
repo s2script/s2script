@@ -1,10 +1,9 @@
 // net-demo — proves @s2script/net end-to-end: a TCP round-trip to a public HTTP server + a UDP A2S
 // query to our own CS2 server (challenge handshake), and that the game frame advances during both.
+import { plugin } from "@s2script/sdk/plugin";
 import { Net } from "@s2script/sdk/net";
-import { OnGameFrame } from "@s2script/sdk/frame";
 
 let frames = 0;
-OnGameFrame.subscribe(() => { frames++; });
 const dec = (b: Uint8Array) => Array.from(b).map((c) => String.fromCharCode(c)).join("");
 
 async function tcp(): Promise<void> {
@@ -44,8 +43,9 @@ async function a2s(): Promise<void> {
   } catch (e) { console.log(`[net-demo] UDP failed: ${e}`); }
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
+  ctx.server.onGameFrame(() => { frames++; });
   console.log("[net-demo] onLoad — TCP + UDP");
   tcp();
   a2s();
-}
+});

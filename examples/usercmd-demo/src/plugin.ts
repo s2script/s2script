@@ -1,14 +1,14 @@
 // @demo/usercmd-demo — the @s2script/usercmd live gate (Task 5). Reads a player's live per-tick input
-// (all 7 fields) through UserCmd.onRun, and a chat-command-gated modify/block so a human can prove the
-// write direction without fighting normal movement:
+// (all 7 fields) through ctx.clients.onRunCmd, and a chat-command-gated modify/block so a human can
+// prove the write direction without fighting normal movement:
 //
 //   !ucmode off    — read only (default)
 //   !ucmode jump   — force forwardMove=0 + IN_JUMP (modify proof)
 //   !ucmode side   — zero forwardMove, route it to sideMove (the sideways surf style — proves sign+effect)
 //   !ucmode block  — return HookResult.Handled (neutralize the whole input)
 
-import { UserCmd } from "@s2script/sdk/usercmd";
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
+import type { UserCmdView } from "@s2script/sdk/usercmd";
 import { Pawn } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
 
@@ -17,9 +17,9 @@ const modeBySlot = new Map<number, Mode>();
 const IN_JUMP = 2n; // buttons is a bigint
 let logN = 0;
 
-export function onLoad(): void {
-  UserCmd.onRun((cmd, ctx) => {
-    const slot = ctx.slot;
+export default plugin((ctx) => {
+  ctx.clients.onRunCmd((cmd: UserCmdView, info: { slot: number }) => {
+    const slot = info.slot;
     // Read proof (throttled ~1/64 cmds): all 7 fields + cross-check buttons against the SCHEMA source
     // (pawn.buttons = m_pButtonStates[0], a different read path) and the decoded slot vs the pawn's.
     if ((logN++ & 0x3f) === 0) {
@@ -46,15 +46,13 @@ export function onLoad(): void {
     return HookResult.Continue;
   });
 
-  Commands.register("ucmode", (ctx) => {
-    if (ctx.callerSlot < 0) { ctx.reply("run in-game"); return; }
-    const arg = ctx.argsFrom(0).trim();
+  ctx.commands.register("ucmode", (cmd) => {
+    if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
+    const arg = cmd.argsFrom(0).trim();
     const mode: Mode = arg === "jump" || arg === "side" || arg === "block" ? arg : "off";
-    modeBySlot.set(ctx.callerSlot, mode);
-    ctx.reply(`usercmd mode = ${mode}`);
+    modeBySlot.set(cmd.callerSlot, mode);
+    cmd.reply(`usercmd mode = ${mode}`);
   });
 
-  console.log("[usercmd-demo] onLoad — UserCmd.onRun armed; !ucmode <off|jump|side|block>");
-}
-
-export function onUnload(): void {}
+  console.log("[usercmd-demo] onLoad — ctx.clients.onRunCmd armed; !ucmode <off|jump|side|block>");
+});

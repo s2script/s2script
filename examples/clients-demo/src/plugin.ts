@@ -4,28 +4,25 @@
 // confirm: the events fire, the firing order (esp. where fullyConnect lands), Client.steamId/name/
 // userId read correctly, isBot for bots, and whether onDisconnect's live-ops are still populated.
 
+import { plugin } from "@s2script/sdk/plugin";
 import { Clients } from "@s2script/sdk/clients";
 
-export function onLoad(): void {
-  Clients.onConnect((c) => {
+export default plugin((ctx) => {
+  ctx.clients.onConnect((c) => {
     console.log(`[clients-demo] connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} ip=${c.ip}`);
     c.print("s2script clients-demo: connected");
     console.log(`[clients-demo] kickWithReason surface: typeof=${typeof c.kickWithReason}`);
   });
-  Clients.onPutInServer((c) =>
+  ctx.clients.onPutInServer((c) =>
     console.log(`[clients-demo] putInServer slot=${c.slot} name=${c.name}`));
-  Clients.onActive((c) =>
+  ctx.clients.onActive((c) =>
     console.log(`[clients-demo] active slot=${c.slot} name=${c.name}`));
-  Clients.onFullyConnect((c) =>
+  ctx.clients.onFullyConnect((c) =>
     console.log(`[clients-demo] fullyConnect slot=${c.slot} name=${c.name}`));
-  Clients.onDisconnect((c) =>
+  ctx.clients.onDisconnect((c) =>
     console.log(`[clients-demo] disconnect slot=${c.slot} name=${c.name} steamId=${c.steamId}`));
-  Clients.onSettingsChanged((c) =>
+  ctx.clients.onSettingsChanged((c) =>
     console.log(`[clients-demo] settingsChanged slot=${c.slot} name=${c.name}`));
 
   console.log(`[clients-demo] onLoad — all()=${Clients.all().length} clients`);
-}
-
-export function onUnload(): void {
-  console.log("[clients-demo] onUnload");
-}
+});

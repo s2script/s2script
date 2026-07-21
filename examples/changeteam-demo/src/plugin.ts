@@ -7,23 +7,23 @@
 //                        by userid, not the pawn-gated Player.all).
 //   sm_unspec [team]   — move the first Spectator back to CT (team 3), or an explicit team number.
 
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { Player } from "@s2script/cs2";
 import { delay } from "@s2script/sdk/timers";
 
 const TEAM_NAME = (t: number): string =>
   t === 1 ? "Spectator" : t === 2 ? "T" : t === 3 ? "CT" : `#${t}`;
 
-export function onLoad(): void {
-  Commands.register("spectest", (ctx) => {
+export default plugin((ctx) => {
+  ctx.commands.register("spectest", (cmd) => {
     const ps = Player.all(); // in-game (pawn-gated)
-    if (!ps.length) { ctx.reply("changeteam-demo: no in-game players"); return; }
+    if (!ps.length) { cmd.reply("changeteam-demo: no in-game players"); return; }
     const p = ps[0];
     const uid = p.userId;
     const before = p.teamNum ?? -1;
     p.spectate(); // = changeTeam(1)
     const immediate = p.teamNum ?? -1; // SYNCHRONOUS re-read on the same controller ref
-    ctx.reply(`spectest slot=${p.slot} uid=${uid}: ${TEAM_NAME(before)} -> spectate(); immediate=${TEAM_NAME(immediate)}`);
+    cmd.reply(`spectest slot=${p.slot} uid=${uid}: ${TEAM_NAME(before)} -> spectate(); immediate=${TEAM_NAME(immediate)}`);
     console.log(`[changeteam-demo] slot=${p.slot} uid=${uid} before=${before}(${TEAM_NAME(before)}) immediate=${immediate}(${TEAM_NAME(immediate)})`);
     delay(600).then(() => {
       const after = Player.fromUserId(uid); // pawnless-safe re-resolve
@@ -32,22 +32,18 @@ export function onLoad(): void {
     });
   });
 
-  Commands.register("unspec", (ctx) => {
-    const team = ctx.argInt(0, 3); // default CT
+  ctx.commands.register("unspec", (cmd) => {
+    const team = cmd.argInt(0, 3); // default CT
     for (const p of Player.allConnected()) {
       if (p.teamNum === 1) {
         p.changeTeam(team);
-        ctx.reply(`unspec slot=${p.slot} uid=${p.userId}: Spectator -> ${TEAM_NAME(team)}`);
+        cmd.reply(`unspec slot=${p.slot} uid=${p.userId}: Spectator -> ${TEAM_NAME(team)}`);
         console.log(`[changeteam-demo] slot=${p.slot} moved Spectator -> ${TEAM_NAME(team)}`);
         return;
       }
     }
-    ctx.reply("changeteam-demo: no spectators to move");
+    cmd.reply("changeteam-demo: no spectators to move");
   });
 
   console.log("[changeteam-demo] onLoad — sm_spectest / sm_unspec registered");
-}
-
-export function onUnload(): void {
-  console.log("[changeteam-demo] onUnload");
-}
+});

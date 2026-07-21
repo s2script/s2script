@@ -8,17 +8,17 @@
 //                     team; asserts teamNum moved and pawnIsAlive stayed false (sm_slay a bot first).
 //   sm_revealtest   — round-end reveal shape (RoundTimerListener): every T -> CT in bulk, one frame.
 
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { delay } from "@s2script/sdk/timers";
 import { Player } from "@s2script/cs2";
 
 const TEAM = (t: number | null | undefined): string =>
   t === 1 ? "Spectator" : t === 2 ? "T" : t === 3 ? "CT" : `#${t}`;
 
-export function onLoad(): void {
-  Commands.register("sm_switchtest", (ctx) => {
+export default plugin((ctx) => {
+  ctx.commands.register("sm_switchtest", (cmd) => {
     const ps = Player.all(); // in-game (pawn-gated) — alive players
-    if (!ps.length) { ctx.reply("switchteam-demo: no in-game players"); return; }
+    if (!ps.length) { cmd.reply("switchteam-demo: no in-game players"); return; }
     const p = ps[0];
     const uid = p.userId;
     const before = p.teamNum ?? -1;
@@ -29,7 +29,7 @@ export function onLoad(): void {
     const target = before === 2 ? 3 : 2;
     p.switchTeam(target);
     const immediate = p.teamNum ?? -1; // SYNCHRONOUS re-read — the move must be immediate (spec §4)
-    ctx.reply(`switchtest slot=${p.slot}: ${TEAM(before)} -> switchTeam(${TEAM(target)}); immediate=${TEAM(immediate)}`);
+    cmd.reply(`switchtest slot=${p.slot}: ${TEAM(before)} -> switchTeam(${TEAM(target)}); immediate=${TEAM(immediate)}`);
     console.log(`[switchteam-demo] slot=${p.slot} uid=${uid} before=${TEAM(before)} immediate=${TEAM(immediate)} ` +
                 `hpBefore=${hpBefore} wepBefore=${wepBefore} pawnRefBefore=${refBefore}`);
     delay(600).then(() => {
@@ -43,17 +43,17 @@ export function onLoad(): void {
     });
   });
 
-  Commands.register("sm_deadtest", (ctx) => {
+  ctx.commands.register("sm_deadtest", (cmd) => {
     const dead = Player.allConnected().find(
       (p) => p.pawnIsAlive === false && (p.teamNum === 2 || p.teamNum === 3)
     );
-    if (!dead) { ctx.reply("switchteam-demo: no dead T/CT player (sm_slay a bot first)"); return; }
+    if (!dead) { cmd.reply("switchteam-demo: no dead T/CT player (sm_slay a bot first)"); return; }
     const uid = dead.userId;
     const before = dead.teamNum ?? -1;
     const target = before === 2 ? 3 : 2;
     dead.switchTeam(target);
     const immediate = dead.teamNum ?? -1;
-    ctx.reply(`deadtest slot=${dead.slot}: DEAD ${TEAM(before)} -> ${TEAM(target)}; ` +
+    cmd.reply(`deadtest slot=${dead.slot}: DEAD ${TEAM(before)} -> ${TEAM(target)}; ` +
               `immediate=${TEAM(immediate)} pawnIsAlive=${dead.pawnIsAlive}`);
     delay(600).then(() => {
       const after = Player.fromUserId(uid);
@@ -63,18 +63,14 @@ export function onLoad(): void {
     });
   });
 
-  Commands.register("sm_revealtest", (ctx) => {
+  ctx.commands.register("sm_revealtest", (cmd) => {
     let n = 0;
     for (const p of Player.allConnected()) {
       if (p.teamNum === 2) { p.switchTeam(3); n++; }
     }
-    ctx.reply(`revealtest: moved ${n} T player(s) -> CT (round-end reveal shape)`);
+    cmd.reply(`revealtest: moved ${n} T player(s) -> CT (round-end reveal shape)`);
     console.log(`[switchteam-demo] revealtest moved ${n} players T->CT in one frame`);
   });
 
   console.log("[switchteam-demo] onLoad — sm_switchtest / sm_deadtest / sm_revealtest registered");
-}
-
-export function onUnload(): void {
-  console.log("[switchteam-demo] onUnload");
-}
+});

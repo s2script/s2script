@@ -1,11 +1,10 @@
 // db-remote-demo — opens the operator-configured "stats" (mysql) + "prefs" (postgres) connections,
 // round-trips CREATE/INSERT/SELECT against each, checks a BIGINT reads back as a decimal string, and
 // proves the game frame advances WHILE a query is in flight (async, off-thread).
+import { plugin } from "@s2script/sdk/plugin";
 import { Database } from "@s2script/sdk/db";
-import { OnGameFrame } from "@s2script/sdk/frame";
 
 let frames = 0;
-OnGameFrame.subscribe(() => { frames++; });
 
 async function exercise(name: string, autoInc: string): Promise<void> {
   try {
@@ -25,8 +24,9 @@ async function exercise(name: string, autoInc: string): Promise<void> {
   }
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
+  ctx.server.onGameFrame(() => { frames++; });
   console.log("[db-remote-demo] onLoad — exercising mysql + postgres");
   exercise("stats", "INT AUTO_INCREMENT PRIMARY KEY");        // mysql
   exercise("prefs", "SERIAL PRIMARY KEY");                    // postgres
-}
+});

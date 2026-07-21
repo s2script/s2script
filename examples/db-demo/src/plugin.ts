@@ -1,7 +1,8 @@
 // @s2script/db-demo — proves the SQLite primitive persists across a server restart.
+import { plugin } from "@s2script/sdk/plugin";
 import { Database } from "@s2script/sdk/db";
 
-export async function onLoad(): Promise<void> {
+export default plugin(async (ctx) => {
   try {
     const db = await Database.open("demo");
     await db.execute("CREATE TABLE IF NOT EXISTS boots (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT)");
@@ -13,6 +14,8 @@ export async function onLoad(): Promise<void> {
   } catch (e) {
     console.log("[db-demo] onLoad ERROR: " + String(e));
   }
-}
 
-export function onUnload(): void { console.log("[db-demo] onUnload"); }
+  return {
+    onUnload(): void { console.log("[db-demo] onUnload"); },
+  };
+});

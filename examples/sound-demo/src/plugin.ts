@@ -1,13 +1,13 @@
-import { Commands } from "@s2script/sdk/commands";
+import { plugin } from "@s2script/sdk/plugin";
 import { Sound } from "@s2script/sdk/sound";
 import { Pawn, Sounds } from "@s2script/cs2";
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   // Precache: fires at map load / mapchange. add() -> true proves the live manifest AddResource
   // path end-to-end (the file itself need not exist for the gate — the engine tolerates a
   // missing resource; a REAL custom .vsndevts playing is the deferred human-client test).
-  Sound.onPrecache((ctx) => {
-    const ok = ctx.add("soundevents/soundevents_s2script_demo.vsndevts");
+  ctx.server.onPrecache((pc) => {
+    const ok = pc.add("soundevents/soundevents_s2script_demo.vsndevts");
     console.log(`[sound-demo] onPrecache fired — add() -> ${ok}`);
   });
 
@@ -17,22 +17,22 @@ export function onLoad(): void {
   // "EmitSound ... recipients=0 -> guid=G"). Without — a worldspawn global broadcast to all valid
   // clients (on a bots server the default enumeration is the bot slots -> also all bot-skipped ->
   // still a real engine call).
-  Commands.register("sm_playsound", (ctx) => {
-    const name = ctx.args[0] || Sounds.Ping;
-    if (ctx.args.length > 1) {
-      const slot = parseInt(ctx.args[1], 10);
+  ctx.commands.register("sm_playsound", (cmd) => {
+    const name = cmd.args[0] || Sounds.Ping;
+    if (cmd.args.length > 1) {
+      const slot = parseInt(cmd.args[1], 10);
       const pawn = Pawn.forSlot(Number.isNaN(slot) ? -1 : slot);
       if (!pawn) {
-        ctx.reply(`[sound-demo] no pawn at slot ${ctx.args[1]}`);
+        cmd.reply(`[sound-demo] no pawn at slot ${cmd.args[1]}`);
         return;
       }
       const guid = pawn.emitSound(name, { recipients: [slot] });
-      ctx.reply(`[sound-demo] emitSound('${name}') from slot ${slot} -> guid=${guid}`);
+      cmd.reply(`[sound-demo] emitSound('${name}') from slot ${slot} -> guid=${guid}`);
     } else {
       const guid = Sound.emit(name);
-      ctx.reply(`[sound-demo] Sound.emit('${name}') broadcast -> guid=${guid}`);
+      cmd.reply(`[sound-demo] Sound.emit('${name}') broadcast -> guid=${guid}`);
     }
   });
 
   console.log("[sound-demo] onLoad — sm_playsound registered");
-}
+});

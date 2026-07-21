@@ -1,5 +1,5 @@
+import { plugin } from "@s2script/sdk/plugin";
 import { Entity } from "@s2script/sdk/entity";
-import { Commands } from "@s2script/sdk/commands";
 import { Server } from "@s2script/sdk/server";
 
 // Live-gate demo for the entity_name primitive: dump every trigger_multiple's targetname.
@@ -13,12 +13,10 @@ function dumpTriggers(): void {
   }
 }
 
-export function onLoad(): void {
+export default plugin((ctx) => {
   // Run `entity_names` from rcon once the map is fully loaded (the reliable gate path).
-  Commands.register("entity_names", () => dumpTriggers());
+  ctx.commands.register("entity_names", () => dumpTriggers());
   // Also auto-dump on each map start (a bonus; entities may still be spawning at this point).
-  Server.onMapStart(() => dumpTriggers());
+  ctx.server.onMapStart(() => dumpTriggers());
   console.log("[entity-name-demo] loaded — run `entity_names` via rcon after the map loads");
-}
-
-export function onUnload(): void {}
+});
