@@ -5,6 +5,10 @@ import { runGenNav } from "./navgen/gen.ts";
 import { createPlugin } from "./create/create.ts";
 import { runConfigGen } from "./config/gen.ts";
 import { resolvePackagesDir } from "./packages-resolve.ts";
+import { loginInteractive } from "./registry/login.ts";
+import { deployPlugin } from "./registry/deploy.ts";
+import { addPackage } from "./registry/add.ts";
+import { defaultRegistryUrl } from "./registry/credentials.ts";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -96,6 +100,68 @@ if (command === "gen-schema") {
     console.error(String(e instanceof Error ? e.message : e));
     process.exit(1);
   }
+} else if (command === "login") {
+  const args = argv.slice(1);
+  try {
+    const creds = await loginInteractive({
+      token: parseFlag(args, "--token"),
+      registryUrl: parseFlag(args, "--registry") || defaultRegistryUrl(),
+      ci: hasFlag(args, "--ci"),
+    });
+    console.log(`logged in → ${creds.registryUrl} (credentials saved)`);
+  } catch (e) {
+    console.error(String(e instanceof Error ? e.message : e));
+    process.exit(1);
+  }
+} else if (command === "deploy" || command === "publish") {
+  const args = argv.slice(1);
+  const pos = positionals(args, ["--packages-dir", "--registry"]);
+  const dir = pos[0] ?? ".";
+  try {
+    const packagesDir = resolvePackagesDir({
+      explicit: parseFlag(args, "--packages-dir"),
+      pluginDir: resolve(dir),
+      fromCliUrl: import.meta.url,
+    });
+    const result = await deployPlugin({
+      dir,
+      packagesDir,
+      registryUrl: parseFlag(args, "--registry"),
+      ci: hasFlag(args, "--ci"),
+    });
+    console.log(`deployed ${result.name}@${result.version} (${result.reviewState})`);
+    if (result.reviewState === "unreviewed") {
+      console.log("note: Not reviewed by s2script — listed with a disclaimer until approved.");
+    }
+  } catch (e) {
+    console.error(String(e instanceof Error ? e.message : e));
+    process.exit(1);
+  }
+} else if (command === "add") {
+  const args = argv.slice(1);
+  const pos = positionals(args, ["--dir", "--registry"]);
+  const spec = pos[0];
+  if (!spec) {
+    console.error("Usage: s2s add <pkg>[@range]");
+    process.exit(1);
+  }
+  try {
+    const result = await addPackage({
+      pluginDir: parseFlag(args, "--dir") || ".",
+      spec,
+      registryUrl: parseFlag(args, "--registry"),
+    });
+    console.log(`added ${result.name}@${result.version} → ${result.typesDir}`);
+    if (result.npmrcLine) {
+      console.log(`npmrc: ${result.npmrcLine}  (types-only; npm install ${result.name} also works)`);
+    }
+    if (result.reviewState === "unreviewed") {
+      console.log("note: Not reviewed by s2script — types pulled; use at your own risk.");
+    }
+  } catch (e) {
+    console.error(String(e instanceof Error ? e.message : e));
+    process.exit(1);
+  }
 } else if (command === "config" && argv[1] === "gen") {
   const args = argv.slice(2);
   const outDir = parseFlag(args, "--out") ?? process.cwd();
@@ -133,10 +199,15 @@ if (command === "gen-schema") {
       "  s2s create [path] [--game cs2|none] [--name <pkg>] [--template minimal]\n" +
       "             [--install npm|pnpm|yarn|bun|none] [--no-install] [-y]\n" +
       "  s2s build <dir> [--packages-dir <path>]\n" +
+      "  s2s login [--token s2s_…] [--registry <url>]\n" +
+      "  s2s deploy [dir] [--ci] [--registry <url>] [--packages-dir <path>]\n" +
+      "  s2s add <pkg>[@range] [--dir <plugin>] [--registry <url>]\n" +
       "  s2s config gen <plugin.s2sp...> --out <dir>\n" +
       "  s2s gen-schema [--check]\n" +
       "  s2s gen-events [--check]\n" +
-      "  s2s gen-nav [--check]"
+      "  s2s gen-nav [--check]\n" +
+      "\n" +
+      "Env: S2SCRIPT_REGISTRY_URL  S2SCRIPT_TOKEN (CI deploy)"
   );
   process.exit(1);
 }

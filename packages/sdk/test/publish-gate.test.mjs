@@ -9,7 +9,9 @@ import assert from "node:assert";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { assertPublishesTypes, hasPublishes } from "../src/publish-gate.ts";
+import { packTypesTarball } from "../src/types-pack.ts";
 
 function dirWith(files) {
   const d = mkdtempSync(join(tmpdir(), "s2gate-"));
@@ -66,4 +68,19 @@ test("publishes pointing at an empty file is a named error", () => {
   const r = assertPublishesTypes({ types: "api.d.ts", s2script: { publishes: "self" } }, d);
   assert.equal(r.ok, false);
   assert.match(r.error, /empty/);
+});
+
+test("packTypesTarball contains package/api.d.ts", () => {
+  const d = dirWith({ "api.d.ts": "export declare const n: number;\n" });
+  const buf = packTypesTarball({
+    name: "@demo/x",
+    version: "1.2.3",
+    typesPath: join(d, "api.d.ts"),
+    publishes: { "@demo/x": "1.2.3" },
+  });
+  const raw = gunzipSync(buf);
+  const asStr = raw.toString("binary");
+  assert.ok(asStr.includes("package/api.d.ts"));
+  assert.ok(asStr.includes("package/package.json"));
+  assert.ok(asStr.includes("@demo/x"));
 });
