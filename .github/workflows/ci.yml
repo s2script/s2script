@@ -26,6 +26,7 @@ jobs:
     outputs:
       native: ${{ steps.filter.outputs.native }}
       js: ${{ steps.filter.outputs.js }}
+      website: ${{ steps.filter.outputs.website }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -45,6 +46,10 @@ jobs:
               - 'examples/**'
               - 'disabled/**'
               - 'plugins/disabled/**'
+            website:
+              - 'website/**'
+              - 'scripts/website-*.sh'
+              - 'scripts/configure-storage.sh'
 
   build:
     needs: changes
@@ -111,13 +116,45 @@ jobs:
       - name: core boundary check
         run: ./scripts/check-core-boundary.sh
 
+  website:
+    needs: changes
+    if: needs.changes.outputs.website == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: npm ci
+        run: npm ci
+      - name: generated binding types are current
+        run: npm run typegen && git diff --exit-code
+      - name: typecheck
+        run: npm run check
+        env: &website-build-env
+          DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/ci
+          ORIGIN: https://s2script.com
+          ENVIRONMENT: production
+          AUTH_SECRET: ci-only-secret-at-least-32-characters
+      - name: Unit tests
+        run: npm test
+        env: *website-build-env
+      - name: production build
+        run: npm run build
+        env: *website-build-env
+
   # Fail-closed aggregator: the ONE required check a future branch-protection flip
   # points at instead of the individual (now path-filtered, sometimes-skipped) jobs.
   # 'if: always()' makes it run even when an upstream job is skipped by the path
   # filter — a skipped result is fine (nothing needed that job); a failure or
   # cancellation is not.
   ci-ok:
-    needs: [changes, build, gates-node, gates-rust, deps]
+    needs: [changes, build, gates-node, gates-rust, website, deps]
     if: always()
     runs-on: ubuntu-latest
     steps:
