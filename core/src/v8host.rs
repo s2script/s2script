@@ -836,6 +836,17 @@ fn transmit_recompute_and_push(index: i32) {
     }
 }
 
+/// Allocate the next monotonic subscription id (1-based; 0 = none). The single allocator behind
+/// every EventMux-family row id and the inter-plugin `iface_on` sub id, so a Scope's ids never
+/// collide with another store's. Reset to 1 on shutdown.
+pub(crate) fn next_sub_id() -> u64 {
+    NEXT_SUB_ID.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    })
+}
+
 /// Unload/resetAll teardown: drop every rule owned by `owner`, re-pushing each affected index.
 fn transmit_remove_owner(owner: &str) {
     let indices: Vec<i32> = TRANSMIT_RULES.with(|r| {
@@ -2975,7 +2986,7 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{id}:{event}");
-        WS_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
+        WS_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -3264,7 +3275,7 @@ fn s2_net_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv:
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{id}:{event}");
-        NET_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
+        NET_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -5039,7 +5050,7 @@ fn s2_event_subscribe(
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
 
         // Subscribe: if this is the FIRST for the name, call the engine-op event_subscribe.
-        let first = EVENT_MUX.with(|m| m.borrow_mut().subscribe(&name, owner, generation, handler_g));
+        let first = EVENT_MUX.with(|m| m.borrow_mut().subscribe(&name, next_sub_id(), owner, generation, handler_g));
         if first {
             if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
                 if let Some(func) = ops.event_subscribe {
@@ -5122,7 +5133,7 @@ fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        DAMAGE_MUX.with(|m| { m.borrow_mut().subscribe("onPre", owner, generation, handler_g); });
+        DAMAGE_MUX.with(|m| { m.borrow_mut().subscribe("onPre", next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -5140,7 +5151,7 @@ fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let first_ever = USERCMD_MUX.with(|m| m.borrow().is_empty());
-        USERCMD_MUX.with(|m| { m.borrow_mut().subscribe("onRun", owner, generation, handler_g); });
+        USERCMD_MUX.with(|m| { m.borrow_mut().subscribe("onRun", next_sub_id(), owner, generation, handler_g); });
         if first_ever {
             if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usercmd_hook_install) {
                 let _ = func();
@@ -5233,7 +5244,7 @@ fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+        CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -5251,7 +5262,7 @@ fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         // Capture the calling plugin's (id, generation) for liveness-gated dispatch.
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, owner, generation, handler_g); });
+        CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -5264,7 +5275,7 @@ fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        MAP_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+        MAP_MUX.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -5279,7 +5290,7 @@ fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        PRECACHE_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+        PRECACHE_MUX.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -5294,7 +5305,7 @@ fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let handler_g = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().subscribe("", owner, generation, handler_g); });
+        COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().subscribe("", next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -6089,7 +6100,7 @@ fn s2_usermsg_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         // installing sub op (see USERMSG_RESOLVE).
         USERMSG_RESOLVE.with(|m| { let mut b = m.borrow_mut();
             b.insert(name, canonical.clone()); b.insert(canonical.clone(), canonical.clone()); });
-        USERMSG_MUX.with(|m| { m.borrow_mut().subscribe(&canonical, owner, generation, handler_g); });
+        USERMSG_MUX.with(|m| { m.borrow_mut().subscribe(&canonical, next_sub_id(), owner, generation, handler_g); });
         if let Some(js) = v8::String::new(scope, &canonical) { rv.set(js.into()); }
     }));
 }
@@ -6421,7 +6432,7 @@ fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{}\0{}", classname, output);
-        OUTPUT_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
+        OUTPUT_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
     }));
 }
 
@@ -6457,7 +6468,7 @@ fn s2_entity_listener_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{}\0{}", kind, class_name);
         let first_ever = ENTITY_MUX.with(|m| m.borrow().is_empty());
-        ENTITY_MUX.with(|m| { m.borrow_mut().subscribe(&key, owner, generation, handler_g); });
+        ENTITY_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
         if first_ever {
             if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.entity_listener_install) {
                 let _ = func();
@@ -6819,7 +6830,7 @@ fn s2_event_subscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let was_empty = EVENT_MUX_PRE.with(|m| m.borrow().is_empty());
-        EVENT_MUX_PRE.with(|m| { m.borrow_mut().subscribe(&name, owner, generation, handler_g); });
+        EVENT_MUX_PRE.with(|m| { m.borrow_mut().subscribe(&name, next_sub_id(), owner, generation, handler_g); });
         if was_empty {   // first pre-sub across ALL names → install the global FireEvent hook
             if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
                 if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 1); }
@@ -8122,7 +8133,7 @@ fn s2_config_on_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let handler_g = v8::Global::new(scope.as_ref(), func);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        CONFIG_SUBS.with(|m| { m.borrow_mut().subscribe("config", owner.clone(), generation, handler_g); });
+        CONFIG_SUBS.with(|m| { m.borrow_mut().subscribe("config", next_sub_id(), owner.clone(), generation, handler_g); });
         crate::loader::watch_config_for(&owner);  // idempotent; seeds baseline if not yet watched
     }));
 }
@@ -9311,6 +9322,10 @@ pub fn init(logger: LogFn) -> Result<(), String> {
     };
 
     HOST.with(|h| *h.borrow_mut() = Some(Host { isolate, context }));
+    // Self-register the owner-scoped teardown stores (design spec §6). Runs last so every init path
+    // (including the in-isolate test harness) gets the registry; `register_builtin_stores` resets the
+    // list first, so a Metamod re-init is idempotent.
+    register_builtin_stores();
     Ok(())
 }
 
@@ -9887,6 +9902,222 @@ pub(crate) fn frame_async_drain() {
     crate::crash::uploader::periodic_sweep();
 }
 
+/// Register every builtin owner-scoped subscription store into the `owner_stores` registry
+/// (design spec §6). Called at the end of `init()` (after `owner_stores::reset()`, which this fn
+/// re-runs so a Metamod re-init is idempotent), so `unload_plugin` can sweep the registry instead of
+/// a hand-maintained cascade. Each store carries its historical follow-up engine-op verbatim, and
+/// registration order == the historical cascade order (which `sweep_owner` preserves 1:1). The
+/// `remove_by_ids` closures are the Scope-disposal path (T3): they mirror `remove_by_owner`'s
+/// follow-up for the mux stores and are a no-op for stores that are not scope surfaces.
+pub(crate) fn register_builtin_stores() {
+    crate::owner_stores::reset();
+
+    // FRAME (OnGameFrame): drop the plugin's handler Globals + reconcile the detour. The ids path is
+    // a no-op — frame subs dispose via their own {dispose} closure (Scope, T3).
+    crate::owner_stores::register(
+        "FRAME",
+        Box::new(|owner| {
+            let _ = FRAME.with(|f| f.borrow_mut().remove_by_owner(owner));
+            refresh_detour();
+        }),
+        Box::new(|_ids| {}),
+    );
+
+    // EVENT_MUX: emptied names → engine-op event_unsubscribe.
+    crate::owner_stores::register(
+        "EVENT_MUX",
+        Box::new(|owner| {
+            let emptied = EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner));
+            unsubscribe_emptied_events(&emptied);
+        }),
+        Box::new(|ids| {
+            let emptied = EVENT_MUX.with(|m| m.borrow_mut().remove_by_ids(ids));
+            unsubscribe_emptied_events(&emptied);
+        }),
+    );
+
+    // EVENT_MUX_PRE: whole-mux-empty → remove the global GameEvent hook.
+    crate::owner_stores::register(
+        "EVENT_MUX_PRE",
+        Box::new(|owner| {
+            EVENT_MUX_PRE.with(|m| m.borrow_mut().remove_by_owner(owner));
+            reconcile_pre_hook();
+        }),
+        Box::new(|ids| {
+            EVENT_MUX_PRE.with(|m| m.borrow_mut().remove_by_ids(ids));
+            reconcile_pre_hook();
+        }),
+    );
+
+    // DAMAGE_MUX: the DispatchTraceAttack detour stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "DAMAGE_MUX",
+        Box::new(|owner| { DAMAGE_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { DAMAGE_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // CHAT_MSG_SUBS: the Host_Say detour stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "CHAT_MSG_SUBS",
+        Box::new(|owner| { CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { CHAT_MSG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // CLIENT_MUX: the six lifecycle hooks stay installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "CLIENT_MUX",
+        Box::new(|owner| { CLIENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // MAP_MUX: the StartupServer hook stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "MAP_MUX",
+        Box::new(|owner| { MAP_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { MAP_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // PRECACHE_MUX: the OnPrecacheResource hook stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "PRECACHE_MUX",
+        Box::new(|owner| { PRECACHE_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { PRECACHE_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // COOKIE_CACHED_MUX: pure post-frame JS dispatch — no engine hook to remove.
+    crate::owner_stores::register(
+        "COOKIE_CACHED_MUX",
+        Box::new(|owner| { COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // WS_EVENT_MUX: pure post-frame JS dispatch — the conns themselves close via the ledger.
+    crate::owner_stores::register(
+        "WS_EVENT_MUX",
+        Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // NET_EVENT_MUX: pure post-frame JS dispatch — the sockets themselves drop via the ledger.
+    crate::owner_stores::register(
+        "NET_EVENT_MUX",
+        Box::new(|owner| { NET_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { NET_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // OUTPUT_MUX: the FireOutputInternal detour stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "OUTPUT_MUX",
+        Box::new(|owner| { OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // ENTITY_MUX: the IEntityListener stays registered for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "ENTITY_MUX",
+        Box::new(|owner| { ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { ENTITY_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // USERCMD_MUX: the input-processing detour stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "USERCMD_MUX",
+        Box::new(|owner| { USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { USERCMD_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // USERMSG_MUX: emptied canonical names → clear the shim bitmap bit via usermsg_hook_unsub.
+    crate::owner_stores::register(
+        "USERMSG_MUX",
+        Box::new(|owner| {
+            let emptied = USERMSG_MUX.with(|m| m.borrow_mut().remove_by_owner(owner));
+            unhook_emptied_usermsgs(&emptied);
+        }),
+        Box::new(|ids| {
+            let emptied = USERMSG_MUX.with(|m| m.borrow_mut().remove_by_ids(ids));
+            unhook_emptied_usermsgs(&emptied);
+        }),
+    );
+
+    // transmit (checktransmit): drop the plugin's visibility rules + re-push each affected index.
+    // Not a scope surface (ids no-op).
+    crate::owner_stores::register(
+        "TRANSMIT",
+        Box::new(|owner| { transmit_remove_owner(owner); }),
+        Box::new(|_ids| {}),
+    );
+
+    // CONFIG_SUBS: drop config-change subs + stop watching the file. The scope path drops the subs
+    // only (the file watch is plugin-lifetime, not scope-lifetime).
+    crate::owner_stores::register(
+        "CONFIG_SUBS",
+        Box::new(|owner| {
+            CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner));
+            crate::loader::unwatch_config_for(owner);
+        }),
+        Box::new(|ids| { CONFIG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // CONCOMMANDS + COMMAND_META: drop the plugin's registered ConCommands (JS dispatch map only —
+    // the shim's ICvar registration stays) and the flag-meta sidecar. Commands are not scope-able
+    // (ids no-op).
+    crate::owner_stores::register(
+        "CONCOMMANDS",
+        Box::new(|owner| {
+            let dropped_cmds: Vec<String> = CONCOMMANDS.with(|m| {
+                let mut b = m.borrow_mut();
+                let names: Vec<String> = b.iter().filter(|(_, (o, _, _))| o == owner).map(|(n, _)| n.clone()).collect();
+                b.retain(|_, (o, _, _)| o != owner);
+                names
+            });
+            COMMAND_META.with(|m| { let mut b = m.borrow_mut(); for n in &dropped_cmds { b.remove(n); } });
+        }),
+        Box::new(|_ids| {}),
+    );
+
+    // TOPMENU_ITEMS: drop the plugin's registered items (categories persist once created — SM parity).
+    // Not scope-able (ids no-op).
+    crate::owner_stores::register(
+        "TOPMENU_ITEMS",
+        Box::new(|owner| { TOPMENU_ITEMS.with(|m| m.borrow_mut().retain(|_, it| it.owner != owner)); }),
+        Box::new(|_ids| {}),
+    );
+}
+
+/// For each name that became empty in an EVENT_MUX teardown, call the engine-op event_unsubscribe so
+/// the shim can deregister at the engine level.
+fn unsubscribe_emptied_events(emptied: &[String]) {
+    for evname in emptied {
+        if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
+            if let Some(func) = ops.event_unsubscribe {
+                if let Ok(cn) = CString::new(evname.as_str()) { func(cn.as_ptr()); }
+            }
+        }
+    }
+}
+
+/// If the PRE game-event mux is now entirely empty (no more pre-hooks), request removal of the global
+/// FireEvent hook.
+fn reconcile_pre_hook() {
+    if EVENT_MUX_PRE.with(|m| m.borrow().is_empty()) {
+        if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
+            if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 0); }
+        }
+    }
+}
+
+/// For each canonical usermessage name that became empty, remove its USERMSG_IDS entry and clear the
+/// shim's bitmap bit via usermsg_hook_unsub.
+fn unhook_emptied_usermsgs(emptied: &[String]) {
+    for canonical in emptied {
+        if let Some(hook_id) = USERMSG_IDS.with(|m| m.borrow_mut().remove(canonical)) {
+            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_unsub) {
+                let _ = func(hook_id);
+            }
+        }
+    }
+}
+
 /// Unload a plugin at a frame boundary (never mid-dispatch): the ledger reverse-walk teardown
 /// authority.  Order matches the spike's Global-drop-before-context discipline (all `Global`s
 /// pointing INTO the plugin's context are dropped BEFORE its `Global<Context>`, isolate alive):
@@ -9914,108 +10145,15 @@ pub fn unload_all() {
 
 pub(crate) fn unload_plugin(id: &str) {
     crate::crash::breadcrumb::plugin_unloaded(id);
-    // (a) Mark unloading: drop the plugin's OnGameFrame subscriptions (handler Globals) and reconcile
-    // the detour.  remove_by_owner returns a DetourChange, but the combined predicate in
-    // refresh_detour is the source of truth — call it to apply the transition.
-    let _change = FRAME.with(|f| f.borrow_mut().remove_by_owner(id));
+    // (a) Sweep every owner-scoped subscription store in registration order (design spec §6). This
+    // replaces the hand-maintained cascade: each store's `remove_by_owner` closure (registered in
+    // `register_builtin_stores`) drops the plugin's handler Globals / rules and runs its own follow-up
+    // engine-op (event_unsubscribe, the PRE-hook GameEvent removal, usermsg_hook_unsub, transmit
+    // re-push, config unwatch, ConCommand/flag-meta drop, TopMenu-item drop). The FRAME store also
+    // reconciles the detour; the trailing refresh_detour here re-applies the combined predicate as the
+    // source of truth (idempotent).
+    crate::owner_stores::sweep_owner(id);
     refresh_detour();
-
-    // (a2) Drop the plugin's game-event subscriptions from the mux (teardown authority: the mux owns
-    // the handler Globals, so drop them here — before the context is disposed).  For any names that
-    // became empty, call the engine-op event_unsubscribe so the shim can deregister.
-    let emptied_events = EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    for evname in &emptied_events {
-        if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
-            if let Some(func) = ops.event_unsubscribe {
-                if let Ok(cn) = CString::new(evname.as_str()) { func(cn.as_ptr()); }
-            }
-        }
-    }
-    // (a2b) Drop the plugin's PRE-hook game-event subscriptions (Slice 5D.3). If the whole
-    // PRE mux is now empty (no more pre-hooks), request removal of the global FireEvent hook.
-    EVENT_MUX_PRE.with(|m| m.borrow_mut().remove_by_owner(id));
-    if EVENT_MUX_PRE.with(|m| m.borrow().is_empty()) {
-        if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
-            if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 0); }
-        }
-    }
-    // (a2c) Drop the plugin's Damage.onPre subscriptions (Slice 6.6). The detour stays installed for the
-    // process lifetime (removed in the shim's Unload), so no per-plugin hook-removal request is needed.
-    DAMAGE_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c') Drop the plugin's Chat.onMessage subscriptions (Slice 6.13b). The Host_Say detour is
-    // installed for the process lifetime (removed in the shim's Unload), so no hook-removal request.
-    CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c'') Drop the plugin's client-lifecycle subscriptions (Clients sub-project). The six shim
-    // lifecycle hooks are installed for the process lifetime (removed in the shim's Unload), so no
-    // per-plugin hook-removal request is needed.
-    CLIENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c'') Drop the plugin's Server.onMapStart subscriptions (clientlist-fakeconvar-onmapstart
-    // slice). The StartupServer hook is installed for the process lifetime (removed in the shim's
-    // Unload), so no per-plugin hook-removal request is needed.
-    MAP_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c'') Drop the plugin's Sound.onPrecache subscriptions (Sound slice). The
-    // OnPrecacheResource hook is installed for the process lifetime (removed in the shim's Unload),
-    // so no per-plugin hook-removal request is needed.
-    PRECACHE_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c'') Drop the plugin's Cookies.onCached subscriptions (clientprefs Task 4). No engine-level
-    // hook to remove (the fan-out is a pure post-frame JS dispatch, no shim involvement).
-    COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c''') Drop the plugin's WebSocket on* subscriptions (WebSocket Task 2). No engine-level hook
-    // to remove (the fan-out is a pure post-frame JS dispatch, like COOKIE_CACHED_MUX); the underlying
-    // connections themselves are closed below via the ledger's WsConn resources.
-    WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c''') Drop the plugin's net (raw TCP/UDP) on* subscriptions (Net Task 2). No engine-level hook
-    // to remove (a pure post-frame JS dispatch, like WS_EVENT_MUX); the underlying sockets themselves
-    // are dropped below via the ledger's NetConn resources.
-    NET_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // (a2c'''') Drop the plugin's Entity.onOutput subscriptions (entity-I/O slice). The FireOutputInternal
-    // detour stays installed for the process lifetime (removed in the shim's Unload), so no per-plugin
-    // hook-removal request is needed.
-    OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // Drop the plugin's entity-lifecycle subscriptions (entity-listeners slice). The IEntityListener
-    // stays registered for the process lifetime (removed in the shim's Unload), so no per-plugin
-    // hook-removal is needed.
-    ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // Drop the plugin's UserCmd.onRun subscriptions (usercmd primitive). The per-tick input-processing detour
-    // stays installed for the process lifetime once lazily installed (removed in the shim's Unload),
-    // so no per-plugin hook-removal request is needed.
-    USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    // Drop the plugin's UserMessages.onPre subscriptions (usermsg-hook slice). For any canonical name
-    // that became empty (no plugin still hooks it), clear the shim's bitmap bit via usermsg_hook_unsub —
-    // the ledger is the teardown authority, so this runs regardless of whether the plugin called `off`.
-    // The lazy PostEventAbstract SourceHook itself stays installed for the process lifetime (removed in
-    // the shim's Unload), so there is no per-plugin hook-removal request here.
-    let emptied_usermsgs = USERMSG_MUX.with(|m| m.borrow_mut().remove_by_owner(id));
-    for canonical in &emptied_usermsgs {
-        if let Some(hook_id) = USERMSG_IDS.with(|m| m.borrow_mut().remove(canonical)) {
-            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_unsub) {
-                let _ = func(hook_id);
-            }
-        }
-    }
-    // checktransmit slice: drop the plugin's visibility rules and re-push the remaining merges
-    // (last-owner-gone entries are cleared from the shim table).
-    transmit_remove_owner(id);
-    // (a2c) Drop the plugin's config-change subscriptions (Slice 5E.2) and stop watching its file.
-    CONFIG_SUBS.with(|m| m.borrow_mut().remove_by_owner(id));
-    crate::loader::unwatch_config_for(id);
-    // (a2d) Drop the plugin's registered ConCommands so a post-unload dispatch no-ops. This is the
-    // per-plugin (.s2sp) unload: we remove from the JS dispatch map only — the shim's ICvar ConCommand
-    // stays registered (idempotent, reload-safe) and re-routes to the new handler on reload. The engine-
-    // side ICvar unregister happens on full shim teardown (Metamod Unload → s2script_mm.cpp, UAF-safe).
-    let dropped_cmds: Vec<String> = CONCOMMANDS.with(|m| {
-        let mut b = m.borrow_mut();
-        let names: Vec<String> = b.iter().filter(|(_, (owner, _, _))| owner == id).map(|(n, _)| n.clone()).collect();
-        b.retain(|_, (owner, _, _)| owner != id);
-        names
-    });
-    // Drop the departing plugin's flag-meta alongside its commands (a stale entry would be ignored by the
-    // list join anyway, but keep the sidecar tidy — trivial).
-    COMMAND_META.with(|m| { let mut b = m.borrow_mut(); for n in &dropped_cmds { b.remove(n); } });
-    // (a2e) Drop the plugin's registered TopMenu items (adminmenu framework). Categories are left in
-    // place (harmless if empty; SM parity — a category persists once created) — only owner-scoped items
-    // are torn down, mirroring the CONCOMMANDS cleanup above.
-    TOPMENU_ITEMS.with(|m| m.borrow_mut().retain(|_, it| it.owner != id));
 
     // (b) Best-effort onUnload in the plugin's OWN context.  Clone the context + exports out of
     // PLUGINS (borrow released) so onUnload may re-enter PLUGINS/FRAME/etc. without a double borrow.

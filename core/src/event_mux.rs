@@ -3,7 +3,7 @@
 //! without the priority/HookResult machinery (events don't collapse).
 use std::collections::HashMap;
 
-pub struct EventSub<H> { pub owner: String, pub generation: u64, pub handler: H }
+pub struct EventSub<H> { pub id: u64, pub owner: String, pub generation: u64, pub handler: H }
 
 #[derive(Default)]
 pub struct EventMux<H> { by_name: HashMap<String, Vec<EventSub<H>>> }
@@ -11,11 +11,28 @@ pub struct EventMux<H> { by_name: HashMap<String, Vec<EventSub<H>>> }
 impl<H: Clone> EventMux<H> {
     pub fn new() -> Self { Self { by_name: HashMap::new() } }
     /// Returns true iff this is the FIRST subscriber for `name` (caller then calls the engine-op event_subscribe).
-    pub fn subscribe(&mut self, name: &str, owner: String, generation: u64, handler: H) -> bool {
+    /// `id` is the per-row subscription id (from `v8host::next_sub_id()`), used by `remove_by_ids` for
+    /// scope disposal; a row is otherwise still identified by `owner` for ledgered teardown.
+    pub fn subscribe_with_id(&mut self, name: &str, id: u64, owner: String, generation: u64, handler: H) -> bool {
         let list = self.by_name.entry(name.to_string()).or_default();
         let first = list.is_empty();
-        list.push(EventSub { owner, generation, handler });
+        list.push(EventSub { id, owner, generation, handler });
         first
+    }
+    /// Thin wrapper: subscribe carrying the caller-allocated per-row `id`.
+    pub fn subscribe(&mut self, name: &str, id: u64, owner: String, generation: u64, handler: H) -> bool {
+        self.subscribe_with_id(name, id, owner, generation, handler)
+    }
+    /// Remove rows whose id is in `ids`. Returns names that became empty (same contract as
+    /// `remove_by_owner` — caller then calls the engine-op event_unsubscribe for each).
+    pub fn remove_by_ids(&mut self, ids: &[u64]) -> Vec<String> {
+        let mut emptied = Vec::new();
+        for (name, list) in self.by_name.iter_mut() {
+            let before = list.len();
+            list.retain(|s| !ids.contains(&s.id));
+            if before > 0 && list.is_empty() { emptied.push(name.clone()); }
+        }
+        emptied
     }
     /// A snapshot of the handlers for `name` (empty if none) — the set that runs for this fire.
     pub fn snapshot(&self, name: &str) -> Vec<(String, u64, H)> {
@@ -66,8 +83,8 @@ mod tests {
     #[test]
     fn subscribe_first_then_snapshot_then_remove_by_owner() {
         let mut m: EventMux<&'static str> = EventMux::new();
-        assert!(m.subscribe("player_death", "p".into(), 1, "h1"));   // first for the name
-        assert!(!m.subscribe("player_death", "q".into(), 1, "h2"));  // not first
+        assert!(m.subscribe("player_death", 1, "p".into(), 1, "h1"));   // first for the name
+        assert!(!m.subscribe("player_death", 2, "q".into(), 1, "h2"));  // not first
         assert_eq!(m.snapshot("player_death").len(), 2);
         assert_eq!(m.snapshot("round_start").len(), 0);
         let emptied = m.remove_by_owner("p");
@@ -81,7 +98,7 @@ mod tests {
     fn is_empty_tracks_any_subscriber() {
         let mut m: EventMux<&str> = EventMux::new();
         assert!(m.is_empty());
-        m.subscribe("player_hurt", "p".into(), 1, "h");
+        m.subscribe("player_hurt", 1, "p".into(), 1, "h");
         assert!(!m.is_empty());
         m.remove_by_owner("p");
         assert!(m.is_empty());
@@ -94,8 +111,8 @@ mod tests {
     #[test]
     fn remove_by_owner_on_partial_then_empty() {
         let mut m: EventMux<&'static str> = EventMux::new();
-        m.subscribe("test_event", "owner_a".into(), 1, "h_a");
-        m.subscribe("test_event", "owner_b".into(), 1, "h_b");
+        m.subscribe("test_event", 1, "owner_a".into(), 1, "h_a");
+        m.subscribe("test_event", 2, "owner_b".into(), 1, "h_b");
 
         // Remove owner_a: owner_b still present → name is NOT empty → must return false.
         let became_empty = m.remove_by_owner_on("test_event", "owner_a");
@@ -127,9 +144,9 @@ mod tests {
     #[test]
     fn remove_by_name_drops_whole_key_and_absent_is_noop() {
         let mut m: EventMux<&'static str> = EventMux::new();
-        m.subscribe("7:message", "owner_a".into(), 1, "h_a");
-        m.subscribe("7:message", "owner_b".into(), 1, "h_b");
-        m.subscribe("7:close", "owner_a".into(), 1, "h_c");
+        m.subscribe("7:message", 1, "owner_a".into(), 1, "h_a");
+        m.subscribe("7:message", 2, "owner_b".into(), 1, "h_b");
+        m.subscribe("7:close", 3, "owner_a".into(), 1, "h_c");
         assert_eq!(m.snapshot("7:message").len(), 2);
 
         m.remove_by_name("7:message");
@@ -139,5 +156,20 @@ mod tests {
         m.remove_by_name("7:close");
         assert!(m.is_empty());
         m.remove_by_name("nonexistent");  // no panic
+    }
+
+    /// L1 lifecycle v2: `remove_by_ids` drops only the rows whose per-subscription id matches
+    /// (scope disposal), leaving other rows for the same name untouched, and reports the names that
+    /// became empty (same "fire event_unsubscribe" contract as `remove_by_owner`).
+    #[test]
+    fn remove_by_ids_removes_only_matching_rows_and_reports_emptied() {
+        let mut m: EventMux<&'static str> = EventMux::new();
+        m.subscribe_with_id("e1", 10, "p".into(), 1, "h1");
+        m.subscribe_with_id("e1", 11, "p".into(), 1, "h2");
+        m.subscribe_with_id("e2", 12, "p".into(), 1, "h3");
+        assert!(m.remove_by_ids(&[10]).is_empty());
+        assert_eq!(m.snapshot("e1").len(), 1);
+        let emptied = m.remove_by_ids(&[11, 12]);
+        assert!(emptied.contains(&"e1".to_string()) && emptied.contains(&"e2".to_string()));
     }
 }

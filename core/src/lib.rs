@@ -16,6 +16,7 @@ mod http;
 mod loader;
 mod multiplexer;
 mod net;
+pub mod owner_stores;
 pub(crate) mod crash;
 mod schema;
 mod schema_catalog;
