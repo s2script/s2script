@@ -330,6 +330,8 @@ await admin.banPlayer(player, 60, "cheating");            // native
 
 A plugin is already a versioned `package.json` package with deps and a published interface — the registry falls out. Three services: **(1) package registry + resolver** (`s2script install @edge/admin-core` resolves the dependency closure into `/plugins` — `npm install` for servers; `s2script update`/lockfile for reproducibility); **(2) type/interface distribution** (`s2script add` pulls a plugin's published `.d.ts` into the dev environment — build against another dev's interface type-safely without their source; the load-time gate verifies the same contract); **(3) discovery/community** (browse, search, versioned downloads, publisher pages).
 
+**Hosting boundary:** the registry and developer platform is developed and operated separately from this repository. Its hosting, storage, and database design are not part of the framework and are not documented here.
+
 **Scope taxonomy (npm's model, one reserved official scope):**
 - **`@s2script/*` — first-party, official.** Engine-generic std lib `@s2script/std`; **per-game packages `@s2script/cs2`, `@s2script/<game>`** (game classes, gamedata, descriptors, APIs); the base-plugin suite (§2.11). Analog: `@angular/*`.
 - **`@<community>/*` — verified third-party scopes** (`@edge/*` = EdgeGamers). Exactly npm org scopes.
