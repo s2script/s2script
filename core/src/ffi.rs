@@ -273,7 +273,7 @@ pub extern "C" fn s2script_core_dispatch_concommand(
             Ok(s) => s,
             Err(_) => return,
         };
-        v8host::dispatch_concommand(name_str, slot as i32, args_str);
+        v8host::dispatch_concommand(name_str, slot as i32, args_str, v8host::ReplySource::from_slot(slot as i32));
     });
 }
 
