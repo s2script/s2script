@@ -1,4 +1,4 @@
-.PHONY: all core shim package check-boundary docker-test clean
+.PHONY: all core shim package check-boundary docker-test clean ci ci-native ci-js
 
 all: core shim package
 
@@ -21,3 +21,8 @@ docker-test:
 clean:
 	cargo clean
 	rm -rf build dist
+
+# The gate suite. These scripts are exactly what CI runs — local green means CI green.
+# npm ci is skipped on a local run; use `CI=1 make ci-js` to include the lockfile guard.
+ci-js:
+	./scripts/ci-js.sh
