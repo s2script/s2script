@@ -814,6 +814,7 @@ EOF
 **Files:**
 - Modify: `CLAUDE.md` (the `## Commands` gate-suite block, and the whole `## Ship work as a stack, not a branch (Graphite)` section)
 - Modify: `docs/sdk-doc-conventions.md:5`
+- Modify: `README.md:3` (the CI badge — see Step 3b)
 
 **Interfaces:**
 - Consumes: `make ci` / `make ci-native` / `make ci-js` from Tasks 2 and 3.
@@ -894,21 +895,43 @@ consistent. Check coverage as you write stubs with `scripts/check-doc-coverage.m
 
 The old sentence contradicted itself: "enforced per-PR" describes a gate and the parenthetical denies it. The plan for that slice (`docs/superpowers/plans/2026-07-21-sdk-tsdoc-intellisense.md:17`) is authoritative — "Do NOT add `check-doc-coverage` to `.github/` or the gate suite."
 
+- [ ] **Step 3b: Fix the README CI badge**
+
+Task 4 deleted `.github/workflows/ci.yml`, and `README.md:3` still badges it — the shield renders 404 on the repo's front page. Replace that one line:
+
+```markdown
+[![ci](https://github.com/s2script/s2script/actions/workflows/ci.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci.yml)
+```
+
+with two badges, one per workflow:
+
+```markdown
+[![ci-native](https://github.com/s2script/s2script/actions/workflows/ci-native.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci-native.yml)
+[![ci-js](https://github.com/s2script/s2script/actions/workflows/ci-js.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci-js.yml)
+```
+
+Leave the npm and license badges on lines 4-5 untouched.
+
 - [ ] **Step 4: Verify the doctrine is really gone and the new commands are real**
 
 ```bash
-# No Graphite left in the governing doc (historical plans/specs are records — leave them).
-grep -nE 'gt submit|gt create|gt restack|gt modify|gt track|Graphite|stacked PR' CLAUDE.md \
-  && { echo "FAIL: Graphite still referenced in CLAUDE.md"; exit 1; } || echo "ok: no Graphite in CLAUDE.md"
+# No Graphite COMMANDS left in the governing doc (historical plans/specs are records —
+# leave them). Match `gt` invocations only: the replacement prose deliberately contains
+# the words "Graphite" and "stacked PRs" to announce the retirement, so grepping for
+# those self-trips.
+grep -nE 'gt submit|gt create|gt restack|gt modify|gt track' CLAUDE.md \
+  && { echo "FAIL: gt commands still in CLAUDE.md"; exit 1; } || echo "ok: no gt commands in CLAUDE.md"
 
 # Every make target CLAUDE.md now advertises actually exists.
 for t in ci ci-native ci-js check-boundary; do
   grep -qE "^$t:" Makefile && echo "ok: make $t exists" || echo "FAIL: make $t missing"
 done
 
-# No stale reference to a deleted workflow anywhere outside the historical docs.
+# No stale reference to a deleted workflow outside the historical docs. Excludes
+# .claude/worktrees/ — sibling git worktrees are checked out UNDER this directory, and a
+# recursive grep otherwise walks another branch's files and reports them as findings here.
 grep -rn '_build.yml\|workflows/ci.yml' --include='*.md' --include='*.yml' . \
-  | grep -v 'docs/superpowers/' | grep -v node_modules \
+  | grep -v 'docs/superpowers/' | grep -v node_modules | grep -v '.claude/worktrees/' \
   && { echo "FAIL: stale workflow reference"; exit 1; } || echo "ok: no stale workflow references"
 
 # The doc conventions no longer claim enforcement.
