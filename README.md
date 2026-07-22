@@ -51,6 +51,24 @@ The design lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); development 
 Work ships as one branch and one PR per slice. Each PR must pass `make ci` and be safe to merge on
 its own.
 
+## Examples
+
+Six worked examples under [`examples/`](examples/), smallest first:
+
+| Example | What it teaches |
+|---|---|
+| [`hello-plugin`](examples/hello-plugin) | The smallest complete plugin — a command, an event, and surviving a hot reload. **Start here.** |
+| [`cookbook`](examples/cookbook) | One file per API under `src/recipes/` — HTTP, websockets, sockets, DB, cookies, menus, sounds, traces, usermessages, and more. Copy a recipe into your own plugin. |
+| [`entity-playground`](examples/entity-playground) | Creating, configuring, and watching entities: keyvalue-configured spawns, entity I/O, lifecycle listeners, beams. |
+| [`greeter-plugin`](examples/greeter-plugin) + [`greeter-consumer`](examples/greeter-consumer) | Two plugins talking over a typed, versioned interface — including an `EntityRef` that stays live across the boundary. |
+| [`monorepo-plugin`](examples/monorepo-plugin) | Splitting one plugin across npm workspace packages when it outgrows a single `src/`. |
+
+Build any of them with `npx s2s build examples/<name>`, then drop the resulting
+`dist/*.s2sp` into `addons/s2script/plugins/` on a running server.
+
+Dev tooling lives in [`tools/`](tools/) — `schema-dump` (regenerates gamedata
+after a CS2 update), `s2bench` (op timing), and `crash-test`.
+
 ## License
 
 s2script is dual-licensed **`MIT OR Apache-2.0`** — take whichever you prefer. See

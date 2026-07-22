@@ -22,7 +22,8 @@ shim/         C++ Metamod plugin. Owns every Source 2 touchpoint: sigscan, Sourc
 games/cs2/    CS2 game-package prelude (generated schema + nav accessors).
 packages/     npm-published: @s2script/sdk (types + the `s2s` CLI), @s2script/cs2, eslint-plugin.
 plugins/      The base-plugin suite; plugins/disabled/ holds the opt-in ones.
-examples/     Demo plugins (not shipped).
+examples/     Worked examples (not shipped) — see README.md.
+tools/        Dev/treadmill tooling: schema-dump, s2bench, crash-test (not shipped).
 gamedata/     Regenerable engine facts: signatures, offsets, schema/event/item catalogs.
 scripts/      Build, gate (check-*.sh), sniper build, rcon.py, package/release.
 docker/       CS2 dev server + database sidecars.
@@ -145,8 +146,8 @@ npx @s2script/sdk build <dir>      # from a plugin dir → dist/<id>.s2sp
 ./scripts/build-base-plugins.sh    # every first-party plugin under plugins/
 ```
 
-`build-base-plugins.sh` builds `plugins/*` and `plugins/disabled/*` (demos in `examples/` are not
-built). Pass `VERSION=0.1.2` (or `$1`) to stamp every plugin's `package.json` to a release tag
+`build-base-plugins.sh` builds `plugins/*` and `plugins/disabled/*` (examples/ and tools/ are not
+packaged). Pass `VERSION=0.1.2` (or `$1`) to stamp every plugin's `package.json` to a release tag
 before building, so the `.s2sp` manifests match the runtime zip.
 
 ---
