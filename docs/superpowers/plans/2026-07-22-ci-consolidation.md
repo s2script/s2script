@@ -289,15 +289,13 @@ In `Makefile`, extend the `.PHONY` line and append the target. The `.PHONY` line
 And append at the end of the file:
 
 ```makefile
-# The gate suite. These two scripts are exactly what CI runs — local green means CI green.
+# The gate suite. These scripts are exactly what CI runs — local green means CI green.
 # npm ci is skipped on a local run; use `CI=1 make ci-js` to include the lockfile guard.
-ci: ci-native ci-js
-
 ci-js:
 	./scripts/ci-js.sh
 ```
 
-`ci-native` is added in Task 3. `make ci` will fail until then — that is expected and is why `ci-native` comes next.
+The `.PHONY` line lists `ci` and `ci-native` for Task 3, which adds both targets. Do **not** add the `ci:` aggregate target here — `ci-native` does not exist yet, and no task may leave a broken make target behind.
 
 - [ ] **Step 4: Run it and verify it passes**
 
@@ -414,16 +412,19 @@ Two details that are easy to get wrong:
 - `-DS2_CORE_LIB_DIR=debug` — the shim links `libs2script_core.so` out of `target/<dir>`, and this script runs `cargo build` (debug), not `--release`. `release.yml`'s sniper build is the only thing that produces release binaries. Passing `release` here makes the shim link a library that does not exist.
 - `${LAUNCHER[@]+"${LAUNCHER[@]}"}` — not the bare `"${LAUNCHER[@]}"`. Under `set -u`, expanding an empty array is an unbound-variable error on bash < 4.4; this form expands to nothing when the array is empty.
 
-- [ ] **Step 3: Add the `ci-native` make target**
+- [ ] **Step 3: Add the `ci-native` and `ci` make targets**
 
 Append to `Makefile`, below the `ci-js` target added in Task 2:
 
 ```makefile
 ci-native:
 	./scripts/ci-native.sh
+
+# Both suites — the command CLAUDE.md tells you to run before every PR.
+ci: ci-native ci-js
 ```
 
-The `.PHONY` line already lists `ci-native` from Task 2.
+The `.PHONY` line already lists both from Task 2. The `ci` aggregate lands here rather than in Task 2 because `ci-native` did not exist then, and no task may leave a broken make target behind.
 
 - [ ] **Step 4: Run it and verify it passes**
 
