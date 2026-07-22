@@ -1,6 +1,6 @@
 {
   "name": "@s2script/sdk",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "license": "MIT OR Apache-2.0",
   "description": "s2script SDK — the builtin capability types (imported as @s2script/sdk/entity, …) plus the `s2s` CLI for building Source 2 / CS2 plugins.",
   "type": "module",
