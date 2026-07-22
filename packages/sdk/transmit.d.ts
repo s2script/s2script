@@ -3,6 +3,7 @@
  *  engine-side hook enforces it every snapshot — zero JS runs in the per-client hot path. */
 import type { EntityRef } from "./entity";
 
+/** Hot-path measurement counters returned by {@link Transmit.stats}. */
 export interface TransmitStats {
   /** CheckTransmit invocations observed since load/reset. */
   snapshots: number;
@@ -16,6 +17,13 @@ export interface TransmitStats {
   nsMax: number;
 }
 
+/**
+ * Declarative per-client entity visibility: hide an entity from some viewers, enforced engine-side each snapshot.
+ * @example
+ * import { Transmit } from "@s2script/sdk/transmit";
+ * // examples/transmit-demo/src/plugin.ts:58 — show `prop` ONLY to one viewer slot
+ * const ok = Transmit.setVisibleTo(prop, [slot]);
+ */
 export declare const Transmit: {
   /** Replace this plugin's visibility rule for `entity`: it is transmitted ONLY to the given viewer
    *  slots (an empty array = hidden from everyone). Multiple plugins AND-merge — an entity reaches a

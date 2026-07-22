@@ -1,4 +1,6 @@
 /** @s2script/plugins — runtime plugin management (the SM `sm plugins` backend). NO runtime code (injected). */
+
+/** A snapshot of one plugin's identity and lifecycle state, as returned by {@link Plugins.list}. */
 export interface PluginInfo {
   /** the plugin id (from its manifest). */
   readonly id: string;
@@ -15,6 +17,13 @@ export interface PluginInfo {
    */
   readonly state: "running" | "loading" | "waiting" | "failed" | "unloaded";
 }
+/**
+ * Enumerate and drive the plugin set at runtime (list / load / unload / reload).
+ * @example
+ * import { Plugins } from "@s2script/sdk/plugins";
+ * // plugins/basecommands/src/plugin.ts:126 — sm plugins list
+ * for (const p of Plugins.list()) cmd.reply(p.id + " — " + p.state);
+ */
 export declare const Plugins: {
   /** Every loaded/unloaded plugin. */
   list(): PluginInfo[];

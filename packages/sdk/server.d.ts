@@ -1,4 +1,12 @@
 /** @s2script/server — server control (run console commands, query map validity). NO runtime code (injected at load). */
+
+/**
+ * Server console + globals: run commands, register/read/set cvars, and query map/time state.
+ * @example
+ * import { Server } from "@s2script/sdk/server";
+ * // plugins/basecommands/src/plugin.ts:46 — sm_map
+ * Server.command("changelevel " + map);
+ */
 export declare const Server: {
   /** Run `cmd` at the server console (queued; executes next frame). */
   command(cmd: string): void;

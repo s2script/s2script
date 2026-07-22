@@ -3,9 +3,13 @@ import type { HookResultValue } from "./events";
 /** A general protobuf user-message builder. Build then send in one synchronous burst. */
 export class UserMessage {
   constructor(name: string);
+  /** Set an integer field. Returns `this` for chaining. */
   setInt(field: string, value: number): this;
+  /** Set a float field. Returns `this` for chaining. */
   setFloat(field: string, value: number): this;
+  /** Set a string field. Returns `this` for chaining. */
   setString(field: string, value: string): this;
+  /** Set a boolean field. Returns `this` for chaining. */
   setBool(field: string, value: boolean): this;
   /** Infer the setter from the JS value type. */
   set(field: string, value: number | string | boolean): this;
@@ -28,15 +32,29 @@ export interface UserMessageView {
   readonly recipients: number[];
   /** protobuf TextFormat dump — the documented FALLBACK for unmapped messages only; prefer typed reads. */
   readonly debugString: string;
+  /** Whether `path` is present on the current message. Dotted nested paths supported ("origin.x"). */
   hasField(path: string): boolean;
   /** Scalar int read (int32/uint32/fixed32/enum; bool as 0/1). Dotted nested paths supported
    *  ("origin.x" walks sub-messages). null = no such field / repeated / no current message. */
   readInt(path: string): number | null;
+  /** Scalar float read (float/double). Dotted nested paths supported. null if absent/repeated/no message. */
   readFloat(path: string): number | null;
+  /** Scalar bool read. Dotted nested paths supported. null if absent/repeated/no message. */
   readBool(path: string): boolean | null;
+  /** Scalar string/bytes read. Dotted nested paths supported. null if absent/repeated/no message. */
   readString(path: string): string | null;
 }
 
+/**
+ * Intercept outbound user messages before delivery (read typed fields, optionally suppress the send).
+ * @example
+ * import { UserMessages } from "@s2script/sdk/usermessages";
+ * import { HookResult, type HookResultValue } from "@s2script/sdk/events";
+ * // examples/usermsg-demo/src/plugin.ts:15 — blanket-block radio text
+ * UserMessages.onPre("CCSUsrMsg_RadioText", (m): HookResultValue | void => {
+ *   if (blockRadio) return HookResult.Handled;
+ * });
+ */
 export declare const UserMessages: {
   /** Pre-hook an outbound user message by unscoped name (partial match, SayText2-style; the view
    *  carries the canonical name). Runs SYNCHRONOUSLY before delivery. Return >= HookResult.Handled
