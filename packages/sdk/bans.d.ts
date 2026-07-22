@@ -29,7 +29,14 @@ export interface BanEntry {
   reason: string;
 }
 
-/** The ban API: add/remove bans, look up by SteamID64, list, and reload from bans.json. */
+/**
+ * The ban API: add/remove bans, look up by SteamID64, list, and reload from bans.json.
+ * @example
+ * import { Bans } from "@s2script/sdk/bans";
+ * // Connect-time enforcement inside a Clients.onConnect handler.
+ * const b = Bans.get(c.steamId);
+ * if (b && (b.until === 0 || b.until > Date.now() / 1000)) c.kickWithReason(b.reason);
+ */
 export declare const Bans: {
   /** Add (or overwrite) a ban and persist it to bans.json. `minutes <= 0` = permanent. */
   add(steamId: string, minutes: number, reason?: string): void;

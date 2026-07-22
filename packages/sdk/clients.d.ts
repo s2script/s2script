@@ -2,8 +2,10 @@
  * @s2script/clients — engine-generic client handle + lifecycle events.
  * Resolved at runtime via globalThis.__s2pkg_clients. Import: import { Client, Clients } from "./clients";
  */
+
 /** A connected client, identified by its 0-based slot (CPlayerSlot). Slot-backed; getters read live. */
 export declare class Client {
+  /** The client's 0-based engine slot (`CPlayerSlot`) — the handle's stable identity for its connection. */
   readonly slot: number;
   /** True while a client occupies this slot. */
   isValid(): boolean;
@@ -35,9 +37,15 @@ export declare class Client {
    */
   voiceMuted: boolean;
 }
+/**
+ * Look up connected clients by slot or enumerate them all.
+ * @example
+ * import { Clients } from "@s2script/sdk/clients";
+ * console.log(`onLoad — all()=${Clients.all().length} clients`);
+ */
 export declare const Clients: {
   /** The client in `slot`, or null if the slot is empty. */
   fromSlot(slot: number): Client | null;
-  /** Every currently-connected client. */
+  /** Every currently-connected client (bots included). */
   all(): Client[];
 };

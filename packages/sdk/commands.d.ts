@@ -1,4 +1,9 @@
 /** @s2script/commands — register server commands. NO runtime code (injected at load). */
+
+/**
+ * The parsed invocation handed to a command callback: who called it, its arguments (multiple typed
+ * accessors), and a caller-appropriate `reply` channel. Valid only for the duration of the callback.
+ */
 export interface CommandInvocation {
   /** 0-based caller slot, or -1 for the server console. */
   readonly callerSlot: number;
@@ -32,6 +37,14 @@ export interface ChatTrigger {
   readonly argString: string;
 }
 
+/**
+ * Command-registry utilities: dispatch by name, parse/route chat triggers, and enumerate the global
+ * registry. Commands themselves are registered through the plugin context (`ctx.commands.register*`).
+ * @example
+ * import { Commands } from "@s2script/sdk/commands";
+ * // sm_help backend: every registered command + its required admin flag mask.
+ * const cmds = Commands.list().slice().sort((a, b) => (a.name < b.name ? -1 : 1));
+ */
 export declare const Commands: {
   /** Invoke a registered command by name in THIS plugin (applying its gating). Returns true if it exists. */
   dispatch(name: string, slot: number, argString: string): boolean;
