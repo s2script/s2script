@@ -1,6 +1,6 @@
 {
   "name": "@s2script/cs2",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "license": "MIT OR Apache-2.0",
   "types": "index.d.ts",
   "description": "Type stubs for the @s2script/cs2 injected CS2 game API. No runtime code — the engine injects the implementation.",
@@ -17,7 +17,7 @@
     "schema.generated.d.ts"
   ],
   "dependencies": {
-    "@s2script/sdk": "^0.5.1"
+    "@s2script/sdk": "^0.6.0"
   },
   "repository": {
     "type": "git",
