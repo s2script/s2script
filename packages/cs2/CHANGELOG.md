@@ -1,5 +1,13 @@
 # @s2script/cs2
 
+## 0.7.1
+
+### Patch Changes
+
+- c9f0293: Rich TSDoc across the hand-authored `@s2script/cs2` game-type stubs (`Pawn`, `Weapon`, `ChatColors`, `RoundEndReason`, and the entry points) — descriptions, `{@link}` cross-references, and `@example`s drawn from real plugin/example usage — for complete in-editor intellisense. The generated schema/nav/event fields are intentionally left bare (a separate future effort). Types are unchanged; this is a comments-only pass verified against every cs2-consuming plugin and example.
+- Updated dependencies [c9f0293]
+  - @s2script/sdk@0.5.1
+
 ## 0.7.0
 
 ### Minor Changes
