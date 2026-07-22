@@ -26,3 +26,9 @@ clean:
 # npm ci is skipped on a local run; use `CI=1 make ci-js` to include the lockfile guard.
 ci-js:
 	./scripts/ci-js.sh
+
+ci-native:
+	./scripts/ci-native.sh
+
+# Both suites — the command CLAUDE.md tells you to run before every PR.
+ci: ci-native ci-js
