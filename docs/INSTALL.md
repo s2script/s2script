@@ -56,13 +56,13 @@ Linux x86-64 only. Windows is not supported yet.
 
 The release ships the SourceMod-parity suite from `plugins/` (demos live under `examples/` and are not packaged):
 
-`adminhelp` · `adminmenu` · `antiflood` · `basebans` · `basechat` · `basecomm` · `basecommands` · `basetriggers` · `basevotes` · `clientprefs` · `funcommands` · `playercommands` · `reservedslots`
+`adminhelp` · `adminmenu` · `antiflood` · `basebans` · `basechat` · `basecomm` · `basecommands` · `basetriggers` · `basevotes` · `clientprefs` · `funcommands` · `playercommands` · `reservedslots` · `zones`
 
 Opt-in plugins (nominations, rockthevote, nextmap, funvotes) ship in the zip under `addons/s2script/plugins/disabled/` but are **not** loaded — the runtime's `plugins/` scan is non-recursive, so it skips the `disabled/` subdir. To enable one, move its `.s2sp` up one level into `addons/s2script/plugins/`.
 
 ## Add more plugins
 
-Build a plugin to a `.s2sp` (see the README authoring section), then copy it into:
+Build a plugin to a `.s2sp` (see the [authoring docs](https://s2script.com/docs)), then copy it into:
 
 ```
 addons/s2script/plugins/<name>.s2sp
