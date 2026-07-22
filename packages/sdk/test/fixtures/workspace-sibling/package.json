@@ -1,0 +1,6 @@
+{
+  "name": "@fixture/workspace-sibling",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "workspaces": ["packages/*"]
+}
