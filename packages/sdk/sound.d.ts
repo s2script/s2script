@@ -1,6 +1,7 @@
 /** @s2script/sound — engine-generic sound: emit a named SoundEvent + register custom precache paths. */
 import type { EntityRef } from "./entity";
 
+/** Options for {@link Sound.emit} — the source entity, recipient slots, and volume. */
 export interface SoundEmitOptions {
   /** Source entity (serial-gated; a stale ref emits nothing and returns 0). Omitted -> worldspawn
    *  (a global/2D sound). */
@@ -22,6 +23,14 @@ export interface PrecacheContext {
   add(path: string): boolean;
 }
 
+/**
+ * Engine-generic sound entry point — play a named SoundEvent to some or all clients.
+ * @example
+ * import { Sound } from "@s2script/sdk/sound";
+ * // global 2D broadcast to every valid client (worldspawn source):
+ * const guid = Sound.emit("MyPack.Ping");
+ * if (guid === 0) console.log("emit failed (unresolved name / stale source)");
+ */
 export declare const Sound: {
   /** Play a named SoundEvent (the engine resolves name->hash; built-in soundevents need no
    *  precache). Returns the engine sound GUID (nonzero) or 0 on failure (unresolved engine
