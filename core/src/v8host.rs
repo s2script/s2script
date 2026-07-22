@@ -1789,12 +1789,31 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   globalThis.__s2pkg_plugins = { Plugins: __s2_plugins };
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
-  function __s2cmd_ctx(slot, argString) {
+  // Console output carries NO control bytes: a chat colour control byte is in the C0 range, so a
+  // coloured message printed to a developer console renders as garbage (or, for \x09/\x0A/\x0D, as
+  // stray whitespace). Strip the whole C0 range + DEL with NO \t/\n/\r exemption — those three
+  // codepoints ARE colours. Engine-generic: "a console line carries no control bytes" holds on any
+  // Source 2 game, so core learns nothing game-specific here.
+  function __s2cmd_stripCtl(s) { return String(s).replace(/[\x00-\x1F\x7F]/g, ""); }
+  // ReplySource (core/src/v8host.rs) → the JS name. Index order is load-bearing: it matches the
+  // enum's discriminants (Server = 0, Console = 1, Chat = 2).
+  var __s2cmd_SRC = ["server", "console", "chat"];
+  // Normalise whatever the dispatch path handed us. Rust sends the numeric discriminant; a JS caller
+  // (Commands.dispatch) may pass the string, or nothing at all. Anything unrecognised falls back to
+  // the slot: the server console, else that player's own console (SM FakeClientCommand parity).
+  function __s2cmd_srcName(src, s) {
+    if (typeof src === "string" && __s2cmd_SRC.indexOf(src) >= 0) return src;
+    if (typeof src === "number" && __s2cmd_SRC[src | 0]) return __s2cmd_SRC[src | 0];
+    return s < 0 ? "server" : "console";
+  }
+  function __s2cmd_ctx(slot, argString, src) {
     var s = (slot | 0);
+    var replySource = __s2cmd_srcName(src, s);
     var raw = String(argString == null ? "" : argString);
     var args = raw.length ? raw.split(/\s+/).filter(function (a) { return a.length; }) : [];
-    return {
+    var ctx = {
       callerSlot: s,
+      replySource: replySource,                    // "server" | "console" | "chat" — set by the dispatch path
       args: args,                                  // 0-based, split on whitespace (kept for compat)
       argString: raw,                              // the full raw arg string (SM GetCmdArgString)
       argCount: args.length,                       // SM GetCmdArgs
@@ -1803,22 +1822,41 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       argInt: function (n, fb) { var v = parseInt(args[n | 0], 10); return isNaN(v) ? (fb === undefined ? 0 : fb) : v; },
       argFloat: function (n, fb) { var v = parseFloat(args[n | 0]); return isNaN(v) ? (fb === undefined ? 0 : fb) : v; },
       argsFrom: function (n) { return args.slice(n | 0).join(" "); },   // the rest, re-joined (a reason/value that spans spaces)
-      // A player's reply is DEFERRED one frame: for a chat-triggered command (!cmd) the command runs in the
-      // Host_Say PRE-hook, before the player's command text is broadcast, so a synchronous reply would land
-      // BEFORE their "!slap …" line (jarring). nextFrame lands it after. Console/rcon (s < 0) stays immediate.
-      reply: function (m) {
-        if (s < 0) { console.log(String(m)); return; }
+      // Force the reply into the caller's CHAT (SM PrintToChat). DEFERRED one frame: for a
+      // chat-triggered command (!cmd) the command runs in the Host_Say PRE-hook, before the player's
+      // command text is broadcast, so a synchronous reply would land BEFORE their "!slap …" line
+      // (jarring). nextFrame lands it after. Sent RAW — colour is content the caller owns. The server
+      // (s < 0) has no chat channel, so it degrades to the server console.
+      replyToChat: function (m) {
+        if (s < 0) { console.log(__s2cmd_stripCtl(m)); return; }
         var msg = String(m);
         globalThis.__s2pkg_timers.nextFrame().then(function () { globalThis.__s2pkg_chat.Chat.toSlot(s, msg); });
+      },
+      // Force the reply into the caller's developer CONSOLE (SM PrintToConsole). Immediate — there is
+      // no chat-broadcast ordering to dodge. Control bytes are stripped; the trailing newline matches
+      // Client.print (the native adds none). The server (s < 0) prints to the server console.
+      replyToConsole: function (m) {
+        var msg = __s2cmd_stripCtl(m);
+        if (s < 0) { console.log(msg); return; }
+        __s2_client_console_print(s, msg + "\n");
+      },
+      // SM ReplyToCommand: answer in the channel the caller used. "chat" → their chat; "console" →
+      // their developer console; "server" → the server console (replyToConsole's s < 0 branch, which
+      // is exactly that row). Chat.color's global prefix lives inside Chat.toSlot, so it applies to
+      // the chat path ONLY and never decorates a console reply.
+      reply: function (m) {
+        if (replySource === "chat") { ctx.replyToChat(m); return; }
+        ctx.replyToConsole(m);
       },
       // Localized reply: translate `key` for the CALLER's language, then reply (SM's %t on the reply path).
       // Soft-deps @s2script/translations — degrades to the key if translations isn't loaded.
       replyT: function (key) {
         var t = globalThis.__s2pkg_translations;
-        if (!t) { this.reply(String(key)); return; }
-        this.reply(t.Translations.translate.apply(t.Translations, [s, key].concat([].slice.call(arguments, 1))));
+        if (!t) { ctx.reply(String(key)); return; }
+        ctx.reply(t.Translations.translate.apply(t.Translations, [s, key].concat([].slice.call(arguments, 1))));
       },
     };
+    return ctx;
   }
   // Slice 6.11: a per-context registry of wrapped dispatch fns (name -> function(slot, argString)), so a
   // command can be invoked BY NAME (chat triggers) reusing the SAME wrapper as the ConCommand path (admin
@@ -1830,18 +1868,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2cmd_triggers = { public: "!", silent: "/" };   // SM PublicChatTrigger / SilentChatTrigger; mutable
   var __s2_commands = {
     register: function (name, handler) {
-      __s2cmd_add(name, function (slot, a) { handler(__s2cmd_ctx(slot, a)); }, 0);   // 0 = anyone
+      __s2cmd_add(name, function (slot, a, src) { handler(__s2cmd_ctx(slot, a, src)); }, 0);   // 0 = anyone
     },
     registerServer: function (name, handler) {
-      __s2cmd_add(name, function (slot, a) {
-        var ctx = __s2cmd_ctx(slot, a);
+      __s2cmd_add(name, function (slot, a, src) {
+        var ctx = __s2cmd_ctx(slot, a, src);
         if (ctx.callerSlot < 0) { handler(ctx); }
         else { ctx.reply("[SM] This command can only be run from the server console."); }
       }, -1);   // -1 = console/server-only sentinel
     },
     registerAdmin: function (name, flags, handler) {
-      __s2cmd_add(name, function (slot, a) {
-        var ctx = __s2cmd_ctx(slot, a);
+      __s2cmd_add(name, function (slot, a, src) {
+        var ctx = __s2cmd_ctx(slot, a, src);
         if (ctx.callerSlot < 0) { handler(ctx); return; }        // server / rcon = root
         var check = globalThis.__s2_admin_check;
         if (typeof check !== "function") {
@@ -1855,10 +1893,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     // Slice 6.11: invoke a registered command by name (same context, synchronous — the wrapper applies
     // gating). Returns true if the command exists in this plugin. Used by chat triggers.
-    dispatch: function (name, slot, argString) {
+    // `src` is optional: omitted (or unrecognised) it falls back to the slot in __s2cmd_srcName —
+    // the server console at -1, else that player's console, which is SM's FakeClientCommand
+    // behaviour. Pass "chat" when re-dispatching from a chat context.
+    dispatch: function (name, slot, argString, src) {
       var w = __s2cmd_reg[name];
       if (!w) return false;
-      w(slot | 0, String(argString == null ? "" : argString));
+      w(slot | 0, String(argString == null ? "" : argString), src);
       return true;
     },
     // Parse a chat message for a trigger. Returns { silent, name, argString } or null (not a trigger).
@@ -1878,10 +1919,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // `sm_<name>`, the SM convention) with `slot` as the caller. Returns { silent, ran } if it WAS a
     // trigger (the caller should suppress the chat), or null if it was ordinary chat.
     handleChatTrigger: function (slot, message) {
-      var t = this.parseChatTrigger(message);
+      var t = __s2_commands.parseChatTrigger(message);
       if (!t) return null;
-      var ran = this.dispatch(t.name, slot, t.argString);
-      if (!ran && t.name.indexOf("sm_") !== 0) ran = this.dispatch("sm_" + t.name, slot, t.argString);
+      var ran = __s2_commands.dispatch(t.name, slot, t.argString, "chat");
+      if (!ran && t.name.indexOf("sm_") !== 0) ran = __s2_commands.dispatch("sm_" + t.name, slot, t.argString, "chat");
       return { silent: t.silent, ran: ran };
     },
     triggers: __s2cmd_triggers,   // { public: "!", silent: "/" } — reconfigure the trigger chars here
@@ -4075,6 +4116,30 @@ fn s2_concommand(
     }));
 }
 
+/// Where a command was invoked from — SM's *reply source*. Decides where `ctx.reply` lands.
+///
+/// Crosses into JS as the command wrapper's 3rd argument (a plain number) and is mapped back to a
+/// string in `__s2cmd_ctx`. Engine-generic: it names invocation channels, never a game concept.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(i32)]
+pub(crate) enum ReplySource {
+    /// The server console or rcon (caller slot -1). Replies go to the server console.
+    Server = 0,
+    /// A player's own developer console — the `ISource2GameClients::ClientCommand` hook.
+    Console = 1,
+    /// A `!`/`/` chat trigger — the `Host_Say` detour.
+    Chat = 2,
+}
+
+impl ReplySource {
+    /// Derive the source for the shared ConCommand trampoline, which carries only a slot: `-1` is
+    /// the server console/rcon; a player slot means a client-run ConCommand that the `ClientCommand`
+    /// hook did not already SUPERCEDE, which is still that player's console — never their chat.
+    pub(crate) fn from_slot(slot: i32) -> Self {
+        if slot < 0 { ReplySource::Server } else { ReplySource::Console }
+    }
+}
+
 /// Dispatch a ConCommand callback to the registered JS function.
 ///
 /// Called from `ffi.rs`'s `s2script_core_dispatch_concommand` (C-ABI export), which the shim's
@@ -4084,7 +4149,7 @@ fn s2_concommand(
 /// borrow — then open a `HOST` scope and call JS.  A command handler may call `__s2_concommand`
 /// again (re-enters `CONCOMMANDS.borrow_mut()`); holding the borrow across the JS call would
 /// panic.  No `CONCOMMANDS` borrow is held across the JS invocation.
-pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
+pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str, src: ReplySource) {
     // Phase 1: clone (owner, gen, Global) out of CONCOMMANDS — release the borrow before JS.
     // Mirrors dispatch_game_event's snapshot discipline: no CONCOMMANDS borrow held across the call.
     let entry = CONCOMMANDS.with(|m| m.borrow().get(name).map(|(o, g, f)| (o.clone(), *g, f.clone())));
@@ -4115,10 +4180,11 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
         let ctx_local = v8::Local::new(hs, &g_ctx);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-        // Build JS arguments: (slot: number, argString: string).
+        // Build JS arguments: (slot: number, argString: string, replySource: number).
         let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
         let slot_val: v8::Local<v8::Value> = v8::Number::new(scope, slot as f64).into();
         let Some(args_str) = v8::String::new(scope, args) else { return };
+        let src_val: v8::Local<v8::Value> = v8::Integer::new(scope, src as i32).into();
 
         // Per-call TryCatch so a throwing handler is caught + WARN, never propagates.
         let mut tc_storage = v8::TryCatch::new(scope);
@@ -4126,7 +4192,7 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str) {
         let tc = &mut tc;
 
         let func = v8::Local::new(tc, &global);
-        if func.call(tc, recv, &[slot_val, args_str.into()]).is_none() {
+        if func.call(tc, recv, &[slot_val, args_str.into(), src_val]).is_none() {
             let msg = tc.exception()
                 .map(|e| e.to_rust_string_lossy(&*tc))
                 .unwrap_or_else(|| "handler threw".into());
@@ -4177,7 +4243,7 @@ pub(crate) fn dispatch_chat(slot: i32, text: &str, teamonly: bool) -> bool {
             });
             if let Some(cmd) = matched {
                 // Matched command → the command path, exactly as before. Never reach the subscriber loop.
-                dispatch_concommand(&cmd, slot, &args);
+                dispatch_concommand(&cmd, slot, &args, ReplySource::Chat);
                 return silent;
             }
         }
@@ -4533,7 +4599,7 @@ pub(crate) fn dispatch_pending_cookie_cached() {
 pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool {
     let matched = CONCOMMANDS.with(|m| m.borrow().contains_key(name));
     if matched {
-        dispatch_concommand(name, slot, args);
+        dispatch_concommand(name, slot, args, ReplySource::Console);
         true
     } else {
         false
@@ -11390,7 +11456,7 @@ mod frame_tests {
             __s2_concommand("s2_test", function (slot, args) { globalThis.__cc = slot + ":" + args; });
         "#, "{}");
         // Simulate the engine invoking the command (bypasses ConCommand registration):
-        dispatch_concommand("s2_test", 3, "1234");
+        dispatch_concommand("s2_test", 3, "1234", ReplySource::from_slot(3));
         assert_eq!(eval_in_context_string("cc_test", "String(globalThis.__cc)"), "3:1234");
         shutdown();
     }
@@ -15586,21 +15652,288 @@ mod frame_tests {
             });
         "#, "{}");
         // Simulate the engine firing the command from the server console (slot -1).
-        dispatch_concommand("sm_test", -1, "foo bar");
+        dispatch_concommand("sm_test", -1, "foo bar", ReplySource::from_slot(-1));
         assert_eq!(eval_in_context_string("cmd", "String(globalThis.__seen)"), "-1|foo,bar|foo bar");
         // The arg API: dispatch "target 42 hello world" and verify typed retrieval.
-        dispatch_concommand("sm_test", -1, "target 42 hello world");
+        dispatch_concommand("sm_test", -1, "target 42 hello world", ReplySource::from_slot(-1));
         assert_eq!(eval_in_context_string("cmd", "String(globalThis.__argapi)"),
                    "4|target|42|42|hello world||7",
                    "argCount|arg(0)|argInt(1)|argFloat(1)|argsFrom(2)|arg(99)=''|argInt(99,7)=7");
         assert!(LOG.lock().unwrap().iter().any(|m| m.contains("console-reply")), "console reply routed to log");
         // A throwing handler is caught (no panic).
         load_body("cmd2", r#" __s2pkg_commands.Commands.register("sm_boom", function(){ throw new Error("x"); }); "#, "{}");
-        dispatch_concommand("sm_boom", -1, "");   // must not panic
+        dispatch_concommand("sm_boom", -1, "", ReplySource::from_slot(-1));   // must not panic
         // Unload drops the command → a later dispatch is a no-op.
         unload_plugin("cmd");
         eval_in_context("cmd2", "globalThis.__afterUnload = 'unchanged';").unwrap();
-        dispatch_concommand("sm_test", -1, "again");   // cmd is gone → no handler → no-op
+        dispatch_concommand("sm_test", -1, "again", ReplySource::from_slot(-1));   // cmd is gone → no handler → no-op
+        shutdown();
+    }
+
+    /// Command reply source, PR 1: the explicit reply targets. `replyToConsole` prints to the
+    /// CALLER'S developer console with every C0 control byte stripped (chat colour control bytes
+    /// occupy the C0 range on this engine — including \x09, \x0A and \x0D — so the strip takes the
+    /// whole range with no tab/newline/carriage-return exemption); `replyToChat` goes to their chat
+    /// RAW, one frame later. Both the native and the chat module fn are resolved through
+    /// `globalThis` at call time, so the test stubs them as in-isolate spies.
+    #[test]
+    fn explicit_reply_targets_route_and_strip() {
+        init(dummy_logger()).unwrap();
+        load_body("rt", r#"
+            globalThis.__con = []; globalThis.__cht = [];
+            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
+            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
+            __s2pkg_commands.Commands.register("sm_t", function (ctx) {
+                ctx.replyToConsole("\x04a\x09b\x0Ac");
+                ctx.replyToChat("\x04a\x09b\x0Ac");
+            });
+        "#, "{}");
+        dispatch_concommand("sm_t", 3, "", ReplySource::from_slot(3));
+        // console: immediate, stripped, newline-terminated (matches Client.print).
+        assert_eq!(eval_in_context_string("rt", "globalThis.__con.join(';')"), "3|abc\n");
+        // chat: deferred one frame — nothing has landed yet.
+        assert_eq!(eval_in_context_string("rt", "String(globalThis.__cht.length)"), "0");
+        frame_async_drain();
+        frame_async_drain();
+        // chat: RAW — colour is content the caller owns.
+        assert_eq!(eval_in_context_string("rt", "globalThis.__cht.join(';')"), "3|\u{4}a\u{9}b\u{a}c");
+        shutdown();
+    }
+
+    /// Command reply source, PR 1: at the server console (slot -1) there is no client channel, so
+    /// BOTH explicit targets degrade to the server console (`console.log`, captured in `LOG`) with
+    /// control bytes stripped, and neither throws.
+    #[test]
+    fn explicit_reply_targets_degrade_at_slot_minus_one() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_body("rd", r#"
+            __s2pkg_commands.Commands.register("sm_d", function (ctx) {
+                ctx.replyToConsole("\x04con-degrade");
+                ctx.replyToChat("\x04chat-degrade");
+            });
+        "#, "{}");
+        dispatch_concommand("sm_d", -1, "", ReplySource::from_slot(-1));   // must not throw
+        let log = LOG.lock().unwrap().clone();
+        assert!(log.iter().any(|l| l.contains("con-degrade")), "replyToConsole at slot -1 → server console");
+        assert!(log.iter().any(|l| l.contains("chat-degrade")), "replyToChat at slot -1 → server console");
+        assert!(!log.iter().any(|l| l.contains('\u{4}')), "control bytes stripped on both degrade paths");
+        shutdown();
+    }
+
+    /// Command reply source, PR 1: the ctx reply methods must survive being DETACHED from the ctx
+    /// object. A plugin that hands `cmd.reply` to a helper as a bare function reference (a real
+    /// pattern in the shipped plugin suite) would otherwise hit an undefined receiver and throw —
+    /// and the dispatch wrapper swallows handler throws, so the reply would silently vanish. The
+    /// methods close over their context instead of depending on `this`.
+    ///
+    /// Driven through the JS `Commands.dispatch` rather than the Rust `dispatch_concommand` so the
+    /// test survives the later commits that change that signature. `reply`'s destination differs
+    /// across those commits (chat before routing lands, the caller's console after), so the
+    /// invariant pinned here is delivery, not channel.
+    #[test]
+    fn reply_methods_survive_being_detached_from_ctx() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_body("rx", r#"
+            globalThis.__con = []; globalThis.__cht = [];
+            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
+            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
+            var C = __s2pkg_commands.Commands;
+            C.register("sm_x", function (ctx) {
+                var toConsole = ctx.replyToConsole, toChat = ctx.replyToChat, reply = ctx.reply;
+                toConsole("detached-console");   // detached, exactly as plugins/disabled/funvotes does
+                toChat("detached-chat");
+                reply("detached-reply");         // the one that used to depend on `this`
+            });
+            C.dispatch("sm_x", 5, "");           // a PLAYER caller — the slot the receiver bug bit
+            globalThis.__sawAll = function (needle) {
+                return (globalThis.__con.join(";") + ";" + globalThis.__cht.join(";")).indexOf(needle) >= 0;
+            };
+        "#, "{}");
+        frame_async_drain();
+        frame_async_drain();
+        assert_eq!(eval_in_context_string("rx", "String(__sawAll('5|detached-console'))"), "true",
+                   "detached replyToConsole delivered");
+        assert_eq!(eval_in_context_string("rx", "String(__sawAll('5|detached-chat'))"), "true",
+                   "detached replyToChat delivered");
+        assert_eq!(eval_in_context_string("rx", "String(__sawAll('detached-reply'))"), "true",
+                   "detached reply delivered (channel varies by commit; delivery does not)");
+        shutdown();
+    }
+
+    /// Command reply source, PR 2: each dispatch entry point stamps its own `ctx.replySource` —
+    /// the shared ConCommand trampoline (server console / rcon) → "server", the ClientCommand hook
+    /// (a player's own developer console) → "console", the Host_Say chat trigger → "chat".
+    #[test]
+    fn reply_source_derives_from_entry_point() {
+        init(dummy_logger()).unwrap();
+        load_body("rs", r#"
+            globalThis.__src = "";
+            __s2pkg_commands.Commands.register("sm_s", function (ctx) { globalThis.__src = ctx.replySource; });
+        "#, "{}");
+        dispatch_concommand("sm_s", -1, "", ReplySource::from_slot(-1));
+        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "server");
+        dispatch_client_command(4, "sm_s", "");
+        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "console");
+        dispatch_chat(4, "!s", false);
+        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "chat");
+        // A client-run ConCommand the ClientCommand hook did not SUPERCEDE is still that player's
+        // console, never their chat.
+        dispatch_concommand("sm_s", 4, "", ReplySource::from_slot(4));
+        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "console");
+        shutdown();
+    }
+
+    /// Command reply source, PR 2: a `Commands.dispatch` with no source (SM's FakeClientCommand
+    /// path) falls back to the slot — the server console at -1, else that player's own console.
+    #[test]
+    fn reply_source_falls_back_to_slot() {
+        init(dummy_logger()).unwrap();
+        load_body("rf", r#"
+            globalThis.__src = "";
+            var C = __s2pkg_commands.Commands;
+            C.register("sm_f", function (ctx) { globalThis.__src = ctx.replySource; });
+            C.dispatch("sm_f", -1, "");   globalThis.__a = globalThis.__src;
+            C.dispatch("sm_f", 4, "");    globalThis.__b = globalThis.__src;
+        "#, "{}");
+        assert_eq!(eval_in_context_string("rf", "globalThis.__a"), "server");
+        assert_eq!(eval_in_context_string("rf", "globalThis.__b"), "console");
+        shutdown();
+    }
+
+    /// Command reply source, PR 3 (THE FIX): `reply` lands in the channel the caller used — the
+    /// server console for "server", the CALLER'S own developer console for "console", their chat
+    /// for "chat". Before this, every reply from a player went to chat, so a player who typed
+    /// `sm_help` at their console got ten lines of pagination spammed into chat instead.
+    #[test]
+    fn reply_routes_by_reply_source() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_body("rr", r#"
+            globalThis.__con = []; globalThis.__cht = [];
+            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
+            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
+            __s2pkg_commands.Commands.register("sm_r", function (ctx) { ctx.reply("\x04hi-" + ctx.replySource); });
+        "#, "{}");
+        // "server" → the server console (console.log → LOG); no client channel is touched.
+        dispatch_concommand("sm_r", -1, "", ReplySource::from_slot(-1));
+        assert!(LOG.lock().unwrap().iter().any(|l| l.contains("hi-server")), "server source → server console");
+        assert!(!LOG.lock().unwrap().iter().any(|l| l.contains('\u{4}')), "server reply strips control bytes");
+        assert_eq!(eval_in_context_string("rr", "String(globalThis.__con.length)"), "0");
+        // "console" → the caller's own developer console, immediately.
+        dispatch_client_command(6, "sm_r", "");
+        assert_eq!(eval_in_context_string("rr", "globalThis.__con.join(';')"), "6|hi-console\n");
+        // "chat" → their chat, one frame later.
+        dispatch_chat(6, "!r", false);
+        assert_eq!(eval_in_context_string("rr", "String(globalThis.__cht.length)"), "0", "chat reply is deferred");
+        frame_async_drain();
+        frame_async_drain();
+        assert_eq!(eval_in_context_string("rr", "globalThis.__cht.join(';')"), "6|\u{4}hi-chat");
+        // …and the chat trigger did NOT also print to the console.
+        assert_eq!(eval_in_context_string("rr", "globalThis.__con.join(';')"), "6|hi-console\n");
+        shutdown();
+    }
+
+    /// Command reply source, PR 3: `Commands.handleChatTrigger` is the chat-trigger entry point, so
+    /// the command it dispatches must answer in CHAT — not in the caller's console, which is where
+    /// the bare slot fallback would send it once `reply` routes on the source.
+    #[test]
+    fn handle_chat_trigger_replies_to_chat() {
+        init(dummy_logger()).unwrap();
+        load_body("hc", r#"
+            globalThis.__con = []; globalThis.__cht = [];
+            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
+            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
+            var C = __s2pkg_commands.Commands;
+            C.register("sm_h", function (ctx) { ctx.reply("via-" + ctx.replySource); });
+            C.handleChatTrigger(4, "!h");
+        "#, "{}");
+        frame_async_drain();
+        frame_async_drain();
+        assert_eq!(eval_in_context_string("hc", "globalThis.__cht.join(';')"), "4|via-chat");
+        assert_eq!(eval_in_context_string("hc", "String(globalThis.__con.length)"), "0",
+                   "a chat trigger must not answer in the caller's console");
+        shutdown();
+    }
+
+    /// Command reply source, PR 3: the explicit targets IGNORE `replySource` — a chat-triggered
+    /// command can force its answer into the caller's console, and a console-invoked one into chat.
+    #[test]
+    fn explicit_reply_targets_override_source() {
+        init(dummy_logger()).unwrap();
+        load_body("ro", r#"
+            globalThis.__con = []; globalThis.__cht = [];
+            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(msg); };
+            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(msg); };
+            __s2pkg_commands.Commands.register("sm_o", function (ctx) {
+                if (ctx.replySource === "chat") ctx.replyToConsole("forced-console");
+                else ctx.replyToChat("forced-chat");
+            });
+        "#, "{}");
+        dispatch_chat(2, "!o", false);              // source "chat" → forced to the console
+        assert_eq!(eval_in_context_string("ro", "globalThis.__con.join(';')"), "forced-console\n");
+        dispatch_client_command(2, "sm_o", "");     // source "console" → forced to chat
+        frame_async_drain();
+        frame_async_drain();
+        assert_eq!(eval_in_context_string("ro", "globalThis.__cht.join(';')"), "forced-chat");
+        shutdown();
+    }
+
+    /// Command reply source, PR 3: `replyT` routes through `reply`, so it inherits the fix — a
+    /// player who ran the command at their console gets the TRANSLATED line in their console, not
+    /// in chat.
+    #[test]
+    fn replyt_inherits_routing() {
+        init(dummy_logger()).unwrap();
+        load_body("rl", r#"
+            globalThis.__con = [];
+            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(msg); };
+            __s2pkg_translations.Translations.load('c', { Kicked: 'Kicked {1}' });
+            __s2pkg_commands.Commands.register("sm_l", function (ctx) { ctx.replyT('Kicked', 'Bob'); });
+        "#, "{}");
+        dispatch_client_command(7, "sm_l", "");
+        let got = eval_in_context_string("rl", "globalThis.__con.join(';')");
+        assert!(got.contains("Kicked"), "replyT landed in the caller's console, got {:?}", got);
+        shutdown();
+    }
+
+    /// Command reply source, PR 4: `Commands.dispatch` takes an optional trailing reply source, and
+    /// `handleChatTrigger` always dispatches as "chat" — the caller typed it in chat, whatever the
+    /// slot would otherwise imply. An unrecognised token degrades to the slot fallback rather than
+    /// failing the dispatch.
+    #[test]
+    fn commands_dispatch_reply_source_param() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_body("rp", r#"
+            var C = __s2pkg_commands.Commands;
+            globalThis.__src = "";
+            globalThis.__cht = [];
+            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
+            C.register("sm_p", function (ctx) { globalThis.__src = ctx.replySource; ctx.reply("r-" + ctx.replySource); });
+            C.dispatch("sm_p", 4, "");            globalThis.__a = globalThis.__src;  // default → console
+            C.dispatch("sm_p", 4, "", "chat");    globalThis.__b = globalThis.__src;  // explicit
+            C.dispatch("sm_p", -1, "", "chat");   globalThis.__c = globalThis.__src;  // explicit beats the slot
+            C.handleChatTrigger(4, "!p");         globalThis.__d = globalThis.__src;  // always chat
+            C.handleChatTrigger(4, "/p");          globalThis.__g = globalThis.__src;  // silent trigger → still chat
+            globalThis.__e = String(C.dispatch("sm_p", 4, "", "bogus"));              // unknown token
+            globalThis.__f = globalThis.__src;
+        "#, "{}");
+        assert_eq!(eval_in_context_string("rp", "globalThis.__a"), "console");
+        assert_eq!(eval_in_context_string("rp", "globalThis.__b"), "chat");
+        assert_eq!(eval_in_context_string("rp", "globalThis.__c"), "chat");
+        assert_eq!(eval_in_context_string("rp", "globalThis.__d"), "chat", "handleChatTrigger forces chat");
+        assert_eq!(eval_in_context_string("rp", "globalThis.__g"), "chat",
+                   "the silent / trigger still answers in chat");
+        assert_eq!(eval_in_context_string("rp", "globalThis.__e"), "true", "an unknown token still dispatches");
+        assert_eq!(eval_in_context_string("rp", "globalThis.__f"), "console", "an unknown token falls back to the slot");
+        // The "chat" + slot -1 dispatch (__c) has no chat channel and must degrade to the server
+        // console synchronously, landing on LOG rather than the chat spy.
+        assert!(LOG.lock().unwrap().iter().any(|l| l.contains("r-chat")),
+                 "\"chat\" reply source at slot -1 degrades to the server console");
+        assert_eq!(eval_in_context_string("rp", "String(globalThis.__cht.length)"), "0",
+                   "the -1 + \"chat\" dispatch must not land in the chat spy");
         shutdown();
     }
 
@@ -15712,24 +16045,35 @@ mod frame_tests {
         init(logger).unwrap();
         load_body("t", r#"
             var C = __s2pkg_commands.Commands;
+            globalThis.__con = []; globalThis.__cht = [];
+            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
+            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
             C.registerServer("sm_srv", function(ctx){ globalThis.__srv = ctx.callerSlot; });
             C.registerAdmin("sm_adm", 512 /*CHAT=1<<9*/, function(ctx){ globalThis.__adm = ctx.callerSlot; });
             // Install a fake admin-check: slot 5 allowed, others denied.
             globalThis.__s2_admin_check = function(slot, mask){ return slot === 5; };
         "#, "{}");
         // registerServer: console (-1) runs; a player (3) denied.
-        dispatch_concommand("sm_srv", -1, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "-1");
+        dispatch_concommand("sm_srv", -1, "", ReplySource::from_slot(-1)); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "-1");
         eval_in_context("t", "globalThis.__srv = 'none';").unwrap();
-        dispatch_concommand("sm_srv", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "none"); // stayed
+        dispatch_concommand("sm_srv", 3, "", ReplySource::from_slot(3)); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "none"); // stayed
         // registerAdmin: console (-1) = root runs; slot 5 (hook true) runs; slot 3 (hook false) denied.
-        dispatch_concommand("sm_adm", -1, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "-1");
+        dispatch_concommand("sm_adm", -1, "", ReplySource::from_slot(-1)); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "-1");
         eval_in_context("t", "globalThis.__adm = 'none';").unwrap();
-        dispatch_concommand("sm_adm", 5, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "5");
+        dispatch_concommand("sm_adm", 5, "", ReplySource::from_slot(5)); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "5");
         eval_in_context("t", "globalThis.__adm = 'none';").unwrap();
-        dispatch_concommand("sm_adm", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // denied
+        // The headline live-gate row: a non-admin typing sm_adm at their OWN CONSOLE (the
+        // ClientCommand path — source "console") must be refused IN THAT CONSOLE, never in chat.
+        eval_in_context("t", "globalThis.__con = [];").unwrap();   // isolate from the registerServer denial above
+        dispatch_client_command(3, "sm_adm", "");
+        assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // denied
+        assert_eq!(eval_in_context_string("t", "globalThis.__con.join(';')"), "3|[SM] You do not have access to this command.\n",
+                   "the console-sourced denial lands in the caller's console");
+        assert_eq!(eval_in_context_string("t", "String(globalThis.__cht.length)"), "0",
+                   "the console-sourced denial must not land in chat");
         // Fail-safe: with NO admin-check hook installed, a player is DENIED (never accidentally granted).
-        eval_in_context("t", "delete globalThis.__s2_admin_check; globalThis.__adm = 'none';").unwrap();
-        dispatch_concommand("sm_adm", 3, ""); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // no hook → denied
+        eval_in_context("t", "delete globalThis.__s2_admin_check; globalThis.__adm = 'none'; globalThis.__con = [];").unwrap();
+        dispatch_concommand("sm_adm", 3, "", ReplySource::from_slot(3)); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // no hook → denied
         shutdown();
     }
 
