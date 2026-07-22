@@ -1,0 +1,60 @@
+name: ci-js
+
+# The JS/TS gate. Path-filtered at the WORKFLOW level — see ci-native.yml.
+#
+# docker/** is here because test-gate.sh asserts on docker/pre.sh, docker/docker-compose.yml
+# and docker/docker-compose.gate.yml. scripts/** is deliberately broad and overlaps
+# ci-native.yml's filter; overlap just means both run, which is correct.
+on:
+  pull_request:
+    paths:
+      - 'plugins/**'
+      - 'packages/**'
+      - 'examples/**'
+      - 'tools/**'
+      - 'games/**'
+      - 'gamedata/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - '.gitignore'
+      - '.github/workflows/ci-js.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/**'
+      - 'packages/**'
+      - 'examples/**'
+      - 'tools/**'
+      - 'games/**'
+      - 'gamedata/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - '.gitignore'
+      - '.github/workflows/ci-js.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      # No submodules: nothing in the JS gate reads third_party/, so the checkout stays cheap.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Must match changesets.yml so the two can never disagree about `npm ci`.
+          node-version: "22"
+          cache: npm
+      - name: JS gate suite
+        run: bash scripts/ci-js.sh

@@ -38,7 +38,7 @@ third_party/  Vendored hl2sdk + Metamod:Source submodules (pinned, patch-capable
 - **cmake ≥ 3.20**
 - **cargo / rustc** — stable
 - **Node ≥ 22.14.0** — for the SDK/CLI and plugin builds
-- **docker** — for the sniper build and the live gate
+- **docker** — for the sniper build, the live gate, and `make ci-js` (`scripts/test-gate.sh` asserts on the compose files)
 
 ---
 
@@ -94,19 +94,18 @@ yourself.
 
 ## The gate suite
 
-Run this before every PR — and **per PR** in a stack, not once at the top. A PR that only passes
-with its children on top of it is not atomic.
+Run it before every PR. These are exactly the two scripts CI runs — local green means CI green.
 
 ```bash
-make check-boundary                      # core must NOT import games/*
-./scripts/check-plugins-typecheck.sh     # every plugin + example typechecks vs the shipped .d.ts
-./scripts/check-schema-generated.sh      # codegen freshness (regenerate + git diff --exit-code)
-./scripts/check-nav-generated.sh
-./scripts/check-events-generated.sh
-./scripts/check-csitem-generated.sh
-./scripts/check-licenses-generated.sh    # third-party notices vs a fresh gen-licenses.sh run
-./scripts/test-boundary-nameleak.sh      # no game identifiers leak into core/
+make ci           # both suites
+make ci-native    # scripts/ci-native.sh — boundary + nameleak + sigscan + licenses, cargo build/test, shim
+make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, activity/antiflood/gate tests
 ```
+
+`.github/workflows/ci-native.yml` and `ci-js.yml` each run one of those two scripts and nothing
+else, so a new gate is added to the script, never to the workflow YAML. `npm ci` (the
+`package-lock.json` drift guard) is CI-only — run `CI=1 make ci-js` to include it.
+`make check-boundary` still runs the core→games boundary check on its own.
 
 The boundary checks are the load-bearing ones: the core is engine-generic and must never learn a
 CS2 name. Dependencies point one way — game → core, never core → game.

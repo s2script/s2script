@@ -1,6 +1,7 @@
 # s2script
 
-[![ci](https://github.com/s2script/s2script/actions/workflows/ci.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci.yml)
+[![ci-native](https://github.com/s2script/s2script/actions/workflows/ci-native.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci-native.yml)
+[![ci-js](https://github.com/s2script/s2script/actions/workflows/ci-js.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci-js.yml)
 [![npm](https://img.shields.io/npm/v/@s2script/sdk.svg)](https://www.npmjs.com/package/@s2script/sdk)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 
@@ -47,8 +48,8 @@ Build details, the gate suite, and the Docker live gate: **[`docs/BUILDING.md`](
 The design lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); development history is in
 [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
-Work ships as small, independently-reviewable PRs. Each one must pass the gate suite and be safe to
-merge on its own.
+Work ships as one branch and one PR per slice. Each PR must pass `make ci` and be safe to merge on
+its own.
 
 ## License
 

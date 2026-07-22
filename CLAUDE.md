@@ -28,17 +28,16 @@ make package      # scripts/package-addon.sh → assembles dist/addons/s2script
 cargo test -p s2script-core   # core unit + in-isolate suite (forced single-threaded via .cargo/config.toml — do not pass --test-threads)
 ```
 
-**Gate suite (run before every PR):**
+**Gate suite (run before every PR) — these ARE the CI jobs:**
 ```bash
-make check-boundary                     # core must NOT import games/* (== scripts/check-core-boundary.sh)
-./scripts/check-plugins-typecheck.sh    # every plugin + example typechecks vs the shipped .d.ts (the 5E.1 gate)
-./scripts/check-schema-generated.sh     # codegen freshness — regenerate + `git diff --exit-code`
-./scripts/check-nav-generated.sh
-./scripts/check-events-generated.sh
-./scripts/check-csitem-generated.sh
-./scripts/check-licenses-generated.sh    # third-party notices vs a fresh gen-licenses.sh run
-./scripts/test-boundary-nameleak.sh
+make ci           # both suites
+make ci-native    # scripts/ci-native.sh — boundary + nameleak + sigscan + licenses, cargo build/test, shim
+make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, activity/antiflood/gate tests
 ```
+`.github/workflows/ci-native.yml` and `ci-js.yml` each run one of those two scripts and nothing
+else, so **local green means CI green** and a new gate is added to the script, never to the YAML.
+`npm ci` (the `package-lock.json` drift guard) is CI-only — run `CI=1 make ci-js` to include it.
+`make check-boundary` still runs the core→games boundary check on its own.
 
 **Server ("sniper") build — the ONLY deployable binaries.** The server is Steam Runtime 3 (Debian bullseye, glibc 2.31); host builds need too-new GLIBC and won't load. Build inside a `rust:bullseye` container:
 ```bash
@@ -67,33 +66,23 @@ python3 scripts/rcon.py "<console command>"              # drive the running ser
 npm run changeset && npm run version-packages && npm run release    # @s2script/* npm types + CLI (changesets)
 ```
 
-## Ship work as a stack, not a branch (Graphite)
+## Ship one PR per slice
 
-**Default to `gt`, not `git push` + one PR.** A slice is a *stack* of small PRs, each independently reviewable. Only ~24% of PRs over 1000 lines get any review comment at all — a 40-file PR is not reviewed, it is rubber-stamped, and agentic work reaches that size fast.
+**A slice is one branch and one PR.** Plain `git` + `gh pr create`, squash-merged. The PR is as
+big as the slice is — don't split a slice into a chain of dependent PRs, and don't batch two
+slices into one. Graphite and stacked PRs are retired; there is no `gt`.
 
-**Plan the stack before writing code.** After the plan exists and before the first edit, map the slice's building blocks in dependency order and make one task per intended PR. This is the step that produces good boundaries; deciding them afterwards means re-cutting commits.
+Branch naming: `<area>/<terse-change>` — e.g. `ci/consolidation`, `docs/readme-front-door`.
 
-**What earns its own PR:**
-- **Atomic** — passes the gate suite and is safe to merge *on its own*. This is the binding constraint: a signature change that breaks every caller must land WITH its callers, in one PR. Don't split what CI can't verify separately.
-- **Narrow scope** — one module, or one mechanical change across many.
-- **Small.** No change is too small. A tiny PR buys clarity for the big one above it. Always argue for more PRs, never fewer.
+A PR must be **atomic**: it passes `make ci` and is safe to merge on its own. A signature change
+that breaks every caller lands WITH its callers.
 
-```bash
-gt ls                                  # see the stack
-gt create <stack>/<change> -m "msg"    # new PR on top (after `git add`)
-gt modify -m "msg"                     # amend the current one
-gt up / gt down / gt top / gt bottom   # navigate
-gt restack                             # rebase the stack on trunk
-gt submit --no-interactive             # push the whole stack
-```
+A pre-merge gate is not optional even for a one-line change: a push to `main` auto-fires
+`changesets.yml`, which publishes to npm. There must be a gate between a bad commit and the registry.
 
-Branch naming: `terse-stack-name/terse-change` (e.g. `contract-grammar/publishes-grammar`, `contract-grammar/host-injected-version`).
-
-Run the gate suite **per PR**, not once at the top — an atomic PR that only passes with its children isn't atomic.
-
-PR bodies need **Stack Context** (what the whole stack is for) and **Why** (what prompted this piece, how it fits). Write the body with the Write tool to a file and `gh pr edit N --body-file` — never a heredoc; shell escaping mangles tables and code blocks.
-
-In a worktree the branch usually starts untracked (`gt branch info` errors): `gt track -p main` first, then create the stack.
+PR bodies need **Why** — what prompted this, and how it fits. Write the body with the Write tool to
+a file and `gh pr edit N --body-file`; never a heredoc, because shell escaping mangles tables and
+code blocks.
 
 ## Repository layout
 

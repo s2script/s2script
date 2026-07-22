@@ -2,7 +2,7 @@ name: release
 
 # Build a SourceMod-style runtime zip (GLIBC ≤ 2.31) and publish it to a
 # GitHub Release. Triggered only on version tags so PRs stay on the cheap
-# host CI in ci.yml.
+# path-filtered workflows (ci-native.yml / ci-js.yml).
 on:
   push:
     tags:
@@ -12,17 +12,11 @@ permissions:
   contents: write
 
 jobs:
-  # Fail-fast host-side release-profile sanity check (shared with ci.yml's cheap
-  # debug build) — catches a broken core/shim build in ~minutes, before spinning
-  # up the much heavier bullseye Docker sniper build below.
-  build:
-    uses: ./.github/workflows/_build.yml
-    with:
-      profile: release
-      core_lib_dir: release
-
+  # The sniper build IS the test. The old fail-fast `build` job compiled release-profile on
+  # ubuntu-latest — a configuration that is neither PR CI (debug/ubuntu) nor the shipped
+  # artifact (release/bullseye/glibc 2.31) — to save ~4 minutes on a tag push where nobody
+  # is iterating. Removing it also removed the deleted reusable build workflow's last consumer.
   release:
-    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

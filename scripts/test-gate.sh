@@ -112,7 +112,12 @@ s.bind(('127.0.0.1', 27099)); s.listen(1)
 time.sleep(10)
 " &
 gate_probe_pid=$!
-sleep 0.7
+# Poll until the probe actually binds. A fixed sleep races on a contended CI runner and
+# produces a spurious "reported a bound port as free" failure.
+for _ in $(seq 1 50); do
+  gate_port_free 27099 || break
+  sleep 0.1
+done
 if gate_port_free 27099; then
   kill "$gate_probe_pid" 2>/dev/null
   echo "FAIL: gate_port_free reported a bound port as free"; exit 1

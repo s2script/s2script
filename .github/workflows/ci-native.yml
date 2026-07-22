@@ -1,0 +1,80 @@
+name: ci-native
+
+# The native (Rust + C++) gate. Path-filtered at the WORKFLOW level, so filtering costs
+# zero jobs — the old `changes` (dorny/paths-filter) and `ci-ok` (fail-closed aggregator)
+# jobs are gone. See docs/superpowers/specs/2026-07-22-ci-consolidation-design.md.
+#
+# NOTE: gamedata/** is deliberately NOT here — it belongs to ci-js. Nothing compiles it in;
+# the shim reads gamedata/core.gamedata.jsonc from disk at runtime. That is the CLAUDE.md
+# invariant "layout is data, semantics are code" expressed as a path filter.
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'shim/**'
+      - 'games/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'third_party/**'
+      - 'licenses/**'
+      - 'LICENSE'
+      - 'packages/*/LICENSE-*'
+      - 'scripts/ci-native.sh'
+      - 'scripts/gen-licenses.sh'
+      - 'scripts/check-licenses-generated.sh'
+      - 'scripts/check-core-boundary.sh'
+      - 'scripts/check-core-names.sh'
+      - 'scripts/test-boundary-nameleak.sh'
+      - 'scripts/test-sigscan.sh'
+      - '.github/workflows/ci-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'shim/**'
+      - 'games/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'third_party/**'
+      - 'licenses/**'
+      - 'LICENSE'
+      - 'packages/*/LICENSE-*'
+      - 'scripts/ci-native.sh'
+      - 'scripts/gen-licenses.sh'
+      - 'scripts/check-licenses-generated.sh'
+      - 'scripts/check-core-boundary.sh'
+      - 'scripts/check-core-names.sh'
+      - 'scripts/test-boundary-nameleak.sh'
+      - 'scripts/test-sigscan.sh'
+      - '.github/workflows/ci-native.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Only contents:read. The old pull-requests:read existed solely for dorny/paths-filter's
+# "list PR files" API call, and paths-filter is gone.
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }   # gen-licenses.sh reads the vendored third_party/ submodules
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore-only on PRs. Returns the ~11s save step, and stops every branch minting
+          # its own ~383MB entry — the predecessor repo reached 77 entries / 4.34GB against a
+          # 10GB quota, and LRU eviction of a rust-cache entry is exactly what turns a 13s
+          # cargo build into a 3-4 minute one. Only main populates the cache.
+          # Accepted cost: a PR that changes Cargo.lock misses and rebuilds fully on every
+          # push until it merges (9 such PRs in the last 60 days).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: hendrikmuhs/ccache-action@v1
+      - name: native gate suite
+        run: bash scripts/ci-native.sh
