@@ -3,7 +3,7 @@ import { Player } from "@s2script/cs2";
 import { delay } from "@s2script/sdk/timers";
 
 // Two different operations, easy to confuse:
-//   changeTeam  — the engine's ChangeTeam: kills the pawn, respects team limits
+//   changeTeam  — the engine's ChangeTeam: jointeam semantics, usually kills the pawn
 //   switchTeam  — an immediate move that keeps the player alive and armed
 // Use switchTeam for team balancing mid-round; changeTeam for a real join.
 const TEAM_NAME = (t: number | null | undefined): string =>

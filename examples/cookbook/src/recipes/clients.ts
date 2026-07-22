@@ -17,6 +17,8 @@ export const clientsRecipe: Recipe = {
     // there is no framework replay of these events.
     ctx.clients.onConnect((c) => {
       console.log(`[cookbook] clients connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} ip=${c.ip}`);
+      c.print("s2script cookbook: connected");
+      console.log(`[cookbook] kickWithReason surface: typeof=${typeof c.kickWithReason}`);
     });
     ctx.clients.onPutInServer((c) =>
       console.log(`[cookbook] clients putInServer slot=${c.slot} name=${c.name}`));

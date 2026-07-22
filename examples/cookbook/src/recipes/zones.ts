@@ -1,5 +1,5 @@
 import type { Recipe } from "../recipe.ts";
-import type { Zones, ZoneEvent } from "@s2script/zones";
+import type { Zones, ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "@s2script/zones";
 import { Player } from "@s2script/cs2";
 
 /**
@@ -16,7 +16,7 @@ import { Player } from "@s2script/cs2";
  */
 export const zonesRecipe: Recipe = {
   name: "zones",
-  describe: "react to zone enter/leave from the zones plugin (optional dep)",
+  describe: "react to zone enter/leave/stay/created/deleted from the zones plugin (optional dep)",
   register(ctx) {
     const zones = ctx.tryUse<Zones>("@s2script/zones");
     if (!zones) {
@@ -30,6 +30,30 @@ export const zonesRecipe: Recipe = {
     zones.on("leave", (p: ZoneEvent) => {
       const name = Player.fromSlot(p.slot)?.playerName ?? `slot ${p.slot}`;
       console.log(`[cookbook] LEAVE ${p.zone}: ${name}`);
+    });
+    // `stay` fires every tick a player is inside a zone — cheap continuous work
+    // like this heal-over-time on a zone named "heal" belongs here, not in a
+    // command. Capped at 100 and logged only every 20hp to avoid a log line
+    // per tick per player.
+    zones.on("stay", (p: ZoneEvent) => {
+      if (p.zone !== "heal") return;
+      const pawn = Player.fromSlot(p.slot)?.pawn;
+      if (pawn && pawn.health != null && pawn.health < 100) {
+        const nh = Math.min(100, pawn.health + 1);
+        pawn.health = nh;
+        if (nh % 20 === 0 || nh === 100) {
+          console.log(`[cookbook] healed slot ${p.slot} -> ${nh}`);
+        }
+      }
+    });
+    // `created`/`deleted` fire when zones are added or removed at runtime —
+    // via createZone/deleteZone, the sm_zone_* commands, or the editor — so a
+    // consumer can react to the zone layout changing without polling getZones().
+    zones.on("created", (p: ZoneCreatedEvent) => {
+      console.log(`[cookbook] CREATED ${p.zone} tags=[${p.tags.join(",")}]`);
+    });
+    zones.on("deleted", (p: ZoneDeletedEvent) => {
+      console.log(`[cookbook] DELETED ${p.zone}`);
     });
   },
 };
