@@ -6,6 +6,24 @@ s2script is a TypeScript plugin framework for Source 2 engine games (Counter-Str
 
 ---
 
+## License
+
+s2script is dual-licensed **`MIT OR Apache-2.0`** — take whichever you prefer. See
+[`LICENSE`](LICENSE), and [`licenses/README.md`](licenses/README.md) for the map.
+
+Two things worth knowing before you fork:
+
+- **The Valve carve-out.** The grant covers s2script's own code. It does not cover the
+  Valve Source 2 SDK — `third_party/hl2sdk` ships no license, and the built `s2script.so`
+  embeds a few Valve translation units. Same posture as Metamod:Source, SourceMod,
+  CounterStrikeSharp and CS2Fixes. Details in
+  [`licenses/README.md`](licenses/README.md#the-valve-carve-out).
+- **The release zip carries its notices.** `licenses/licenses.txt` is generated from the
+  real linked sources (`./scripts/gen-licenses.sh`) and gated for freshness
+  (`./scripts/check-licenses-generated.sh`), so it can't quietly go stale on a treadmill bump.
+
+---
+
 ## Install (server operators)
 
 Download a SourceMod-style zip from [GitHub Releases](https://github.com/GabeHirakawa/s2script/releases), extract it into your CS2 server's `game/csgo/` directory, ensure [Metamod:Source 2.0](https://www.sourcemm.net/) is installed, and patch `gameinfo.gi` for the Metamod SearchPath. The zip includes the runtime **and** the first-party base plugins under `addons/s2script/plugins/`.

@@ -1,6 +1,7 @@
 {
   "name": "s2script",
   "private": true,
+  "license": "MIT OR Apache-2.0",
   "description": "s2script monorepo — npm workspaces cover packages/* only (types + CLI). Base plugins ship in the runtime zip and are not published to npm.",
   "workspaces": [
     "packages/*"

@@ -1,0 +1,23 @@
+s2script
+Copyright (c) 2026 Gabriel Hirakawa
+
+This product includes software developed as part of the s2script project
+(https://github.com/GabeHirakawa/s2script).
+
+This product includes third-party software. The complete set of third-party
+notices required by their licenses is reproduced in licenses/licenses.txt,
+which ships with every s2script release. In summary, the shipped binaries
+statically link or embed:
+
+  - Metamod:Source (zlib/libpng)          - Google Breakpad (BSD-3-Clause)
+  - V8 / rusty_v8 (BSD-3-Clause / MIT)    - Protocol Buffers (BSD-3-Clause)
+  - HDE64, via MinHook (BSD-2-Clause)     - SQLite (public domain)
+  - ~294 Rust crates (MIT / Apache-2.0 / ISC / BSD / Unicode-3.0 / Zlib /
+    CDLA-Permissive-2.0 / BSL-1.0 / 0BSD / Unlicense)
+
+s2script also compiles a small number of Valve Source 2 SDK translation units
+into its binaries. The Valve SDK is not open source and is not licensed under
+the terms above. See licenses/README.md.
+
+"s2script" and the s2script logo are trademarks of the s2script project.
+Neither the Apache License nor the MIT license grants permission to use them.

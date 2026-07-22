@@ -26,6 +26,7 @@ jobs:
     outputs:
       native: ${{ steps.filter.outputs.native }}
       js: ${{ steps.filter.outputs.js }}
+      licenses: ${{ steps.filter.outputs.licenses }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -45,6 +46,17 @@ jobs:
               - 'examples/**'
               - 'disabled/**'
               - 'plugins/disabled/**'
+            # Anything that can change what the shipped binaries link, or the notice
+            # file itself. Cargo.lock is the big one — `cargo update` rewrites §9/§10.
+            licenses:
+              - 'Cargo.lock'
+              - 'third_party/**'
+              - 'shim/CMakeLists.txt'
+              - 'licenses/**'
+              - 'LICENSE'
+              - 'scripts/gen-licenses.sh'
+              - 'scripts/check-licenses-generated.sh'
+              - 'packages/*/LICENSE-*'
 
   build:
     needs: changes
@@ -91,7 +103,13 @@ jobs:
       - name: codegen freshness (glob check-*-generated.sh)
         run: |
           set -e
-          for f in scripts/check-*-generated.sh; do echo "== $f =="; bash "$f"; done
+          for f in scripts/check-*-generated.sh; do
+            # check-licenses-generated.sh needs a populated cargo registry (it reads every
+            # crate's LICENSE text), which this Node-only job has no toolchain for. It runs
+            # in the dedicated gates-licenses job instead.
+            case "$f" in */check-licenses-generated.sh) continue ;; esac
+            echo "== $f =="; bash "$f"
+          done
       - name: plugin/example typecheck (5E.1 gate)
         run: bash ./scripts/check-plugins-typecheck.sh
       - name: core-boundary name-leak self-test
@@ -111,13 +129,31 @@ jobs:
       - name: core boundary check
         run: ./scripts/check-core-boundary.sh
 
+  # Third-party notice freshness. Split out of gates-node because gen-licenses.sh reads the
+  # real license text of every locked crate out of the cargo registry (and the third_party/
+  # submodules), so it needs a Rust toolchain + `cargo fetch` that the Node job has no reason
+  # to carry. A stale licenses/licenses.txt is a compliance bug that otherwise looks green.
+  gates-licenses:
+    needs: changes
+    if: needs.changes.outputs.licenses == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fetch (populate the registry gen-licenses.sh reads)
+        run: cargo fetch --locked
+      - name: third-party notice freshness
+        run: ./scripts/check-licenses-generated.sh
+
   # Fail-closed aggregator: the ONE required check a future branch-protection flip
   # points at instead of the individual (now path-filtered, sometimes-skipped) jobs.
   # 'if: always()' makes it run even when an upstream job is skipped by the path
   # filter — a skipped result is fine (nothing needed that job); a failure or
   # cancellation is not.
   ci-ok:
-    needs: [changes, build, gates-node, gates-rust, deps]
+    needs: [changes, build, gates-node, gates-rust, gates-licenses, deps]
     if: always()
     runs-on: ubuntu-latest
     steps:

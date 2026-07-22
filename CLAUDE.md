@@ -36,6 +36,7 @@ make check-boundary                     # core must NOT import games/* (== scrip
 ./scripts/check-nav-generated.sh
 ./scripts/check-events-generated.sh
 ./scripts/check-csitem-generated.sh
+./scripts/check-licenses-generated.sh    # third-party notices vs a fresh gen-licenses.sh run
 ./scripts/test-boundary-nameleak.sh
 ```
 

@@ -1,0 +1,37 @@
+s2script — Copyright (c) 2026 Gabriel Hirakawa
+
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+This project is dual-licensed under either of
+
+  * Apache License, Version 2.0 .... licenses/Apache-2.0.txt
+  * MIT license ................... licenses/MIT.txt
+
+at your option. You may choose either license; you do not have to comply with
+both. Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this project shall be dual-licensed as above,
+without any additional terms or conditions.
+
+
+WHAT THIS LICENSE COVERS
+
+The first-party s2script source in this repository: core/, shim/src/,
+shim/include/, games/, packages/, plugins/, examples/, gamedata/, scripts/,
+docs/, and website/.
+
+
+WHAT THIS LICENSE DOES NOT COVER
+
+  * third_party/ — vendored and submoduled dependencies, each under its own
+    license (Metamod:Source, Google Breakpad, HDE/MinHook, hl2sdk).
+
+  * The Valve Source 2 SDK (third_party/hl2sdk). Valve's SDK is NOT open
+    source and is NOT redistributed under the terms above. s2script compiles
+    a small number of Valve SDK translation units into its shipped binaries.
+    See licenses/README.md § "The Valve carve-out".
+
+  * Everything statically linked into the shipped binaries — V8, Breakpad,
+    protobuf, SQLite, and the Rust crate graph. Their required notices are
+    reproduced in licenses/licenses.txt, which ships with every release.
+
+A map of all of the above is in licenses/README.md.

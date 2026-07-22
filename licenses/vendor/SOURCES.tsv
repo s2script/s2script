@@ -1,0 +1,8 @@
+# Verbatim upstream license texts for components whose shipped distribution does
+# NOT carry a readable LICENSE file, so scripts/gen-licenses.sh cannot read one
+# from third_party/ or the cargo registry. Each row records exact provenance.
+# Re-fetch and diff these on any version bump.
+#
+# file<TAB>component<TAB>spdx<TAB>upstream-url<TAB>revision
+v8.LICENSE	V8 JavaScript engine	BSD-3-Clause	https://chromium.googlesource.com/v8/v8/+/main/LICENSE?format=TEXT	main @ 2026-07-21 (v8 crate 149.4.0)
+rusty_v8.LICENSE	rusty_v8 (Rust bindings, crate `v8`)	MIT	https://raw.githubusercontent.com/denoland/rusty_v8/main/LICENSE	main @ 2026-07-21 (crate 149.4.0)

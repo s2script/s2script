@@ -166,6 +166,19 @@ for f in admins admin_groups admin_overrides databases; do
     cp "core/config-templates/$f.json" "$CONFIGS_DIR/$f.json"
 done
 
+# --- Licensing: the zip MUST carry the notices the shipped binaries owe — BSD-3-Clause
+#     (Breakpad, V8, protobuf), BSD-2-Clause (HDE), zlib/libpng (Metamod:Source) and the
+#     Rust crate graph all require reproducing their notice in binary distributions.
+#     licenses/licenses.txt is generated; scripts/check-licenses-generated.sh gates it. ---
+if [ ! -f licenses/licenses.txt ]; then
+    echo "ERROR: licenses/licenses.txt missing — run scripts/gen-licenses.sh" >&2
+    exit 1
+fi
+LIC_DIR="$STAGE/addons/s2script/licenses"
+mkdir -p "$LIC_DIR"
+cp LICENSE "$STAGE/addons/s2script/LICENSE"
+cp licenses/licenses.txt licenses/MIT.txt licenses/Apache-2.0.txt licenses/NOTICE "$LIC_DIR/"
+
 printf '%s\n' "$VERSION" > "$STAGE/addons/s2script/VERSION"
 
 # Zip with addons/ at the archive root (unzip into game/csgo/).
