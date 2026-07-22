@@ -15,6 +15,8 @@
  * time" footgun). Obtain refs from the engine (events, `findByClass`, `readHandle`, …).
  */
 export declare class EntityRef {
+  /** This entity's slot index in the game entity system. Paired with the host-minted
+   *  {@link EntityRef.id} for slot validation (books first, then identity-slot match). */
   readonly index: number;
   /** The host-minted liveness id for this ref (books key). Not the raw engine serial. */
   readonly id: number;
@@ -80,21 +82,33 @@ export declare class EntityRef {
   /** Write an int32 at the end of a pointer chain (each hop deref'd, liveness-gated at the root). Returns
    *  false on a stale ref or a null hop. Used to clear a flag on a pointer-referenced sub-object. */
   writeInt32Via(pathOffs: number[], finalOff: number, value: number): boolean;
+  /** Read an i8 (sign-extended) at the end of a pointer chain (each hop deref'd, liveness-gated at the root); null if the root is stale or any hop is null. */
   readInt8Via(pathOffs: number[], finalOff: number): number | null;
+  /** Read an i16 (sign-extended) through a pointer chain; null if the root is stale or any hop is null. */
   readInt16Via(pathOffs: number[], finalOff: number): number | null;
+  /** Read a u8 through a pointer chain; null if the root is stale or any hop is null. */
   readUInt8Via(pathOffs: number[], finalOff: number): number | null;
+  /** Read a u16 through a pointer chain; null if the root is stale or any hop is null. */
   readUInt16Via(pathOffs: number[], finalOff: number): number | null;
+  /** Read a u32 through a pointer chain; null if the root is stale or any hop is null. */
   readUInt32Via(pathOffs: number[], finalOff: number): number | null;
+  /** Read an f32 through a pointer chain; null if the root is stale or any hop is null. */
   readFloat32Via(pathOffs: number[], finalOff: number): number | null;
+  /** Read a bool through a pointer chain; null if the root is stale or any hop is null. */
   readBoolVia(pathOffs: number[], finalOff: number): boolean | null;
+  /** Read a u64 as a BigInt through a pointer chain; null if the root is stale or any hop is null. */
   readUInt64Via(pathOffs: number[], finalOff: number): bigint | null;
+  /** Read an i64 as a BigInt through a pointer chain; null if the root is stale or any hop is null. */
   readInt64Via(pathOffs: number[], finalOff: number): bigint | null;
+  /** Decode a `CEntityHandle` at the end of a pointer chain into a liveness-gated {@link EntityRef}; null if the root is stale, any hop is null, or the handle is dead. */
   readHandleVia(pathOffs: number[], finalOff: number): EntityRef | null;
   /** Write a scalar through a pointer chain (write mirror of `read*Via`). Liveness-gated at the root;
    *  returns false on a stale ref, an unresolved hop, or a bad offset/kind. Does NOT notifyStateChanged —
    *  the caller decides (many sub-object fields, e.g. the fire gate, are server-authoritative).
    *  (`writeInt32Via` is declared above alongside `readInt32Via`.) */
   writeFloat32Via(pathOffs: number[], finalOff: number, value: number): boolean;
+  /** Write a bool through a pointer chain (write mirror of {@link EntityRef.readBoolVia}; shares the
+   *  no-notify semantics on {@link EntityRef.writeFloat32Via}). False on a stale ref, an unresolved hop, or a bad offset/kind. */
   writeBoolVia(pathOffs: number[], finalOff: number, value: boolean): boolean;
   /** Read a `CEntityHandle` at `offset`, decode it, and return a live `EntityRef` — or null if stale/invalid. */
   readHandle(offset: number): EntityRef | null;
@@ -138,7 +152,12 @@ export type EntityKeyValueMap = { [key: string]: string | number | boolean };
 /** Create a new entity by class name. WITHOUT keyvalues: create only — set fields, then call
  *  `.spawn()`. WITH keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is
  *  a LIVE, SPAWNED entity (on spawn failure the entity is removed and null returned). The created
- *  entity is game-world-owned (NOT auto-removed on plugin unload) — the plugin owns cleanup. */
+ *  entity is game-world-owned (NOT auto-removed on plugin unload) — the plugin owns cleanup.
+ *  @example
+ *  import { createEntity } from "@s2script/sdk/entity";
+ *  const wt = createEntity("point_worldtext", { message: "s2-ekv-proof", fullbright: true });
+ *  if (wt) wt.remove();
+ */
 export declare function createEntity(className: string, keyvalues?: EntityKeyValueMap): EntityRef | null;
 
 /** The payload delivered to an `Entity.onOutput` handler. */
@@ -155,6 +174,13 @@ export interface OutputEvent {
   delay: number;
 }
 
+/**
+ * Entry point for entity lookup by class name.
+ * @example
+ * import { Entity } from "@s2script/sdk/entity";
+ * const triggers = Entity.findByClass("trigger_multiple");
+ * for (const t of triggers) console.log(t.index, t.name);
+ */
 export declare const Entity: {
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns liveness-gated refs. */
   findByClass(className: string): EntityRef[];
