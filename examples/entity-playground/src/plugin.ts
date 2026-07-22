@@ -24,9 +24,18 @@ declare const __s2_schema_offset: (cls: string, field: string) => number;
 export default plugin((ctx) => {
   // --- Lifecycle listeners -------------------------------------------------
   // The useful case is reacting to ENGINE-driven lifecycle: map entities,
-  // weapons, grenades, ragdolls. `entity` is a serial-gated EntityRef and may
-  // be null for a barely-constructed create or a dying delete; `className` is
-  // always valid. Counters keep a map-load burst readable.
+  // weapons, grenades, ragdolls, or the engine's own console `ent_create`
+  // (its built-in cheat command, not the plugin command of the same name
+  // below). `entity` is a serial-gated EntityRef and may be null for a
+  // barely-constructed create or a dying delete; `className` is always
+  // valid. Counters keep a map-load burst readable.
+  //
+  // These loggers will NOT fire for the entities ent_create/ent_kv/ent_io
+  // spawn further down: those commands call createEntity/spawn synchronously
+  // inside their own handler, which already holds the isolate borrow, so the
+  // engine's onCreate/onSpawn callbacks re-enter that dispatch and are
+  // gracefully skipped by design (never a crash). Trigger a round restart to
+  // watch the loggers fire for real.
   let created = 0, spawned = 0, deleted = 0;
   ctx.entities.onCreate("*", (_e, cls) => { if (++created <= 10) console.log(`[ent] created ${cls}`); });
   ctx.entities.onSpawn("*", (e, cls) => { if (++spawned <= 10) console.log(`[ent] spawned ${cls} valid=${!!e?.isValid()}`); });
@@ -41,6 +50,8 @@ export default plugin((ctx) => {
   });
 
   // --- Create, read back, remove -------------------------------------------
+  // Synchronous, so the "*" loggers above stay silent for this one (see the
+  // note above) — the reply is your only confirmation.
   ctx.commands.register("ent_create", (cmd) => {
     const text = createEntity("point_worldtext");
     if (!text) { cmd.reply("createEntity failed"); return; }
@@ -54,7 +65,8 @@ export default plugin((ctx) => {
   // createEntity(className, keyvalues) builds a CEntityKeyValues and dispatches
   // the spawn with it, so the entity's OWN Spawn() parses the keys. Proven two
   // ways: read the parsed fields back through the schema, and let an int
-  // keyvalue drive the entity's own logic until it fires an output.
+  // keyvalue drive the entity's own logic until it fires an output. Same
+  // re-entrancy note as above — the "*" loggers won't fire for these either.
   ctx.commands.register("ent_kv", (cmd) => {
     const text = createEntity("point_worldtext", { message: "configured-by-keyvalues", enabled: true, fullbright: true });
     if (text) {
@@ -77,6 +89,7 @@ export default plugin((ctx) => {
   // acceptInput queues an I/O event that the game's own pump routes to the
   // entity's outputs, which our onOutput subscriber above catches next tick.
   // Passing activator/caller gives the output hook live EntityRefs to report.
+  // The relay itself won't hit the "*" loggers (same re-entrancy note above).
   ctx.commands.register("ent_io", (cmd) => {
     const relay = createEntity("logic_relay");
     if (!relay) { cmd.reply("createEntity failed"); return; }
