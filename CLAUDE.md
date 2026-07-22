@@ -48,7 +48,7 @@ docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/regi
 
 **Plugins:**
 ```bash
-npx s2script build            # from a plugin dir → dist/<id>.s2sp
+npx @s2script/sdk build       # from a plugin dir → dist/<id>.s2sp
 ./scripts/build-base-plugins.sh
 ```
 

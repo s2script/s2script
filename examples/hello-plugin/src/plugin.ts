@@ -6,7 +6,7 @@
 //   3. subscribe to a game event               — ctx.events.on
 //   4. survive a hot reload                    — return { state, onUnload }
 //
-// Build it:   npx s2s build examples/hello-plugin
+// Build it:   npx @s2script/sdk build examples/hello-plugin
 // Then drop dist/*.s2sp into addons/s2script/plugins/ on a running server.
 import { plugin } from "@s2script/sdk/plugin";
 import { Player } from "@s2script/cs2";

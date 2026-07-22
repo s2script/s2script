@@ -33,5 +33,5 @@ over a published interface — see `examples/greeter-plugin`.
 ## Build
 
 ```bash
-npx s2s build examples/monorepo-plugin
+npx @s2script/sdk build examples/monorepo-plugin
 ```

@@ -63,7 +63,7 @@ Six worked examples under [`examples/`](examples/), smallest first:
 | [`greeter-plugin`](examples/greeter-plugin) + [`greeter-consumer`](examples/greeter-consumer) | Two plugins talking over a typed, versioned interface — including an `EntityRef` that stays live across the boundary. |
 | [`monorepo-plugin`](examples/monorepo-plugin) | Splitting one plugin across npm workspace packages when it outgrows a single `src/`. |
 
-Build any of them with `npx s2s build examples/<name>`, then drop the resulting
+Build any of them with `npx @s2script/sdk build examples/<name>`, then drop the resulting
 `dist/*.s2sp` into `addons/s2script/plugins/` on a running server.
 
 Dev tooling lives in [`tools/`](tools/) — `schema-dump` (regenerates gamedata
