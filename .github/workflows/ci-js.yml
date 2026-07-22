@@ -18,6 +18,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.base.json'
+      - '.gitignore'
       - '.github/workflows/ci-js.yml'
   push:
     branches: [main]
@@ -32,6 +33,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.base.json'
+      - '.gitignore'
       - '.github/workflows/ci-js.yml'
 
 concurrency:

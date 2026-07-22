@@ -48,8 +48,8 @@ Build details, the gate suite, and the Docker live gate: **[`docs/BUILDING.md`](
 The design lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); development history is in
 [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
-Work ships as small, independently-reviewable PRs. Each one must pass the gate suite and be safe to
-merge on its own.
+Work ships as one branch and one PR per slice. Each PR must pass `make ci` and be safe to merge on
+its own.
 
 ## License
 

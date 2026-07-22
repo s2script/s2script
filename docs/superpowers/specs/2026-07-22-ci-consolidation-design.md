@@ -187,8 +187,11 @@ and overlaps `ci-native`'s filter; overlap means both run, which is correct.
 `gamedata/**` appears in **`ci-js` only**, and this is load-bearing rather than an oversight.
 Nothing compiles it in: `core/build.rs` only emits a link arg, no `include_str!`/`include_bytes!`
 in `core/src` reads it, and the shim resolves `gamedata/core.gamedata.jsonc` from disk **at
-runtime** (`shim/src/gamedata.cpp`, `shim/src/s2script_mm.cpp:2199`). Its only build-time consumer
-is `packages/sdk/src/schemagen/gen.ts`, which the codegen-freshness checks run. So a gamedata edit
+runtime** (`shim/src/gamedata.cpp`, `shim/src/s2script_mm.cpp:2199`). No gate script reads it at
+all: the codegen-freshness checks read `games/cs2/gamedata/` (covered by the `games/**` entry),
+and the top-level directory's only consumer is `scripts/package-addon.sh` at packaging time. It
+stays on `ci-js` rather than `ci-native` because if it must fire something, the cheap suite is the
+right one — but the load-bearing half of this decision is its absence from the native filter. So a gamedata edit
 must trigger the JS job and must **not** trigger a native rebuild — which is the CLAUDE.md
 invariant "layout is data, semantics are code; a field-offset change must never require a code
 change", expressed as a path filter. If a future change makes `core/` or `shim/` embed gamedata at
