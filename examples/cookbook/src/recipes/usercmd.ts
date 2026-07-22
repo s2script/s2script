@@ -12,23 +12,29 @@ const IN_JUMP = 2n; // buttons is a bigint
  * HookResult. Gated behind cb_usercmd so it doesn't fight normal movement
  * until a player opts in:
  *
- *   cb_usercmd off    — read only (default)
- *   cb_usercmd jump   — force forwardMove=0 + IN_JUMP (modify proof)
- *   cb_usercmd side   — zero forwardMove, route it to sideMove (the sideways surf style — proves sign+effect)
- *   cb_usercmd block  — return HookResult.Handled (neutralize the whole input)
+ *   cb_usercmd off      — read only (default)
+ *   cb_usercmd jump     — force forwardMove=0 + IN_JUMP (modify proof)
+ *   cb_usercmd side     — zero forwardMove, route it to sideMove (the sideways surf style — proves sign+effect)
+ *   cb_usercmd block    — return HookResult.Handled (neutralize the whole input)
+ *   cb_usercmd verbose  — toggle the read-proof log line below (off by default — this hook fires
+ *                         every tick for every player, so even throttled to 1-in-64 it's ~1
+ *                         line/sec/player; loading the cookbook must not spam the console on its
+ *                         own, same reasoning as recipes/damage.ts defaulting its effect off)
  */
 export const usercmdRecipe: Recipe = {
   name: "usercmd",
-  describe: "read/modify/block a player's per-tick input (cb_usercmd off|jump|side|block)",
+  describe: "read/modify/block a player's per-tick input (cb_usercmd off|jump|side|block|verbose)",
   register(ctx) {
     const modeBySlot = new Map<number, Mode>();
     let logN = 0;
+    let verbose = false;
 
     ctx.clients.onRunCmd((cmd: UserCmdView, info: { slot: number }) => {
       const slot = info.slot;
       // Read proof (throttled ~1/64 cmds): all 7 fields + cross-check buttons against the SCHEMA source
       // (pawn.buttons = m_pButtonStates[0], a different read path) and the decoded slot vs the pawn's.
-      if ((logN++ & 0x3f) === 0) {
+      // Opt-in via cb_usercmd verbose — see the toggle note above.
+      if (verbose && (logN++ & 0x3f) === 0) {
         const schemaBtn = Pawn.forSlot(slot)?.buttons ?? -1;
         const va = cmd.viewAngles;
         console.log(
@@ -53,8 +59,13 @@ export const usercmdRecipe: Recipe = {
     });
 
     ctx.commands.register("cb_usercmd", (cmd) => {
-      if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
       const arg = cmd.argsFrom(0).trim();
+      if (arg === "verbose") {
+        verbose = !verbose;
+        cmd.reply(`usercmd verbose logging = ${verbose ? "on" : "off"}`);
+        return;
+      }
+      if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
       const mode: Mode = arg === "jump" || arg === "side" || arg === "block" ? arg : "off";
       modeBySlot.set(cmd.callerSlot, mode);
       cmd.reply(`usercmd mode = ${mode}`);

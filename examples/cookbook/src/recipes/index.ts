@@ -1,5 +1,8 @@
 import type { Recipe } from "../recipe.ts";
+import { adminRecipe } from "./admin.ts";
+import { chatRecipe } from "./chat.ts";
 import { clientsRecipe } from "./clients.ts";
+import { configRecipe } from "./config.ts";
 import { consoleRecipe } from "./console.ts";
 import { cookiesRecipe } from "./cookies.ts";
 import { damageRecipe } from "./damage.ts";
@@ -24,7 +27,10 @@ import { zonesRecipe } from "./zones.ts";
 
 /** Every recipe the cookbook registers. Add new ones here. */
 export const RECIPES: readonly Recipe[] = [
+  adminRecipe,
+  chatRecipe,
   clientsRecipe,
+  configRecipe,
   consoleRecipe,
   cookiesRecipe,
   damageRecipe,
