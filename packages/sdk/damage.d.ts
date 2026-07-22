@@ -4,7 +4,13 @@
  */
 import type { EntityRef } from "./entity";
 
-/** A block-scoped view of the current damage event (valid only inside a Damage.onPre handler). */
+/**
+ * A block-scoped view of the current damage event (valid only inside a Damage.onPre handler).
+ * @example
+ * import type { DamageInfo } from "@s2script/sdk/damage";
+ * // plugins/basecommands/src/plugin.ts:81 — halve the damage (assign 0 to block it entirely)
+ * ctx.entities.onDamage((info: DamageInfo) => { info.damage = info.damage / 2; });
+ */
 export interface DamageInfo {
   /** The damage amount (m_flDamage). Assigning MODIFIES the live damage; set to 0 to block. */
   damage: number;
