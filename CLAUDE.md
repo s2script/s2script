@@ -32,7 +32,7 @@ cargo test -p s2script-core   # core unit + in-isolate suite (forced single-thre
 ```bash
 make ci           # both suites
 make ci-native    # scripts/ci-native.sh — boundary + nameleak + sigscan + licenses, cargo build/test, shim
-make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, activity/antiflood/gate tests
+make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, examples coverage, activity/antiflood/gate tests
 ```
 `.github/workflows/ci-native.yml` and `ci-js.yml` each run one of those two scripts and nothing
 else, so **local green means CI green** and a new gate is added to the script, never to the YAML.
