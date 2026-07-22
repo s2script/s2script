@@ -1,5 +1,0 @@
-{
-  "name": "@demo/transmit-demo",
-  "version": "1.0.0",
-  "main": "src/plugin.ts"
-}
