@@ -148,10 +148,12 @@ if [ "$violation" -ne 0 ]; then exit 1; fi
 
 # Name-leak + games/-embed gates. They live in their own script (pure greps, no cargo) so
 # test-boundary-nameleak.sh can re-run them without repeating the dependency walk above.
-bash "$(dirname "$0")/check-core-names.sh"
+bash scripts/check-core-names.sh
 
 echo "core boundary OK: s2script-core depends on no games/* crate"
 ```
+
+Note the plain `scripts/…` path, **not** `"$(dirname "$0")/check-core-names.sh"`. The script `cd`s to the repo root on line 4, so re-evaluating `$0` here resolves against the wrong directory — `cd scripts && bash ./check-core-boundary.sh` would exit 127.
 
 Everything above `if [ "$violation" -ne 0 ]` — the shebang, `set -euo pipefail`, the `cd`, the `GAME_PKGS` mapfile, the `DEPS` cargo tree, and the violation loop — is unchanged.
 
