@@ -1,6 +1,7 @@
 # s2script
 
-[![ci](https://github.com/s2script/s2script/actions/workflows/ci.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci.yml)
+[![ci-native](https://github.com/s2script/s2script/actions/workflows/ci-native.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci-native.yml)
+[![ci-js](https://github.com/s2script/s2script/actions/workflows/ci-js.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci-js.yml)
 [![npm](https://img.shields.io/npm/v/@s2script/sdk.svg)](https://www.npmjs.com/package/@s2script/sdk)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 

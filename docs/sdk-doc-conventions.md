@@ -2,8 +2,8 @@
 
 The `@s2script/sdk/*` and `@s2script/cs2` `.d.ts` stubs ARE the intellisense a
 plugin author sees on hover. These conventions keep that experience rich and
-consistent. Coverage is enforced per-PR by `scripts/check-doc-coverage.mjs`
-(a dev tool, not a CI gate).
+consistent. Check coverage as you write stubs with `scripts/check-doc-coverage.mjs`
+— a local dev tool, deliberately not a CI gate.
 
 ## What must be documented
 Every **exported** symbol (function, const, class, interface, type, enum) **and
