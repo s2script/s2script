@@ -2,7 +2,7 @@ name: release
 
 # Build a SourceMod-style runtime zip (GLIBC ≤ 2.31) and publish it to a
 # GitHub Release. Triggered only on version tags so PRs stay on the cheap
-# host CI in ci.yml.
+# path-filtered workflows (ci-native.yml / ci-js.yml).
 on:
   push:
     tags:
