@@ -3,21 +3,33 @@ import { fetch } from "@s2script/sdk/http";
 
 /**
  * fetch() runs off-thread on the shared tokio runtime and resolves back on a
- * game frame, so awaiting it never blocks the server. Bodies are capped at 10MB.
+ * game frame, so awaiting it never blocks the server. This fires several
+ * concurrent requests; the frame counter proves the tick keeps advancing the
+ * whole time they're in flight. Bodies are capped at 10MB.
  */
 export const httpRecipe: Recipe = {
   name: "http",
-  describe: "fetch() an HTTP endpoint without blocking the server",
+  describe: "fire concurrent fetch()es without blocking the tick (cb_http)",
   register(ctx) {
+    let frames = 0;
+    ctx.server.onGameFrame(() => { frames += 1; });
+
     ctx.commands.register("cb_http", (cmd) => {
-      cmd.reply("fetching…");
-      fetch("https://api.github.com/repos/s2script/s2script")
-        .then((res) => res.json())
-        .then((body: unknown) => {
-          const repo = body as { stargazers_count?: number };
-          cmd.reply(`ok — stars: ${repo.stargazers_count ?? "?"}`);
-        })
-        .catch((e: unknown) => cmd.reply(`failed: ${String(e)}`));
+      const start = frames;
+      const N = 10;
+      cmd.reply(`firing ${N} concurrent fetches…`);
+      Promise.all(
+        Array.from({ length: N }, (_unused, i) =>
+          fetch(`https://postman-echo.com/get?i=${i}`, { timeoutMs: 15000 })
+            .then((r) => r.status)
+            .catch((e: unknown) => `ERR:${String(e)}`)
+        )
+      ).then((results) => {
+        const ok = results.filter((s) => s === 200).length;
+        const elapsed = frames - start;
+        console.log(`[cookbook] http: ${ok}/${N} ok; tick advanced ${elapsed} frames while the fetches were in flight`);
+        cmd.reply(`${ok}/${N} ok — tick advanced ${elapsed} frames meanwhile (see log)`);
+      });
     });
   },
 };
