@@ -32,13 +32,31 @@ runs of the predecessor repo:
 
 | job | median | max | what it actually does |
 |---|---:|---:|---|
-| `build` (via `_build.yml`) | 233s | 292s | `cargo build`, `cargo test`, boundary check, shim cmake |
+| `build` (via `_build.yml`) | 119s | 119s | `cargo build`, `cargo test`, boundary check, shim cmake |
 | `gates-node` | 104s | 116s | `npm ci`, 4 codegen-freshness checks, plugin typecheck, nameleak |
 | `gates-rust` | 56s | 56s | Rust toolchain + cache restore → **one 40-line script** |
 | `gates-licenses` | 55s | 55s | Rust toolchain + `cargo fetch --locked` → notice freshness |
 | `deps` | 11s | 15s | `npm ci`, nothing else |
 | `changes` | 7s | 8s | `dorny/paths-filter` orchestration |
 | `ci-ok` | 3s | 4s | fail-closed aggregator |
+
+The `build` figure is the **post-restructure, warm-cache** job (`88859042220`); earlier runs of a
+same-named job took 233–292s but predate `Swatinem/rust-cache` landing in the 2026-07-19 spec's
+§A.2, so they are not representative. Its internal breakdown matters for §7:
+
+| step | time |
+|---|---:|
+| `actions/checkout` (`submodules: recursive`) | 21s |
+| `dtolnay/rust-toolchain` install | 10s |
+| `Swatinem/rust-cache` restore | 13s |
+| `cargo build` | 13s |
+| `cargo test -p s2script-core` | 17s |
+| `hendrikmuhs/ccache-action` setup | 9s |
+| shim cmake build | 17s |
+| rust-cache save + post steps | 13s |
+| **total** | **116s** |
+
+**Compilation is 47s of 116s — 60% of the native job is fixed overhead, not compiling.**
 
 **Both load-bearing justifications for that structure have expired.**
 
@@ -125,6 +143,24 @@ scripts/test-boundary-nameleak.sh  scripts/test-sigscan.sh  scripts/ci-native.sh
 Steps: `actions/checkout@v4` (`submodules: recursive` — `gen-licenses.sh` reads the vendored
 `third_party/` submodules), `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2`,
 `hendrikmuhs/ccache-action@v1`, then `bash scripts/ci-native.sh`.
+
+**rust-cache is restore-only on PRs:**
+
+```yaml
+- uses: Swatinem/rust-cache@v2
+  with:
+    save-if: ${{ github.ref == 'refs/heads/main' }}
+```
+
+Two reasons. It returns the 13s save step per PR (§2). More importantly it stops every branch
+minting its own ~383 MB cache entry: the predecessor repo reached **77 entries / 4.34 GB** against a
+10 GB quota, and LRU eviction of a rust-cache entry is precisely what turns a 13s `cargo build` into
+a 3-4 minute one. Only `main` populates the cache; PRs restore from it. Consolidating the three
+current per-job Rust caches (`build` 383 MB, `gates-rust` 109 MB, `gates-licenses` 109 MB — one per
+job, all keyed separately) into this single job compounds the same win.
+
+Accepted cost: a PR that changes `Cargo.lock` misses the cache and rebuilds fully on every push
+until it merges. That is 9 PRs in 60 days (§7).
 
 ### 4.2 `.github/workflows/ci-js.yml`
 
@@ -266,10 +302,24 @@ Cargo dependency walks on a native PR: **7 → 1**.
 
 ## 7. Explicitly out of scope
 
-- **Native critical-path latency.** A native PR still takes ~4 minutes; the path is `cargo build` +
-  `cmake shim` and consolidating jobs does not shrink it. The latency win in this spec is that docs
-  and JS-only PRs stop paying it at all. Shortening it further means `sccache`, or splitting the
-  shim into a parallel job — which buys a check box back, against the primary goal. Not done here.
+- **Native critical-path latency.** A native PR takes ~2 minutes (§2), of which only 47s is
+  compilation. Consolidating jobs does not shrink that; the latency win in this spec is that docs
+  and JS-only PRs stop paying it at all, plus the `save-if` change in §4.1. Splitting the shim into
+  a parallel job would trim ~17s at the cost of a check box — rejected, against the primary goal.
+
+- **`sccache`. Evaluated and rejected**, with the numbers, so this isn't relitigated:
+  1. On a warm `target/` cargo never invokes `rustc`, so the `RUSTC_WRAPPER` is never consulted.
+     No effect on ~99% of PRs.
+  2. The case it would help is a `Cargo.lock` change (which misses rust-cache's key and forces a
+     full rebuild of all 197 transitive deps). `Cargo.lock` changed **9 times in 60 days** against
+     **1006 commits** — under 1%.
+  3. It worsens the real constraint. GitHub's cache quota is 10 GB/repo with LRU eviction, and
+     eviction is what *causes* cold builds. The predecessor repo held **4.34 GB across 77 entries**.
+     sccache would add a second GHA-backed cache population competing for the same quota.
+  4. It cannot cache the expensive part of a cold build anyway: the `v8 = "149.4.0"` build script
+     downloads a ~130 MB prebuilt `librusty_v8.a`, and sccache caches `rustc` invocations, not
+     build-script execution or downloaded artifacts. It would be an addition to rust-cache, not a
+     replacement.
 - **Merge queue.** No branch protection exists to queue against.
 - **Gating `check-doc-coverage.mjs`.** Honours the 2026-07-21 plan's explicit decision. Instead,
   `docs/sdk-doc-conventions.md:5` is corrected to describe it as a local tool run while authoring
