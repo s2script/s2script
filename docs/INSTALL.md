@@ -11,7 +11,7 @@ Linux x86-64 only. Windows is not supported yet.
 
 ## Install the runtime
 
-1. Download the latest `s2script-cs2-linux-*.zip` from [GitHub Releases](https://github.com/GabeHirakawa/s2script/releases).
+1. Download the latest `s2script-cs2-linux-*.zip` from [GitHub Releases](https://github.com/s2script/s2script/releases).
 2. Extract it into `game/csgo/`:
 
    ```bash
@@ -56,13 +56,13 @@ Linux x86-64 only. Windows is not supported yet.
 
 The release ships the SourceMod-parity suite from `plugins/` (demos live under `examples/` and are not packaged):
 
-`adminhelp` · `adminmenu` · `antiflood` · `basebans` · `basechat` · `basecomm` · `basecommands` · `basetriggers` · `basevotes` · `clientprefs` · `funcommands` · `playercommands` · `reservedslots`
+`adminhelp` · `adminmenu` · `antiflood` · `basebans` · `basechat` · `basecomm` · `basecommands` · `basetriggers` · `basevotes` · `clientprefs` · `funcommands` · `playercommands` · `reservedslots` · `zones`
 
 Opt-in plugins (nominations, rockthevote, nextmap, funvotes) ship in the zip under `addons/s2script/plugins/disabled/` but are **not** loaded — the runtime's `plugins/` scan is non-recursive, so it skips the `disabled/` subdir. To enable one, move its `.s2sp` up one level into `addons/s2script/plugins/`.
 
 ## Add more plugins
 
-Build a plugin to a `.s2sp` (see the README authoring section), then copy it into:
+Build a plugin to a `.s2sp` (see the [authoring docs](https://s2script.com/docs)), then copy it into:
 
 ```
 addons/s2script/plugins/<name>.s2sp
@@ -124,7 +124,7 @@ On the **first** 2FA browser prompt during `--apply`, enable “skip 2FA for the
 What `--apply` does for every public `packages/*` package:
 
 1. Classic-publishes any name that doesn’t exist yet (today usually just `@s2script/zones`)
-2. Runs `npm trust github <pkg> --repo GabeHirakawa/s2script --file changesets.yml --allow-publish --yes`
+2. Runs `npm trust github <pkg> --repo s2script/s2script --file changesets.yml --allow-publish --yes`
 
 Optional hardening afterward: package **Publishing access** → “Require two-factor authentication and disallow tokens” (OIDC still works; revoke leftover automation tokens).
 

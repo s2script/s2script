@@ -19,7 +19,7 @@
 #     "skip 2FA for the next 5 minutes" so the rest of the loop is unattended
 #
 # Trusted publisher target (same for every package):
-#   GabeHirakawa / s2script / changesets.yml / allow npm publish
+#   s2script / s2script / changesets.yml / allow npm publish
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -29,7 +29,7 @@ if [[ "${1:-}" == "--apply" ]]; then
   APPLY=1
 fi
 
-OWNER_REPO="GabeHirakawa/s2script"
+OWNER_REPO="s2script/s2script"
 WORKFLOW="changesets.yml"
 
 echo "Trusted Publisher target (applied to every @s2script/* package):"

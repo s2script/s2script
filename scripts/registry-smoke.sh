@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Registry smoke checklist (manual / local).
 # This exercises the CLIENT side (`s2script deploy` / `add`), which lives here. The registry
-# SERVICE it talks to lives in a separate repo: GabeHirakawa/s2script-website.
+# SERVICE it talks to lives in a separate repo.
 # Prerequisites: check out that repo, bring its Postgres up (`npm run db:start`), set env,
 # `npm run db:push`, `npm run dev`, and sign up a Better Auth user.
 #
