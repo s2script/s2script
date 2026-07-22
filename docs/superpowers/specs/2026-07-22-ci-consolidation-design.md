@@ -92,11 +92,12 @@ not CLAUDE.md's gate list, not the Makefile:
 zero references anywhere outside themselves. `scripts/test-sigscan.sh` is referenced only by a
 completed 2026-07-03 plan document.
 
-**A doc that lies.** `docs/sdk-doc-conventions.md:5` states TSDoc coverage "is enforced per-PR by
-`scripts/check-doc-coverage.mjs`". The plan for that same slice
-(`2026-07-21-sdk-tsdoc-intellisense.md:17`) says: "**The analyzer is a dev tool, not a CI gate.** Do
-NOT add `check-doc-coverage` to `.github/` or the gate suite." The plan is authoritative; the
-convention doc is wrong.
+**A self-contradicting sentence.** `docs/sdk-doc-conventions.md:5` reads: "Coverage is enforced
+per-PR by `scripts/check-doc-coverage.mjs` (a dev tool, not a CI gate)." Both halves are in one
+sentence and they contradict each other — "enforced per-PR" describes a gate, and the parenthetical
+denies it. The plan for that slice (`2026-07-21-sdk-tsdoc-intellisense.md:17`) is authoritative:
+"**The analyzer is a dev tool, not a CI gate.** Do NOT add `check-doc-coverage` to `.github/` or the
+gate suite." Only the "enforced per-PR" clause needs rewording.
 
 ---
 
@@ -354,5 +355,8 @@ cannot currently be turned on.
   contain no gate step that is not in those scripts.
 - `grep -rn 'gt submit\|gt create\|gt restack' CLAUDE.md` returns nothing.
 - Each of the four formerly-orphaned scripts appears in exactly one of the two gate scripts.
-- `make check-boundary` produces the same output as before the split.
+- `make check-boundary` keeps its exit-code behaviour across the split: 0 on a clean tree, non-zero
+  on a planted violation of **either** half (a `games/*` dependency edge, or a CS2 identifier /
+  `include_str!("…games/…")` in `core/src`). Its stdout gains one line from the extracted script;
+  no caller parses it.
 - A deliberately planted CS2 identifier in `core/src` still fails `ci-native`.
