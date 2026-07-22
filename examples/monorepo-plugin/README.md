@@ -24,6 +24,14 @@ packages/commands/    one slice of behaviour, importing core
    build time. They are not runtime dependencies and do not appear in the
    manifest.
 
+`node_modules/@monorepo-example/*` are committed as symlinks (git mode
+`120000`) into `packages/*`, standing in for the workspace `npm install`
+would otherwise create. A checkout on Windows needs `core.symlinks` enabled
+(and Developer Mode or an elevated `git clone`), or git materializes them as
+plain-text files containing the link target instead of the packages
+themselves, and the typecheck gate fails confusingly (module not found,
+pointing at what looks like a valid directory).
+
 ## Not the same as a cross-plugin interface
 
 Workspace packages are a build-time factoring of **one** plugin. If two parts

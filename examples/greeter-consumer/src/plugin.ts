@@ -3,8 +3,14 @@
 // a producer reload degrades gracefully instead of crashing this plugin.
 // (For a dependency you can live without, declare it under
 // optionalPluginDependencies and use ctx.tryUse, which returns null instead.)
+//
+// Types come from the verified contract copy at
+// .s2script/types/@demo/greeter/index.d.ts — a byte-copy of the producer's
+// api.d.ts that s2s build hashes into manifest.compiledAgainst, so a drifted
+// contract is refused at load rather than marshalled across. Refresh with:
+//   cp examples/greeter-plugin/api.d.ts examples/greeter-consumer/.s2script/types/@demo/greeter/index.d.ts
 import { plugin } from "@s2script/sdk/plugin";
-import type { Greeter } from "../../greeter-plugin/api";
+import type { Greeter } from "@demo/greeter";
 
 export default plugin((ctx) => {
   console.log("[consumer] onLoad");

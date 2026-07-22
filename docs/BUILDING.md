@@ -100,7 +100,7 @@ Run it before every PR. These are exactly the two scripts CI runs — local gree
 ```bash
 make ci           # both suites
 make ci-native    # scripts/ci-native.sh — boundary + nameleak + sigscan + licenses, cargo build/test, shim
-make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, activity/antiflood/gate tests
+make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, examples-coverage, activity/antiflood/gate tests
 ```
 
 `.github/workflows/ci-native.yml` and `ci-js.yml` each run one of those two scripts and nothing

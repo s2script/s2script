@@ -6,10 +6,5 @@
   "dependencies": {
     "@s2script/sdk": "^0.1.0",
     "@s2script/cs2": "^0.5.0"
-  },
-  "s2script": {
-    "publishes": {
-      "@demo/greeter": "1.0.0"
-    }
   }
 }

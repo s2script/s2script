@@ -3,6 +3,12 @@
 # examples/, plugins/, or tools/. Without this, the curated example set silently
 # stops covering the API as new modules land — and the typecheck gate can only
 # catch regressions in modules something actually imports.
+#
+# This gate proves MODULE granularity, not symbol granularity: it verifies each
+# module is imported *somewhere* in the corpus, not that its full exported
+# surface (every function/type/const it ships) is actually exercised by that
+# import. A module with one narrow consumer passes even if most of its API is
+# untouched.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

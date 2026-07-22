@@ -28,6 +28,9 @@ export const httpRecipe: Recipe = {
         const ok = results.filter((s) => s === 200).length;
         const elapsed = frames - start;
         console.log(`[cookbook] http: ${ok}/${N} ok; tick advanced ${elapsed} frames while the fetches were in flight`);
+        // cmd is safe to hold across this await (it's a plain closure, no native handle) — but it
+        // still targets the caller's SLOT, so if they disconnected mid-fetch and someone else has
+        // since taken that slot, this reply lands on the new occupant instead.
         cmd.reply(`${ok}/${N} ok — tick advanced ${elapsed} frames meanwhile (see log)`);
       });
     });

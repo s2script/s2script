@@ -1,7 +1,7 @@
 // entity-playground — creating, configuring, wiring, and watching entities.
 //
 // Commands (run from rcon or console):
-//   ent_create    spawn an entity, read its fields back, then remove it
+//   ep_create     spawn an entity, read its fields back, then remove it
 //   ent_kv        spawn entities configured by keyvalues, proven two ways
 //   ent_io        fire an input and catch the output it produces
 //   ent_names     list every trigger_multiple on the map by targetname
@@ -25,12 +25,13 @@ export default plugin((ctx) => {
   // --- Lifecycle listeners -------------------------------------------------
   // The useful case is reacting to ENGINE-driven lifecycle: map entities,
   // weapons, grenades, ragdolls, or the engine's own console `ent_create`
-  // (its built-in cheat command, not the plugin command of the same name
-  // below). `entity` is a serial-gated EntityRef and may be null for a
+  // (its built-in cheat command — this example's own creation command is
+  // named `ep_create`, precisely so it never collides with the engine's).
+  // `entity` is a serial-gated EntityRef and may be null for a
   // barely-constructed create or a dying delete; `className` is always
   // valid. Counters keep a map-load burst readable.
   //
-  // These loggers will NOT fire for the entities ent_create/ent_kv/ent_io
+  // These loggers will NOT fire for the entities ep_create/ent_kv/ent_io
   // spawn further down: those commands call createEntity/spawn synchronously
   // inside their own handler, which already holds the isolate borrow, so the
   // engine's onCreate/onSpawn callbacks re-enter that dispatch and are
@@ -52,7 +53,7 @@ export default plugin((ctx) => {
   // --- Create, read back, remove -------------------------------------------
   // Synchronous, so the "*" loggers above stay silent for this one (see the
   // note above) — the reply is your only confirmation.
-  ctx.commands.register("ent_create", (cmd) => {
+  ctx.commands.register("ep_create", (cmd) => {
     const text = createEntity("point_worldtext");
     if (!text) { cmd.reply("createEntity failed"); return; }
     text.spawn();
@@ -114,5 +115,5 @@ export default plugin((ctx) => {
     delay(3000).then(() => cmd.reply(`beam removed -> ${handle.remove()}`));
   });
 
-  console.log("[ent] entity-playground loaded — try ent_create, ent_kv, ent_io, ent_names, ent_beam");
+  console.log("[ent] entity-playground loaded — try ep_create, ent_kv, ent_io, ent_names, ent_beam");
 });
