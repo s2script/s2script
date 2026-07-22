@@ -57,6 +57,14 @@ export interface TraceOptions {
   ignoreEntity?: EntityRef;
 }
 
+/**
+ * Ray-tracing entry point — `line`/`ray`/`hull` traces over the Source 2 physics scene.
+ * @example
+ * import { Trace } from "@s2script/sdk/trace";
+ * import { Vector } from "@s2script/sdk/math";
+ * const down = Trace.line(new Vector(o.x, o.y, o.z + 500), new Vector(o.x, o.y, o.z - 100));
+ * if (down.didHit) console.log(down.fraction, down.endPos);
+ */
 export declare const Trace: {
   /** A line trace from `start` to `end`. */
   line(start: Vector, end: Vector, opts?: TraceOptions): TraceHit;
