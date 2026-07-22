@@ -25,6 +25,15 @@ export interface Weapon extends CCSWeaponBase {
   remove(): boolean;
 }
 
+/**
+ * Entry point for the {@link Weapon} entity object — wrap a raw {@link EntityRef} or enumerate weapons
+ * by class name. Prefer {@link Pawn}'s `activeWeapon`/`weapons`/`giveNamedItem` for owned weapons.
+ * @example
+ * import { Weapon } from "@s2script/cs2";
+ * // `ent` is an EntityRef, e.g. from Entity.onSpawn("weapon_*", …)
+ * const weapon = Weapon.fromEntity(ent);
+ * if (weapon) weapon.setAmmo(90);
+ */
 export declare const Weapon: {
   /** Wrap a raw weapon EntityRef; null if ref is null. */
   fromEntity(ref: EntityRef | null): Weapon | null;

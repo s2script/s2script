@@ -27,6 +27,7 @@ import type { Weapon } from "./weapon";
  * Nav props (sceneNode, weaponServices, movementServices, aimPunchServices) are generated from nav-targets.json.
  */
 export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
+  /** The backing entity ref (the pawn's liveness-gated identity; escape hatch to the raw {@link EntityRef} surface). */
   readonly ref: EntityRef;
   /**
    * SourceMod/CSSharp-sense validity: the pawn is live (liveness-gated) AND fully spawned (out of the
@@ -93,6 +94,13 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
    *  nothing). Returns the engine sound GUID (nonzero) or 0. Bot recipients are always skipped. */
   emitSound(name: string, opts?: { recipients?: number[]; volume?: number }): number;
 }
+/**
+ * Entry point for the {@link Pawn} body object — resolve the in-world pawn for a player slot.
+ * @example
+ * import { Pawn } from "@s2script/cs2";
+ * const pawn = Pawn.forSlot(0);
+ * if (pawn) console.log(pawn.activeWeapon?.clip1);
+ */
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */
   forSlot(slot: number): Pawn | null;
@@ -104,6 +112,7 @@ export declare const Pawn: {
  * generated m_hPawn handle). Referenced by slot (0-based); a stored Player degrades to null on reuse.
  */
 export interface Player extends Omit<CCSPlayerController, "pawn"> {
+  /** The backing entity ref (the persistent controller's liveness-gated identity; degrades to `null` on reuse). */
   readonly ref: EntityRef;
   /** The 0-based player slot (CPlayerSlot). */
   readonly slot: number;
@@ -149,6 +158,13 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
    *  or the Respawn descriptor failed its boot gates. */
   respawn(): boolean;
 }
+/**
+ * Entry point for the {@link Player} controller object — resolve players by slot or user-id, enumerate
+ * connected players, or resolve a SourceMod target string.
+ * @example
+ * import { Player } from "@s2script/cs2";
+ * for (const p of Player.all()) p.pawn?.slay();
+ */
 export declare const Player: {
   /** The Player for a 0-based slot, or null if the slot is unoccupied / the controller is stale. */
   fromSlot(slot: number): Player | null;
@@ -174,12 +190,19 @@ import type { GameEvents } from "./events.generated";
  * The `off` signature matches `@s2script/events` semantics: removes ALL of this plugin's handlers for `name`.
  */
 export declare const Events: {
+  /** Subscribe to a game event; the typed overload delivers the `GameEvents[K]` payload with typed field accessors. */
   on<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => void): void;
+  /** Subscribe to a game event by raw name; the handler receives the generic {@link GameEvent}. */
   on(name: string, handler: (ev: GameEvent) => void): void;
+  /** Remove ALL of this plugin's handlers for `name` (the `handler` arg is accepted for API symmetry but not matched). */
   off(name: string, handler: (ev: GameEvent) => void): void;
+  /** Subscribe before broadcast; return a {@link HookResultValue} to block/modify. Typed payload overload. */
   onPre<K extends keyof GameEvents>(name: K, handler: (ev: GameEvents[K]) => HookResultValue | void): void;
+  /** Subscribe before broadcast by raw name; return a {@link HookResultValue} to block/modify. */
   onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
+  /** Fire a game event with typed field constraints; `dontBroadcast` keeps it server-side (not sent to clients). Returns false if the event is unknown. */
   fire<K extends keyof GameEvents>(name: K, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
+  /** Fire a game event by raw name; `dontBroadcast` keeps it server-side. Returns false if the event is unknown. */
   fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
 };
 
@@ -201,11 +224,23 @@ export declare const Activity: {
  * owns color (SourceMod-parity): e.g. `Chat.toAll(ChatColors.Green + "[SM] hello")`.
  */
 export declare const ChatColors: {
-  readonly Default: string; readonly White: string; readonly DarkRed: string; readonly LightPurple: string;
-  readonly Green: string; readonly Olive: string; readonly Lime: string; readonly Red: string;
-  readonly Grey: string; readonly Yellow: string; readonly Silver: string; readonly Blue: string;
-  readonly DarkBlue: string; readonly BlueGrey: string; readonly Purple: string; readonly LightRed: string;
-  readonly Orange: string;
+  /** Reset to the client's default chat color. */ readonly Default: string;
+  /** White control byte. */ readonly White: string;
+  /** Dark-red control byte. */ readonly DarkRed: string;
+  /** Light-purple control byte. */ readonly LightPurple: string;
+  /** Green control byte. */ readonly Green: string;
+  /** Olive control byte. */ readonly Olive: string;
+  /** Lime control byte. */ readonly Lime: string;
+  /** Red control byte. */ readonly Red: string;
+  /** Grey control byte. */ readonly Grey: string;
+  /** Yellow control byte. */ readonly Yellow: string;
+  /** Silver control byte. */ readonly Silver: string;
+  /** Blue control byte. */ readonly Blue: string;
+  /** Dark-blue control byte. */ readonly DarkBlue: string;
+  /** Blue-grey control byte. */ readonly BlueGrey: string;
+  /** Purple control byte. */ readonly Purple: string;
+  /** Light-red control byte. */ readonly LightRed: string;
+  /** Orange control byte. */ readonly Orange: string;
 };
 
 /**
@@ -218,30 +253,46 @@ export declare function pickPlayer(adminSlot: number, onPicked: (target: Player)
 
 /** A live CEnvBeam handle. update() moves both endpoints; remove() destroys it. */
 export interface BeamHandle {
+  /** The backing CEnvBeam entity ref. */
   readonly ref: EntityRef;
+  /** Move both endpoints — the beam redraws from `start` to `end`. */
   update(start: Vector, end: Vector): void;
+  /** Destroy the beam entity; returns false if it's already gone / the ref is stale. */
   remove(): boolean;
 }
 /** Draw a point-to-point beam (a CEnvBeam) from start to end. Returns a handle, or null if the entity
  *  couldn't be created. The beam is game-world-owned — call handle.remove() to clean up. */
 export declare const Beam: {
+  /** Draw a point-to-point beam from `start` to `end`. `opts.color` is RGBA, `opts.width` in units. Returns a {@link BeamHandle}, or null if the entity couldn't be created. */
   draw(start: Vector, end: Vector, opts?: { color?: [number, number, number, number]; width?: number }): BeamHandle | null;
 };
 
 /** A live read view over CCSGameRules (via the cs_gamerules proxy). Every field is liveness-gated at the
  *  proxy root and reads null if the proxy is gone (e.g. between maps). */
 export interface GameRulesView {
+  /** In warmup (m_bWarmupPeriod). */
   readonly warmupPeriod: boolean | null;
+  /** In freeze time (m_bFreezePeriod) — players frozen at round start. */
   readonly freezePeriod: boolean | null;
+  /** Configured round length in seconds (m_iRoundTime). */
   readonly roundTime: number | null;
+  /** Configured freeze-time length in seconds (m_iFreezeTime); the first slice of the round span. */
   readonly freezeTime: number | null;
+  /** Rounds played this match (m_totalRoundsPlayed). */
   readonly totalRoundsPlayed: number | null;
+  /** Current game phase enum (m_gamePhase). */
   readonly gamePhase: number | null;
+  /** The bomb is currently planted (m_bBombPlanted). */
   readonly bombPlanted: boolean | null;
+  /** Rounds played in the current phase (m_nRoundsPlayedThisPhase). */
   readonly roundsPlayedThisPhase: number | null;
+  /** A game restart is queued (m_bGameRestart). */
   readonly gameRestart: boolean | null;
+  /** Match start time (m_flGameStartTime, GameTime_t). */
   readonly gameStartTime: number | null;
+  /** Match is paused awaiting resume (m_bMatchWaitingForResume). */
   readonly matchWaitingForResume: boolean | null;
+  /** The match has started (m_bHasMatchStarted). */
   readonly hasMatchStarted: boolean | null;
   /** m_fRoundStartTime (GameTime_t): the map-time at which the current round started. */
   readonly roundStartTime: number | null;
@@ -267,6 +318,7 @@ export interface GameRulesView {
 /** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (liveness-gated
  *  cache); returns null when no proxy exists (e.g. pre-map-load). */
 export declare const GameRules: {
+  /** Re-find the cs_gamerules proxy and return a live {@link GameRulesView}, or null when no proxy exists (e.g. pre-map-load). */
   get(): GameRulesView | null;
   /** Convenience over get()?.terminateRound(reason, delay) — false when no proxy. */
   terminateRound(reason: number, delay?: number): boolean;
@@ -275,41 +327,77 @@ export declare const GameRules: {
 /** Team scoreboard scores (cs_team_manager entities, CTeam.m_iScore + notifyStateChanged). team is
  *  0..3 (Unassigned/Spectator/T/CT), matched by m_iTeamNum; entities are re-found per call. */
 export declare const Teams: {
+  /** Read the scoreboard score for `team` (0..3), or null if no matching cs_team_manager entity. */
   getScore(team: number): number | null;
+  /** Overwrite the scoreboard score for `team` (writes m_iScore + notifyStateChanged). false if the entity isn't found. */
   setScore(team: number, score: number): boolean;
+  /** Add `delta` to `team`'s scoreboard score. false if the entity isn't found. */
   addScore(team: number, delta: number): boolean;
 };
 
 /** CS2 round-end reasons (CCSGameRules::TerminateRound / round_end.reason). Binary-validated against
  *  our build (reason bound = 22; #SFUI_Notice_* switch). Gaps 2/3/15 are removed legacy VIP reasons. */
 export declare const RoundEndReason: {
-  readonly Unknown: 0; readonly TargetBombed: 1; readonly TerroristsEscaped: 4;
-  readonly CTsPreventEscape: 5; readonly EscapingTerroristsNeutralized: 6; readonly BombDefused: 7;
-  readonly CTsWin: 8; readonly TerroristsWin: 9; readonly RoundDraw: 10;
-  readonly AllHostagesRescued: 11; readonly TargetSaved: 12; readonly HostagesNotRescued: 13;
-  readonly TerroristsNotEscaped: 14; readonly GameCommencing: 16; readonly TerroristsSurrender: 17;
-  readonly CTsSurrender: 18; readonly TerroristsPlanted: 19; readonly CTsReachedHostage: 20;
-  readonly SurvivalWin: 21; readonly SurvivalDraw: 22;
+  /** No/unknown reason. */ readonly Unknown: 0;
+  /** T's bombed the target. */ readonly TargetBombed: 1;
+  /** T's escaped (legacy es_ maps). */ readonly TerroristsEscaped: 4;
+  /** CT's prevented the escape. */ readonly CTsPreventEscape: 5;
+  /** Escaping T's were neutralized. */ readonly EscapingTerroristsNeutralized: 6;
+  /** The bomb was defused. */ readonly BombDefused: 7;
+  /** CT's win the round. */ readonly CTsWin: 8;
+  /** T's win the round. */ readonly TerroristsWin: 9;
+  /** The round was a draw. */ readonly RoundDraw: 10;
+  /** All hostages were rescued. */ readonly AllHostagesRescued: 11;
+  /** The VIP target was saved. */ readonly TargetSaved: 12;
+  /** Hostages were not rescued in time. */ readonly HostagesNotRescued: 13;
+  /** T's did not escape in time. */ readonly TerroristsNotEscaped: 14;
+  /** The game is (re)commencing / warmup. */ readonly GameCommencing: 16;
+  /** T's surrendered. */ readonly TerroristsSurrender: 17;
+  /** CT's surrendered. */ readonly CTsSurrender: 18;
+  /** T's planted the bomb (round-end variant). */ readonly TerroristsPlanted: 19;
+  /** CT's reached the hostages. */ readonly CTsReachedHostage: 20;
+  /** Survival-mode win. */ readonly SurvivalWin: 21;
+  /** Survival-mode draw. */ readonly SurvivalDraw: 22;
 };
 
 /** cs_win_panel_round final_event values (validated at the live gate against a natural round end). */
-export declare const WinPanelFinalEvent: { readonly CTsWin: 2; readonly TerroristsWin: 3 };
+export declare const WinPanelFinalEvent: {
+  /** CT's won (final_event = 2). */ readonly CTsWin: 2;
+  /** T's won (final_event = 3). */ readonly TerroristsWin: 3;
+};
 
 /** Screen-fade user message (CUserMessageFade). duration/holdTime are engine fade units; color is a
  *  packed RGBA fixed32. Returns false if the message/fields don't resolve. */
 export declare const Fade: {
+  /** Send a screen fade to `slot`. `duration`/`holdTime` are engine fade units; `color` is packed RGBA fixed32. false if unresolved. */
   to(slot: number, opts: { duration?: number; holdTime?: number; color?: number; flags?: number }): boolean;
+  /** Convenience full-screen blind (opaque fade) for `duration` — the canonical flashbang-style effect. */
   blind(slot: number, duration?: number): boolean;
 };
 /** Screen-shake user message (CUserMessageShake). command 0 = start. Returns false if unresolved. */
 export declare const Shake: {
+  /** Send a screen shake to `slot`. `command` 0 = start; `amplitude`/`frequency`/`duration` are engine shake units. false if unresolved. */
   to(slot: number, opts: { command?: number; amplitude?: number; frequency?: number; duration?: number }): boolean;
 };
 /** Best-effort hint text (TextMsg-family). Returns false if the message/fields don't resolve. */
-export declare const HintText: { to(slot: number, text: string): boolean };
+export declare const HintText: {
+  /** Show `text` as hint text to `slot`. false if the message/fields don't resolve. */
+  to(slot: number, text: string): boolean;
+};
 
-export interface ZoneBox { x: number; y: number; z: number; }
-export interface TriggerZoneHandle { ref: EntityRef; center: ZoneBox; remove(): boolean; }
+/** A world-space coordinate triple (a corner or center of a {@link TriggerZoneHandle} box). */
+export interface ZoneBox {
+  /** World X. */ x: number;
+  /** World Y. */ y: number;
+  /** World Z. */ z: number;
+}
+/** A live runtime trigger_multiple zone (from {@link TriggerZone.create}). */
+export interface TriggerZoneHandle {
+  /** The backing trigger_multiple entity ref. */ ref: EntityRef;
+  /** The box center in world space. */ center: ZoneBox;
+  /** Destroy the trigger entity; false if already gone/stale. */ remove(): boolean;
+}
+/** Create arbitrary-box touch zones at runtime (a runtime trigger_multiple). */
 export declare const TriggerZone: {
   /** Create a runtime engine trigger_multiple whose touch volume is the arbitrary box [min,max].
    *  Fires OnStartTouch/OnEndTouch (hook via Entity.onOutput). Non-solid (pass-through). */
@@ -318,8 +406,12 @@ export declare const TriggerZone: {
 
 /** Curated built-in CS2 soundevent names (see @s2script/sound `Sound.emit` / `Pawn.emitSound`). */
 export declare const Sounds: {
+  /** Player ping soundevent (`UI.PlayerPing`). */
   readonly Ping: string;
+  /** Urgent player ping soundevent (`UI.PlayerPingUrgent`). */
   readonly PingUrgent: string;
+  /** AK-47 single-shot soundevent (`Weapon_AK47.Single`). */
   readonly Ak47Shot: string;
+  /** Desert Eagle single-shot soundevent (`Weapon_DEagle.Single`). */
   readonly DeagleShot: string;
 };
