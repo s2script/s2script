@@ -24,6 +24,6 @@ if [ "$violation" -ne 0 ]; then exit 1; fi
 
 # Name-leak + games/-embed gates. They live in their own script (pure greps, no cargo) so
 # test-boundary-nameleak.sh can re-run them without repeating the dependency walk above.
-bash "$(dirname "$0")/check-core-names.sh"
+bash scripts/check-core-names.sh
 
 echo "core boundary OK: s2script-core depends on no games/* crate"
