@@ -1,0 +1,11 @@
+{
+  "name": "@example/monorepo-plugin",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0",
+    "@monorepo-example/core": "*",
+    "@monorepo-example/commands": "*"
+  }
+}
