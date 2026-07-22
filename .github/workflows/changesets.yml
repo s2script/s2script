@@ -6,7 +6,7 @@ name: changesets
 # updates do not need a changeset; package-only updates do not need a tag.
 #
 # Prerequisite (one-time, per package on npmjs.com): configure a Trusted
-# Publisher → GitHub Actions → GabeHirakawa / s2script / changesets.yml
+# Publisher → GitHub Actions → s2script / s2script / changesets.yml
 # (packages must already exist on npm — see docs/INSTALL.md bootstrap).
 on:
   push:

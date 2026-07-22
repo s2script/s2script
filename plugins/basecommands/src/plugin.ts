@@ -117,7 +117,7 @@ export default plugin((ctx) => {
     const sub = cmd.arg(0).toLowerCase();
     if (!sub || sub === "version" || sub === "credits") {
       cmd.reply("[SM] s2script 0.1.0 — a TypeScript plugin framework for Source 2 / CS2, by Gabriel Hirakawa.");
-      cmd.reply("[SM] github.com/GabeHirakawa/s2script");
+      cmd.reply("[SM] github.com/s2script/s2script");
       return;
     }
     if (sub === "plugins") {

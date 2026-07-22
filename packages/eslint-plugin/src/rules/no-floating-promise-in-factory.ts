@@ -10,7 +10,7 @@ import { findFactory, isFunctionNode, type FactoryNode } from "../plugin-factory
 
 const createRule = ESLintUtils.RuleCreator(
   (name) =>
-    `https://github.com/GabeHirakawa/s2script/blob/main/packages/eslint-plugin/docs/${name}.md`,
+    `https://github.com/s2script/s2script/blob/main/packages/eslint-plugin/docs/${name}.md`,
 );
 
 function isThenable(checker: ts.TypeChecker, type: ts.Type): boolean {

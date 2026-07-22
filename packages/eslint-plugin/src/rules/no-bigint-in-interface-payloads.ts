@@ -12,7 +12,7 @@ import { ESLintUtils, type TSESTree } from "@typescript-eslint/utils";
 
 const createRule = ESLintUtils.RuleCreator(
   (name) =>
-    `https://github.com/GabeHirakawa/s2script/blob/main/packages/eslint-plugin/docs/${name}.md`,
+    `https://github.com/s2script/s2script/blob/main/packages/eslint-plugin/docs/${name}.md`,
 );
 
 function symbolName(type: ts.Type): string | undefined {

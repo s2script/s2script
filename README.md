@@ -1,6 +1,6 @@
 # s2script
 
-[![ci](https://github.com/GabeHirakawa/s2script/actions/workflows/ci.yml/badge.svg)](https://github.com/GabeHirakawa/s2script/actions/workflows/ci.yml)
+[![ci](https://github.com/s2script/s2script/actions/workflows/ci.yml/badge.svg)](https://github.com/s2script/s2script/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@s2script/sdk.svg)](https://www.npmjs.com/package/@s2script/sdk)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 
@@ -34,7 +34,7 @@ Pre-1.0 and moving. **Linux x86-64 + CS2 only** — Windows is not supported.
 ## Contributing
 
 ```bash
-git clone https://github.com/GabeHirakawa/s2script.git
+git clone https://github.com/s2script/s2script.git
 cd s2script
 git submodule update --init --recursive
 make all

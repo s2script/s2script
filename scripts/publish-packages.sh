@@ -9,7 +9,7 @@
 #   3. Merge the version PR → CI runs `changeset publish` via OIDC
 #
 # Bootstrap (one-time, before OIDC works): packages must exist on npm and
-# each needs a Trusted Publisher → GabeHirakawa/s2script/changesets.yml.
+# each needs a Trusted Publisher → s2script/s2script/changesets.yml.
 # See scripts/bootstrap-npm-trusted-publishing.sh and docs/INSTALL.md.
 #
 # Prefer: DRY_RUN=1 scripts/publish-packages.sh

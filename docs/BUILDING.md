@@ -4,7 +4,7 @@ Everything a contributor needs: build the runtime, run the gate suite, work with
 SDKs, and drive the Docker live gate.
 
 If you only want to *run* s2script on a server, you do not need this file — grab a
-[release zip](https://github.com/GabeHirakawa/s2script/releases) and follow
+[release zip](https://github.com/s2script/s2script/releases) and follow
 [`INSTALL.md`](INSTALL.md).
 
 > **Read this first.** A build made on your host machine will **not load on a real CS2 server**.
@@ -45,7 +45,7 @@ third_party/  Vendored hl2sdk + Metamod:Source submodules (pinned, patch-capable
 ## Build
 
 ```bash
-git clone https://github.com/GabeHirakawa/s2script.git
+git clone https://github.com/s2script/s2script.git
 cd s2script
 git submodule update --init --recursive   # vendored hl2sdk + Metamod:Source
 

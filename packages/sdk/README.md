@@ -37,7 +37,7 @@ game-specific schema types ship separately in
 ## Docs
 
 **[s2script.com/docs](https://s2script.com/docs)** — getting started, guides, and the full API
-reference. Source and issues: [GitHub](https://github.com/GabeHirakawa/s2script).
+reference. Source and issues: [GitHub](https://github.com/s2script/s2script).
 
 ## License
 

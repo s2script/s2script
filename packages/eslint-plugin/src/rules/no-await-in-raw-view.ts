@@ -10,7 +10,7 @@ import { isFunctionNode } from "../plugin-factory.ts";
 
 const createRule = ESLintUtils.RuleCreator(
   (name) =>
-    `https://github.com/GabeHirakawa/s2script/blob/main/packages/eslint-plugin/docs/${name}.md`,
+    `https://github.com/s2script/s2script/blob/main/packages/eslint-plugin/docs/${name}.md`,
 );
 
 const RAW_VIEW_TYPES: ReadonlySet<string> = new Set(["UserCmdView"]);

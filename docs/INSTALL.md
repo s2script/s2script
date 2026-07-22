@@ -11,7 +11,7 @@ Linux x86-64 only. Windows is not supported yet.
 
 ## Install the runtime
 
-1. Download the latest `s2script-cs2-linux-*.zip` from [GitHub Releases](https://github.com/GabeHirakawa/s2script/releases).
+1. Download the latest `s2script-cs2-linux-*.zip` from [GitHub Releases](https://github.com/s2script/s2script/releases).
 2. Extract it into `game/csgo/`:
 
    ```bash
@@ -124,7 +124,7 @@ On the **first** 2FA browser prompt during `--apply`, enable “skip 2FA for the
 What `--apply` does for every public `packages/*` package:
 
 1. Classic-publishes any name that doesn’t exist yet (today usually just `@s2script/zones`)
-2. Runs `npm trust github <pkg> --repo GabeHirakawa/s2script --file changesets.yml --allow-publish --yes`
+2. Runs `npm trust github <pkg> --repo s2script/s2script --file changesets.yml --allow-publish --yes`
 
 Optional hardening afterward: package **Publishing access** → “Require two-factor authentication and disallow tokens” (OIDC still works; revoke leftover automation tokens).
 
