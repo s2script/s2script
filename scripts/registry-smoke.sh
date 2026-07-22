@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Registry smoke checklist (manual / local).
-# Prerequisites: website Postgres up (`cd website && npm run db:start`), env set,
-# `npm run db:push`, `npm run dev`, and a Better Auth user signed up.
+# This exercises the CLIENT side (`s2script deploy` / `add`), which lives here. The registry
+# SERVICE it talks to lives in a separate repo: GabeHirakawa/s2script-website.
+# Prerequisites: check out that repo, bring its Postgres up (`npm run db:start`), set env,
+# `npm run db:push`, `npm run dev`, and sign up a Better Auth user.
 #
 # 1) Create org @demo + deploy token in the UI (/account/orgs, /account/tokens)
 # 2) export S2SCRIPT_REGISTRY_URL=http://localhost:5173
