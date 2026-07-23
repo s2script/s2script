@@ -13,7 +13,16 @@ export type ReplySource = "server" | "console" | "chat";
 
 /**
  * The parsed invocation handed to a command callback: who called it, its arguments (multiple typed
- * accessors), and a caller-appropriate `reply` channel. Valid only for the duration of the callback.
+ * accessors), and a caller-appropriate `reply` channel. It is a plain object that captures no native
+ * handle, so it MAY be retained and used after an `await`/`.then` — a deferred `reply` (e.g. from
+ * inside `delay(...).then(...)` or an async DB/HTTP call) is safe to call once the awaited work
+ * completes.
+ *
+ * What it captures, though, is the caller's **slot** — not a stable identity. If the original caller
+ * disconnects before the deferred reply runs and a different player has since taken that slot, the
+ * reply routes to (or targets the console/chat channel of) whoever now occupies it, not the original
+ * caller. Prefer replying synchronously where the timing matters, or re-check the caller (e.g. via
+ * their user id) before trusting a slot held across a long-running await.
  */
 export interface CommandInvocation {
   /** 0-based caller slot, or -1 for the server console. */

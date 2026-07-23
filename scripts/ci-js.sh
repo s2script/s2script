@@ -27,6 +27,9 @@ done
 echo "== check-plugins-typecheck.sh (the 5E.1 gate) =="
 bash scripts/check-plugins-typecheck.sh
 
+echo "== check-examples-coverage.sh (every shipped SDK module has a consumer) =="
+bash scripts/check-examples-coverage.sh
+
 echo "== check-activity-test.sh =="
 bash scripts/check-activity-test.sh
 

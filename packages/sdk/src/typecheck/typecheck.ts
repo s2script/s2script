@@ -58,11 +58,11 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   // fetched. No disk-existence guess — the old check that made `@s2script/sdk/frmae` (a typo the
   // plugin DECLARES) stub to `any` instead of erroring is gone (the finding fix).
   //
-  // FOLLOW-ON (design spec 2026-07-15 §4.6, plan 2): the `any` for a stubbed interface is a
-  // placeholder. A consumer should resolve a plugin-published interface to its REAL contract via
-  // `s2script add` → `.s2script/types/<iface>/index.d.ts`. Until that lands,
-  // `examples/zones-consumer-demo` has weaker types than it did when packages/zones existed.
-  // Tracked in the spec's §10.
+  // The `any` stub above is the fallback for a declared dep with NO verified contract copy on
+  // disk. When one exists, it resolves to REAL types instead (see the B1 block below) — a
+  // consumer gets this by keeping a byte-copy of the producer's published `.d.ts` under
+  // `.s2script/types/<iface>/index.d.ts` (see examples/cookbook's zones recipe for the pattern;
+  // design spec 2026-07-15 §4.6, plan 2, landed as B1).
   const isAlwaysResolved = (d: string): boolean =>
     d.startsWith("@s2script/sdk/") || d === "@s2script/cs2" || d.startsWith("@s2script/cs2/");
 

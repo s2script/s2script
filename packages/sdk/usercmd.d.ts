@@ -13,7 +13,7 @@ import type { QAngle } from "./math";
  * handler call operates on it.
  * @example
  * import type { UserCmdView } from "@s2script/sdk/usercmd";
- * // examples/usercmd-demo/src/plugin.ts:21 — read this tick's input
+ * // examples/cookbook/src/recipes/usercmd.ts:27 — read this tick's input
  * ctx.clients.onRunCmd((cmd: UserCmdView, info: { slot: number }) => {
  *   console.log(`slot=${info.slot} fwd=${cmd.forwardMove} btn=${cmd.buttons}`);
  * });
