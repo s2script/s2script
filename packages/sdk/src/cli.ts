@@ -1,171 +1,11 @@
-import { buildPlugin } from "./build.ts";
-import { runGenSchema } from "./schemagen/gen.ts";
-import { runGenEvents } from "./eventgen/gen.ts";
-import { runGenNav } from "./navgen/gen.ts";
-import { createPlugin } from "./create/create.ts";
-import { runConfigGen } from "./config/gen.ts";
-import { resolvePackagesDir } from "./packages-resolve.ts";
-import { loginInteractive } from "./registry/login.ts";
-import { deployPlugin } from "./registry/deploy.ts";
-import { addPackage } from "./registry/add.ts";
-import { defaultRegistryUrl } from "./registry/credentials.ts";
-import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
-import { parseFlag, hasFlag, positionals } from "./cli/args.ts";
+import { find } from "./commands/index.ts";
+import * as menu from "./commands/menu.ts";
+import * as ui from "./ui/ui.ts";
 
 const argv = process.argv.slice(2);
 const command = argv[0];
 
-function repoRootFromCli(): string {
-  // dist/cli.js → packages/sdk → packages → repo  (or src/cli.ts → same)
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-}
-
-if (command === "gen-schema") {
-  const repoRoot = repoRootFromCli();
-  const check = argv[1] === "--check";
-  const r = runGenSchema(repoRoot, { check });
-  if (check) {
-    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-schema\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
-    console.log(`schema codegen up to date (${r.classes} classes, ${r.fields} fields, ${r.skipped} skipped)`);
-  } else {
-    console.log(`gen-schema: wrote ${r.classes} classes, ${r.fields} fields (${r.skipped} skipped)`);
-  }
-} else if (command === "gen-events") {
-  const repoRoot = repoRootFromCli();
-  const check = argv[1] === "--check";
-  const r = runGenEvents(repoRoot, { check });
-  if (check) {
-    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-events\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
-    console.log(`event codegen up to date (${r.events} events)`);
-  } else {
-    console.log(`gen-events: wrote ${r.events} events`);
-  }
-} else if (command === "gen-nav") {
-  const repoRoot = repoRootFromCli();
-  const check = argv[1] === "--check";
-  const r = runGenNav(repoRoot, { check });
-  if (check) {
-    if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-nav\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
-    console.log(`nav codegen up to date (${r.wrappers} wrappers, ${r.fields} fields)`);
-  } else {
-    console.log(`gen-nav: wrote ${r.wrappers} wrappers, ${r.fields} fields`);
-  }
-} else if (command === "create") {
-  const args = argv.slice(1);
-  const pathArg = args.find((a) => !a.startsWith("-"));
-  try {
-    const result = await createPlugin({
-      path: pathArg,
-      name: parseFlag(args, "--name"),
-      game: parseFlag(args, "--game") as "cs2" | "none" | undefined,
-      template: parseFlag(args, "--template") as "minimal" | undefined,
-      install: parseFlag(args, "--install") as "npm" | "pnpm" | "yarn" | "bun" | "none" | undefined,
-      noInstall: hasFlag(args, "--no-install"),
-      yes: hasFlag(args, "--yes") || hasFlag(args, "-y"),
-    });
-    console.log(`created ${result.dir}`);
-    if (result.installed) console.log(`dependencies installed (${result.packageManager})`);
-    else if (!result.skippedInstall) console.log(`next: cd ${result.dir} && npm install && npm run build`);
-    else console.log(`next: cd ${result.dir} && npm run build`);
-  } catch (e) {
-    console.error(String(e instanceof Error ? e.message : e));
-    process.exit(1);
-  }
-} else if (command === "login") {
-  const args = argv.slice(1);
-  try {
-    const creds = await loginInteractive({
-      token: parseFlag(args, "--token"),
-      registryUrl: parseFlag(args, "--registry") || defaultRegistryUrl(),
-      ci: hasFlag(args, "--ci"),
-    });
-    console.log(`logged in → ${creds.registryUrl} (credentials saved)`);
-  } catch (e) {
-    console.error(String(e instanceof Error ? e.message : e));
-    process.exit(1);
-  }
-} else if (command === "deploy" || command === "publish") {
-  const args = argv.slice(1);
-  const pos = positionals(args, ["--packages-dir", "--registry"]);
-  const dir = pos[0] ?? ".";
-  try {
-    const packagesDir = resolvePackagesDir({
-      explicit: parseFlag(args, "--packages-dir"),
-      pluginDir: resolve(dir),
-      fromCliUrl: import.meta.url,
-    });
-    const result = await deployPlugin({
-      dir,
-      packagesDir,
-      registryUrl: parseFlag(args, "--registry"),
-      ci: hasFlag(args, "--ci"),
-    });
-    console.log(`deployed ${result.name}@${result.version} (${result.reviewState})`);
-    if (result.reviewState === "unreviewed") {
-      console.log("note: Not reviewed by s2script — listed with a disclaimer until approved.");
-    }
-  } catch (e) {
-    console.error(String(e instanceof Error ? e.message : e));
-    process.exit(1);
-  }
-} else if (command === "add") {
-  const args = argv.slice(1);
-  const pos = positionals(args, ["--dir", "--registry"]);
-  const spec = pos[0];
-  if (!spec) {
-    console.error("Usage: s2s add <pkg>[@range]");
-    process.exit(1);
-  }
-  try {
-    const result = await addPackage({
-      pluginDir: parseFlag(args, "--dir") || ".",
-      spec,
-      registryUrl: parseFlag(args, "--registry"),
-    });
-    console.log(`added ${result.name}@${result.version} → ${result.typesDir}`);
-    if (result.npmrcLine) {
-      console.log(`npmrc: ${result.npmrcLine}  (types-only; npm install ${result.name} also works)`);
-    }
-    if (result.reviewState === "unreviewed") {
-      console.log("note: Not reviewed by s2script — types pulled; use at your own risk.");
-    }
-  } catch (e) {
-    console.error(String(e instanceof Error ? e.message : e));
-    process.exit(1);
-  }
-} else if (command === "config" && argv[1] === "gen") {
-  const args = argv.slice(2);
-  const outDir = parseFlag(args, "--out") ?? process.cwd();
-  const s2sps = positionals(args, ["--out"]);
-  if (s2sps.length === 0) {
-    console.error("Usage: s2s config gen <plugin.s2sp...> --out <dir>");
-    process.exit(1);
-  }
-  try {
-    const { written, skipped } = runConfigGen(s2sps, outDir);
-    for (const w of written) console.log(`config gen: wrote ${w}`);
-    for (const s of skipped) console.log(`config gen: ${s} declares no config — skipped`);
-  } catch (e) {
-    console.error(String(e instanceof Error ? e.message : e));
-    process.exit(1);
-  }
-} else if (command === "build" && argv[1]) {
-  const args = argv.slice(1);
-  const dir = args.find((a) => !a.startsWith("-"))!;
-  const packagesDirFlag = parseFlag(args, "--packages-dir");
-  try {
-    const packagesDir = resolvePackagesDir({
-      explicit: packagesDirFlag,
-      pluginDir: resolve(dir),
-      fromCliUrl: import.meta.url,
-    });
-    console.log(await buildPlugin(dir, packagesDir));
-  } catch (e) {
-    console.error(String(e instanceof Error ? e.message : e));
-    process.exit(1);
-  }
-} else {
+function usage(): void {
   console.error(
     "Usage:\n" +
       "  s2s create [path] [--game cs2|none] [--name <pkg>] [--template minimal]\n" +
@@ -179,7 +19,23 @@ if (command === "gen-schema") {
       "  s2s gen-events [--check]\n" +
       "  s2s gen-nav [--check]\n" +
       "\n" +
-      "Env: S2SCRIPT_REGISTRY_URL  S2SCRIPT_TOKEN (CI deploy)"
+      "Env: S2SCRIPT_REGISTRY_URL  S2SCRIPT_TOKEN (CI deploy)",
   );
-  process.exit(1);
+}
+
+if (!command) {
+  // Bare `s2s`: an arrow-key menu in a terminal, the usage text otherwise (unchanged for scripts/CI).
+  if (ui.isInteractive()) {
+    await menu.run();
+  } else {
+    usage();
+    process.exit(1);
+  }
+} else {
+  const cmd = find(command);
+  if (!cmd) {
+    usage();
+    process.exit(1);
+  }
+  await cmd.run(argv.slice(1));
 }
