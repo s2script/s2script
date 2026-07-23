@@ -1614,12 +1614,27 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // sets it to a color control byte (CS2: a ChatColors byte); "" = send raw. This keeps color as CONTENT
   // owned by the caller (SourceMod-parity), never a native-layer default. A message may still embed its own
   // color codes mid-string.
+  //
+  // A leading ZERO-WIDTH SPACE (U+200B) is prepended to every chat line: a Source 2 chat box mutes a color
+  // control byte that sits at index 0, so without a preceding byte the message's first color never renders.
+  // Prepending the byte here means a plugin author writes `Green + "hi"` and the colour just lands — they
+  // never hand-roll a prefix (SourceMod / CounterStrikeSharp do the same, some with a plain space). We use
+  // U+200B rather than a plain " " so the affordance is INVISIBLE — it satisfies the "need a leading byte"
+  // rule without shifting every line right by a visible space. Idempotent: a line that ALREADY starts with
+  // the ZWSP or a (legacy) plain space is left untouched, so an existing prefix never doubles up. Chat-only
+  // — the console.log / replyToConsole path never runs through here, so console output stays byte-clean.
+  var __s2_chatZWSP = "\u200B";
+  function __s2_chatLine(msg) {
+    var body = __s2_chat.color + String(msg);
+    var lead = body.charAt(0);
+    return (lead === __s2_chatZWSP || lead === " ") ? body : __s2_chatZWSP + body;
+  }
   var __s2_chat = {
     color: "",
-    toSlot: function (slot, msg) { __s2_client_print(slot | 0, __s2_chat.color + String(msg)); },
+    toSlot: function (slot, msg) { __s2_client_print(slot | 0, __s2_chatLine(msg)); },
     // slot -1 = broadcast to all in ONE call (the shim routes it to the game's UTIL_ClientPrintAll, which
     // renders true custom color, not team color — SourceMod's PrintToChatAll). NOT a per-slot loop.
-    toAll:  function (msg) { __s2_client_print(-1, __s2_chat.color + String(msg)); },
+    toAll:  function (msg) { __s2_client_print(-1, __s2_chatLine(msg)); },
     // Slice 6.13b: subscribe to raw player chat. The handler gets (slot, text, teamonly) and may return
     // a HookResult (>= Handled suppresses the broadcast). Delivered from the Host_Say detour for every
     // non-command chat line; the `@`-trigger layer (a later slice) subscribes through this.
@@ -14903,6 +14918,46 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toSlot(0, 'hi'))"), "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_chat.Chat.toAll('hi'))"),      "undefined");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_print(0, 'hi'))"),          "undefined");
+        shutdown();
+    }
+
+    /// `Chat.toSlot`/`toAll` prepend a leading ZERO-WIDTH SPACE (U+200B) so a Source 2 chat box renders the
+    /// message's first color control byte (an index-0 colour is muted) — the author never hand-writes a
+    /// prefix. Idempotent: a line already led by the ZWSP OR a (legacy) plain space is passed through
+    /// unchanged. Captured by swapping the writable `__s2_client_print` global for a JS spy.
+    #[test]
+    fn chat_prepends_leading_zwsp_idempotently() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        // Spy captures each composed line; we compare CHAR CODES (ZWSP = 8203, plain space = 32, colour
+        // byte = 4 / 7) so the assertion stays plain ASCII and proves the exact leading byte.
+        let seen = eval_in_context_string(
+            "p",
+            r#"
+            var seen = [];
+            var orig = globalThis.__s2_client_print;
+            globalThis.__s2_client_print = function (slot, m) { seen.push(m); };
+            var C = __s2pkg_chat.Chat;
+            C.color = "";
+            C.toSlot(0, "\x04hi");         // bare colour      -> ZWSP + \x04hi
+            C.toSlot(0, "\u200B\x04hi");   // already ZWSP-led  -> unchanged (idempotent)
+            C.toSlot(0, " \x04hi");        // legacy space-led  -> unchanged (compat, no double prefix)
+            C.color = "\x04";
+            C.toSlot(0, "hi");             // colour via prefix -> ZWSP + \x04hi
+            C.color = "";
+            C.toAll("\x07red");            // broadcast path    -> ZWSP + \x07red
+            globalThis.__s2_client_print = orig;
+            seen.map(function (s) {
+              return s.split("").map(function (c) { return c.charCodeAt(0); }).join(",");
+            }).join("|");
+            "#,
+        );
+        assert_eq!(
+            seen,
+            // ZWSP+\x04hi | ZWSP+\x04hi | space+\x04hi | ZWSP+\x04hi | ZWSP+\x07red
+            "8203,4,104,105|8203,4,104,105|32,4,104,105|8203,4,104,105|8203,7,114,101,100"
+        );
         shutdown();
     }
 
