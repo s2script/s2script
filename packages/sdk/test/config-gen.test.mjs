@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import AdmZip from "adm-zip";
+import { writeZip } from "./zip.mjs";
 import { configFileName } from "../src/config/config-path.ts";
 import { generateDefaultJsonc, genConfigForS2sp, runConfigGen } from "../src/config/gen.ts";
 
@@ -47,17 +47,17 @@ test("generateDefaultJsonc skips dotted keys", () => {
 test("genConfigForS2sp reads the staged manifest and writes the sanitized filename", () => {
   const dir = mkdtempSync(join(tmpdir(), "s2s-configgen-"));
   // Build a minimal .s2sp (manifest.json + plugin.js) with a config block.
-  const zip = new AdmZip();
   const manifest = {
     id: "@s2script/funvotes",
     version: "1.0.0",
     apiVersion: "1.0.0",
     config: { greeting: { type: "string", default: "hi" }, sect: { n: { type: "int", default: 3 } } },
   };
-  zip.addFile("manifest.json", Buffer.from(JSON.stringify(manifest)));
-  zip.addFile("plugin.js", Buffer.from("module.exports = {};"));
   const s2sp = join(dir, "funvotes.s2sp");
-  zip.writeZip(s2sp);
+  writeZip(s2sp, {
+    "manifest.json": Buffer.from(JSON.stringify(manifest)),
+    "plugin.js": Buffer.from("module.exports = {};"),
+  });
 
   const written = genConfigForS2sp(s2sp, dir);
   assert.equal(written, join(dir, "_s2script_funvotes.json"));
@@ -69,11 +69,11 @@ test("genConfigForS2sp reads the staged manifest and writes the sanitized filena
 
 test("runConfigGen skips a manifest with no config block", () => {
   const dir = mkdtempSync(join(tmpdir(), "s2s-configgen-"));
-  const zip = new AdmZip();
-  zip.addFile("manifest.json", Buffer.from(JSON.stringify({ id: "noconfig", version: "1.0.0", apiVersion: "1.0.0" })));
-  zip.addFile("plugin.js", Buffer.from("module.exports = {};"));
   const s2sp = join(dir, "noconfig.s2sp");
-  zip.writeZip(s2sp);
+  writeZip(s2sp, {
+    "manifest.json": Buffer.from(JSON.stringify({ id: "noconfig", version: "1.0.0", apiVersion: "1.0.0" })),
+    "plugin.js": Buffer.from("module.exports = {};"),
+  });
   const { written, skipped } = runConfigGen([s2sp], dir);
   assert.equal(written.length, 0);
   assert.deepEqual(skipped, [s2sp]);

@@ -17,13 +17,14 @@ export async function loginInteractive(opts?: {
   if (!token) {
     if (opts?.ci || !input.isTTY) {
       throw new Error(
-        "no deploy token: set S2SCRIPT_TOKEN or run `s2script login` interactively"
+        "no deploy token: set S2SCRIPT_TOKEN or run `s2s login` interactively"
       );
     }
     const rl = createInterface({ input, output });
     try {
       console.log(`Registry: ${registryUrl}`);
-      console.log("Create a deploy token at /account/tokens on the registry site, then paste it:");
+      console.log("Sign in (or create an account), then mint a deploy token at:");
+      console.log(`  ${registryUrl}/account/tokens`);
       token = (await rl.question("token: ")).trim();
     } finally {
       rl.close();

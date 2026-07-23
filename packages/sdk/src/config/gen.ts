@@ -9,8 +9,8 @@
  *  Plugin-scoped by design: this knows nothing about the framework templates (admins/databases/…) —
  *  those are shipped by the release script, not by the published CLI. */
 
-import AdmZip from "adm-zip";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { unzipSync } from "fflate";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { configFileName } from "./config-path.ts";
 
@@ -65,10 +65,9 @@ export function genConfigFromManifest(manifest: { id?: unknown; config?: unknown
 
 /** Read a staged .s2sp, extract its manifest.json, and write its default config file into `outDir`. */
 export function genConfigForS2sp(s2spPath: string, outDir: string): string | null {
-  const zip = new AdmZip(s2spPath);
-  const entry = zip.getEntry("manifest.json");
+  const entry = unzipSync(readFileSync(s2spPath))["manifest.json"];
   if (!entry) throw new Error(`config gen: ${s2spPath} has no manifest.json`);
-  const manifest = JSON.parse(entry.getData().toString("utf8"));
+  const manifest = JSON.parse(Buffer.from(entry).toString("utf8"));
   return genConfigFromManifest(manifest, outDir);
 }
 

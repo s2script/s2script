@@ -1,13 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import vm from "node:vm";
-
-const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const genJs = readFileSync(join(repo, "games/cs2/js/schema.generated.js"), "utf8");
-const pawnJs = readFileSync(join(repo, "games/cs2/js/pawn.js"), "utf8");
+import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 function runWith(clientMock, names) {
   const nameMap = names || {};                                    // controller entity index -> playerName
@@ -27,13 +21,13 @@ function runWith(clientMock, names) {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math
                        : n === "@s2script/sdk/events" ? {} : null),
     __s2_schema_offset: () => 8,
-    __s2_ent_current_serial: () => 7,
-    __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_ent_id_for_index: (i) => i,
+    __s2_handle_adopt: (h) => [h & 0x7fff, 0],
     ...clientMock,
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  vm.runInContext(cs2AddonBundle, ctx);
   return ctx.__s2pkg_cs2;
 }
 
