@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import AdmZip from "adm-zip";
+import { openZip } from "./zip.mjs";
 import { buildPlugin } from "../src/build.ts";
 import { typecheckPlugin } from "../src/typecheck/typecheck.ts";
 import { localContractPath } from "../src/contracts.ts";
@@ -23,7 +23,7 @@ test("localContractPath resolves the verified copy and refuses traversal", () =>
 
 test("build emits compiledAgainst = sha256 of the verified copy's raw bytes", async () => {
   const out = await buildPlugin(fixture, packagesDir);
-  const zip = new AdmZip(out);
+  const zip = openZip(out);
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
   const expected = createHash("sha256").update(readFileSync(contractFile)).digest("hex");
   assert.deepEqual(manifest.compiledAgainst, { "@demo/greeter": expected });

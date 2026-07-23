@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import AdmZip from "adm-zip";
+import { unzipSync } from "fflate";
 import { buildPlugin } from "../build.ts";
 import { assertPublishesTypes, hasPublishes } from "../publish-gate.ts";
 import { packTypesTarball } from "../types-pack.ts";
@@ -31,12 +31,11 @@ export async function deployPlugin(opts: {
   // compiledAgainst). Deploy that — do not reconstruct from package.json.
   const outPath = await buildPlugin(absDir, opts.packagesDir);
   const s2sp = readFileSync(outPath);
-  const zip = new AdmZip(s2sp);
-  const manifestEntry = zip.getEntry("manifest.json");
+  const manifestEntry = unzipSync(s2sp)["manifest.json"];
   if (!manifestEntry) {
     throw new Error(`built archive missing manifest.json: ${outPath}`);
   }
-  const manifest = JSON.parse(manifestEntry.getData().toString("utf8")) as {
+  const manifest = JSON.parse(Buffer.from(manifestEntry).toString("utf8")) as {
     id: string;
     version: string;
     apiVersion: string;

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { buildPlugin } from "../src/build.ts";
 import { STAMPED_API_VERSION } from "../src/api-version.ts";
-import AdmZip from "adm-zip";
+import { openZip } from "./zip.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -22,7 +22,7 @@ const packagesDir = join(repoRoot, "packages");
 test("build produces a .s2sp with derived manifest + cjs plugin.js", async () => {
   const out = await buildPlugin("test/fixtures/hello", packagesDir);
 
-  const zip = new AdmZip(out);
+  const zip = openZip(out);
 
   // manifest.json must exist and have the derived fields
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
@@ -44,7 +44,7 @@ test("build produces a .s2sp with derived manifest + cjs plugin.js", async () =>
 
 test("consumer manifest carries both dep maps and externalizes the inter-plugin dep", async () => {
   const out = await buildPlugin(join(here, "fixtures", "consumer"), packagesDir);
-  const zip = new AdmZip(out);
+  const zip = openZip(out);
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
   assert.equal(manifest.pluginDependencies["@demo/greeter"], "^1.0.0");
   assert.equal(manifest.optionalPluginDependencies["@demo/extra"], "^1.0.0");
@@ -54,7 +54,7 @@ test("consumer manifest carries both dep maps and externalizes the inter-plugin 
 
 test("build derives publishes {version, typesSha256} and embeds the contract", async () => {
   const out = await buildPlugin("test/fixtures/publisher", packagesDir);
-  const zip = new AdmZip(out);
+  const zip = openZip(out);
 
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
   const decl = manifest.publishes["@demo/publisher"];
@@ -79,7 +79,7 @@ test("build derives publishes {version, typesSha256} and embeds the contract", a
 
 test("build of a non-publishing plugin has no publishes block and no types member", async () => {
   const out = await buildPlugin("test/fixtures/hello", packagesDir);
-  const zip = new AdmZip(out);
+  const zip = openZip(out);
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
   assert.equal(manifest.publishes, undefined, "no publishes block when nothing is published");
   assert.equal(zip.getEntries().filter((e) => e.entryName.startsWith("types/")).length, 0);
@@ -115,7 +115,7 @@ test("build accepts a CONCRETE map value naming an interface the package does no
   // The decoupling the grammar exists for: @demo/renamer publishes @demo/other-name@1.0.0.
   // Concrete + a contract the plugin ships itself ⇒ resolvable with no registry.
   const out = await buildPlugin("test/fixtures/publisher-renamed", packagesDir);
-  const zip = new AdmZip(out);
+  const zip = openZip(out);
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
 
   const decl = manifest.publishes["@demo/other-name"];

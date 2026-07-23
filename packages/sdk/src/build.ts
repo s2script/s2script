@@ -10,8 +10,8 @@
  */
 
 import * as esbuild from "esbuild";
-import AdmZip from "adm-zip";
-import { readFileSync, mkdirSync } from "node:fs";
+import { zipSync } from "fflate";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
@@ -208,9 +208,10 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   if (Object.keys(compiledAgainst).length > 0) manifest.compiledAgainst = compiledAgainst;
 
   // --- Zip manifest.json + plugin.js ---
-  const zip = new AdmZip();
-  zip.addFile("manifest.json", Buffer.from(JSON.stringify(manifest, null, 2)));
-  zip.addFile("plugin.js", Buffer.from(pluginJs));
+  const zipFiles: Record<string, Uint8Array> = {
+    "manifest.json": Buffer.from(JSON.stringify(manifest, null, 2)),
+    "plugin.js": Buffer.from(pluginJs),
+  };
 
   // --- Embedded verified copy (spec §4.5): redundant, hash-checked, NEVER authoritative.
   // core's read_s2sp reads manifest.json/plugin.js by_name and ignores every other member,
@@ -219,7 +220,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     const contract = readFileSync(gate.typesPath);
     for (const iface of Object.keys(derivedPublishes)) {
       const safe = iface.replace(/[^a-zA-Z0-9._-]/g, "_");
-      zip.addFile(`types/${safe}.d.ts`, contract);
+      zipFiles[`types/${safe}.d.ts`] = contract;
     }
   }
 
@@ -228,7 +229,8 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   const outDir = join(absDir, "dist");
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, `${sanitizedId}.s2sp`);
-  zip.writeZip(outPath);
+  // fflate emits standard DEFLATE members; core's read_s2sp (zip crate, deflate feature) reads them.
+  writeFileSync(outPath, zipSync(zipFiles));
 
   return outPath;
 }

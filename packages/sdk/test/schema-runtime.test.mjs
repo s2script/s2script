@@ -1,14 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import vm from "node:vm";
-
-const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const genJs = readFileSync(join(repo, "games/cs2/js/schema.generated.js"), "utf8");
-const navJs = readFileSync(join(repo, "games/cs2/js/nav.generated.js"), "utf8");
-const pawnJs = readFileSync(join(repo, "games/cs2/js/pawn.js"), "utf8");
+import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (offline vm)", () => {
   // Stub EntityRef: isValid() true, typed reads return fixed values, readHandle returns a fresh ref (nav).
@@ -25,12 +18,12 @@ test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? stdEntity : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => 8,               // any non-negative offset
-    __s2_ent_current_serial: () => 7,
-    __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_ent_id_for_index: (i) => i,
+    __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  vm.runInContext(cs2AddonBundle, ctx);
   const { Player, Pawn } = ctx.__s2pkg_cs2;
   assert.equal(typeof Player, "function");
 
@@ -59,11 +52,11 @@ test("Player.fromSlot degrades to null when the controller is invalid (offline v
       : n === "@s2script/sdk/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                                    QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
       : null),
-    __s2_schema_offset: () => 8, __s2_ent_current_serial: () => -1, __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_schema_offset: () => 8, __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  vm.runInContext(cs2AddonBundle, ctx);
   const { Player } = ctx.__s2pkg_cs2;
   assert.equal(Player.fromSlot(0), null, "invalid controller → null");
   assert.deepEqual(Player.all(), [], "Player.all() is empty when no controller is valid");
@@ -82,12 +75,12 @@ test("schema.generated.js + pawn.js compose: Pawn.prototype has generated access
                                       QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
       : null),
     __s2_schema_offset: () => 100,
-    __s2_ent_current_serial: () => 7,
-    __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_ent_id_for_index: (i) => i,
+    __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + pawnJs, ctx);   // concatenation order: schema first, pawn second
+  vm.runInContext(cs2AddonBundle, ctx);   // the full shipped bundle (schema → … → pawn)
   const Pawn = ctx.__s2pkg_cs2.Pawn;
   assert.equal(typeof Object.getOwnPropertyDescriptor(Pawn.prototype, "health").get, "function");
   assert.equal(typeof Object.getOwnPropertyDescriptor(Pawn.prototype, "friction").get, "function");
@@ -107,11 +100,11 @@ test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter
       : n === "@s2script/sdk/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                                    QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
       : null),
-    __s2_schema_offset: () => 8, __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_schema_offset: () => 8, __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  vm.runInContext(cs2AddonBundle, ctx);
   const { Player } = ctx.__s2pkg_cs2;
   assert.equal(Player.fromSlot(0), null, "valid controller but no pawn → not occupied → null");
   assert.deepEqual(Player.all(), [], "Player.all() excludes controllers without a pawn");
@@ -132,11 +125,11 @@ test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade t
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => offRet,
-    __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + navJs + "\n" + pawnJs, ctx);   // addon order: schema, nav, pawn
+  vm.runInContext(cs2AddonBundle, ctx);   // addon order comes from package-addon.sh (schema, nav, …, pawn)
   const { Pawn } = ctx.__s2pkg_cs2;
   const p = new Pawn(new EntityRef(5, 9));
   assert.ok(p.origin instanceof Vector, "origin is a Vector");
@@ -160,11 +153,11 @@ test("generated Vector/QAngle accessor: reads a value object, degrades to null (
   const math = { Vector, QAngle };
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
-    __s2_schema_offset: () => 8, __s2_ent_current_serial: () => 7, __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_schema_offset: () => 8, __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + pawnJs, ctx);
+  vm.runInContext(cs2AddonBundle, ctx);
   const { Pawn } = ctx.__s2pkg_cs2;
   const p = new Pawn(new EntityRef(5, 9));
   const ang = p.eyeAngles;                          // generated QAngle accessor
@@ -200,12 +193,12 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => 8,      // all offsets valid; NAV paths resolve to [8, …]
-    __s2_ent_current_serial: () => 7,
-    __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_ent_id_for_index: (i) => i,
+    __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(genJs + "\n" + navJs + "\n" + pawnJs, ctx);
+  vm.runInContext(cs2AddonBundle, ctx);
   const { Pawn } = ctx.__s2pkg_cs2;
   const p = new Pawn(new EntityRef(5, 9));
 
@@ -230,12 +223,12 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
   const ctx2 = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => -1,     // per-access off() returns -1 → oN < 0 guard returns null
-    __s2_ent_current_serial: () => 7,
-    __s2_handle_decode: (h) => [h & 0x7fff, 0],
+    __s2_ent_id_for_index: (i) => i,
+    __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx2.globalThis = ctx2;
   vm.createContext(ctx2);
-  vm.runInContext(genJs + "\n" + navJs + "\n" + pawnJs, ctx2);
+  vm.runInContext(cs2AddonBundle, ctx2);
   const { Pawn: Pawn2 } = ctx2.__s2pkg_cs2;
   const p2 = new Pawn2(new EntityRef(5, 9));
   assert.equal(p2.sceneNode, null, "pawn.sceneNode is null when off() returns -1 (boot-window guard)");
