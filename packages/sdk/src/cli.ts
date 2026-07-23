@@ -11,6 +11,7 @@ import { addPackage } from "./registry/add.ts";
 import { defaultRegistryUrl } from "./registry/credentials.ts";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { parseFlag, hasFlag, positionals } from "./cli/args.ts";
 
 const argv = process.argv.slice(2);
 const command = argv[0];
@@ -18,35 +19,6 @@ const command = argv[0];
 function repoRootFromCli(): string {
   // dist/cli.js → packages/sdk → packages → repo  (or src/cli.ts → same)
   return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-}
-
-function parseFlag(args: string[], name: string): string | undefined {
-  const eq = args.find((a) => a.startsWith(`${name}=`));
-  if (eq) return eq.slice(name.length + 1);
-  const i = args.indexOf(name);
-  if (i >= 0 && args[i + 1] && !args[i + 1]!.startsWith("-")) return args[i + 1];
-  return undefined;
-}
-
-function hasFlag(args: string[], name: string): boolean {
-  return args.includes(name);
-}
-
-/** Positional args, skipping `-`/`--` flags and the value that follows a `--flag value` in
- *  `flagsWithValue` (a `--flag=value` form carries its own value and consumes no positional). */
-function positionals(args: string[], flagsWithValue: string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!;
-    if (a.startsWith("--")) {
-      const name = a.split("=")[0]!;
-      if (flagsWithValue.includes(name) && !a.includes("=")) i++; // consume the value token
-      continue;
-    }
-    if (a.startsWith("-")) continue;
-    out.push(a);
-  }
-  return out;
 }
 
 if (command === "gen-schema") {
