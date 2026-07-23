@@ -14,15 +14,15 @@ import { GameRules, Teams, RoundEndReason, WinPanelFinalEvent } from "@s2script/
  * cs_win_panel_round logger will NOT log a fire it triggered itself — the
  * client-visible panel is the check.
  *
- *   cb_round               end the round (GameRules.terminateRound)
- *   cb_round_settime        set the round clock
- *   cb_round_addtime        add to the round clock
- *   cb_round_teamscore      set a team's scoreboard score
- *   cb_round_winpanel       fire a synthetic cs_win_panel_round
+ *   sm_round               end the round (GameRules.terminateRound)
+ *   sm_round_settime        set the round clock
+ *   sm_round_addtime        add to the round clock
+ *   sm_round_teamscore      set a team's scoreboard score
+ *   sm_round_winpanel       fire a synthetic cs_win_panel_round
  */
 export const eventsRecipe: Recipe = {
   name: "events",
-  describe: "control round flow: terminate, adjust the clock, set score, fire an event (cb_round*)",
+  describe: "control round flow: terminate, adjust the clock, set score, fire an event (sm_round*)",
   register(ctx) {
     let lastTerminateReason: number | null = null;
 
@@ -45,7 +45,7 @@ export const eventsRecipe: Recipe = {
       console.log(`[cookbook] round: round_start roundTime=${gr.roundTime} roundStartTime=${gr.roundStartTime} gameTime=${Server.gameTime} timeElapsed=${gr.timeElapsed} timeRemaining=${gr.timeRemaining}`);
     });
 
-    ctx.commands.register("cb_round", (cmd) => {
+    ctx.commands.register("sm_round", (cmd) => {
       const reason = cmd.argInt(0, RoundEndReason.TerroristsWin);
       const delay = cmd.argInt(1, 5);
       lastTerminateReason = reason;
@@ -54,7 +54,7 @@ export const eventsRecipe: Recipe = {
       cmd.reply(`[cookbook] round: endround reason=${reason} delay=${delay} queued=${ok} (round_end log follows next frame if queued)`);
     });
 
-    ctx.commands.register("cb_round_settime", (cmd) => {
+    ctx.commands.register("sm_round_settime", (cmd) => {
       const sec = cmd.argInt(0, 60);
       const gr = GameRules.get();
       const ok = gr ? gr.setTimeRemaining(sec) : false;
@@ -64,21 +64,21 @@ export const eventsRecipe: Recipe = {
       cmd.reply(`[cookbook] round: settime ${sec}: ok=${ok} roundTime=${rt} timeRemaining=${gr.timeRemaining} | freezeTime=${gr.freezeTime} roundStartTime=${rst} gameTime=${now} timeElapsed=${gr.timeElapsed} hud(rt-(now-rst))=${hud}`);
     });
 
-    ctx.commands.register("cb_round_addtime", (cmd) => {
+    ctx.commands.register("sm_round_addtime", (cmd) => {
       const sec = cmd.argInt(0, 30);
       const gr = GameRules.get();
       const ok = gr ? gr.addTimeRemaining(sec) : false;
       cmd.reply(`[cookbook] round: addtime ${sec}: ok=${ok} roundTime=${gr ? gr.roundTime : null} timeRemaining=${gr ? gr.timeRemaining : null}`);
     });
 
-    ctx.commands.register("cb_round_teamscore", (cmd) => {
+    ctx.commands.register("sm_round_teamscore", (cmd) => {
       const team = cmd.argInt(0, 2);
       const score = cmd.argInt(1, 10);
       const ok = Teams.setScore(team, score);
       cmd.reply(`[cookbook] round: teamscore team=${team} -> ${score}: ok=${ok} readback=${Teams.getScore(team)}`);
     });
 
-    ctx.commands.register("cb_round_winpanel", (cmd) => {
+    ctx.commands.register("sm_round_winpanel", (cmd) => {
       const fe = cmd.argInt(0, WinPanelFinalEvent.TerroristsWin);
       const fired = Events.fire("cs_win_panel_round", { final_event: fe }, false);
       cmd.reply(`[cookbook] round: winpanel final_event=${fe} fired=${fired} (client-visible panel is the check; our own JS logger will NOT fire — expected)`);

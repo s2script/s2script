@@ -7,20 +7,20 @@ import { Database } from "@s2script/sdk/db";
  * Every call is off-thread behind a Promise, so none of this ever blocks the
  * tick; the frame counter below proves it advances while a query is in flight.
  *
- *   cb_db          round-trip the local SQLite "demo" connection; proves the
+ *   sm_db          round-trip the local SQLite "demo" connection; proves the
  *                  primitive persists across a server restart.
- *   cb_db_remote   round-trip the operator-configured "stats" (mysql) + "prefs"
+ *   sm_db_remote   round-trip the operator-configured "stats" (mysql) + "prefs"
  *                  (postgres) connections; checks a BIGINT reads back as a
  *                  decimal string.
  */
 export const dbRecipe: Recipe = {
   name: "db",
-  describe: "round-trip SQLite (cb_db) or operator-configured mysql/postgres (cb_db_remote)",
+  describe: "round-trip SQLite (sm_db) or operator-configured mysql/postgres (sm_db_remote)",
   register(ctx) {
     let frames = 0;
     ctx.server.onGameFrame(() => { frames += 1; });
 
-    ctx.commands.register("cb_db", (cmd) => {
+    ctx.commands.register("sm_db", (cmd) => {
       cmd.reply("querying SQLite…");
       (async () => {
         try {
@@ -57,7 +57,7 @@ export const dbRecipe: Recipe = {
       }
     }
 
-    ctx.commands.register("cb_db_remote", (cmd) => {
+    ctx.commands.register("sm_db_remote", (cmd) => {
       cmd.reply("exercising mysql + postgres — watch the log");
       exercise("stats", "INT AUTO_INCREMENT PRIMARY KEY"); // mysql
       exercise("prefs", "SERIAL PRIMARY KEY");              // postgres

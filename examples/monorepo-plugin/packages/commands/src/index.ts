@@ -10,12 +10,12 @@ export function registerCommands(ctx: PluginContext, log: GreetingLog): void {
   let frames = 0;
   ctx.server.onGameFrame(() => { frames += 1; });
 
-  ctx.commands.register("mono_greet", (cmd) => {
+  ctx.commands.register("sm_greet", (cmd) => {
     log.add("hello from a workspace package", frames);
     cmd.reply(`logged greeting #${log.count}`);
   });
 
-  ctx.commands.register("mono_latest", (cmd) => {
+  ctx.commands.register("sm_latest", (cmd) => {
     const latest = log.latest();
     cmd.reply(latest ? `#${log.count} "${latest.text}" at frame ${latest.at}` : "nothing logged yet");
   });

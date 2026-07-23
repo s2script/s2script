@@ -8,11 +8,11 @@ import { Translations } from "@s2script/sdk/translations";
  */
 export const translationsRecipe: Recipe = {
   name: "translations",
-  describe: "seed phrases, positional {1} formatting, and a language switch (cb_translations)",
+  describe: "seed phrases, positional {1} formatting, and a language switch (sm_translations)",
   register(ctx) {
     Translations.load("trdemo", { Greeting: "Hello {1}", Bye: "Goodbye {1}", OnlyEn: "English only" });
 
-    ctx.commands.register("cb_translations", (cmd) => {
+    ctx.commands.register("sm_translations", (cmd) => {
       // default (root / English) — slot -1 uses the server default ("" = root)
       console.log(`[cookbook] translations en: ${Translations.translate(-1, "Greeting", "world")}`);       // Hello world
       console.log(`[cookbook] translations en missing-key: ${Translations.translate(-1, "Nope")}`);         // Nope (fallback)

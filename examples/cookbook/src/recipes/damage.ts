@@ -13,13 +13,13 @@ import type { DamageInfo } from "@s2script/sdk/damage";
  * data, not something this recipe should hardcode.
  *
  * The hook is a subscription, so it's registered unconditionally at
- * register() time, as it must be. cb_damage only toggles whether the handler
+ * register() time, as it must be. sm_damage only toggles whether the handler
  * actually *modifies* anything, so loading this recipe doesn't quietly start
  * halving damage on a live server.
  */
 export const damageRecipe: Recipe = {
   name: "damage",
-  describe: "toggle a damage pre-hook that halves incoming damage (cb_damage)",
+  describe: "toggle a damage pre-hook that halves incoming damage (sm_damage)",
   register(ctx) {
     let halving = false;
 
@@ -33,7 +33,7 @@ export const damageRecipe: Recipe = {
       if (halving) info.damage = info.damage / 2;
     });
 
-    ctx.commands.register("cb_damage", (cmd) => {
+    ctx.commands.register("sm_damage", (cmd) => {
       halving = !halving;
       cmd.reply(halving
         ? "damage hook now HALVING incoming damage — see server log"

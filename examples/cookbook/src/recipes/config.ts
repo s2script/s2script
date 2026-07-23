@@ -15,15 +15,15 @@ import { config } from "@s2script/sdk/config";
  */
 export const configRecipe: Recipe = {
   name: "config",
-  describe: "read the plugin's operator-editable config file, live-reloadable (cb_config)",
+  describe: "read the plugin's operator-editable config file, live-reloadable (sm_config)",
   register(ctx) {
     ctx.config.onChange(() => {
       console.log("[cookbook] config changed — greeting=" + JSON.stringify(config.getString("greeting")));
     });
 
-    ctx.commands.register("cb_config", (cmd) => {
+    ctx.commands.register("sm_config", (cmd) => {
       cmd.reply("greeting = " + JSON.stringify(config.getString("greeting")));
-      cmd.reply("edit the materialized config file, save, then re-run cb_config to see it live-reload");
+      cmd.reply("edit the materialized config file, save, then re-run sm_config to see it live-reload");
     });
   },
 };

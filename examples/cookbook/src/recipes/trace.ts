@@ -16,9 +16,9 @@ function fmt(v: { x: number; y: number; z: number }): string {
  */
 export const traceRecipe: Recipe = {
   name: "trace",
-  describe: "ray-cast down, up, and along a pawn's aim (cb_trace)",
+  describe: "ray-cast down, up, and along a pawn's aim (sm_trace)",
   register(ctx) {
-    ctx.commands.register("cb_trace", (cmd) => {
+    ctx.commands.register("sm_trace", (cmd) => {
       let pawn: ReturnType<typeof Pawn.forSlot> = null;
       for (let slot = 0; slot < 12; slot++) {
         const pw = Pawn.forSlot(slot);

@@ -10,9 +10,9 @@ import { GameRules, Fade } from "@s2script/cs2";
  */
 export const gamerulesRecipe: Recipe = {
   name: "gamerules",
-  describe: "read live gamerules state and fire a Fade usermessage (cb_gamerules / cb_gamerules_blind)",
+  describe: "read live gamerules state and fire a Fade usermessage (sm_gamerules / sm_gamerules_blind)",
   register(ctx) {
-    ctx.commands.register("cb_gamerules", (cmd) => {
+    ctx.commands.register("sm_gamerules", (cmd) => {
       const gr = GameRules.get();
       const proxies = Entity.findByClass("cs_gamerules").length;
       if (!gr) { cmd.reply(`[cookbook] gamerules: no cs_gamerules proxy (findByClass=${proxies})`); return; }
@@ -20,7 +20,7 @@ export const gamerulesRecipe: Recipe = {
                 `rounds=${gr.totalRoundsPlayed} phase=${gr.gamePhase} proxies=${proxies}`);
     });
 
-    ctx.commands.register("cb_gamerules_blind", (cmd) => {
+    ctx.commands.register("sm_gamerules_blind", (cmd) => {
       // the slot is the FIRST arg (cmd.args excludes the command name; no target token here).
       const slot = cmd.args.length > 0 ? parseInt(cmd.args[0], 10) : (cmd.callerSlot >= 0 ? cmd.callerSlot : 0);
       const ok = Fade.blind(slot, 1500);

@@ -9,12 +9,12 @@ import { fetch } from "@s2script/sdk/http";
  */
 export const httpRecipe: Recipe = {
   name: "http",
-  describe: "fire concurrent fetch()es without blocking the tick (cb_http)",
+  describe: "fire concurrent fetch()es without blocking the tick (sm_http)",
   register(ctx) {
     let frames = 0;
     ctx.server.onGameFrame(() => { frames += 1; });
 
-    ctx.commands.register("cb_http", (cmd) => {
+    ctx.commands.register("sm_http", (cmd) => {
       const start = frames;
       const N = 10;
       cmd.reply(`firing ${N} concurrent fetches…`);

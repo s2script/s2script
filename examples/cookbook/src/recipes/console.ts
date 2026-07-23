@@ -13,9 +13,9 @@ import { console } from "@s2script/sdk/console";
  */
 export const consoleRecipe: Recipe = {
   name: "console",
-  describe: "the engine console via an explicit import, not the ambient global (cb_console)",
+  describe: "the engine console via an explicit import, not the ambient global (sm_console)",
   register(ctx) {
-    ctx.commands.register("cb_console", (cmd) => {
+    ctx.commands.register("sm_console", (cmd) => {
       console.log("[cookbook] console.log — informational");
       console.info("[cookbook] console.info — same severity as log, a semantic label only");
       console.warn("[cookbook] console.warn — flagged at warning severity");

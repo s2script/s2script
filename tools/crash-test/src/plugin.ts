@@ -11,7 +11,7 @@ import { plugin } from "@s2script/sdk/plugin";
 declare function __s2_crash_test(kind: string): boolean;
 
 export default plugin((ctx) => {
-  ctx.commands.registerServer("crashtest", (cmd) => {
+  ctx.commands.registerServer("sm_crashtest", (cmd) => {
     const kind = cmd.args[0] ?? "";
     console.log(`[crash-test] sm_crashtest ${kind}`);
     if (kind === "js") {

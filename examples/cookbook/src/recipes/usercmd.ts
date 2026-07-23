@@ -9,21 +9,21 @@ const IN_JUMP = 2n; // buttons is a bigint
 /**
  * ctx.clients.onRunCmd reads a player's live per-tick input (7 fields) before
  * the engine processes it, and can modify or block it by returning a
- * HookResult. Gated behind cb_usercmd so it doesn't fight normal movement
+ * HookResult. Gated behind sm_usercmd so it doesn't fight normal movement
  * until a player opts in:
  *
- *   cb_usercmd off      — read only (default)
- *   cb_usercmd jump     — force forwardMove=0 + IN_JUMP (modify proof)
- *   cb_usercmd side     — zero forwardMove, route it to sideMove (the sideways surf style — proves sign+effect)
- *   cb_usercmd block    — return HookResult.Handled (neutralize the whole input)
- *   cb_usercmd verbose  — toggle the read-proof log line below (off by default — this hook fires
+ *   sm_usercmd off      — read only (default)
+ *   sm_usercmd jump     — force forwardMove=0 + IN_JUMP (modify proof)
+ *   sm_usercmd side     — zero forwardMove, route it to sideMove (the sideways surf style — proves sign+effect)
+ *   sm_usercmd block    — return HookResult.Handled (neutralize the whole input)
+ *   sm_usercmd verbose  — toggle the read-proof log line below (off by default — this hook fires
  *                         every tick for every player, so even throttled to 1-in-64 it's ~1
  *                         line/sec/player; loading the cookbook must not spam the console on its
  *                         own, same reasoning as recipes/damage.ts defaulting its effect off)
  */
 export const usercmdRecipe: Recipe = {
   name: "usercmd",
-  describe: "read/modify/block a player's per-tick input (cb_usercmd off|jump|side|block|verbose)",
+  describe: "read/modify/block a player's per-tick input (sm_usercmd off|jump|side|block|verbose)",
   register(ctx) {
     const modeBySlot = new Map<number, Mode>();
     let logN = 0;
@@ -33,7 +33,7 @@ export const usercmdRecipe: Recipe = {
       const slot = info.slot;
       // Read proof (throttled ~1/64 cmds): all 7 fields + cross-check buttons against the SCHEMA source
       // (pawn.buttons = m_pButtonStates[0], a different read path) and the decoded slot vs the pawn's.
-      // Opt-in via cb_usercmd verbose — see the toggle note above.
+      // Opt-in via sm_usercmd verbose — see the toggle note above.
       if (verbose && (logN++ & 0x3f) === 0) {
         const schemaBtn = Pawn.forSlot(slot)?.buttons ?? -1;
         const va = cmd.viewAngles;
@@ -58,7 +58,7 @@ export const usercmdRecipe: Recipe = {
       return HookResult.Continue;
     });
 
-    ctx.commands.register("cb_usercmd", (cmd) => {
+    ctx.commands.register("sm_usercmd", (cmd) => {
       const arg = cmd.argsFrom(0).trim();
       if (arg === "verbose") {
         verbose = !verbose;

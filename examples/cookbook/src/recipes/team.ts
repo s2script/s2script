@@ -11,10 +11,10 @@ const TEAM_NAME = (t: number | null | undefined): string =>
 
 export const teamRecipe: Recipe = {
   name: "team",
-  describe: "changeTeam (cb_changeteam spectest|unspec) vs switchTeam (cb_switchteam switchtest|deadtest|revealtest)",
+  describe: "changeTeam (sm_changeteam spectest|unspec) vs switchTeam (sm_switchteam switchtest|deadtest|revealtest)",
   register(ctx) {
     // --- changeTeam: jointeam semantics, usually kills the pawn ------------
-    ctx.commands.register("cb_changeteam", (cmd) => {
+    ctx.commands.register("sm_changeteam", (cmd) => {
       const sub = cmd.arg(0) || "spectest";
 
       if (sub === "unspec") {
@@ -47,7 +47,7 @@ export const teamRecipe: Recipe = {
     });
 
     // --- switchTeam: non-lethal, keeps the player alive and armed ----------
-    ctx.commands.register("cb_switchteam", (cmd) => {
+    ctx.commands.register("sm_switchteam", (cmd) => {
       const sub = cmd.arg(0) || "switchtest";
 
       if (sub === "deadtest") {

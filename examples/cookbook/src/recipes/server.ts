@@ -13,7 +13,7 @@ import { Player } from "@s2script/cs2";
  */
 export const serverRecipe: Recipe = {
   name: "server",
-  describe: "a registered cvar, OnMapStart, and the connected client list (cb_server)",
+  describe: "a registered cvar, OnMapStart, and the connected client list (sm_server)",
   register(ctx) {
     const ok = Server.registerCvar("s2_demo_mode", {
       type: "int", default: 42, help: "cookbook clientlist/convar/mapstart demo cvar", min: 0, max: 100,
@@ -24,7 +24,7 @@ export const serverRecipe: Recipe = {
       console.log(`[cookbook] server: onMapStart: ${map}`);
     });
 
-    ctx.commands.register("cb_server", (cmd) => {
+    ctx.commands.register("sm_server", (cmd) => {
       const cs = Clients.all();
       cmd.reply(`[cookbook] server: clients=${cs.length} players=${Player.allConnected().length} map=${Server.mapName}`);
       for (const c of cs) {

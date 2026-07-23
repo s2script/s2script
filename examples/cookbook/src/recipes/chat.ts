@@ -16,9 +16,9 @@ import { ChatColors } from "@s2script/cs2";
  */
 export const chatRecipe: Recipe = {
   name: "chat",
-  describe: "print to chat, plain and multi-color inline (cb_chat)",
+  describe: "print to chat, plain and multi-color inline (sm_saycolor)",
   register(ctx) {
-    ctx.commands.register("cb_chat", (cmd) => {
+    ctx.commands.register("sm_saycolor", (cmd) => {
       if (cmd.callerSlot < 0) { cmd.reply("run in-game — chat has no console channel"); return; }
 
       // Plain — no control byte at all; renders in the client's default chat color.
@@ -32,7 +32,7 @@ export const chatRecipe: Recipe = {
           "green stops here, white starts here, " + ChatColors.Red + "and red from here on.",
       );
 
-      Chat.toAll("[cookbook] cb_chat ran — everyone sees this one.");
+      Chat.toAll("[cookbook] sm_saycolor ran — everyone sees this one.");
       cmd.reply("sent 3 chat lines — check chat");
     });
   },

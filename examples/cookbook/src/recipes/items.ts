@@ -19,16 +19,16 @@ function livePawns(): Array<{ slot: number; pawn: NonNullable<ReturnType<typeof 
 }
 
 /**
- * cb_items  give|strip|drop|weapons — the item surface: giveNamedItem /
+ * sm_items  give|strip|drop|weapons — the item surface: giveNamedItem /
  *   stripWeapons / dropActiveWeapon / enumerate held weapons.
- * cb_weapon info|refill|disarm|nofire — the Weapon entity object + pawn fire
+ * sm_weapon info|refill|disarm|nofire — the Weapon entity object + pawn fire
  *   control.
  */
 export const itemsRecipe: Recipe = {
   name: "items",
-  describe: "give/strip/enumerate items (cb_items) and weapon-specific control (cb_weapon)",
+  describe: "give/strip/enumerate items (sm_items) and weapon-specific control (sm_weapon)",
   register(ctx) {
-    ctx.commands.register("cb_items", (cmd) => {
+    ctx.commands.register("sm_items", (cmd) => {
       const sub = cmd.arg(0) || "weapons";
       if (sub === "give") {
         const weapon = cmd.arg(1) || CsItem.AK47;
@@ -53,7 +53,7 @@ export const itemsRecipe: Recipe = {
       }
     });
 
-    ctx.commands.register("cb_weapon", (cmd) => {
+    ctx.commands.register("sm_weapon", (cmd) => {
       const sub = cmd.arg(0) || "info";
       if (sub === "refill") {
         let n = 0;

@@ -16,5 +16,5 @@ import { registerCommands } from "@monorepo-example/commands";
 export default plugin((ctx) => {
   const log = new GreetingLog();
   registerCommands(ctx, log);
-  console.log("[monorepo] loaded — try mono_greet and mono_latest");
+  console.log("[monorepo] loaded — try sm_greet and sm_latest");
 });

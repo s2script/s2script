@@ -4,17 +4,17 @@ import { Player } from "@s2script/cs2";
 
 /**
  * @s2script/clients — the engine-generic client handle: six lifecycle events
- * plus live-read fields (steamId/name/userId/isBot/signonState). cb_clients
- * snapshots every currently-connected client; cb_voice demonstrates
+ * plus live-read fields (steamId/name/userId/isBot/signonState). sm_clients
+ * snapshots every currently-connected client; sm_voice demonstrates
  * ctx.clients.onVoice with a lazy dead-player mute.
  *
  * onVoice fires per-frame while a client is talking, so its per-packet log line is opt-in via
- * `cb_voice verbose` (off by default) — same reasoning as recipes/damage.ts defaulting its effect
+ * `sm_voice verbose` (off by default) — same reasoning as recipes/damage.ts defaulting its effect
  * off: loading the cookbook must not spam the console on its own.
  */
 export const clientsRecipe: Recipe = {
   name: "clients",
-  describe: "list connected clients + lifecycle state (cb_clients) and onVoice (cb_voice / cb_voice verbose)",
+  describe: "list connected clients + lifecycle state (sm_clients) and onVoice (sm_voice / sm_voice verbose)",
   register(ctx) {
     let voiceVerbose = false;
     // --- lifecycle listeners: fire for clients connecting AFTER Active. To
@@ -36,8 +36,8 @@ export const clientsRecipe: Recipe = {
     ctx.clients.onSettingsChanged((c) =>
       console.log(`[cookbook] clients settingsChanged slot=${c.slot} name=${c.name}`));
 
-    // cb_clients — snapshot every currently-connected client (bots included).
-    ctx.commands.register("cb_clients", (cmd) => {
+    // sm_clients — snapshot every currently-connected client (bots included).
+    ctx.commands.register("sm_clients", (cmd) => {
       const all = Clients.all();
       cmd.reply(`${all.length} connected client(s):`);
       for (const c of all) {
@@ -71,9 +71,9 @@ export const clientsRecipe: Recipe = {
       console.log("[cookbook] voice round_end — unmuted all");
     });
 
-    // cb_voice verbose — toggle the per-packet onVoice log (see the toggle note above).
-    // cb_voice <slot> <0|1> — set/read the mute flag directly, without needing voice traffic.
-    ctx.commands.register("cb_voice", (cmd) => {
+    // sm_voice verbose — toggle the per-packet onVoice log (see the toggle note above).
+    // sm_voice <slot> <0|1> — set/read the mute flag directly, without needing voice traffic.
+    ctx.commands.register("sm_voice", (cmd) => {
       if (cmd.arg(0) === "verbose") {
         voiceVerbose = !voiceVerbose;
         cmd.reply("[cookbook] voice verbose logging = " + (voiceVerbose ? "on" : "off"));

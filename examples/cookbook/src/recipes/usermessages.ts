@@ -16,7 +16,7 @@ import { HookResult, type HookResultValue } from "@s2script/sdk/events";
  */
 export const usermessagesRecipe: Recipe = {
   name: "usermessages",
-  describe: "intercept RadioText + FireBullets user messages, typed reads + suppress (cb_usermsg)",
+  describe: "intercept RadioText + FireBullets user messages, typed reads + suppress (sm_usermsg)",
   register(ctx) {
     let blockRadio = false; // blanket-blocks ALL radio text
     let blockShots = false;
@@ -40,11 +40,11 @@ export const usermessagesRecipe: Recipe = {
       if (blockShots) return HookResult.Handled;
     });
 
-    ctx.commands.register("cb_usermsg", (cmd) => {
+    ctx.commands.register("sm_usermsg", (cmd) => {
       const what = cmd.arg(0), on = cmd.arg(1) !== "0";
       if (what === "radio") blockRadio = on;
       else if (what === "shots") blockShots = on;
-      else { cmd.reply("[cookbook] usage: cb_usermsg <radio|shots> <0|1>"); return; }
+      else { cmd.reply("[cookbook] usage: sm_usermsg <radio|shots> <0|1>"); return; }
       cmd.reply("[cookbook] usermsg: block " + what + " = " + on);
     });
   },

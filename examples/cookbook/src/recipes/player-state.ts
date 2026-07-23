@@ -9,12 +9,12 @@ import { Player } from "@s2script/cs2";
  * (players stay dead) and fires in gamemodes that permit respawn (warmup,
  * and TTT-style rules).
  *
- *   cb_respawn <slot>   respawn one slot, called from a command handler
- *   cb_respawn_all      respawn every dead in-game player in one dispatch
+ *   sm_respawn <slot>   respawn one slot, called from a command handler
+ *   sm_respawn_all      respawn every dead in-game player in one dispatch
  */
 export const playerStateRecipe: Recipe = {
   name: "player-state",
-  describe: "respawn a player and observe the resulting player_spawn (cb_respawn / cb_respawn_all)",
+  describe: "respawn a player and observe the resulting player_spawn (sm_respawn / sm_respawn_all)",
   register(ctx) {
     ctx.events.on("player_spawn", (e) => {
       const slot = e.getPlayerSlot("userid");
@@ -31,23 +31,23 @@ export const playerStateRecipe: Recipe = {
       console.log("[cookbook] player-state: player_death slot=" + e.getPlayerSlot("userid"));
     });
 
-    // cb_respawn <slot> — single-target respawn from a command handler.
-    ctx.commands.register("cb_respawn", (cmd) => {
+    // sm_respawn <slot> — single-target respawn from a command handler.
+    ctx.commands.register("sm_respawn", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const p = slot >= 0 ? Player.fromSlot(slot) : null;
-      if (!p) { cmd.reply("cb_respawn: no player in slot " + slot); return; }
+      if (!p) { cmd.reply("sm_respawn: no player in slot " + slot); return; }
       const ok = p.respawn();
-      cmd.reply("cb_respawn slot=" + slot + " -> " +
+      cmd.reply("sm_respawn slot=" + slot + " -> " +
         (ok ? "queued (executes next frame)" : "no-op (already alive / stale ref / degraded descriptor)"));
     });
 
-    // cb_respawn_all — respawn every dead in-game player in one dispatch (the multi-entry batch proof).
-    ctx.commands.register("cb_respawn_all", (cmd) => {
+    // sm_respawn_all — respawn every dead in-game player in one dispatch (the multi-entry batch proof).
+    ctx.commands.register("sm_respawn_all", (cmd) => {
       let queued = 0, skipped = 0;
       for (const p of Player.all()) {
         if (p.respawn()) queued++; else skipped++;
       }
-      cmd.reply("cb_respawn_all: queued=" + queued + " skipped=" + skipped);
+      cmd.reply("sm_respawn_all: queued=" + queued + " skipped=" + skipped);
     });
   },
 };

@@ -24,7 +24,7 @@ export default plugin((ctx) => {
   console.log(`[hello] loaded (greeted so far: ${greeted})`);
 
   // A command any client can run, from chat or console.
-  ctx.commands.register("hello", (cmd) => {
+  ctx.commands.register("sm_hello", (cmd) => {
     cmd.reply(`hello! I have greeted ${greeted} spawns since first load.`);
   });
 

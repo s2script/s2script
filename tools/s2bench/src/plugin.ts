@@ -2,7 +2,7 @@
 // DIRECT per-op timing via __s2_hrtime_ns (the Stopwatch analog): batch ops are timed as a single
 // 1024-loop (exactly like the profiler), per-call ops are timed individually with min/avg/max and a
 // subtracted timer baseline. NO loop-amortization multipliers. Throwaway informational tool.
-// Run: `s2bench` (rcon/console).
+// Run: `sm_s2bench` (rcon/console).
 
 import { plugin } from "@s2script/sdk/plugin";
 import { createEntity, Entity, EntityRef } from "@s2script/sdk/entity";
@@ -139,6 +139,6 @@ function runBench(reply: (m: string) => void): void {
 }
 
 export default plugin((ctx) => {
-  ctx.commands.register("s2bench", (cmd) => { runBench((m) => cmd.reply(m)); });
-  console.log("[s2bench] onLoad — run `s2bench` (direct per-op timing)");
+  ctx.commands.register("sm_s2bench", (cmd) => { runBench((m) => cmd.reply(m)); });
+  console.log("[s2bench] onLoad — run `sm_s2bench` (direct per-op timing)");
 });

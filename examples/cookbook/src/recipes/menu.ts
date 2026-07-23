@@ -27,18 +27,18 @@ function showMenu(slot: number, style: MenuStyle): void {
  * center-screen HTML backend (WASD nav + E to select) or the chat-log
  * backend (type the number). This also proves the WASD input primitive
  * live by logging a bot's button mask changing every couple of seconds
- * (bots press buttons) — opt-in via `cb_menu verbose` (off by default), same
+ * (bots press buttons) — opt-in via `sm_menu verbose` (off by default), same
  * reasoning as recipes/damage.ts defaulting its effect off: a subscription
  * this cookbook registers unconditionally at load must not spam the console
  * on its own.
  */
 export const menuRecipe: Recipe = {
   name: "menu",
-  describe: "show a center or chat menu (cb_menu / cb_menu_chat / cb_menu verbose)",
+  describe: "show a center or chat menu (sm_menu / sm_menu_chat / sm_menu verbose)",
   register(ctx) {
     let verbose = false;
 
-    ctx.commands.register("cb_menu", cmd => {
+    ctx.commands.register("sm_menu", cmd => {
       if (cmd.arg(0) === "verbose") {
         verbose = !verbose;
         cmd.reply(`menu verbose frame-probe logging = ${verbose ? "on" : "off"}`);
@@ -48,7 +48,7 @@ export const menuRecipe: Recipe = {
       showMenu(cmd.callerSlot, MenuStyle.Center);
       cmd.reply("center menu shown — W/S to move, E to select");
     });
-    ctx.commands.register("cb_menu_chat", cmd => {
+    ctx.commands.register("sm_menu_chat", cmd => {
       if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
       showMenu(cmd.callerSlot, MenuStyle.Chat);
       cmd.reply("chat menu shown — type the number");

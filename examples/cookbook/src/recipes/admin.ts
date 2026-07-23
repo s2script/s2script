@@ -13,7 +13,7 @@ import { ADMFLAG } from "@s2script/sdk/admin";
  *                                     missing the flag (or with no admin entry) is refused with
  *                                     no code in this file making that decision — see
  *                                     plugins/adminhelp, whose sm_help is registerAdmin-gated on
- *                                     ADMFLAG.GENERIC exactly like cb_admin_flag below. The server
+ *                                     ADMFLAG.GENERIC exactly like sm_adminflags_gated below. The server
  *                                     console always passes an admin gate (SM parity).
  *
  * ADMFLAG's bits are SourceMod-parity (see @s2script/sdk/admin): GENERIC is the baseline "is an
@@ -21,20 +21,20 @@ import { ADMFLAG } from "@s2script/sdk/admin";
  */
 export const adminRecipe: Recipe = {
   name: "admin",
-  describe: "register vs registerServer vs registerAdmin (cb_admin / cb_admin_server / cb_admin_flag)",
+  describe: "register vs registerServer vs registerAdmin (sm_adminflags / sm_adminflags_server / sm_adminflags_gated)",
   register(ctx) {
-    ctx.commands.register("cb_admin", (cmd) => {
-      cmd.reply("cb_admin: anyone can run this (ctx.commands.register). Now try cb_admin_server from " +
-        "an in-game console (refused) vs the SERVER console (works), and cb_admin_flag as a non-admin " +
+    ctx.commands.register("sm_adminflags", (cmd) => {
+      cmd.reply("sm_adminflags: anyone can run this (ctx.commands.register). Now try sm_adminflags_server from " +
+        "an in-game console (refused) vs the SERVER console (works), and sm_adminflags_gated as a non-admin " +
         "(refused, no code here decided that).");
     });
 
-    ctx.commands.registerServer("cb_admin_server", (cmd) => {
-      cmd.reply("cb_admin_server: reached the handler — this command only exists for the server console/rcon.");
+    ctx.commands.registerServer("sm_adminflags_server", (cmd) => {
+      cmd.reply("sm_adminflags_server: reached the handler — this command only exists for the server console/rcon.");
     });
 
-    ctx.commands.registerAdmin("cb_admin_flag", ADMFLAG.GENERIC, (cmd) => {
-      cmd.reply("cb_admin_flag: you passed the ADMFLAG.GENERIC gate (or you're the server console).");
+    ctx.commands.registerAdmin("sm_adminflags_gated", ADMFLAG.GENERIC, (cmd) => {
+      cmd.reply("sm_adminflags_gated: you passed the ADMFLAG.GENERIC gate (or you're the server console).");
     });
   },
 };

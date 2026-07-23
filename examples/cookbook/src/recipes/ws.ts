@@ -8,12 +8,12 @@ import { WebSocket } from "@s2script/sdk/ws";
  */
 export const wsRecipe: Recipe = {
   name: "ws",
-  describe: "connect a websocket without blocking the tick (cb_ws)",
+  describe: "connect a websocket without blocking the tick (sm_ws)",
   register(ctx) {
     let frames = 0;
     ctx.server.onGameFrame(() => { frames += 1; });
 
-    ctx.commands.register("cb_ws", (cmd) => {
+    ctx.commands.register("sm_ws", (cmd) => {
       const start = frames;
       cmd.reply("connecting…");
       WebSocket.connect("wss://ws.postman-echo.com/raw")
