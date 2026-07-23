@@ -429,9 +429,11 @@
     return pawn.isValid() ? new Pawn(pawn) : null;
   };
 
-  // CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). A message sent to
-  // the chat box needs a leading control byte to render; the PLUGIN composes colored messages with these
-  // (SourceMod-parity — color is content, not a native-layer default). Frozen so consumers can't mutate.
+  // CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). The PLUGIN composes
+  // colored messages with these (SourceMod-parity — color is content, not a native-layer default); just
+  // put one at the front of the message (`Green + "hi"`). No leading space needed — @s2script/chat prefixes
+  // every line with an invisible zero-width space so the first color byte is never swallowed. Frozen so
+  // consumers can't mutate.
   var ChatColors = Object.freeze({
     Default: "\x01", White: "\x01", DarkRed: "\x02", LightPurple: "\x03", Green: "\x04", Olive: "\x05",
     Lime: "\x06", Red: "\x07", Grey: "\x08", Yellow: "\x09", Silver: "\x0A", Blue: "\x0B", DarkBlue: "\x0C",

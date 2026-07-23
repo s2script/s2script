@@ -15,7 +15,7 @@ function actorName(slot: number): string {
 function doSay(actorSlot: number, msg: string): void {
   for (const p of Player.allConnected()) {
     const src = Activity.formatSource(actorSlot, p.slot);
-    if (src.show) Chat.toSlot(p.slot, " " + GREEN + "(ALL) " + src.name + ": " + WHITE + msg);
+    if (src.show) Chat.toSlot(p.slot, GREEN + "(ALL) " + src.name + ": " + WHITE + msg);
   }
 }
 
@@ -23,7 +23,7 @@ function doAdminChat(actorSlot: number, msg: string): void {
   const name = actorName(actorSlot);
   for (const p of Player.allConnected()) {
     const a = Admin.forSlot(p.slot);
-    if (a && a.hasFlags(ADMFLAG.CHAT)) Chat.toSlot(p.slot, " " + GREEN + "(ADMINS) " + name + ": " + WHITE + msg);
+    if (a && a.hasFlags(ADMFLAG.CHAT)) Chat.toSlot(p.slot, GREEN + "(ADMINS) " + name + ": " + WHITE + msg);
   }
 }
 
@@ -31,9 +31,9 @@ function doPsay(actorSlot: number, target: Player, msg: string): void {
   const name = actorName(actorSlot);
   const tn = target.playerName || "";
   // Recipient sees who it was directed to + who sent it; sender gets a confirmation echo.
-  Chat.toSlot(target.slot, " " + GREEN + "(private to " + tn + ") " + name + ": " + WHITE + msg);
+  Chat.toSlot(target.slot, GREEN + "(private to " + tn + ") " + name + ": " + WHITE + msg);
   if (actorSlot >= 0 && actorSlot !== target.slot) {
-    Chat.toSlot(actorSlot, " " + GREEN + "(private to " + tn + ") " + WHITE + msg);
+    Chat.toSlot(actorSlot, GREEN + "(private to " + tn + ") " + WHITE + msg);
   }
 }
 

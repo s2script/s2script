@@ -37,8 +37,7 @@ export default plugin((ctx) => {
     // sustained flood doesn't produce a wall of notices (they'd be the only lines the flooder sees).
     let lastNotify = prev.lastNotify;
     if (r.block && now - lastNotify >= NOTIFY_INTERVAL) {
-      // Leading space so the red byte lands on the text (a leading color byte is swallowed).
-      Chat.toSlot(slot, " " + ChatColors.Red + "[antiflood] You are sending messages too fast. Please slow down.");
+      Chat.toSlot(slot, ChatColors.Red + "[antiflood] You are sending messages too fast. Please slow down.");
       lastNotify = now;
     }
     state.set(slot, { tokens: r.tokens, lastTime: r.lastTime, lastNotify });
