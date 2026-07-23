@@ -7,12 +7,11 @@ import {
   symlinkSync,
 } from "node:fs";
 import { dirname, join, resolve, basename } from "node:path";
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isPackagesDir } from "../packages-resolve.ts";
 import { sharedCompilerOptionsJson } from "../tsconfig-shared.ts";
+import * as ui from "../ui/ui.ts";
 
 export type GameChoice = "cs2" | "none";
 export type TemplateChoice = "minimal";
@@ -77,38 +76,6 @@ function defaultNameFromPath(dir: string): string {
       .replace(/^-+|-+$/g, "")
       .toLowerCase() || "plugin";
   return `@plugin/${slug}`;
-}
-
-async function promptSelect(
-  rl: ReturnType<typeof createInterface>,
-  question: string,
-  choices: { value: string; label: string }[],
-  defaultValue: string,
-): Promise<string> {
-  console.log(question);
-  choices.forEach((c, i) => {
-    const mark = c.value === defaultValue ? "*" : " ";
-    console.log(`  ${mark} ${i + 1}) ${c.label}`);
-  });
-  const raw = (await rl.question(`  (default ${defaultValue}): `)).trim();
-  if (!raw) return defaultValue;
-  const asNum = Number(raw);
-  if (Number.isInteger(asNum) && asNum >= 1 && asNum <= choices.length) {
-    return choices[asNum - 1]!.value;
-  }
-  const hit = choices.find(
-    (c) => c.value === raw || c.label.toLowerCase() === raw.toLowerCase(),
-  );
-  return hit?.value ?? defaultValue;
-}
-
-async function promptText(
-  rl: ReturnType<typeof createInterface>,
-  question: string,
-  defaultValue: string,
-): Promise<string> {
-  const raw = (await rl.question(`${question} (${defaultValue}): `)).trim();
-  return raw || defaultValue;
 }
 
 function assertGame(v: string | undefined): GameChoice | undefined {
@@ -294,7 +261,7 @@ function runInstall(dir: string, pm: InstallChoice): void {
  */
 export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResult> {
   const targetPath = resolve(opts.path ?? ".");
-  const interactive = Boolean(input.isTTY && output.isTTY && !opts.yes);
+  const interactive = ui.isInteractive({ yes: opts.yes });
   let game = assertGame(opts.game);
   let name = opts.name;
   let install = opts.noInstall ? ("none" as InstallChoice) : assertInstall(opts.install);
@@ -312,38 +279,44 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
   }
 
   if (interactive) {
-    const rl = createInterface({ input, output });
-    try {
-      if (!game) {
-        game = (await promptSelect(
-          rl,
-          "Which game?",
-          [
-            { value: "cs2", label: "Counter-Strike 2" },
-            { value: "none", label: "Engine-generic only (no game package)" },
-          ],
-          "cs2",
-        )) as GameChoice;
-      }
-      if (!name) {
-        name = await promptText(rl, "Plugin package name", defaultNameFromPath(targetPath));
-      }
-      if (!install) {
-        install = (await promptSelect(
-          rl,
-          "Install dependencies?",
-          [
-            { value: "npm", label: "npm" },
-            { value: "pnpm", label: "pnpm" },
-            { value: "yarn", label: "yarn" },
-            { value: "bun", label: "bun" },
-            { value: "none", label: "skip" },
-          ],
-          "npm",
-        )) as InstallChoice;
-      }
-    } finally {
-      rl.close();
+    ui.intro("Create an s2script plugin");
+    if (!game) {
+      game = await ui.select<GameChoice>({
+        message: "Which game?",
+        options: [
+          { value: "cs2", label: "Counter-Strike 2" },
+          { value: "none", label: "Engine-generic only (no game package)" },
+        ],
+        initialValue: "cs2",
+      });
+    }
+    if (!name) {
+      name = await ui.text({
+        message: "Plugin package name",
+        defaultValue: defaultNameFromPath(targetPath),
+        placeholder: defaultNameFromPath(targetPath),
+      });
+    }
+    if (!install) {
+      install = await ui.select<InstallChoice>({
+        message: "Install dependencies?",
+        options: [
+          { value: "npm", label: "npm" },
+          { value: "pnpm", label: "pnpm" },
+          { value: "yarn", label: "yarn" },
+          { value: "bun", label: "bun" },
+          { value: "none", label: "skip" },
+        ],
+        initialValue: "npm",
+      });
+    }
+    const proceed = await ui.confirm({
+      message: `Create ${name} (${game}) in ${targetPath}?`,
+      initialValue: true,
+    });
+    if (!proceed) {
+      ui.outro("Cancelled.");
+      process.exit(130);
     }
   }
 
@@ -366,7 +339,11 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
 
   let installed = false;
   if (install !== "none") {
-    runInstall(targetPath, install);
+    const pm = install;
+    await ui.task(`Installing dependencies (${pm})`, async () => runInstall(targetPath, pm), {
+      interactive,
+      done: () => `Installed dependencies (${pm})`,
+    });
     installed = true;
   } else if (localPackagesDir) {
     linkLocalPackagesForNoInstall(targetPath, localPackagesDir);

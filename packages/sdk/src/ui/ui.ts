@@ -33,32 +33,19 @@ export const log = {
   message: (m: string): void => clack.log.message(m),
 };
 
-export async function select<T extends string>(opts: {
-  message: string;
-  options: { value: T; label: string; hint?: string }[];
-  initialValue?: T;
-}): Promise<T> {
-  return guard(await clack.select(opts)) as T;
+export async function select<T extends string>(opts: clack.SelectOptions<T>): Promise<T> {
+  return guard(await clack.select(opts));
 }
 
-export async function text(opts: {
-  message: string;
-  placeholder?: string;
-  defaultValue?: string;
-  initialValue?: string;
-  validate?: (v: string) => string | undefined;
-}): Promise<string> {
+export async function text(opts: clack.TextOptions): Promise<string> {
   return guard(await clack.text(opts));
 }
 
-export async function password(opts: {
-  message: string;
-  validate?: (v: string) => string | undefined;
-}): Promise<string> {
+export async function password(opts: clack.PasswordOptions): Promise<string> {
   return guard(await clack.password(opts));
 }
 
-export async function confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean> {
+export async function confirm(opts: clack.ConfirmOptions): Promise<boolean> {
   return guard(await clack.confirm(opts));
 }
 
@@ -76,7 +63,7 @@ export async function task<T>(
     s.stop(opts.done ? opts.done(r) : label);
     return r;
   } catch (e) {
-    s.stop(`${label} — failed`, 1);
+    s.error(`${label} — failed`);
     throw e;
   }
 }
