@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Typecheck every example and plugin against the shipped engine .d.ts (the Slice-5E.1 gate).
-# Fails if any plugin or example has a type error — a .d.ts regression that breaks them is caught here.
+# Typecheck every example, plugin, and dev tool against the shipped engine .d.ts (the Slice-5E.1 gate).
+# Fails if any has a type error — a .d.ts regression that breaks them is caught here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
 # plugins/*/ also globs the bare plugins/disabled/ dir; the package.json guard skips it.
 # An unmatched glob stays literal and is skipped by the same guard (no set -e trip).
-for d in examples/*/ plugins/*/ plugins/disabled/*/; do
+for d in examples/*/ plugins/*/ plugins/disabled/*/ tools/*/; do
     [ -f "$d/package.json" ] || continue
     echo "=== typecheck $d ==="
     if ! node --experimental-strip-types --no-warnings -e "

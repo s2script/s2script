@@ -129,3 +129,17 @@ test("build accepts a CONCRETE map value naming an interface the package does no
   assert.equal(decl.typesSha256, expected);
   assert.ok(zip.readFile("types/_demo_other-name.d.ts"), "embeds under the INTERFACE name");
 });
+
+test("bundles a workspace sibling that declares `main` (platform:neutral mainFields)", async () => {
+  const out = await buildPlugin(join(here, "fixtures", "workspace-sibling"), packagesDir);
+  const zip = new AdmZip(out);
+  const js = zip.readAsText("plugin.js");
+  assert.ok(
+    js.includes("workspace-sibling-resolved"),
+    "the sibling package's source must be inlined into the bundle"
+  );
+  assert.ok(
+    !js.includes('require("@fixture/util")'),
+    "the sibling must be bundled, not left as an external require"
+  );
+});

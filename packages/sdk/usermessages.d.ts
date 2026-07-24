@@ -50,7 +50,7 @@ export interface UserMessageView {
  * @example
  * import { UserMessages } from "@s2script/sdk/usermessages";
  * import { HookResult, type HookResultValue } from "@s2script/sdk/events";
- * // examples/usermsg-demo/src/plugin.ts:15 — blanket-block radio text
+ * // examples/cookbook/src/recipes/usermessages.ts:27 — blanket-block radio text
  * UserMessages.onPre("CCSUsrMsg_RadioText", (m): HookResultValue | void => {
  *   if (blockRadio) return HookResult.Handled;
  * });

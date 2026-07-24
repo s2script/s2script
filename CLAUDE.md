@@ -32,7 +32,7 @@ cargo test -p s2script-core   # core unit + in-isolate suite (forced single-thre
 ```bash
 make ci           # both suites
 make ci-native    # scripts/ci-native.sh — boundary + nameleak + sigscan + licenses, cargo build/test, shim
-make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, activity/antiflood/gate tests
+make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, examples coverage, activity/antiflood/gate tests
 ```
 `.github/workflows/ci-native.yml` and `ci-js.yml` each run one of those two scripts and nothing
 else, so **local green means CI green** and a new gate is added to the script, never to the YAML.
@@ -48,7 +48,7 @@ docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/regi
 
 **Plugins:**
 ```bash
-npx s2script build            # from a plugin dir → dist/<id>.s2sp
+npx @s2script/sdk build       # from a plugin dir → dist/<id>.s2sp
 ./scripts/build-base-plugins.sh
 ```
 
@@ -92,7 +92,9 @@ shim/        C++ Metamod plugin (s2script.so). Owns every CS2/Source2 touchpoint
 games/cs2/   CS2 game-package prelude (pawn.js + generated schema/nav accessors). CS2 field/class names live here, never in core/ or shim.
 packages/    npm-published: @s2script/sdk (builtin capability .d.ts as @s2script/sdk/<cap> subpaths + the `s2s` CLI) and @s2script/cs2 (game types).
 plugins/     The base-plugin suite (SourceMod parity) — ships in the runtime zip.
-examples/    Demo plugins (not shipped).
+examples/    Worked examples (not shipped): hello-plugin, cookbook, entity-playground,
+             greeter-plugin/-consumer, monorepo-plugin.
+tools/       Dev/treadmill tooling (not shipped): schema-dump, s2bench, crash-test.
 plugins/disabled/  Opt-in plugins; the loader's non-recursive scan skips the `plugins/disabled/` subdir. Operators move a .s2sp up one level (into `plugins/`) to enable.
 gamedata/    Regenerable engine facts: byte-signatures, offsets, schema/event/item catalogs (data, not code).
 docs/        ARCHITECTURE.md · INSTALL.md · re-strategy.md · PROGRESS.md · superpowers/{specs,plans}/.

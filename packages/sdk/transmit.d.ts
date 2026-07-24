@@ -21,7 +21,7 @@ export interface TransmitStats {
  * Declarative per-client entity visibility: hide an entity from some viewers, enforced engine-side each snapshot.
  * @example
  * import { Transmit } from "@s2script/sdk/transmit";
- * // examples/transmit-demo/src/plugin.ts:58 — show `prop` ONLY to one viewer slot
+ * // examples/cookbook/src/recipes/transmit.ts:65 — show `prop` ONLY to one viewer slot
  * const ok = Transmit.setVisibleTo(prop, [slot]);
  */
 export declare const Transmit: {
