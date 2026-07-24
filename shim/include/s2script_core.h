@@ -306,6 +306,23 @@ typedef void*     (*s2_ent_resolve_fn)(int index, int serial);
 typedef long long (*s2_ent_identity_flags_fn)(int index, int serial);
 typedef int       (*s2_ent_snapshot_fn)(int* out_indices, int* out_serials, int cap);
 
+/* Plugin-declared engine calls (plugin-gamedata slice) — APPENDED after ent_snapshot; order is the
+ * ABI. Implemented in shim/src/engine_calls.{h,cpp}; these MUST stay signature-identical to the
+ * declarations there. Engine-generic: every string is an OPAQUE name out of the PLUGIN's own
+ * gamedata, so no game identifier reaches the core.
+ * engine_call_resolve: resolve one descriptor against the live binary -> call id >= 0, or -1 with a
+ *   named reason written to reasonOut (the core stores it verbatim as the degrade reason).
+ * engine_call_invoke: call a resolved descriptor on a serial-gated entity receiver. 1 = called
+ *   (retOut written), 0 = degraded (stale receiver / absent `via` sub-object / bad arg budget). */
+typedef int (*s2_engine_call_resolve_fn)(const char* kind, const char* module, const char* pattern,
+                                         const char* resolve, const char* className, int vtableIndex,
+                                         const char* prologue, char* reasonOut, int reasonCap);
+typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial, int subObjOff,
+                                        const uint64_t* gp, const unsigned char* gpKind, int gpCount,
+                                        const double* fp, int fpCount,
+                                        const char* const* strs, const float* vecs,
+                                        int retKind, uint64_t* retOut);
+
 /* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
  * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
  * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
@@ -472,6 +489,9 @@ typedef struct {
     s2_ent_resolve_fn        ent_resolve;        /* (index, engine_serial) -> CEntityInstance* | NULL — identity-CHUNK validated */
     s2_ent_identity_flags_fn ent_identity_flags; /* (index, engine_serial) -> m_flags (>=0) | -1 stale/absent */
     s2_ent_snapshot_fn       ent_snapshot;       /* fill live (index, serial) pairs; returns TOTAL found (may exceed cap) */
+    /* Plugin-declared engine calls — APPENDED after ent_snapshot; order is the ABI; do not reorder above. */
+    s2_engine_call_resolve_fn engine_call_resolve;
+    s2_engine_call_invoke_fn  engine_call_invoke;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

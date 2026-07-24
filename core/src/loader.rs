@@ -202,7 +202,7 @@ fn verify_compiled_against(manifest: &Manifest) -> Result<(), String> {
 
 /// Materialize + start a plugin's load and record it in WATCH_STATE. Shared by the poll file scan,
 /// the reload path, and `start_unblocked_waiters` (the parked-then-unblocked path).
-fn begin_load(manifest: &Manifest, js: &str, path: &Path, mtime: SystemTime) {
+fn begin_load(manifest: &Manifest, js: &str, gamedata: Option<&str>, path: &Path, mtime: SystemTime) {
     // B1: typesSha256 fail-fast. Refusal is remembered exactly like an apiVersion refusal:
     // WATCH_STATE row (path+mtime => warn once) + FAILED state (operator-visible). A rebuilt
     // file (new mtime) retries.
@@ -216,6 +216,13 @@ fn begin_load(manifest: &Manifest, js: &str, path: &Path, mtime: SystemTime) {
     }
     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(manifest));
     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
+    // Plugin-declared engine calls: register every descriptor from the packed `gamedata.json` BEFORE
+    // the factory runs — the plugin's `Engine.call(name)` executes inside its factory and must see a
+    // resolved (or named-degraded) descriptor. Registration is core-side by design: JS never supplies
+    // a declaration. Absent member = a plugin with no declared calls (the overwhelming majority).
+    if let Some(gd) = gamedata {
+        crate::gamedata_calls::register_plugin(&manifest.id, gd);
+    }
     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
     start_load(manifest, js, &cfg);
     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
@@ -359,6 +366,9 @@ struct WaitingLoad {
     mtime: SystemTime,
     manifest: Manifest,
     js: String,
+    /// The packed `gamedata.json` text, carried alongside `js` so a parked plugin registers its
+    /// declared engine calls when it finally starts (`read_s2sp`'s third element).
+    gamedata: Option<String>,
     since_frame: u64,
 }
 
@@ -453,7 +463,7 @@ pub(crate) fn start_unblocked_waiters() {
                 id
             ));
         }
-        begin_load(&wl.manifest, &wl.js, &wl.path, wl.mtime);
+        begin_load(&wl.manifest, &wl.js, wl.gamedata.as_deref(), &wl.path, wl.mtime);
     }
 }
 
@@ -499,10 +509,10 @@ fn drain_pending_ops() {
                 let Some(path) = path else { continue };
                 SUPPRESSED.with(|s| { s.borrow_mut().remove(&path); });
                 match read_file_and_parse(&path) {
-                    Ok((manifest, js, _gamedata)) => {
+                    Ok((manifest, js, gamedata)) => {
                         crate::v8host::unload_plugin(&id);   // no-op if not currently loaded
                         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-                        begin_load(&manifest, &js, &path, mtime);
+                        begin_load(&manifest, &js, gamedata.as_deref(), &path, mtime);
                         crate::v8host::log_warn(&format!("[plugins] reloaded '{}' (sm plugins reload)", id));
                     }
                     Err(e) => crate::v8host::log_warn(&format!("[plugins] reload '{}' failed: {}", id, e)),
@@ -606,7 +616,7 @@ pub(crate) fn poll_plugins() {
     for action in actions {
         match action {
             Action::Load { path, mtime } => match read_file_and_parse(&path) {
-                Ok((manifest, js, _gamedata)) => {
+                Ok((manifest, js, gamedata)) => {
                     if !api_version_compatible(&manifest.api_version) {
                         let reason = format!(
                             "apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)",
@@ -627,7 +637,7 @@ pub(crate) fn poll_plugins() {
                         manifest.plugin_dependencies.keys().cloned().collect(),
                         manifest.publishes.keys().cloned().collect(),
                     ));
-                    parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, old_id: None });
+                    parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, gamedata, old_id: None });
                 }
                 Err(e) => {
                     crate::v8host::log_warn(&format!("WARN: poll_plugins: failed to load {:?}: {}", path, e));
@@ -643,7 +653,7 @@ pub(crate) fn poll_plugins() {
                     continue;
                 }
                 match read_file_and_parse(&path) {
-                    Ok((manifest, js, _gamedata)) => {
+                    Ok((manifest, js, gamedata)) => {
                         if !api_version_compatible(&manifest.api_version) {
                             crate::v8host::log_warn(&format!(
                                 "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {} - keeping the running version",
@@ -662,7 +672,7 @@ pub(crate) fn poll_plugins() {
                             manifest.plugin_dependencies.keys().cloned().collect(),
                             manifest.publishes.keys().cloned().collect(),
                         ));
-                        parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, old_id: Some(old_id) });
+                        parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, gamedata, old_id: Some(old_id) });
                     }
                     Err(e) => {
                         crate::v8host::log_warn(&format!("WARN: poll_plugins: failed to reload {:?}: {}", path, e));
@@ -691,7 +701,7 @@ pub(crate) fn poll_plugins() {
         if let Some(old_id) = &pl.old_id { crate::v8host::unload_plugin(old_id); }
 
         if deps_satisfied(&pl.manifest) {
-            begin_load(&pl.manifest, &pl.js, &pl.path, pl.mtime);
+            begin_load(&pl.manifest, &pl.js, pl.gamedata.as_deref(), &pl.path, pl.mtime);
         } else {
             // Park: record in WATCH_STATE (so mtime edits still retrigger) + WAITING (spec §4).
             WATCH_STATE.with(|ws| {
@@ -703,7 +713,8 @@ pub(crate) fn poll_plugins() {
             ));
             WAITING.with(|w| {
                 w.borrow_mut().insert(pl.manifest.id.clone(), WaitingLoad {
-                    path: pl.path, mtime: pl.mtime, manifest: pl.manifest, js: pl.js, since_frame: frame,
+                    path: pl.path, mtime: pl.mtime, manifest: pl.manifest, js: pl.js,
+                    gamedata: pl.gamedata, since_frame: frame,
                 });
             });
         }
@@ -725,6 +736,9 @@ struct ParsedLoad {
     mtime: SystemTime,
     manifest: Manifest,
     js: String,
+    /// The packed `gamedata.json` text (`read_s2sp`'s third element), `None` for an archive without
+    /// one — which is every plugin that declares no engine calls.
+    gamedata: Option<String>,
     /// `Some(old_id)` when this parse came from a Reload — the old instance is unloaded first.
     old_id: Option<String>,
 }

@@ -62,6 +62,7 @@
 #include "trace.h"    // Ray-trace slice: Ray_t/CTraceFilterEx/CGameTrace + the TraceShape call
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
+#include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -4276,6 +4277,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.ent_resolve        = &s2_ent_resolve;
     ops.ent_identity_flags = &s2_ent_identity_flags;
     ops.ent_snapshot       = &s2_ent_snapshot;
+    // Plugin-declared engine calls — APPENDED after ent_snapshot; order MUST match S2EngineOps
+    // (s2script_core.h + Rust v8host.rs). Both live in engine_calls.cpp: descriptor resolution
+    // (byte-sig or RTTI vtable slot, `prologue`-validated + .text-range checked) and the SysV
+    // invoke thunk. The core owns the descriptor table, the permission gate, and all marshalling.
+    ops.engine_call_resolve = &S2_EngineCallResolve;
+    ops.engine_call_invoke  = &S2_EngineCallInvoke;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
