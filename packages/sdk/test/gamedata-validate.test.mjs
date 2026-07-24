@@ -115,3 +115,24 @@ test("ordinary identifier call names are still accepted", () => {
     assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), [], `expected ${ok} to pass`);
   }
 });
+
+// --- closed vocabularies (added after review) ---
+
+test("an unknown resolve step is rejected", () => {
+  const gd = structuredClone(sigCall);
+  gd.signatures.Foo.linuxsteamrt64.resolve = "drect";
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("unknown resolve step")));
+});
+
+test("every resolve step the shim dispatches on is accepted", () => {
+  for (const r of ["direct", "ctor-body-xref", "lea-disp"]) {
+    const gd = structuredClone(sigCall);
+    gd.signatures.Foo.linuxsteamrt64.resolve = r;
+    assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), [], `expected ${r} to be accepted`);
+  }
+});
+
+test("an unknown declared permission is rejected", () => {
+  const errs = validatePluginGamedata(sigCall, { permissions: ["engine:calls", "totally:bogus"] });
+  assert.ok(errs.some((e) => e.includes("unknown permission")));
+});

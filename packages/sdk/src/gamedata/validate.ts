@@ -18,6 +18,16 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 /** Names that are legal identifiers but hazardous as interface members / map keys. */
 const RESERVED_CALL_NAMES = new Set(["constructor", "prototype", "__proto__"]);
 
+/**
+ * The resolver steps the shim actually dispatches on (`engine_calls.cpp` — `direct` is the default,
+ * then `ctor-body-xref` and `lea-disp`). Closed here so a typo like "drect" is a BUILD error naming
+ * the valid set, rather than a descriptor that resolves to nothing at load and degrades silently.
+ */
+const RESOLVE_KINDS = ["direct", "ctor-body-xref", "lea-disp"] as const;
+
+/** Permissions the runtime understands. Closed for the same reason as RESOLVE_KINDS. */
+const KNOWN_PERMISSIONS = ["engine:calls"] as const;
+
 /** Validate a plugin's gamedata. Returns [] when valid; every string is a build-blocking error. */
 export function validatePluginGamedata(gd: unknown, opts: { permissions: string[] }): string[] {
   const errs: string[] = [];
@@ -39,6 +49,20 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
       if (typeof p[f] !== "string" || !(p[f] as string).length) {
         errs.push(`signature '${name}': '${f}' must be a non-empty string`);
       }
+    }
+    if (typeof p.resolve === "string" && p.resolve.length &&
+        !(RESOLVE_KINDS as readonly string[]).includes(p.resolve)) {
+      errs.push(
+        `signature '${name}': unknown resolve step ${JSON.stringify(p.resolve)} ` +
+          `(allowed: ${RESOLVE_KINDS.join(", ")})`
+      );
+    }
+  }
+
+  // Declared permissions are part of the manifest contract, so a typo here silently grants nothing.
+  for (const perm of opts.permissions) {
+    if (!(KNOWN_PERMISSIONS as readonly string[]).includes(perm)) {
+      errs.push(`unknown permission ${JSON.stringify(perm)} (allowed: ${KNOWN_PERMISSIONS.join(", ")})`);
     }
   }
 

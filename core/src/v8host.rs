@@ -7073,9 +7073,16 @@ fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
             crate::gamedata_calls::RET_ENTITY => {
                 // The shim handed back a packed CEntityHandle read off the entity's own identity;
                 // only the books can turn it into a live ref (a dangling handle yields null).
-                let (i, s) = crate::entity::decode_handle(ret as u32);
-                if let Some(id) = crate::entity_live::adopt(i, s) {
-                    rv.set(build_entity_ref(scope, i, id));
+                //
+                // 0xFFFFFFFF is the shim's "no entity" sentinel (kInvalidEntityHandle) and must be
+                // rejected BEFORE decoding. It cannot be 0, because 0 decodes to the perfectly legal
+                // (index 0, serial 0) — an absent entity would otherwise be indistinguishable from a
+                // live handle to entity slot 0.
+                if ret as u32 != crate::gamedata_calls::INVALID_ENTITY_HANDLE {
+                    let (i, s) = crate::entity::decode_handle(ret as u32);
+                    if let Some(id) = crate::entity_live::adopt(i, s) {
+                        rv.set(build_entity_ref(scope, i, id));
+                    }
                 }
             }
             _ => {}

@@ -11,8 +11,8 @@
 
 import * as esbuild from "esbuild";
 import { zipSync } from "fflate";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { resolve, join, sep } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
 import { assertPublishesTypes, hasPublishes } from "./publish-gate.ts";
@@ -23,6 +23,7 @@ import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
 import { validatePluginGamedata } from "./gamedata/validate.ts";
 import { generateGamedataTypes } from "./gamedata/gen-types.ts";
+import { stripJsonComments } from "./gamedata/jsonc.ts";
 import type { PluginGamedata } from "./gamedata/types.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
@@ -73,9 +74,20 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   const permissions: string[] = Array.isArray(s2.permissions) ? s2.permissions : [];
   let gamedata: PluginGamedata | undefined;
   if (typeof s2.gamedata === "string") {
-    const gdPath = join(absDir, s2.gamedata);
-    // JSONC: line comments only (the same shape gamedata/*.gamedata.jsonc uses).
-    const raw = readFileSync(gdPath, "utf8").replace(/^\s*\/\/.*$/gm, "");
+    const gdPath = resolve(absDir, s2.gamedata);
+    // Containment: the gamedata must live inside the plugin directory. `s2script.gamedata` is an
+    // author-supplied path, and a build must never read (and then PACK) a file from outside the
+    // package — the same class of thing commit 7f45a70 hardened for install.
+    const dirPrefix = absDir.endsWith(sep) ? absDir : absDir + sep;
+    if (gdPath !== absDir && !gdPath.startsWith(dirPrefix)) {
+      throw new Error(
+        `s2script.gamedata escapes the plugin directory: ${JSON.stringify(s2.gamedata)} resolves to ${gdPath}`
+      );
+    }
+    // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core.gamedata.jsonc —
+    // which authors are told to imitate — uses both freely, so a line-only stripper rejected the
+    // house style. See gamedata/jsonc.ts.
+    const raw = stripJsonComments(readFileSync(gdPath, "utf8"));
     try {
       gamedata = JSON.parse(raw) as PluginGamedata;
     } catch (e) {
@@ -90,6 +102,13 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     const genDir = join(absDir, ".s2script");
     mkdirSync(genDir, { recursive: true });
     writeFileSync(join(genDir, "gamedata.d.ts"), generateGamedataTypes(gamedata));
+  } else {
+    // No gamedata: DELETE any previously generated types. Leaving them behind is not merely untidy —
+    // typecheck.ts loads the file as a root, so a stale copy makes the gate certify Engine.call()s
+    // that the emitted .s2sp (which now carries no gamedata.json) provably cannot make. Same hazard
+    // when a call is renamed or dropped, which is why this runs unconditionally rather than only
+    // when the gamedata key is removed.
+    rmSync(join(absDir, ".s2script", "gamedata.d.ts"), { force: true });
   }
 
   // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on

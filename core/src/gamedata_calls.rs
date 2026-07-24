@@ -41,6 +41,11 @@ pub(crate) const RET_INT: i32 = 2;
 pub(crate) const RET_FLOAT: i32 = 3;
 pub(crate) const RET_ENTITY: i32 = 4;
 
+/// The shim's "no entity" marker for `RET_ENTITY` (`kInvalidEntityHandle` in `engine_calls.cpp`).
+/// MUST stay in sync with it, and MUST NOT be 0 — zero decodes to the legal (index 0, serial 0), so
+/// an absent entity would be indistinguishable from a live handle to entity slot 0.
+pub(crate) const INVALID_ENTITY_HANDLE: u32 = 0xFFFF_FFFF;
+
 /// SysV budget (spec §4): `this` consumes the first of the six GP argument registers, leaving 5;
 /// there are 8 xmm argument registers. The SDK fails the BUILD past either bound — these are the
 /// runtime backstop for a hand-rolled or older `.s2sp`.

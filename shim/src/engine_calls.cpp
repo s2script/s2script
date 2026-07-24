@@ -65,6 +65,12 @@ constexpr int kMaxFpArgs = 8;
 // index degrades instead of reading out of bounds (the Shim_EntitySubobjVcall precedent).
 constexpr int kMaxVtableIndex = 512;
 
+// The "no entity" value for `returns: "entity"`. MUST NOT be 0: zero is a legal CEntityHandle
+// encoding (index 0, serial 0), so using it as the absent marker would make "the call returned no
+// entity" indistinguishable from "a live handle to entity slot 0" once the core decodes it. This is
+// the engine's own INVALID_EHANDLE_INDEX convention; core skips decoding when it sees it.
+constexpr uint64_t kInvalidEntityHandle = 0xFFFFFFFFull;
+
 // Descriptor-table cap. Resolution is idempotent per resolved address (see the dedupe in
 // S2_EngineCallResolve), so a plugin reload loop re-uses ids rather than growing the table; the cap
 // is the last line of defence against unbounded growth.
@@ -147,17 +153,48 @@ CEntityInstance* ResolveEntity(int index, int serial) {
     return id->m_pInstance;   // may be null (removal in progress) — caller treats null as not-live
 }
 
+// Is `p` an instance the entity system's own books currently vouch for? Decided WITHOUT reading a
+// single byte of `p`: we walk the system-owned identity chunks and compare instance POINTERS. That
+// ordering is the whole point — `returns: "entity"` is author-declared, so a descriptor whose real
+// return type is not a CBaseEntity* (a wrong declaration, or a call that misbehaved) would otherwise
+// have its vtable/identity read through a wild pointer and SEGV. Membership first, deref second.
+//
+// Cost: at most MAX_TOTAL_ENTITIES pointer compares, and only on an entity-returning invoke. That is
+// the right trade against a wild read, and it is the same books-first rule the rest of the entity
+// system already follows.
+bool PointerIsLiveEntity(const void* p) {
+    CGameEntitySystem* es = S2_EntitySystemBridge();
+    if (!es || !p) return false;
+    for (int i = 0; i < MAX_TOTAL_ENTITIES; i++) {
+        CEntityIdentity* chunk = es->m_EntityList.m_pIdentityChunks[i / MAX_ENTITIES_IN_LIST];
+        if (!chunk) {                                  // sparse chunk — skip the whole block
+            i += MAX_ENTITIES_IN_LIST - 1 - (i % MAX_ENTITIES_IN_LIST);
+            continue;
+        }
+        CEntityIdentity* id = &chunk[i % MAX_ENTITIES_IN_LIST];
+        if (id->m_flags & EF_IS_INVALID_EHANDLE) continue;   // free slot
+        if (id->m_pInstance == p) return true;
+    }
+    return false;
+}
+
 // `returns: "entity"`: convert the returned pointer into a packed CEntityHandle WITHOUT ever letting
-// the pointer itself become a ref. The handle is read off the entity's own identity (the same
-// identity read Shim_EntityCreate/__s2_handle_adopt's callers rely on) and then round-tripped
-// through the identity chunk: the system's books must hand back exactly this instance for that
-// (index, serial), otherwise the pointer is not a live entity of this system and we yield 0. The
-// core still runs the surviving handle through the books-gated adopt path, so a handle the HOST's
+// the pointer itself become a ref. Order of operations matters:
+//   1. PointerIsLiveEntity(p) — books-only membership check, NO deref (see above).
+//   2. only then read the handle off the entity's own identity, and
+//   3. round-trip it through the identity chunk: the books must hand back exactly this instance for
+//      that (index, serial).
+// The core still runs the surviving handle through the books-gated adopt path, so a handle the HOST's
 // books do not vouch for degrades to null there (spec §4).
+//
+// The "no entity" sentinel is kInvalidEntityHandle (0xFFFFFFFF, the engine's own convention), NOT 0:
+// zero is a perfectly legal encoding (index 0, serial 0), so returning it for "none" would make an
+// absent entity indistinguishable from a real handle to entity slot 0 once core decodes it.
 uint64_t EntityHandleFromPtr(void* p) {
-    if (!p) return 0;
+    if (!p) return kInvalidEntityHandle;
+    if (!PointerIsLiveEntity(p)) return kInvalidEntityHandle;   // MUST precede any deref of p
     CEntityHandle h = static_cast<CEntityInstance*>(p)->GetRefEHandle();
-    if (ResolveEntity(h.GetEntryIndex(), h.GetSerialNumber()) != p) return 0;
+    if (ResolveEntity(h.GetEntryIndex(), h.GetSerialNumber()) != p) return kInvalidEntityHandle;
     return static_cast<uint64_t>(static_cast<uint32_t>(h.ToInt()));
 }
 

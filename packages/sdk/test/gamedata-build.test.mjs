@@ -76,3 +76,60 @@ test("a plugin with no gamedata key still builds and packs no gamedata.json", as
   const zip = unzipSync(readFileSync(await buildPlugin(dir)));
   assert.equal(zip["gamedata.json"], undefined);
 });
+
+// --- stale-artifact + containment (added after review) ---
+
+test("removing gamedata deletes the stale generated .d.ts", async () => {
+  const dir = scaffold(GD, ["engine:calls"], OK_BODY);
+  await buildPlugin(dir);
+  const gen = join(dir, ".s2script", "gamedata.d.ts");
+  assert.ok(existsSync(gen), "precondition: generated after the first build");
+
+  // Drop the gamedata and the code that used it, exactly as an author would.
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  delete pkg.s2script.gamedata;
+  delete pkg.s2script.permissions;
+  writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+  writeFileSync(join(dir, "src", "plugin.ts"),
+    `import { plugin } from "@s2script/sdk/plugin";\nexport default plugin(() => {});`);
+
+  const out = await buildPlugin(dir);
+  assert.ok(!existsSync(gen),
+    "a stale gamedata.d.ts makes the gate certify Engine.calls the .s2sp cannot make");
+  assert.equal(unzipSync(readFileSync(out))["gamedata.json"], undefined);
+});
+
+test("a gamedata path escaping the plugin directory fails the build", async () => {
+  const dir = scaffold(GD, ["engine:calls"], OK_BODY);
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  pkg.s2script.gamedata = "../../../etc/hostname";
+  writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+  await assert.rejects(() => buildPlugin(dir), /escapes the plugin directory/);
+});
+
+test("gamedata with trailing and block comments builds (house JSONC style)", async () => {
+  const dir = scaffold(GD, ["engine:calls"], OK_BODY);
+  const jsonc = `{
+  // the signature block
+  "signatures": {
+    "Ig": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48", /* a real pattern would be longer */
+        "resolve": "direct" // match offset == entry
+      }
+    }
+  },
+  "calls": {
+    "ignite": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "Ig" },
+      "args": ["float"], // lifetime
+      "returns": "void"
+    }
+  }
+}`;
+  writeFileSync(join(dir, "gamedata", "plugin.gamedata.jsonc"), jsonc);
+  const out = await buildPlugin(dir);
+  assert.ok(unzipSync(readFileSync(out))["gamedata.json"], "packed despite inline comments");
+});
