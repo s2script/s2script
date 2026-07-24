@@ -111,6 +111,9 @@
     "./transmit": {
       "types": "./transmit.d.ts"
     },
+    "./unsafe": {
+      "types": "./unsafe.d.ts"
+    },
     "./usercmd": {
       "types": "./usercmd.d.ts"
     },

@@ -11,8 +11,8 @@
 
 import * as esbuild from "esbuild";
 import { zipSync } from "fflate";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { resolve, join, sep, basename } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
 import { assertPublishesTypes, hasPublishes } from "./publish-gate.ts";
@@ -21,6 +21,10 @@ import { STAMPED_API_VERSION } from "./api-version.ts";
 import { localContractPath } from "./contracts.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
+import { validatePluginGamedata } from "./gamedata/validate.ts";
+import { generateGamedataTypes } from "./gamedata/gen-types.ts";
+import { stripJsonComments } from "./gamedata/jsonc.ts";
+import type { PluginGamedata } from "./gamedata/types.ts";
 
 /** Shape of plugin package.json (the fields we care about). */
 interface PluginPackageJson {
@@ -35,6 +39,10 @@ interface PluginPackageJson {
     optionalPluginDependencies?: Record<string, string>;
     publishes?: string | Record<string, string>;
     config?: Record<string, unknown>;
+    /** Path (relative to the plugin dir) of this plugin's own gamedata (JSONC). */
+    gamedata?: string;
+    /** Declared capabilities, e.g. ["engine:calls"]. Auditable; the operator allow-list decides. */
+    permissions?: string[];
   };
 }
 
@@ -58,6 +66,61 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   if (config !== undefined) {
     const cfgErrs = validateConfigBlock(config);
     if (cfgErrs.length) throw new Error(`invalid s2script.config:\n  ${cfgErrs.join("\n  ")}`);
+  }
+
+  // --- Cheap fail-fast: the plugin's own gamedata (declared engine calls). Parsed and validated
+  //     BEFORE the typecheck gate so a bad descriptor is reported as a gamedata error rather than
+  //     as a downstream TS error, and so the generated types exist for the gate below. ---
+  const permissions: string[] = Array.isArray(s2.permissions) ? s2.permissions : [];
+  let gamedata: PluginGamedata | undefined;
+  if (typeof s2.gamedata === "string") {
+    const gdPath = resolve(absDir, s2.gamedata);
+    // Containment: the gamedata must live inside the plugin directory. `s2script.gamedata` is an
+    // author-supplied path, and a build must never read (and then PACK) a file from outside the
+    // package — the same class of thing commit 7f45a70 hardened for install.
+    const dirPrefix = absDir.endsWith(sep) ? absDir : absDir + sep;
+    if (gdPath !== absDir && !gdPath.startsWith(dirPrefix)) {
+      throw new Error(
+        `s2script.gamedata escapes the plugin directory: ${JSON.stringify(s2.gamedata)} resolves to ${gdPath}`
+      );
+    }
+    // Naming convention: `<plugin-name-without-scope>.gamedata.jsonc`, mirroring the framework's own
+    // `gamedata/core.gamedata.jsonc` — a gamedata file is named for whoever owns it. Enforced rather
+    // than documented so the convention actually holds: `@me/burn` -> `burn.gamedata.jsonc`.
+    const unscoped = pkg.name.includes("/") ? pkg.name.slice(pkg.name.lastIndexOf("/") + 1) : pkg.name;
+    const actualBase = basename(gdPath);
+    const allowedBases = [`${unscoped}.gamedata.jsonc`, `${unscoped}.gamedata.json`];
+    if (!allowedBases.includes(actualBase)) {
+      throw new Error(
+        `s2script.gamedata must be named '${unscoped}.gamedata.jsonc' (after the plugin name without ` +
+          `its scope, like the framework's own core.gamedata.jsonc), but is '${actualBase}'`
+      );
+    }
+    // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core.gamedata.jsonc —
+    // which authors are told to imitate — uses both freely, so a line-only stripper rejected the
+    // house style. See gamedata/jsonc.ts.
+    const raw = stripJsonComments(readFileSync(gdPath, "utf8"));
+    try {
+      gamedata = JSON.parse(raw) as PluginGamedata;
+    } catch (e) {
+      throw new Error(`invalid gamedata ${gdPath}: ${(e as Error).message}`);
+    }
+    const gdErrs = validatePluginGamedata(gamedata, { permissions });
+    if (gdErrs.length) throw new Error(`invalid gamedata:\n  ${gdErrs.join("\n  ")}`);
+
+    // Layout is data, semantics are code: the EngineCalls types are DERIVED from the gamedata.
+    // Written before the gate so a wrong arity/arg type at a call site fails the build (the file
+    // is a typecheck root — see typecheck.ts generatedDeclarationFiles).
+    const genDir = join(absDir, ".s2script");
+    mkdirSync(genDir, { recursive: true });
+    writeFileSync(join(genDir, "gamedata.d.ts"), generateGamedataTypes(gamedata));
+  } else {
+    // No gamedata: DELETE any previously generated types. Leaving them behind is not merely untidy —
+    // typecheck.ts loads the file as a root, so a stale copy makes the gate certify Engine.call()s
+    // that the emitted .s2sp (which now carries no gamedata.json) provably cannot make. Same hazard
+    // when a call is renamed or dropped, which is why this runs unconditionally rather than only
+    // when the gamedata key is removed.
+    rmSync(join(absDir, ".s2script", "gamedata.d.ts"), { force: true });
   }
 
   // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on
@@ -197,6 +260,9 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     manifest.publishes = derivedPublishes;
   }
   if (config !== undefined) manifest.config = config;
+  // Declared capabilities travel with the package so `s2s install` can surface them and the loader
+  // can gate the gamedata calls against the operator allow-list (default-deny).
+  if (permissions.length > 0) manifest.permissions = permissions;
 
   // --- compiledAgainst (B1): hash every verified contract copy this consumer typechecked
   // against. The loader compares these to the producer's published typesSha256 at load
@@ -216,6 +282,10 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     "manifest.json": Buffer.from(JSON.stringify(manifest, null, 2)),
     "plugin.js": Buffer.from(pluginJs),
   };
+
+  // --- The plugin's own gamedata rides along as its own member. read_s2sp reads manifest.json/
+  // plugin.js by_name and ignores every other member, so an older runtime simply ignores it.
+  if (gamedata) zipFiles["gamedata.json"] = Buffer.from(JSON.stringify(gamedata, null, 2));
 
   // --- Embedded verified copy (spec §4.5): redundant, hash-checked, NEVER authoritative.
   // core's read_s2sp reads manifest.json/plugin.js by_name and ignores every other member,

@@ -19,6 +19,15 @@ function localDeclarationFiles(pluginDir: string): string[] {
     .map((f) => join(srcDir, f));
 }
 
+/** The build-generated gamedata augmentation (`.s2script/gamedata.d.ts`), when `s2s build` wrote one.
+ *  It augments `@s2script/sdk/unsafe`'s `EngineCalls`, and a module augmentation nothing imports is
+ *  invisible to the program — so it MUST be a typecheck ROOT or every declared `Engine.call(name)`
+ *  fails as `never`. Absent for a plugin that ships no gamedata. */
+function generatedDeclarationFiles(pluginDir: string): string[] {
+  const gd = join(pluginDir, ".s2script", "gamedata.d.ts");
+  return existsSync(gd) ? [gd] : [];
+}
+
 /** Module specifiers the plugin declares itself, e.g. `declare module "@demo/greeter" { … }`.
  *  Deliberately a scan, not a parse: we only need to know whether to skip generating a
  *  conflicting shorthand stub, and a false negative merely restores the old behaviour. */
@@ -110,7 +119,9 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   };
 
   // Globals live at the consolidated path (the legacy packages/globals/ dir is deleted).
-  const rootNames = [entry, join(packagesDir, "sdk", "globals.d.ts"), ...localDts];
+  const rootNames = [
+    entry, join(packagesDir, "sdk", "globals.d.ts"), ...localDts, ...generatedDeclarationFiles(absDir),
+  ];
   const tmp = mkdtempSync(join(tmpdir(), "s2tc-"));
   try {
     if (deps.length) {

@@ -19,6 +19,7 @@ import { soundRecipe } from "./sound.ts";
 import { teamRecipe } from "./team.ts";
 import { traceRecipe } from "./trace.ts";
 import { translationsRecipe } from "./translations.ts";
+import { unsafeRecipe } from "./unsafe.ts";
 import { transmitRecipe } from "./transmit.ts";
 import { usercmdRecipe } from "./usercmd.ts";
 import { usermessagesRecipe } from "./usermessages.ts";
@@ -48,6 +49,7 @@ export const RECIPES: readonly Recipe[] = [
   traceRecipe,
   translationsRecipe,
   transmitRecipe,
+  unsafeRecipe,
   usercmdRecipe,
   usermessagesRecipe,
   wsRecipe,

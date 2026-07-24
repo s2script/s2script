@@ -12,6 +12,7 @@ pub(crate) mod liveness;
 pub(crate) mod entity_live;
 mod event_mux;
 mod ffi;
+mod gamedata_calls;
 mod http;
 mod loader;
 mod multiplexer;

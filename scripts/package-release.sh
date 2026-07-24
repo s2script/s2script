@@ -162,7 +162,7 @@ fi
 
 # (b) canonical framework config files — ONE source (core/config-templates/, shared with the runtime
 #     include_str! templates). A shell copy here; the published CLI is plugin-scoped and never ships these.
-for f in admins admin_groups admin_overrides databases; do
+for f in admins admin_groups admin_overrides databases permissions; do
     cp "core/config-templates/$f.json" "$CONFIGS_DIR/$f.json"
 done
 

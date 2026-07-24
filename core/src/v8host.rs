@@ -283,6 +283,31 @@ pub type EntResolveFn       = extern "C" fn(c_int, c_int) -> *mut c_void;
 pub type EntIdentityFlagsFn = extern "C" fn(c_int, c_int) -> i64;
 pub type EntSnapshotFn      = extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_int;
 
+// --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI). ENGINE-GENERIC:
+// every string crossing here (target kind, module soname, byte pattern, resolver strategy, class
+// name, prologue) is an OPAQUE plugin-supplied string core never interprets — the same discipline as
+// `schema_offset`'s class/field, so no game identifier is compiled into core (spec §10).
+//
+// `engine_call_resolve`: resolve ONE descriptor against the live binary. Returns a call id >= 0, or
+// -1 having written a human-readable reason into `reason_out` (which core stores verbatim as that
+// descriptor's named degrade reason — spec §12).
+pub type EngineCallResolveFn = extern "C" fn(
+    kind: *const c_char, module: *const c_char, pattern: *const c_char, resolve: *const c_char,
+    class_name: *const c_char, vtable_index: c_int, prologue: *const c_char,
+    reason_out: *mut c_char, reason_cap: c_int) -> c_int;
+// `engine_call_invoke`: call a resolved descriptor on a serial-gated entity receiver. Args arrive
+// pre-classified into the two SysV register sequences (`gp`+`gp_kind`, `fp`) with strings/vectors
+// passed indirectly via `strs`/`vecs`; NO raw pointer crosses in either direction (an entity arg is
+// an (index, serial) pair, an entity return is a packed CEntityHandle core runs through the
+// books-gated adopt path). Returns 1 on success (`ret_out` written), 0 on a degrade (stale receiver /
+// unresolved `via` sub-object / bad arg budget) — never a crash.
+pub type EngineCallInvokeFn = extern "C" fn(
+    call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int,
+    gp: *const u64, gp_kind: *const u8, gp_count: c_int,
+    fp: *const f64, fp_count: c_int,
+    strs: *const *const c_char, vecs: *const f32,
+    ret_kind: c_int, ret_out: *mut u64) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -434,6 +459,16 @@ pub struct S2EngineOps {
     pub ent_resolve:        Option<EntResolveFn>,
     pub ent_identity_flags: Option<EntIdentityFlagsFn>,
     pub ent_snapshot:       Option<EntSnapshotFn>,
+    // --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI; do not reorder above) ---
+    pub engine_call_resolve: Option<EngineCallResolveFn>,
+    pub engine_call_invoke:  Option<EngineCallInvokeFn>,
+}
+
+/// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
+/// (`gamedata_calls`' resolve/invoke). `None` until `set_engine_ops` runs; a null field inside it
+/// degrades that op's caller to a named miss.
+pub(crate) fn engine_ops() -> Option<S2EngineOps> {
+    ENGINE_OPS.with(|o| o.get())
 }
 
 static PLATFORM_INIT: Once = Once::new();
@@ -1803,6 +1838,25 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     load: function (id) { return __s2_plugin_load(String(id)); },       // false if not currently unloaded
   };
   globalThis.__s2pkg_plugins = { Plugins: __s2_plugins };
+  // --- @s2script/sdk/unsafe — plugin-declared engine calls. A THIN shim by design: core registered
+  //     every descriptor at plugin load from the packed gamedata.json and owns all marshalling, so
+  //     this layer only asks by NAME. `call()` guards ONCE (at factory time, where `pid` is this
+  //     plugin's own id) and hands back a plain callable or null, keeping call sites clean. ---
+  globalThis.__s2pkg_unsafe = {
+    Engine: {
+      call: function (name) {
+        var pid = __s2_current_plugin();
+        if (!__s2_engine_call_ready(pid, name)) return null;
+        return function () {
+          var args = Array.prototype.slice.call(arguments);
+          var self = args.shift();
+          if (!self) return null;          // no receiver -> no-op (never a call on a null `this`)
+          return __s2_engine_call_invoke(pid, name, self.index, self.id, args);
+        };
+      },
+      status: function (name) { return __s2_engine_call_status(__s2_current_plugin(), name); },
+    },
+  };
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
   // Console output carries NO control bytes: a chat colour control byte is in the C0 range, so a
   // coloured message printed to a developer console renders as garbage (or, for \x09/\x0A/\x0D, as
@@ -3664,27 +3718,32 @@ fn s2_schema_offset(
         }
         let class = args.get(0).to_rust_string_lossy(scope);
         let field = args.get(1).to_rust_string_lossy(scope);
-
-        // Live resolver: marshal to C strings and call the shim's engine-op (recon Q1 lives shim
-        // side).  Degrades to `-1` if no ops table, a null `schema_offset`, or interior NULs.
-        let live_raw = |c: &str, f: &str| -> i32 {
-            let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
-            let Some(func) = ops.schema_offset else { return -1 };
-            let (Ok(cc), Ok(cf)) = (CString::new(c), CString::new(f)) else { return -1 };
-            func(cc.as_ptr(), cf.as_ptr())
-        };
-        let live_log = |msg: &str| {
-            if let Some(l) = LOGGER.with(|l| l.get()) {
-                if let Ok(cs) = CString::new(msg) {
-                    l(0, cs.as_ptr());
-                }
-            }
-        };
-
-        let off =
-            SCHEMA_OFFSETS.with(|c| c.borrow_mut().resolve(&class, &field, live_raw, live_log));
-        rv.set_int32(off);
+        rv.set_int32(schema_offset_cached(&class, &field));
     }));
+}
+
+/// The cached `(class, field) → offset` resolver behind `__s2_schema_offset`, callable from Rust.
+/// Returns `-1` on any miss (no ops table / null `schema_offset` / interior NULs / class or field not
+/// found) and WARNs at most once per key. `class`/`field` are OPAQUE strings — no game identifier
+/// appears in core. Extracted so the plugin-declared-call `receiver.via` hop resolves through the
+/// SAME cache as JS rather than a second, drifting one (spec §5: "live-resolved, never baked").
+fn schema_offset_cached(class: &str, field: &str) -> i32 {
+    // Live resolver: marshal to C strings and call the shim's engine-op (recon Q1 lives shim
+    // side).  Degrades to `-1` if no ops table, a null `schema_offset`, or interior NULs.
+    let live_raw = |c: &str, f: &str| -> i32 {
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
+        let Some(func) = ops.schema_offset else { return -1 };
+        let (Ok(cc), Ok(cf)) = (CString::new(c), CString::new(f)) else { return -1 };
+        func(cc.as_ptr(), cf.as_ptr())
+    };
+    let live_log = |msg: &str| {
+        if let Some(l) = LOGGER.with(|l| l.get()) {
+            if let Ok(cs) = CString::new(msg) {
+                l(0, cs.as_ptr());
+            }
+        }
+    };
+    SCHEMA_OFFSETS.with(|c| c.borrow_mut().resolve(class, field, live_raw, live_log))
 }
 
 // ---------------------------------------------------------------------------
@@ -6834,6 +6893,203 @@ fn s2_entity_subobj_vcall(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
+// ---------------------------------------------------------------------------
+// Plugin-declared engine calls (`@s2script/sdk/unsafe`). THREE natives and no registration native:
+// core registered every descriptor itself at plugin load from the packed `gamedata.json`, so JS can
+// only ask BY NAME — it can never hand core a declaration. Core owns every marshalling decision
+// (arg classification, the string/vector temporaries, the entity pack/unpack, the lazy `via` hop),
+// which is what keeps the prelude a thin shim and keeps raw pointers out of JS entirely (spec §4/§10).
+// ---------------------------------------------------------------------------
+
+/// Read a named property off a JS object. `None` when the value is not an object or the property is
+/// absent — a missing property is a degrade input, never an error.
+fn obj_prop<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    v: v8::Local<v8::Value>,
+    key: &str,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let obj = v8::Local::<v8::Object>::try_from(v).ok()?;
+    let k = v8::String::new(scope, key)?;
+    obj.get(scope, k.into())
+}
+
+/// Pack an `EntityRef` arg into the `(index, engine serial)` pair the shim's entity arg slot carries.
+/// A null / non-EntityRef / stale ref packs `(-1, -1)`, which the shim's range guard turns into a
+/// NULL pointer argument — a legitimate "no entity" (the generated types spell exactly that as
+/// `EntityRef | null`), never a wild pointer. The engine serial never crosses to JS: it is read out
+/// of the HOST'S BOOKS here from the ref's `(index, id)`.
+fn pack_entity_arg(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
+    const NO_ENTITY: u64 = 0xffff_ffff_ffff_ffff; // (index -1, serial -1)
+    let idx_v = obj_prop(scope, v, "index");
+    let index = idx_v.and_then(|x| x.integer_value(scope)).unwrap_or(-1) as i32;
+    let id_v = obj_prop(scope, v, "id");
+    let id = match id_v {
+        Some(x) => js_ent_id(scope, x),
+        None => 0,
+    };
+    let Some(serial) = crate::entity_live::engine_serial_for(index, id) else { return NO_ENTITY };
+    ((index as u32 as u64) << 32) | (serial as u32 as u64)
+}
+
+/// Native `__s2_engine_call_ready(pluginId, callName) -> boolean`. True iff the descriptor passed
+/// every LOAD-time gate (allow-list + op + resolve/validate). This is what `Engine.call()` keys
+/// callable-or-null on, so it deliberately ignores a pending `via` hop (spec §11).
+fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let pid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        rv.set_bool(crate::gamedata_calls::is_ready(&pid, &name));
+    }));
+}
+
+/// Native `__s2_engine_call_status(pluginId, callName) -> string`. `"available"`, or the named reason
+/// the descriptor is not (spec §12) — for diagnostics and operator reports.
+fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Default to a NAMED reason up front: a panic below then still yields a sentence an operator
+        // can act on, never JS `undefined`.
+        if let Some(s) = v8::String::new(scope, "unavailable") { rv.set(s.into()); }
+        if args.length() < 2 { return; }
+        let pid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let status = crate::gamedata_calls::status(&pid, &name);
+        if let Some(s) = v8::String::new(scope, &status) { rv.set(s.into()); }
+    }));
+}
+
+/// Native `__s2_engine_call_invoke(pluginId, callName, selfIndex, selfId, argsArray) -> value`.
+///
+/// JS passes ONLY the receiver identity and the raw arg values; core looks the descriptor up to
+/// obtain the shim call id, the arg kinds, the return kind and (lazily) the `via` sub-object offset.
+/// Every failure is a no-op returning `null` (spec §12 "Call" row): a stale receiver, an unresolved
+/// `via` offset, an interior NUL in a string arg, or a missing op. `string` args are marshalled into
+/// temporaries that live exactly as long as this call (spec §4's documented author's risk), and a
+/// `returns: "entity"` result is a packed handle run through the books-gated adopt path — a raw
+/// pointer can never mint a ref.
+fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        if args.length() < 4 { return; }
+        let pid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        // The registry borrow is released HERE (the plan is cloned): the engine call below may
+        // synchronously fire an output/event that dispatches into JS and calls Engine.call again.
+        let Some(plan) = crate::gamedata_calls::plan(&pid, &name) else { return };
+        // Receiver: books-gated (index, id) → (index, engine serial). Not-live → no-op, never a deref.
+        let Some((index, serial)) = ent_op_serial(scope, args.get(2), args.get(3)) else { return };
+
+        // `receiver.via`: resolved LAZILY through the same cached resolver JS's `__s2_schema_offset`
+        // uses — schema resolves at map-live, not at Load (spec §11). A miss no-ops THIS invocation
+        // and flips `Engine.status(name)` to a named reason; it clears on the first success, so the
+        // descriptor recovers once the map is live instead of being permanently dead.
+        let subobj_off = match &plan.via {
+            None => -1,
+            Some((class, field)) => {
+                let off = schema_offset_cached(class, field);
+                if off < 0 {
+                    crate::gamedata_calls::set_via_miss(
+                        &pid,
+                        &name,
+                        Some("receiver sub-object offset unresolved (schema resolves at map-live)".to_string()),
+                    );
+                    return;
+                }
+                crate::gamedata_calls::set_via_miss(&pid, &name, None);
+                off
+            }
+        };
+
+        // Marshal the args into the two SysV register sequences, preserving order within each class.
+        // `strs`/`vecs` carry the indirect payloads; a GP slot holds their INDEX (bounded by the slot
+        // count, which is what the shim re-validates).
+        let js_args = v8::Local::<v8::Array>::try_from(args.get(4)).ok();
+        let mut gp: Vec<u64> = Vec::new();
+        let mut gp_kind: Vec<u8> = Vec::new();
+        let mut fp: Vec<f64> = Vec::new();
+        let mut strs_owned: Vec<CString> = Vec::new();
+        let mut vecs: Vec<f32> = Vec::new();
+        for (i, kind) in plan.args.iter().enumerate() {
+            let mut v: v8::Local<v8::Value> = v8::undefined(scope).into();
+            if let Some(a) = js_args {
+                if let Some(x) = a.get_index(scope, i as u32) { v = x; }
+            }
+            match kind.as_str() {
+                "float" => fp.push(v.number_value(scope).unwrap_or(0.0)),
+                "bool" => {
+                    gp.push(if v.boolean_value(scope) { 1 } else { 0 });
+                    gp_kind.push(crate::gamedata_calls::GP_SCALAR);
+                }
+                "int" => {
+                    gp.push(v.integer_value(scope).unwrap_or(0) as u64);
+                    gp_kind.push(crate::gamedata_calls::GP_SCALAR);
+                }
+                "entity" => {
+                    gp.push(pack_entity_arg(scope, v));
+                    gp_kind.push(crate::gamedata_calls::GP_ENTITY);
+                }
+                "string" => {
+                    let s = v.to_rust_string_lossy(scope);
+                    // An interior NUL would silently truncate into a DIFFERENT string — no-op instead.
+                    let Ok(c) = CString::new(s) else { return };
+                    strs_owned.push(c);
+                    gp.push((strs_owned.len() - 1) as u64);
+                    gp_kind.push(crate::gamedata_calls::GP_STRING);
+                }
+                "vector" => {
+                    let xv = obj_prop(scope, v, "x");
+                    let x = xv.and_then(|a| a.number_value(scope)).unwrap_or(0.0) as f32;
+                    let yv = obj_prop(scope, v, "y");
+                    let y = yv.and_then(|a| a.number_value(scope)).unwrap_or(0.0) as f32;
+                    let zv = obj_prop(scope, v, "z");
+                    let z = zv.and_then(|a| a.number_value(scope)).unwrap_or(0.0) as f32;
+                    vecs.extend_from_slice(&[x, y, z]);
+                    gp.push((vecs.len() / 3 - 1) as u64);
+                    gp_kind.push(crate::gamedata_calls::GP_VECTOR);
+                }
+                // Unknown kind: registration already rejected it with a named reason — belt-and-braces.
+                _ => return,
+            }
+        }
+        let strs: Vec<*const c_char> = strs_owned.iter().map(|c| c.as_ptr()).collect();
+
+        let Some(func) = engine_ops().and_then(|o| o.engine_call_invoke) else { return };
+        let mut ret: u64 = 0;
+        let ok = func(
+            plan.call_id, index, serial, subobj_off,
+            gp.as_ptr(), gp_kind.as_ptr(), gp.len() as i32,
+            fp.as_ptr(), fp.len() as i32,
+            strs.as_ptr(), vecs.as_ptr(),
+            plan.ret_code, &mut ret,
+        );
+        if ok == 0 { return; } // shim-side degrade (stale receiver / absent sub-object) → null
+
+        match plan.ret_code {
+            crate::gamedata_calls::RET_VOID => rv.set_undefined(),
+            crate::gamedata_calls::RET_BOOL => rv.set_bool(ret != 0),
+            crate::gamedata_calls::RET_INT => rv.set_int32(ret as u32 as i32),
+            crate::gamedata_calls::RET_FLOAT => rv.set_double(f32::from_bits(ret as u32) as f64),
+            crate::gamedata_calls::RET_ENTITY => {
+                // The shim handed back a packed CEntityHandle read off the entity's own identity;
+                // only the books can turn it into a live ref (a dangling handle yields null).
+                //
+                // 0xFFFFFFFF is the shim's "no entity" sentinel (kInvalidEntityHandle) and must be
+                // rejected BEFORE decoding. It cannot be 0, because 0 decodes to the perfectly legal
+                // (index 0, serial 0) — an absent entity would otherwise be indistinguishable from a
+                // live handle to entity slot 0.
+                if ret as u32 != crate::gamedata_calls::INVALID_ENTITY_HANDLE {
+                    let (i, s) = crate::entity::decode_handle(ret as u32);
+                    if let Some(id) = crate::entity_live::adopt(i, s) {
+                        rv.set(build_entity_ref(scope, i, id));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }));
+}
+
 /// Native `__s2_remove_player_item(pawnIndex, pawnSerial, weaponIndex, weaponSerial) -> boolean`.
 /// Over the `remove_player_item` engine op (`RemovePlayerItem`, sig-resolved shim-side) — a proper
 /// unequip of one specific weapon (vs. `stripWeapons`'s blanket `RemoveWeapons`). Degrades to
@@ -8094,6 +8350,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_usermsg_has_field", s2_usermsg_has_field);
     set_native(scope, global_obj, "__s2_usermsg_recipients", s2_usermsg_recipients);
     set_native(scope, global_obj, "__s2_usermsg_debug", s2_usermsg_debug);
+    // Plugin-declared engine calls (`@s2script/sdk/unsafe`): ask-by-name only — there is deliberately
+    // NO registration native (core registers descriptors itself from the packed gamedata.json).
+    set_native(scope, global_obj, "__s2_engine_call_ready", s2_engine_call_ready);
+    set_native(scope, global_obj, "__s2_engine_call_status", s2_engine_call_status);
+    set_native(scope, global_obj, "__s2_engine_call_invoke", s2_engine_call_invoke);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -10840,6 +11101,10 @@ fn teardown_ledger_and_dispose(id: &str) {
     IFACE_SUBS.with(|m| { let mut mm = m.borrow_mut(); for (_iface, sid) in orphaned { mm.remove(&sid); } });
     IFACES.with(|r| r.borrow_mut().clear_imports(id));
     clear_plugin_publishes(id);
+    // Plugin-declared engine calls: drop this plugin's descriptor table (spec §12 "Unload" row). On
+    // BOTH teardown paths (Active and never-Active), so a reload always re-resolves from scratch
+    // rather than inheriting a stale call id.
+    crate::gamedata_calls::drop_plugin(id);
     // Removing timers/jobs (or an onUnload-added hook) changed the detour predicate — reconcile.
     refresh_detour();
 
@@ -12012,6 +12277,32 @@ mod frame_tests {
         // A non-s2script specifier is still null (handled by the JS interop shim).
         assert!(eval_in_context_bool("dualpfx",
             r#"__s2require("@other/x") === null"#));
+        shutdown();
+    }
+
+    /// Plugin-declared engine calls, JS half: the `@s2script/sdk/unsafe` prelude compiles, resolves
+    /// under both specifier spellings, and its three natives are registered. An UNDECLARED call is
+    /// the default state for every plugin, so `call()` must be `null` (never a throw, never a
+    /// callable that would reach the engine) and `status()` must NAME why.
+    #[test]
+    fn unsafe_module_exposes_engine_call_status_and_degrades_to_null() {
+        let _ = init(dummy_logger());
+        create_plugin_context("unsafepfx");
+        assert!(eval_in_context_bool("unsafepfx",
+            r#"typeof __s2require("@s2script/sdk/unsafe").Engine.call === "function""#),
+            "@s2script/sdk/unsafe must expose Engine.call (the prelude compiled)");
+        assert!(eval_in_context_bool("unsafepfx",
+            r#"__s2require("@s2script/sdk/unsafe").Engine.call("nope") === null"#),
+            "an undeclared call must yield null, not a callable");
+        assert_eq!(
+            eval_in_context_string("unsafepfx",
+                r#"__s2require("@s2script/sdk/unsafe").Engine.status("nope")"#),
+            "not declared in this plugin's gamedata");
+        // The natives themselves: ready is false and invoke no-ops to null for an unknown descriptor.
+        assert!(eval_in_context_bool("unsafepfx",
+            r#"__s2_engine_call_ready("unsafepfx", "nope") === false"#));
+        assert!(eval_in_context_bool("unsafepfx",
+            r#"__s2_engine_call_invoke("unsafepfx", "nope", 1, 1, []) === null"#));
         shutdown();
     }
 
@@ -13267,6 +13558,8 @@ mod frame_tests {
             ent_resolve: None,
             ent_identity_flags: None,
             ent_snapshot: None,
+            engine_call_resolve: None,
+            engine_call_invoke: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -14373,6 +14666,8 @@ mod frame_tests {
             ent_resolve: None,
             ent_identity_flags: None,
             ent_snapshot: None,
+            engine_call_resolve: None,
+            engine_call_invoke: None,
         }
     }
 
