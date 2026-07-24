@@ -5,6 +5,7 @@ import type { EntityRef } from "@s2script/sdk/entity";
 
 declare module "@s2script/sdk/unsafe" {
   interface EngineCalls {
+    dropActiveWeaponRejected: (self: EntityRef) => void;
     ignite: (self: EntityRef, flFlameLifetime: number, nFlags: number, pAttacker: EntityRef | null, flSize: number) => void;
   }
 }

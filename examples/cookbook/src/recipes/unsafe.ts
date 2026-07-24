@@ -1,5 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { Engine } from "@s2script/sdk/unsafe";
+import { Entity } from "@s2script/sdk/entity";
 import { Player } from "@s2script/cs2";
 
 /**
@@ -30,6 +31,8 @@ export const unsafeRecipe: Recipe = {
     // its type into .s2script/gamedata.d.ts, so the argument list below is typechecked at build time.
     const ignite = Engine.call("ignite");
     console.log(`[cookbook] unsafe: ignite -> ${Engine.status("ignite")}`);
+    // The negative fixture: expected to be degraded with a named reason (spec criterion 4).
+    console.log(`[cookbook] unsafe: dropActiveWeaponRejected -> ${Engine.status("dropActiveWeaponRejected")}`);
 
     ctx.commands.register("cb_unsafe", (cmd) => {
       const status = Engine.status("ignite");
@@ -52,16 +55,26 @@ export const unsafeRecipe: Recipe = {
         cmd.reply("[cookbook] usage: cb_unsafe_burn [target] (run from a client to burn yourself)");
         return;
       }
-      let burned = 0;
+      // Count flames BEFORE, so the reply proves the call had an EFFECT rather than merely that it
+      // was dispatched. That distinction is the whole point: a declared call that resolves but passes
+      // a wrong argument (a mis-declared float, or nFlags without bit 0x4) returns cleanly and does
+      // nothing — "ignited N pawns" would be a lie. Ignite spawns a CEntityFlame per victim, so a
+      // rising flame count is server-side evidence the engine actually acted.
+      const before = Entity.findByClass("entityflame").length;
+      let called = 0;
       for (const p of chosen) {
         const pawn = p.pawn;
         if (!pawn?.isValid) continue;
         // nFlags MUST be 4 — with bit 0x4 clear the engine consults its "ignitable?" virtual, which
         // is false for every pawn, and the call no-ops silently. See the gamedata comment.
         ignite(pawn.ref, 10.0, 4, null, 0.0);
-        burned++;
+        called++;
       }
-      cmd.reply(`[cookbook] unsafe: ignited ${burned} pawn(s) for 10s`);
+      const after = Entity.findByClass("entityflame").length;
+      cmd.reply(
+        `[cookbook] unsafe: called ignite on ${called} pawn(s); entityflame ${before} -> ${after}` +
+          (after > before ? " (EFFECT CONFIRMED)" : " (NO EFFECT — resolved but did nothing)")
+      );
     });
   },
 };
