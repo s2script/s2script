@@ -29,7 +29,9 @@ const TIMEOUTS_MS = {
   deploy: 300_000, // up to ~40 MiB on a slow uplink
   resolve: 30_000,
   meta: 30_000,
+  plan: 30_000,
   "types download": 120_000,
+  "s2sp download": 120_000,
 } as const;
 
 type Op = keyof typeof TIMEOUTS_MS;
@@ -82,6 +84,23 @@ export interface RegistryClientOpts {
   baseUrl: string;
   token?: string;
   fetch?: typeof fetch;
+}
+
+export interface PlanEntry {
+  name: string;
+  version: string;
+  url: string;
+  sha256: string | null;
+  reviewState: string;
+  filename: string;
+}
+
+export interface InstallPlan {
+  root: { name: string; version: string } | null;
+  install: PlanEntry[];
+  skipped: { name: string; reason: string }[];
+  warnings: string[];
+  errors: string[];
 }
 
 export class RegistryClient {
@@ -196,5 +215,21 @@ export class RegistryClient {
     u.searchParams.set("name", name);
     const res = await this.request("meta", u);
     return this.json(res, "meta");
+  }
+
+  async plan(name: string, range = "*"): Promise<InstallPlan> {
+    const u = new URL(`${this.baseUrl}/api/v1/plan`);
+    u.searchParams.set("name", name);
+    u.searchParams.set("range", range);
+    const res = await this.request("plan", u);
+    return this.json(res, "plan");
+  }
+
+  async downloadS2sp(name: string, version: string): Promise<Buffer> {
+    const u = new URL(`${this.baseUrl}/api/v1/download/s2sp`);
+    u.searchParams.set("name", name);
+    u.searchParams.set("version", version);
+    const res = await this.request("s2sp download", u);
+    return Buffer.from(await res.arrayBuffer());
   }
 }

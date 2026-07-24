@@ -1,6 +1,7 @@
 import * as build from "./build.ts";
 import * as deploy from "./deploy.ts";
 import * as add from "./add.ts";
+import * as install from "./install.ts";
 import * as create from "./create.ts";
 import * as login from "./login.ts";
 import * as config from "./config.ts";
@@ -18,6 +19,7 @@ export const COMMANDS: Command[] = [
   { name: "build", summary: "Build a plugin to a .s2sp", run: build.run },
   { name: "deploy", summary: "Publish a plugin to the registry", run: deploy.run },
   { name: "add", summary: "Add a registry package's types", run: add.run },
+  { name: "install", summary: "Download plugins + their deps into a server", run: install.run },
   { name: "login", summary: "Save a registry deploy token", run: login.run },
   { name: "config", summary: "Emit a plugin's default config file(s)", run: config.run },
   { name: "gen-schema", summary: "Regenerate schema accessors", run: (a) => codegen.run("schema", a) },

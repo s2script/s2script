@@ -14,6 +14,7 @@ function usage(): void {
       "  s2s login [--token s2s_…] [--registry <url>]\n" +
       "  s2s deploy [dir] [--ci] [--registry <url>] [--packages-dir <path>]\n" +
       "  s2s add <pkg>[@range] [--dir <plugin>] [--registry <url>]\n" +
+      "  s2s install [name[@range]...] [--file <path>] [--dir <plugins dir>] [--registry <url>]\n" +
       "  s2s config gen <plugin.s2sp...> --out <dir>\n" +
       "  s2s gen-schema [--check]\n" +
       "  s2s gen-events [--check]\n" +
