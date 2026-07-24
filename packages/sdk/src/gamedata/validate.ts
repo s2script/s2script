@@ -147,6 +147,38 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
       if (floats > MAX_FLOAT_ARGS) {
         errs.push(`${where}: ${floats} float args exceeds the max of ${MAX_FLOAT_ARGS}`);
       }
+
+      // Optional argNames — documentary, but still emitted into the generated .d.ts, so it gets the
+      // same identifier discipline as the call name itself (see the IDENTIFIER note above).
+      if (decl.argNames !== undefined) {
+        const names = decl.argNames;
+        if (!Array.isArray(names)) {
+          errs.push(`${where}: 'argNames' must be an array of parameter names`);
+        } else if (names.length !== args.length) {
+          errs.push(
+            `${where}: 'argNames' has ${names.length} entr${names.length === 1 ? "y" : "ies"} but ` +
+              `'args' has ${args.length} — they are positionally matched`
+          );
+        } else {
+          const seen = new Set<string>();
+          for (const nm of names) {
+            if (typeof nm !== "string" || !IDENTIFIER.test(nm)) {
+              errs.push(
+                `${where}: argName ${JSON.stringify(nm)} must be a plain identifier matching ` +
+                  `${IDENTIFIER.source} — it is emitted as a parameter name in the generated .d.ts`
+              );
+              continue;
+            }
+            // `self` is the generated receiver parameter; reusing it would emit a duplicate name.
+            if (nm === "self") {
+              errs.push(`${where}: argName 'self' is reserved (it names the receiver parameter)`);
+              continue;
+            }
+            if (seen.has(nm)) errs.push(`${where}: duplicate argName ${JSON.stringify(nm)}`);
+            seen.add(nm);
+          }
+        }
+      }
     }
 
     // returns

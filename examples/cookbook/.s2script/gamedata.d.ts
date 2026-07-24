@@ -5,6 +5,6 @@ import type { EntityRef } from "@s2script/sdk/entity";
 
 declare module "@s2script/sdk/unsafe" {
   interface EngineCalls {
-    ignite: (self: EntityRef, a0: number, a1: number, a2: EntityRef | null, a3: number) => void;
+    ignite: (self: EntityRef, flFlameLifetime: number, nFlags: number, pAttacker: EntityRef | null, flSize: number) => void;
   }
 }

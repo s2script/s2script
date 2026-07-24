@@ -642,4 +642,22 @@ mod tests {
             "args":["float"],"returns":"void"}"#
             .to_string()
     }
+
+    /// `argNames` is an SDK-only documentation field (it names the generated `.d.ts` parameters). The
+    /// packed `gamedata.json` carries it, so core MUST ignore it rather than reject the descriptor.
+    /// This holds today because the decl is read as a raw `serde_json::Value`; the test exists so that
+    /// swapping in a typed struct with `deny_unknown_fields` fails here instead of at load on a live
+    /// server.
+    #[test]
+    fn decl_with_arg_names_still_flattens() {
+        let decl: serde_json::Value = serde_json::from_str(
+            r#"{"receiver":{"kind":"entity"},"target":{"kind":"signature","name":"Ig",
+                "module":"libserver.so","pattern":"55 48","resolve":"direct"},
+                "args":["float","int"],"argNames":["flFlameLifetime","nFlags"],"returns":"void"}"#,
+        )
+        .expect("parses");
+        let flat = flatten_decl(&decl, None).expect("argNames must not break flattening");
+        assert!(flat.contains("\"args\""), "kinds survive: {flat}");
+        assert!(flat.contains("float"), "kinds survive: {flat}");
+    }
 }

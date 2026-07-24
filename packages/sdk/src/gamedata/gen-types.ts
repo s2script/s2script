@@ -25,7 +25,13 @@ export function generateGamedataTypes(gd: PluginGamedata): string {
     .sort()
     .map((name) => {
       const decl = calls[name]!;
-      const params = ["self: EntityRef", ...decl.args.map((a, i) => `a${i}: ${ARG_TS[a]}`)];
+      // Author-supplied names when present (validated as identifiers, positionally matched), else
+      // positional aN. On an unsafe FFI surface the parameter names ARE the documentation.
+      const names = decl.argNames;
+      const params = [
+        "self: EntityRef",
+        ...decl.args.map((a, i) => `${names?.[i] ?? `a${i}`}: ${ARG_TS[a]}`),
+      ];
       return `    ${name}: (${params.join(", ")}) => ${RET_TS[decl.returns]};`;
     });
 

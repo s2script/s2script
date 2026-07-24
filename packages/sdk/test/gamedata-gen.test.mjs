@@ -56,3 +56,24 @@ test("vector args generate the structural {x,y,z} shape core actually reads, not
   assert.doesNotMatch(out, /readonly \[number, number, number\]/,
     "a tuple type would reject a real Vector and silently send (0,0,0) for an array");
 });
+
+// --- argNames (Tier C: on an unsafe FFI surface the param names ARE the documentation) ---
+
+test("argNames replace the positional aN parameter names", () => {
+  const out = generateGamedataTypes({
+    calls: { ignite: { receiver: { kind: "entity" }, target: { kind: "signature", name: "S" },
+                       args: ["float", "int", "entity", "float"],
+                       argNames: ["flFlameLifetime", "nFlags", "pAttacker", "flSize"],
+                       returns: "void" } },
+  });
+  assert.match(out, /ignite: \(self: EntityRef, flFlameLifetime: number, nFlags: number, pAttacker: EntityRef \| null, flSize: number\) => void;/);
+  assert.doesNotMatch(out, /\ba0:/);
+});
+
+test("omitting argNames still yields positional aN", () => {
+  const out = generateGamedataTypes({
+    calls: { f: { receiver: { kind: "entity" }, target: { kind: "signature", name: "S" },
+                  args: ["int"], returns: "void" } },
+  });
+  assert.match(out, /f: \(self: EntityRef, a0: number\) => void;/);
+});

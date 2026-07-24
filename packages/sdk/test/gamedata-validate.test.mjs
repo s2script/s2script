@@ -136,3 +136,40 @@ test("an unknown declared permission is rejected", () => {
   const errs = validatePluginGamedata(sigCall, { permissions: ["engine:calls", "totally:bogus"] });
   assert.ok(errs.some((e) => e.includes("unknown permission")));
 });
+
+// --- argNames (Tier C) ---
+
+test("valid argNames are accepted", () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.args = ["float", "int"];
+  gd.calls.foo.argNames = ["lifetime", "flags"];
+  assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), []);
+});
+
+test("argNames length must match args", () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.args = ["float", "int"];
+  gd.calls.foo.argNames = ["lifetime"];
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("positionally matched")));
+});
+
+test("a non-identifier argName is rejected", () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.args = ["float"];
+  gd.calls.foo.argNames = ["not a name"];
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("plain identifier")));
+});
+
+test("argName 'self' is reserved (it names the receiver)", () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.args = ["float"];
+  gd.calls.foo.argNames = ["self"];
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("reserved")));
+});
+
+test("duplicate argNames are rejected", () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.args = ["float", "float"];
+  gd.calls.foo.argNames = ["a", "a"];
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("duplicate argName")));
+});

@@ -134,9 +134,24 @@ A plugin ships `gamedata/plugin.gamedata.jsonc` in its source tree. It reuses th
 }
 ```
 
-`resolve` accepts the existing resolver vocabulary (`direct`, `ctor-body-xref`, …) — plugin gamedata
+`resolve` is closed to the vocabulary the shim dispatches on — `direct`, `ctor-body-xref`, `lea-disp` —
+so a typo fails the build naming the valid set instead of degrading silently at load. Plugin gamedata
 introduces no new resolver kinds. `validate` is nested **under the platform key** alongside `index`,
 because a prologue is as platform-specific as the slot number it guards.
+
+A call may carry an optional **`argNames`** array, positionally matched to `args`:
+
+```jsonc
+"args":     ["float", "int", "entity", "float"],
+"argNames": ["flFlameLifetime", "nFlags", "pAttacker", "flSize"],
+```
+
+It is documentary only — the runtime never reads it — but it is what makes the generated signature
+legible, and on an `unsafe` FFI surface the parameter names *are* the documentation. It is a parallel
+array rather than a richer `args` element type on purpose: the runtime only ever needs the kinds, so
+`args` stays a flat string array and core parses the packed gamedata unchanged. Entries are validated
+as plain identifiers, must be unique, must not be `self` (the generated receiver parameter), and must
+match `args` in length.
 
 `receiver.via` is resolved through the existing cached `__s2_schema_offset`, so the sub-object
 pointer offset is **live-resolved, never baked** — a field move needs no plugin change.
@@ -204,6 +219,11 @@ in its own file scope, so an un-imported `EntityRef` silently degrades to an err
 
 Non-`void` calls generate a `T | null` return, matching the framework's degrade convention rather
 than inventing a zero-value sentinel.
+
+Parameter names come from the call's optional `argNames` (§5); without it they fall back to positional
+`a0…aN`. Call names and arg names are both validated as plain identifiers before emission — they are
+interpolated verbatim into this file, so an unvalidated name could inject an index signature into
+`EngineCalls` and defeat the gate entirely, or simply emit invalid TypeScript.
 
 ## 9. Plugin-facing API — `@s2script/sdk/unsafe`
 

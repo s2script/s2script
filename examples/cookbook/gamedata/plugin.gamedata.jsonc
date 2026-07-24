@@ -37,6 +37,9 @@
       "receiver": { "kind": "entity" },
       "target": { "kind": "signature", "name": "CBaseModelEntity_Ignite" },
       "args": ["float", "int", "entity", "float"],
+      // argNames is documentary only — the runtime never reads it — but it is what makes the
+      // generated signature legible: `ignite(pawn.ref, 10.0, 4, null, 0.0)` says nothing on its own.
+      "argNames": ["flFlameLifetime", "nFlags", "pAttacker", "flSize"],
       "returns": "void"
     }
   }
