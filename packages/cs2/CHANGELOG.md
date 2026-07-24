@@ -1,5 +1,13 @@
 # @s2script/cs2
 
+## 0.7.4
+
+### Patch Changes
+
+- Updated dependencies [afce5a2]
+- Updated dependencies
+  - @s2script/sdk@0.8.0
+
 ## 0.7.3
 
 ### Patch Changes
