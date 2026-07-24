@@ -11,6 +11,7 @@ export async function run(argv: string[]): Promise<void> {
       token: parseFlag(argv, "--token"),
       registryUrl: parseFlag(argv, "--registry") || defaultRegistryUrl(),
       ci: hasFlag(argv, "--ci"),
+      noBrowser: hasFlag(argv, "--no-browser"),
     });
     const msg = `logged in → ${creds.registryUrl} (credentials saved)`;
     if (interactive) ui.outro(msg);

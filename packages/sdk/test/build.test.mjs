@@ -132,7 +132,7 @@ test("build accepts a CONCRETE map value naming an interface the package does no
 
 test("bundles a workspace sibling that declares `main` (platform:neutral mainFields)", async () => {
   const out = await buildPlugin(join(here, "fixtures", "workspace-sibling"), packagesDir);
-  const zip = new AdmZip(out);
+  const zip = openZip(out);
   const js = zip.readAsText("plugin.js");
   assert.ok(
     js.includes("workspace-sibling-resolved"),

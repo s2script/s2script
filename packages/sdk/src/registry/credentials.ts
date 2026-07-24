@@ -15,8 +15,21 @@ export function credentialsPath(): string {
   return join(homedir(), ".s2script", "credentials.json");
 }
 
+/**
+ * Canonicalizes a registry URL: strips the trailing slash and rewrites the bare
+ * apex to www. The apex 301s (which drops Authorization and turns POST into GET
+ * for pre-exemption servers), and pre-0.8 credential files recorded it.
+ */
+export function normalizeRegistryUrl(url: string): string {
+  const trimmed = url.replace(/\/$/, "");
+  if (trimmed === "https://s2script.com") return "https://www.s2script.com";
+  return trimmed;
+}
+
 export function defaultRegistryUrl(): string {
-  return process.env.S2SCRIPT_REGISTRY_URL?.replace(/\/$/, "") || "https://s2script.com";
+  const fromEnv = process.env.S2SCRIPT_REGISTRY_URL;
+  if (fromEnv) return normalizeRegistryUrl(fromEnv);
+  return "https://www.s2script.com";
 }
 
 export function loadCredentials(): Credentials | null {
@@ -30,7 +43,7 @@ export function loadCredentials(): Credentials | null {
     const j = JSON.parse(readFileSync(p, "utf8")) as Credentials;
     if (!j.token) return null;
     return {
-      registryUrl: (j.registryUrl || defaultRegistryUrl()).replace(/\/$/, ""),
+      registryUrl: normalizeRegistryUrl(j.registryUrl || defaultRegistryUrl()),
       token: j.token,
     };
   } catch {
@@ -44,7 +57,7 @@ export function saveCredentials(creds: Credentials): void {
   writeFileSync(
     credentialsPath(),
     JSON.stringify(
-      { registryUrl: creds.registryUrl.replace(/\/$/, ""), token: creds.token },
+      { registryUrl: normalizeRegistryUrl(creds.registryUrl), token: creds.token },
       null,
       2
     ) + "\n",
