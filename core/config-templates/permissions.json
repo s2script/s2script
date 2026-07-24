@@ -1,0 +1,4 @@
+{
+  "_help": "permission name -> the EXACT plugin ids allowed to use it (no globs). Default-DENY: a plugin that declares a permission but is not listed here still loads, with every capability that permission gates degraded. e.g. \"engine:calls\": [\"@me/burn\"]",
+  "engine:calls": []
+}

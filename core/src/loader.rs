@@ -54,6 +54,83 @@ pub struct Manifest {
     pub compiled_against: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub config: std::collections::HashMap<String, crate::config::ConfigEntry>,
+    /// Capabilities this plugin requests (spec §6). Declaration is necessary but NOT sufficient —
+    /// an operator allow-list entry is also required (`permission_allowed`), which is what the
+    /// runtime actually gates on; this field is the auditable record of what the plugin ASKED for
+    /// (`s2s install` surfaces it before an operator installs).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub permissions: Vec<String>,
+    /// Author-side path to the plugin's gamedata source. Informational only at runtime; the runtime
+    /// consumes the packed `gamedata.json` member (`read_s2sp`'s third element), never this path.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub gamedata: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Operator permission allow-list (spec §6)
+// ---------------------------------------------------------------------------
+
+/// The operator allow-list: permission name → the EXACT plugin ids allowed to use it.
+/// `None` = never loaded ⇒ default-DENY (mirrors the admin system's fail-safe posture).
+/// Host-global (not thread_local) like the admin/ban caches: V8 contexts are per-plugin, the
+/// authorization decision is not.
+static PERMISSIONS: std::sync::RwLock<Option<HashMap<String, Vec<String>>>> =
+    std::sync::RwLock::new(None);
+
+/// Config id of the operator allow-list file (`addons/s2script/configs/permissions.json`).
+const PERMISSIONS_CONFIG_ID: &str = "permissions";
+
+/// One-shot so a malformed `permissions.json` WARNs once, not once per descriptor check.
+static PERMISSIONS_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Parse an operator allow-list: `{"engine:calls":["@me/burn"]}`. Exact-match ids, no globs (v1).
+///
+/// Tolerant of non-array values: the shipped template carries a `_help` string like every other
+/// framework config template, and an entry whose value is not a string array is SKIPPED rather than
+/// failing the whole file — a strict parse would leave the allow-list unloaded, i.e. deny everything,
+/// which is exactly the invisible failure the named-reason doctrine exists to avoid.
+pub fn load_permissions_from_str(s: &str) -> Result<(), String> {
+    let raw: HashMap<String, serde_json::Value> =
+        serde_json::from_str(s).map_err(|e| format!("permissions.json: {}", e))?;
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for (name, value) in raw {
+        let Some(arr) = value.as_array() else { continue };   // `_help` and friends
+        map.insert(
+            name,
+            arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(),
+        );
+    }
+    *PERMISSIONS.write().map_err(|_| "permissions lock poisoned".to_string())? = Some(map);
+    Ok(())
+}
+
+/// Load the allow-list from `configs/permissions.json` on first use, through the same `config_read`
+/// op every other framework config file goes through. Fail-safe: an absent ops table, a missing file
+/// or malformed JSON leaves the allow-list UNLOADED — default-DENY — and, because nothing is cached
+/// on failure, the next check retries (a file dropped in later takes effect on the next plugin load).
+fn ensure_permissions_loaded() {
+    if PERMISSIONS.read().map(|g| g.is_some()).unwrap_or(false) { return; }
+    let Some(text) = crate::v8host::config_file_content(PERMISSIONS_CONFIG_ID) else { return };
+    if let Err(reason) = load_permissions_from_str(&text) {
+        if !PERMISSIONS_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::v8host::log_warn(&format!(
+                "WARN: {} - ignoring the operator allow-list (every gated capability stays denied)",
+                reason
+            ));
+        }
+    }
+}
+
+/// Default-DENY: unloaded or absent allow-list permits nothing.
+pub fn permission_allowed(plugin_id: &str, permission: &str) -> bool {
+    ensure_permissions_loaded();
+    PERMISSIONS
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|m| m.get(permission).is_some_and(|v| v.iter().any(|p| p == plugin_id))))
+        .unwrap_or(false)
 }
 
 /// The major apiVersion this host speaks.  A plugin whose declared apiVersion major differs is
@@ -178,13 +255,18 @@ fn imports_from_manifest(m: &Manifest) -> Vec<crate::interfaces::ImportSpec> {
 // read_s2sp
 // ---------------------------------------------------------------------------
 
-/// Unzip a `.s2sp` archive from raw bytes and extract `(Manifest, plugin_js)`.
+/// Unzip a `.s2sp` archive from raw bytes and extract `(Manifest, plugin_js, gamedata_json)`.
+///
+/// `gamedata_json` is the RAW text of the optional `gamedata.json` member (`s2s build` packs the
+/// plugin's parsed, platform-filtered gamedata there — spec §7). `None` when the archive has no such
+/// member, which is every pre-slice `.s2sp`: absence is normal, never an error. Core does not parse
+/// it here; the call registry owns that.
 ///
 /// Returns `Err(named_reason)` when:
 /// - `bytes` is not a valid zip archive
 /// - `manifest.json` is absent or fails JSON parsing into `Manifest`
 /// - `plugin.js` is absent or contains invalid UTF-8
-pub fn read_s2sp(bytes: &[u8]) -> Result<(Manifest, String), String> {
+pub fn read_s2sp(bytes: &[u8]) -> Result<(Manifest, String, Option<String>), String> {
     use std::io::{Cursor, Read};
 
     let cursor = Cursor::new(bytes);
@@ -216,7 +298,17 @@ pub fn read_s2sp(bytes: &[u8]) -> Result<(Manifest, String), String> {
         s
     };
 
-    Ok((manifest, plugin_js))
+    // Optional gamedata.json (spec §7). Mirrors the manifest read, but a MISSING member is Ok(None) —
+    // an unreadable/non-UTF-8 one degrades to None as well rather than failing the whole plugin.
+    let gamedata_json: Option<String> = match archive.by_name("gamedata.json") {
+        Ok(mut entry) => {
+            let mut s = String::new();
+            entry.read_to_string(&mut s).ok().map(|_| s)
+        }
+        Err(_) => None,
+    };
+
+    Ok((manifest, plugin_js, gamedata_json))
 }
 
 // ---------------------------------------------------------------------------
@@ -407,7 +499,7 @@ fn drain_pending_ops() {
                 let Some(path) = path else { continue };
                 SUPPRESSED.with(|s| { s.borrow_mut().remove(&path); });
                 match read_file_and_parse(&path) {
-                    Ok((manifest, js)) => {
+                    Ok((manifest, js, _gamedata)) => {
                         crate::v8host::unload_plugin(&id);   // no-op if not currently loaded
                         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
                         begin_load(&manifest, &js, &path, mtime);
@@ -514,7 +606,7 @@ pub(crate) fn poll_plugins() {
     for action in actions {
         match action {
             Action::Load { path, mtime } => match read_file_and_parse(&path) {
-                Ok((manifest, js)) => {
+                Ok((manifest, js, _gamedata)) => {
                     if !api_version_compatible(&manifest.api_version) {
                         let reason = format!(
                             "apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)",
@@ -551,7 +643,7 @@ pub(crate) fn poll_plugins() {
                     continue;
                 }
                 match read_file_and_parse(&path) {
-                    Ok((manifest, js)) => {
+                    Ok((manifest, js, _gamedata)) => {
                         if !api_version_compatible(&manifest.api_version) {
                             crate::v8host::log_warn(&format!(
                                 "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {} - keeping the running version",
@@ -808,7 +900,8 @@ fn topo_order(batch: &[(String, Vec<String>, Vec<String>)]) -> Vec<String> {
 }
 
 /// Read a `.s2sp` file from disk then parse it via `read_s2sp`.
-fn read_file_and_parse(path: &Path) -> Result<(Manifest, String), String> {
+/// Third element = the optional packed `gamedata.json` text (see `read_s2sp`).
+fn read_file_and_parse(path: &Path) -> Result<(Manifest, String, Option<String>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read failed: {}", e))?;
     read_s2sp(&bytes)
 }
@@ -844,6 +937,22 @@ mod tests {
         writer.finish().expect("finish zip").into_inner()
     }
 
+    /// Build an in-memory `.s2sp` zip with a third `gamedata.json` member (what `s2s build` packs).
+    fn make_test_s2sp_with_gamedata(manifest_json: &str, plugin_js: &str, gamedata_json: &str) -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let opts = || zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        writer.start_file("manifest.json", opts()).expect("start manifest.json");
+        writer.write_all(manifest_json.as_bytes()).expect("write manifest.json");
+        writer.start_file("plugin.js", opts()).expect("start plugin.js");
+        writer.write_all(plugin_js.as_bytes()).expect("write plugin.js");
+        writer.start_file("gamedata.json", opts()).expect("start gamedata.json");
+        writer.write_all(gamedata_json.as_bytes()).expect("write gamedata.json");
+
+        writer.finish().expect("finish zip").into_inner()
+    }
+
     /// Build an in-memory `.s2sp` zip containing ONLY `plugin.js` (no manifest.json).
     fn make_test_s2sp_missing_manifest(plugin_js: &str) -> Vec<u8> {
         let cursor = std::io::Cursor::new(Vec::new());
@@ -869,7 +978,7 @@ mod tests {
             r#"{"id":"@demo/hello","version":"0.1.0","apiVersion":"2.x"}"#,
             "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
         );
-        let (m, js) = read_s2sp(&bytes).expect("valid s2sp");
+        let (m, js, _gd) = read_s2sp(&bytes).expect("valid s2sp");
         assert_eq!(m.id, "@demo/hello");
         assert!(js.contains("factory"));
     }
@@ -911,7 +1020,7 @@ mod tests {
                 "optionalPluginDependencies":{"@demo/extra":"^1.0.0"}}"#,
             "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
         );
-        let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
+        let (m, _js, _gd) = read_s2sp(&bytes).expect("valid s2sp");
         assert_eq!(m.plugin_dependencies.get("@demo/greeter").map(String::as_str), Some("^1.0.0"));
         assert_eq!(m.optional_plugin_dependencies.get("@demo/extra").map(String::as_str), Some("^1.0.0"));
     }
@@ -922,7 +1031,7 @@ mod tests {
             r#"{"id":"@demo/x","version":"0.1.0","apiVersion":"2.x"}"#,
             "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
         );
-        let (m, _js) = read_s2sp(&bytes).expect("valid s2sp");
+        let (m, _js, _gd) = read_s2sp(&bytes).expect("valid s2sp");
         assert!(m.plugin_dependencies.is_empty());
         assert!(m.optional_plugin_dependencies.is_empty());
     }
@@ -938,7 +1047,7 @@ mod tests {
                 "pluginDependencies":{"@s2script/entity":"^0.2.0","@s2script/math":"^0.1.0"}}"#,
             "module.exports.onLoad=()=>{};",
         );
-        let (m, _js) = read_s2sp(&bytes).expect("legacy manifest parses");
+        let (m, _js, _gd) = read_s2sp(&bytes).expect("legacy manifest parses");
         let imports = imports_from_manifest(&m);
         // Builtins are no longer skipped — they become phantom Hard deps (lazy, never called).
         assert_eq!(imports.len(), 2, "both builtin deps flow through post-deletion");
@@ -1053,5 +1162,65 @@ mod tests {
         PLUGINS_DIR.with(|d| *d.borrow_mut() = None);
         let _ = std::fs::remove_file(&p);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    // -------------------------------------------------------------------
+    // Plugin gamedata: manifest fields + the operator allow-list (spec §6/§7)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn manifest_parses_permissions_and_gamedata() {
+        let bytes = make_test_s2sp(
+            r#"{"id":"@demo/gd","version":"0.1.0","apiVersion":"2.x","permissions":["engine:calls"]}"#,
+            "module.exports.default={__s2plugin:1};",
+        );
+        let (m, _js, gd) = read_s2sp(&bytes).expect("valid s2sp");
+        assert_eq!(m.permissions, vec!["engine:calls".to_string()]);
+        assert!(gd.is_none(), "no gamedata.json member in this archive");
+    }
+
+    /// The packed member is returned VERBATIM (core never parses it here) and the manifest's
+    /// author-side `gamedata` path parses alongside it.
+    #[test]
+    fn read_s2sp_returns_the_packed_gamedata_member() {
+        let gd = r#"{"signatures":{},"calls":{"ignite":{"receiver":{"kind":"entity"}}}}"#;
+        let bytes = make_test_s2sp_with_gamedata(
+            r#"{"id":"@demo/gd","version":"0.1.0","apiVersion":"2.x",
+                "permissions":["engine:calls"],"gamedata":"gamedata/plugin.gamedata.jsonc"}"#,
+            "module.exports.default={__s2plugin:1};",
+            gd,
+        );
+        let (m, _js, packed) = read_s2sp(&bytes).expect("valid s2sp");
+        assert_eq!(packed.as_deref(), Some(gd), "raw gamedata text crosses unaltered");
+        assert_eq!(m.gamedata.as_deref(), Some("gamedata/plugin.gamedata.jsonc"));
+    }
+
+    #[test]
+    fn manifest_without_permissions_defaults_empty() {
+        let bytes = make_test_s2sp(
+            r#"{"id":"@demo/p","version":"0.1.0","apiVersion":"2.x"}"#,
+            "module.exports.default={__s2plugin:1};",
+        );
+        let (m, _js, _gd) = read_s2sp(&bytes).expect("valid s2sp");
+        assert!(m.permissions.is_empty());
+    }
+
+    #[test]
+    fn permission_is_default_deny() {
+        // PERMISSIONS is host-global and libtest orders tests by NAME, so
+        // `permission_allowed_after_allow_list_load` (and any other module's test that loads an
+        // allow-list) runs BEFORE this one on the single test thread. Reset at entry — the same
+        // shared-global discipline the frame tests' capture buffers use (see .cargo/config.toml).
+        *PERMISSIONS.write().expect("permissions lock") = None;
+        // With no allow-list loaded, nothing is permitted.
+        assert!(!permission_allowed("@demo/gd", "engine:calls"));
+    }
+
+    #[test]
+    fn permission_allowed_after_allow_list_load() {
+        load_permissions_from_str(r#"{"engine:calls":["@demo/gd"]}"#).expect("parses");
+        assert!(permission_allowed("@demo/gd", "engine:calls"));
+        assert!(!permission_allowed("@other/x", "engine:calls"));
+        assert!(!permission_allowed("@demo/gd", "engine:other"));
     }
 }
