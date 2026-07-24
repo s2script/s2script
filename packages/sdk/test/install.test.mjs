@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parseManifest,
+  parseSpec,
   mergeSpecs,
   sha256Hex,
   installPlan,
@@ -44,6 +45,11 @@ test("mergeSpecs lets args override the manifest", () => {
   assert.deepEqual(merged, { rtv: "^2.0.0", a: "^1", b: "*" });
 });
 
+test("parseSpec keeps a scoped name intact (the scope's @ is not the version separator)", () => {
+  assert.deepEqual(parseSpec("@edge/foo@^1.0.0"), { name: "@edge/foo", range: "^1.0.0" });
+  assert.deepEqual(parseSpec("@edge/foo"), { name: "@edge/foo", range: "*" });
+});
+
 test("installPlan writes files, verifies sha, is idempotent", async () => {
   const dir = mkdtempSync(join(tmpdir(), "s2s-inst-"));
   const rtvBytes = new Uint8Array([9, 9, 9]);
@@ -74,6 +80,59 @@ test("installPlan aborts on a sha256 mismatch without writing", async () => {
     /sha256|integrity|mismatch/i
   );
   assert.ok(!existsSync(join(dir, "rtv.s2sp")));
+});
+
+test("installPlan refuses to write an entry the registry gave no sha256 for", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "s2s-inst-"));
+  const bytes = new Uint8Array([6, 6, 6]);
+  const entry = {
+    name: "rtv", version: "1.0.0", url: "u",
+    sha256: null, reviewState: "reviewed", filename: "rtv.s2sp",
+  };
+  const map = { rtv: { entries: [entry] }, __bytes: { rtv: bytes } };
+  await assert.rejects(
+    installPlan({ client: fakeClient(map), specs: { rtv: "*" }, dir }),
+    /sha256|verify/i
+  );
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+test("installPlan refuses a path-traversal filename from the registry", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "s2s-inst-"));
+  const bytes = new Uint8Array([4, 4, 4]);
+  const entry = {
+    name: "rtv", version: "1.0.0", url: "u",
+    sha256: sha256Hex(bytes), // self-consistent — a compromised plan response controls both fields
+    reviewState: "reviewed",
+    filename: "../../../../tmp/pwned",
+  };
+  const map = { rtv: { entries: [entry] }, __bytes: { rtv: bytes } };
+  const escapedPath = join(tmpdir(), "pwned");
+  try {
+    await assert.rejects(
+      installPlan({ client: fakeClient(map), specs: { rtv: "*" }, dir }),
+      /unsafe|traversal|filename/i
+    );
+    assert.deepEqual(readdirSync(dir), []);
+    assert.ok(!existsSync(escapedPath), "must not write outside opts.dir");
+  } finally {
+    if (existsSync(escapedPath)) rmSync(escapedPath);
+  }
+});
+
+test("installPlan fails fast and writes nothing when one of several specs is unresolvable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "s2s-inst-"));
+  const bytes = new Uint8Array([8, 8, 8]);
+  const map = {
+    rtv: { entries: [planEntry("rtv", "1.0.0", bytes)] },
+    __bytes: { rtv: bytes },
+    // "missing" is deliberately absent from map, so client.plan() reports it unresolvable
+  };
+  await assert.rejects(
+    installPlan({ client: fakeClient(map), specs: { rtv: "*", missing: "*" }, dir }),
+    /cannot resolve/i
+  );
+  assert.deepEqual(readdirSync(dir), []);
 });
 
 test("installPlan with reviewedOnly refuses an unreviewed plugin", async () => {
