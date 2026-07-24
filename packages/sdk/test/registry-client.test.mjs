@@ -157,8 +157,31 @@ test("plan() GETs /api/v1/plan and returns the parsed body", async () => {
 
 test("downloadS2sp() returns the artifact bytes", async () => {
   const bytes = new Uint8Array([1, 2, 3, 4]);
-  const fetchFn = async () => new Response(bytes, { status: 200 });
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(String(url));
+    return new Response(bytes, { status: 200 });
+  };
   const client = new RegistryClient({ baseUrl: "https://www.s2script.com", fetch: fetchFn });
   const buf = await client.downloadS2sp("rtv", "1.0.0");
   assert.deepEqual(new Uint8Array(buf), bytes);
+  assert.match(calls[0], /\/api\/v1\/download\/s2sp\?name=rtv&version=1\.0\.0/);
+});
+
+test("plan() reports server errors instead of returning a bogus plan", async () => {
+  const client = clientWith(async () => jsonResponse(404, { message: "no releases match ^9.0.0 for rtv" }));
+  const err = await client.plan("rtv", "^9.0.0").catch((e) => e);
+  assert.ok(err instanceof RegistryError);
+  assert.equal(err.status, 404);
+  assert.match(err.message, /no releases match \^9\.0\.0 for rtv/);
+  assert.match(err.message, /plan/);
+});
+
+test("downloadS2sp() reports server errors instead of returning a bogus buffer", async () => {
+  const client = clientWith(async () => jsonResponse(404, { message: "no s2sp for rtv@1.0.0" }));
+  const err = await client.downloadS2sp("rtv", "1.0.0").catch((e) => e);
+  assert.ok(err instanceof RegistryError);
+  assert.equal(err.status, 404);
+  assert.match(err.message, /no s2sp for rtv@1\.0\.0/);
+  assert.match(err.message, /s2sp download/);
 });

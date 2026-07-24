@@ -29,7 +29,9 @@ const TIMEOUTS_MS = {
   deploy: 300_000, // up to ~40 MiB on a slow uplink
   resolve: 30_000,
   meta: 30_000,
+  plan: 30_000,
   "types download": 120_000,
+  "s2sp download": 120_000,
 } as const;
 
 type Op = keyof typeof TIMEOUTS_MS;
@@ -219,35 +221,15 @@ export class RegistryClient {
     const u = new URL(`${this.baseUrl}/api/v1/plan`);
     u.searchParams.set("name", name);
     u.searchParams.set("range", range);
-    const res = await this.fetchFn(u, { headers: this.headers() });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new RegistryError(
-        (body as { error?: string; message?: string }).error ||
-          (body as { message?: string }).message ||
-          `plan failed (${res.status})`,
-        res.status,
-        body
-      );
-    }
-    return body as InstallPlan;
+    const res = await this.request("plan", u);
+    return this.json(res, "plan");
   }
 
   async downloadS2sp(name: string, version: string): Promise<Buffer> {
     const u = new URL(`${this.baseUrl}/api/v1/download/s2sp`);
     u.searchParams.set("name", name);
     u.searchParams.set("version", version);
-    const res = await this.fetchFn(u, { headers: this.headers() });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new RegistryError(
-        (body as { message?: string; error?: string }).message ||
-          (body as { error?: string }).error ||
-          `s2sp download failed (${res.status})`,
-        res.status,
-        body
-      );
-    }
+    const res = await this.request("s2sp download", u);
     return Buffer.from(await res.arrayBuffer());
   }
 }
