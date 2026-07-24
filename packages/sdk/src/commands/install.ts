@@ -27,17 +27,17 @@ export async function run(argv: string[]): Promise<void> {
     }
   }
 
-  const manifest = loadManifestFile(resolve(file));
-  const specs = mergeSpecs(manifest, args);
-  if (Object.keys(specs).length === 0) {
-    console.error(
-      `Nothing to install. Add plugins to ${file} or pass names: s2s install rtv@^1.0.0`
-    );
-    process.exit(1);
-  }
-
   const client = new RegistryClient({ baseUrl: registry });
   try {
+    const manifest = loadManifestFile(resolve(file));
+    const specs = mergeSpecs(manifest, args);
+    if (Object.keys(specs).length === 0) {
+      console.error(
+        `Nothing to install. Add plugins to ${file} or pass names: s2s install rtv@^1.0.0`
+      );
+      process.exit(1);
+    }
+
     const res = await installPlan({
       client,
       specs,
