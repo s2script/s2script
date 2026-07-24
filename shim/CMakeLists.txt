@@ -41,6 +41,9 @@ add_library(s2script SHARED
     src/ekv.cpp
     # Crash-reporter slice: Breakpad arming + the async-signal-safe .s2meta sidecar writer.
     src/crash_handler.cpp
+    # Plugin-gamedata slice: plugin-declared engine calls — descriptor resolution (byte signature /
+    # RTTI vtable slot + prologue validation + .text range) and the fixed-max-arity SysV invoke.
+    src/engine_calls.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier1/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
