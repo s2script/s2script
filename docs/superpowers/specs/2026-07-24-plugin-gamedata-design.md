@@ -96,9 +96,13 @@ system) are an additive kind in a later slice, not a format redesign.
 
 ## 5. Descriptor format
 
-A plugin ships `gamedata/plugin.gamedata.jsonc` in its source tree. It reuses the existing
-`core.gamedata.jsonc` shape exactly — a named entry whose keys are **platform ids**
-(`linuxsteamrt64`), with the platform-specific details nested inside — plus a new `calls` section.
+A plugin ships its gamedata in its own source tree, named
+**`<plugin-name-without-scope>.gamedata.jsonc`** — `@me/burn` → `burn.gamedata.jsonc` — mirroring the
+framework's own `gamedata/core.gamedata.jsonc`, where the file is named for whoever owns it. `s2s build`
+**enforces** the basename (a `.json` extension is also accepted); the directory is not constrained,
+though `gamedata/` is the convention. The file reuses the existing `core.gamedata.jsonc` shape exactly
+— a named entry whose keys are **platform ids** (`linuxsteamrt64`), with the platform-specific details
+nested inside — plus a new `calls` section.
 
 ```jsonc
 {
@@ -166,7 +170,7 @@ pointer offset is **live-resolved, never baked** — a field move needs no plugi
 
 ```jsonc
 "s2script": {
-  "gamedata": "gamedata/plugin.gamedata.jsonc",
+  "gamedata": "gamedata/burn.gamedata.jsonc",
   "permissions": ["engine:calls"]
 }
 ```

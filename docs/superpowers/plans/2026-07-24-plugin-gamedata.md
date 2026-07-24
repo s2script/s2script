@@ -546,10 +546,10 @@ function scaffold(gamedata, permissions, body) {
   const dir = mkdtempSync(join(tmpdir(), "s2gd-"));
   mkdirSync(join(dir, "src"), { recursive: true });
   mkdirSync(join(dir, "gamedata"), { recursive: true });
-  writeFileSync(join(dir, "gamedata", "plugin.gamedata.jsonc"), JSON.stringify(gamedata));
+  writeFileSync(join(dir, "gamedata", "gd.gamedata.jsonc"), JSON.stringify(gamedata));
   writeFileSync(join(dir, "package.json"), JSON.stringify({
     name: "@demo/gd", version: "0.1.0", main: "src/plugin.ts",
-    s2script: { gamedata: "gamedata/plugin.gamedata.jsonc", ...(permissions ? { permissions } : {}) },
+    s2script: { gamedata: "gamedata/gd.gamedata.jsonc", ...(permissions ? { permissions } : {}) },
   }));
   writeFileSync(join(dir, "src", "plugin.ts"), body);
   return dir;
@@ -1145,7 +1145,7 @@ git commit -m "Record the RE spike for the demo engine call"
 ### Task 9: Demo plugin + live gate
 
 **Files:**
-- Create: `examples/engine-call-demo/package.json`, `gamedata/plugin.gamedata.jsonc`, `src/plugin.ts`
+- Create: `examples/engine-call-demo/package.json`, `gamedata/engine-call.gamedata.jsonc`, `src/plugin.ts`
 - Modify: `docs/PROGRESS.md` (append the finished-slice entry)
 
 **Interfaces:**
@@ -1161,13 +1161,13 @@ git commit -m "Record the RE spike for the demo engine call"
   "version": "0.1.0",
   "main": "src/plugin.ts",
   "s2script": {
-    "gamedata": "gamedata/plugin.gamedata.jsonc",
+    "gamedata": "gamedata/engine-call.gamedata.jsonc",
     "permissions": ["engine:calls"]
   }
 }
 ```
 
-`gamedata/plugin.gamedata.jsonc` — use the **verified** values from Task 8 (not placeholders).
+`gamedata/engine-call.gamedata.jsonc` (named `<plugin-without-scope>.gamedata.jsonc`) — use the **verified** values from Task 8 (not placeholders).
 
 `src/plugin.ts`:
 

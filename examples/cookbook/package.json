@@ -17,7 +17,7 @@
     "optionalPluginDependencies": {
       "@s2script/zones": "^0.3.0"
     },
-    "gamedata": "gamedata/plugin.gamedata.jsonc",
+    "gamedata": "gamedata/cookbook.gamedata.jsonc",
     "permissions": [
       "engine:calls"
     ]

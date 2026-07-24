@@ -1200,13 +1200,13 @@ mod tests {
         let gd = r#"{"signatures":{},"calls":{"ignite":{"receiver":{"kind":"entity"}}}}"#;
         let bytes = make_test_s2sp_with_gamedata(
             r#"{"id":"@demo/gd","version":"0.1.0","apiVersion":"2.x",
-                "permissions":["engine:calls"],"gamedata":"gamedata/plugin.gamedata.jsonc"}"#,
+                "permissions":["engine:calls"],"gamedata":"gamedata/gd.gamedata.jsonc"}"#,
             "module.exports.default={__s2plugin:1};",
             gd,
         );
         let (m, _js, packed) = read_s2sp(&bytes).expect("valid s2sp");
         assert_eq!(packed.as_deref(), Some(gd), "raw gamedata text crosses unaltered");
-        assert_eq!(m.gamedata.as_deref(), Some("gamedata/plugin.gamedata.jsonc"));
+        assert_eq!(m.gamedata.as_deref(), Some("gamedata/gd.gamedata.jsonc"));
     }
 
     #[test]

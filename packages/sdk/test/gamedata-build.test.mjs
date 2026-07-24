@@ -18,10 +18,10 @@ function scaffold(gamedata, permissions, body) {
   const dir = mkdtempSync(join(tmpdir(), "s2gd-"));
   mkdirSync(join(dir, "src"), { recursive: true });
   mkdirSync(join(dir, "gamedata"), { recursive: true });
-  writeFileSync(join(dir, "gamedata", "plugin.gamedata.jsonc"), JSON.stringify(gamedata));
+  writeFileSync(join(dir, "gamedata", "gd.gamedata.jsonc"), JSON.stringify(gamedata));
   writeFileSync(join(dir, "package.json"), JSON.stringify({
     name: "@demo/gd", version: "0.1.0", main: "src/plugin.ts",
-    s2script: { gamedata: "gamedata/plugin.gamedata.jsonc", ...(permissions ? { permissions } : {}) },
+    s2script: { gamedata: "gamedata/gd.gamedata.jsonc", ...(permissions ? { permissions } : {}) },
   }));
   writeFileSync(join(dir, "src", "plugin.ts"), body);
   return dir;
@@ -129,7 +129,38 @@ test("gamedata with trailing and block comments builds (house JSONC style)", asy
     }
   }
 }`;
-  writeFileSync(join(dir, "gamedata", "plugin.gamedata.jsonc"), jsonc);
+  writeFileSync(join(dir, "gamedata", "gd.gamedata.jsonc"), jsonc);
   const out = await buildPlugin(dir);
   assert.ok(unzipSync(readFileSync(out))["gamedata.json"], "packed despite inline comments");
+});
+
+// --- gamedata filename convention: <plugin-name-without-scope>.gamedata.jsonc ---
+
+test("a gamedata file not named after the plugin fails the build", async () => {
+  const dir = scaffold(GD, ["engine:calls"], OK_BODY);   // package is @demo/gd
+  writeFileSync(join(dir, "gamedata", "wrong-name.gamedata.jsonc"), JSON.stringify(GD));
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  pkg.s2script.gamedata = "gamedata/wrong-name.gamedata.jsonc";
+  writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+  await assert.rejects(() => buildPlugin(dir), /must be named 'gd\.gamedata\.jsonc'/);
+});
+
+test("the scope is stripped when deriving the expected name", async () => {
+  // @scoped/burn -> burn.gamedata.jsonc, NOT "@scoped/burn.gamedata.jsonc" or "scoped-burn…".
+  const dir = scaffold(GD, ["engine:calls"], OK_BODY);
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  pkg.name = "@scoped/burn";
+  pkg.s2script.gamedata = "gamedata/burn.gamedata.jsonc";
+  writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+  writeFileSync(join(dir, "gamedata", "burn.gamedata.jsonc"), JSON.stringify(GD));
+  await buildPlugin(dir);   // resolves without throwing
+});
+
+test("a .json extension is accepted too", async () => {
+  const dir = scaffold(GD, ["engine:calls"], OK_BODY);
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  pkg.s2script.gamedata = "gamedata/gd.gamedata.json";
+  writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+  writeFileSync(join(dir, "gamedata", "gd.gamedata.json"), JSON.stringify(GD));
+  await buildPlugin(dir);
 });

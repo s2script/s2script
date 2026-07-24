@@ -2,7 +2,7 @@
  * engine-call-demo — calling an engine function the framework does not wrap.
  *
  * See README.md for how the pieces fit together. The short version: this plugin ships its own
- * gamedata (gamedata/plugin.gamedata.jsonc), `s2s build` generated types from it into
+ * gamedata (gamedata/engine-call.gamedata.jsonc), `s2s build` generated types from it into
  * .s2script/gamedata.d.ts, and `Engine.call()` hands back a plain callable — or null when the
  * descriptor failed a load-time gate.
  *

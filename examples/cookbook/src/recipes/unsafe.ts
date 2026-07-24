@@ -5,7 +5,7 @@ import { Player } from "@s2script/cs2";
 
 /**
  * `@s2script/sdk/unsafe` — call an engine function the core does not wrap, declared in this plugin's
- * OWN gamedata (`examples/cookbook/gamedata/plugin.gamedata.jsonc`) rather than in the framework's.
+ * OWN gamedata (`examples/cookbook/gamedata/cookbook.gamedata.jsonc`) rather than in the framework's.
  *
  * The three things this recipe demonstrates, in order of importance:
  *

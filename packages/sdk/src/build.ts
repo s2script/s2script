@@ -12,7 +12,7 @@
 import * as esbuild from "esbuild";
 import { zipSync } from "fflate";
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { resolve, join, sep } from "node:path";
+import { resolve, join, sep, basename } from "node:path";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
 import { validateConfigBlock } from "./config-validate.ts";
 import { assertPublishesTypes, hasPublishes } from "./publish-gate.ts";
@@ -82,6 +82,18 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     if (gdPath !== absDir && !gdPath.startsWith(dirPrefix)) {
       throw new Error(
         `s2script.gamedata escapes the plugin directory: ${JSON.stringify(s2.gamedata)} resolves to ${gdPath}`
+      );
+    }
+    // Naming convention: `<plugin-name-without-scope>.gamedata.jsonc`, mirroring the framework's own
+    // `gamedata/core.gamedata.jsonc` — a gamedata file is named for whoever owns it. Enforced rather
+    // than documented so the convention actually holds: `@me/burn` -> `burn.gamedata.jsonc`.
+    const unscoped = pkg.name.includes("/") ? pkg.name.slice(pkg.name.lastIndexOf("/") + 1) : pkg.name;
+    const actualBase = basename(gdPath);
+    const allowedBases = [`${unscoped}.gamedata.jsonc`, `${unscoped}.gamedata.json`];
+    if (!allowedBases.includes(actualBase)) {
+      throw new Error(
+        `s2script.gamedata must be named '${unscoped}.gamedata.jsonc' (after the plugin name without ` +
+          `its scope, like the framework's own core.gamedata.jsonc), but is '${actualBase}'`
       );
     }
     // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core.gamedata.jsonc —
