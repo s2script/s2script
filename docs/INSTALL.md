@@ -70,6 +70,29 @@ addons/s2script/plugins/<name>.s2sp
 
 The runtime watches that directory (top-level only, ~1s poll): drop → load, replace → hot-reload, delete → unload. No server restart required for plugin changes.
 
+### Or install from the registry
+
+`s2s install` downloads a plugin and its dependencies straight into the plugins
+directory — handy in a Dockerfile or provisioning script, and it needs no login:
+
+```bash
+# from a manifest checked in next to your server config
+s2s install --dir /path/to/csgo/addons/s2script/plugins
+
+# or by name
+s2s install rtv@^1.0.0 --dir /path/to/csgo/addons/s2script/plugins
+```
+
+A manifest (`s2script-plugins.json`) pins what the server should have:
+
+```json
+{ "plugins": { "rtv": "^1.0.0", "@edge/foo": "2.1.0" } }
+```
+
+Base `@s2script/*` plugins are skipped (already in the runtime). Unreviewed
+community plugins install with a warning; pass `--reviewed-only` to block them,
+or `--dry-run` to preview the resolved set.
+
 Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismatched **major** at load time.
 
 ## After a CS2 update
