@@ -62,7 +62,10 @@ test("a wrong arg count fails the typecheck gate", async () => {
 import { Engine } from "@s2script/sdk/unsafe";
 export default plugin(() => { const f = Engine.call("ignite"); if (f) f(null as never, 1, 2); });`;
   const dir = scaffold(GD, ["engine:calls"], body);
-  await assert.rejects(() => buildPlugin(dir));
+  // The matcher matters: a bare assert.rejects() passes for ANY rejection, including the TS2345
+  // "not assignable to 'never'" you get when the augmentation is DEAD. Requiring the arity error
+  // (TS2554) is what distinguishes a working gate from a silently empty EngineCalls.
+  await assert.rejects(() => buildPlugin(dir), /TS2554|Expected 2 arguments/);
 });
 
 test("a plugin with no gamedata key still builds and packs no gamedata.json", async () => {

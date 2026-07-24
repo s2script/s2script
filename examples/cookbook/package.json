@@ -11,11 +11,15 @@
       "greeting": {
         "type": "string",
         "default": "Hello from the cookbook's config file!",
-        "description": "Printed by cb_config (examples/cookbook/src/recipes/config.ts). Edit the materialized config file to change it live — no rebuild needed."
+        "description": "Printed by cb_config (examples/cookbook/src/recipes/config.ts). Edit the materialized config file to change it live \u2014 no rebuild needed."
       }
     },
     "optionalPluginDependencies": {
       "@s2script/zones": "^0.3.0"
-    }
+    },
+    "gamedata": "gamedata/plugin.gamedata.jsonc",
+    "permissions": [
+      "engine:calls"
+    ]
   }
 }

@@ -168,10 +168,18 @@ int Fail(char* out, int cap, const char* reason) {
 
 // The two max-arity prototypes (see THE INVOKE TECHNIQUE above). All 5 GP + 8 xmm slots are always
 // passed; the callee reads only what its real prototype declares.
+//
+// The xmm slots MUST be `float`, not `double`. The arg vocabulary's `float` is 32-bit, and SysV
+// passes a 32-bit float as a float in the LOW 32 bits of the xmm register. Declaring these `double`
+// puts a 64-bit double bit pattern in the register, so a callee doing `movss`/`movd` reads the
+// double's low word: `(double)10.0` is 0x4024000000000000, whose low 32 bits are ZERO, so the callee
+// sees 0.0f. That is a SILENT wrong value — no crash, no diagnostic — and it is exactly the
+// misbehaviour class this slice exists to prevent. Verified by compiled repro; guarded by the
+// float-round-trip test in core/src/gamedata_calls.rs.
 using FnU64 = uint64_t (*)(void*, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           double, double, double, double, double, double, double, double);
+                           float, float, float, float, float, float, float, float);
 using FnF32 = float    (*)(void*, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           double, double, double, double, double, double, double, double);
+                           float, float, float, float, float, float, float, float);
 
 }  // namespace
 
@@ -276,7 +284,9 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     }
 
     uint64_t g[kMaxGpArgs] = { 0, 0, 0, 0, 0 };
-    double   f[kMaxFpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    // `float`, not `double` — see the FnU64/FnF32 note above. The core hands us f64 across the ABI
+    // (JS numbers are doubles); the narrowing to the engine's 32-bit float happens HERE, once.
+    float    f[kMaxFpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
     for (int i = 0; i < gpCount; i++) {
         switch (gpKind[i]) {
@@ -311,7 +321,7 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
                 return 0;                            // unknown arg kind — degrade, never guess
         }
     }
-    for (int i = 0; i < fpCount; i++) f[i] = fp[i];
+    for (int i = 0; i < fpCount; i++) f[i] = static_cast<float>(fp[i]);   // explicit f64 -> f32 narrow
 
     if (retKind == kRetFloat) {
         float r = reinterpret_cast<FnF32>(fn)(thisPtr, g[0], g[1], g[2], g[3], g[4],

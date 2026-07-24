@@ -1,8 +1,16 @@
 import type { ArgKind, PluginGamedata, RetKind } from "./types.ts";
 
+// `vector` MUST be the structural {x,y,z} shape, NOT a tuple. Core marshals a vector arg by reading
+// the `x`/`y`/`z` PROPERTIES off the JS value (core/src/v8host.rs, "vector" arm), each defaulting to
+// 0.0 when absent. A tuple type therefore inverts the contract: passing a real `Vector` (which is
+// {x,y,z}) would fail typecheck, while passing `[1,2,3]` would typecheck and silently hand the engine
+// (0,0,0). This shape accepts Vector, QAngle, and plain object literals — everything core can read —
+// and correctly rejects arrays.
+const VECTOR_TS = "{ readonly x: number; readonly y: number; readonly z: number }";
+
 const ARG_TS: Record<ArgKind, string> = {
   bool: "boolean", int: "number", float: "number",
-  string: "string", vector: "readonly [number, number, number]",
+  string: "string", vector: VECTOR_TS,
   entity: "EntityRef | null",
 };
 const RET_TS: Record<RetKind, string> = {

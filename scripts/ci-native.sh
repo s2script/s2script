@@ -37,6 +37,9 @@ if command -v ccache >/dev/null 2>&1; then
   LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
 fi
 
+echo "== check-invoke-abi.sh (declared-call float ABI) =="
+bash scripts/check-invoke-abi.sh
+
 echo "== shim build =="
 cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
   -DS2_CORE_LIB_DIR=debug \

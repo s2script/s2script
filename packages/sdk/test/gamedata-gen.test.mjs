@@ -44,3 +44,15 @@ test("output is deterministic (calls sorted by name)", () => {
   const idxIgnite = generateGamedataTypes(gd).indexOf("ignite");
   assert.ok(idxDrop < idxIgnite, "expected alphabetical ordering");
 });
+
+// --- vector shape (added after review: this was inverted and had zero coverage) ---
+
+test("vector args generate the structural {x,y,z} shape core actually reads, not a tuple", () => {
+  const out = generateGamedataTypes({
+    calls: { teleport: { receiver: { kind: "entity" }, target: { kind: "signature", name: "S" },
+                         args: ["vector"], returns: "void" } },
+  });
+  assert.match(out, /teleport: \(self: EntityRef, a0: \{ readonly x: number; readonly y: number; readonly z: number \}\) => void;/);
+  assert.doesNotMatch(out, /readonly \[number, number, number\]/,
+    "a tuple type would reject a real Vector and silently send (0,0,0) for an array");
+});

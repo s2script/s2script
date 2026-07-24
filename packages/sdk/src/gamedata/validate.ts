@@ -5,6 +5,19 @@ import {
 
 const ALLOWED_SECTIONS = new Set(["signatures", "calls"]);
 
+/**
+ * A call name is interpolated VERBATIM into the generated `.s2script/gamedata.d.ts` as a TypeScript
+ * interface member, so it must be a plain identifier. This is a security gate, not cosmetics: a name
+ * like `y: (...a: any[]) => any; [k: string]: any; z` injects an index signature into `EngineCalls`,
+ * after which EVERY `Engine.call("anything")` typechecks and the build gate is completely defeated —
+ * while each such call degrades to `null` at runtime, so the failure is silent. Benign-but-invalid
+ * names (`burn-target`, `0abc`) emit syntactically invalid TypeScript, which surfaces as a confusing
+ * `tsc` error inside a generated file instead of a gamedata error here.
+ */
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+/** Names that are legal identifiers but hazardous as interface members / map keys. */
+const RESERVED_CALL_NAMES = new Set(["constructor", "prototype", "__proto__"]);
+
 /** Validate a plugin's gamedata. Returns [] when valid; every string is a build-blocking error. */
 export function validatePluginGamedata(gd: unknown, opts: { permissions: string[] }): string[] {
   const errs: string[] = [];
@@ -37,6 +50,21 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
 
   for (const [name, rawDecl] of Object.entries(calls)) {
     const where = `call '${name}'`;
+
+    // Name gate FIRST — see the IDENTIFIER note above. A bad name is never emitted, so a malicious or
+    // malformed key can neither inject into the generated .d.ts nor produce invalid TypeScript.
+    if (!IDENTIFIER.test(name)) {
+      errs.push(
+        `${where}: call name must be a plain identifier matching ${IDENTIFIER.source} — it is emitted ` +
+          `verbatim as a TypeScript interface member in the generated .s2script/gamedata.d.ts`
+      );
+      continue;
+    }
+    if (RESERVED_CALL_NAMES.has(name)) {
+      errs.push(`${where}: call name '${name}' is reserved`);
+      continue;
+    }
+
     if (rawDecl == null || typeof rawDecl !== "object") { errs.push(`${where}: must be an object`); continue; }
     const decl = rawDecl as Record<string, unknown>;
 

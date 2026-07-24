@@ -1,0 +1,43 @@
+{
+  // Plugin-shippable gamedata (spec docs/superpowers/specs/2026-07-24-plugin-gamedata-design.md).
+  // Every value here was SELF-RESOLVED against our pinned libserver.so — nothing is borrowed.
+  // Full derivation + per-update re-resolve recipes: docs/re-notes/2026-07-24-ignite.md.
+  "signatures": {
+    // CBaseModelEntity::Ignite(float flFlameLifetime /*xmm0*/, uint32 nFlags /*esi*/,
+    // CBaseEntity* pAttacker /*rdx*/, float flSize /*xmm1*/, Vector vPosition /*xmm2+xmm3*/) -> void.
+    //
+    // NOTE the class: it is CBaseModelEntity, NOT CBaseEntity. CBaseEntity's primary vtable is only
+    // 237 slots long, so index 264 is past its end; Ignite is introduced at CBaseModelEntity and
+    // CCSPlayerPawn inherits it unchanged. (The spec's illustrative "CBaseEntity" + index 214 +
+    // (float,bool,float,bool) are all wrong on this build — see the RE note §1/§4/§5.)
+    //
+    // Identity is schema-anchored, not guessed: the body fires CBaseModelEntity::m_OnIgnite (+0x818)
+    // through FireOutputInternal (@0x21327a0), writes CEntityFlame::m_hAttacker (+0x7a4) from rdx, and
+    // its CEnvEntityIgniter caller passes m_flLifetime (+0x788) as arg1. Build 2000877, va 0x15cb290,
+    // vtable index 264. DIRECT pattern (match offset == entry); masks only the volatile
+    // `sub $0x30,%rsp` immediate and keeps the `and $0x4,%esi` flags test. Validated UNIQUE
+    // (exactly 1 match, whole-file and PF_X). The prologue moves every CS2 update — re-derive per
+    // docs/re-notes/2026-07-24-ignite.md §9.
+    //
+    // The trailing by-value Vector is OUTSIDE the v1 arg vocabulary and is DELIBERATELY not declared:
+    // it is a proven dead store in this build's base implementation. Re-check on every update.
+    "CBaseModelEntity_Ignite": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 66 41 0F 7E C6 41 55 49 89 D5 41 54 41 89 F4 53 48 89 FB 48 83 EC ? 83 E6 04",
+        "resolve": "direct"
+      }
+    }
+  },
+  "calls": {
+    // nFlags MUST be 4: with bit 0x4 clear, Ignite consults vtable[263] ("ignitable?"), which returns
+    // false for every pawn, and returns having done nothing (RE note §6). A silent no-op — which is
+    // exactly why the float ABI had to be fixed first, since a zeroed lifetime looks identical.
+    "ignite": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CBaseModelEntity_Ignite" },
+      "args": ["float", "int", "entity", "float"],
+      "returns": "void"
+    }
+  }
+}

@@ -69,3 +69,49 @@ test("receiver.via requires both class and field", () => {
   gd.calls.foo.receiver.via = { class: "CBasePlayerPawn" };
   assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("via")));
 });
+
+// --- call-name gate (added after review: the generated .d.ts interpolates the name verbatim) ---
+
+test("a call name that injects TypeScript is rejected", () => {
+  const gd = structuredClone(sigCall);
+  delete gd.calls.foo;
+  gd.calls["y: (...a: any[]) => any; [k: string]: any; z"] = {
+    receiver: { kind: "entity" }, target: { kind: "signature", name: "Foo" }, args: [], returns: "void",
+  };
+  const errs = validatePluginGamedata(gd, { permissions: PERMS });
+  assert.ok(errs.some((e) => e.includes("plain identifier")),
+    "an index-signature injection must be rejected — it defeats the whole typecheck gate");
+});
+
+test("call names that are not identifiers are rejected", () => {
+  for (const bad of ["burn-target", "0abc", "has space", "a.b", ""]) {
+    const gd = structuredClone(sigCall);
+    delete gd.calls.foo;
+    gd.calls[bad] = { receiver: { kind: "entity" }, target: { kind: "signature", name: "Foo" }, args: [], returns: "void" };
+    assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("plain identifier")),
+      `expected ${JSON.stringify(bad)} to be rejected`);
+  }
+});
+
+test("reserved call names are rejected", () => {
+  // Built via JSON.parse, not assignment: `obj["__proto__"] = x` sets the PROTOTYPE rather than
+  // creating an own key, so an assignment-built fixture would not reach the validator at all.
+  // JSON.parse does create a real own property — and JSON.parse is how gamedata actually arrives.
+  for (const bad of ["constructor", "prototype", "__proto__"]) {
+    const decl = { receiver: { kind: "entity" }, target: { kind: "signature", name: "Foo" }, args: [], returns: "void" };
+    const gd = JSON.parse(JSON.stringify({ signatures: sigCall.signatures, calls: {} }));
+    gd.calls = JSON.parse(`{${JSON.stringify(bad)}:${JSON.stringify(decl)}}`);
+    assert.ok(Object.hasOwn(gd.calls, bad), `fixture for ${bad} must have an own key`);
+    assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("reserved")),
+      `expected ${JSON.stringify(bad)} to be rejected`);
+  }
+});
+
+test("ordinary identifier call names are still accepted", () => {
+  for (const ok of ["ignite", "dropActiveWeapon", "_private", "$dollar", "a0"]) {
+    const gd = structuredClone(sigCall);
+    delete gd.calls.foo;
+    gd.calls[ok] = { receiver: { kind: "entity" }, target: { kind: "signature", name: "Foo" }, args: [], returns: "void" };
+    assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), [], `expected ${ok} to pass`);
+  }
+});
