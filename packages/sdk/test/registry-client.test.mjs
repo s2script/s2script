@@ -139,3 +139,26 @@ test("error extraction: a JSON body with no error/message still shows the payloa
   assert.match(err.message, /unexpected/);
   assert.deepEqual(err.body, { unexpected: "shape" });
 });
+
+test("plan() GETs /api/v1/plan and returns the parsed body", async () => {
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(String(url));
+    return new Response(
+      JSON.stringify({ root: { name: "rtv", version: "1.0.0" }, install: [], skipped: [], warnings: [], errors: [] }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+  const client = new RegistryClient({ baseUrl: "https://www.s2script.com", fetch: fetchFn });
+  const plan = await client.plan("rtv", "^1.0.0");
+  assert.equal(plan.root.version, "1.0.0");
+  assert.match(calls[0], /\/api\/v1\/plan\?name=rtv&range=%5E1\.0\.0/);
+});
+
+test("downloadS2sp() returns the artifact bytes", async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const fetchFn = async () => new Response(bytes, { status: 200 });
+  const client = new RegistryClient({ baseUrl: "https://www.s2script.com", fetch: fetchFn });
+  const buf = await client.downloadS2sp("rtv", "1.0.0");
+  assert.deepEqual(new Uint8Array(buf), bytes);
+});

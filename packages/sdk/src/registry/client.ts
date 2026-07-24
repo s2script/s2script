@@ -84,6 +84,23 @@ export interface RegistryClientOpts {
   fetch?: typeof fetch;
 }
 
+export interface PlanEntry {
+  name: string;
+  version: string;
+  url: string;
+  sha256: string | null;
+  reviewState: string;
+  filename: string;
+}
+
+export interface InstallPlan {
+  root: { name: string; version: string } | null;
+  install: PlanEntry[];
+  skipped: { name: string; reason: string }[];
+  warnings: string[];
+  errors: string[];
+}
+
 export class RegistryClient {
   readonly baseUrl: string;
   private token?: string;
@@ -196,5 +213,41 @@ export class RegistryClient {
     u.searchParams.set("name", name);
     const res = await this.request("meta", u);
     return this.json(res, "meta");
+  }
+
+  async plan(name: string, range = "*"): Promise<InstallPlan> {
+    const u = new URL(`${this.baseUrl}/api/v1/plan`);
+    u.searchParams.set("name", name);
+    u.searchParams.set("range", range);
+    const res = await this.fetchFn(u, { headers: this.headers() });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new RegistryError(
+        (body as { error?: string; message?: string }).error ||
+          (body as { message?: string }).message ||
+          `plan failed (${res.status})`,
+        res.status,
+        body
+      );
+    }
+    return body as InstallPlan;
+  }
+
+  async downloadS2sp(name: string, version: string): Promise<Buffer> {
+    const u = new URL(`${this.baseUrl}/api/v1/download/s2sp`);
+    u.searchParams.set("name", name);
+    u.searchParams.set("version", version);
+    const res = await this.fetchFn(u, { headers: this.headers() });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new RegistryError(
+        (body as { message?: string; error?: string }).message ||
+          (body as { error?: string }).error ||
+          `s2sp download failed (${res.status})`,
+        res.status,
+        body
+      );
+    }
+    return Buffer.from(await res.arrayBuffer());
   }
 }
