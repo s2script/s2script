@@ -1,0 +1,77 @@
+{
+  // This plugin's OWN gamedata. Same file shape as the framework's gamedata/core.gamedata.jsonc:
+  // a named entry whose keys are PLATFORM IDS, with the platform-specific details nested inside.
+  //
+  // Every value here was self-resolved against OUR pinned libserver.so. Nothing is borrowed.
+  // Full derivation, and the recipes to re-derive it after a CS2 update:
+  //   docs/re-notes/2026-07-24-ignite.md
+  "signatures": {
+    // CBaseModelEntity::Ignite(float flFlameLifetime /*xmm0*/, uint32 nFlags /*esi*/,
+    //                          CBaseEntity* pAttacker /*rdx*/, float flSize /*xmm1*/,
+    //                          Vector vPosition /*xmm2+xmm3, defaulted*/) -> void
+    //
+    // Note the CLASS. It is CBaseModelEntity, not CBaseEntity: CBaseEntity's primary vtable is only
+    // 237 slots long, so Ignite's index 264 is past its end. Ignite is introduced at
+    // CBaseModelEntity and CCSPlayerPawn inherits it unchanged.
+    //
+    // Identity is schema-anchored rather than guessed: the body fires
+    // CBaseModelEntity::m_OnIgnite (+0x818) through FireOutputInternal, writes
+    // CEntityFlame::m_hAttacker (+0x7a4) from its rdx argument, and its CEnvEntityIgniter caller
+    // passes m_flLifetime (+0x788) as arg1. Build 2000877, va 0x15cb290, vtable index 264.
+    //
+    // A DIRECT pattern: the match offset IS the function entry. It masks only the volatile
+    // `sub $0x30,%rsp` immediate and keeps the `and $0x4,%esi` flags test. Validated UNIQUE —
+    // exactly one match, whole-file and within PF_X.
+    //
+    // The trailing by-value Vector is outside the v1 arg vocabulary and is deliberately NOT
+    // declared: it is a proven dead store in this build. Re-check that on every update.
+    "CBaseModelEntity_Ignite": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 66 41 0F 7E C6 41 55 49 89 D5 41 54 41 89 F4 53 48 89 FB 48 83 EC ? 83 E6 04",
+        "resolve": "direct"
+      }
+    }
+  },
+  "calls": {
+    // The working call. `args` are the marshalling contract the runtime uses; `argNames` is
+    // documentary only (the runtime never reads it) but it is what makes the generated TypeScript
+    // signature legible — `ignite(pawn.ref, 10.0, 4, null, 0.0)` says nothing on its own.
+    "ignite": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CBaseModelEntity_Ignite" },
+      "args": ["float", "int", "entity", "float"],
+      "argNames": ["flFlameLifetime", "nFlags", "pAttacker", "flSize"],
+      "returns": "void"
+    },
+
+    // ---------------------------------------------------------------------------------------
+    // A DELIBERATELY REJECTED descriptor. This one is SUPPOSED to fail at load, and the plugin
+    // is supposed to keep working anyway. It is here because the interesting property of this
+    // system is not that a good descriptor works — it is that a bad one is caught by name.
+    //
+    // It names CCSPlayer_ItemServices vtable slot 24, which other frameworks' gamedata calls
+    // DropActivePlayerWeapon. On this build that slot is actually a GiveNamedItem overload THUNK.
+    // A thunk is valid, in-range executable code, so the shim's `.text`-range guard PASSES it —
+    // calling through would hand an entity pointer to GiveNamedItem's `const char* name` and
+    // silently misbehave rather than crash.
+    //
+    // That is exactly why a `vtable` target REQUIRES a `validate.prologue`, and why the build
+    // refuses one without it. The prologue below cannot match anything real, so this descriptor
+    // degrades with a named reason while `ignite` above stays armed.
+    // ---------------------------------------------------------------------------------------
+    "dropActiveWeaponRejected": {
+      "receiver": { "kind": "entity", "via": { "class": "CBasePlayerPawn", "field": "m_pItemServices" } },
+      "target": {
+        "kind": "vtable",
+        "class": "CCSPlayer_ItemServices",
+        "linuxsteamrt64": {
+          "index": 24,
+          "validate": { "prologue": "DE AD BE EF DE AD BE EF" }
+        }
+      },
+      "args": [],
+      "returns": "void"
+    }
+  }
+}

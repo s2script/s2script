@@ -41,26 +41,6 @@
       // generated signature legible: `ignite(pawn.ref, 10.0, 4, null, 0.0)` says nothing on its own.
       "argNames": ["flFlameLifetime", "nFlags", "pAttacker", "flSize"],
       "returns": "void"
-    },
-    // NEGATIVE FIXTURE (spec §15 criterion 4). This descriptor is EXPECTED TO BE REJECTED at load.
-    // It names the documented ItemServices vtable slot 24 — which on this build is a GiveNamedItem
-    // overload THUNK, not DropActivePlayerWeapon (gamedata/core.gamedata.jsonc:66-84). The thunk is
-    // valid in-range .text, so IsAddressInServerText passes it; only the prologue tells them apart.
-    // The prologue below deliberately does not match the thunk's first bytes, so a correct
-    // implementation degrades THIS call with a named reason while `ignite` above stays available —
-    // proving degradation is per-descriptor, not per-plugin.
-    "dropActiveWeaponRejected": {
-      "receiver": { "kind": "entity", "via": { "class": "CBasePlayerPawn", "field": "m_pItemServices" } },
-      "target": {
-        "kind": "vtable",
-        "class": "CCSPlayer_ItemServices",
-        "linuxsteamrt64": {
-          "index": 24,
-          "validate": { "prologue": "DE AD BE EF DE AD BE EF" }
-        }
-      },
-      "args": [],
-      "returns": "void"
     }
   }
 }

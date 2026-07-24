@@ -31,8 +31,6 @@ export const unsafeRecipe: Recipe = {
     // its type into .s2script/gamedata.d.ts, so the argument list below is typechecked at build time.
     const ignite = Engine.call("ignite");
     console.log(`[cookbook] unsafe: ignite -> ${Engine.status("ignite")}`);
-    // The negative fixture: expected to be degraded with a named reason (spec criterion 4).
-    console.log(`[cookbook] unsafe: dropActiveWeaponRejected -> ${Engine.status("dropActiveWeaponRejected")}`);
 
     ctx.commands.register("cb_unsafe", (cmd) => {
       const status = Engine.status("ignite");
