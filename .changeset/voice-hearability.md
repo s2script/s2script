@@ -10,4 +10,4 @@ which still wins, so admin moderation always beats a gameplay rule.
 
 Declarative rather than a callback: the engine's listen matrix is re-asserted continuously and the
 underlying hook fires per pair, so a per-pair JS callback would run up to 64x64 times per refresh.
-`Voice.stats().rewrites` is the effect counter — a rule that never rewrites is not taking effect.
+`Voice.stats()?.rewrites` is the effect counter (stats is nullable — null means the running shim predates the capability) — a rule that never rewrites is not taking effect.

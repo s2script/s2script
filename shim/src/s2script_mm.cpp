@@ -1437,14 +1437,19 @@ static int s2_voice_get_muted(int slot) {
 //   voice_audible_clear 1 = a rule was removed 0 = nothing to remove, OR degraded (deliberately
 //                       collapsed — both mean "no rule is in force afterwards").
 static int s2_voice_audible_set(int sender, uint64_t mask) {
-    if (s_voiceListenDegraded) return 0;
+    // `!s_voiceListenHookInstalled` matters as much as the degrade flag, and is easy to miss: the op
+    // is wired unconditionally at Load, but the PRE hook only installs when EngineToServer resolves
+    // (the classic post-CS2-update failure). Without this guard we would accept a rule that can never
+    // be enforced and report success — the silent no-op the spec exists to forbid. The adjacent
+    // s2_voice_set_muted guards both for the same reason.
+    if (!s_voiceListenHookInstalled || s_voiceListenDegraded) return 0;
     if (sender < 0 || sender >= kMaxClientSlots) return 0;
     s_voiceAudible[sender] = mask;
     s_voiceHasRule |= (1ull << sender);
     return 1;
 }
 static int s2_voice_audible_clear(int sender) {
-    if (s_voiceListenDegraded) return 0;
+    if (!s_voiceListenHookInstalled || s_voiceListenDegraded) return 0;
     if (sender < 0 || sender >= kMaxClientSlots) return 0;
     int had = (s_voiceHasRule >> sender) & 1;
     s_voiceAudible[sender] = 0;
@@ -4821,7 +4826,17 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
     int s = slot.Get();
     s2script_core_dispatch_client_event("disconnect", s);   // dispatch FIRST — handler still sees valid
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonNone;
-    if (s >= 0 && s < kMaxClientSlots) { s_voiceMuted[s] = 0; s_voiceLastNotify[s] = 0; }  // slot-reuse hygiene
+    if (s >= 0 && s < kMaxClientSlots) {
+        // slot-reuse hygiene. Hearability state MUST be cleared here alongside the mute: a rule is
+        // authored about the player who occupied this slot, and slots are recycled. Leaving
+        // s_voiceHasRule set would silence (or grant hearing to) whoever connects into the slot next,
+        // with no plugin action and no way for them to discover why. Core drops its matching
+        // VOICE_RULES entry from dispatch_client_event("disconnect").
+        s_voiceMuted[s] = 0;
+        s_voiceLastNotify[s] = 0;
+        s_voiceAudible[s] = 0;
+        s_voiceHasRule &= ~(1ull << s);
+    }
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
@@ -4873,10 +4888,16 @@ bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot s
         } else if ((s_voiceHasRule >> s) & 1) {
             // layer 2: hearability. r < 0 is the engine's broadcast/console pseudo-receiver — no
             // bit to test, so a rule cannot deny it.
-            if (r >= 0 && r < kMaxClientSlots && !((s_voiceAudible[s] >> r) & 1)) deny = true;
+            if (r >= 0 && r < kMaxClientSlots && !((s_voiceAudible[s] >> r) & 1)) {
+                deny = true;
+                // Counted HERE, not in the shared `deny` block below: `rewrites` is documented as the
+                // HEARABILITY effect counter, and the live gate asserts it stops climbing once rules
+                // are reset. Counting layer-1 mutes too would make a basecomm gag keep it climbing
+                // with no rule in force — the gate could then pass falsely or fail spuriously.
+                s_voiceRewrites++;
+            }
         }
         if (deny) {
-            s_voiceRewrites++;
             RETURN_META_VALUE_NEWPARAMS(MRES_IGNORED, bListen, &IVEngineServer2::SetClientListening,
                                         (receiver, sender, false));
         }

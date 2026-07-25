@@ -971,6 +971,25 @@ fn voice_remove_owner(owner: &str) {
     for s in touched { voice_recompute_and_push(s); }
 }
 
+/// Drop EVERY owner's rule for one sender slot, and push the clear.
+///
+/// Called on client disconnect (slot-reuse hygiene). A hearability rule is authored about the player
+/// who occupied the slot, and the engine recycles slots — so a surviving rule would silence, or grant
+/// hearing to, the next occupant with no plugin action. This mirrors the mute's own disconnect clear
+/// in the shim; unlike `voice_remove_owner` it crosses owners, because the departing player is not
+/// any one plugin's concern.
+fn voice_clear_slot(sender: i32) {
+    let touched = VOICE_RULES.with(|r| {
+        let mut map = r.borrow_mut();
+        let mut any = false;
+        for rules in map.values_mut() {
+            if rules.remove(&sender).is_some() { any = true; }
+        }
+        any
+    });
+    if touched { voice_recompute_and_push(sender); }
+}
+
 #[cfg(test)]
 fn voice_rules_clear_for_test() { VOICE_RULES.with(|r| r.borrow_mut().clear()); }
 #[cfg(test)]
@@ -4482,6 +4501,14 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
             "disconnect" => crate::crash::breadcrumb::set_players(s.players - 1),
             _ => {}
         }
+    }
+    // Slot-reuse hygiene for voice hearability, run UNCONDITIONALLY and BEFORE the no-subscriber
+    // early return below — a rule must be dropped whether or not any plugin happens to subscribe to
+    // "disconnect". The shim clears its own copy in Hook_ClientDisconnect; this drops the policy
+    // source of truth so a later recompute (triggered by an unrelated owner) cannot re-push a rule
+    // authored about a player who has left.
+    if event == "disconnect" {
+        voice_clear_slot(slot);
     }
     // Phase 1: snapshot — release CLIENT_MUX borrow before entering any context.
     let snap = CLIENT_MUX.with(|m| m.borrow().snapshot(event));
@@ -14692,6 +14719,28 @@ mod frame_tests {
         }
     }
 
+    static VOICE_CLEAR_CALLS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+
+    extern "C" fn voice_fake_clear(sender: c_int) -> c_int {
+        VOICE_CLEAR_CALLS.lock().unwrap().push(sender);
+        1
+    }
+
+    /// A set op that REJECTS everything, mirroring a degraded / hook-not-installed shim.
+    extern "C" fn voice_rejecting_set(sender: c_int, mask: u64) -> c_int {
+        VOICE_SET_CALLS.lock().unwrap().push((sender, mask));
+        0
+    }
+
+    /// Both ops wired, so teardown and slot-clear paths can be observed.
+    fn voice_test_ops_full() -> S2EngineOps {
+        S2EngineOps {
+            voice_audible_set: Some(voice_fake_set),
+            voice_audible_clear: Some(voice_fake_clear),
+            ..mock_event_ops()
+        }
+    }
+
     /// setAudibleTo folds the receiver-slot array into a u64 mask and pushes (sender, mask).
     #[test]
     fn voice_set_audible_to_folds_receiver_slots_into_mask() {
@@ -14733,6 +14782,104 @@ mod frame_tests {
               catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()");
         assert_eq!(out, "TypeError");
         assert_eq!(VOICE_SET_CALLS.lock().unwrap().len(), 0, "the native must never be reached");
+        shutdown();
+    }
+
+    /// A REJECTED push must leave VOICE_RULES untouched. This is the push-then-persist invariant the
+    /// plan review caught; a mutation test proved it had zero coverage (swapping the order kept the
+    /// whole suite green), so it is asserted here directly.
+    #[test]
+    fn voice_rejected_push_does_not_persist_the_rule() {
+        let _ = init(dummy_logger());
+        VOICE_SET_CALLS.lock().unwrap().clear();
+        voice_rules_clear_for_test();
+        set_engine_ops(Some(S2EngineOps {
+            voice_audible_set: Some(voice_rejecting_set),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("vr1");
+        let out = eval_in_context_string("vr1", "String(__s2pkg_voice.Voice.setAudibleTo(4, [1]))");
+        assert_eq!(out, "false", "a rejecting op must surface as false, not a silent success");
+        assert_eq!(VOICE_SET_CALLS.lock().unwrap().len(), 1, "the push was attempted");
+        assert_eq!(voice_merged_for_test(4), None,
+            "core must NOT hold a rule the shim rejected — that is the state divergence this guards");
+        shutdown();
+    }
+
+    /// Two plugin contexts restricting the same sender must AND-merge. The native inlines its own
+    /// merge loop separate from voice_merged(), and a mutation test showed flipping it to OR (letting
+    /// one plugin WIDEN another's restriction — spec criterion 3) kept the suite green.
+    #[test]
+    fn voice_two_owners_and_merge_through_the_native() {
+        let _ = init(dummy_logger());
+        VOICE_SET_CALLS.lock().unwrap().clear();
+        voice_rules_clear_for_test();
+        set_engine_ops(Some(voice_test_ops()));
+        create_plugin_context("vm1");
+        create_plugin_context("vm2");
+        eval_in_context_string("vm1", "__s2pkg_voice.Voice.setAudibleTo(6, [0, 1, 2])");
+        eval_in_context_string("vm2", "__s2pkg_voice.Voice.setAudibleTo(6, [1, 2, 3])");
+        let calls = VOICE_SET_CALLS.lock().unwrap().clone();
+        drop(VOICE_SET_CALLS.lock());
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], (6, 0b0111), "first owner alone");
+        assert_eq!(calls[1], (6, 0b0110),
+            "second push must be the INTERSECTION — an owner may narrow, never widen");
+        shutdown();
+    }
+
+    /// Unloading a plugin must drop its rules through the registered "VOICE" owner store and push a
+    /// clear. Mirrors transmit_unload_clears_owner_rules; a mutation test showed no-op'ing the
+    /// registered closure kept the suite green, so the wiring itself was unverified.
+    #[test]
+    fn voice_unload_clears_owner_rules() {
+        let _ = init(dummy_logger());
+        VOICE_CLEAR_CALLS.lock().unwrap().clear();
+        voice_rules_clear_for_test();
+        set_engine_ops(Some(voice_test_ops_full()));
+        create_plugin_context("vun");
+        eval_in_context_string("vun", "__s2pkg_voice.Voice.setAudibleTo(9, [3])");
+        unload_plugin("vun");
+        assert_eq!(VOICE_CLEAR_CALLS.lock().unwrap().as_slice(), &[9],
+            "teardown must reach the shim, not just drop the core-side map");
+        assert_eq!(voice_merged_for_test(9), None);
+        shutdown();
+    }
+
+    /// An empty receiver array is a RULE (audible to nobody), not an absence. Observable only at the
+    /// op boundary: it must reach the shim as set(sender, 0), never as clear(sender).
+    #[test]
+    fn voice_empty_array_reaches_the_shim_as_set_zero() {
+        let _ = init(dummy_logger());
+        VOICE_SET_CALLS.lock().unwrap().clear();
+        VOICE_CLEAR_CALLS.lock().unwrap().clear();
+        voice_rules_clear_for_test();
+        set_engine_ops(Some(voice_test_ops_full()));
+        create_plugin_context("ve1");
+        let out = eval_in_context_string("ve1", "String(__s2pkg_voice.Voice.setAudibleTo(2, []))");
+        assert_eq!(out, "true");
+        assert_eq!(VOICE_SET_CALLS.lock().unwrap().as_slice(), &[(2, 0u64)],
+            "mask 0 WITH a rule — silencing everyone");
+        assert!(VOICE_CLEAR_CALLS.lock().unwrap().is_empty(),
+            "must NOT be routed to clear, which would mean 'no rule, engine decides'");
+        shutdown();
+    }
+
+    /// A client disconnecting drops every owner's rule for that slot. Slots are recycled, and a rule
+    /// is authored about the player who left — a survivor would silence the next occupant.
+    #[test]
+    fn voice_disconnect_clears_the_slot_across_owners() {
+        let _ = init(dummy_logger());
+        VOICE_CLEAR_CALLS.lock().unwrap().clear();
+        voice_rules_clear_for_test();
+        set_engine_ops(Some(voice_test_ops_full()));
+        voice_set_rule_for_test("@a/one", 5, 0);
+        voice_set_rule_for_test("@b/two", 5, 0b11);
+        // No plugin subscribes to "disconnect" here ON PURPOSE: the cleanup must run ahead of the
+        // dispatcher's no-subscriber early return.
+        dispatch_client_event("disconnect", 5);
+        assert_eq!(voice_merged_for_test(5), None, "every owner's rule for slot 5 is gone");
+        assert_eq!(VOICE_CLEAR_CALLS.lock().unwrap().as_slice(), &[5], "and the shim was told");
         shutdown();
     }
 

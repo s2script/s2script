@@ -70,6 +70,15 @@ from "no rule, leave the engine alone".
 convenient, not principled — the same coupling `Transmit`'s `uint64_t mask` already has. If the slot
 cap ever rises, both must change together; the plan pins this with a `static_assert`.
 
+**Slot-reuse hygiene.** A rule is authored about the player occupying a slot, and the engine recycles
+slots. Both halves of the state are therefore cleared when a client disconnects: the shim clears
+`s_voiceAudible[s]` / the `s_voiceHasRule` bit in `Hook_ClientDisconnect` (alongside the mute clear
+already there), and core drops every owner's rule for that sender from `dispatch_client_event`. The
+core-side clear must run **before** that dispatcher's no-subscriber early return, so it happens whether
+or not any plugin subscribed to `"disconnect"`. Without this, a departing player's rule silences —
+or grants hearing to — whoever connects into the slot next, with no plugin action and no way for them
+to discover why.
+
 **Core owns policy** (mirroring `TRANSMIT_RULES`):
 
 ```rust
@@ -86,10 +95,16 @@ Recompute-and-push runs on every set, reset, and owner teardown.
 
 ```cpp
 if (!degraded && bListen && s >= 0 && s < kMaxClientSlots) {
-    if (s_voiceMuted[s]) → rewrite bListen = false;                        // layer 1
+    if (s_voiceMuted[s]) → deny;                                           // layer 1 (NOT counted)
     else if ((s_voiceHasRule >> s) & 1) {
-        if (!((s_voiceAudible[s] >> r) & 1)) → rewrite bListen = false;    // layer 2
+        // r < 0 is the engine's broadcast/console pseudo-receiver: no bit to test, so a rule
+        // cannot deny it. Bounds-check r before indexing.
+        if (r >= 0 && r < kMaxClientSlots && !((s_voiceAudible[s] >> r) & 1)) {
+            s_voiceRewrites++;                                             // layer 2 only
+            deny;
+        }
     }
+    if (deny) → rewrite bListen = false;
 }
 ```
 
@@ -123,8 +138,13 @@ No new failure mode. Hearability rides the existing `s_voiceListenDegraded` flag
 slice's own runtime validation — first-fire argument sanity plus the one-shot
 `Get/SetClientListening` round-trip that guards the hand-patched `eiface.h` vtable slots.
 
-If that validation failed, mute enforcement is already disabled; hearability ops return `false` rather
-than silently accepting rules that will never be applied. A plugin can therefore tell the difference
+Two conditions disable enforcement, and the ops must check BOTH: `s_voiceListenDegraded` (validation
+failed) and `!s_voiceListenHookInstalled` (the PRE hook never installed, because `EngineToServer` did
+not resolve — the classic post-CS2-update failure). The ops are wired unconditionally at Load, so
+checking only the degrade flag would accept rules that can never be enforced and report success.
+
+In either state hearability ops return `false` rather than silently accepting rules that will never be
+applied. A plugin can therefore tell the difference
 between "rule set" and "voice control unavailable on this build".
 
 ## 9. Plugin API — `@s2script/sdk/voice`
@@ -137,7 +157,7 @@ export interface VoiceStats {
   calls: number;
   /** Senders currently carrying a hearability rule. */
   entries: number;
-  /** Times a rule rewrote bListen to false (the effect counter). */
+  /** Times a HEARABILITY rule rewrote bListen to false. Does NOT count `voiceMuted` denials. */
   rewrites: number;
 }
 
@@ -148,14 +168,19 @@ export declare const Voice: {
   reset(sender: number): boolean;
   /** Drop every rule this plugin owns. */
   resetAll(): void;
-  /** Hot-path counters — `rewrites` is the proof a rule is actually taking effect. */
-  stats(): VoiceStats;
+  /** Hot-path counters, or null when the running shim predates this capability. */
+  stats(): VoiceStats | null;
 };
 ```
 
 `stats().rewrites` exists for the same reason the engine-call demo counts entities: a rule that is set
 but never applied looks identical to one that works. A climbing `rewrites` is the observable effect,
 and it is what the live gate asserts.
+
+**It counts layer-2 denials ONLY.** Incrementing it for `voiceMuted` denials too would make a
+basecomm gag keep the counter climbing with no hearability rule in force — which would let the live
+gate pass falsely, and would make its "rewrites stop climbing after reset" step fail spuriously. The
+counter is scoped to the thing it is named after.
 
 **No timing counters**, unlike `TransmitStats`'s `nsLast`/`nsMax`. `Transmit` times once per snapshot;
 this hook fires per (receiver, sender) *pair*, so a clock read per invocation would cost more than the
