@@ -1,6 +1,6 @@
 # Movement control — design
 
-**Status:** Tier A implemented and live-gated (2026-07-25). Tier B deferred — see §7.
+**Status:** Tier A implemented and live-gated (2026-07-25). Tier B NOT PLANNED — see §7.
 **Audience:** plugin authors writing movement gameplay; core + codegen maintainers.
 **Builds on:** the `pawn.movementServices` nav wrapper (`games/cs2/nav-targets.json`), the navgen
 pipeline (`packages/sdk/src/navgen/`), and the `EntityRef.write*Via` chain-write surface.
@@ -27,16 +27,16 @@ And the machinery to fix that already exists too: `FieldDescriptor.writable` is 
 `classifyField` and honored by **schemagen**'s emitters (`if (f.writable)` → emit a setter).
 **navgen's emitters simply ignore the flag.**
 
-## 3. The slice splits in two, and only Tier A ships here
+## 3. The slice splits in two, and only Tier A ships
 
 | | Tier A — writable movement fields | Tier B — `ProcessMovement` intercept |
 |---|---|---|
-| New RE | **none** | vtable slot identification + validation |
+| New RE | **none** | signature resolve + a services→slot mapping |
 | Buys | `GetMaxSpeed` parity, duck/stamina/friction/jump control | pre/post movement hook, `WalkMove` |
 | Risk | contained: a curated field list | a per-tick hook in the hottest path in the game |
 
-Per *build by risk, not by layer*, these are separate slices and separate PRs. Tier A is a thin
-vertical slice with no unknowns; Tier B is an RE spike that should not ride along with it.
+Per *build by risk, not by layer*, these were always separate slices. Tier A ships here; **Tier B is
+not planned** — see §7 for why, and for what it would take if that changes.
 
 ## 4. Tier A: a curated writable allowlist, not a flipped flag
 
@@ -106,62 +106,33 @@ A chain-aware `notifyStateChangedVia` is **deferred, with a reason**: it must ca
 Guessing wrong is a crash in the networking path, not a degraded read. That needs its own RE + live
 gate — exactly the `CCommand` lesson from PR #17: a plausible-looking call is not a verified one.
 
-## 7. Tier B groundwork: `ProcessMovement` is a SIGNATURE, not a vtable slot
+## 7. Tier B (`ProcessMovement` hook) — NOT PLANNED
 
-Two wrong turns are recorded here because each cost real time.
+Dropped deliberately, after checking what the ecosystem actually does:
 
-**Wrong turn 1 — a fictitious vtable.** An earlier revision published "primary vtable at
-`0x2487678`, exactly 24 slots". That was derived by scanning raw file bytes for a qword equal to the
-typeinfo address. CS2 vtables live in `.data.rel.ro` and are filled at load by
-`R_X86_64_RELATIVE` relocations, so the file bytes are *not* the pointers; the scan matched unrelated
-data. Its "slot functions" disassembled to KV3 entity serialization and round/team code.
+| Framework | Loader | Movement fields | `ProcessMovement` hook |
+|---|---|---|---|
+| CounterStrikeSharp | Metamod | yes (generated schema) | **no** |
+| CS2Fixes | Metamod | — | yes (signature + detour) |
+| ModSharp | standalone | yes | yes |
+| **s2script** | Metamod | **yes (Tier A, this spec)** | **no** |
 
-Resolved properly, every hop from `readelf -r`:
+CounterStrikeSharp — the most widely deployed Metamod framework, with the largest plugin ecosystem —
+ships no movement hook at all. Its nine `MovementServices` references are generated schema bindings,
+i.e. exactly the read/write field access Tier A provides. CS2Fixes needs the hook because it
+*implements* movement behaviour itself, not because it exposes movement to other plugins; ModSharp
+is a different product shape. Neither reason applies to us.
 
-| hop | address | how |
-|---|---|---|
-| name string | `0x821b00` | `.rodata`, `26CCSPlayer_MovementServices` |
-| typeinfo | `0x2489e80` | the reloc **targeting** the name sits at typeinfo+8 |
-| vtable slot 0 | `0x248ace0` | the reloc **targeting** the typeinfo sits at vtable+8 |
-| slot count | **59** | length of the contiguous relocation run |
+Against that, the cost is real: the detour receives a movement-services pointer with no validated
+route to a player slot (`CPlayerPawnComponent` exposes only `__m_pChainEntity`, and our schema knows
+just `m_PathIndex @32` inside `CNetworkVarChainer`), so it would mean dereferencing a guessed offset
+in the hottest path in the game — the crash class the degrade doctrine exists to prevent.
 
-Independently corroborated: CS2Fixes' gamedata lists
-`CCSPlayer_MovementServices::CheckMovingGround` at linux vtable index **45**, which only fits a
-vtable of ≥46 slots — consistent with 59, and impossible under the fictitious 24.
-
-**Wrong turn 2 — assuming it was a vtable slot at all.** It is not.
-[CS2Fixes' gamedata](https://github.com/Source2ZE/CS2Fixes/blob/main/gamedata/cs2fixes.jsonc) carries
-`ProcessMovement` as a **byte signature**, which is strictly better: directly self-resolvable against
-our own binary, no slot-index ambiguity, and it survives vtable reordering.
-
-```
-linux: 55 48 89 E5 41 57 41 56 41 55 49 89 F5 41 54 53 48 89 FB 48 83 EC ? 48 8B 7F
-```
-
-**Validated against our pinned build** (`docker/cs2-data`, not taken on trust):
-
-- **UNIQUE** — exactly one match in `libserver.so`, at file offset `0x157d5f0`. A borrowed pattern
-  that matched twice would be unusable; this is the check `docs/re-strategy.md` requires.
-- It lands next to the `PreWalkMove` string xref at `0x157ccaf` — the movement code region.
-- **Detourable**, which `EmitSound` is not. `s2detour` steals 14 bytes; here that spans
-  `push rbp / mov rbp,rsp / push r15 / push r14 / push r13 / mov r13,rsi / push r12` = 15 bytes of
-  plain push/mov with **no relative or rip-relative operand**, so `detour.cpp`'s two refusal
-  conditions do not apply.
-- Prototype from the prologue: `this` in `rdi` (`mov rbx,rdi`), a second pointer arg in `rsi`
-  (`mov r13,rsi`) — i.e. `void ProcessMovement(CCSPlayer_MovementServices*, CMoveData*)`.
-
-### What still blocks the hook: per-player identity
-
-The detour receives the *movement services* pointer, and there is no validated way to get from it to
-a player slot. `CPlayerPawnComponent` exposes only `__m_pChainEntity`, and our schema catalog knows
-just `m_PathIndex @32` inside `CNetworkVarChainer` — the owner pointer's offset is **not** a schema
-field. Dereferencing a guessed offset in the per-tick movement path is precisely the crash class the
-degrade doctrine exists to prevent, so it is not being guessed.
-
-The sound design is a **reverse map**: cache `(services* → slot)` for the 64 slots, built from the
-already-validated `CBasePlayerPawn::m_pMovementServices` chain, and refreshed on a miss. Dispatch
-then costs pointer compares, no derefs. That plus the detour, a blockable `HookResult`, lazy arming
-on first subscribe, and a live gate is the next slice — it is not a bolt-on to this one.
+Tier A plus `@s2script/usercmd` (input interception *before* movement runs, which CSSharp also lacks)
+covers the realistic cases. **A note on the earlier framing in this document:** Tier B was never
+blocked on finding a vtable slot. `ProcessMovement` is reachable by byte signature — CS2Fixes carries
+one, and it validated UNIQUE against our pinned build. If this is ever revisited, that is the route,
+and the open problem is the services→slot mapping, not the address.
 
 ## 8. Testing
 
