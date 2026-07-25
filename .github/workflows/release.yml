@@ -79,17 +79,29 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$ZIP" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
+      - name: Build release notes (install info + the package changelogs)
+        run: |
+          set -euo pipefail
+          bash scripts/release-notes.sh \
+            "${{ steps.package.outputs.version }}" \
+            "${{ steps.package.outputs.sha256 }}" > release-notes.md
+          echo "--- release notes ($(wc -l < release-notes.md) lines) ---"
+          cat release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: s2script ${{ steps.package.outputs.version }}
-          body: |
-            SourceMod-style runtime for Counter-Strike 2 (Linux x86-64), including the first-party base plugins.
-
-            **Install:** extract `s2script-cs2-linux-${{ steps.package.outputs.version }}.zip` into your server's `game/csgo/` directory (overlays `addons/`). Metamod:Source 2.0 must already be installed. See [docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md).
-
-            **SHA256:** `${{ steps.package.outputs.sha256 }}`
-
-            Base plugins load from `addons/s2script/plugins/` on first boot. Drop additional `.s2sp` files there to add more. Plugins declare `s2script.apiVersion: "1.x"` — the host major must match.
+          # body_path, NOT a hardcoded `body`. The old inline body was pure boilerplate, so every
+          # release shipped with none of the changeset prose from packages/*/CHANGELOG.md — 138 lines
+          # of it went unpublished between v0.2.2 and v0.3.0 alone. scripts/release-notes.sh pulls in
+          # every package changelog section that appeared since the previous v* tag.
+          body_path: release-notes.md
+          # append_body so this NEVER replaces an existing release body. action-gh-release overwrites
+          # by default, so a re-run of a tag (the recovery path) silently destroyed anything already
+          # written there, hand-edited or generated.
+          append_body: true
+          # GitHub's own PR-derived notes, which the hardcoded body also used to suppress.
+          generate_release_notes: true
           files: ${{ steps.package.outputs.zip }}
           fail_on_unmatched_files: true
