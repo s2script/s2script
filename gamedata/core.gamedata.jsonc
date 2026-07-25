@@ -412,14 +412,27 @@
     },
     // Zones real-trigger slice: CBaseEntity::SetModel(const char* modelName) — gives an entity a model
     // (resolves the name via modelinfo [vtbl+0x68], then tail-calls the real SetModel with the model).
-    // A runtime trigger_multiple needs a model to build the physics volume that fires touch. Fresh
-    // CSSharp gamedata (CBaseModelEntity_SetModel) for build 2000873; the sig matched two identical
-    // wrappers, so the lea displacement is pinned to select the first. Validated UNIQUE @ 2026-07-12
-    // in the pinned libserver.so (@0x15d9cc0).
+    // A runtime trigger_multiple needs a model to build the physics volume that fires touch; TTT needs
+    // it for corpse props.
+    //
+    // REGENERATED 2026-07-25 — the previous pattern baked in the `lea rax,[rip+0x0128ED3D]`
+    // displacement to break a tie between two candidates. A rip-relative displacement shifts on ANY
+    // recompile, so that signature could not survive a single CS2 update; it reported
+    // "SetModel — signature NOT FOUND (moved — regenerate)" and EntityRef.setModel silently became a
+    // no-op. Every build-relative byte is now a wildcard: the lea disp32 AND the tail `jmp` rel32.
+    //
+    // The tie is real: libserver contains TWO byte-identical wrappers (0x15d8a00 and 0x15d8a30 on this
+    // build) that ICF did not fold. Verified interchangeable, not merely similar — both load the SAME
+    // modelinfo global (0x2867790) and tail-call the SAME target (0x15d8630), so either would work.
+    // The tie is broken structurally instead of numerically: wrapper 1 is followed by int3 padding and
+    // its twin's prologue, wrapper 2 is followed by unrelated code, so anchoring on
+    // `CC CC CC CC 55 48 89 E5 53 48 89 FB` selects the first with no build-specific bytes.
+    // If a future build folds the twins this fails LOUDLY (NOT FOUND) rather than silently
+    // mis-resolving — the correct failure mode. Validated UNIQUE against the pinned libserver.so.
     "SetModel": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 08 48 8D 05 3D ED 28 01 48 8B 38 48 8B 07 FF 50 68 48 89 DF 48 8B 5D F8 C9 48 89 C6 E9",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 08 48 8D 05 ? ? ? ? 48 8B 38 48 8B 07 FF 50 68 48 89 DF 48 8B 5D F8 C9 48 89 C6 E9 ? ? ? ? CC CC CC CC 55 48 89 E5 53 48 89 FB",
         "resolve": "direct"
       }
     },
