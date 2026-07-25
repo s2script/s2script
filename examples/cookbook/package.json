@@ -15,7 +15,9 @@
       }
     },
     "optionalPluginDependencies": {
-      "@s2script/zones": "^0.3.0"
+      "@s2script/zones": "^0.3.0",
+      "econ": "^1.0.0",
+      "workshop": "^1.0.0"
     },
     "gamedata": "gamedata/cookbook.gamedata.jsonc",
     "permissions": [
