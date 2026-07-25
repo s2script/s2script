@@ -763,20 +763,34 @@ sleep 45
 - [ ] **Step 4: Gate it**
 
 ```bash
-python3 scripts/rcon.py "cb_voice_stats"            # baseline: calls climbing, rewrites 0
-python3 scripts/rcon.py "cb_voice_solo 0"           # silence every sender except slot 0
-sleep 10
-python3 scripts/rcon.py "cb_voice_stats"            # rewrites MUST now be > 0
-python3 scripts/rcon.py "cb_voice_reset"
-sleep 10
-python3 scripts/rcon.py "cb_voice_stats"            # rewrites stops climbing
+python3 scripts/rcon.py "sm_voice_stats"              # baseline: calls climbing, entries 0
+python3 scripts/rcon.py "sm_voice_only 0 1"           # slot 0 audible ONLY to slot 1
+python3 scripts/rcon.py "sm_voice_stats"              # entries MUST be 1
+python3 scripts/rcon.py "sm_voice_reset"
+python3 scripts/rcon.py "sm_voice_stats"              # entries back to 0
+python3 scripts/rcon.py "sm_voice_solo 63"            # empty mask on every connected sender
+python3 scripts/rcon.py "sm_voice_stats"              # entries == connected player count
+touch <live>/plugins/_example_cookbook.s2sp           # hot-reload -> owner-store teardown
+sleep 12
+python3 scripts/rcon.py "sm_voice_stats"              # entries MUST be 0 again
 ```
 
-Expected: `rewrites` climbs only while a rule is active. That counter is the whole gate — bots do not
-transmit voice, so it is the server-side proof the engine honored the rule.
+**`entries` is the gate, NOT `rewrites`.** The hot path only considers denying when the engine passes
+`bListen == true`, and it only does that when a client is actually TRANSMITTING voice. Bots never
+transmit, so `rewrites` stays at 0 no matter how many rules are in force — measured: 12 senders with
+empty masks and ~160k hook `calls` produced exactly 0 rewrites. Do not treat that as a failure, and do
+not try to force it with `sv_alltalk`; it does not help.
 
-Also confirm the layering: gag a bot via basecomm and check it is still muted independently of any
-hearability rule.
+What `entries` does prove: the rule crossed core→shim, the AND-merge ran, the has-rule bit was set,
+and — on the hot-reload — the `"VOICE"` owner-store teardown reached the shim. That is spec criterion
+4, live.
+
+**Not provable on this server:** disconnect hygiene. It needs a client to actually leave, and neither
+`bot_kick` nor `bot_quota 0` removes bots on this configuration. It is covered by
+`voice_disconnect_clears_the_slot_across_owners` in the core suite.
+
+**Deferred to a two-human session:** the denial itself (`rewrites > 0`) and audible silence — the same
+Tier-2 deferral the voice-control slice carries for mute.
 
 - [ ] **Step 5: Restore the server**
 

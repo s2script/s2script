@@ -212,12 +212,21 @@ not trusted to run.
   clears; mask encoding round-trip; `setAudibleTo` with an empty array yields mask 0 **with** the
   has-rule bit set (the distinction §5 depends on); ops-absent and degraded paths return false.
 - **Shim:** compiles; `static_assert(kMaxClientSlots <= 64)` pins the mask-width coupling.
-- **Live gate (Docker CS2, two bots):** `Voice.setAudibleTo(0, [])` → `stats().rewrites` climbs while
-  slot 0 speaks; `Voice.reset(0)` → rewrites stop climbing; a basecomm gag on slot 1 still mutes
-  independently (proving the layering); `resetAll()` on plugin unload leaves nobody silenced.
+- **Live gate (Docker CS2, bots) — what is ACTUALLY provable:** `stats().entries` tracking a rule
+  reaching the shim (exercises the core→shim push, the AND-merge, and the has-rule bit), `reset`
+  dropping it, and **`entries` returning to 0 across a plugin unload** (the owner-store teardown,
+  criterion 4).
 
-Audible confirmation with two humans is **deferred**, consistent with the voice-control slice's own
-Tier-2 deferral — bots do not transmit voice, so the server-side proof is the `rewrites` counter.
+**`stats().rewrites` CANNOT be exercised with bots, and the gate must not depend on it.** The hot path
+only considers denying when the engine passes `bListen == true`, and the engine only does that when a
+client is actually transmitting voice. Bots never transmit. Measured on a 12-bot server: with an empty
+mask on all 12 senders and ~160k hook `calls`, `rewrites` stayed at exactly 0.
+
+An earlier draft of this section asserted the opposite — "bots do not transmit voice, so the
+server-side proof is the `rewrites` counter" — which is self-contradictory: the counter only moves
+when voice IS transmitted. The denial path is therefore proven by unit test and by mechanism, not by
+observation, and **audible two-human confirmation is the only way to close it** — the same Tier-2
+deferral the voice-control slice itself carries for mute.
 
 ## 12. Out of scope
 
@@ -230,7 +239,8 @@ Tier-2 deferral — bots do not transmit voice, so the server-side proof is the 
 
 ## 13. Success criteria
 
-1. A plugin restricts who hears a speaker, and `stats().rewrites` proves the engine honored it.
+1. A plugin restricts who hears a speaker, and `stats().entries` proves the rule reached the shim.
+   (The engine honoring it is proven by unit test + mechanism; see §11 — `rewrites` needs real voice.)
 2. `Client.voiceMuted` still overrides, and `basecomm` is unmodified.
 3. Two plugins' rules AND-merge; neither can widen the other.
 4. Plugin unload drops its rules automatically.
