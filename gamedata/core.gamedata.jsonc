@@ -499,6 +499,33 @@
     // UNIQUE offline (1 match) + by the boot gate. If it drifts on an update, re-locate via the string
     // refs: "EmitSoundByHandle", "public.distance_volume_mapping_curve",
     // "Playing sound on non-networked entity %s".
+    // CCSPlayer_MovementServices::ProcessMovement — the per-tick movement entry point (the Tier B
+    // movement hook; see docs/superpowers/specs/2026-07-25-movement-control-design.md §7).
+    //
+    // NOT a vtable index. Borrowed from CS2Fixes' gamedata (Source2ZE/CS2Fixes, gamedata/cs2fixes.jsonc)
+    // and — per the RE doctrine — treated as a HINT, then re-resolved and VALIDATED against our own
+    // pinned build: exactly ONE match in libserver.so (file offset 0x157d5f0 on build-2000873), sitting
+    // beside the "PreWalkMove" string xref at 0x157ccaf. A pattern that matched twice would be
+    // unusable, which is exactly what ResolveSigValidated enforces at load.
+    //
+    // A signature beats the vtable index here: the class's primary vtable has 59 slots (resolved via
+    // R_X86_64_RELATIVE relocations, NOT by scanning raw file bytes — that yields a fictitious table),
+    // and a slot index silently shifts when Valve reorders virtuals, whereas a stale pattern simply
+    // fails to match and the feature degrades OFF with a named reason.
+    //
+    // Detourable, unlike EmitSound: s2detour steals 14 bytes, which here spans only push/mov
+    // (push rbp / mov rbp,rsp / push r15/r14/r13 / mov r13,rsi / push r12 = 15 bytes) with no relative
+    // or rip-relative operand, so neither detour.cpp refusal condition applies.
+    //
+    // Prototype: void ProcessMovement(CCSPlayer_MovementServices* this, CMoveData* mv)
+    //   rdi -> this (mov rbx,rdi), rsi -> move data (mov r13,rsi).
+    "ProcessMovement": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 49 89 F5 41 54 53 48 89 FB 48 83 EC ? 48 8B 7F",
+        "resolve": "direct"
+      }
+    },
     "EmitSound": {
       "linuxsteamrt64": {
         "module": "libserver.so",

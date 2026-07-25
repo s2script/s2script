@@ -2935,6 +2935,10 @@ typedef SndOpEventGuid_t (*EmitSoundFn_t)(S2RecipientFilter& filter, CEntityInde
                                           const EmitSound_t& params);
 static EmitSoundFn_t s_pEmitSound = nullptr;   // sig-resolved in Load(); null -> op no-ops
 
+// CCSPlayer_MovementServices::ProcessMovement — sig-resolved at Load, deliberately NOT detoured yet
+// (the hook needs a validated services*->slot map; design spec §7). Null when the signature moved.
+static void* s_pProcessMovementAddr = nullptr;
+
 // The sound_emit op. Degrade-never-crash — return 0 WITHOUT calling the engine ONLY when: unresolved
 // sig / out-of-.text fn / !soundName / stale-or-null source entity / the CALLER requested no
 // recipients (slotCount <= 0 || !slots). An all-bot-skipped filter (Count()==0 after the loop) is
@@ -3814,6 +3818,32 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] SetModel resolved @%p (EntityRef.setModel)\n",
                                    reinterpret_cast<void*>(s_pSetModel));
                 }
+            }
+            // Movement Tier B: resolve CCSPlayer_MovementServices::ProcessMovement — the per-tick
+            // movement entry point. RESOLVED ONLY, NOT HOOKED: the detour needs a validated
+            // services*->slot mapping first (see the design spec §7), and guessing that offset in the
+            // per-tick path is the crash class the degrade doctrine exists to prevent.
+            //
+            // Resolving it now is still worth it: ResolveSigValidated puts it in the boot GAMEDATA
+            // VALIDATION report, so a CS2 update that moves the pattern shows up as a named failure
+            // ("signature NOT FOUND (moved — regenerate)") on the very next boot, instead of being
+            // discovered later by whoever builds the hook. Unresolved -> the address stays null and
+            // the future hook simply never arms.
+            auto pmit = sigs.find("ProcessMovement");
+            if (pmit == sigs.end()) {
+                GamedataResult("ProcessMovement", false, "signature absent from gamedata");
+            } else {
+                int64_t pmOff = ResolveSigValidated("ProcessMovement", pmit->second);
+                ModText pmmt = FindModuleText(pmit->second.module.c_str());
+                if (pmOff != s2sig::kFail && pmmt.text) {
+                    void* addr = const_cast<uint8_t*>(pmmt.text) + pmOff;
+                    if (IsAddressInServerText(addr)) {
+                        s_pProcessMovementAddr = addr;
+                        META_CONPRINTF("[s2script] ProcessMovement resolved @%p (movement hook, not yet armed)\n", addr);
+                    } else {
+                        GamedataResult("ProcessMovement", false, "resolved outside libserver .text");
+                    }
+                }   // kFail: ResolveSigValidated already recorded the reason
             }
             // Sound slice: resolve CBaseEntity::EmitSound (soundevent emit; Sound.emit /
             // pawn.emitSound). A DIRECT prologue signature self-validated UNIQUE on OUR libserver.so

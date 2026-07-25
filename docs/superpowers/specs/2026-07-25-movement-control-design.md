@@ -106,41 +106,62 @@ A chain-aware `notifyStateChangedVia` is **deferred, with a reason**: it must ca
 Guessing wrong is a crash in the networking path, not a degraded read. That needs its own RE + live
 gate — exactly the `CCommand` lesson from PR #17: a plausible-looking call is not a verified one.
 
-## 7. Tier B groundwork (recorded, not built)
+## 7. Tier B groundwork: `ProcessMovement` is a SIGNATURE, not a vtable slot
 
-- `libserver.so` exports **no** movement symbols at all — `nm -D --defined-only | grep -iE
-  'ProcessMovement|WalkMove|GetMaxSpeed'` is empty. Everything must be RTTI- or signature-resolved.
-- RTTI is present: `26CCSPlayer_MovementServices` at `.rodata:0x821b00`.
+Two wrong turns are recorded here because each cost real time.
 
-**Resolve the vtable through RELOCATIONS, not raw file bytes.** This is the trap, and an earlier
-revision of this spec fell into it and published wrong numbers. Vtables live in `.data.rel.ro`,
-whose qwords are filled in at load time by `R_X86_64_RELATIVE` relocations; the bytes sitting in the
-file are *not* the pointers. Scanning the raw file for "a qword equal to the typeinfo address"
-matches unrelated data and yields a plausible-looking but entirely fictitious vtable — it produced
-"vtable at `0x2487678`, exactly 24 slots", whose slot functions disassembled to KV3 entity
-serialization and round/team code. None of it was movement, which is what gave the error away.
+**Wrong turn 1 — a fictitious vtable.** An earlier revision published "primary vtable at
+`0x2487678`, exactly 24 slots". That was derived by scanning raw file bytes for a qword equal to the
+typeinfo address. CS2 vtables live in `.data.rel.ro` and are filled at load by
+`R_X86_64_RELATIVE` relocations, so the file bytes are *not* the pointers; the scan matched unrelated
+data. Its "slot functions" disassembled to KV3 entity serialization and round/team code.
 
-The correct chain, every hop read from `readelf -r`:
+Resolved properly, every hop from `readelf -r`:
 
 | hop | address | how |
 |---|---|---|
-| name string | `0x821b00` | `.rodata` |
+| name string | `0x821b00` | `.rodata`, `26CCSPlayer_MovementServices` |
 | typeinfo | `0x2489e80` | the reloc **targeting** the name sits at typeinfo+8 |
 | vtable slot 0 | `0x248ace0` | the reloc **targeting** the typeinfo sits at vtable+8 |
-| slot count | **59** | length of the contiguous relocation run from slot 0 |
+| slot count | **59** | length of the contiguous relocation run |
 
-Ten of the 59 are ≤32-byte stubs. The largest are slots 47 (`0x173b2f0`, ~6.0 KB), 50
-(`0x14b2480`, ~4.9 KB), 2 (`0x1768030`, ~4.7 KB) and 45 (`0x1553dc0`, ~4.6 KB) — sizes derived from
-the next known function start, so they are upper bounds.
+Independently corroborated: CS2Fixes' gamedata lists
+`CCSPlayer_MovementServices::CheckMovingGround` at linux vtable index **45**, which only fits a
+vtable of ≥46 slots — consistent with 59, and impossible under the fictitious 24.
 
-**Which slot is `ProcessMovement` is still OPEN.** Size alone does not identify it, and the obvious
-string-xref shortcut is a dead end: the only `ProcessMovement` mention (`.rodata:0x9828b8`) sits in a
-*spawn* assert about ground flags. The next slice needs a real discriminator — a caller-side xref
-from the player-simulation path, or a `CMoveData` argument-shape match.
+**Wrong turn 2 — assuming it was a vtable slot at all.** It is not.
+[CS2Fixes' gamedata](https://github.com/Source2ZE/CS2Fixes/blob/main/gamedata/cs2fixes.jsonc) carries
+`ProcessMovement` as a **byte signature**, which is strictly better: directly self-resolvable against
+our own binary, no slot-index ambiguity, and it survives vtable reordering.
 
-All addresses are for the currently-installed build and are **hints for that slice, not constants to
-ship** — per `docs/re-strategy.md` the shipped resolver must self-resolve against whatever binary it
-loads into, which is exactly the discipline that would have caught the fictitious vtable at load.
+```
+linux: 55 48 89 E5 41 57 41 56 41 55 49 89 F5 41 54 53 48 89 FB 48 83 EC ? 48 8B 7F
+```
+
+**Validated against our pinned build** (`docker/cs2-data`, not taken on trust):
+
+- **UNIQUE** — exactly one match in `libserver.so`, at file offset `0x157d5f0`. A borrowed pattern
+  that matched twice would be unusable; this is the check `docs/re-strategy.md` requires.
+- It lands next to the `PreWalkMove` string xref at `0x157ccaf` — the movement code region.
+- **Detourable**, which `EmitSound` is not. `s2detour` steals 14 bytes; here that spans
+  `push rbp / mov rbp,rsp / push r15 / push r14 / push r13 / mov r13,rsi / push r12` = 15 bytes of
+  plain push/mov with **no relative or rip-relative operand**, so `detour.cpp`'s two refusal
+  conditions do not apply.
+- Prototype from the prologue: `this` in `rdi` (`mov rbx,rdi`), a second pointer arg in `rsi`
+  (`mov r13,rsi`) — i.e. `void ProcessMovement(CCSPlayer_MovementServices*, CMoveData*)`.
+
+### What still blocks the hook: per-player identity
+
+The detour receives the *movement services* pointer, and there is no validated way to get from it to
+a player slot. `CPlayerPawnComponent` exposes only `__m_pChainEntity`, and our schema catalog knows
+just `m_PathIndex @32` inside `CNetworkVarChainer` — the owner pointer's offset is **not** a schema
+field. Dereferencing a guessed offset in the per-tick movement path is precisely the crash class the
+degrade doctrine exists to prevent, so it is not being guessed.
+
+The sound design is a **reverse map**: cache `(services* → slot)` for the 64 slots, built from the
+already-validated `CBasePlayerPawn::m_pMovementServices` chain, and refreshed on a miss. Dispatch
+then costs pointer compares, no derefs. That plus the detour, a blockable `HookResult`, lazy arming
+on first subscribe, and a live gate is the next slice — it is not a bolt-on to this one.
 
 ## 8. Testing
 
