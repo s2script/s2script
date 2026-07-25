@@ -108,23 +108,39 @@ gate — exactly the `CCommand` lesson from PR #17: a plausible-looking call is 
 
 ## 7. Tier B groundwork (recorded, not built)
 
-RE already done, so the next slice does not restart cold:
-
 - `libserver.so` exports **no** movement symbols at all — `nm -D --defined-only | grep -iE
   'ProcessMovement|WalkMove|GetMaxSpeed'` is empty. Everything must be RTTI- or signature-resolved.
-- RTTI **is** present: `26CCSPlayer_MovementServices` at `.rodata:0x821b00`. Its `__class_type_info`
-  is at `0x2487e80`, referenced by five vtables; the primary (`offset_to_top == 0`) is at
-  `0x2487678`, so **slot 0 is at `0x2487680`**.
-- That vtable is **exactly 24 slots** — qword 24 is `0xffffffff2bf4f9c5`, the start of an unrelated
-  hash/string table, so the bound is read off the data, not assumed.
-- Identifying *which* of the 24 is `ProcessMovement` is the open question. The obvious
-  string-xref shortcut is a red herring: the only `ProcessMovement` mention
-  (`.rodata:0x9828b8`) sits in a *spawn* assert about ground flags, referenced from `0xb07f74`,
-  which is not the function itself.
+- RTTI is present: `26CCSPlayer_MovementServices` at `.rodata:0x821b00`.
 
-All addresses above are for the currently-installed build and are **hints for the next slice, not
-constants to ship** — per `docs/re-strategy.md`, the shipped resolver must self-resolve against
-whatever binary it loads into.
+**Resolve the vtable through RELOCATIONS, not raw file bytes.** This is the trap, and an earlier
+revision of this spec fell into it and published wrong numbers. Vtables live in `.data.rel.ro`,
+whose qwords are filled in at load time by `R_X86_64_RELATIVE` relocations; the bytes sitting in the
+file are *not* the pointers. Scanning the raw file for "a qword equal to the typeinfo address"
+matches unrelated data and yields a plausible-looking but entirely fictitious vtable — it produced
+"vtable at `0x2487678`, exactly 24 slots", whose slot functions disassembled to KV3 entity
+serialization and round/team code. None of it was movement, which is what gave the error away.
+
+The correct chain, every hop read from `readelf -r`:
+
+| hop | address | how |
+|---|---|---|
+| name string | `0x821b00` | `.rodata` |
+| typeinfo | `0x2489e80` | the reloc **targeting** the name sits at typeinfo+8 |
+| vtable slot 0 | `0x248ace0` | the reloc **targeting** the typeinfo sits at vtable+8 |
+| slot count | **59** | length of the contiguous relocation run from slot 0 |
+
+Ten of the 59 are ≤32-byte stubs. The largest are slots 47 (`0x173b2f0`, ~6.0 KB), 50
+(`0x14b2480`, ~4.9 KB), 2 (`0x1768030`, ~4.7 KB) and 45 (`0x1553dc0`, ~4.6 KB) — sizes derived from
+the next known function start, so they are upper bounds.
+
+**Which slot is `ProcessMovement` is still OPEN.** Size alone does not identify it, and the obvious
+string-xref shortcut is a dead end: the only `ProcessMovement` mention (`.rodata:0x9828b8`) sits in a
+*spawn* assert about ground flags. The next slice needs a real discriminator — a caller-side xref
+from the player-simulation path, or a `CMoveData` argument-shape match.
+
+All addresses are for the currently-installed build and are **hints for that slice, not constants to
+ship** — per `docs/re-strategy.md` the shipped resolver must self-resolve against whatever binary it
+loads into, which is exactly the discipline that would have caught the fictitious vtable at load.
 
 ## 8. Testing
 
