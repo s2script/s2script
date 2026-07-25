@@ -24,6 +24,12 @@ for f in scripts/check-*-generated.sh; do
   bash "$f"
 done
 
+# The SDK's own unit suite (codegen models + emitters, manifest/gamedata validation, CLI). It was
+# never wired in, so 230 tests across 30 files — including every codegen gate's underlying model —
+# could go red without CI noticing. Found while adding the navgen writable-allowlist tests.
+echo "== packages/sdk unit suite =="
+( cd packages/sdk && node --experimental-strip-types --no-warnings --test test/*.test.mjs )
+
 echo "== check-plugins-typecheck.sh (the 5E.1 gate) =="
 bash scripts/check-plugins-typecheck.sh
 

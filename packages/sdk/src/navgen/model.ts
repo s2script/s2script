@@ -10,7 +10,18 @@ export interface NavConfigEntry {
   source: string;
   target: string;
   path: NavHop[];
+  /**
+   * Raw field names (`m_flMaxspeed`) that get a SETTER as well as a getter. Opt-in per field,
+   * deliberately: which byte a field lives at is regenerable layout, but whether writing it is
+   * SAFE is a behavioural fact that belongs in reviewed config. Blanket-honouring the catalog's
+   * `writable` flag would expose engine bookkeeping (`m_nTraceCount`, `m_bInStuckTest`) whose
+   * mutation is undefined behaviour. Absent ⇒ the wrapper stays entirely read-only.
+   */
+  writable?: string[];
 }
+
+/** A nav field plus whether THIS wrapper opted it into write-through (see NavConfigEntry.writable). */
+export type NavField = FieldDescriptor & { navWritable: boolean };
 
 export interface NavWrapper {
   wrapper: string;
@@ -18,7 +29,7 @@ export interface NavWrapper {
   source: string;
   target: string;
   path: NavHop[];
-  fields: FieldDescriptor[];
+  fields: NavField[];
   skippedKinds: { propName: string; accessorKind: AccessorKind }[];
 }
 
@@ -37,6 +48,15 @@ export const SUPPORTED_NAV_KINDS = new Set<AccessorKind>([
   "u64", "i64", "handle", "vector", "qangle",
 ]);
 
+/**
+ * Kinds a nav SETTER can be emitted for — i.e. the `EntityRef.write*Via` chain-write surface that
+ * actually exists (`core/src/v8host.rs`). Deliberately narrower than the read surface: the other
+ * writers were never added. An allowlisted field of any other kind is a GENERATION-TIME ERROR
+ * rather than a silently-dropped setter, so a missing native is discovered at build time by
+ * whoever asked for it, not at runtime by a plugin author whose assignment did nothing.
+ */
+export const WRITABLE_NAV_KINDS = new Set<AccessorKind>(["f32", "bool", "i32"]);
+
 /** Build a NavModel from a config array + the schema catalog.
  *  Reuses schemagen's buildModel + flattenedFields for the inheritance walk
  *  and propName-collision→raw handling.
@@ -52,13 +72,35 @@ export function buildNavModel(config: NavConfigEntry[], catalog: Catalog): NavMo
   const sorted = [...config].sort((a, b) => a.wrapper < b.wrapper ? -1 : a.wrapper > b.wrapper ? 1 : 0);
   const wrappers: NavWrapper[] = sorted.map(entry => {
     const all = flattenedFields(schemaModel, entry.target);
-    const fields: FieldDescriptor[] = [];
+    const wantWritable = new Set(entry.writable ?? []);
+    const fields: NavField[] = [];
     const skippedKinds: { propName: string; accessorKind: AccessorKind }[] = [];
     for (const f of all) {
       if (SUPPORTED_NAV_KINDS.has(f.accessorKind)) {
-        fields.push(f);
+        fields.push({ ...f, navWritable: wantWritable.has(f.rawName) });
       } else {
         skippedKinds.push({ propName: f.propName, accessorKind: f.accessorKind });
+      }
+    }
+
+    // Fail generation on a bad allowlist rather than emitting nothing. Both of these are silent
+    // no-ops otherwise, and both are exactly what a CS2 update produces: a renamed field, or a
+    // field whose type changed to one with no chain writer.
+    for (const raw of wantWritable) {
+      const f = fields.find(x => x.rawName === raw);
+      if (!f) {
+        const known = all.some(x => x.rawName === raw);
+        throw new Error(
+          `nav-targets: ${entry.wrapper}.writable lists ${JSON.stringify(raw)}, which ` +
+          (known
+            ? `exists on ${entry.target} but has an unsupported accessor kind, so it has no nav accessor at all.`
+            : `does not exist on ${entry.target} or any of its ancestors (renamed or removed?).`));
+      }
+      if (!WRITABLE_NAV_KINDS.has(f.accessorKind)) {
+        throw new Error(
+          `nav-targets: ${entry.wrapper}.writable lists ${JSON.stringify(raw)} (kind ` +
+          `'${f.accessorKind}'), but there is no EntityRef.write*Via for that kind. Add the ` +
+          `native and extend WRITABLE_NAV_KINDS, or drop the field from the allowlist.`);
       }
     }
     return {

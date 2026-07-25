@@ -9,6 +9,15 @@ export interface AimPunchServices {
   readonly unpredictableBaseAngle: QAngle | null;
 }
 
+/**
+ * Fields NOT marked `readonly` are writable.
+ *
+ * A write takes effect immediately — the server reads these during movement — but it is **not**
+ * flagged for replication, because this object is reached through a pointer chain and the
+ * change-notifier addresses the root entity. A client predicting the old value may therefore
+ * see brief mismatch until the next authoritative correction. SourceMod's `SetEntPropFloat`
+ * on the same fields behaves the same way.
+ */
 export interface MovementServices {
   readonly impulse: number | null;
   readonly queuedButtonDownMask: string | null;
@@ -16,29 +25,29 @@ export interface MovementServices {
   readonly buttonDoublePressed: string | null;
   readonly lastCommandNumberProcessed: number | null;
   readonly toggleButtonDownMask: string | null;
-  readonly cmdForwardMove: number | null;
-  readonly cmdLeftMove: number | null;
-  readonly cmdUpMove: number | null;
-  readonly maxspeed: number | null;
-  readonly forwardMove: number | null;
-  readonly leftMove: number | null;
-  readonly upMove: number | null;
+  cmdForwardMove: number | null;
+  cmdLeftMove: number | null;
+  cmdUpMove: number | null;
+  maxspeed: number | null;
+  forwardMove: number | null;
+  leftMove: number | null;
+  upMove: number | null;
   readonly lastMovementImpulses: Vector | null;
   readonly oldViewAngles: QAngle | null;
   readonly stepSoundTime: number | null;
-  readonly fallVelocity: number | null;
+  fallVelocity: number | null;
   readonly groundNormal: Vector | null;
-  readonly surfaceFriction: number | null;
+  surfaceFriction: number | null;
   readonly stepside: number | null;
   readonly smoothedVelocity: Vector | null;
   readonly usingGroundTopologyOffset: boolean | null;
   readonly usingGroundTopologyOffsetTransitionSmoothing: number | null;
   readonly ladderNormal: Vector | null;
   readonly ladderSurfacePropIndex: number | null;
-  readonly ducked: boolean | null;
-  readonly duckAmount: number | null;
-  readonly duckSpeed: number | null;
-  readonly duckOverride: boolean | null;
+  ducked: boolean | null;
+  duckAmount: number | null;
+  duckSpeed: number | null;
+  duckOverride: boolean | null;
   readonly desiresDuck: boolean | null;
   readonly ducking: boolean | null;
   readonly duckRootOffset: number | null;
@@ -63,7 +72,7 @@ export interface MovementServices {
   readonly useFrictionStashedSpeed: boolean | null;
   readonly useFrictionStashedSpeedUntilFrac: number | null;
   readonly frictionStashedSpeed: number | null;
-  readonly stamina: number | null;
+  stamina: number | null;
   readonly heightAtJumpStart: number | null;
   readonly maxJumpHeightThisJump: number | null;
   readonly maxJumpHeightLastJump: number | null;

@@ -20,6 +20,15 @@ const READ_VIA: Partial<Record<AccessorKind, string>> = {
   u32: "readUInt32Via",
 };
 
+// AccessorKind → EntityRef.write*Via. Narrower than READ_VIA on purpose — these are the chain
+// writers that exist. buildNavModel already rejects an allowlisted field of any other kind, so a
+// missing entry here can never silently degrade a setter into nothing.
+const WRITE_VIA: Partial<Record<AccessorKind, string>> = {
+  f32: "writeFloat32Via",
+  bool: "writeBoolVia",
+  i32: "writeInt32Via",
+};
+
 export function emitNavJs(model: NavModel): string {
   const out: string[] = [HEADER, "(function () {", "  var off = __s2_schema_offset;"];
 
@@ -57,7 +66,15 @@ export function emitNavJs(model: NavModel): string {
         if (!method) continue;  // unrecognised kind (should not happen with a well-formed model)
         getter = `get: function () { return this.root.${method}(this.path, ${resolve}); }`;
       }
-      out.push(`    ${S(f.propName)}: { ${getter} },`);
+      // A setter only for allowlisted fields. NOTE: no notifyStateChanged — it resolves the ROOT
+      // entity, and a chain write changes a SUBOBJECT, so notifying with a chain-relative offset
+      // would mark the wrong bytes on the wrong object. The write lands (the server reads these
+      // every tick); it just is not flagged for replication. See the design spec §6.
+      const wmethod = f.navWritable ? WRITE_VIA[kind] : undefined;
+      const setter = wmethod
+        ? `, set: function (v) { this.root.${wmethod}(this.path, ${resolve}, v); }`
+        : "";
+      out.push(`    ${S(f.propName)}: { ${getter}${setter} },`);
     }
     out.push("  });");
   }

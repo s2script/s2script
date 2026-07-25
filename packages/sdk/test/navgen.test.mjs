@@ -101,3 +101,58 @@ test("emitNavJs and emitNavDts agree on field count when unsupported kinds are p
   assert.doesNotMatch(dts, /readonly precision/, "f64 field must not appear in d.ts");
   assert.doesNotMatch(dts, /readonly name/, "str field must not appear in d.ts");
 });
+
+// ---------------------------------------------------------------------------
+// nav-targets `writable` allowlist. Writability is opt-in per field because which byte a field
+// lives at is regenerable layout, but whether writing it is SAFE is a behavioural fact — the
+// catalog's own `writable` flag would happily expose engine bookkeeping like m_nTraceCount.
+// ---------------------------------------------------------------------------
+
+const CAT_W = {
+  CCSPlayerPawn: { parent: null, fields: [] },
+  CMoveServices: { parent: null, fields: [
+    { name: "m_flMaxspeed", offset: 16, type: { kind: "atomic", name: "float32" } },
+    { name: "m_bDucked", offset: 20, type: { kind: "atomic", name: "bool" } },
+    { name: "m_nTraceCount", offset: 24, type: { kind: "atomic", name: "int32" } },
+    { name: "m_nBigMask", offset: 32, type: { kind: "atomic", name: "uint64" } },   // no write*Via
+  ] },
+};
+const cfgW = (writable) => [{ prop: "mv", wrapper: "Move", target: "CMoveServices", source: "CCSPlayerPawn",
+  path: [{ cls: "CCSPlayerPawn", field: "m_pMove" }], ...(writable ? { writable } : {}) }];
+
+test("writable allowlist: only listed fields get a setter; the rest stay read-only", () => {
+  const m = buildNavModel(cfgW(["m_flMaxspeed", "m_bDucked"]), CAT_W);
+  const w = m.wrappers[0];
+  assert.equal(w.fields.find(f => f.rawName === "m_flMaxspeed").navWritable, true);
+  assert.equal(w.fields.find(f => f.rawName === "m_bDucked").navWritable, true);
+  assert.equal(w.fields.find(f => f.rawName === "m_nTraceCount").navWritable, false,
+    "an unlisted field must stay read-only even though its KIND is writable");
+
+  const js = emitNavJs(m);
+  assert.match(js, /"maxspeed": \{ get: [^}]*\}, set: function \(v\) \{ this\.root\.writeFloat32Via\(this\.path, off\("CMoveServices","m_flMaxspeed"\), v\); \}/);
+  assert.match(js, /"ducked": \{ get: [^}]*\}, set: function \(v\) \{ this\.root\.writeBoolVia\(/);
+  assert.doesNotMatch(js, /"traceCount": \{ get: [^}]*\}, set:/, "unlisted field must emit no setter");
+
+  const dts = emitNavDts(m);
+  assert.match(dts, /^  maxspeed: number \| null;$/m, "writable field loses `readonly`");
+  assert.match(dts, /^  readonly traceCount: number \| null;$/m, "unlisted field keeps `readonly`");
+});
+
+test("writable allowlist: with no allowlist at all, the wrapper is entirely read-only", () => {
+  const m = buildNavModel(cfgW(null), CAT_W);
+  assert.equal(m.wrappers[0].fields.some(f => f.navWritable), false);
+  assert.doesNotMatch(emitNavJs(m), /set: function/);
+  // and the interface-level write caveat is not emitted for a read-only wrapper
+  assert.doesNotMatch(emitNavDts(m), /Fields NOT marked/);
+});
+
+test("writable allowlist: a field name that does not exist FAILS generation", () => {
+  // The CS2-update case: the field was renamed, so the allowlist silently matches nothing.
+  assert.throws(() => buildNavModel(cfgW(["m_flMaxSpeed"]), CAT_W),
+    /does not exist on CMoveServices or any of its ancestors/);
+});
+
+test("writable allowlist: a kind with no write*Via FAILS generation", () => {
+  assert.throws(() => buildNavModel(cfgW(["m_nBigMask"]), CAT_W),
+    /no EntityRef\.write\*Via for that kind/);
+});

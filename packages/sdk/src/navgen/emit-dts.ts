@@ -30,12 +30,24 @@ export function emitNavDts(model: NavModel): string {
   if (needsEntityRef) out.push('import type { EntityRef } from "@s2script/sdk/entity";');
   out.push("");
 
-  // One interface per wrapper.
+  // One interface per wrapper. The write-through caveat is stated ONCE on the interface rather
+  // than cloned onto every writable field — repeating it N times buries it.
   for (const w of model.wrappers) {
+    if (w.fields.some(f => f.navWritable)) {
+      out.push(`/**`);
+      out.push(` * Fields NOT marked \`readonly\` are writable.`);
+      out.push(` *`);
+      out.push(` * A write takes effect immediately — the server reads these during movement — but it is **not**`);
+      out.push(` * flagged for replication, because this object is reached through a pointer chain and the`);
+      out.push(` * change-notifier addresses the root entity. A client predicting the old value may therefore`);
+      out.push(` * see brief mismatch until the next authoritative correction. SourceMod's \`SetEntPropFloat\``);
+      out.push(` * on the same fields behaves the same way.`);
+      out.push(` */`);
+    }
     out.push(`export interface ${w.wrapper} {`);
     for (const f of w.fields) {
-      // All navgen fields are readonly (wrappers don't support write-through).
-      out.push(`  readonly ${f.propName}: ${TSTYPE[f.accessorKind]};`);
+      // Read-only unless nav-targets.json opted the field into write-through.
+      out.push(`  ${f.navWritable ? "" : "readonly "}${f.propName}: ${TSTYPE[f.accessorKind]};`);
     }
     out.push("}", "");
   }
