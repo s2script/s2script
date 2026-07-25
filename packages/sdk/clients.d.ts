@@ -36,6 +36,42 @@ export declare class Client {
    * reason in the server log), setting is an inert no-op and reads stay false.
    */
   voiceMuted: boolean;
+  /**
+   * Tell this client to run `cmd` in their own console, as if they had typed it
+   * (SourceMod `ClientCommand`).
+   *
+   * Requires a real client: a bot has no console, so this is a no-op on bots — use
+   * {@link Client.fakeCommand} for server-side execution. Returns `false` when the command was not
+   * dispatched (empty text, bad slot, or the engine interface is unavailable on this build), never
+   * a silent no-op.
+   *
+   * @example
+   * client.command("play sounds/ui/beep.vsnd");
+   */
+  command(cmd: string): boolean;
+  /**
+   * Have the SERVER process `cmd` as if this client had sent it (SourceMod `FakeClientCommand`).
+   *
+   * Unlike {@link Client.command} this works on bots, because nothing is sent to a client — the
+   * engine dispatches the command itself, attributed to this player's slot. Live-verified:
+   * `fakeCommand("say hi")` on slot 0 prints as that player, not as Console.
+   *
+   * Returns `false` — never a silent no-op — for a bad slot, empty text, an unavailable interface,
+   * or a name that is not a registered console **command** (a ConVar such as `mp_friendlyfire` is
+   * refused: use `Server.command` for those).
+   *
+   * KNOWN LIMITATION: engine commands (`say`, `kill`, …) execute. A command registered by an
+   * s2script plugin is dispatched by the engine, but its JS handler will NOT run — the core holds
+   * the isolate borrow across all JS, so re-entering the dispatcher hits the documented
+   * re-entrancy skip. (This is not a permissions issue: every s2script command is registered
+   * client-executable, which is why a player can type it in their own console.) To invoke another
+   * plugin's behaviour, use a cross-plugin interface rather than faking its command. See
+   * docs/superpowers/specs/2026-07-25-client-command-design.md §12.
+   *
+   * @example
+   * client.fakeCommand("say hello");   // as though the player typed it
+   */
+  fakeCommand(cmd: string): boolean;
 }
 /**
  * Look up connected clients by slot or enumerate them all.

@@ -71,6 +71,40 @@ export const clientsRecipe: Recipe = {
       console.log("[cookbook] voice round_end — unmuted all");
     });
 
+    // Client command execution. TWO different mechanisms:
+    //   sm_clientcmd — ClientCommand: asks the CLIENT to run it, so it does nothing on a bot.
+    //   sm_fakecmd   — FakeClientCommand: the SERVER processes it as if the client sent it, so it
+    //                  DOES work on bots, and reaches command handlers including our own.
+    ctx.commands.register("sm_clientcmd", (cmd) => {
+      const slot = cmd.argInt(0, -1);
+      const rest = cmd.argsFrom(1);
+      if (slot < 0 || slot > 63 || !rest) {
+        cmd.reply("[cookbook] usage: sm_clientcmd <slot 0-63> <command...>");
+        return;
+      }
+      const c = Clients.fromSlot(slot);
+      if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return; }
+      const ok = c.command(rest);
+      cmd.reply(`[cookbook] clients: command(slot ${slot}, ${JSON.stringify(rest)}) -> ${ok}` +
+        (c.isBot ? " (bot — expect no visible effect: no console)" : ""));
+    });
+
+    ctx.commands.register("sm_fakecmd", (cmd) => {
+      const slot = cmd.argInt(0, -1);
+      const rest = cmd.argsFrom(1);
+      if (slot < 0 || slot > 63 || !rest) {
+        cmd.reply("[cookbook] usage: sm_fakecmd <slot 0-63> <command...>");
+        return;
+      }
+      const c = Clients.fromSlot(slot);
+      if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return; }
+      const ok = c.fakeCommand(rest);
+      cmd.reply(`[cookbook] clients: fakeCommand(slot ${slot}, ${JSON.stringify(rest)}) -> ${ok}` +
+        (c.isBot ? " (bot — this one DOES work server-side)" : "") +
+        "  [try: sm_fakecmd <slot> say hi — engine commands run; another PLUGIN's command is " +
+        "dispatched but its handler is re-entrancy-skipped, use a cross-plugin interface instead]");
+    });
+
     // sm_voice verbose — toggle the per-packet onVoice log (see the toggle note above).
     // sm_voice <slot> <0|1> — set/read the mute flag directly, without needing voice traffic.
     ctx.commands.register("sm_voice", (cmd) => {

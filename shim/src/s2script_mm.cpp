@@ -1498,6 +1498,52 @@ static void s2_server_command(const char* cmd) {
     if (!s_pEngine || !cmd) return;
     s_pEngine->ServerCommand(cmd);
 }
+// Client command execution (SourceMod ClientCommand / FakeClientCommand parity).
+//
+// `s2_client_command` tells the CLIENT to run the command in its own console. NOTE the "%s":
+// IVEngineServer2::ClientCommand is FMTFUNCTION(3,4), so its second parameter is a FORMAT STRING.
+// Passing `cmd` directly would let a '%' in player-supplied text be read as a conversion specifier.
+// Neutralised here, once, rather than exposed to every plugin author.
+static int s2_client_command(int slot, const char* cmd) {
+    if (!s_pEngine || !cmd || !cmd[0]) return 0;
+    if (slot < 0 || slot >= kMaxClientSlots) return 0;
+    s_pEngine->ClientCommand(CPlayerSlot(slot), "%s", cmd);
+    return 1;
+}
+
+// `s2_client_fake_command` makes the SERVER process the command as if the client had sent it
+// (SourceMod FakeClientCommand). Unlike s2_client_command this works on bots, because nothing is
+// sent to a client.
+//
+// NOT via ISource2GameClients::ClientCommand. That is the INBOUND callback the engine invokes to
+// tell the game module a client sent a command — the engine has already executed it by then. We
+// hook it precisely to observe player commands. Calling it ourselves notifies the game and executes
+// nothing: measured on a live server, `say`, `kill` and a plugin-registered command all returned
+// cleanly with zero effect and no handler dispatch.
+//
+// The real path is the engine's own command dispatch: resolve the name to a ConCommandRef and hand
+// it to ICvar::DispatchConCommand with a CCommandContext carrying the player slot — the context IS
+// the "as if this client sent it" part. See shim/src/ccommand_shim.cpp for how we get a usable
+// CCommand at all (CS2 exports none of its methods).
+//
+// RE-ENTRANCY: this reaches command handlers, including our own registered ConCommands, so a plugin
+// can drive its own handler. Core's try_borrow_mut re-entrancy guard is load-bearing here.
+static int s2_client_fake_command(int slot, const char* cmd) {
+    if (!s_pCvar || !cmd || !cmd[0]) return 0;
+    if (slot < 0 || slot >= kMaxClientSlots) return 0;
+
+    CCommand parsed;
+    if (!parsed.Tokenize(cmd)) return 0;          // refuse rather than dispatch an empty argv
+    if (parsed.ArgC() < 1) return 0;
+
+    ConCommandRef ref = s_pCvar->FindConCommand(parsed.Arg(0), /*allow_defensive=*/true);
+    if (!ref.IsValidRef()) return 0;              // unknown command — report, do not pretend
+
+    CCommandContext ctx(CT_NO_TARGET, CPlayerSlot(slot));
+    s_pCvar->DispatchConCommand(ref, ctx, parsed);
+    return 1;
+}
+
 static int s2_server_map_valid(const char* map) {
     if (!s_pEngine || !map) return 0;
     return s_pEngine->IsMapValid(map) ? 1 : 0;
@@ -4328,6 +4374,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.voice_audible_set   = &s2_voice_audible_set;
     ops.voice_audible_clear = &s2_voice_audible_clear;
     ops.voice_audible_stats = &s2_voice_audible_stats;
+    // --- client-command slice (APPENDED after voice_audible_stats; order is the ABI) ---
+    ops.client_command      = &s2_client_command;
+    ops.client_fake_command = &s2_client_fake_command;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
