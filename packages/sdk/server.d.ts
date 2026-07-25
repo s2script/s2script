@@ -35,6 +35,28 @@ export declare const Server: {
     min?: number;
     max?: number;
   }): boolean;
+  /**
+   * Watch a cvar for changes (SourceMod `HookConVarChange`, ModSharp's cvar change hook).
+   *
+   * `name` is a cvar name, or `"*"` for every cvar. The handler receives the cvar's name and its
+   * new and old values as strings — for `"*"` the name tells you which one moved.
+   *
+   * NOTIFY-only: the engine's global change callback runs **after** the value has been applied, so
+   * a handler cannot veto a change; returning anything is ignored. A handler that throws is logged
+   * and contained, and the remaining handlers still run.
+   *
+   * Subscriptions are ledgered — unload removes them whether or not `dispose()` is called.
+   *
+   * @example
+   * import { Server } from "@s2script/sdk/server";
+   * Server.onCvarChange("mp_friendlyfire", (name, next, prev) => {
+   *   console.log(`${name}: ${prev} -> ${next}`);
+   * });
+   */
+  onCvarChange(
+    name: string,
+    handler: (name: string, newValue: string, oldValue: string) => void,
+  ): { dispose(): void };
   /** The server's configured max client count (`GetMaxClients()`). `0` if unavailable. */
   readonly maxPlayers: number;
   /** The current map name (`GetMapName()`, the BSP). `""` if unavailable. */

@@ -211,6 +211,24 @@ pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
 ///
 /// `catch_unwind`-wrapped and FAIL-OPEN (-> 0 Continue on a panic or invalid UTF-8): a core bug must
 /// never suppress an output it didn't mean to, mirroring `s2script_core_ban_check`'s fail-open shape.
+/// Called from the shim's ONE `ICvar` global change callback. Notify-only.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_cvar_change(
+    name: *const c_char,
+    new_value: *const c_char,
+    old_value: *const c_char,
+) {
+    catch_unwind(|| {
+        if name.is_null() { return; }
+        let Ok(n) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
+        let nv = if new_value.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(new_value) }).to_str().unwrap_or("") };
+        let ov = if old_value.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(old_value) }).to_str().unwrap_or("") };
+        crate::v8host::dispatch_cvar_change(n, nv, ov);
+    });
+}
+
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_output(
     classname: *const c_char,

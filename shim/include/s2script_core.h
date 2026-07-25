@@ -538,6 +538,12 @@ int s2script_core_dispatch_chat(int slot, const char* text, int teamonly);
  * (Slice 6.11c). slot = the player's slot, name = CCommand::Arg(0), args = ArgS(). Dispatches the
  * matching registered command. Returns 1 if handled (the caller SUPERCEDEs the engine's handling). */
 int s2script_core_dispatch_client_command(int slot, const char* name, const char* args);
+
+/**
+ * A cvar's value changed (ICvar global change callback). NOTIFY-only — the engine has already
+ * applied the value by the time this fires, so there is no return value to veto with.
+ */
+void s2script_core_dispatch_cvar_change(const char* name, const char* newValue, const char* oldValue);
 /* Shim -> core: called by the six ISource2GameClients lifecycle hooks (@s2script/clients sub-project).
  * name is one of connect/putinserver/active/fullyconnect/disconnect/settingschanged; slot is the
  * player's slot (CPlayerSlot::Get()). Notify-only: runs the JS Clients.on(name) subscribers. */
