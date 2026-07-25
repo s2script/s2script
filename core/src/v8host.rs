@@ -612,6 +612,19 @@ thread_local! {
     /// isolate is dropped.  Never held across the checkpoint.
     static RESOLVERS: std::cell::RefCell<std::collections::HashMap<u64, ResolverEntry>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Callback timers (`Timers.after`/`Timers.every`) — distinct from RESOLVERS, which holds
+    /// one-shot Promise resolvers. A callback timer's function must SURVIVE firing when it repeats,
+    /// so it cannot live in a map the drain removes from unconditionally. Keyed by the same
+    /// async-id space as TIMERS/RESOLVERS so ledger teardown reaches all three by one id.
+    static TIMER_CBS: std::cell::RefCell<std::collections::HashMap<u64, TimerCallback>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Timer ids killed since the last drain step. The drain REMOVES a callback from TIMER_CBS
+    /// before firing it (so a callback cannot observe a half-updated map), which means "did this
+    /// callback kill itself?" cannot be answered by looking in TIMER_CBS — it is already absent
+    /// either way. `__s2_timer_kill` records the id here instead, and the drain consults it before
+    /// re-arming. Without this a self-killing repeater fires forever.
+    static TIMER_KILLED: std::cell::RefCell<std::collections::HashSet<u64>>
+        = std::cell::RefCell::new(std::collections::HashSet::new());
     /// Pending unhandled rejections awaiting end-of-frame confirmation (D-2): promise identity
     /// hash → (message, stack). kPromiseHandlerAddedAfterReject removes its entry; whatever
     /// survives to the frame_async_drain flush is reported. Cleared on shutdown.
@@ -1142,11 +1155,29 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return { dispose: () => __s2_unsubscribe(id) };
     },
   };
+  function makeTimerHandle(id) {
+    // A handle rather than a bare id: a bare number invites arithmetic on it and gives no place to
+    // hang `alive`. kill() is idempotent and safe to call from inside the callback itself.
+    return {
+      get alive() { return __s2_timer_alive(id); },
+      kill: function () { return __s2_timer_kill(id); },
+    };
+  }
   const timers = {
     delay: (ms) => __s2_delay(ms || 0),
     nextTick: () => __s2_next_tick(),
     nextFrame: () => __s2_next_frame(),
     threadSleep: (ms) => __s2_thread_sleep(ms || 0),
+    after: function (ms, fn) {
+      if (typeof fn !== "function") throw new TypeError("__s2pkg_timers.after(ms, fn): fn must be a function");
+      return makeTimerHandle(__s2_timer_create(ms || 0, fn, false));
+    },
+    every: function (ms, fn) {
+      if (typeof fn !== "function") throw new TypeError("__s2pkg_timers.every(ms, fn): fn must be a function");
+      var id = __s2_timer_create(ms || 0, fn, true);
+      if (!id) throw new RangeError("__s2pkg_timers.every(ms, fn): ms must be > 0 (a 0ms repeat would starve the frame)");
+      return makeTimerHandle(id);
+    },
   };
   // --- Slice 4.5: inter-plugin interfaces ---
   function makeIfaceProxy(name) {
@@ -3109,6 +3140,80 @@ fn s2_delay(
         let kind = TimerKind::Deadline(Instant::now() + Duration::from_millis(ms));
         let promise = make_timer_promise(scope, kind);
         rv.set(promise);
+    }));
+}
+
+/// Native `__s2_timer_create(ms, fn, repeat) -> id`. A CALLBACK timer (SourceMod `CreateTimer`),
+/// as opposed to `__s2_delay`'s one-shot Promise. Returns 0 when the arguments are unusable, so JS
+/// can report failure instead of handing back a handle that will never fire.
+fn s2_timer_create(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 2 { return; }
+        let ms = args.get(0).integer_value(scope).unwrap_or(-1);
+        if ms < 0 { return; }
+        let ms = ms as u64;
+        let Ok(f) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let repeat = args.get(2).boolean_value(scope);
+        // A zero-interval REPEATING timer would re-arm itself every drain forever with no way for
+        // the frame to make progress on anything else. Refuse it rather than ship a footgun.
+        if repeat && ms == 0 { return; }
+
+        let id = next_async_id();
+        let owner = resolver_owner_tag(scope);
+        if let Some((ref oid, _)) = owner {
+            REGISTRY.with(|r| {
+                if let Some(l) = r.borrow_mut().ledger_mut(oid) { l.record_timer(id); }
+            });
+        }
+        TIMER_CBS.with(|m| m.borrow_mut().insert(id, TimerCallback {
+            owner,
+            cb: v8::Global::new(scope.as_ref(), f),
+            interval_ms: if repeat { Some(ms) } else { None },
+        }));
+        TIMERS.with(|t| t.borrow_mut().push(id, TimerKind::Deadline(Instant::now() + Duration::from_millis(ms))));
+        refresh_detour();
+        rv.set_double(id as f64);
+    }));
+}
+
+/// Native `__s2_timer_kill(id) -> bool`. Idempotent: killing an already-dead or never-existing
+/// timer is `false`, not an error. Removes from BOTH the queue and the callback map — leaving the
+/// callback behind would keep a Global<Function> alive for the isolate's lifetime.
+fn s2_timer_kill(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id = args.get(0).integer_value(scope).unwrap_or(0) as u64;
+        let had_cb = TIMER_CBS.with(|m| m.borrow_mut().remove(&id)).is_some();
+        let had_q = TIMERS.with(|t| t.borrow_mut().remove(id));
+        // Record ONLY the self-kill case, so this set stays bounded. If the timer was still in
+        // TIMER_CBS or the queue we removed it above and the drain will never see it; the only way
+        // both are absent for a live id is that the drain is holding it mid-fire — i.e. the
+        // callback is killing itself. (An id that never existed also lands here; the drain removes
+        // whatever it looks up, and shutdown clears the rest.)
+        if !had_cb && !had_q { TIMER_KILLED.with(|k| { k.borrow_mut().insert(id); }); }
+        rv.set_bool(had_cb || had_q);
+    }));
+}
+
+/// Native `__s2_timer_alive(id) -> bool`.
+fn s2_timer_alive(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id = args.get(0).integer_value(scope).unwrap_or(0) as u64;
+        // Killed-mid-fire counts as dead even though the drain is holding the entry.
+        if TIMER_KILLED.with(|k| k.borrow().contains(&id)) { rv.set_bool(false); return; }
+        rv.set_bool(TIMER_CBS.with(|m| m.borrow().contains_key(&id)));
     }));
 }
 
@@ -8303,6 +8408,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_unsubscribe", s2_unsubscribe);
     // Async timer primitives (Delay / NextTick / NextFrame / threadSleep).
     set_native(scope, global_obj, "__s2_delay", s2_delay);
+    set_native(scope, global_obj, "__s2_timer_create", s2_timer_create);
+    set_native(scope, global_obj, "__s2_timer_kill", s2_timer_kill);
+    set_native(scope, global_obj, "__s2_timer_alive", s2_timer_alive);
     set_native(scope, global_obj, "__s2_next_tick", s2_next_tick);
     set_native(scope, global_obj, "__s2_next_frame", s2_next_frame);
     set_native(scope, global_obj, "__s2_thread_sleep", s2_thread_sleep);
@@ -10532,6 +10640,8 @@ pub fn shutdown() {
     // handles must be reset while the isolate is still alive (HOST still owns it here).
     TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new());
     RESOLVERS.with(|m| m.borrow_mut().clear());
+    TIMER_CBS.with(|m| m.borrow_mut().clear());
+    TIMER_KILLED.with(|k| k.borrow_mut().clear());
     // PENDING_REJECTS holds only Strings (no Globals), so drop order vs the isolate is not
     // load-bearing — this clear is hygiene for a clean re-init.
     PENDING_REJECTS.with(|m| m.borrow_mut().clear());
@@ -10648,6 +10758,51 @@ pub fn shutdown() {
 ///
 /// The owner's `Global<Context>` is cloned out of `PLUGINS` (borrow released) before the resolve; a
 /// resolve does NOT run JS under kExplicit, so no continuation re-enters here.
+/// A repeating-or-one-shot callback timer. `interval_ms` is `Some` for `Timers.every`, in which
+/// case the drain re-arms it after each fire; `None` is a one-shot that is removed after firing.
+struct TimerCallback {
+    owner: Option<(String, u64)>,
+    cb: v8::Global<v8::Function>,
+    interval_ms: Option<u64>,
+}
+
+/// Fire a callback timer in its OWNER's context. Mirrors `resolve_or_drop`'s liveness guard exactly
+/// — never call into a disposed/replaced context. Returns false when the owner is gone, which tells
+/// the drain to drop the timer instead of re-arming it (a repeating timer whose plugin unloaded must
+/// not keep the frame detour alive forever).
+fn fire_timer_cb(host: &mut Host, entry: &TimerCallback) -> bool {
+    let g_ctx = match &entry.owner {
+        Some((id, generation)) => {
+            if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) { return false; }
+            match PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) {
+                Some(g) => g,
+                None => return false,
+            }
+        }
+        None => host.context.clone(),
+    };
+    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+    let hs = &mut hs;
+    let ctx_local = v8::Local::new(hs, &g_ctx);
+    let scope = &mut v8::ContextScope::new(hs, ctx_local);
+    let mut tc_storage = v8::TryCatch::new(scope);
+    let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+    let tc = &mut tc;
+    let f = v8::Local::new(tc, &entry.cb);
+    let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+    if f.call(tc, recv, &[]).is_none() {
+        // A throwing timer callback must not kill the timer system or the frame. Report and carry
+        // on — the same per-handler containment posture the multiplexer uses.
+        let msg = tc.exception()
+            .map(|e| e.to_rust_string_lossy(&*tc))
+            .unwrap_or_else(|| "timer callback threw".into());
+        let who = entry.owner.as_ref().map(|(id, _)| id.as_str()).unwrap_or("<host>");
+        log_warn(&format!("WARN: timer callback threw (plugin '{who}'): {msg}"));
+    }
+    true
+}
+
 fn resolve_or_drop(host: &mut Host, entry: &ResolverEntry) {
     let g_ctx = match &entry.owner {
         Some((id, generation)) => {
@@ -10760,6 +10915,23 @@ pub(crate) fn frame_async_drain() {
         let frame = FRAME_COUNTER.with(|c| c.get());
         let due = TIMERS.with(|t| t.borrow_mut().due(Instant::now(), frame));
         for id in due {
+            // A CALLBACK timer fires its function and, when repeating, re-arms. Take the entry out
+            // while firing so a callback that kills its own timer (or creates one) cannot observe a
+            // half-updated map or double-borrow TIMER_CBS.
+            if let Some(cb) = TIMER_CBS.with(|m| m.borrow_mut().remove(&id)) {
+                // Clear any stale record for this id, fire, then ask whether the callback killed it.
+                TIMER_KILLED.with(|k| { k.borrow_mut().remove(&id); });
+                let owner_live = fire_timer_cb(host, &cb);
+                // Re-arm only if it repeats AND the callback did not kill itself during the fire
+                // AND the owner is still live. Otherwise the entry stays removed and it is done.
+                let self_killed = TIMER_KILLED.with(|k| k.borrow_mut().remove(&id));
+                if let (Some(iv), true, false) = (cb.interval_ms, owner_live, self_killed) {
+                    TIMERS.with(|t| t.borrow_mut()
+                        .push(id, TimerKind::Deadline(Instant::now() + Duration::from_millis(iv))));
+                    TIMER_CBS.with(|m| m.borrow_mut().insert(id, cb));
+                }
+                continue;
+            }
             // Remove the tagged resolver (RESOLVERS borrow released), then resolve-or-drop it in its
             // owner's context.  A None entry means the timer was already dropped (e.g. by unload).
             let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) else { continue };
@@ -11291,6 +11463,11 @@ fn teardown_ledger_and_dispose(id: &str) {
                 plugin::Resource::Timer(tid) => {
                     TIMERS.with(|t| { t.borrow_mut().remove(tid); });
                     RESOLVERS.with(|m| { m.borrow_mut().remove(&tid); });
+                    // A repeating callback timer re-arms itself, so failing to drop it here would
+                    // leave it firing into a dead context forever — the ledger is the teardown
+                    // authority precisely so this does not depend on the plugin's own cleanup.
+                    TIMER_CBS.with(|m| { m.borrow_mut().remove(&tid); });
+                    TIMER_KILLED.with(|k| { k.borrow_mut().remove(&tid); });
                 }
                 plugin::Resource::Job(jid) => {
                     // The worker may still run; its late completion is a no-op (resolver gone).  Drop
@@ -11869,6 +12046,120 @@ mod frame_tests {
         std::thread::sleep(std::time::Duration::from_millis(40));
         frame_async_drain();                       // now past the deadline
         assert_eq!(read_bool_global_in("p", "__d"), true);
+        shutdown();
+    }
+
+    /// A one-shot callback timer fires exactly once and then reports dead.
+    #[test]
+    fn timer_after_fires_once_then_is_dead() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "globalThis.__n = 0; globalThis.__t = __s2pkg_timers.after(20, () => { globalThis.__n++; });");
+        frame_async_drain();
+        assert_eq!(read_i32_global_in("p", "__n"), 0, "must not fire before its deadline");
+        assert_eq!(eval_in_context_string("p", "String(__t.alive)"), "true");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        frame_async_drain();
+        assert_eq!(read_i32_global_in("p", "__n"), 1);
+        assert_eq!(eval_in_context_string("p", "String(__t.alive)"), "false", "one-shot is dead after firing");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        frame_async_drain();
+        assert_eq!(read_i32_global_in("p", "__n"), 1, "a one-shot must never fire twice");
+        shutdown();
+    }
+
+    /// The repeat re-arm: `every` keeps firing across drains. This is the invariant that separates
+    /// it from `after` — without the re-arm in the drain it would fire once and silently stop.
+    #[test]
+    fn timer_every_rearms_across_drains() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "globalThis.__n = 0; globalThis.__t = __s2pkg_timers.every(10, () => { globalThis.__n++; });");
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            frame_async_drain();
+        }
+        assert!(read_i32_global_in("p", "__n") >= 3,
+            "expected >= 3 fires, got {}", read_i32_global_in("p", "__n"));
+        assert_eq!(eval_in_context_string("p", "String(__t.alive)"), "true", "a repeater stays alive");
+        shutdown();
+    }
+
+    /// kill() stops a repeater, and is idempotent rather than an error.
+    #[test]
+    fn timer_kill_stops_a_repeater_and_is_idempotent() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "globalThis.__n = 0; globalThis.__t = __s2pkg_timers.every(10, () => { globalThis.__n++; });");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        frame_async_drain();
+        let after_one = read_i32_global_in("p", "__n");
+        assert!(after_one >= 1);
+        assert_eq!(eval_in_context_string("p", "String(__t.kill())"), "true");
+        assert_eq!(eval_in_context_string("p", "String(__t.kill())"), "false", "second kill is false, not an error");
+        assert_eq!(eval_in_context_string("p", "String(__t.alive)"), "false");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        frame_async_drain();
+        assert_eq!(read_i32_global_in("p", "__n"), after_one, "no fires after kill");
+        shutdown();
+    }
+
+    /// A callback that kills its OWN timer must not be re-armed. The drain takes the entry out
+    /// while firing, so the self-kill has to be detected rather than overwritten by the re-arm.
+    #[test]
+    fn timer_callback_can_kill_itself() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "globalThis.__n = 0; globalThis.__t = __s2pkg_timers.every(10, () => { globalThis.__n++; __t.kill(); });");
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            frame_async_drain();
+        }
+        assert_eq!(read_i32_global_in("p", "__n"), 1, "self-kill must prevent the re-arm");
+        shutdown();
+    }
+
+    /// THE teardown invariant: a repeating timer whose plugin unloads must stop. Without the
+    /// ledger dropping TIMER_CBS it would re-arm forever and fire into a dead context.
+    #[test]
+    fn unload_kills_a_repeating_timer() {
+        init(dummy_logger()).unwrap();
+        eval_std("demo", "globalThis.__n = 0; __s2pkg_timers.every(10, () => { globalThis.__n++; });");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        frame_async_drain();
+        assert!(read_i32_global_in("demo", "__n") >= 1, "sanity: it fired at least once while loaded");
+        unload_plugin("demo");
+        // Nothing to assert in JS (the context is gone) — assert on the host books instead: no
+        // callback and no queue entry may survive the unload.
+        assert_eq!(TIMER_CBS.with(|m| m.borrow().len()), 0, "unload must drop the callback");
+        assert_eq!(TIMERS.with(|t| t.borrow().len()), 0, "unload must drop the queue entry");
+        shutdown();
+    }
+
+    /// A throwing callback is contained: it does not kill the timer system, and a repeater keeps
+    /// going rather than silently dying on the first exception.
+    #[test]
+    fn throwing_timer_callback_is_contained() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "globalThis.__n = 0; __s2pkg_timers.every(10, () => { globalThis.__n++; throw new Error('boom'); });");
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            frame_async_drain();
+        }
+        assert!(read_i32_global_in("p", "__n") >= 3,
+            "a throwing repeater must keep firing, got {}", read_i32_global_in("p", "__n"));
+        shutdown();
+    }
+
+    /// A 0ms REPEAT would re-arm every drain and starve the frame, so it is refused loudly.
+    /// A 0ms one-shot is fine (fire on the next drain).
+    #[test]
+    fn zero_interval_repeat_is_refused_but_zero_oneshot_is_fine() {
+        init(dummy_logger()).unwrap();
+        // eval_std creates the context; eval_in_context_string alone would panic with "no context".
+        eval_std("p", "globalThis.__z = 0;");
+        assert_eq!(eval_in_context_string("p",
+            "(function(){ try { __s2pkg_timers.every(0, function(){}); return 'no-throw'; } catch (e) { return e.constructor.name; } })()"),
+            "RangeError");
+        eval_std("p", "__s2pkg_timers.after(0, () => { globalThis.__z = 1; });");
+        frame_async_drain();
+        assert_eq!(read_i32_global_in("p", "__z"), 1, "a 0ms one-shot fires on the next drain");
         shutdown();
     }
 

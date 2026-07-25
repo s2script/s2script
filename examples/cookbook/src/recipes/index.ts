@@ -18,6 +18,7 @@ import { playerStateRecipe } from "./player-state.ts";
 import { serverRecipe } from "./server.ts";
 import { soundRecipe } from "./sound.ts";
 import { teamRecipe } from "./team.ts";
+import { timersRecipe } from "./timers.ts";
 import { traceRecipe } from "./trace.ts";
 import { translationsRecipe } from "./translations.ts";
 import { unsafeRecipe } from "./unsafe.ts";
@@ -49,6 +50,7 @@ export const RECIPES: readonly Recipe[] = [
   serverRecipe,
   soundRecipe,
   teamRecipe,
+  timersRecipe,
   traceRecipe,
   translationsRecipe,
   transmitRecipe,
