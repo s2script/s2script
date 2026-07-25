@@ -318,6 +318,10 @@ pub type EngineCallInvokeFn = extern "C" fn(
 type VoiceAudibleSetFn   = extern "C" fn(c_int, u64) -> c_int;
 type VoiceAudibleClearFn = extern "C" fn(c_int) -> c_int;
 type VoiceAudibleStatsFn = extern "C" fn(*mut u64) -> c_int;
+// --- client-command slice (APPENDED after voice_audible_stats; order is the ABI) ---
+// Both return 1 on dispatch, 0 when degraded (interface unacquired, bad slot, empty command, or a
+// CCommand that failed to tokenize) — never a silent no-op.
+pub type ClientCommandFn     = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -477,6 +481,8 @@ pub struct S2EngineOps {
     pub voice_audible_set:   Option<VoiceAudibleSetFn>,
     pub voice_audible_clear: Option<VoiceAudibleClearFn>,
     pub voice_audible_stats: Option<VoiceAudibleStatsFn>,
+    // --- client-command slice (APPENDED after voice_audible_stats; do not reorder above) ---
+    pub client_command:      Option<ClientCommandFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -2360,6 +2366,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Client.prototype.kick = function (reason)  { __s2_client_kick(this.slot, reason == null ? "" : String(reason)); };
   Client.prototype.chat = function (message) { __s2_client_print(this.slot, String(message)); };
   Client.prototype.print = function (msg) { __s2_client_console_print(this.slot, String(msg) + "\n"); };
+  // Client command execution (SourceMod ClientCommand parity): ask the CLIENT to run it. The
+  // server-side FakeClientCommand variant is NOT here — see the spec: it needs a CCommand, whose
+  // ctor and Tokenize are not exported by any shipped engine binary.
+  Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd)); };
   Object.defineProperty(Client.prototype, "ip", { get: function () {
     var a = __s2_client_address(this.slot); if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
   } });
@@ -8419,6 +8429,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_voice_get_muted", s2_voice_get_muted);
     // ban-reason sub-project 2: developer-console print + client IP address.
     set_native(scope, global_obj, "__s2_client_console_print", s2_client_console_print);
+    set_native(scope, global_obj, "__s2_client_command", s2_client_command);
     set_native(scope, global_obj, "__s2_client_address", s2_client_address);
     set_native(scope, global_obj, "__s2_damage_subscribe", s2_damage_subscribe);
     set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
@@ -9438,6 +9449,24 @@ fn s2_client_address(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
 }
 
 /// `__s2_server_command(cmd)` — run `cmd` at the server console. No-op without the op / null.
+/// Native `__s2_client_command(slot, cmd) -> boolean` — tell the CLIENT to run `cmd`.
+/// False when the op is unassigned, the slot is out of range, or `cmd` is empty; the shim also
+/// guards, so this is belt-and-braces plus an honest return value.
+fn s2_client_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let slot = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        if !(0..64).contains(&slot) { return; }
+        let cmd = args.get(1).to_rust_string_lossy(scope);
+        if cmd.is_empty() { return; }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.client_command else { return };
+        let Ok(ccmd) = CString::new(cmd) else { return };
+        rv.set_bool(f(slot, ccmd.as_ptr()) != 0);
+    }));
+}
+
 fn s2_server_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
@@ -13771,6 +13800,7 @@ mod frame_tests {
             voice_audible_set: None,
             voice_audible_clear: None,
             voice_audible_stats: None,
+            client_command: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -14456,6 +14486,82 @@ mod frame_tests {
     extern "C" fn mock_transmit_stats(out: *mut u64) {
         unsafe { for i in 0..5 { *out.add(i) = (i as u64 + 1) * 10; } }
     }
+    // --- client command execution (SourceMod ClientCommand / FakeClientCommand parity) ---
+    static CLIENT_CMD_CALLS: std::sync::Mutex<Vec<(i32, String)>> = std::sync::Mutex::new(Vec::new());
+
+    extern "C" fn mock_client_command(slot: c_int, cmd: *const c_char) -> c_int {
+        let s = unsafe { std::ffi::CStr::from_ptr(cmd) }.to_string_lossy().into_owned();
+        CLIENT_CMD_CALLS.lock().unwrap().push((slot, s));
+        1
+    }
+    fn client_cmd_test_ops() -> S2EngineOps {
+        S2EngineOps {
+            client_command: Some(mock_client_command),
+            ..mock_event_ops()
+        }
+    }
+
+    /// The slot and the command text reach the op verbatim — including a '%', which must survive as
+    /// literal text (the shim passes it as a "%s" argument, never as the format string).
+    #[test]
+    fn client_command_passes_slot_and_text_verbatim() {
+        let _ = init(dummy_logger());
+        CLIENT_CMD_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(client_cmd_test_ops()));
+        create_plugin_context("cc1");
+        // `new Client(slot)` rather than Clients.fromSlot: the test isolate has no engine client
+        // state, so fromSlot resolves to null. Same construction the voice-mute test uses.
+        let out = eval_in_context_string("cc1",
+            r#"var c = new __s2pkg_clients.Client(3); String(c.command("say 100% done"))"#);
+        assert_eq!(out, "true");
+        assert_eq!(CLIENT_CMD_CALLS.lock().unwrap().as_slice(),
+            &[(3, "say 100% done".to_string())]);
+        shutdown();
+    }
+
+    /// An empty command is refused before the op — dispatching "" would be a no-op the caller
+    /// could not distinguish from success.
+    #[test]
+    fn client_command_refuses_empty_text() {
+        let _ = init(dummy_logger());
+        CLIENT_CMD_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(client_cmd_test_ops()));
+        create_plugin_context("cc3");
+        let out = eval_in_context_string("cc3",
+            r#"var c = new __s2pkg_clients.Client(0); String(c.command(""))"#);
+        assert_eq!(out, "false");
+        assert!(CLIENT_CMD_CALLS.lock().unwrap().is_empty());
+        shutdown();
+    }
+
+    /// A slot outside [0,64) never reaches the op. The engine indexes a fixed 64-slot array, so a
+    /// bad slot is an out-of-bounds read on the far side of the FFI — refuse before the call.
+    #[test]
+    fn client_command_refuses_out_of_range_slot() {
+        let _ = init(dummy_logger());
+        CLIENT_CMD_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(client_cmd_test_ops()));
+        create_plugin_context("cc2");
+        for slot in ["-1", "64", "9999"] {
+            let out = eval_in_context_string("cc2",
+                &format!(r#"var c = new __s2pkg_clients.Client({slot}); String(c.command("sm_help"))"#));
+            assert_eq!(out, "false", "slot {slot} should have been refused");
+        }
+        assert!(CLIENT_CMD_CALLS.lock().unwrap().is_empty(), "no out-of-range slot may reach the op");
+        shutdown();
+    }
+
+    /// With no op wired (old shim) both report false rather than pretending they dispatched.
+    #[test]
+    fn client_command_degrades_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));   // client_command stays None
+        create_plugin_context("cc4");
+        assert_eq!(eval_in_context_string("cc4",
+            r#"var c = new __s2pkg_clients.Client(0); String(c.command("sm_help"))"#), "false");
+        shutdown();
+    }
+
     fn transmit_test_ops() -> S2EngineOps {
         S2EngineOps {
             transmit_set: Some(mock_transmit_set),
@@ -15093,6 +15199,7 @@ mod frame_tests {
             voice_audible_set: None,
             voice_audible_clear: None,
             voice_audible_stats: None,
+            client_command: None,
         }
     }
 

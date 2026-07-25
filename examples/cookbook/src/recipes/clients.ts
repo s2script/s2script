@@ -71,6 +71,23 @@ export const clientsRecipe: Recipe = {
       console.log("[cookbook] voice round_end — unmuted all");
     });
 
+    // Client command execution (SourceMod ClientCommand). Asks the CLIENT to run it, so this does
+    // nothing for a bot — it has no console. There is no server-side FakeClientCommand equivalent
+    // yet; see docs/superpowers/specs/2026-07-25-client-command-design.md.
+    ctx.commands.register("sm_clientcmd", (cmd) => {
+      const slot = cmd.argInt(0, -1);
+      const rest = cmd.argsFrom(1);
+      if (slot < 0 || slot > 63 || !rest) {
+        cmd.reply("[cookbook] usage: sm_clientcmd <slot 0-63> <command...>");
+        return;
+      }
+      const c = Clients.fromSlot(slot);
+      if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return; }
+      const ok = c.command(rest);
+      cmd.reply(`[cookbook] clients: command(slot ${slot}, ${JSON.stringify(rest)}) -> ${ok}` +
+        (c.isBot ? " (bot — expect no visible effect: no console)" : ""));
+    });
+
     // sm_voice verbose — toggle the per-packet onVoice log (see the toggle note above).
     // sm_voice <slot> <0|1> — set/read the mute flag directly, without needing voice traffic.
     ctx.commands.register("sm_voice", (cmd) => {

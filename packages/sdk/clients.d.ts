@@ -36,6 +36,20 @@ export declare class Client {
    * reason in the server log), setting is an inert no-op and reads stay false.
    */
   voiceMuted: boolean;
+  /**
+   * Tell this client to run `cmd` in their own console, as if they had typed it
+   * (SourceMod `ClientCommand`).
+   *
+   * Requires a real client: a bot has no console, so this is a no-op on bots. A server-side
+   * `FakeClientCommand` equivalent is NOT available — it needs a `CCommand`, whose constructor and
+   * `Tokenize` are not exported by any shipped engine binary. Returns `false` when the command was
+   * not dispatched (empty text, bad slot, or the engine interface is unavailable on this build),
+   * never a silent no-op.
+   *
+   * @example
+   * client.command("play sounds/ui/beep.vsnd");
+   */
+  command(cmd: string): boolean;
 }
 /**
  * Look up connected clients by slot or enumerate them all.
