@@ -323,6 +323,18 @@ typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial,
                                         const char* const* strs, const float* vecs,
                                         int retKind, uint64_t* retOut);
 
+/* --- voice hearability slice (APPENDED after engine_call_invoke; order is the ABI) ---
+ * Per-SENDER "who may hear me" bitmask, enforced by the SetClientListening PRE hook. The core owns
+ * the policy (owner -> sender -> mask, AND-merged) and pushes only the merged result, so the hot
+ * path stays a shift and a test — no FFI, no JS, no allocation.
+ * voice_audible_set:   1 = applied; 0 = voice degraded OR sender out of range.
+ * voice_audible_clear: 1 = a rule was present and removed; 0 = nothing to remove OR degraded (both
+ *                      mean "no rule is in force afterwards", the only thing a caller can act on).
+ * voice_audible_stats: out[3] = {calls, entries, rewrites}; 1 = written, 0 = null out. */
+typedef int (*s2_voice_audible_set_fn)(int sender, uint64_t mask);
+typedef int (*s2_voice_audible_clear_fn)(int sender);
+typedef int (*s2_voice_audible_stats_fn)(uint64_t* out);
+
 /* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
  * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
  * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
@@ -492,6 +504,10 @@ typedef struct {
     /* Plugin-declared engine calls — APPENDED after ent_snapshot; order is the ABI; do not reorder above. */
     s2_engine_call_resolve_fn engine_call_resolve;
     s2_engine_call_invoke_fn  engine_call_invoke;
+    /* voice hearability slice — APPENDED after engine_call_invoke; order is the ABI; do not reorder above. */
+    s2_voice_audible_set_fn   voice_audible_set;
+    s2_voice_audible_clear_fn voice_audible_clear;
+    s2_voice_audible_stats_fn voice_audible_stats;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

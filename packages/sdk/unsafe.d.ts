@@ -14,6 +14,15 @@
  */
 export interface EngineCalls {}
 
+/**
+ * Plugin-declared engine calls, resolved from this plugin's own gamedata.
+ *
+ * @example
+ * import { Engine } from "@s2script/sdk/unsafe";
+ * // Resolve ONCE at load — null means the descriptor failed a load-time gate.
+ * const ignite = Engine.call("ignite");
+ * if (!ignite) console.log(`unavailable: ${Engine.status("ignite")}`);
+ */
 export declare const Engine: {
   /**
    * The declared call, or `null` when its descriptor failed a load-time gate (signature miss,

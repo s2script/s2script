@@ -120,6 +120,9 @@
     "./usermessages": {
       "types": "./usermessages.d.ts"
     },
+    "./voice": {
+      "types": "./voice.d.ts"
+    },
     "./votes": {
       "types": "./votes.d.ts"
     },
