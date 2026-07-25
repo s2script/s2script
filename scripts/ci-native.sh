@@ -37,6 +37,9 @@ if command -v ccache >/dev/null 2>&1; then
   LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
 fi
 
+echo "== check-gamedata-sigs.sh (no build-specific operands in a signature) =="
+bash scripts/check-gamedata-sigs.sh
+
 echo "== check-invoke-abi.sh (declared-call float ABI) =="
 bash scripts/check-invoke-abi.sh
 
