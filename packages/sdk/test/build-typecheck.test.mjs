@@ -20,3 +20,12 @@ test("build SUCCEEDS (emits .s2sp) on a clean plugin", async () => {
   const out = await buildPlugin(join(fixtures, "clean"), fakePkgs);
   assert.ok(existsSync(out), "clean plugin emits a .s2sp");
 });
+
+// Contract subpaths: @s2script/cs2/econ and @s2script/sdk/contracts/workshop. The generic
+// "@s2script/*" -> "*/index.d.ts" fallback CANNOT express either, so both need their own `paths`
+// entry. Without them the import is TS2307 and the standard interface contracts would be
+// unusable — and unnoticed, since nothing else in the corpus imports a game-package subpath.
+test("build resolves game-package and nested SDK contract subpaths", async () => {
+  const out = await buildPlugin(join(fixtures, "subpath"), fakePkgs);
+  assert.ok(existsSync(out), "a plugin importing contract subpaths typechecks and builds");
+});

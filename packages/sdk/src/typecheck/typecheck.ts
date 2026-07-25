@@ -113,6 +113,10 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       // dirs are deleted). tsc picks the longest matching prefix, so `@s2script/sdk/*` wins for
       // sdk imports.
       "@s2script/sdk/*": ["sdk/*.d.ts"],
+      // Game-package SUBPATHS (e.g. @s2script/cs2/econ -> packages/cs2/econ.d.ts). Needed because
+      // the `@s2script/*` fallback below maps to `<pkg>/index.d.ts`, which cannot express a
+      // subpath. tsc picks the longest matching prefix, so this wins for cs2 subpath imports.
+      "@s2script/cs2/*": ["cs2/*.d.ts"],
       "@s2script/*": ["*/index.d.ts"],
       ...contractPaths,
     },

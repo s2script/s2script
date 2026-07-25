@@ -4,6 +4,7 @@ import { chatRecipe } from "./chat.ts";
 import { clientsRecipe } from "./clients.ts";
 import { configRecipe } from "./config.ts";
 import { consoleRecipe } from "./console.ts";
+import { contractsRecipe } from "./contracts.ts";
 import { cookiesRecipe } from "./cookies.ts";
 import { damageRecipe } from "./damage.ts";
 import { dbRecipe } from "./db.ts";
@@ -33,6 +34,7 @@ export const RECIPES: readonly Recipe[] = [
   clientsRecipe,
   configRecipe,
   consoleRecipe,
+  contractsRecipe,
   cookiesRecipe,
   damageRecipe,
   dbRecipe,
