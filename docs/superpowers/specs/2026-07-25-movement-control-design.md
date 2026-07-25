@@ -1,6 +1,6 @@
 # Movement control — design
 
-**Status:** Approved — ready for planning.
+**Status:** Tier A implemented and live-gated (2026-07-25). Tier B deferred — see §7.
 **Audience:** plugin authors writing movement gameplay; core + codegen maintainers.
 **Builds on:** the `pawn.movementServices` nav wrapper (`games/cs2/nav-targets.json`), the navgen
 pipeline (`packages/sdk/src/navgen/`), and the `EntityRef.write*Via` chain-write surface.
@@ -137,9 +137,10 @@ whatever binary it loads into.
 - **`check-nav-generated.sh`** must stay green — the committed codegen is regenerated and diffed.
 - **`check-plugins-typecheck`** proves `MovementServices` fields lose `readonly` in the emitted
   `.d.ts` only for allowlisted fields.
-- **Live gate:** `sm_speed <slot> <mult>` in the cookbook sets `maxspeed`; a bot's movement speed
-  visibly changes and reverts. Bot-provable — bots move under server-side movement code, so unlike
-  `Client.command` this slice **can** be proven on hardware, and must be.
+- **Live gate:** `sm_speed <slot> <mult>` in the cookbook sets `maxspeed` and `sm_movement <slot>`
+  reads it back on real engine memory.
+  ~~Bot-provable — bots move under server-side movement code, so unlike `Client.command` this slice
+  **can** be proven on hardware, and must be.~~ **That claim was wrong; see §11.**
 
 ## 9. Out of scope
 
@@ -150,9 +151,56 @@ whatever binary it loads into.
 
 ## 10. Success criteria
 
-1. `pawn.movementServices.maxspeed = 400` changes a bot's movement speed on a live server.
+1. `pawn.movementServices.maxspeed = 400` reaches real engine memory on a live server and survives
+   the movement tick. (Originally worded as "changes a bot's movement speed" — not achievable here,
+   §11.)
 2. Only allowlisted fields gain setters; the other 39 stay read-only, and the other three wrappers
    are untouched (verified by diffing the generated files).
 3. A typo'd or non-writable-kind allowlist entry **fails generation**, naming the field.
 4. The no-replication caveat is in the emitted TSDoc, not only in this document.
 5. `make ci` green, `check-nav-generated` included.
+
+---
+
+## 11. Live-gate result (2026-07-25)
+
+Docker CS2, `de_inferno`, 12 bots, sniper build from this branch. 3 plugins loaded, 0 faults.
+
+**PASS — the write path works end to end on hardware.**
+
+| step | result |
+|---|---|
+| `sm_movement 0` | `maxspeed=260 stamina=0 friction=1 ducked=false duckAmount=0` |
+| `sm_speed 0 2` | `maxspeed 260 -> 520` |
+| read back | `520` |
+| re-read at +2s / +5s / +10s | `520`, `520`, `520` — **not** recomputed by the movement tick |
+| `mp_restartgame` → fresh pawns | back to `260` on all 8 slots |
+
+The last row matters: a fresh pawn reading 260 again proves these are genuine per-pawn engine reads
+and writes through the `m_pMovementServices` chain, not a cached JS value.
+
+### The "bot moves faster" half could NOT be proven, and my spec was wrong to promise it
+
+§8 asserted this slice was bot-provable "because bots move under server-side movement code". **The
+bots on this server do not move at all.** Measured, not assumed — the cookbook sampler reports both
+`absVelocity` magnitude and frame-to-frame position delta:
+
+```
+slot 0 over 192 frames: peak absVelocity=0.0 u/s, peak by position delta=0.0 u/s
+slot 1 / 3 / 5 over 128 frames: 0.0 / 0.0        (same on every slot tried)
+```
+
+`mp_restartgame`, `mp_warmup_end`, `mp_freezetime 0`, `bot_stop 0`, `bot_wander 1` change nothing;
+the map directory holds only `.vpk`s with no navigation data, so the bots have nowhere to walk.
+
+I also tried driving movement directly — writing the allowlisted `forwardMove`/`cmdForwardMove` every
+frame — on the theory that those are the inputs the movement code consumes. Still `0.0`: a
+game-frame write lands at the wrong point in the tick relative to `ProcessUserCmd`. That experiment
+was **removed** from the cookbook rather than shipped, because an example that appears to do
+something it does not is worse than no example.
+
+**So "the engine acts on the written value" is deferred to a human-client session**, the same Tier-2
+deferral the voice slices carry. This is the second time I have written a gate whose premise
+contradicted itself; the check that catches it is running it, not reviewing it.
+
+Server restored to its pre-gate baseline afterwards.
