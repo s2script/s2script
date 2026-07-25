@@ -101,7 +101,8 @@ export const clientsRecipe: Recipe = {
       const ok = c.fakeCommand(rest);
       cmd.reply(`[cookbook] clients: fakeCommand(slot ${slot}, ${JSON.stringify(rest)}) -> ${ok}` +
         (c.isBot ? " (bot — this one DOES work server-side)" : "") +
-        "  [try: sm_fakecmd <slot> say hi]");
+        "  [try: sm_fakecmd <slot> say hi — engine commands run; another PLUGIN's command is " +
+        "dispatched but its handler is re-entrancy-skipped, use a cross-plugin interface instead]");
     });
 
     // sm_voice verbose — toggle the per-packet onVoice log (see the toggle note above).

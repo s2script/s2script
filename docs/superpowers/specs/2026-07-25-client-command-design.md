@@ -218,13 +218,32 @@ prints as a different bot than slot 0. Quoting survives end to end —
 `sm_fakecmd 1 say "quoted   text  here"` arrives as one argument. Degrades correctly: an unknown
 name and a ConVar (`mp_friendlyfire`) both return `false` rather than pretending.
 
-### Known limitation, stated rather than glossed
+### Known limitation: plugin-registered commands (and the reason is NOT permissions)
 
-Engine commands execute; **commands registered by s2script plugins do not**. Faking `sm_console`
-returns `true` (the ref resolves, the dispatch is made) but the handler never runs, while invoking
-it directly does. The engine refuses a client-context dispatch for commands lacking the
-client-executable flag, and our `RegisterConCommand` path does not set one. Fixing that is a
-separate change to command registration, not to this op.
+Engine commands execute. A command registered by an s2script plugin is dispatched by the engine —
+the op is reached and `DispatchConCommand` runs — but its **JS handler does not run**.
+
+The first published explanation of this was wrong. It claimed the engine refuses a client-context
+dispatch for commands lacking the client-executable flag. In fact
+`shim/src/s2script_mm.cpp` registers *every* s2script command with `FCVAR_CLIENT_CAN_EXECUTE`,
+deliberately, because that is what lets a real player type `sm_ban` in their own console and reach
+the handler through the `ClientCommand` hook. There is no permissions gap and no security tradeoff
+to weigh — that framing was invented.
+
+The actual cause is re-entrancy. Core holds `HOST.borrow_mut()` across **all** JS execution, so a
+`fakeCommand` issued from JS re-enters `dispatch_concommand` while the isolate is already borrowed
+and hits the long-standing `try_borrow_mut` graceful skip (`core/src/v8host.rs`). It is not specific
+to command handlers — it applies from any JS context, including a timer or an event handler, because
+all of them run inside that borrow.
+
+Two core tests pin this down without needing a server, by having the mock op call
+`dispatch_concommand` back exactly as the engine round-trip does:
+`fake_command_cannot_reenter_a_plugin_command_from_js` and
+`fake_command_from_inside_a_command_handler_is_reentrancy_skipped`. Both assert the op **is**
+reached and the nested handler **is not** run.
+
+**Guidance:** to invoke another plugin's behaviour, use a cross-plugin interface — that is what they
+are for. `fakeCommand` is for making a *player* do something the engine handles.
 
 ### A methodology note worth keeping
 

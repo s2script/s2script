@@ -14566,6 +14566,68 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Reproduces the ENGINE ROUND TRIP: the real shim's fakeCommand reaches
+    /// `ICvar::DispatchConCommand`, which calls our ConCommand trampoline, which re-enters
+    /// `dispatch_concommand`. This mock does the same, so the re-entrancy behaviour is testable
+    /// without a server.
+    extern "C" fn mock_fake_command_roundtrip(slot: c_int, cmd: *const c_char) -> c_int {
+        let s = unsafe { std::ffi::CStr::from_ptr(cmd) }.to_string_lossy().into_owned();
+        FAKE_CMD_CALLS.lock().unwrap().push((slot, s.clone()));
+        let name = s.split(' ').next().unwrap_or("").to_string();
+        let args = s.splitn(2, ' ').nth(1).unwrap_or("").to_string();
+        dispatch_concommand(&name, slot, &args, ReplySource::Console);
+        1
+    }
+    fn roundtrip_ops() -> S2EngineOps {
+        S2EngineOps { client_fake_command: Some(mock_fake_command_roundtrip), ..mock_event_ops() }
+    }
+
+    /// The REAL shape of the plugin-command limitation, and it is not what the first live gate
+    /// suggested. Core holds `HOST.borrow_mut()` across ALL JS execution, so a fakeCommand issued
+    /// from JS re-enters `dispatch_concommand` while the isolate is already borrowed and hits the
+    /// documented `try_borrow_mut` graceful skip. The engine IS asked to dispatch — the op is
+    /// reached and `DispatchConCommand` runs — but the nested JS handler cannot run.
+    ///
+    /// This is NOT a missing client-executable flag: every s2script command is registered
+    /// FCVAR_CLIENT_CAN_EXECUTE (shim/src/s2script_mm.cpp), which is exactly why a real player can
+    /// type `sm_ban` in their own console and reach the handler through the ClientCommand hook.
+    #[test]
+    fn fake_command_cannot_reenter_a_plugin_command_from_js() {
+        let _ = init(dummy_logger());
+        FAKE_CMD_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(roundtrip_ops()));
+        load_body("p", r#"
+            globalThis.__ran = 0;
+            __s2_concommand("s2_target", function () { globalThis.__ran++; }, -1);
+        "#, "{}");
+        eval_in_context_string("p", r#"new __s2pkg_clients.Client(0).fakeCommand("s2_target"); ''"#);
+        assert_eq!(FAKE_CMD_CALLS.lock().unwrap().len(), 1,
+            "the op IS reached — the engine really is asked to dispatch");
+        assert_eq!(read_i32_global_in("p", "__ran"), 0,
+            "but the nested JS handler is re-entrancy-skipped, never double-borrowed");
+        shutdown();
+    }
+
+    /// Same skip from inside a command handler — the common case a plugin author would try.
+    #[test]
+    fn fake_command_from_inside_a_command_handler_is_reentrancy_skipped() {
+        let _ = init(dummy_logger());
+        FAKE_CMD_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(roundtrip_ops()));
+        load_body("p", r#"
+            globalThis.__ran = 0;
+            __s2_concommand("s2_target", function () { globalThis.__ran++; }, -1);
+            __s2_concommand("s2_outer", function () {
+              new __s2pkg_clients.Client(0).fakeCommand("s2_target");
+            }, -1);
+        "#, "{}");
+        dispatch_concommand("s2_outer", -1, "", ReplySource::Server);
+        assert_eq!(FAKE_CMD_CALLS.lock().unwrap().len(), 1, "the op is still called");
+        assert_eq!(read_i32_global_in("p", "__ran"), 0,
+            "nested dispatch must be re-entrancy-skipped, not run");
+        shutdown();
+    }
+
     /// With no op wired (an older shim) it reports false rather than pretending it dispatched.
     #[test]
     fn fake_command_degrades_without_ops() {
