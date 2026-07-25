@@ -1511,6 +1511,25 @@ static int s2_client_command(int slot, const char* cmd) {
     return 1;
 }
 
+// `s2_client_fake_command` makes the SERVER process the command as if the client had sent it
+// (SourceMod FakeClientCommand). Unlike s2_client_command this works on bots, because nothing is
+// sent to a client. It needs a real CCommand — see shim/src/ccommand_shim.cpp for why we define
+// CCommand's unexported members ourselves rather than reverse-engineering the struct.
+//
+// RE-ENTRANCY: the shim already installs a PRE SourceHook on ISource2GameClients::ClientCommand
+// (Slice 6.11c — how player console commands reach JS), so this dispatches to JS handlers exactly
+// as a real client command would. That is the point of the capability, but it means a plugin can
+// drive its own handler; core's try_borrow_mut re-entrancy guard is load-bearing here.
+static int s2_client_fake_command(int slot, const char* cmd) {
+    ISource2GameClients* gc = g_S2ScriptPlugin.m_gameClients;
+    if (!gc || !cmd || !cmd[0]) return 0;
+    if (slot < 0 || slot >= kMaxClientSlots) return 0;
+    CCommand parsed;
+    if (!parsed.Tokenize(cmd)) return 0;          // refuse rather than dispatch an empty argv
+    gc->ClientCommand(CPlayerSlot(slot), parsed);
+    return 1;
+}
+
 static int s2_server_map_valid(const char* map) {
     if (!s_pEngine || !map) return 0;
     return s_pEngine->IsMapValid(map) ? 1 : 0;
@@ -4343,6 +4362,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.voice_audible_stats = &s2_voice_audible_stats;
     // --- client-command slice (APPENDED after voice_audible_stats; order is the ABI) ---
     ops.client_command      = &s2_client_command;
+    ops.client_fake_command = &s2_client_fake_command;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

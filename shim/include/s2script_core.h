@@ -324,6 +324,7 @@ typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial,
                                         int retKind, uint64_t* retOut);
 /* --- client-command slice: make a client run a console command --- */
 typedef int (*s2_client_command_fn)(int slot, const char* cmd);
+typedef int (*s2_client_fake_command_fn)(int slot, const char* cmd);
 
 /* --- voice hearability slice (APPENDED after engine_call_invoke; order is the ABI) ---
  * Per-SENDER "who may hear me" bitmask, enforced by the SetClientListening PRE hook. The core owns
@@ -512,6 +513,7 @@ typedef struct {
     s2_voice_audible_stats_fn voice_audible_stats;
     /* --- client-command slice (APPENDED after voice_audible_stats; order is the ABI) --- */
     s2_client_command_fn      client_command;
+    s2_client_fake_command_fn client_fake_command;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

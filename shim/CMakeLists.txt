@@ -26,6 +26,11 @@ add_library(s2script SHARED
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
     # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
     src/tier1_shims.cpp
+    # CCommand's ctor/Tokenize/Reset/EnsureBuffers are DECLARED in tier1/convar.h but exported by no
+    # shipped CS2 binary — using them links and then fails at dlopen, taking the whole addon down.
+    # Same doctrine as tier1_shims.cpp: define the few members we need rather than link all of tier1.
+    src/ccommand_shim.cpp
+    src/ccommand_tokenize.cpp
     # Slice 6.6: a minimal self-contained x86-64 inline detour (the damage hook) + the vendored HDE
     # length disassembler (pure, no OS deps). No third-party detour library / no dlopen cascade.
     src/detour.cpp
@@ -101,6 +106,11 @@ target_compile_options(breakpad_client PRIVATE
     -ffunction-sections -fdata-sections
     # C++ only — the .S assembly TU (breakpad_getcontext.S) must not force-include a C++ header.
     "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstddef>")
+
+# Tokenizer selftest for our CCommand::Tokenize (not shipped; run by scripts/ci-native.sh).
+add_executable(ccommand_selftest src/ccommand_selftest.cpp src/ccommand_tokenize.cpp)
+target_include_directories(ccommand_selftest PRIVATE src)
+
 
 # The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).
 add_executable(crash_selftest src/crash_selftest.cpp src/crash_handler.cpp)

@@ -40,16 +40,27 @@ export declare class Client {
    * Tell this client to run `cmd` in their own console, as if they had typed it
    * (SourceMod `ClientCommand`).
    *
-   * Requires a real client: a bot has no console, so this is a no-op on bots. A server-side
-   * `FakeClientCommand` equivalent is NOT available — it needs a `CCommand`, whose constructor and
-   * `Tokenize` are not exported by any shipped engine binary. Returns `false` when the command was
-   * not dispatched (empty text, bad slot, or the engine interface is unavailable on this build),
-   * never a silent no-op.
+   * Requires a real client: a bot has no console, so this is a no-op on bots — use
+   * {@link Client.fakeCommand} for server-side execution. Returns `false` when the command was not
+   * dispatched (empty text, bad slot, or the engine interface is unavailable on this build), never
+   * a silent no-op.
    *
    * @example
    * client.command("play sounds/ui/beep.vsnd");
    */
   command(cmd: string): boolean;
+  /**
+   * Have the SERVER process `cmd` as if this client had sent it (SourceMod `FakeClientCommand`).
+   *
+   * Unlike {@link Client.command} this works on bots, because nothing is sent to a client — the
+   * server dispatches it directly. It goes through the same path a real client command takes, so it
+   * WILL reach command handlers, including your own plugin's. Returns `false` when not dispatched
+   * (bad slot, empty text, unavailable interface, or the text failed to tokenize).
+   *
+   * @example
+   * client.fakeCommand("sm_help");   // as though the player typed it
+   */
+  fakeCommand(cmd: string): boolean;
 }
 /**
  * Look up connected clients by slot or enumerate them all.

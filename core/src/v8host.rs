@@ -322,6 +322,7 @@ type VoiceAudibleStatsFn = extern "C" fn(*mut u64) -> c_int;
 // Both return 1 on dispatch, 0 when degraded (interface unacquired, bad slot, empty command, or a
 // CCommand that failed to tokenize) — never a silent no-op.
 pub type ClientCommandFn     = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
+pub type ClientFakeCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -483,6 +484,7 @@ pub struct S2EngineOps {
     pub voice_audible_stats: Option<VoiceAudibleStatsFn>,
     // --- client-command slice (APPENDED after voice_audible_stats; do not reorder above) ---
     pub client_command:      Option<ClientCommandFn>,
+    pub client_fake_command: Option<ClientFakeCommandFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -2370,6 +2372,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // server-side FakeClientCommand variant is NOT here — see the spec: it needs a CCommand, whose
   // ctor and Tokenize are not exported by any shipped engine binary.
   Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd)); };
+  Client.prototype.fakeCommand = function (cmd) { return __s2_client_fake_command(this.slot, String(cmd)); };
   Object.defineProperty(Client.prototype, "ip", { get: function () {
     var a = __s2_client_address(this.slot); if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
   } });
@@ -8430,6 +8433,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // ban-reason sub-project 2: developer-console print + client IP address.
     set_native(scope, global_obj, "__s2_client_console_print", s2_client_console_print);
     set_native(scope, global_obj, "__s2_client_command", s2_client_command);
+    set_native(scope, global_obj, "__s2_client_fake_command", s2_client_fake_command);
     set_native(scope, global_obj, "__s2_client_address", s2_client_address);
     set_native(scope, global_obj, "__s2_damage_subscribe", s2_damage_subscribe);
     set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
@@ -9462,6 +9466,24 @@ fn s2_client_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         if cmd.is_empty() { return; }
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.client_command else { return };
+        let Ok(ccmd) = CString::new(cmd) else { return };
+        rv.set_bool(f(slot, ccmd.as_ptr()) != 0);
+    }));
+}
+
+/// Native `__s2_client_fake_command(slot, cmd) -> boolean` — have the SERVER process `cmd` as if
+/// this client sent it. False when the op is unassigned, the slot is out of range, `cmd` is empty,
+/// or tokenization rejected it.
+fn s2_client_fake_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let slot = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        if !(0..64).contains(&slot) { return; }
+        let cmd = args.get(1).to_rust_string_lossy(scope);
+        if cmd.is_empty() { return; }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.client_fake_command else { return };
         let Ok(ccmd) = CString::new(cmd) else { return };
         rv.set_bool(f(slot, ccmd.as_ptr()) != 0);
     }));
@@ -13801,6 +13823,7 @@ mod frame_tests {
             voice_audible_clear: None,
             voice_audible_stats: None,
             client_command: None,
+            client_fake_command: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -14494,11 +14517,64 @@ mod frame_tests {
         CLIENT_CMD_CALLS.lock().unwrap().push((slot, s));
         1
     }
+    static FAKE_CMD_CALLS: std::sync::Mutex<Vec<(i32, String)>> = std::sync::Mutex::new(Vec::new());
+
+    extern "C" fn mock_client_fake_command(slot: c_int, cmd: *const c_char) -> c_int {
+        let s = unsafe { std::ffi::CStr::from_ptr(cmd) }.to_string_lossy().into_owned();
+        FAKE_CMD_CALLS.lock().unwrap().push((slot, s));
+        1
+    }
     fn client_cmd_test_ops() -> S2EngineOps {
         S2EngineOps {
             client_command: Some(mock_client_command),
+            client_fake_command: Some(mock_client_fake_command),
             ..mock_event_ops()
         }
+    }
+
+    /// fakeCommand reaches its own op with the slot and text verbatim — and is a DIFFERENT op from
+    /// command(), which is the whole point (server-side vs client-side).
+    #[test]
+    fn fake_command_passes_slot_and_text_verbatim() {
+        let _ = init(dummy_logger());
+        FAKE_CMD_CALLS.lock().unwrap().clear();
+        CLIENT_CMD_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(client_cmd_test_ops()));
+        create_plugin_context("fc1");
+        let out = eval_in_context_string("fc1",
+            r#"var c = new __s2pkg_clients.Client(5); String(c.fakeCommand('sm_ban \"some guy\" 60'))"#);
+        assert_eq!(out, "true");
+        assert_eq!(FAKE_CMD_CALLS.lock().unwrap().as_slice(),
+            &[(5, "sm_ban \"some guy\" 60".to_string())]);
+        assert!(CLIENT_CMD_CALLS.lock().unwrap().is_empty(), "must NOT route through client_command");
+        shutdown();
+    }
+
+    /// Same degrade contract as command(): refuse rather than silently no-op.
+    #[test]
+    fn fake_command_refuses_bad_slot_and_empty_text() {
+        let _ = init(dummy_logger());
+        FAKE_CMD_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(client_cmd_test_ops()));
+        create_plugin_context("fc2");
+        for expr in [r#"new __s2pkg_clients.Client(64).fakeCommand("x")"#,
+                     r#"new __s2pkg_clients.Client(-1).fakeCommand("x")"#,
+                     r#"new __s2pkg_clients.Client(0).fakeCommand("")"#] {
+            assert_eq!(eval_in_context_string("fc2", &format!("String({expr})")), "false", "{expr}");
+        }
+        assert!(FAKE_CMD_CALLS.lock().unwrap().is_empty());
+        shutdown();
+    }
+
+    /// With no op wired (an older shim) it reports false rather than pretending it dispatched.
+    #[test]
+    fn fake_command_degrades_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));
+        create_plugin_context("fc3");
+        assert_eq!(eval_in_context_string("fc3",
+            r#"String(new __s2pkg_clients.Client(0).fakeCommand("sm_help"))"#), "false");
+        shutdown();
     }
 
     /// The slot and the command text reach the op verbatim — including a '%', which must survive as
@@ -15200,6 +15276,7 @@ mod frame_tests {
             voice_audible_clear: None,
             voice_audible_stats: None,
             client_command: None,
+            client_fake_command: None,
         }
     }
 

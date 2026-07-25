@@ -46,6 +46,10 @@ cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
   ${LAUNCHER[@]+"${LAUNCHER[@]}"}
 cmake --build build/shim -j
 
+echo "== ccommand_selftest (our CCommand tokenizer) =="
+cmake --build build/shim --target ccommand_selftest -j >/dev/null
+./build/shim/ccommand_selftest
+
 echo "== check-shim-symbols.sh (no unresolvable engine symbols) =="
 bash scripts/check-shim-symbols.sh
 
