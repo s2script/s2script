@@ -1,5 +1,44 @@
 # @s2script/cli
 
+## 0.9.0
+
+### Minor Changes
+
+- 6a423a1: Add plugin-shippable gamedata and declared engine calls (`@s2script/sdk/unsafe`).
+
+  A plugin can now declare, in its own regenerable gamedata, an engine function the framework does not
+  natively wrap, and call it from TypeScript with generated types.
+
+  `s2s build` gains three behaviours when `s2script.gamedata` is set: it validates the gamedata, writes
+  `.s2script/gamedata.d.ts` (which augments `EngineCalls`, so arity and argument types are enforced by
+  the existing typecheck gate), and packs `gamedata.json` into the `.s2sp`. Declaring a `calls` section
+  requires `s2script.permissions: ["engine:calls"]`, which is recorded in the manifest — and is
+  necessary but not sufficient, since an operator must also allow-list the plugin id.
+
+  New export subpath `@s2script/sdk/unsafe`, exposing `Engine.call(name)` (a plain callable, or `null`
+  when the descriptor failed a load-time gate) and `Engine.status(name)` (the named reason).
+
+  Validation is deliberately strict in two places that are easy to get wrong: a `vtable` target must
+  carry a `validate.prologue` (a bare borrowed index is never trusted, because a wrong-but-in-range slot
+  silently misbehaves rather than crashing), and call names must be plain identifiers, since they are
+  interpolated into the generated `.d.ts` and a crafted name could otherwise inject an index signature
+  that defeats the type gate entirely.
+
+- 6de4606: Add `s2s install` — download plugins and their dependencies onto a server.
+
+  Reads an `s2script-plugins.json` manifest (and/or names on the command line),
+  resolves each plugin's full non-`@s2script/*` dependency tree from the registry,
+  verifies every `.s2sp` by sha256, and writes them into the server's plugins
+  directory. Needs no credentials (registry reads are public), so it drops cleanly
+  into a Dockerfile:
+
+      COPY s2script-plugins.json .
+      RUN s2s install --dir /cs2/game/csgo/addons/s2script/plugins
+
+  `@s2script/*` base plugins are skipped (they ship with the runtime). Unreviewed
+  plugins install with a warning; `--reviewed-only` blocks them. `--dry-run` prints
+  the resolved plan without downloading.
+
 ## 0.8.0
 
 ### Minor Changes
