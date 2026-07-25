@@ -1,5 +1,88 @@
 # @s2script/cli
 
+## 0.10.0
+
+### Minor Changes
+
+- a64da95: Add cancellable, repeating timers — SourceMod `CreateTimer` / `KillTimer`.
+
+  `after(ms, fn)` and `every(ms, fn)` return a `Timer` handle with `kill()` and `alive`. The existing
+  `delay`/`nextTick`/`nextFrame` are Promises and cannot be cancelled: "cancelling" one means leaving
+  it forever unresolved, which leaks the continuation.
+
+  Every timer is ledgered against the creating plugin, so unload kills it whether or not `kill()` was
+  called — a repeating timer can never outlive its plugin and fire into a dead context. A throwing
+  callback is contained and a repeater keeps repeating; `kill()` is idempotent and safe from inside
+  the callback itself; `every(0, …)` throws rather than starving the frame.
+
+- a64da95: Add `Client.command` and `Client.fakeCommand` — SourceMod `ClientCommand` / `FakeClientCommand`.
+
+  `command(cmd)` asks the client to run it in their own console; `fakeCommand(cmd)` has the SERVER
+  execute it attributed to that player, so it works on bots. Both return `false` rather than silently
+  no-opping when the slot is bad, the text is empty, or the engine interface is unavailable.
+
+  `fakeCommand` dispatches through `ICvar::DispatchConCommand` with a `CCommandContext` carrying the
+  slot — verified live by attribution, where a faked `say` prints as that player rather than Console.
+  Engine commands execute; a command registered by an s2script _plugin_ is dispatched but its JS
+  handler does not run, because the core holds the isolate borrow across all JS and the nested
+  dispatch hits the documented re-entrancy skip. Use a cross-plugin interface to drive another
+  plugin's behaviour.
+
+- a64da95: Add `Server.onCvarChange` — SourceMod `HookConVarChange`.
+
+  Watch one cvar by name, or `"*"` for every cvar; the handler receives the name plus the new and old
+  values as strings. Returns `{ dispose() }`, and subscriptions are ledgered so unload drops them
+  regardless.
+
+  Notify-only, and the API says so: the engine's global change callback runs _after_ the value has
+  been applied, so a handler cannot veto a change. A handler that throws is logged and contained; the
+  remaining handlers still run. The engine only calls back on a real change, so a write of the same
+  value does not fire and plugins need not de-duplicate.
+
+- a64da95: Make curated `pawn.movementServices` fields writable — the `GetMaxSpeed` equivalent.
+
+  All 53 generated accessors on the movement services were read-only. 14 now have setters:
+  `maxspeed`, `stamina`, `surfaceFriction`, `fallVelocity`, the duck group, and the six move-input
+  fields. Writability is opt-in per field via a `writable` allowlist in `nav-targets.json` rather than
+  derived from the field's type — which byte a field lives at is regenerable layout, but whether
+  writing it is safe is a reviewed behavioural decision, and the type-derived set would have exposed
+  engine bookkeeping such as `m_nTraceCount`.
+
+  A bad allowlist entry now fails codegen instead of silently emitting nothing: an unknown field name
+  (what a CS2 rename produces) and a kind with no `EntityRef.write*Via` both throw, naming the field.
+
+  These writes are not flagged for replication — the change-notifier addresses the root entity while a
+  nav write changes a subobject — so a predicting client may see brief mismatch. Stated on the emitted
+  `MovementServices` interface.
+
+- a64da95: Publish standard interface contracts for econ/skins and workshop — types only, no implementation.
+
+  New subpaths: `@s2script/sdk/contracts/workshop` (`WorkshopService`, engine-generic) and
+  `@s2script/cs2/econ` (`EconService`, `WeaponSkin`, `Loadout`, CS2-specific). A community plugin
+  implements one and publishes it; consumers depend on the agreed shape via `ctx.tryUse` instead of a
+  different ad-hoc interface per plugin.
+
+  The framework ships no implementation deliberately: applying skins means driving CS2's economy item
+  model and workshop means Steam's UGC services, neither of which is a Source 2 engine touchpoint.
+
+  Every 64-bit value in these contracts — workshop published-file IDs, SteamIDs — is typed as a
+  decimal **string**, because a `BigInt` throws crossing the plugin boundary and silently drops the
+  whole payload. Everything Steam-facing is `Promise`-returning so an implementation cannot block the
+  game frame.
+
+  Also fixes game-package subpath resolution in the plugin typecheck: `@s2script/*` mapped to
+  `<pkg>/index.d.ts`, which cannot express a subpath, so `@s2script/cs2/econ` was `TS2307`.
+
+- 291e017: Add `@s2script/sdk/voice` — per-(receiver, sender) voice hearability.
+
+  `Voice.setAudibleTo(sender, receivers)` restricts who can hear a speaker; rules from multiple plugins
+  AND-merge so one plugin can only narrow another's, never widen it. Layered under `Client.voiceMuted`,
+  which still wins, so admin moderation always beats a gameplay rule.
+
+  Declarative rather than a callback: the engine's listen matrix is re-asserted continuously and the
+  underlying hook fires per pair, so a per-pair JS callback would run up to 64x64 times per refresh.
+  `Voice.stats()?.rewrites` is the effect counter (stats is nullable — null means the running shim predates the capability) — a rule that never rewrites is not taking effect.
+
 ## 0.9.0
 
 ### Minor Changes

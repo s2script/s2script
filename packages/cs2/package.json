@@ -1,9 +1,9 @@
 {
   "name": "@s2script/cs2",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "license": "MIT OR Apache-2.0",
   "types": "index.d.ts",
-  "description": "Type stubs for the @s2script/cs2 injected CS2 game API. No runtime code \u2014 the engine injects the implementation.",
+  "description": "Type stubs for the @s2script/cs2 injected CS2 game API. No runtime code — the engine injects the implementation.",
   "publishConfig": {
     "access": "public"
   },
@@ -18,7 +18,7 @@
     "econ.d.ts"
   ],
   "dependencies": {
-    "@s2script/sdk": "^0.9.0"
+    "@s2script/sdk": "^0.10.0"
   },
   "repository": {
     "type": "git",
