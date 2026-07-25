@@ -12,6 +12,7 @@ import { gamerulesRecipe } from "./gamerules.ts";
 import { httpRecipe } from "./http.ts";
 import { itemsRecipe } from "./items.ts";
 import { menuRecipe } from "./menu.ts";
+import { movementRecipe } from "./movement.ts";
 import { netRecipe } from "./net.ts";
 import { playerStateRecipe } from "./player-state.ts";
 import { serverRecipe } from "./server.ts";
@@ -41,6 +42,7 @@ export const RECIPES: readonly Recipe[] = [
   httpRecipe,
   itemsRecipe,
   menuRecipe,
+  movementRecipe,
   netRecipe,
   playerStateRecipe,
   serverRecipe,
