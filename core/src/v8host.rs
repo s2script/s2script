@@ -14675,6 +14675,67 @@ mod frame_tests {
         assert_eq!(voice_merged_for_test(5), Some(0));
     }
 
+    // --- voice hearability: the in-isolate __s2pkg_voice.Voice surface ---
+    static VOICE_SET_CALLS: std::sync::Mutex<Vec<(i32, u64)>> = std::sync::Mutex::new(Vec::new());
+
+    extern "C" fn voice_fake_set(sender: c_int, mask: u64) -> c_int {
+        VOICE_SET_CALLS.lock().unwrap().push((sender, mask));
+        1
+    }
+
+    /// Ops with ONLY voice_audible_set wired — everything else stays as `mock_event_ops` leaves it
+    /// (None), which is also what proves the stats native reports ABSENT rather than zero.
+    fn voice_test_ops() -> S2EngineOps {
+        S2EngineOps {
+            voice_audible_set: Some(voice_fake_set),
+            ..mock_event_ops()
+        }
+    }
+
+    /// setAudibleTo folds the receiver-slot array into a u64 mask and pushes (sender, mask).
+    #[test]
+    fn voice_set_audible_to_folds_receiver_slots_into_mask() {
+        let _ = init(dummy_logger());
+        VOICE_SET_CALLS.lock().unwrap().clear();
+        voice_rules_clear_for_test();
+        set_engine_ops(Some(voice_test_ops()));
+        create_plugin_context("vc1");
+        let out = eval_in_context_string("vc1",
+            "String(__s2pkg_voice.Voice.setAudibleTo(3, [0, 5, 63]))");
+        assert_eq!(out, "true");
+        let calls = VOICE_SET_CALLS.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], (3, 1u64 | (1u64 << 5) | (1u64 << 63)));
+        drop(calls);
+        shutdown();
+    }
+
+    /// An old shim must report ABSENT, not zero — zero would read as "working, nothing happened".
+    #[test]
+    fn voice_stats_is_null_without_the_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));      // voice_audible_stats stays None
+        create_plugin_context("vc2");
+        let out = eval_in_context_string("vc2", "String(__s2pkg_voice.Voice.stats())");
+        assert_eq!(out, "null");
+        shutdown();
+    }
+
+    /// The JS wrapper rejects a non-array before it can reach the native.
+    #[test]
+    fn voice_set_audible_to_rejects_a_non_array() {
+        let _ = init(dummy_logger());
+        VOICE_SET_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(voice_test_ops()));
+        create_plugin_context("vc3");
+        let out = eval_in_context_string("vc3",
+            "(function(){ try { __s2pkg_voice.Voice.setAudibleTo(0, 5); return 'no-throw'; } \
+              catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()");
+        assert_eq!(out, "TypeError");
+        assert_eq!(VOICE_SET_CALLS.lock().unwrap().len(), 0, "the native must never be reached");
+        shutdown();
+    }
+
     /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
     /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
     /// never a crash.
