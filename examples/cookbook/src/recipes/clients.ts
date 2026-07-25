@@ -100,7 +100,8 @@ export const clientsRecipe: Recipe = {
       if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return; }
       const ok = c.fakeCommand(rest);
       cmd.reply(`[cookbook] clients: fakeCommand(slot ${slot}, ${JSON.stringify(rest)}) -> ${ok}` +
-        (c.isBot ? " (bot — this one DOES work server-side)" : ""));
+        (c.isBot ? " (bot — this one DOES work server-side)" : "") +
+        "  [try: sm_fakecmd <slot> say hi]");
     });
 
     // sm_voice verbose — toggle the per-packet onVoice log (see the toggle note above).

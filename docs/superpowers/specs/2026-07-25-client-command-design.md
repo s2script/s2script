@@ -1,6 +1,6 @@
 # Client command execution — design
 
-**Status:** Implemented and live-gated (2026-07-25). `fakeCommand` deferred — see §3.
+**Status:** Implemented and live-gated (2026-07-25). BOTH `command` and `fakeCommand` ship.
 **Audience:** plugin authors needing to drive a client-side action; core+shim maintainers.
 **Builds on:** the already-acquired `s_pEngine` (`IVEngineServer2`) and `m_gameClients`
 (`ISource2GameClients`) interface pointers, and the `s2_server_command` op pattern
@@ -25,7 +25,7 @@ Routed through the generic declared-call machinery, both engine entry points are
 | Route | Signature | Blocked by |
 |---|---|---|
 | `IVEngineServer2::ClientCommand` | `(CPlayerSlot, const char* szFmt, ...)` | variadic — out of scope in the gamedata spec |
-| `ISource2GameClients::ClientCommand` | `(CPlayerSlot, const CCommand&)` | struct by reference — also out of scope |
+| `ICvar::DispatchConCommand` | `(ConCommandRef, const CCommandContext&, const CCommand&)` | two structs by reference — also out of scope |
 
 Both restrictions exist because the *generic* path marshals a closed vocabulary across an ABI. A
 purpose-built op has neither problem: the shim writes an ordinary C++ call, so the compiler emits the
@@ -38,40 +38,29 @@ receivers are consequently **dropped** from the parity roadmap: with this capabi
 an interface allowlist would only buy `ClientPrintf` and cvar getters, and the Steam/sound interfaces
 it was also meant to unlock are not acquired by the shim at all.
 
-## 3. One command ships; the server-side variant is BLOCKED
-
-Two variants were designed. Only one is buildable, and the reason is worth recording because it cost
-a live-server outage to discover.
+## 3. Two commands, and the CCommand detour
 
 | API | Engine path | Meaning |
 |---|---|---|
-| `client.command(cmd)` | `IVEngineServer2::ClientCommand(slot, "%s", cmd)` | Tell the CLIENT to execute it. Requires a real, cooperating client — a bot has no console, so this is a no-op on bots. |
-| `client.fakeCommand(cmd)` | `ISource2GameClients::ClientCommand(slot, CCommand)` | The SERVER processes the command as if the client had sent it. Works on bots, and is what SourceMod's `FakeClientCommand` does. |
+| `client.command(cmd)` | `IVEngineServer2::ClientCommand(slot, "%s", cmd)` | Tell the CLIENT to execute it. Needs a real client — a bot has no console. |
+| `client.fakeCommand(cmd)` | `ICvar::DispatchConCommand(ref, ctx{slot}, args)` | The SERVER executes it attributed to that player. Works on bots. |
 
-`fakeCommand` is the one most plugins want, and the only one gateable with bots — but it **cannot be
-built today**. It needs a `CCommand`, and *no shipped CS2 binary exports a way to make one*:
+`fakeCommand` needs a `CCommand`, and **no shipped CS2 binary exports one's constructor or
+`Tokenize`** — using them links fine (a shared library tolerates undefined symbols) and then kills
+the entire addon at `dlopen`. That is how it was found: by taking a server down.
 
-```
-$ nm -D --defined-only <every game .so> | grep -E 'CCommand::(CCommand|Tokenize)'
-(nothing)
-```
+**That is not, however, a reverse-engineering problem, and an earlier revision of this spec was
+wrong to call it one.** `CCommand`'s data members are `CUtlVectorFixedGrowable` templates declared
+in `tier1/convar.h`, so the layout is already ours — the header IS the definition. Only the
+out-of-line method bodies are missing, and hl2sdk vendors them at `tier1/convar.cpp`. Compiling that
+wholesale drags in the ConVar system plus the `CUtlString`/`UtlVectorMemory`/tier0 cascade that
+`tier1_shims.cpp` exists to avoid, so `shim/src/ccommand_shim.cpp` defines the four members we
+need — the same doctrine that file already applies to `MurmurHash2LowerCase`. Defining them as
+member functions gives private access and emits exactly the mangled symbols the linker wants.
 
-`tier1/convar.h` DECLARES `CCommand()` and `Tokenize(CUtlString, characterset_t*)`, so code using them
-compiles and links — a shared library tolerates undefined symbols. It then dies at `dlopen`:
-
-```
-[META] Failed to load plugin addons/s2script/...: undefined symbol:
-       _ZN8CCommand8TokenizeE10CUtlStringP14characterset_t
-```
-
-which takes down the ENTIRE addon, every plugin with it. That is how this was found: by deploying it.
-`scripts/check-shim-symbols.sh` now catches this class at build time (see §8).
-
-**`fakeCommand` is therefore deferred** pending an RE spike to reverse the `CCommand` struct layout and
-hand-construct one (argc + argv pointers into an argument buffer). That is a real slice with its own
-treadmill burden — the layout would need re-validating every CS2 update — not a bolt-on here.
-
-Only `command()` ships:
+The tokenizer is ours (Valve's routes through `CUtlBuffer::ParseToken` and
+`g_pCVar->GetCharacterSet()`, both also unexported). It lives in `ccommand_tokenize.h/.cpp` free of
+SDK types so it unit-tests standalone with no stubs.
 
 ## 4. The format-string hazard
 
@@ -191,3 +180,57 @@ so in its own reply. This is the same Tier-2 deferral the voice slices carry.
 **What the gate really proved.** The first attempt at this slice took the server down at 15:54 with
 the `CCommand::Tokenize` dlopen failure. The 16:11 boot with `check-shim-symbols.sh` green loaded
 cleanly — 3 plugins, no faults. Server restored to its pre-gate baseline (`de0eb747`) afterwards.
+
+---
+
+## 12. FakeClientCommand: how it actually dispatches (2026-07-25)
+
+**The wrong entry point cost the most time here.** `ISource2GameClients::ClientCommand(slot,
+CCommand&)` looks like the dispatch API and is what SourceMod's CS:GO-era `FakeClientCommand` maps
+onto. It is not. In CS2 it is the **inbound** callback the engine invokes to tell the game module a
+client sent a command — which is exactly why this shim *hooks* it to observe player commands.
+Calling it from the game module notifies the game and executes nothing: measured on hardware,
+`say`, `kill` and a plugin command all returned cleanly with no effect.
+
+The real path is the engine's own command dispatch:
+
+```cpp
+CCommand parsed;
+if (!parsed.Tokenize(cmd)) return 0;
+ConCommandRef ref = s_pCvar->FindConCommand(parsed.Arg(0), /*allow_defensive=*/true);
+if (!ref.IsValidRef()) return 0;                        // a ConVar or unknown name — refuse
+CCommandContext ctx(CT_NO_TARGET, CPlayerSlot(slot));   // <- the "as if this client sent it" part
+s_pCvar->DispatchConCommand(ref, ctx, parsed);
+```
+
+Both are plain vtable calls on the already-acquired `ICvar`, so no new symbols.
+
+### Live gate — PASS
+
+```
+sm_fakecmd 0 say from_slot_zero   -> [All Chat][Enforcer (0)]: from_slot_zero
+sm_fakecmd 3 say from_slot_three  -> [All Chat][Aspirant (0)]: from_slot_three
+say from_console                  -> [All Chat][Console (0)]:  from_console
+```
+
+Attribution is the proof: the faked command prints as **that bot**, not as Console, and slot 3
+prints as a different bot than slot 0. Quoting survives end to end —
+`sm_fakecmd 1 say "quoted   text  here"` arrives as one argument. Degrades correctly: an unknown
+name and a ConVar (`mp_friendlyfire`) both return `false` rather than pretending.
+
+### Known limitation, stated rather than glossed
+
+Engine commands execute; **commands registered by s2script plugins do not**. Faking `sm_console`
+returns `true` (the ref resolves, the dispatch is made) but the handler never runs, while invoking
+it directly does. The engine refuses a client-context dispatch for commands lacking the
+client-executable flag, and our `RegisterConCommand` path does not set one. Fixing that is a
+separate change to command registration, not to this op.
+
+### A methodology note worth keeping
+
+Three probes in a row said "no dispatch" and all three were invalid: `docker logs` was not capturing
+the container's current output at all, so *the control did not log either* — a fact I only checked
+after drawing conclusions from it, and after writing one of them into a commit message. The rcon
+**response** carries the server console output for the command being run, and comparing a direct
+invocation against a faked one in that channel settled it immediately. Verify the probe on a known
+positive before trusting a negative.

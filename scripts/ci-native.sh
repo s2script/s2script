@@ -40,6 +40,15 @@ fi
 echo "== check-invoke-abi.sh (declared-call float ABI) =="
 bash scripts/check-invoke-abi.sh
 
+# The sniper build (scripts/build-sniper.sh) runs in a container where the repo is /repo, so it
+# leaves a CMakeCache.txt pointing at /repo. A later host build then dies with "current
+# CMakeCache.txt directory ... is different". Detect a cache from a different source tree and
+# discard it, rather than making every developer learn this by hitting it.
+if [ -f build/shim/CMakeCache.txt ] && ! grep -q "CMAKE_HOME_DIRECTORY:INTERNAL=$PWD/shim\$" build/shim/CMakeCache.txt; then
+  echo "== discarding a CMake cache from another source tree (sniper build) =="
+  rm -rf build/shim
+fi
+
 echo "== shim build =="
 cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
   -DS2_CORE_LIB_DIR=debug \

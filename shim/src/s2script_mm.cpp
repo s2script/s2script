@@ -1513,20 +1513,34 @@ static int s2_client_command(int slot, const char* cmd) {
 
 // `s2_client_fake_command` makes the SERVER process the command as if the client had sent it
 // (SourceMod FakeClientCommand). Unlike s2_client_command this works on bots, because nothing is
-// sent to a client. It needs a real CCommand — see shim/src/ccommand_shim.cpp for why we define
-// CCommand's unexported members ourselves rather than reverse-engineering the struct.
+// sent to a client.
 //
-// RE-ENTRANCY: the shim already installs a PRE SourceHook on ISource2GameClients::ClientCommand
-// (Slice 6.11c — how player console commands reach JS), so this dispatches to JS handlers exactly
-// as a real client command would. That is the point of the capability, but it means a plugin can
-// drive its own handler; core's try_borrow_mut re-entrancy guard is load-bearing here.
+// NOT via ISource2GameClients::ClientCommand. That is the INBOUND callback the engine invokes to
+// tell the game module a client sent a command — the engine has already executed it by then. We
+// hook it precisely to observe player commands. Calling it ourselves notifies the game and executes
+// nothing: measured on a live server, `say`, `kill` and a plugin-registered command all returned
+// cleanly with zero effect and no handler dispatch.
+//
+// The real path is the engine's own command dispatch: resolve the name to a ConCommandRef and hand
+// it to ICvar::DispatchConCommand with a CCommandContext carrying the player slot — the context IS
+// the "as if this client sent it" part. See shim/src/ccommand_shim.cpp for how we get a usable
+// CCommand at all (CS2 exports none of its methods).
+//
+// RE-ENTRANCY: this reaches command handlers, including our own registered ConCommands, so a plugin
+// can drive its own handler. Core's try_borrow_mut re-entrancy guard is load-bearing here.
 static int s2_client_fake_command(int slot, const char* cmd) {
-    ISource2GameClients* gc = g_S2ScriptPlugin.m_gameClients;
-    if (!gc || !cmd || !cmd[0]) return 0;
+    if (!s_pCvar || !cmd || !cmd[0]) return 0;
     if (slot < 0 || slot >= kMaxClientSlots) return 0;
+
     CCommand parsed;
     if (!parsed.Tokenize(cmd)) return 0;          // refuse rather than dispatch an empty argv
-    gc->ClientCommand(CPlayerSlot(slot), parsed);
+    if (parsed.ArgC() < 1) return 0;
+
+    ConCommandRef ref = s_pCvar->FindConCommand(parsed.Arg(0), /*allow_defensive=*/true);
+    if (!ref.IsValidRef()) return 0;              // unknown command — report, do not pretend
+
+    CCommandContext ctx(CT_NO_TARGET, CPlayerSlot(slot));
+    s_pCvar->DispatchConCommand(ref, ctx, parsed);
     return 1;
 }
 

@@ -53,12 +53,20 @@ export declare class Client {
    * Have the SERVER process `cmd` as if this client had sent it (SourceMod `FakeClientCommand`).
    *
    * Unlike {@link Client.command} this works on bots, because nothing is sent to a client — the
-   * server dispatches it directly. It goes through the same path a real client command takes, so it
-   * WILL reach command handlers, including your own plugin's. Returns `false` when not dispatched
-   * (bad slot, empty text, unavailable interface, or the text failed to tokenize).
+   * engine dispatches the command itself, attributed to this player's slot. Live-verified:
+   * `fakeCommand("say hi")` on slot 0 prints as that player, not as Console.
+   *
+   * Returns `false` — never a silent no-op — for a bad slot, empty text, an unavailable interface,
+   * or a name that is not a registered console **command** (a ConVar such as `mp_friendlyfire` is
+   * refused: use `Server.command` for those).
+   *
+   * KNOWN LIMITATION: engine commands (`say`, `kill`, …) execute; commands registered by s2script
+   * plugins currently do NOT, because the engine refuses a client-context dispatch for commands
+   * that lack the client-executable flag. Driving another plugin's command this way does not work
+   * yet — see docs/superpowers/specs/2026-07-25-client-command-design.md §12.
    *
    * @example
-   * client.fakeCommand("sm_help");   // as though the player typed it
+   * client.fakeCommand("say hello");   // as though the player typed it
    */
   fakeCommand(cmd: string): boolean;
 }
