@@ -1,8 +1,8 @@
 {
   "name": "@s2script/sdk",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "license": "MIT OR Apache-2.0",
-  "description": "s2script SDK \u2014 the builtin capability types (imported as @s2script/sdk/entity, \u2026) plus the `s2s` CLI for building Source 2 / CS2 plugins.",
+  "description": "s2script SDK — the builtin capability types (imported as @s2script/sdk/entity, …) plus the `s2s` CLI for building Source 2 / CS2 plugins.",
   "type": "module",
   "bin": {
     "s2s": "dist/cli.js"
