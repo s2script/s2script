@@ -787,6 +787,15 @@ thread_local! {
     static OUTPUT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
+    /// `Server.onCvarChange(name, handler)` subscribers, keyed by cvar name (`"*"` = every cvar).
+    /// Fed by the shim's ONE `ICvar::InstallGlobalChangeCallback`, installed unconditionally at Load —
+    /// so there is no per-subscribe engine op. NOTIFY-only: the engine's global change callback runs
+    /// AFTER the value has already changed, so there is nothing to veto and handlers return nothing
+    /// (`ICvar::CallFilterCallback` would be the vetoing path — out of scope, see the design spec).
+    /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
+    static CVAR_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
     /// Usercmd primitive Task 2: `UserCmd.onRun(handler)` subscriber mux, keyed by the constant "onRun"
     /// (usercmd has no name dimension, like `DAMAGE_MUX`'s "onPre"). Dispatch is SYNCHRONOUS (the
     /// Task-3 per-tick input-processing detour blocks on it, mirrors `DAMAGE_MUX`/`OUTPUT_MUX`) so a handler's
@@ -1819,6 +1828,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
     getCvar: function (name) { return __s2_cvar_get(String(name)); },                 // "" if absent
     setCvar: function (name, value) { __s2_server_command(String(name) + " " + String(value)); },
+    // onCvarChange(name|"*", handler) -> { dispose() }. Notify-only: the engine's global change
+    // callback runs AFTER the value is applied, so there is nothing to veto.
+    onCvarChange: function (name, handler) {
+      if (typeof handler !== "function") throw new TypeError("Server.onCvarChange(name, fn): fn must be a function");
+      var n = String(name);
+      __s2_cvar_on_change(n, handler);
+      return { dispose: function () { __s2_cvar_off_change(n); } };
+    },
     // Register a plugin-owned ConVar (FakeConVar). Type-checked JS-side; the shim ORs FCVAR_RELEASE.
     // Value reads reuse getCvar; writes reuse setCvar/console. Idempotent (reload-safe); the cvar and
     // its value persist for the process lifetime (SourceMod parity).
@@ -4715,6 +4732,49 @@ pub(crate) fn dispatch_map_start(map: &str) {
     });
 }
 
+/// Fan a cvar change out to `Server.onCvarChange` subscribers for that exact name AND for `"*"`.
+/// NOTIFY-only (the engine has already applied the value). Mirrors `dispatch_map_start`: snapshot
+/// first so no mux borrow is held across JS, per-handler TryCatch so one thrower cannot stop the
+/// rest, and a `try_borrow_mut` graceful-skip so a handler that itself sets a cvar (re-entering this
+/// dispatch) is skipped rather than double-borrowing the isolate.
+pub(crate) fn dispatch_cvar_change(name: &str, new_value: &str, old_value: &str) {
+    let mut snap = CVAR_MUX.with(|m| m.borrow().snapshot(name));
+    if name != "*" { snap.extend(CVAR_MUX.with(|m| m.borrow().snapshot("*"))); }
+    if snap.is_empty() { return; }
+
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, generation, handler_g) in &snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let (Some(n), Some(nv), Some(ov)) = (
+                v8::String::new(tc, name), v8::String::new(tc, new_value), v8::String::new(tc, old_value)
+            ) else { continue };
+            let args: [v8::Local<v8::Value>; 3] = [n.into(), nv.into(), ov.into()];
+            let func = v8::Local::new(tc, handler_g);
+            if func.call(tc, recv, &args).is_none() {
+                let msg = tc.exception().map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: dispatch_cvar_change('{}'): handler '{}': {}", name, owner, msg));
+            }
+        }
+    });
+}
+
 /// E1 repair sweep (north-star §7, the E0-V4 contingency): armed by the map-start books
 /// clear, runs ONCE at the next SIMULATING frame — reconciles the books against a
 /// chunk-walk snapshot of live identity slots (system-owned memory only; the shim's
@@ -7105,6 +7165,33 @@ fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 /// can't be compared by identity, so this drops ALL of the caller's subs for that exact key). Available
 /// as a primitive; `Entity.onOutput` this slice has no matching `offOutput` — cleanup on unload/reload
 /// runs via `remove_by_owner`, not this native.
+/// Native `__s2_cvar_on_change(name, handler) -> subId`. `name` is a cvar name or `"*"`.
+fn s2_cvar_on_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        if name.is_empty() { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let sub_id = next_sub_id();
+        CVAR_MUX.with(|m| { m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// Native `__s2_cvar_off_change(name)`. Drops the CURRENT plugin's subscriptions for that name
+/// (best-effort by owner, mirroring `s2_output_unsubscribe` — V8 Globals are not identity-comparable).
+fn s2_cvar_off_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        CVAR_MUX.with(|m| { m.borrow_mut().remove_by_owner_on(&name, &owner); });
+    }));
+}
+
 fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
@@ -8639,6 +8726,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);
     set_native(scope, global_obj, "__s2_entity_spawn_kv", s2_entity_spawn_kv);
     set_native(scope, global_obj, "__s2_output_subscribe", s2_output_subscribe);
+    set_native(scope, global_obj, "__s2_cvar_on_change", s2_cvar_on_change);
+    set_native(scope, global_obj, "__s2_cvar_off_change", s2_cvar_off_change);
     set_native(scope, global_obj, "__s2_output_unsubscribe", s2_output_unsubscribe);
     // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete subscribe/unsubscribe (the
     // IEntityListener is lazily installed shim-side on the first subscribe via entity_listener_install).
@@ -10712,6 +10801,7 @@ pub fn shutdown() {
     NET_EVENT_PENDING.with(|q| q.borrow_mut().clear());
     // Reset the Entity.onOutput mux (entity-I/O slice) so a re-init starts clean.
     OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    CVAR_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the entity-lifecycle mux (entity-listeners slice) so a re-init starts clean.
     ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the UserCmd.onRun mux (usercmd primitive) so a re-init starts clean.
@@ -11180,6 +11270,13 @@ pub(crate) fn register_builtin_stores() {
         "OUTPUT_MUX",
         Box::new(|owner| { OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // CVAR_MUX: the global change callback stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "CVAR_MUX",
+        Box::new(|owner| { CVAR_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { CVAR_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
     );
 
     // ENTITY_MUX: the IEntityListener stays registered for the process lifetime — no follow-up.
@@ -12160,6 +12257,77 @@ mod frame_tests {
         eval_std("p", "__s2pkg_timers.after(0, () => { globalThis.__z = 1; });");
         frame_async_drain();
         assert_eq!(read_i32_global_in("p", "__z"), 1, "a 0ms one-shot fires on the next drain");
+        shutdown();
+    }
+
+    /// A subscriber gets (name, new, old) for its own cvar, and a "*" subscriber sees every cvar.
+    #[test]
+    fn cvar_change_fans_out_to_exact_name_and_wildcard() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"
+            globalThis.__seen = [];
+            __s2pkg_server.Server.onCvarChange("mp_friendlyfire", (n, nv, ov) => { __seen.push("exact:"+n+":"+nv+":"+ov); });
+            __s2pkg_server.Server.onCvarChange("*",               (n, nv, ov) => { __seen.push("star:"+n+":"+nv+":"+ov); });
+        "#);
+        dispatch_cvar_change("mp_friendlyfire", "1", "0");
+        dispatch_cvar_change("sv_gravity", "600", "800");
+        assert_eq!(eval_in_context_string("p", "__seen.join('|')"),
+            "exact:mp_friendlyfire:1:0|star:mp_friendlyfire:1:0|star:sv_gravity:600:800");
+        shutdown();
+    }
+
+    /// A handler that throws is contained: the other subscribers for the same change still run.
+    #[test]
+    fn throwing_cvar_handler_does_not_stop_the_others() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"
+            globalThis.__n = 0;
+            __s2pkg_server.Server.onCvarChange("*", () => { throw new Error("boom"); });
+            __s2pkg_server.Server.onCvarChange("*", () => { globalThis.__n++; });
+        "#);
+        dispatch_cvar_change("sv_cheats", "1", "0");
+        assert_eq!(read_i32_global_in("p", "__n"), 1);
+        shutdown();
+    }
+
+    /// dispose() drops this plugin's subscriptions for that name.
+    #[test]
+    fn cvar_change_dispose_stops_delivery() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"
+            globalThis.__n = 0;
+            globalThis.__h = __s2pkg_server.Server.onCvarChange("sv_cheats", () => { globalThis.__n++; });
+        "#);
+        dispatch_cvar_change("sv_cheats", "1", "0");
+        assert_eq!(read_i32_global_in("p", "__n"), 1);
+        eval_in_context_string("p", "__h.dispose(); ''");
+        dispatch_cvar_change("sv_cheats", "0", "1");
+        assert_eq!(read_i32_global_in("p", "__n"), 1, "no delivery after dispose");
+        shutdown();
+    }
+
+    /// THE teardown invariant: unload must drop the subscription, so a later change cannot
+    /// dispatch into a dead context. The ledger is the authority, not the plugin's own cleanup.
+    #[test]
+    fn unload_drops_cvar_subscriptions() {
+        init(dummy_logger()).unwrap();
+        eval_std("demo", r#"__s2pkg_server.Server.onCvarChange("*", () => {});"#);
+        assert!(CVAR_MUX.with(|m| !m.borrow().snapshot("*").is_empty()), "sanity: subscribed");
+        unload_plugin("demo");
+        assert!(CVAR_MUX.with(|m| m.borrow().snapshot("*").is_empty()),
+            "unload must drop the subscription");
+        dispatch_cvar_change("sv_cheats", "1", "0");   // must not panic into a dead context
+        shutdown();
+    }
+
+    /// A non-function handler is refused loudly rather than silently never firing.
+    #[test]
+    fn cvar_change_rejects_a_non_function_handler() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "globalThis.__x = 0;");
+        assert_eq!(eval_in_context_string("p",
+            "(function(){ try { __s2pkg_server.Server.onCvarChange('a', 42); return 'no-throw'; } catch (e) { return e.constructor.name; } })()"),
+            "TypeError");
         shutdown();
     }
 

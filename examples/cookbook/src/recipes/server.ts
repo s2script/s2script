@@ -15,6 +15,21 @@ export const serverRecipe: Recipe = {
   name: "server",
   describe: "a registered cvar, OnMapStart, and the connected client list (sm_server)",
   register(ctx) {
+    // Server.onCvarChange — SourceMod HookConVarChange parity. Notify-only: the engine applies the
+    // value first, so a handler cannot veto it. "*" watches every cvar; the name argument says which.
+    let watching = false;
+    let watch: { dispose(): void } | null = null;
+    ctx.commands.register("sm_cvarwatch", (cmd) => {
+      const name = cmd.arg(0) ?? "*";
+      if (watching) { watch?.dispose(); watch = null; watching = false;
+        cmd.reply("[cookbook] server: cvar watch OFF"); return; }
+      watch = Server.onCvarChange(name, (n, next, prev) => {
+        console.log(`[cookbook] server: cvar ${n}: ${JSON.stringify(prev)} -> ${JSON.stringify(next)}`);
+      });
+      watching = true;
+      cmd.reply(`[cookbook] server: watching ${JSON.stringify(name)} — change it and watch the console`);
+    });
+
     const ok = Server.registerCvar("s2_demo_mode", {
       type: "int", default: 42, help: "cookbook clientlist/convar/mapstart demo cvar", min: 0, max: 100,
     });

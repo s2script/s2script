@@ -704,7 +704,10 @@ static GetLegacyListener_t s_pGetLegacyListener = nullptr;
 // TODO(teardown): iterate s_concommandRefs in Unload() and call
 //   s_pCvar->UnregisterConCommandCallbacks(ref) per entry.
 // ---------------------------------------------------------------------------
+static void s2_cvar_change_cb(ConVarRefAbstract* ref, CSplitScreenSlot slot,
+                              const char* newValue, const char* oldValue, void* unk);
 static ICvar* s_pCvar = nullptr;
+static bool s_cvarChangeCbInstalled = false;   // so Unload only removes what Load installed
 static std::map<std::string, ConCommandRef> s_concommandRefs;
 
 // IVEngineServer2 (Source2EngineToServer001) — used by client_print's bot guard: GetPlayerNetInfo(slot)
@@ -1542,6 +1545,21 @@ static int s2_client_fake_command(int slot, const char* cmd) {
     CCommandContext ctx(CT_NO_TARGET, CPlayerSlot(slot));
     s_pCvar->DispatchConCommand(ref, ctx, parsed);
     return 1;
+}
+
+// ICvar global change callback -> core. Installed ONCE at Load (see the InstallGlobalChangeCallback
+// call below) and removed at Unload, so there is no per-subscribe engine work: core decides whether
+// anyone cares. Notify-only — the engine has already applied the value here; vetoing would need
+// ICvar::CallFilterCallback, which is a different (and much riskier) hook.
+//
+// ConVarRefAbstract::GetName() -> m_ConVarData->GetName() -> m_pszName is inline all the way down,
+// so this needs no tier1 symbol (see tier1_shims.cpp for why that matters).
+static void s2_cvar_change_cb(ConVarRefAbstract* ref, CSplitScreenSlot /*slot*/,
+                              const char* newValue, const char* oldValue, void* /*unk*/) {
+    if (!ref) return;
+    const char* name = ref->GetName();
+    if (!name || !name[0]) return;
+    s2script_core_dispatch_cvar_change(name, newValue ? newValue : "", oldValue ? oldValue : "");
 }
 
 static int s2_server_map_valid(const char* map) {
@@ -3484,6 +3502,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 : nullptr;
             if (s_pCvar && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: EngineCvar (%s)\n", verStr);
+                // One global change callback for the whole framework; core fans it out to whichever
+                // plugins subscribed. Unconditional (like the FireOutputInternal detour) so there is
+                // no per-subscribe engine work — and removed in Unload, because leaving a callback
+                // pointing into an unloaded .so is a use-after-free on the next cvar write.
+                s_pCvar->InstallGlobalChangeCallback(&s2_cvar_change_cb);
+                s_cvarChangeCbInstalled = true;
+                META_CONPRINTF("[s2script] cvar change callback installed\n");
             } else {
                 s_pCvar = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: EngineCvar (%s) — ConCommand registration degrades\n", verStr);
@@ -4483,6 +4508,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 // Unload
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
+    // Remove the global cvar change callback FIRST: leaving it installed points the engine at a
+    // function inside a .so that is about to be unloaded — a use-after-free on the next cvar write.
+    if (s_pCvar && s_cvarChangeCbInstalled) {
+        s_pCvar->RemoveGlobalChangeCallback(&s2_cvar_change_cb);
+        s_cvarChangeCbInstalled = false;
+    }
     META_CONPRINTF("[s2script] Unload(): shutting down V8 core\n");
 
     // Remove hooks before shutdown so no in-flight dispatch can reach a
