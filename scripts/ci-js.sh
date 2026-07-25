@@ -30,6 +30,9 @@ done
 echo "== packages/sdk unit suite =="
 ( cd packages/sdk && node --experimental-strip-types --no-warnings --test test/*.test.mjs )
 
+echo "== check-changeset.sh (published package changes carry a changeset) =="
+bash scripts/check-changeset.sh
+
 echo "== check-plugins-typecheck.sh (the 5E.1 gate) =="
 bash scripts/check-plugins-typecheck.sh
 
