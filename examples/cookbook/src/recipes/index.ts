@@ -23,6 +23,7 @@ import { unsafeRecipe } from "./unsafe.ts";
 import { transmitRecipe } from "./transmit.ts";
 import { usercmdRecipe } from "./usercmd.ts";
 import { usermessagesRecipe } from "./usermessages.ts";
+import { voiceRecipe } from "./voice.ts";
 import { wsRecipe } from "./ws.ts";
 import { zonesRecipe } from "./zones.ts";
 
@@ -52,6 +53,7 @@ export const RECIPES: readonly Recipe[] = [
   unsafeRecipe,
   usercmdRecipe,
   usermessagesRecipe,
+  voiceRecipe,
   wsRecipe,
   zonesRecipe,
 ];
