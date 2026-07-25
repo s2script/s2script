@@ -308,6 +308,17 @@ pub type EngineCallInvokeFn = extern "C" fn(
     strs: *const *const c_char, vecs: *const f32,
     ret_kind: c_int, ret_out: *mut u64) -> c_int;
 
+// --- Voice-hearability slice (APPENDED after engine_call_invoke; order is the ABI). ENGINE-GENERIC:
+// a sender slot and a u64 receiver bitmask — the shim evaluates the rule on the SetClientListening
+// hot path, so no JS/FFI runs per (receiver, sender) pair. Return convention (spec §7):
+//   voice_audible_set   1 = applied            0 = voice degraded OR sender out of range
+//   voice_audible_clear 1 = a rule was removed 0 = nothing to remove, OR degraded (both collapse to
+//                                                 "no rule is in force afterwards")
+//   voice_audible_stats out[3] = {calls, entries, rewrites}; 1 = written, 0 = null `out`
+type VoiceAudibleSetFn   = extern "C" fn(c_int, u64) -> c_int;
+type VoiceAudibleClearFn = extern "C" fn(c_int) -> c_int;
+type VoiceAudibleStatsFn = extern "C" fn(*mut u64) -> c_int;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -462,6 +473,10 @@ pub struct S2EngineOps {
     // --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI; do not reorder above) ---
     pub engine_call_resolve: Option<EngineCallResolveFn>,
     pub engine_call_invoke:  Option<EngineCallInvokeFn>,
+    // --- Voice-hearability slice (APPENDED after engine_call_invoke; order is the ABI; do not reorder above) ---
+    pub voice_audible_set:   Option<VoiceAudibleSetFn>,
+    pub voice_audible_clear: Option<VoiceAudibleClearFn>,
+    pub voice_audible_stats: Option<VoiceAudibleStatsFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -913,6 +928,57 @@ fn transmit_recompute_and_push(index: i32) {
         None => { if let Some(f) = ops.transmit_clear { f(index); } }
     }
 }
+
+/// Voice-hearability slice: per-plugin rules. owner -> (senderSlot -> u64 receiver mask), bit r set
+/// = receiver r may hear sender s. The shim holds only the AND-merged mask per sender; this map is
+/// the policy source of truth so unload/reset can recompute the merge. AND means no owner can WIDEN
+/// what another owner restricted (the safe direction for a moderation-adjacent feature).
+thread_local! {
+    static VOICE_RULES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<i32, u64>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// AND-merge every owner's rule for `sender`. `None` when no owner has one — which is distinct from
+/// `Some(0)` ("audible to nobody"), the distinction `s_voiceHasRule` exists for on the shim side.
+fn voice_merged(sender: i32) -> Option<u64> {
+    VOICE_RULES.with(|r| {
+        let map = r.borrow();
+        let mut acc: Option<u64> = None;
+        for rules in map.values() {
+            if let Some(m) = rules.get(&sender) {
+                acc = Some(match acc { None => *m, Some(a) => a & *m });
+            }
+        }
+        acc
+    })
+}
+
+/// Recompute and push to the shim: set the merged mask, or clear when no rule remains.
+fn voice_recompute_and_push(sender: i32) {
+    let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+    match voice_merged(sender) {
+        Some(mask) => { if let Some(f) = ops.voice_audible_set { f(sender, mask); } }
+        None => { if let Some(f) = ops.voice_audible_clear { f(sender); } }
+    }
+}
+
+/// Unload/resetAll teardown: drop every rule `owner` holds and re-push each sender it touched.
+fn voice_remove_owner(owner: &str) {
+    let touched: Vec<i32> = VOICE_RULES.with(|r| {
+        let mut map = r.borrow_mut();
+        match map.remove(owner) { Some(rules) => rules.keys().copied().collect(), None => Vec::new() }
+    });
+    for s in touched { voice_recompute_and_push(s); }
+}
+
+#[cfg(test)]
+fn voice_rules_clear_for_test() { VOICE_RULES.with(|r| r.borrow_mut().clear()); }
+#[cfg(test)]
+fn voice_set_rule_for_test(owner: &str, sender: i32, mask: u64) {
+    VOICE_RULES.with(|r| { r.borrow_mut().entry(owner.to_string()).or_default().insert(sender, mask); });
+}
+#[cfg(test)]
+fn voice_merged_for_test(sender: i32) -> Option<u64> { voice_merged(sender) }
 
 /// Allocate the next monotonic subscription id (1-based; 0 = none). The single allocator behind
 /// every EventMux-family row id and the inter-plugin `iface_on` sub id, so a Scope's ids never
@@ -1565,9 +1631,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     resetAll: function () { __s2_transmit_reset_all(); },
     stats: function () { return __s2_transmit_stats(); }
   };
+  // @s2script/sdk/voice — who can hear whom, per (receiver, sender) pair. Declarative for the same
+  // reason Transmit is: the SetClientListening hook fires per PAIR, so a JS callback there would run
+  // up to 64x64 times per voice refresh. Layered UNDER Client.voiceMuted, which still wins.
+  var Voice = {
+    setAudibleTo: function (sender, receivers) {
+      if (!Array.isArray(receivers)) throw new TypeError("Voice.setAudibleTo: receivers must be an array");
+      return __s2_voice_audible_set(sender, receivers);
+    },
+    reset: function (sender) { return __s2_voice_audible_clear(sender); },
+    resetAll: function () { __s2_voice_reset_all(); },
+    stats: function () { return __s2_voice_audible_stats(); }
+  };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
   globalThis.__s2pkg_transmit  = { Transmit: Transmit };
+  globalThis.__s2pkg_voice      = { Voice: Voice };
   globalThis.__s2pkg_usermessages = { UserMessage: UserMessage, UserMessages: UserMessages };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -5957,6 +6036,92 @@ fn s2_transmit_stats(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgume
     }));
 }
 
+/// Native `__s2_voice_audible_set(sender, receiversArray) -> boolean` — replace the calling
+/// plugin's hearability rule for `sender`: audible ONLY to the given receiver slots (an empty array
+/// = audible to nobody, which is NOT the same as having no rule). The u64 mask is folded core-side
+/// from the JS number array (no BigInt on any boundary). Degraded voice validation / a sender out of
+/// range / a missing op all degrade to `false`.
+fn s2_voice_audible_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let sender = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        if !(0..64).contains(&sender) { return; }
+        let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(1)) else { return };
+        let mut mask: u64 = 0;
+        for i in 0..arr.length() {
+            let Some(v) = arr.get_index(scope, i) else { return };
+            let slot = v.integer_value(scope).unwrap_or(-1);
+            if !(0..64).contains(&slot) { return; }
+            mask |= 1u64 << (slot as u32);
+        }
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        // Candidate merged mask: AND this rule with every OTHER owner's rule for the same sender.
+        let merged = VOICE_RULES.with(|r| {
+            let map = r.borrow();
+            let mut acc = mask;
+            for (o, rules) in map.iter() {
+                if o == &owner { continue; }
+                if let Some(m) = rules.get(&sender) { acc &= *m; }
+            }
+            acc
+        });
+        // PUSH FIRST, PERSIST ONLY ON SUCCESS — the s2_transmit_set ordering. Inserting before the
+        // push would leave core holding a rule the shim rejected (e.g. voice degraded), so the two
+        // would disagree and a later unrelated recompute would silently apply a phantom rule.
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.voice_audible_set else { return };
+        if f(sender, merged) == 0 { return; }
+        VOICE_RULES.with(|r| { r.borrow_mut().entry(owner).or_default().insert(sender, mask); });
+        rv.set_bool(true);
+    }));
+}
+
+/// Native `__s2_voice_audible_clear(sender) -> boolean` — drops only the CALLER's rule, then
+/// re-pushes the remaining merge (or clears the shim entry when this was the last rule).
+fn s2_voice_audible_clear(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let sender = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        if !(0..64).contains(&sender) { return; }
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let removed = VOICE_RULES.with(|r| {
+            let mut map = r.borrow_mut();
+            map.get_mut(&owner).map(|rules| rules.remove(&sender).is_some()).unwrap_or(false)
+        });
+        if removed { voice_recompute_and_push(sender); }
+        rv.set_bool(removed);
+    }));
+}
+
+/// Native `__s2_voice_reset_all()` — remove all of the calling plugin's rules.
+/// A dedicated native, not a 64-iteration loop in JS: mirrors `__s2_transmit_reset_all`, and
+/// `voice_remove_owner` already recomputes exactly the senders that were touched.
+fn s2_voice_reset_all(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        voice_remove_owner(&owner);
+    }));
+}
+
+/// Native `__s2_voice_audible_stats() -> {calls, entries, rewrites} | null`.
+/// Null when the op is unassigned (old shim) — the capability is ABSENT, not zero.
+fn s2_voice_audible_stats(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.voice_audible_stats else { return };
+        let mut out = [0u64; 3];
+        if f(out.as_mut_ptr()) == 0 { return; }
+        let obj = v8::Object::new(scope);
+        for (k, v) in [("calls", out[0]), ("entries", out[1]), ("rewrites", out[2])] {
+            let Some(key) = v8::String::new(scope, k) else { return };
+            let val = v8::Number::new(scope, v as f64);
+            obj.set(scope, key.into(), val.into());
+        }
+        rv.set(obj.into());
+    }));
+}
+
 /// `__s2_plugins_list() -> string` — JSON array of `{id, loaded, state}` for `sm plugins list` /
 /// `Plugins.list()`. `state` is one of running|loading|waiting|failed|unloaded (L1 lifecycle v2);
 /// `loaded` is kept and is exactly `state === "running"`.
@@ -8339,6 +8504,12 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_transmit_reset", s2_transmit_reset);
     set_native(scope, global_obj, "__s2_transmit_reset_all", s2_transmit_reset_all);
     set_native(scope, global_obj, "__s2_transmit_stats", s2_transmit_stats);
+    // Voice-hearability slice: declarative per-(receiver, sender) rules (@s2script/sdk/voice). The
+    // shim evaluates them on the SetClientListening hot path; no JS runs per pair.
+    set_native(scope, global_obj, "__s2_voice_audible_set", s2_voice_audible_set);
+    set_native(scope, global_obj, "__s2_voice_audible_clear", s2_voice_audible_clear);
+    set_native(scope, global_obj, "__s2_voice_reset_all", s2_voice_reset_all);
+    set_native(scope, global_obj, "__s2_voice_audible_stats", s2_voice_audible_stats);
     // UserMessage-interception slice: UserMessages.onPre subscribe/unsubscribe + the block-scoped view
     // read natives (route through the usermsg_hook_* ops; the shim's PostEventAbstract hook installs
     // lazily on the first subscribe).
@@ -10363,6 +10534,8 @@ pub fn shutdown() {
     USERMSG_RESOLVE.with(|m| m.borrow_mut().clear());
     // Reset the per-plugin visibility rules (checktransmit slice) so a re-init starts clean.
     TRANSMIT_RULES.with(|r| r.borrow_mut().clear());
+    // Reset the per-plugin voice-hearability rules (voice slice) so a re-init starts clean.
+    VOICE_RULES.with(|r| r.borrow_mut().clear());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the L1 lifecycle-v2 load state (in-flight loads, failed reasons, manifest versions).
@@ -10791,6 +10964,14 @@ pub(crate) fn register_builtin_stores() {
     crate::owner_stores::register(
         "TRANSMIT",
         Box::new(|owner| { transmit_remove_owner(owner); }),
+        Box::new(|_ids| {}),
+    );
+
+    // voice hearability: drop the plugin's rules + re-push each affected sender, so a departed
+    // plugin can never leave players silenced. Not a scope surface (ids no-op).
+    crate::owner_stores::register(
+        "VOICE",
+        Box::new(|owner| { voice_remove_owner(owner); }),
         Box::new(|_ids| {}),
     );
 
@@ -13560,6 +13741,9 @@ mod frame_tests {
             ent_snapshot: None,
             engine_call_resolve: None,
             engine_call_invoke: None,
+            voice_audible_set: None,
+            voice_audible_clear: None,
+            voice_audible_stats: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -14461,6 +14645,36 @@ mod frame_tests {
         shutdown();
     }
 
+    // --- voice hearability slice: the VOICE_RULES policy store + its AND merge ---
+
+    #[test]
+    fn voice_rules_and_merge_across_owners() {
+        // Two owners restricting the same sender -> the shim sees the INTERSECTION.
+        voice_rules_clear_for_test();
+        voice_set_rule_for_test("@a/one", 3, 0b0111);
+        voice_set_rule_for_test("@b/two", 3, 0b0110);
+        assert_eq!(voice_merged_for_test(3), Some(0b0110));
+    }
+
+    #[test]
+    fn voice_owner_teardown_recomputes() {
+        voice_rules_clear_for_test();
+        voice_set_rule_for_test("@a/one", 3, 0b0111);
+        voice_set_rule_for_test("@b/two", 3, 0b0110);
+        voice_remove_owner("@b/two");
+        assert_eq!(voice_merged_for_test(3), Some(0b0111), "the survivor's rule stands alone");
+        voice_remove_owner("@a/one");
+        assert_eq!(voice_merged_for_test(3), None, "no owners -> no rule at all");
+    }
+
+    #[test]
+    fn voice_empty_receiver_list_is_a_rule_not_an_absence() {
+        // mask 0 WITH a rule = audible to nobody. Distinct from None = engine decides.
+        voice_rules_clear_for_test();
+        voice_set_rule_for_test("@a/one", 5, 0);
+        assert_eq!(voice_merged_for_test(5), Some(0));
+    }
+
     /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
     /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
     /// never a crash.
@@ -14668,6 +14882,9 @@ mod frame_tests {
             ent_snapshot: None,
             engine_call_resolve: None,
             engine_call_invoke: None,
+            voice_audible_set: None,
+            voice_audible_clear: None,
+            voice_audible_stats: None,
         }
     }
 
