@@ -1,6 +1,6 @@
 # Client command execution — design
 
-**Status:** Approved — ready for planning.
+**Status:** Implemented and live-gated (2026-07-25). `fakeCommand` deferred — see §3.
 **Audience:** plugin authors needing to drive a client-side action; core+shim maintainers.
 **Builds on:** the already-acquired `s_pEngine` (`IVEngineServer2`) and `m_gameClients`
 (`ISource2GameClients`) interface pointers, and the `s2_server_command` op pattern
@@ -159,3 +159,35 @@ command(cmd: string): boolean;
 3. Plugin text is never used as a format string.
 4. `check-shim-symbols.sh` passes, and fails when the `CCommand::Tokenize` call is reintroduced.
 5. `make ci` green, including `check-boundary`.
+
+---
+
+## 11. Live-gate result (2026-07-25)
+
+Docker CS2, `de_inferno`, 12 bots. Sniper shim `1b5af372` / core `35f3b979` (GLIBC 2.17 / 2.30).
+
+**PASS — the op dispatches end to end.** `sm_clientcmd 0 say hello` returned `true`, exercising the
+whole chain: JS → `__s2_client_command` → op → `IVEngineServer2::ClientCommand`. All four degrade
+paths returned the usage error rather than dispatching.
+
+**The format-string hazard is neutralised in the SHIPPED binary**, proven by disassembling the
+deployed `.so` rather than trusting the source:
+
+```
+lea 0x13cf01(%rip),%rdx   # 0x1cb091 -> "%s"      <- the FORMAT is the constant
+mov %rsi,%rcx             #                        <- the plugin text is a VARARG
+mov %edi,%esi             #                        <- slot
+xor %eax,%eax             #                        <- al = 0, no vector regs (correct for varargs)
+cmp $0x3f,%edi / ja       #                        <- UNSIGNED, so negatives are rejected too
+```
+
+**ABI append verified live.** `client_command` is the 106th and last op. `sm_voice 0 1` / `0 0`
+round-tripped, so the adjacent tail-region ops did not shift.
+
+**Effect confirmation deferred, stated not glossed.** `command()` asks a *client* to execute, and a
+bot has no console, so there is no observable effect to assert with bots — the cookbook recipe says
+so in its own reply. This is the same Tier-2 deferral the voice slices carry.
+
+**What the gate really proved.** The first attempt at this slice took the server down at 15:54 with
+the `CCommand::Tokenize` dlopen failure. The 16:11 boot with `check-shim-symbols.sh` green loaded
+cleanly — 3 plugins, no faults. Server restored to its pre-gate baseline (`de0eb747`) afterwards.
