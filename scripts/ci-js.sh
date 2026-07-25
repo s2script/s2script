@@ -42,6 +42,9 @@ bash scripts/check-activity-test.sh
 echo "== check-antiflood-test.sh =="
 bash scripts/check-antiflood-test.sh
 
+echo "== test-release-notes.sh (release notes keep the changelogs) =="
+bash scripts/test-release-notes.sh
+
 echo "== test-gate.sh =="
 bash scripts/test-gate.sh
 
