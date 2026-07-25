@@ -46,4 +46,7 @@ cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
   ${LAUNCHER[@]+"${LAUNCHER[@]}"}
 cmake --build build/shim -j
 
+echo "== check-shim-symbols.sh (no unresolvable engine symbols) =="
+bash scripts/check-shim-symbols.sh
+
 echo "ci-native: all native gates passed"

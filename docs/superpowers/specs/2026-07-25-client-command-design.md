@@ -38,18 +38,40 @@ receivers are consequently **dropped** from the parity roadmap: with this capabi
 an interface allowlist would only buy `ClientPrintf` and cvar getters, and the Steam/sound interfaces
 it was also meant to unlock are not acquired by the shim at all.
 
-## 3. Two commands, not one
+## 3. One command ships; the server-side variant is BLOCKED
 
-They are different mechanisms and both have SourceMod parity, so both ship:
+Two variants were designed. Only one is buildable, and the reason is worth recording because it cost
+a live-server outage to discover.
 
 | API | Engine path | Meaning |
 |---|---|---|
 | `client.command(cmd)` | `IVEngineServer2::ClientCommand(slot, "%s", cmd)` | Tell the CLIENT to execute it. Requires a real, cooperating client — a bot has no console, so this is a no-op on bots. |
 | `client.fakeCommand(cmd)` | `ISource2GameClients::ClientCommand(slot, CCommand)` | The SERVER processes the command as if the client had sent it. Works on bots, and is what SourceMod's `FakeClientCommand` does. |
 
-`fakeCommand` is the one most plugins want (it is how you make a player "say" something, trigger a
-`sm_` command on their behalf, or drive a menu selection), and it is the one that can be gated with
-bots.
+`fakeCommand` is the one most plugins want, and the only one gateable with bots — but it **cannot be
+built today**. It needs a `CCommand`, and *no shipped CS2 binary exports a way to make one*:
+
+```
+$ nm -D --defined-only <every game .so> | grep -E 'CCommand::(CCommand|Tokenize)'
+(nothing)
+```
+
+`tier1/convar.h` DECLARES `CCommand()` and `Tokenize(CUtlString, characterset_t*)`, so code using them
+compiles and links — a shared library tolerates undefined symbols. It then dies at `dlopen`:
+
+```
+[META] Failed to load plugin addons/s2script/...: undefined symbol:
+       _ZN8CCommand8TokenizeE10CUtlStringP14characterset_t
+```
+
+which takes down the ENTIRE addon, every plugin with it. That is how this was found: by deploying it.
+`scripts/check-shim-symbols.sh` now catches this class at build time (see §8).
+
+**`fakeCommand` is therefore deferred** pending an RE spike to reverse the `CCommand` struct layout and
+hand-construct one (argc + argv pointers into an argument buffer). That is a real slice with its own
+treadmill burden — the layout would need re-validating every CS2 update — not a bolt-on here.
+
+Only `command()` ships:
 
 ## 4. The format-string hazard
 
@@ -63,18 +85,16 @@ reviewed place, instead of being handed to every plugin author who declares a ca
 
 ## 5. Ops
 
-Two ops, **appended** at the end of `S2EngineOps` (the struct is ABI-ordered; append only, never
+One op, **appended** at the end of `S2EngineOps` (the struct is ABI-ordered; append only, never
 insert), populated at the matching end of the shim initializer:
 
 ```rust
-pub type ClientCommandFn     = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
-pub type ClientFakeCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
+pub type ClientCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
 ```
 
-Both return `1` on dispatch and `0` when degraded: the interface pointer is null (it was never
-acquired), the slot is outside `[0, 64)`, the command is null/empty, or — for `fakeCommand` —
-`CCommand::Tokenize` rejected the string. A caller can therefore distinguish "sent" from "not sent",
-rather than getting a silent no-op.
+Returns `1` on dispatch and `0` when degraded: the engine interface is null (never acquired), the slot
+is outside `[0, 64)`, or the command is empty. A caller can therefore distinguish "sent" from "not
+sent" rather than getting a silent no-op.
 
 ## 6. Shim implementation
 
@@ -87,31 +107,14 @@ static int s2_client_command(int slot, const char* cmd) {
     s_pEngine->ClientCommand(CPlayerSlot(slot), "%s", cmd);   // "%s" is MANDATORY — see §4
     return 1;
 }
-
-static int s2_client_fake_command(int slot, const char* cmd) {
-    // m_gameClients is a MEMBER of S2ScriptPlugin (s2script_mm.h:124), not a file-static like
-    // s_pEngine — a file-scope op must reach it through the global instance, the same way the
-    // frame-hook code uses g_S2ScriptPlugin.m_server.
-    ISource2GameClients* gc = g_S2ScriptPlugin.m_gameClients;
-    if (!gc || !cmd || !cmd[0]) return 0;
-    if (slot < 0 || slot >= kMaxClientSlots) return 0;
-    CCommand parsed;
-    if (!parsed.Tokenize(cmd)) return 0;                       // refuse rather than dispatch garbage
-    gc->ClientCommand(CPlayerSlot(slot), parsed);
-    return 1;
-}
 ```
 
-`CPlayerSlot(int)` is a real constructor (`playerslot.h:13`). `Tokenize` takes a `CUtlString`, which a
-`const char*` converts to implicitly.
+`CPlayerSlot(int)` is a real constructor (`playerslot.h:13`) and IS exported — unlike `CCommand`'s.
 
-**Re-entrancy note.** The shim already installs a PRE `SourceHook` on
-`ISource2GameClients::ClientCommand` (Slice 6.11c — it is how player console commands reach JS). A
-`fakeCommand` call will therefore pass through our own hook and dispatch to JS handlers, exactly as a
-real client command would. That is the correct and desirable behaviour — it is what makes the
-capability useful — but it means a plugin can drive its own command handler, so the existing
-`try_borrow_mut` re-entrancy guard in the dispatch path is load-bearing here. No new guard is added;
-the slice's testing asserts the existing one holds.
+**Re-entrancy is not a concern for `command()`.** It hands the command to the client; nothing
+re-enters our dispatch path. That analysis WOULD matter for `fakeCommand`, which routes through the
+same `ISource2GameClients::ClientCommand` our PRE hook watches — noted here for whoever picks up the
+deferred spike.
 
 ## 7. Plugin API
 
@@ -125,13 +128,6 @@ Added to the existing `Client` class in `@s2script/sdk/clients` — no new subpa
  * {@link Client.fakeCommand} for server-side execution. False when not dispatched.
  */
 command(cmd: string): boolean;
-
-/**
- * Have the SERVER process `cmd` as if this client had sent it (SourceMod `FakeClientCommand`).
- * Works on bots. This dispatches through the same path a real client command takes, so it WILL
- * reach command handlers — including your own. False when not dispatched.
- */
-fakeCommand(cmd: string): boolean;
 ```
 
 ## 8. Testing
@@ -140,10 +136,13 @@ fakeCommand(cmd: string): boolean;
   (slot + string reach the op verbatim); slot out of range returns false; empty string returns false;
   ops-absent returns false.
 - **Shim:** compiles and links.
-- **Live gate (Docker CS2, bots):** `fakeCommand(botSlot, "sm_help")` on a bot must produce the
-  command's output in the server log — end-to-end proof that the server dispatched it. This is
-  gateable with bots precisely because `fakeCommand` is server-side; `command()` is **not** bot-
-  gateable (no console) and is deferred to a human session, stated rather than glossed.
+- **`scripts/check-shim-symbols.sh`:** every mangled symbol the built shim needs must be exported by
+  some shipped game binary. Verified both ways — it passes on the shipped shim, and reintroducing the
+  `CCommand::Tokenize` call makes it FAIL naming that symbol. Wired into `ci-native.sh`.
+- **Live gate: NOT bot-provable.** `command()` asks a *client* to execute, and a bot has no console,
+  so there is no observable effect to assert with bots. What a deploy does prove — and what one
+  already did prove the hard way — is that the addon loads. Effect confirmation needs a human client
+  and is deferred, stated rather than glossed.
 
 ## 9. Out of scope
 
@@ -154,8 +153,9 @@ fakeCommand(cmd: string): boolean;
 
 ## 10. Success criteria
 
-1. `client.fakeCommand("sm_help")` on a bot dispatches server-side and the command's output appears.
-2. `command()` and `fakeCommand()` return `false` — never silently no-op — for a bad slot, an empty
-   string, or an unacquired interface.
+1. `client.command(cmd)` reaches the engine with the slot and text verbatim, including a literal `%`.
+2. It returns `false` — never silently no-ops — for a bad slot, an empty string, or an unacquired
+   interface.
 3. Plugin text is never used as a format string.
-4. `make ci` green, including `check-boundary`.
+4. `check-shim-symbols.sh` passes, and fails when the `CCommand::Tokenize` call is reintroduced.
+5. `make ci` green, including `check-boundary`.
