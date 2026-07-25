@@ -2934,6 +2934,63 @@ struct SndOpEventGuid_t {
 typedef SndOpEventGuid_t (*EmitSoundFn_t)(S2RecipientFilter& filter, CEntityIndex ent,
                                           const EmitSound_t& params);
 static EmitSoundFn_t s_pEmitSound = nullptr;   // sig-resolved in Load(); null -> op no-ops
+static EmitSoundFn_t s_origEmitSound        = nullptr;   // trampoline, set once s2detour::Install succeeds
+static bool          s_emitSoundHookArmed   = false;     // idempotent lazy install
+
+// EmitSound detour — Sound.onEmit (ModSharp OnEmitSound parity). BLOCKABLE: core collapses the
+// subscribers' HookResults and >= 2 means suppress, so we return a zeroed guid WITHOUT calling the
+// original. Same convention as Hook_FireOutputInternal.
+//
+// ABI NOTE: SndOpEventGuid_t is a 24-byte struct, so this returns via the hidden sret pointer. That
+// is safe here precisely BECAUSE the handler, the trampoline and the target all share one C++
+// prototype (EmitSoundFn_t) — the compiler emits the sret sequence on every side. This is the
+// opposite of the hand-marshalled declared-call path, where getting a register class wrong silently
+// corrupted an argument.
+//
+// Installed LAZILY on the first Sound.onEmit subscribe (Shim_SoundHookInstall): emission is one of
+// the hottest paths in the game and a server whose plugins never subscribe must pay nothing.
+static SndOpEventGuid_t Hook_EmitSound(S2RecipientFilter& filter, CEntityIndex ent,
+                                       const EmitSound_t& params) {
+    int result = 0;   // Continue
+    const char* name = params.m_pSoundName;
+    if (name && name[0]) {
+        result = s2script_core_dispatch_emit_sound(name, ent.Get(), params.m_flVolume);
+    }
+    if (result >= 2) {                      // Handled|Stop -> suppress: do NOT call the original
+        SndOpEventGuid_t blocked;
+        memset(&blocked, 0, sizeof blocked);
+        return blocked;                     // guid 0 == "no sound started", what callers already expect
+    }
+    if (s_origEmitSound) return s_origEmitSound(filter, ent, params);
+    SndOpEventGuid_t none;
+    memset(&none, 0, sizeof none);
+    return none;
+}
+
+// sound_hook_install: called by core on the FIRST-EVER Sound.onEmit subscribe. Idempotent.
+// Returns 1 once armed, 0 if the EmitSound signature never resolved (subscribe then delivers
+// nothing — degrade, never crash).
+static int Shim_SoundHookInstall() {
+    if (s_emitSoundHookArmed) return 1;
+    if (!s_pEmitSound) {
+        META_CONPRINTF("[s2script] WARN: Sound.onEmit — EmitSound signature unresolved, hook not armed\n");
+        return 0;
+    }
+    if (!IsAddressInServerText(reinterpret_cast<void*>(s_pEmitSound))) {
+        META_CONPRINTF("[s2script] WARN: Sound.onEmit — resolved EmitSound outside .text, refusing to hook\n");
+        return 0;
+    }
+    void* orig = nullptr;
+    if (!s2detour::Install(reinterpret_cast<void*>(s_pEmitSound),
+                           reinterpret_cast<void*>(&Hook_EmitSound), &orig)) {
+        META_CONPRINTF("[s2script] WARN: Sound.onEmit — s2detour::Install refused the prologue\n");
+        return 0;
+    }
+    s_origEmitSound = reinterpret_cast<EmitSoundFn_t>(orig);
+    s_emitSoundHookArmed = true;
+    META_CONPRINTF("[s2script] EmitSound hook armed (Sound.onEmit)\n");
+    return 1;
+}
 
 // The sound_emit op. Degrade-never-crash — return 0 WITHOUT calling the engine ONLY when: unresolved
 // sig / out-of-.text fn / !soundName / stale-or-null source entity / the CALLER requested no
@@ -4237,6 +4294,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Both op fns are defined above: s2_sound_emit with the emit block, s2_sound_precache_add with the
     // precache vtable-hook block (which also defines Detour_OnPrecacheResource / InstallPrecacheHook).
     ops.sound_emit         = &s2_sound_emit;
+    ops.sound_hook_install = &Shim_SoundHookInstall;
     ops.sound_precache_add = &s2_sound_precache_add;
     // changeteam slice — APPENDED after sound_precache_add; order MUST match S2EngineOps.
     ops.player_change_team = &s2_player_change_team;

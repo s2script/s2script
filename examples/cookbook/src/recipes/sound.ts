@@ -11,6 +11,30 @@ export const soundRecipe: Recipe = {
   name: "sound",
   describe: "precache and emit a sound (sm_sound [name] [slot])",
   register(ctx) {
+    // Sound.onEmit — ModSharp OnEmitSound parity. SYNCHRONOUS and BLOCKABLE: return Handled to
+    // suppress. Default OFF, because a cookbook that silences your server on load is a bad guest —
+    // and because the hook only arms on the first subscribe, `sm_soundwatch` also demonstrates the
+    // lazy install.
+    let watch: { dispose(): void } | null = null;
+    let heard = 0;
+    let silence = "";
+    ctx.commands.register("sm_soundwatch", (cmd) => {
+      if (watch) { watch.dispose(); watch = null;
+        cmd.reply(`[cookbook] sound: watch OFF (heard ${heard})`); return; }
+      heard = 0;
+      silence = cmd.arg(0) ?? "";        // optional: a soundevent name to BLOCK
+      watch = Sound.onEmit("*", (e) => {
+        heard++;
+        if (heard <= 10) console.log(`[cookbook] sound: emit ${e.name} ent=${e.entIndex} vol=${e.volume}`);
+        if (silence && e.name === silence) return 2;   // HookResult.Handled -> suppress
+      });
+      cmd.reply(`[cookbook] sound: watch ON${silence ? ` (blocking ${silence})` : ""} — first 10 logged`);
+    });
+    ctx.commands.register("sm_soundstats", (cmd) => {
+      cmd.reply(`[cookbook] sound: watching=${watch ? "yes" : "no"} heard=${heard}` +
+        (silence ? ` blocking=${silence}` : ""));
+    });
+
     ctx.server.onPrecache((pc) => {
       const ok = pc.add("soundevents/soundevents_s2script_demo.vsndevts");
       console.log(`[cookbook] precache add() -> ${ok}`);

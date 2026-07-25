@@ -269,7 +269,8 @@ typedef int (*s2_player_respawn_fn)(int idx, int serial, int alive_off, int hpla
 
 /* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
  * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
-typedef int   (*s2_usercmd_hook_install_fn)(void);              /* lazily install the ProcessUsercmds detour; 1 ok / 0 unresolved */
+typedef int   (*s2_usercmd_hook_install_fn)(void);
+typedef int   (*s2_sound_hook_install_fn)(void);               /* lazily install the EmitSound detour; 1 ok / 0 unresolved */              /* lazily install the ProcessUsercmds detour; 1 ok / 0 unresolved */
 typedef double(*s2_usercmd_read_fn)(int field);                 /* field: 0 fwd,1 side(raw leftmove NEGATED->+right),2 up,3 pitch,4 yaw,5 roll,6 impulse */
 typedef void  (*s2_usercmd_write_fn)(int field, double value);
 typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_pb.buttonstate1 */
@@ -492,6 +493,7 @@ typedef struct {
     /* Plugin-declared engine calls — APPENDED after ent_snapshot; order is the ABI; do not reorder above. */
     s2_engine_call_resolve_fn engine_call_resolve;
     s2_engine_call_invoke_fn  engine_call_invoke;
+    s2_sound_hook_install_fn  sound_hook_install;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
@@ -554,6 +556,12 @@ void s2script_core_dispatch_damage(void);
  * HookResults via run_chain; the caller supersedes the original FireOutputInternal (suppresses the
  * output) when the returned value is >= Handled (2). Returns the collapsed HookResult (0 Continue ..
  * 3 Stop). catch_unwind -> 0 (fail-open: a core bug must never suppress an output it didn't mean to). */
+/**
+ * The engine is emitting a sound. Return >= 2 (Handled|Stop) to SUPPRESS it — the shim then skips
+ * the original, matching s2script_core_dispatch_output's convention.
+ */
+int s2script_core_dispatch_emit_sound(const char* name, int entIndex, float volume);
+
 int s2script_core_dispatch_output(const char* classname, const char* output, int actHandle, int callerHandle,
                                   const char* value, float delay);
 /* Shim -> core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`

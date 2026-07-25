@@ -301,6 +301,7 @@ pub type EngineCallResolveFn = extern "C" fn(
 // an (index, serial) pair, an entity return is a packed CEntityHandle core runs through the
 // books-gated adopt path). Returns 1 on success (`ret_out` written), 0 on a degrade (stale receiver /
 // unresolved `via` sub-object / bad arg budget) — never a crash.
+pub type SoundHookInstallFn = extern "C" fn() -> c_int;
 pub type EngineCallInvokeFn = extern "C" fn(
     call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int,
     gp: *const u64, gp_kind: *const u8, gp_count: c_int,
@@ -462,6 +463,7 @@ pub struct S2EngineOps {
     // --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI; do not reorder above) ---
     pub engine_call_resolve: Option<EngineCallResolveFn>,
     pub engine_call_invoke:  Option<EngineCallInvokeFn>,
+    pub sound_hook_install:  Option<SoundHookInstallFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -749,6 +751,16 @@ thread_local! {
     /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
     static OUTPUT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+
+    /// `Sound.onEmit(name|"*", handler)` subscribers, keyed by sound-event name. Dispatch is
+    /// SYNCHRONOUS (the EmitSound detour blocks on it, like DAMAGE_MUX/OUTPUT_MUX) so a handler's
+    /// HookResult can SUPPRESS the sound before the original runs.
+    ///
+    /// The detour installs LAZILY on the first-ever subscribe (`sound_hook_install`), mirroring
+    /// USERCMD_MUX: sound emission is one of the hottest paths in the game, so a server whose
+    /// plugins never subscribe must pay nothing at all.
+    static SOUND_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
 
     /// Usercmd primitive Task 2: `UserCmd.onRun(handler)` subscriber mux, keyed by the constant "onRun"
@@ -2350,6 +2362,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return __s2_precache_subscribe(function () {
         h({ add: function (p) { return __s2_sound_precache_add(String(p)); } });
       });
+    },
+    // onEmit(name|"*", handler) -> { dispose() }. SYNCHRONOUS and BLOCKABLE: return Handled/Stop to
+    // suppress the sound. The detour arms on the first-ever subscribe, so an unsubscribed server
+    // pays nothing on this very hot path.
+    onEmit: function (name, handler) {
+      if (typeof handler !== "function") throw new TypeError("Sound.onEmit(name, fn): fn must be a function");
+      var n = String(name);
+      __s2_sound_on_emit(n, handler);
+      return { dispose: function () { __s2_sound_off_emit(n); } };
     },
   };
   globalThis.__s2pkg_sound = { Sound: __s2_sound };   // named export `Sound`
@@ -4489,6 +4510,77 @@ pub(crate) fn dispatch_map_start(map: &str) {
             }
         }
     });
+}
+
+/// Fan an EmitSound out to `Sound.onEmit` subscribers for that exact sound name and for `"*"`,
+/// collapsing their `HookResult`s. Returns the collapsed result: >= 2 (Handled|Stop) means the shim
+/// must SUPPRESS the sound and not call the original.
+///
+/// SYNCHRONOUS — the detour blocks on this so a handler can veto before the engine plays anything
+/// (mirrors `dispatch_output`/`dispatch_damage`, NOT the post-drain `dispatch_pending_*` path).
+/// A `try_borrow_mut` graceful-skip guards re-entrancy: a handler that itself calls `Sound.emit`
+/// (or a `Sound.emit` from any other JS, which runs with the isolate already borrowed) re-enters
+/// here and is skipped — the sound still plays, only the nested JS dispatch is dropped.
+pub(crate) fn dispatch_emit_sound(name: &str, ent_index: i32, volume: f32) -> i32 {
+    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
+    let mut snap0 = SOUND_MUX.with(|m| m.borrow().snapshot(name));
+    if name != "*" { snap0.extend(SOUND_MUX.with(|m| m.borrow().snapshot("*"))); }
+    if snap0.is_empty() { return 0; }
+    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
+        .into_iter().enumerate()
+        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
+        .collect();
+
+    let outcome = HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        let Some(host) = borrow.as_mut() else {
+            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        };
+        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else { return Ok(HookResult::Continue); };
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            // Build the event object inline — the data is already in hand, no engine round-trip
+            // (unlike GameEvent/DamageInfo, which read live shim state through further ops).
+            let ev = v8::Object::new(tc);
+            if let (Some(k), Some(v)) = (v8::String::new(tc, "name"), v8::String::new(tc, name)) {
+                ev.set(tc, k.into(), v.into());
+            }
+            if let Some(k) = v8::String::new(tc, "entIndex") {
+                let v = v8::Number::new(tc, ent_index as f64);
+                ev.set(tc, k.into(), v.into());
+            }
+            if let Some(k) = v8::String::new(tc, "volume") {
+                let v = v8::Number::new(tc, volume as f64);
+                ev.set(tc, k.into(), v.into());
+            }
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let func = v8::Local::new(tc, handler_g);
+            let args: [v8::Local<v8::Value>; 1] = [ev.into()];
+            match func.call(tc, recv, &args) {
+                None => Err(()),                                   // threw → drop this sub
+                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
+                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                    0 => HookResult::Continue, 1 => HookResult::Changed,
+                    2 => HookResult::Handled, 3 => HookResult::Stop,
+                    _ => HookResult::Continue,                     // out-of-range → Continue
+                }),
+            }
+        })
+    });
+    outcome.result as i32
 }
 
 /// E1 repair sweep (north-star §7, the E0-V4 contingency): armed by the map-start books
@@ -6795,6 +6887,40 @@ fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 /// can't be compared by identity, so this drops ALL of the caller's subs for that exact key). Available
 /// as a primitive; `Entity.onOutput` this slice has no matching `offOutput` — cleanup on unload/reload
 /// runs via `remove_by_owner`, not this native.
+/// Native `__s2_sound_on_emit(name, handler) -> subId`. Installs the EmitSound detour LAZILY on
+/// the first-ever subscribe — sound is a hot path, so an unsubscribed server pays nothing.
+fn s2_sound_on_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        if name.is_empty() { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let first_ever = SOUND_MUX.with(|m| m.borrow().is_empty());
+        let sub_id = next_sub_id();
+        SOUND_MUX.with(|m| { m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g); });
+        if first_ever {
+            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.sound_hook_install) {
+                let _ = func();
+            }
+        }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// Native `__s2_sound_off_emit(name)`. Drops the CURRENT plugin's subscriptions for that name.
+/// The detour stays installed (removing it mid-frame is not worth the risk); an empty mux early-outs.
+fn s2_sound_off_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        SOUND_MUX.with(|m| { m.borrow_mut().remove_by_owner_on(&name, &owner); });
+    }));
+}
+
 fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
@@ -8324,6 +8450,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);
     set_native(scope, global_obj, "__s2_entity_spawn_kv", s2_entity_spawn_kv);
     set_native(scope, global_obj, "__s2_output_subscribe", s2_output_subscribe);
+    set_native(scope, global_obj, "__s2_sound_on_emit", s2_sound_on_emit);
+    set_native(scope, global_obj, "__s2_sound_off_emit", s2_sound_off_emit);
     set_native(scope, global_obj, "__s2_output_unsubscribe", s2_output_unsubscribe);
     // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete subscribe/unsubscribe (the
     // IEntityListener is lazily installed shim-side on the first subscribe via entity_listener_install).
@@ -10353,6 +10481,7 @@ pub fn shutdown() {
     NET_EVENT_PENDING.with(|q| q.borrow_mut().clear());
     // Reset the Entity.onOutput mux (entity-I/O slice) so a re-init starts clean.
     OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    SOUND_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the entity-lifecycle mux (entity-listeners slice) so a re-init starts clean.
     ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the UserCmd.onRun mux (usercmd primitive) so a re-init starts clean.
@@ -10757,6 +10886,13 @@ pub(crate) fn register_builtin_stores() {
         "OUTPUT_MUX",
         Box::new(|owner| { OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // SOUND_MUX: the EmitSound detour stays installed once armed — no follow-up.
+    crate::owner_stores::register(
+        "SOUND_MUX",
+        Box::new(|owner| { SOUND_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { SOUND_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
     );
 
     // ENTITY_MUX: the IEntityListener stays registered for the process lifetime — no follow-up.
@@ -11610,6 +11746,84 @@ mod frame_tests {
         std::thread::sleep(std::time::Duration::from_millis(40));
         frame_async_drain();                       // now past the deadline
         assert_eq!(read_bool_global_in("p", "__d"), true);
+        shutdown();
+    }
+
+    /// Exact-name and "*" both see the emit, and the event carries name/entIndex/volume.
+    #[test]
+    fn emit_sound_fans_out_with_the_event_payload() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"
+            globalThis.__seen = [];
+            __s2pkg_sound.Sound.onEmit("Weapon_AK47.Single", (e) => { __seen.push("exact:"+e.name+":"+e.entIndex+":"+e.volume); });
+            __s2pkg_sound.Sound.onEmit("*",                  (e) => { __seen.push("star:"+e.name); });
+        "#);
+        assert_eq!(dispatch_emit_sound("Weapon_AK47.Single", 7, 0.5), 0, "no handler blocked -> Continue");
+        assert_eq!(dispatch_emit_sound("Player.Footstep", 3, 1.0), 0);
+        assert_eq!(eval_in_context_string("p", "__seen.join('|')"),
+            "exact:Weapon_AK47.Single:7:0.5|star:Weapon_AK47.Single|star:Player.Footstep");
+        shutdown();
+    }
+
+    /// THE point of the slice: a handler returning Handled(2) collapses to >= 2, which is the shim's
+    /// signal to skip the original and play nothing.
+    #[test]
+    fn emit_sound_handler_can_block() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"__s2pkg_sound.Sound.onEmit("Weapon_AK47.Single", () => 2);"#);
+        assert!(dispatch_emit_sound("Weapon_AK47.Single", 1, 1.0) >= 2, "Handled must suppress");
+        assert_eq!(dispatch_emit_sound("Player.Footstep", 1, 1.0), 0, "a different sound is untouched");
+        shutdown();
+    }
+
+    /// A throwing handler must NOT silence the server: it is dropped and the chain collapses to
+    /// Continue, so the sound still plays.
+    #[test]
+    fn throwing_emit_sound_handler_does_not_block_the_sound() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"__s2pkg_sound.Sound.onEmit("*", () => { throw new Error("boom"); });"#);
+        assert_eq!(dispatch_emit_sound("Weapon_AK47.Single", 1, 1.0), 0,
+            "a thrower must degrade to Continue, never to a silenced sound");
+        shutdown();
+    }
+
+    /// Returning nothing is Continue — the common case for a pure observer.
+    #[test]
+    fn emit_sound_observer_returning_undefined_is_continue() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"globalThis.__n = 0; __s2pkg_sound.Sound.onEmit("*", () => { globalThis.__n++; });"#);
+        assert_eq!(dispatch_emit_sound("Player.Footstep", 1, 1.0), 0);
+        assert_eq!(read_i32_global_in("p", "__n"), 1);
+        shutdown();
+    }
+
+    /// dispose() drops this plugin's subs for that name.
+    #[test]
+    fn emit_sound_dispose_stops_delivery() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", r#"
+            globalThis.__n = 0;
+            globalThis.__h = __s2pkg_sound.Sound.onEmit("Player.Footstep", () => { globalThis.__n++; });
+        "#);
+        dispatch_emit_sound("Player.Footstep", 1, 1.0);
+        assert_eq!(read_i32_global_in("p", "__n"), 1);
+        eval_in_context_string("p", "__h.dispose(); ''");
+        dispatch_emit_sound("Player.Footstep", 1, 1.0);
+        assert_eq!(read_i32_global_in("p", "__n"), 1, "no delivery after dispose");
+        shutdown();
+    }
+
+    /// Teardown: unload drops the subscription, so a later emit cannot dispatch into a dead context
+    /// — and, critically, cannot leave a sound permanently blocked by a gone plugin.
+    #[test]
+    fn unload_drops_emit_sound_subscriptions() {
+        init(dummy_logger()).unwrap();
+        eval_std("demo", r#"__s2pkg_sound.Sound.onEmit("*", () => 2);"#);
+        assert!(dispatch_emit_sound("Weapon_AK47.Single", 1, 1.0) >= 2, "sanity: blocking while loaded");
+        unload_plugin("demo");
+        assert!(SOUND_MUX.with(|m| m.borrow().snapshot("*").is_empty()), "unload must drop the sub");
+        assert_eq!(dispatch_emit_sound("Weapon_AK47.Single", 1, 1.0), 0,
+            "an unloaded plugin must not keep blocking sounds");
         shutdown();
     }
 
@@ -13560,6 +13774,7 @@ mod frame_tests {
             ent_snapshot: None,
             engine_call_resolve: None,
             engine_call_invoke: None,
+            sound_hook_install: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -14668,6 +14883,7 @@ mod frame_tests {
             ent_snapshot: None,
             engine_call_resolve: None,
             engine_call_invoke: None,
+            sound_hook_install: None,
         }
     }
 

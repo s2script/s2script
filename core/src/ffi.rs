@@ -211,6 +211,21 @@ pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
 ///
 /// `catch_unwind`-wrapped and FAIL-OPEN (-> 0 Continue on a panic or invalid UTF-8): a core bug must
 /// never suppress an output it didn't mean to, mirroring `s2script_core_ban_check`'s fail-open shape.
+/// Called from the shim's EmitSound detour. Returns the collapsed HookResult: >= 2 means the shim
+/// must SUPPRESS the sound (skip the original), matching dispatch_output's convention.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_emit_sound(
+    name: *const c_char,
+    ent_index: c_int,
+    volume: f32,
+) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(n) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        crate::v8host::dispatch_emit_sound(n, ent_index, volume)
+    }).unwrap_or(0)
+}
+
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_output(
     classname: *const c_char,
