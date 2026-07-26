@@ -2233,7 +2233,8 @@ static void schema_type_to_kind(CSchemaType* t, const char** kind,
 /// and streams each class/field to core via the C-ABI callbacks. Also unions GlobalTypeScope so
 /// parent classes declared outside the server module are present in the catalog (Delta 3).
 /// Degrade-never-crash: null system/scope → return 0.
-static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field) noexcept {
+static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field,
+                            s2_emit_enum_fn emit_enum) noexcept {
     if (!s_pSchemaSystem) return 0;
     CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
     if (!scope) scope = s_pSchemaSystem->GlobalTypeScope();
@@ -2270,6 +2271,31 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
         emitted.insert(ci->m_pszName);
     }
 
+    // Enums, from the same scope pair as the classes. The class walk gives a field's enum TYPE NAME
+    // and byte width but not its enumerators, so without this pass every enum field is an anonymous
+    // integer and a plugin has to hardcode the values — the borrowed-constant problem one level down.
+    //
+    // Emitted for EVERY enum in the scope, not only those a generated class happens to reference: the
+    // constants are useful on their own (an entity input value, a bitflag test), and filtering here
+    // would make the output depend on which classes are requested.
+    auto emit_enums_from = [&](CSchemaSystemTypeScope* sc) {
+        if (!sc || !emit_enum) return;
+        int en = sc->m_EnumBindings.Count();
+        if (en <= 0) return;
+        std::vector<UtlTSHashHandle_t> eh((size_t)en);
+        int egot = sc->m_EnumBindings.GetElements(0, en, eh.data());
+        for (int i = 0; i < egot; ++i) {
+            CSchemaEnumInfo* ei = sc->m_EnumBindings.Element(eh[i]);
+            if (!ei || !ei->m_pszName) continue;
+            if (ei->m_nEnumeratorCount > 0 && !ei->m_pEnumerators) continue;  // degrade, never deref null
+            for (uint16 j = 0; j < ei->m_nEnumeratorCount; ++j) {
+                const SchemaEnumeratorInfoData_t& ev = ei->m_pEnumerators[j];
+                if (!ev.m_pszName) continue;
+                emit_enum(ctx, ei->m_pszName, (int)ei->m_nSize, ev.m_pszName, (long long)ev.m_nValue);
+            }
+        }
+    };
+
     // Pass 2 (Delta 3 / completeness): union GlobalTypeScope so base classes registered outside
     // the server module scope (e.g. CBaseEntity, CEntityInstance from a different module) are also
     // present in the catalog. Skip classes already emitted from the server scope to prevent
@@ -2286,6 +2312,11 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
             emit_one(ci);
         }
     }
+
+    // Enums last, both scopes. Core dedupes by (enum, enumerator), so a name present in both the
+    // server and global scope is recorded once rather than doubling its enumerator list.
+    emit_enums_from(scope);
+    if (gScope && gScope != scope) emit_enums_from(gScope);
 
     return 1;
 }

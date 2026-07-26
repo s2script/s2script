@@ -36,15 +36,29 @@ pub struct Class {
     pub fields: Vec<Field>,
 }
 
+/// One declared enum: its byte width plus its enumerators.
+///
+/// Kept SEPARATE from `Catalog`'s class map rather than folded into it. The catalog serializes as a
+/// bare `{ className: {...} }` object, so adding a sibling section would change that shape and break
+/// every existing consumer; enums get their own file instead.
+#[derive(Serialize)]
+pub struct EnumDef {
+    pub size: u8,
+    /// Enumerator name -> value. BTreeMap for deterministic output; values are i64 because the
+    /// schema stores them as int64 and flag enums legitimately use the high bit.
+    pub values: BTreeMap<String, i64>,
+}
+
 /// The catalog. Classes are keyed in a BTreeMap for deterministic (sorted) output; fields keep
 /// insertion order (the shim emits them in schema order, which is stable per binary).
 pub struct Catalog {
     classes: BTreeMap<String, Class>,
+    enums: BTreeMap<String, EnumDef>,
 }
 
 impl Catalog {
     pub fn new() -> Self {
-        Self { classes: BTreeMap::new() }
+        Self { classes: BTreeMap::new(), enums: BTreeMap::new() }
     }
 
     /// Record a class (idempotent: a repeat keeps the first, so a duplicate emit is harmless).
@@ -79,6 +93,28 @@ impl Catalog {
     }
 
     /// Serialize to pretty JSON (stable order). Returns "{}" on the (impossible) serialization error.
+    /// Record one enumerator. Idempotent per (enum, enumerator): the shim walks two type scopes and
+    /// an enum registered in both would otherwise be merged twice — harmless for values, but it would
+    /// hide a genuine disagreement, so the first write wins and a repeat is ignored.
+    pub fn add_enum(&mut self, name: &str, size: i32, enumerator: &str, value: i64) {
+        if name.is_empty() || enumerator.is_empty() { return; }
+        // Same rule as a field's width: only a stated 1/2/4/8 is trusted.
+        if !(1..=8).contains(&size) { return; }
+        self.enums
+            .entry(name.to_string())
+            .or_insert_with(|| EnumDef { size: size as u8, values: BTreeMap::new() })
+            .values
+            .entry(enumerator.to_string())
+            .or_insert(value);
+    }
+
+    /// The enum table, serialized. Separate artifact from {@link Catalog::to_json}.
+    pub fn enums_json(&self) -> String {
+        serde_json::to_string_pretty(&self.enums).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn enum_count(&self) -> usize { self.enums.len() }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(&self.classes).unwrap_or_else(|_| "{}".to_string())
     }
@@ -129,6 +165,33 @@ mod tests {
     fn output_is_deterministic_across_identical_builds() {
         // classes sorted (BTreeMap); fields in insertion order — a stable committed file.
         assert_eq!(built().to_json(), built().to_json());
+    }
+
+    #[test]
+    fn enum_table_dedupes_and_rejects_an_unstated_width() {
+        let mut c = Catalog::new();
+        c.add_enum("MoveType_t", 1, "MOVETYPE_NONE", 0);
+        c.add_enum("MoveType_t", 1, "MOVETYPE_FLY", 5);
+        // The shim walks two type scopes; an enum registered in both must not merge twice. First
+        // write wins, so a genuine disagreement stays visible rather than being silently overwritten.
+        c.add_enum("MoveType_t", 1, "MOVETYPE_FLY", 999);
+        // Flag enums legitimately use the high bit, so a negative value must survive.
+        c.add_enum("Flags_t", 4, "FLAG_SIGNBIT", -2147483648);
+        // Unstated / out-of-range width is not trusted, exactly as for a field.
+        c.add_enum("Bogus_t", 0, "X", 1);
+        c.add_enum("Bogus_t", 99, "Y", 2);
+        c.add_enum("", 1, "Anon", 1);
+        c.add_enum("Named_t", 1, "", 1);
+
+        let j = c.enums_json();
+        assert!(j.contains("MOVETYPE_FLY"), "{j}");
+        assert!(j.contains("5"), "{j}");
+        assert!(!j.contains("999"), "a repeat enumerator must not overwrite: {j}");
+        assert!(j.contains("-2147483648"), "negative enumerator lost: {j}");
+        assert!(!j.contains("Bogus_t"), "enum with no stated width must be dropped: {j}");
+        assert!(!j.contains("Anon"), "{j}");
+        assert!(!j.contains("Named_t"), "{j}");
+        assert_eq!(c.enum_count(), 2);
     }
 
     #[test]

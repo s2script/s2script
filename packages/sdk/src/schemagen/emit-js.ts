@@ -85,6 +85,15 @@ export function emitJs(model: SchemaModel): string {
   out.push("  var P = {");
   for (const c of model.classes) if (c.parent) out.push(`    ${S(c.className)}: ${S(c.parent)},`);
   out.push("  };");
+  // Enum constants. Frozen so a plugin cannot mutate a shared table and change what another plugin
+  // reads; plain values, no offsets involved.
+  if (model.enums.length > 0) {
+    out.push("  var E_CONST = {};");
+    for (const e of model.enums) {
+      const body = e.members.map((m) => `${S(m.name)}: ${m.value}`).join(", ");
+      out.push(`  E_CONST[${S(e.tsName)}] = Object.freeze({ ${body} });`);
+    }
+  }
   out.push(
     "  // Walk the ancestor chain rather than storing every inherited accessor per class. Flattening",
     "  // into each table duplicated the whole chain 3.77x on the CS2 class set and grew as",
@@ -110,7 +119,8 @@ export function emitJs(model: SchemaModel): string {
     "  }",
     "  globalThis.__s2pkg_cs2_schema = { applyAccessors: applyAccessors, wrap: wrap };",
     "  // Merge (not overwrite): this prelude runs FIRST, and pawn.js merges onto whatever it finds.",
-    "  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { wrapEntity: wrap });",
+    "  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { wrapEntity: wrap }" +
+      (model.enums.length > 0 ? ", E_CONST);" : ");"),
     "})();",
   );
   return out.join("\n");

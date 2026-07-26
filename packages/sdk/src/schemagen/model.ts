@@ -2,6 +2,49 @@
 // No I/O, no Date/random — deterministic. See the plan's Global Constraints.
 
 export type Catalog = Record<string, { parent: string | null; fields: CatalogField[] }>;
+
+/** `schema-enums.json`: enum name -> width + enumerator values. Absent = enums stay plain integers. */
+export type EnumCatalog = Record<string, { size: number; values: Record<string, number> }>;
+
+/**
+ * TS identifier for an enumerator, with the enum's own redundant prefix removed.
+ *
+ * `MoveType_t::MOVETYPE_FLY` reads as `MoveType_t.FLY`, not `MoveType_t.MOVETYPE_FLY`. CASE IS
+ * PRESERVED — `MOVETYPE_VPHYSICS` has no unambiguous PascalCase form (`Vphysics`? `VPhysics`?), so
+ * converting would be a guess, occasionally lossy, and could collide. Stripping is
+ * conditional and per-enum: it only happens when EVERY enumerator shares the prefix and each result
+ * is still a distinct, valid identifier. One enumerator that does not fit, or two that collapse to the
+ * same name, and the whole enum keeps its raw names — a partly-stripped enum would be worse than an
+ * unstripped one, because the caller could not predict which form any given member takes.
+ */
+export function enumMemberNames(enumName: string, members: string[]): Record<string, string> {
+  const raw: Record<string, string> = {};
+  for (const m of members) raw[m] = m;
+  if (members.length === 0) return raw;
+
+  // "MoveType_t" -> "MOVETYPE"; "RenderMode_t" -> "RENDERMODE".
+  const stem = enumName.replace(/_t$/, "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  if (stem === "") return raw;
+
+  const stripped: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const m of members) {
+    const up = m.toUpperCase();
+    let rest: string | null = null;
+    for (const sep of ["_", ""]) {
+      const pfx = stem + sep;
+      if (up.startsWith(pfx) && m.length > pfx.length) { rest = m.slice(pfx.length); break; }
+    }
+    // Also accept the `kRenderNone` convention, where the prefix is a bare `k`.
+    if (rest === null && /^k[A-Z]/.test(m)) rest = m.slice(1);
+    if (rest === null) return raw;
+    const name = /^[0-9]/.test(rest) ? `_${rest}` : rest;
+    if (seen.has(name)) return raw;          // two members collapsing == ambiguous, keep raw
+    seen.add(name);
+    stripped[m] = name;
+  }
+  return stripped;
+}
 export interface CatalogField {
   name: string;
   offset: number;
@@ -18,6 +61,9 @@ export interface FieldDescriptor {
   accessorKind: AccessorKind;
   writable: boolean;
   strLen?: number;
+  /** Schema name of the enum this field holds, when it is one — the emitters declare it as that
+   *  type instead of a bare number. */
+  enumType?: string;
   /** Extra bytes added to the resolved offset — non-zero only for a flattened value wrapper,
    *  where the scalar sits at `wrapperOffset + this`. See {@link transparentValue}. */
   addOffset?: number;
@@ -43,7 +89,24 @@ export interface EmbeddedFieldDescriptor {
 }
 export interface EmbeddedClassDescriptor { className: string; fields: FieldDescriptor[]; embeddedFields: EmbeddedFieldDescriptor[]; skipped: SkippedField[]; }
 export interface ClassDescriptor { className: string; parent: string | null; ownFields: FieldDescriptor[]; embeddedFields: EmbeddedFieldDescriptor[]; skipped: SkippedField[]; }
-export interface SchemaModel { classes: ClassDescriptor[]; embedded: EmbeddedClassDescriptor[]; collisions: string[]; }
+/**
+ * One emitted enum. `className` is the schema name; `tsName` is the identifier it is emitted under.
+ *
+ * They differ for a nested enum: the schema names those `CFuncMover::Move_t`, and `::` is not a legal
+ * TS identifier — emitting it produced a syntactically invalid `.d.ts`.
+ */
+export interface EnumDescriptor {
+  className: string;
+  tsName: string;
+  members: { name: string; raw: string; value: number }[];
+}
+
+/** Schema enum name -> a legal TS identifier. `CFuncMover::Move_t` -> `CFuncMover_Move_t`. */
+export function enumTsName(schemaName: string): string {
+  const id = schemaName.replace(/[^A-Za-z0-9_$]/g, "_");
+  return /^[0-9]/.test(id) ? `_${id}` : id;
+}
+export interface SchemaModel { classes: ClassDescriptor[]; embedded: EmbeddedClassDescriptor[]; enums: EnumDescriptor[]; collisions: string[]; }
 
 // AccessorKind → EntityRef method (5B.2 surface) + TS type. Writable ⇔ a WRITE entry exists.
 export const READ: Record<AccessorKind, string> = {
@@ -117,7 +180,7 @@ export function transparentValue(catalog: Catalog, className: string): CatalogFi
   return f.name === "m_Value" && f.type.kind === "atomic" ? f : null;
 }
 
-export function classifyField(type: CatalogField["type"], embeddable: ReadonlySet<string> = new Set()): { accessorKind: AccessorKind; writable: boolean; strLen?: number } | { embedded: string } | { skip: string } {
+export function classifyField(type: CatalogField["type"], embeddable: ReadonlySet<string> = new Set()): { accessorKind: AccessorKind; writable: boolean; strLen?: number; enumType?: string } | { embedded: string } | { skip: string } {
   if (type.kind === "handle") return { accessorKind: "handle", writable: false };
   if (type.kind === "atomic") {
     const vk = VEC[type.name ?? ""];
@@ -141,7 +204,7 @@ export function classifyField(type: CatalogField["type"], embeddable: ReadonlySe
     const w = ENUM_WIDTH[type.size ?? 0];
     // Writability follows the WRITE table rather than being asserted: there is no narrow 64-bit
     // writer, so an 8-byte enum is read-only for the same reason uint64 is.
-    if (w) return { accessorKind: w, writable: WRITE[w] !== undefined };
+    if (w) return { accessorKind: w, writable: WRITE[w] !== undefined, enumType: type.name };
     return { skip: `enum '${type.name ?? ""}' byte width not stated by the schema` };
   }
   if (type.kind === "class") {
@@ -161,7 +224,7 @@ export function flattenedFields(model: SchemaModel, className: string): FieldDes
   return chain.flatMap((c) => c.ownFields);
 }
 
-export function buildModel(catalog: Catalog, requested: string[], embeddable: string[] = []): SchemaModel {
+export function buildModel(catalog: Catalog, requested: string[], embeddable: string[] = [], enumCatalog: EnumCatalog = {}): SchemaModel {
   for (const n of embeddable) if (!catalog[n]) throw new Error(`gen-schema: embedded class '${n}' is not in the catalog`);
   // An explicit list, when given, restricts which structs embed; empty/absent means "every struct
   // the catalog describes". Curation stopped being necessary once transparent wrappers flatten —
@@ -204,7 +267,7 @@ export function buildModel(catalog: Catalog, requested: string[], embeddable: st
         emb.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: owner, embeddedClass: c.embedded });
         continue;
       }
-      out.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: owner, accessorKind: c.accessorKind, writable: c.writable, strLen: c.strLen, addOffset: c.addOffset });
+      out.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: owner, accessorKind: c.accessorKind, writable: c.writable, strLen: c.strLen, addOffset: c.addOffset, enumType: c.enumType });
     }
   };
 
@@ -300,5 +363,41 @@ export function buildModel(catalog: Catalog, requested: string[], embeddable: st
     collisions.push(`${prop} <- ${renamed.sort().join(", ")}${soleWinner ? ` (kept by ${winnerCls})` : ""}`);
   }
   collisions.sort();
-  return { classes, embedded, collisions };
+
+  // Only enums a generated field actually references are emitted: the table describes every enum in
+  // the game (500+), and shipping constants nothing can be assigned to would be noise.
+  const referenced = new Set<string>();
+  const noteEnum = (f: CatalogField): void => {
+    if (f.type.kind === "enum" && f.type.name && enumCatalog[f.type.name]) referenced.add(f.type.name);
+  };
+  for (const cls of inClosure) for (const f of catalog[cls]!.fields) noteEnum(f);
+  for (const e of embedded) for (const owner of new Set(e.fields.map((f) => f.declaringClass))) {
+    for (const f of catalog[owner]?.fields ?? []) noteEnum(f);
+  }
+  // Sanitising can collapse two distinct schema names onto one identifier. Rather than emit an
+  // ambiguous constant, drop every enum in the colliding group — its fields stay plain integers,
+  // which is the pre-existing behaviour rather than a wrong name.
+  const byTsName = new Map<string, string[]>();
+  for (const n of referenced) {
+    const id = enumTsName(n);
+    (byTsName.get(id) ?? byTsName.set(id, []).get(id)!).push(n);
+  }
+  const ambiguous = new Set<string>();
+  for (const [, group] of byTsName) if (group.length > 1) for (const n of group) ambiguous.add(n);
+
+  const enums: EnumDescriptor[] = [...referenced]
+    .filter((n) => !ambiguous.has(n))
+    .sort()
+    .map((className) => {
+      const values = enumCatalog[className]!.values;
+      const names = enumMemberNames(className, Object.keys(values));
+      return {
+        className,
+        tsName: enumTsName(className),
+        members: Object.keys(values).sort().map((raw) => ({ name: names[raw]!, raw, value: values[raw]! })),
+      };
+    });
+  for (const n of [...ambiguous].sort()) collisions.push(`enum ${n} -> ${enumTsName(n)} (ambiguous; emitted as number)`);
+
+  return { classes, embedded, enums, collisions };
 }
