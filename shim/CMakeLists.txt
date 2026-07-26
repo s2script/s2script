@@ -131,6 +131,8 @@ target_include_directories(s2script PRIVATE
     ${HL2SDK}/public/tier1
     ${HL2SDK}/public/mathlib
     ${HL2SDK}/public/appframework
+    # model precache: igamesystem.h / igamesystemfactory.h live under game/shared, not public/
+    ${HL2SDK}/game/shared
     # protobuf 3.21.8 runtime headers (Slice 6.1c) — reflection over the game's usermessage
     # protobuf objects (CUserMessageSayText2). Matches the vendored libprotobuf.a below.
     ${HL2SDK}/thirdparty/protobuf-3.21.8/src
