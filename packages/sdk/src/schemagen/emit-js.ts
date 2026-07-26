@@ -14,6 +14,12 @@ const S = JSON.stringify;
  * offset 7 and read a neighbouring field. Hence an explicit guard rather than leaning on the
  * SDK's own bad-offset rejection, which only sees the summed value.
  */
+/** Absolute-offset expression for a top-level field, including any flattened-wrapper delta. */
+function resolveExpr(f: FieldDescriptor): string {
+  const base = `off(${S(f.declaringClass)},${S(f.rawName)})`;
+  return f.addOffset ? `${base} + ${f.addOffset}` : base;
+}
+
 function accessorEntry(f: FieldDescriptor, resolve: string, guard: string): string {
   // Keep the emitted text byte-identical to the un-guarded form when there is no guard, so adding
   // embedded support does not rewrite every line of the generated file.
@@ -50,7 +56,7 @@ export function emitJs(model: SchemaModel): string {
   for (const c of model.classes) {
     out.push(`  A[${S(c.className)}] = {`);
     for (const f of flattenedFields(model, c.className)) {
-      const entry = accessorEntry(f, `off(${S(f.declaringClass)},${S(f.rawName)})`, "");
+      const entry = accessorEntry(f, resolveExpr(f), "");
       out.push(`    ${S(f.propName)}: { ${entry} },`);
     }
     for (const f of model.classes.find((x) => x.className === c.className)!.embeddedFields) {
@@ -62,10 +68,16 @@ export function emitJs(model: SchemaModel): string {
   for (const e of model.embedded) {
     out.push(`  E[${S(e.className)}] = {`);
     for (const f of e.fields) {
-      const sub = `off(${S(e.className)},${S(f.rawName)})`;
-      const resolve = `this.base + ${sub}`;
+      const sub = `off(${S(f.declaringClass)},${S(f.rawName)})`;
+      const resolve = f.addOffset ? `this.base + ${sub} + ${f.addOffset}` : `this.base + ${sub}`;
       const guard = `if (this.base < 0 || ${sub} < 0) return null;`;
       out.push(`    ${S(f.propName)}: { ${accessorEntry(f, resolve, guard)} },`);
+    }
+    // A struct embedding a struct is the same (ref, base) pair one level down, so this is the
+    // top-level emit with `this.base` folded into the new base rather than a separate mechanism.
+    for (const f of e.embeddedFields) {
+      const sub = `off(${S(f.declaringClass)},${S(f.rawName)})`;
+      out.push(`    ${S(f.propName)}: { get: function () { var s = ${sub}; return embed(${S(f.embeddedClass)}, this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },`);
     }
     out.push("  };");
   }

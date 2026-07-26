@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { idiomaticName, classifyField, buildModel, flattenedFields, TSTYPE } from "../src/schemagen/model.ts";
+import { idiomaticName, classifyField, buildModel, flattenedFields, transparentValue, TSTYPE } from "../src/schemagen/model.ts";
 
 test("idiomaticName strips m_ + Hungarian tag, camelCases", () => {
   assert.equal(idiomaticName("m_iHealth"), "health");
@@ -178,4 +178,84 @@ test("buildModel emits a vector/qangle field with the right kind + TS type", () 
   assert.equal(ang.propName, "eyeAngles");        // ang ∈ tags stripped
   assert.equal(ang.accessorKind, "qangle");
   assert.equal(TSTYPE.qangle, "QAngle | null");
+});
+
+// --- transparent value wrappers -------------------------------------------
+
+const WRAPPERS = {
+  GameTime_t: { parent: null, fields: [{ name: "m_Value", offset: 0, type: { kind: "atomic", name: "float32" } }] },
+  GameTick_t: { parent: null, fields: [{ name: "m_Value", offset: 0, type: { kind: "atomic", name: "int32" } }] },
+  // Single-field, but the field carries its own meaning -> NOT transparent.
+  CHitboxComponent: { parent: null, fields: [{ name: "m_flBoundsExpandRadius", offset: 20, type: { kind: "atomic", name: "float32" } }] },
+};
+
+test("transparentValue accepts only an anonymous single m_Value", () => {
+  assert.equal(transparentValue(WRAPPERS, "GameTime_t").name, "m_Value");
+  assert.equal(transparentValue(WRAPPERS, "GameTick_t").name, "m_Value");
+  // A named single field is not anonymous enough to absorb -- flattening it would produce a
+  // property called "hitboxComponent" holding a radius.
+  assert.equal(transparentValue(WRAPPERS, "CHitboxComponent"), null);
+  assert.equal(transparentValue(WRAPPERS, "Nope"), null);
+});
+
+test("a wrapper field flattens to the scalar it wraps, not a nested object", () => {
+  const catalog = {
+    ...WRAPPERS,
+    Base: { parent: null, fields: [
+      { name: "m_flDeathTime", offset: 100, type: { kind: "class", name: "GameTime_t" } },
+      { name: "m_nNextThinkTick", offset: 108, type: { kind: "class", name: "GameTick_t" } },
+    ] },
+  };
+  const m = buildModel(catalog, ["Base"]);
+  const base = m.classes.find((c) => c.className === "Base");
+  assert.deepEqual(base.embeddedFields, []);                 // no nested object
+  assert.deepEqual(base.ownFields.map((f) => [f.propName, f.accessorKind, f.writable]),
+    [["deathTime", "f32", true], ["nextThinkTick", "i32", true]]);
+  // Wrappers put m_Value at +0 here, so no delta is carried.
+  assert.equal(m.embedded.length, 0);
+});
+
+test("a wrapper whose value is NOT at +0 carries the delta", () => {
+  const catalog = {
+    Off_t: { parent: null, fields: [{ name: "m_Value", offset: 8, type: { kind: "atomic", name: "int32" } }] },
+    Base: { parent: null, fields: [{ name: "m_thing", offset: 64, type: { kind: "class", name: "Off_t" } }] },
+  };
+  const f = buildModel(catalog, ["Base"]).classes[0].ownFields[0];
+  assert.equal(f.addOffset, 8);
+});
+
+// --- auto-embed + recursion ------------------------------------------------
+
+const NESTED = {
+  Inner: { parent: null, fields: [{ name: "m_iCount", offset: 4, type: { kind: "atomic", name: "int32" } }] },
+  Outer: { parent: null, fields: [{ name: "m_Inner", offset: 80, type: { kind: "class", name: "Inner" } }] },
+  Base: { parent: null, fields: [{ name: "m_Outer", offset: 16, type: { kind: "class", name: "Outer" } }] },
+};
+
+test("with no allow-list every catalog struct embeds, transitively", () => {
+  const m = buildModel(NESTED, ["Base"]);
+  assert.deepEqual(m.embedded.map((e) => e.className), ["Inner", "Outer"]);
+  // Outer reaches Inner as an embedded field of its own -- the mechanism nests.
+  const outer = m.embedded.find((e) => e.className === "Outer");
+  assert.deepEqual(outer.embeddedFields.map((f) => f.embeddedClass), ["Inner"]);
+});
+
+test("a non-empty allow-list still restricts which structs embed", () => {
+  const m = buildModel(NESTED, ["Base"], ["Outer"]);
+  assert.deepEqual(m.embedded.map((e) => e.className), ["Outer"]);
+  // Inner is not allow-listed, so Outer's field skips rather than nesting.
+  assert.deepEqual(m.embedded[0].embeddedFields, []);
+  assert.ok(m.embedded[0].skipped.some((s) => s.rawName === "m_Inner"));
+});
+
+test("a self-referential struct terminates instead of recursing forever", () => {
+  const catalog = {
+    Loop: { parent: null, fields: [
+      { name: "m_self", offset: 8, type: { kind: "class", name: "Loop" } },
+      { name: "m_iX", offset: 16, type: { kind: "atomic", name: "int32" } },
+    ] },
+    Base: { parent: null, fields: [{ name: "m_loop", offset: 0, type: { kind: "class", name: "Loop" } }] },
+  };
+  const m = buildModel(catalog, ["Base"]);
+  assert.deepEqual(m.embedded.map((e) => e.className), ["Loop"]);   // emitted exactly once
 });

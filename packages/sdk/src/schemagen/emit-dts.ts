@@ -21,6 +21,7 @@ export function emitDts(model: SchemaModel): string {
     for (const f of e.fields) {
       out.push(`  ${f.writable ? "" : "readonly "}${f.propName}: ${TSTYPE[f.accessorKind]};`);
     }
+    for (const f of e.embeddedFields) out.push(`  readonly ${f.propName}: ${f.embeddedClass};`);
     out.push("}", "");
   }
   for (const c of model.classes) {
