@@ -1,5 +1,65 @@
 # @s2script/cs2
 
+## 0.9.0
+
+### Minor Changes
+
+- e2b1e99: Reach fields behind a struct embedded in a pointer target, and add `Player.matchStats`.
+
+  A nav target could only expose fields declared on the target class or an ancestor. Anything behind an
+  embedded struct was unreachable, because every entry in a `read*Via` path is DEREFERENCED and an
+  embedded struct must not be — it is part of the object already reached.
+
+  `nav-targets.json` entries take an optional `base`: hops whose offsets are SUMMED into the field
+  offset instead. `CCSPlayerController_ActionTrackingServices::m_matchStats` is one — the stats live
+  inside the services object, so `m_iKills` is one pointer hop plus a base offset plus the field. A base
+  lookup that fails returns `null` rather than falling through as 0, which would silently read the start
+  of the target object and hand back plausible numbers from the wrong field.
+
+  `Player.matchStats` uses it: kills/deaths/assists/damage/utilityDamage are writable, the rest of the
+  block is engine bookkeeping and stays read-only, per the existing opt-in allowlist. This is the path a
+  gamemode needs to hide scoreboard counters — TTT must zero them until a body is identified, and was
+  carrying ~186 lines of hardcoded offsets, a probe and an operator override file to try. Those offsets
+  were also wrong (`+0x7f8`/`+0x98` against a real `+2760`/`+208`), so the feature was silently disabled
+  on every build — exactly the failure mode a borrowed constant produces, and why offsets now resolve by
+  name at runtime instead.
+
+  Wrapper constructors take a third `base` argument. Generated code only, but it is a signature change
+  in `nav.generated.js` — regenerate rather than hand-merging.
+
+- 8d25254: Schema codegen: embedded structs, enums, `wrapEntity`, and every entity class.
+
+  Catch-up changeset — this work merged in #26, #28 and #29 without one, so neither package was
+  versioned or published and the new surface is unreachable from npm.
+
+  `@s2script/cs2` grows from 62 to 415 interfaces and 793 to 2740 exposed fields:
+
+  - **Embedded structs** as nested accessors, at any depth — `pawn.glow.glowing`,
+    `pawn.collision.collisionGroup`, and struct-inside-struct via
+    `collision.collisionAttribute.collisionGroup`.
+  - **`wrapEntity(className, ref)`** — schema accessors on an entity you created. `createEntity`
+    returns a bare `EntityRef`; this is how it gets fields. Keyed on a generated class map, so a wrong
+    name is a compile error rather than an object with silently missing accessors.
+  - **Enums** as unsigned integers of the width their binding declares. They were skipped wholesale
+    because the category names the type but not its width; the width is now dumped from the live
+    SchemaSystem. 533 fields catalog-wide. Notably `moveType`, `solidType` and `renderMode`.
+  - **`Color` as a packed uint32** (R in the low byte), which also exposes `m_clrRender` as `render`.
+    Previously skipped as "not a scalar", which is what kept `m_glowColorOverride` unreachable.
+  - **367 entity classes** instead of 13 — everything deriving from `CEntityInstance` that has fields,
+    plus `CCSGameRules`. Costs 3.6 ms once at boot.
+  - **Transparent value wrappers flattened**: `pawn.deathTime` is a `number`, not `{ value }`.
+    `GameTime_t`/`GameTick_t` were the majority of embedded fields on a pawn.
+
+  Offsets still resolve by NAME at runtime, so none of this bakes in a layout constant.
+
+  `@s2script/sdk` is a patch: only the codegen internals and its tests changed, no published `.d.ts`,
+  but the shipped `dist/cli.js` differs.
+
+### Patch Changes
+
+- Updated dependencies [8d25254]
+  - @s2script/sdk@0.10.1
+
 ## 0.8.0
 
 ### Minor Changes
