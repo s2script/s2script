@@ -10,8 +10,8 @@ import type { Vector, QAngle } from "@s2script/sdk/math";
 import type { TraceHit } from "@s2script/sdk/trace";
 export * from "./schema.generated";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
-export type { SceneNode, WeaponServices, MovementServices, AimPunchServices } from "./nav.generated";
-import type { SceneNode, WeaponServices, MovementServices, AimPunchServices } from "./nav.generated";
+export type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
+import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
 export { GameEvent } from "@s2script/sdk/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
@@ -118,6 +118,15 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   readonly slot: number;
   /** This player's in-world pawn (the body), or null if dead/absent. */
   readonly pawn: Pawn | null;
+  /**
+   * Per-match scoreboard counters — kills/deaths/assists/damage — via the
+   * `m_pActionTrackingServices` pointer hop plus the embedded `m_matchStats` block.
+   *
+   * `null` when the services pointer is not resolvable (a controller with no tracking services yet).
+   * Only the four counters a gamemode legitimately rewrites are writable; the rest of the block is
+   * engine bookkeeping and stays read-only. See nav-targets.json.
+   */
+  readonly matchStats: MatchStats | null;
   /** The engine user-id (session-stable; NOT a schema field). `-1` if unassigned/absent. */
   readonly userId: number;
   /**

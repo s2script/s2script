@@ -3,132 +3,180 @@
   var off = __s2_schema_offset;
   var QAngle = __s2require("@s2script/sdk/math").QAngle;
   var Vector = __s2require("@s2script/sdk/math").Vector;
-  function AimPunchServices(root, path) { this.root = root; this.path = path; }
+  function AimPunchServices(root, path, base) { this.root = root; this.path = path; this.base = base; }
   Object.defineProperties(AimPunchServices.prototype, {
-    "predictableBaseTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTick")); } },
-    "predictableBaseTickInterpAmount": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTickInterpAmount")); } },
-    "predictableBaseAngle": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseAngle"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
-    "predictableBaseAngleVel": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseAngleVel"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
-    "unpredictableBaseTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_AimPunchServices","m_unpredictableBaseTick")); } },
-    "unpredictableBaseAngle": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_unpredictableBaseAngle"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "predictableBaseTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTick") + this.base); } },
+    "predictableBaseTickInterpAmount": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTickInterpAmount") + this.base); } },
+    "predictableBaseAngle": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseAngle") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "predictableBaseAngleVel": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseAngleVel") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "unpredictableBaseTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_AimPunchServices","m_unpredictableBaseTick") + this.base); } },
+    "unpredictableBaseAngle": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_unpredictableBaseAngle") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
   });
-  function MovementServices(root, path) { this.root = root; this.path = path; }
+  function MatchStats(root, path, base) { this.root = root; this.path = path; this.base = base; }
+  Object.defineProperties(MatchStats.prototype, {
+    "kills": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iKills") + this.base); }, set: function (v) { this.root.writeInt32Via(this.path, off("CSPerRoundStats_t","m_iKills") + this.base, v); } },
+    "deaths": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iDeaths") + this.base); }, set: function (v) { this.root.writeInt32Via(this.path, off("CSPerRoundStats_t","m_iDeaths") + this.base, v); } },
+    "assists": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iAssists") + this.base); }, set: function (v) { this.root.writeInt32Via(this.path, off("CSPerRoundStats_t","m_iAssists") + this.base, v); } },
+    "damage": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iDamage") + this.base); }, set: function (v) { this.root.writeInt32Via(this.path, off("CSPerRoundStats_t","m_iDamage") + this.base, v); } },
+    "equipmentValue": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iEquipmentValue") + this.base); } },
+    "moneySaved": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iMoneySaved") + this.base); } },
+    "killReward": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iKillReward") + this.base); } },
+    "liveTime": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iLiveTime") + this.base); } },
+    "headShotKills": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iHeadShotKills") + this.base); } },
+    "objective": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iObjective") + this.base); } },
+    "cashEarned": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iCashEarned") + this.base); } },
+    "utilityDamage": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iUtilityDamage") + this.base); }, set: function (v) { this.root.writeInt32Via(this.path, off("CSPerRoundStats_t","m_iUtilityDamage") + this.base, v); } },
+    "enemiesFlashed": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iEnemiesFlashed") + this.base); } },
+    "enemy5Ks": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEnemy5Ks") + this.base); } },
+    "enemy4Ks": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEnemy4Ks") + this.base); } },
+    "enemy3Ks": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEnemy3Ks") + this.base); } },
+    "enemyKnifeKills": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEnemyKnifeKills") + this.base); } },
+    "enemyTaserKills": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEnemyTaserKills") + this.base); } },
+    "enemy2Ks": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEnemy2Ks") + this.base); } },
+    "utility_Count": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iUtility_Count") + this.base); } },
+    "utility_Successes": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iUtility_Successes") + this.base); } },
+    "utility_Enemies": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iUtility_Enemies") + this.base); } },
+    "flash_Count": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iFlash_Count") + this.base); } },
+    "flash_Successes": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iFlash_Successes") + this.base); } },
+    "healthPointsRemovedTotal": { get: function () { return this.root.readFloat32Via(this.path, off("CSMatchStats_t","m_flHealthPointsRemovedTotal") + this.base); } },
+    "healthPointsDealtTotal": { get: function () { return this.root.readFloat32Via(this.path, off("CSMatchStats_t","m_flHealthPointsDealtTotal") + this.base); } },
+    "shotsFiredTotal": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_nShotsFiredTotal") + this.base); } },
+    "shotsOnTargetTotal": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_nShotsOnTargetTotal") + this.base); } },
+    "i1v1Count": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_i1v1Count") + this.base); } },
+    "i1v1Wins": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_i1v1Wins") + this.base); } },
+    "i1v2Count": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_i1v2Count") + this.base); } },
+    "i1v2Wins": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_i1v2Wins") + this.base); } },
+    "entryCount": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEntryCount") + this.base); } },
+    "entryWins": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEntryWins") + this.base); } },
+  });
+  function MovementServices(root, path, base) { this.root = root; this.path = path; this.base = base; }
   Object.defineProperties(MovementServices.prototype, {
-    "impulse": { get: function () { return this.root.readInt32Via(this.path, off("CPlayer_MovementServices","m_nImpulse")); } },
-    "queuedButtonDownMask": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nQueuedButtonDownMask")); return v === null ? null : v.toString(); } },
-    "queuedButtonChangeMask": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nQueuedButtonChangeMask")); return v === null ? null : v.toString(); } },
-    "buttonDoublePressed": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nButtonDoublePressed")); return v === null ? null : v.toString(); } },
-    "lastCommandNumberProcessed": { get: function () { return this.root.readUInt32Via(this.path, off("CPlayer_MovementServices","m_nLastCommandNumberProcessed")); } },
-    "toggleButtonDownMask": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nToggleButtonDownMask")); return v === null ? null : v.toString(); } },
-    "cmdForwardMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdForwardMove")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdForwardMove"), v); } },
-    "cmdLeftMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdLeftMove")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdLeftMove"), v); } },
-    "cmdUpMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdUpMove")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdUpMove"), v); } },
-    "maxspeed": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flMaxspeed")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flMaxspeed"), v); } },
-    "forwardMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flForwardMove")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flForwardMove"), v); } },
-    "leftMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flLeftMove")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flLeftMove"), v); } },
-    "upMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flUpMove")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flUpMove"), v); } },
-    "lastMovementImpulses": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices","m_vecLastMovementImpulses"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "oldViewAngles": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices","m_vecOldViewAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
-    "stepSoundTime": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flStepSoundTime")); } },
-    "fallVelocity": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flFallVelocity")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flFallVelocity"), v); } },
-    "groundNormal": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices_Humanoid","m_groundNormal"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "surfaceFriction": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flSurfaceFriction")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flSurfaceFriction"), v); } },
-    "stepside": { get: function () { return this.root.readInt32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_nStepside")); } },
-    "smoothedVelocity": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices_Humanoid","m_vecSmoothedVelocity"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "usingGroundTopologyOffset": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bUsingGroundTopologyOffset")); } },
-    "usingGroundTopologyOffsetTransitionSmoothing": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flUsingGroundTopologyOffsetTransitionSmoothing")); } },
-    "ladderNormal": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecLadderNormal"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "ladderSurfacePropIndex": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nLadderSurfacePropIndex")); } },
-    "ducked": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDucked")); }, set: function (v) { this.root.writeBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDucked"), v); } },
-    "duckAmount": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckAmount")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckAmount"), v); } },
-    "duckSpeed": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckSpeed")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckSpeed"), v); } },
-    "duckOverride": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDuckOverride")); }, set: function (v) { this.root.writeBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDuckOverride"), v); } },
-    "desiresDuck": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDesiresDuck")); } },
-    "ducking": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDucking")); } },
-    "duckRootOffset": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckRootOffset")); } },
-    "duckViewOffset": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckViewOffset")); } },
-    "lastDuckTime": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastDuckTime")); } },
-    "bombPlantViewOffset": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flBombPlantViewOffset")); } },
-    "duckUntilOnGround": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_duckUntilOnGround")); } },
-    "hasWalkMovedSinceLastJump": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bHasWalkMovedSinceLastJump")); } },
-    "inStuckTest": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bInStuckTest")); } },
-    "traceCount": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nTraceCount")); } },
-    "stuckLast": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_StuckLast")); } },
-    "speedCropped": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bSpeedCropped")); } },
-    "oldWaterLevel": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nOldWaterLevel")); } },
-    "waterEntryTime": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flWaterEntryTime")); } },
-    "forward": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecForward"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "left": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecLeft"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "up": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecUp"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "gameCodeHasMovedPlayerAfterCommand": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nGameCodeHasMovedPlayerAfterCommand")); } },
-    "madeFootstepNoise": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bMadeFootstepNoise")); } },
-    "footsteps": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_iFootsteps")); } },
-    "stashGrenadeParameterWhen": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_fStashGrenadeParameterWhen")); } },
-    "useFrictionStashedSpeed": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bUseFrictionStashedSpeed")); } },
-    "useFrictionStashedSpeedUntilFrac": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flUseFrictionStashedSpeedUntilFrac")); } },
-    "frictionStashedSpeed": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flFrictionStashedSpeed")); } },
-    "stamina": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flStamina")); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flStamina"), v); } },
-    "heightAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flHeightAtJumpStart")); } },
-    "maxJumpHeightThisJump": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flMaxJumpHeightThisJump")); } },
-    "maxJumpHeightLastJump": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flMaxJumpHeightLastJump")); } },
-    "staminaAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flStaminaAtJumpStart")); } },
-    "velMulAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flVelMulAtJumpStart")); } },
-    "accumulatedJumpError": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flAccumulatedJumpError")); } },
-    "lastJumpTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nLastJumpTick")); } },
-    "lastJumpFrac": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastJumpFrac")); } },
-    "lastJumpVelocityZ": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastJumpVelocityZ")); } },
-    "jumpApexPending": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bJumpApexPending")); } },
-    "ticksSinceLastSurfingDetected": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flTicksSinceLastSurfingDetected")); } },
-    "hasEverProcessedCommand": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bHasEverProcessedCommand")); } },
+    "impulse": { get: function () { return this.root.readInt32Via(this.path, off("CPlayer_MovementServices","m_nImpulse") + this.base); } },
+    "queuedButtonDownMask": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nQueuedButtonDownMask") + this.base); return v === null ? null : v.toString(); } },
+    "queuedButtonChangeMask": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nQueuedButtonChangeMask") + this.base); return v === null ? null : v.toString(); } },
+    "buttonDoublePressed": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nButtonDoublePressed") + this.base); return v === null ? null : v.toString(); } },
+    "lastCommandNumberProcessed": { get: function () { return this.root.readUInt32Via(this.path, off("CPlayer_MovementServices","m_nLastCommandNumberProcessed") + this.base); } },
+    "toggleButtonDownMask": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nToggleButtonDownMask") + this.base); return v === null ? null : v.toString(); } },
+    "cmdForwardMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdForwardMove") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdForwardMove") + this.base, v); } },
+    "cmdLeftMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdLeftMove") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdLeftMove") + this.base, v); } },
+    "cmdUpMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdUpMove") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flCmdUpMove") + this.base, v); } },
+    "maxspeed": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flMaxspeed") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flMaxspeed") + this.base, v); } },
+    "forwardMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flForwardMove") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flForwardMove") + this.base, v); } },
+    "leftMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flLeftMove") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flLeftMove") + this.base, v); } },
+    "upMove": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices","m_flUpMove") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices","m_flUpMove") + this.base, v); } },
+    "lastMovementImpulses": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices","m_vecLastMovementImpulses") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "oldViewAngles": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices","m_vecOldViewAngles") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "stepSoundTime": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flStepSoundTime") + this.base); } },
+    "fallVelocity": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flFallVelocity") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flFallVelocity") + this.base, v); } },
+    "groundNormal": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices_Humanoid","m_groundNormal") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "surfaceFriction": { get: function () { return this.root.readFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flSurfaceFriction") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_flSurfaceFriction") + this.base, v); } },
+    "stepside": { get: function () { return this.root.readInt32Via(this.path, off("CPlayer_MovementServices_Humanoid","m_nStepside") + this.base); } },
+    "smoothedVelocity": { get: function () { var a = this.root.readFloatsChain(this.path, off("CPlayer_MovementServices_Humanoid","m_vecSmoothedVelocity") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "usingGroundTopologyOffset": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bUsingGroundTopologyOffset") + this.base); } },
+    "usingGroundTopologyOffsetTransitionSmoothing": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flUsingGroundTopologyOffsetTransitionSmoothing") + this.base); } },
+    "ladderNormal": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecLadderNormal") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "ladderSurfacePropIndex": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nLadderSurfacePropIndex") + this.base); } },
+    "ducked": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDucked") + this.base); }, set: function (v) { this.root.writeBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDucked") + this.base, v); } },
+    "duckAmount": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckAmount") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckAmount") + this.base, v); } },
+    "duckSpeed": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckSpeed") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckSpeed") + this.base, v); } },
+    "duckOverride": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDuckOverride") + this.base); }, set: function (v) { this.root.writeBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDuckOverride") + this.base, v); } },
+    "desiresDuck": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDesiresDuck") + this.base); } },
+    "ducking": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bDucking") + this.base); } },
+    "duckRootOffset": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckRootOffset") + this.base); } },
+    "duckViewOffset": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flDuckViewOffset") + this.base); } },
+    "lastDuckTime": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastDuckTime") + this.base); } },
+    "bombPlantViewOffset": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flBombPlantViewOffset") + this.base); } },
+    "duckUntilOnGround": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_duckUntilOnGround") + this.base); } },
+    "hasWalkMovedSinceLastJump": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bHasWalkMovedSinceLastJump") + this.base); } },
+    "inStuckTest": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bInStuckTest") + this.base); } },
+    "traceCount": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nTraceCount") + this.base); } },
+    "stuckLast": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_StuckLast") + this.base); } },
+    "speedCropped": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bSpeedCropped") + this.base); } },
+    "oldWaterLevel": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nOldWaterLevel") + this.base); } },
+    "waterEntryTime": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flWaterEntryTime") + this.base); } },
+    "forward": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecForward") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "left": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecLeft") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "up": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_MovementServices","m_vecUp") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "gameCodeHasMovedPlayerAfterCommand": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nGameCodeHasMovedPlayerAfterCommand") + this.base); } },
+    "madeFootstepNoise": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bMadeFootstepNoise") + this.base); } },
+    "footsteps": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_iFootsteps") + this.base); } },
+    "stashGrenadeParameterWhen": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_fStashGrenadeParameterWhen") + this.base); } },
+    "useFrictionStashedSpeed": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bUseFrictionStashedSpeed") + this.base); } },
+    "useFrictionStashedSpeedUntilFrac": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flUseFrictionStashedSpeedUntilFrac") + this.base); } },
+    "frictionStashedSpeed": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flFrictionStashedSpeed") + this.base); } },
+    "stamina": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flStamina") + this.base); }, set: function (v) { this.root.writeFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flStamina") + this.base, v); } },
+    "heightAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flHeightAtJumpStart") + this.base); } },
+    "maxJumpHeightThisJump": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flMaxJumpHeightThisJump") + this.base); } },
+    "maxJumpHeightLastJump": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flMaxJumpHeightLastJump") + this.base); } },
+    "staminaAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flStaminaAtJumpStart") + this.base); } },
+    "velMulAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flVelMulAtJumpStart") + this.base); } },
+    "accumulatedJumpError": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flAccumulatedJumpError") + this.base); } },
+    "lastJumpTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nLastJumpTick") + this.base); } },
+    "lastJumpFrac": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastJumpFrac") + this.base); } },
+    "lastJumpVelocityZ": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastJumpVelocityZ") + this.base); } },
+    "jumpApexPending": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bJumpApexPending") + this.base); } },
+    "ticksSinceLastSurfingDetected": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flTicksSinceLastSurfingDetected") + this.base); } },
+    "hasEverProcessedCommand": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bHasEverProcessedCommand") + this.base); } },
   });
-  function SceneNode(root, path) { this.root = root; this.path = path; }
+  function SceneNode(root, path, base) { this.root = root; this.path = path; this.base = base; }
   Object.defineProperties(SceneNode.prototype, {
-    "rotation": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_angRotation"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
-    "scale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flScale")); } },
-    "absOrigin": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_vecAbsOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
-    "absRotation": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_angAbsRotation"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
-    "absScale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flAbsScale")); } },
-    "parentAttachmentOrBone": { get: function () { return this.root.readInt16Via(this.path, off("CGameSceneNode","m_nParentAttachmentOrBone")); } },
-    "debugAbsOriginChanges": { get: function () { return this.root.readBoolVia(this.path, off("CGameSceneNode","m_bDebugAbsOriginChanges")); } },
-    "dormant": { get: function () { return this.root.readBoolVia(this.path, off("CGameSceneNode","m_bDormant")); } },
-    "forceParentToBeNetworked": { get: function () { return this.root.readBoolVia(this.path, off("CGameSceneNode","m_bForceParentToBeNetworked")); } },
-    "hierarchicalDepth": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nHierarchicalDepth")); } },
-    "hierarchyType": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nHierarchyType")); } },
-    "doNotSetAnimTimeInInvalidatePhysicsCount": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nDoNotSetAnimTimeInInvalidatePhysicsCount")); } },
-    "clientLocalScale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flClientLocalScale")); } },
+    "rotation": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_angRotation") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "scale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flScale") + this.base); } },
+    "absOrigin": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_vecAbsOrigin") + this.base, 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "absRotation": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_angAbsRotation") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "absScale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flAbsScale") + this.base); } },
+    "parentAttachmentOrBone": { get: function () { return this.root.readInt16Via(this.path, off("CGameSceneNode","m_nParentAttachmentOrBone") + this.base); } },
+    "debugAbsOriginChanges": { get: function () { return this.root.readBoolVia(this.path, off("CGameSceneNode","m_bDebugAbsOriginChanges") + this.base); } },
+    "dormant": { get: function () { return this.root.readBoolVia(this.path, off("CGameSceneNode","m_bDormant") + this.base); } },
+    "forceParentToBeNetworked": { get: function () { return this.root.readBoolVia(this.path, off("CGameSceneNode","m_bForceParentToBeNetworked") + this.base); } },
+    "hierarchicalDepth": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nHierarchicalDepth") + this.base); } },
+    "hierarchyType": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nHierarchyType") + this.base); } },
+    "doNotSetAnimTimeInInvalidatePhysicsCount": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nDoNotSetAnimTimeInInvalidatePhysicsCount") + this.base); } },
+    "clientLocalScale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flClientLocalScale") + this.base); } },
   });
-  function WeaponServices(root, path) { this.root = root; this.path = path; }
+  function WeaponServices(root, path, base) { this.root = root; this.path = path; this.base = base; }
   Object.defineProperties(WeaponServices.prototype, {
-    "activeWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hActiveWeapon")); } },
-    "lastWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hLastWeapon")); } },
-    "preventWeaponPickup": { get: function () { return this.root.readBoolVia(this.path, off("CPlayer_WeaponServices","m_bPreventWeaponPickup")); } },
-    "nextAttack": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_WeaponServices","m_flNextAttack")); } },
-    "savedWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CCSPlayer_WeaponServices","m_hSavedWeapon")); } },
-    "timeToMelee": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToMelee")); } },
-    "timeToSecondary": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToSecondary")); } },
-    "timeToPrimary": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToPrimary")); } },
-    "timeToSniperRifle": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToSniperRifle")); } },
-    "isBeingGivenItem": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bIsBeingGivenItem")); } },
-    "isPickingUpItemWithUse": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bIsPickingUpItemWithUse")); } },
-    "pickedUpWeapon": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bPickedUpWeapon")); } },
-    "disableAutoDeploy": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bDisableAutoDeploy")); } },
-    "isPickingUpGroundWeapon": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bIsPickingUpGroundWeapon")); } },
-    "blockInspectUntilNextGraphUpdate": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bBlockInspectUntilNextGraphUpdate")); } },
+    "activeWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hActiveWeapon") + this.base); } },
+    "lastWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hLastWeapon") + this.base); } },
+    "preventWeaponPickup": { get: function () { return this.root.readBoolVia(this.path, off("CPlayer_WeaponServices","m_bPreventWeaponPickup") + this.base); } },
+    "nextAttack": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_WeaponServices","m_flNextAttack") + this.base); } },
+    "savedWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CCSPlayer_WeaponServices","m_hSavedWeapon") + this.base); } },
+    "timeToMelee": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToMelee") + this.base); } },
+    "timeToSecondary": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToSecondary") + this.base); } },
+    "timeToPrimary": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToPrimary") + this.base); } },
+    "timeToSniperRifle": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToSniperRifle") + this.base); } },
+    "isBeingGivenItem": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bIsBeingGivenItem") + this.base); } },
+    "isPickingUpItemWithUse": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bIsPickingUpItemWithUse") + this.base); } },
+    "pickedUpWeapon": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bPickedUpWeapon") + this.base); } },
+    "disableAutoDeploy": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bDisableAutoDeploy") + this.base); } },
+    "isPickingUpGroundWeapon": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bIsPickingUpGroundWeapon") + this.base); } },
+    "blockInspectUntilNextGraphUpdate": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_WeaponServices","m_bBlockInspectUntilNextGraphUpdate") + this.base); } },
   });
   function applyNav(proto, className) {
+    if (className === "CCSPlayerController") {
+      Object.defineProperty(proto, "matchStats", {
+        get: function () {
+          var _p = [];
+          var o0 = off("CCSPlayerController","m_pActionTrackingServices"); if (o0 < 0) return null; _p.push(o0);
+          var _b = 0;
+          var b0 = off("CCSPlayerController_ActionTrackingServices","m_matchStats"); if (b0 < 0) return null; _b += b0;
+          return new MatchStats(this.ref, _p, _b);
+        }, enumerable: true, configurable: true,
+      });
+    }
     if (className === "CCSPlayerPawn") {
       Object.defineProperty(proto, "aimPunchServices", {
         get: function () {
           var _p = [];
           var o0 = off("CCSPlayerPawn","m_pAimPunchServices"); if (o0 < 0) return null; _p.push(o0);
-          return new AimPunchServices(this.ref, _p);
+          return new AimPunchServices(this.ref, _p, 0);
         }, enumerable: true, configurable: true,
       });
       Object.defineProperty(proto, "movementServices", {
         get: function () {
           var _p = [];
           var o0 = off("CBasePlayerPawn","m_pMovementServices"); if (o0 < 0) return null; _p.push(o0);
-          return new MovementServices(this.ref, _p);
+          return new MovementServices(this.ref, _p, 0);
         }, enumerable: true, configurable: true,
       });
       Object.defineProperty(proto, "sceneNode", {
@@ -136,14 +184,14 @@
           var _p = [];
           var o0 = off("CBaseEntity","m_CBodyComponent"); if (o0 < 0) return null; _p.push(o0);
           var o1 = off("CBodyComponent","m_pSceneNode"); if (o1 < 0) return null; _p.push(o1);
-          return new SceneNode(this.ref, _p);
+          return new SceneNode(this.ref, _p, 0);
         }, enumerable: true, configurable: true,
       });
       Object.defineProperty(proto, "weaponServices", {
         get: function () {
           var _p = [];
           var o0 = off("CBasePlayerPawn","m_pWeaponServices"); if (o0 < 0) return null; _p.push(o0);
-          return new WeaponServices(this.ref, _p);
+          return new WeaponServices(this.ref, _p, 0);
         }, enumerable: true, configurable: true,
       });
     }

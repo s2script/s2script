@@ -46,15 +46,19 @@ export function emitNavJs(model: NavModel): string {
 
   // Emit one constructor + Object.defineProperties block per wrapper.
   for (const w of model.wrappers) {
-    out.push(`  function ${w.wrapper}(root, path) { this.root = root; this.path = path; }`);
+    // `base` is the summed offset of any embedded hops (0 when there are none), added to every
+    // field offset. Kept off the path because `read*Via` DEREFERENCES each path entry, and an
+    // embedded struct must not be dereferenced — it is part of the object already reached.
+    out.push(`  function ${w.wrapper}(root, path, base) { this.root = root; this.path = path; this.base = base; }`);
     out.push(`  Object.defineProperties(${w.wrapper}.prototype, {`);
     for (const f of w.fields) {
       // `addOffset` is non-zero only for a flattened value wrapper, where the scalar sits at
       // wrapperOffset + delta. Both wrappers reachable from nav today (GameTime_t, GameTick_t) put
       // m_Value at +0, so this changes no current output — but omitting it would silently read the
       // wrong bytes the moment a wrapper with a non-zero value offset came into range.
-      const base = `off(${S(f.declaringClass)},${S(f.rawName)})`;
-      const resolve = f.addOffset ? `${base} + ${f.addOffset}` : base;
+      const own = `off(${S(f.declaringClass)},${S(f.rawName)})`;
+      const withDelta = f.addOffset ? `${own} + ${f.addOffset}` : own;
+      const resolve = `${withDelta} + this.base`;
       let getter: string;
       const kind = f.accessorKind;
       if (kind === "u64") {
@@ -105,7 +109,18 @@ export function emitNavJs(model: NavModel): string {
         const h = w.path[i];
         out.push(`          var o${i} = off(${S(h.cls)},${S(h.field)}); if (o${i} < 0) return null; _p.push(o${i});`);
       }
-      out.push(`          return new ${w.wrapper}(this.ref, _p);`);
+      if (w.base.length > 0) {
+        out.push(`          var _b = 0;`);
+        for (let i = 0; i < w.base.length; i++) {
+          const h = w.base[i]!;
+          // A failed base lookup must NOT fall through as 0 — that would silently read the start
+          // of the target object instead of the embedded struct inside it.
+          out.push(`          var b${i} = off(${S(h.cls)},${S(h.field)}); if (b${i} < 0) return null; _b += b${i};`);
+        }
+        out.push(`          return new ${w.wrapper}(this.ref, _p, _b);`);
+      } else {
+        out.push(`          return new ${w.wrapper}(this.ref, _p, 0);`);
+      }
       out.push(`        }, enumerable: true, configurable: true,`);
       out.push(`      });`);
     }
