@@ -195,3 +195,24 @@ test("wrappers with no base hop still receive an explicit 0", () => {
   assert.match(js, /return new Svc2\(this\.ref, _p, 0\)/);
   assert.doesNotMatch(js, /return new Svc2\(this\.ref, _p\)/);
 });
+
+test("notifyChanged flags the ROOT-relative hop, not a chain-relative offset", () => {
+  const js = emitNavJs(buildNavModel(BASE_CFG, BASE_CAT));
+  // path[0] is a field ON the root entity, so its offset is the one the engine's dirty-tracking
+  // understands. A later hop is inside the pointed-to object and would mark the wrong bytes on the
+  // wrong entity — which is why setters do not do this implicitly.
+  assert.match(js, /MatchStats\.prototype\.notifyChanged = function \(\) \{/);
+  assert.match(js, /this\.root\.notifyStateChanged\(this\.path\[0\]\)/);
+  assert.doesNotMatch(js, /notifyStateChanged\(this\.path\[1\]\)/);
+});
+
+test("notifyChanged is a no-op when there is no pointer hop", () => {
+  // A wrapper reached without a hop has no root-relative offset to notify at; notifying at a
+  // fabricated 0 would mark the entity header.
+  const js = emitNavJs(buildNavModel(BASE_CFG, BASE_CAT));
+  assert.match(js, /if \(this\.path\.length > 0\)/);
+});
+
+test("the wrapper interface declares notifyChanged", () => {
+  assert.match(emitNavDts(buildNavModel(BASE_CFG, BASE_CAT)), /^\s*notifyChanged\(\): void;/m);
+});

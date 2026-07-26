@@ -50,6 +50,21 @@ export function emitNavJs(model: NavModel): string {
     // field offset. Kept off the path because `read*Via` DEREFERENCES each path entry, and an
     // embedded struct must not be dereferenced — it is part of the object already reached.
     out.push(`  function ${w.wrapper}(root, path, base) { this.root = root; this.path = path; this.base = base; }`);
+    // notifyChanged(): flag the sub-object for replication after a write.
+    //
+    // Setters deliberately do NOT do this (see the write note below): for most targets the server
+    // reads the field every tick and replication is irrelevant. It is NOT irrelevant for anything a
+    // CLIENT renders — match stats drive the scoreboard, so a write nobody is told about is a write
+    // nobody sees.
+    //
+    // Notifying at path[0] is exactly what the C# does for this case
+    // (`SetStateChanged(controller, "m_pActionTrackingServices")`): the FIRST hop is a field on the
+    // root entity, so its offset is the one the engine's dirty-tracking understands. Later hops are
+    // inside the pointed-to object and would mark the wrong bytes on the wrong entity — which is why
+    // this is a separate, explicit call rather than something a setter does for you.
+    out.push(`  ${w.wrapper}.prototype.notifyChanged = function () {`);
+    out.push(`    if (this.path.length > 0) this.root.notifyStateChanged(this.path[0]);`);
+    out.push(`  };`);
     out.push(`  Object.defineProperties(${w.wrapper}.prototype, {`);
     for (const f of w.fields) {
       // `addOffset` is non-zero only for a flattened value wrapper, where the scalar sits at

@@ -3,6 +3,14 @@ import type { Vector, QAngle } from "@s2script/sdk/math";
 import type { EntityRef } from "@s2script/sdk/entity";
 
 export interface AimPunchServices {
+  /**
+   * Flag this sub-object for network replication after writing to it.
+   *
+   * Setters do not do this for you. For most targets it does not matter — the server reads the
+   * field every tick — but anything a CLIENT renders (a scoreboard counter, say) will not update
+   * until you call this.
+   */
+  notifyChanged(): void;
   readonly predictableBaseTick: number | null;
   readonly predictableBaseTickInterpAmount: number | null;
   readonly predictableBaseAngle: QAngle | null;
@@ -21,6 +29,14 @@ export interface AimPunchServices {
  * on the same fields behaves the same way.
  */
 export interface MatchStats {
+  /**
+   * Flag this sub-object for network replication after writing to it.
+   *
+   * Setters do not do this for you. For most targets it does not matter — the server reads the
+   * field every tick — but anything a CLIENT renders (a scoreboard counter, say) will not update
+   * until you call this.
+   */
+  notifyChanged(): void;
   kills: number | null;
   deaths: number | null;
   assists: number | null;
@@ -67,6 +83,14 @@ export interface MatchStats {
  * on the same fields behaves the same way.
  */
 export interface MovementServices {
+  /**
+   * Flag this sub-object for network replication after writing to it.
+   *
+   * Setters do not do this for you. For most targets it does not matter — the server reads the
+   * field every tick — but anything a CLIENT renders (a scoreboard counter, say) will not update
+   * until you call this.
+   */
+  notifyChanged(): void;
   readonly impulse: number | null;
   readonly queuedButtonDownMask: string | null;
   readonly queuedButtonChangeMask: string | null;
@@ -136,6 +160,14 @@ export interface MovementServices {
 }
 
 export interface SceneNode {
+  /**
+   * Flag this sub-object for network replication after writing to it.
+   *
+   * Setters do not do this for you. For most targets it does not matter — the server reads the
+   * field every tick — but anything a CLIENT renders (a scoreboard counter, say) will not update
+   * until you call this.
+   */
+  notifyChanged(): void;
   readonly rotation: QAngle | null;
   readonly scale: number | null;
   readonly absOrigin: Vector | null;
@@ -152,6 +184,14 @@ export interface SceneNode {
 }
 
 export interface WeaponServices {
+  /**
+   * Flag this sub-object for network replication after writing to it.
+   *
+   * Setters do not do this for you. For most targets it does not matter — the server reads the
+   * field every tick — but anything a CLIENT renders (a scoreboard counter, say) will not update
+   * until you call this.
+   */
+  notifyChanged(): void;
   readonly activeWeapon: EntityRef | null;
   readonly lastWeapon: EntityRef | null;
   readonly preventWeaponPickup: boolean | null;

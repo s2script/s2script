@@ -45,6 +45,16 @@ export function emitNavDts(model: NavModel): string {
       out.push(` */`);
     }
     out.push(`export interface ${w.wrapper} {`);
+    out.push(
+      "  /**",
+      "   * Flag this sub-object for network replication after writing to it.",
+      "   *",
+      "   * Setters do not do this for you. For most targets it does not matter — the server reads the",
+      "   * field every tick — but anything a CLIENT renders (a scoreboard counter, say) will not update",
+      "   * until you call this.",
+      "   */",
+      "  notifyChanged(): void;",
+    );
     for (const f of w.fields) {
       // Read-only unless nav-targets.json opted the field into write-through.
       out.push(`  ${f.navWritable ? "" : "readonly "}${f.propName}: ${TSTYPE[f.accessorKind]};`);

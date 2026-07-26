@@ -4,6 +4,9 @@
   var QAngle = __s2require("@s2script/sdk/math").QAngle;
   var Vector = __s2require("@s2script/sdk/math").Vector;
   function AimPunchServices(root, path, base) { this.root = root; this.path = path; this.base = base; }
+  AimPunchServices.prototype.notifyChanged = function () {
+    if (this.path.length > 0) this.root.notifyStateChanged(this.path[0]);
+  };
   Object.defineProperties(AimPunchServices.prototype, {
     "predictableBaseTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTick") + this.base); } },
     "predictableBaseTickInterpAmount": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTickInterpAmount") + this.base); } },
@@ -13,6 +16,9 @@
     "unpredictableBaseAngle": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_unpredictableBaseAngle") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
   });
   function MatchStats(root, path, base) { this.root = root; this.path = path; this.base = base; }
+  MatchStats.prototype.notifyChanged = function () {
+    if (this.path.length > 0) this.root.notifyStateChanged(this.path[0]);
+  };
   Object.defineProperties(MatchStats.prototype, {
     "kills": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iKills") + this.base); }, set: function (v) { this.root.writeInt32Via(this.path, off("CSPerRoundStats_t","m_iKills") + this.base, v); } },
     "deaths": { get: function () { return this.root.readInt32Via(this.path, off("CSPerRoundStats_t","m_iDeaths") + this.base); }, set: function (v) { this.root.writeInt32Via(this.path, off("CSPerRoundStats_t","m_iDeaths") + this.base, v); } },
@@ -50,6 +56,9 @@
     "entryWins": { get: function () { return this.root.readInt32Via(this.path, off("CSMatchStats_t","m_iEntryWins") + this.base); } },
   });
   function MovementServices(root, path, base) { this.root = root; this.path = path; this.base = base; }
+  MovementServices.prototype.notifyChanged = function () {
+    if (this.path.length > 0) this.root.notifyStateChanged(this.path[0]);
+  };
   Object.defineProperties(MovementServices.prototype, {
     "impulse": { get: function () { return this.root.readInt32Via(this.path, off("CPlayer_MovementServices","m_nImpulse") + this.base); } },
     "queuedButtonDownMask": { get: function () { var v = this.root.readUInt64Via(this.path, off("CPlayer_MovementServices","m_nQueuedButtonDownMask") + this.base); return v === null ? null : v.toString(); } },
@@ -119,6 +128,9 @@
     "hasEverProcessedCommand": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bHasEverProcessedCommand") + this.base); } },
   });
   function SceneNode(root, path, base) { this.root = root; this.path = path; this.base = base; }
+  SceneNode.prototype.notifyChanged = function () {
+    if (this.path.length > 0) this.root.notifyStateChanged(this.path[0]);
+  };
   Object.defineProperties(SceneNode.prototype, {
     "rotation": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_angRotation") + this.base, 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
     "scale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flScale") + this.base); } },
@@ -135,6 +147,9 @@
     "clientLocalScale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flClientLocalScale") + this.base); } },
   });
   function WeaponServices(root, path, base) { this.root = root; this.path = path; this.base = base; }
+  WeaponServices.prototype.notifyChanged = function () {
+    if (this.path.length > 0) this.root.notifyStateChanged(this.path[0]);
+  };
   Object.defineProperties(WeaponServices.prototype, {
     "activeWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hActiveWeapon") + this.base); } },
     "lastWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hLastWeapon") + this.base); } },
