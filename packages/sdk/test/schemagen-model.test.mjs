@@ -259,3 +259,55 @@ test("a self-referential struct terminates instead of recursing forever", () => 
   const m = buildModel(catalog, ["Base"]);
   assert.deepEqual(m.embedded.map((e) => e.className), ["Loop"]);   // emitted exactly once
 });
+
+// --- collisions are per inheritance chain, not global ----------------------
+
+const CHAIN = {
+  Root:   { parent: null,   fields: [{ name: "m_flSpeed", offset: 8,  type: { kind: "atomic", name: "float32" } }] },
+  Mid:    { parent: "Root", fields: [] },
+  Leaf:   { parent: "Mid",  fields: [{ name: "m_fSpeed", offset: 12, type: { kind: "atomic", name: "float32" } }] },
+  Sibling:{ parent: null,   fields: [{ name: "m_flSpeed", offset: 16, type: { kind: "atomic", name: "float32" } }] },
+  Twice:  { parent: null,   fields: [
+    { name: "m_iRecoilIndex",  offset: 8,  type: { kind: "atomic", name: "int32" } },
+    { name: "m_flRecoilIndex", offset: 12, type: { kind: "atomic", name: "float32" } },
+  ] },
+};
+
+test("an unrelated class sharing a name does NOT rename the existing property", () => {
+  // The regression this guards: adding CTeam (m_iScore) once renamed
+  // CCSPlayerController.score to m_iScore for every plugin already using it.
+  const m = buildModel(CHAIN, ["Root", "Sibling"]);
+  const root = m.classes.find((c) => c.className === "Root");
+  const sib = m.classes.find((c) => c.className === "Sibling");
+  assert.equal(root.ownFields[0].propName, "speed");
+  assert.equal(sib.ownFields[0].propName, "speed");   // both keep it — they never share an object
+  assert.deepEqual(m.collisions, []);
+});
+
+test("a real chain conflict is resolved ancestor-wins", () => {
+  const m = buildModel(CHAIN, ["Leaf"]);
+  const root = m.classes.find((c) => c.className === "Root");
+  const leaf = m.classes.find((c) => c.className === "Leaf");
+  // Leaf flattens Root's fields onto one object, so these two genuinely meet.
+  assert.equal(root.ownFields[0].propName, "speed");        // ancestor keeps the good name
+  assert.equal(leaf.ownFields[0].propName, "m_fSpeed");     // descendant falls back
+  assert.equal(m.collisions.length, 1);
+  assert.match(m.collisions[0], /kept by Root/);
+});
+
+test("two fields on the SAME class both fall back — no ancestor to break the tie", () => {
+  const m = buildModel(CHAIN, ["Twice"]);
+  assert.deepEqual(m.classes[0].ownFields.map((f) => f.propName).sort(),
+    ["m_flRecoilIndex", "m_iRecoilIndex"]);
+  assert.equal(m.collisions.length, 1);
+  assert.doesNotMatch(m.collisions[0], /kept by/);
+});
+
+test("ancestor-wins makes naming independent of which descendants are generated", () => {
+  // Root's property must be `speed` whether or not Leaf is in the class list -- otherwise the
+  // generated API would shift under an unrelated addition.
+  const withLeaf = buildModel(CHAIN, ["Root", "Leaf"]);
+  const without = buildModel(CHAIN, ["Root"]);
+  const nameIn = (m) => m.classes.find((c) => c.className === "Root").ownFields[0].propName;
+  assert.equal(nameIn(withLeaf), nameIn(without));
+});

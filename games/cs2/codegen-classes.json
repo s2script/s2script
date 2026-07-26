@@ -1,1 +1,17 @@
-["CCSPlayerPawn", "CCSPlayerController", "CCSWeaponBase"]
+[
+  "CCSPlayerPawn",
+  "CCSPlayerController",
+  "CCSWeaponBase",
+  "CCSGameRules",
+  "CCSTeam",
+  "CDynamicProp",
+  "CRagdollProp",
+  "CPhysicsProp",
+  "CPointWorldText",
+  "CBaseTrigger",
+  "CBeam",
+  "CPlantedC4",
+  "CBaseCSGrenadeProjectile",
+  "CBaseDoor",
+  "CBaseButton"
+]

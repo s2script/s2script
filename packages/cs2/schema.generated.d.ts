@@ -87,10 +87,34 @@ export interface CNetworkTransmitComponent {
   transmitStateOwnedCounter: number | null;
 }
 
+export interface CNetworkVarChainer {
+  pathIndex: number | null;
+}
+
 export interface CNetworkVelocityVector {
 }
 
 export interface CNetworkViewOffsetVector {
+}
+
+export interface CPropDataComponent {
+  dmgModBullet: number | null;
+  dmgModClub: number | null;
+  dmgModExplosive: number | null;
+  dmgModFire: number | null;
+  interactions: number | null;
+  spawnMotionDisabled: boolean | null;
+  disableTakePhysicsDamageSpawnFlag: number | null;
+  motionDisabledSpawnFlag: number | null;
+}
+
+export interface CRetakeGameRules {
+  matchSeed: number | null;
+  blockersPresent: boolean | null;
+  roundInProgress: boolean | null;
+  firstSecondHalfRound: number | null;
+  bombSite: number | null;
+  readonly bombPlanter: EntityRef | null;
 }
 
 export interface CTouchExpansionComponent {
@@ -154,6 +178,15 @@ export interface fogparams_t {
   padding: boolean | null;
 }
 
+export interface locksound_t {
+  flwaitSound: number | null;
+}
+
+export interface ragdoll_t {
+  allowStretch: boolean | null;
+  unused: boolean | null;
+}
+
 export interface sky3dparams_t {
   scale: number | null;
   readonly origin: Vector | null;
@@ -163,6 +196,17 @@ export interface sky3dparams_t {
 }
 
 export interface CEntityInstance {
+}
+
+export interface CGameRules {
+  readonly questName: string | null;
+  questPhase: number | null;
+  lastMatchTime: number | null;
+  readonly lastMatchTime_MatchID64: string | null;
+  totalPausedTicks: number | null;
+  pauseStartTick: number | null;
+  gamePaused: boolean | null;
+  readonly __m_pChainEntity: CNetworkVarChainer;
 }
 
 export interface CBaseEntity extends CEntityInstance {
@@ -230,6 +274,9 @@ export interface CBaseEntity extends CEntityInstance {
   readonly onUser4: CEntityIOOutput;
 }
 
+export interface CMultiplayRules extends CGameRules {
+}
+
 export interface CBaseModelEntity extends CBaseEntity {
   destructiblePartInitialStateDestructed0_PartIndex: number | null;
   destructiblePartInitialStateDestructed1_PartIndex: number | null;
@@ -281,6 +328,14 @@ export interface CBasePlayerController extends CBaseEntity {
   desiredFOV: number | null;
 }
 
+export interface CTeam extends CBaseEntity {
+  score: number | null;
+  readonly teamname: string | null;
+}
+
+export interface CTeamplayRules extends CMultiplayRules {
+}
+
 export interface CBaseAnimGraph extends CBaseModelEntity {
   initiallyPopulateInterpHistory: boolean | null;
   animGraphUpdateEnabled: boolean | null;
@@ -291,6 +346,212 @@ export interface CBaseAnimGraph extends CBaseModelEntity {
   ragdollClientSide: boolean | null;
   readonly graphControllerManager: CAnimGraphControllerManager;
   readonly ragdollPose: PhysicsRagdollPose_t;
+}
+
+export interface CBaseToggle extends CBaseModelEntity {
+  moveDistance: number | null;
+  wait: number | null;
+  lip: number | null;
+  alwaysFireBlockedOutputs: boolean | null;
+  readonly position1: Vector | null;
+  readonly position2: Vector | null;
+  readonly moveAng: QAngle | null;
+  readonly angle1: QAngle | null;
+  readonly angle2: QAngle | null;
+  height: number | null;
+  readonly activator: EntityRef | null;
+  readonly finalDest: Vector | null;
+  readonly finalAngle: QAngle | null;
+  movementType: number | null;
+}
+
+export interface CBeam extends CBaseModelEntity {
+  frameRate: number | null;
+  hDRColorScale: number | null;
+  fireTime: number | null;
+  damage: number | null;
+  numBeamEnts: number | null;
+  beamFlags: number | null;
+  width: number | null;
+  endWidth: number | null;
+  fadeLength: number | null;
+  haloScale: number | null;
+  amplitude: number | null;
+  startFrame: number | null;
+  m_fSpeed: number | null;
+  frame: number | null;
+  turnedOff: boolean | null;
+  readonly endPos: Vector | null;
+  readonly endEntity: EntityRef | null;
+  dissolveType: number | null;
+}
+
+export interface CCSGameRules extends CTeamplayRules {
+  freezePeriod: boolean | null;
+  warmupPeriod: boolean | null;
+  warmupPeriodEnd: number | null;
+  warmupPeriodStart: number | null;
+  terroristTimeOutActive: boolean | null;
+  cTTimeOutActive: boolean | null;
+  terroristTimeOutRemaining: number | null;
+  cTTimeOutRemaining: number | null;
+  terroristTimeOuts: number | null;
+  cTTimeOuts: number | null;
+  technicalTimeOut: boolean | null;
+  matchWaitingForResume: boolean | null;
+  freezeTime: number | null;
+  roundTime: number | null;
+  matchStartTime: number | null;
+  roundStartTime: number | null;
+  restartRoundTime: number | null;
+  gameRestart: boolean | null;
+  gameStartTime: number | null;
+  timeUntilNextPhaseStarts: number | null;
+  gamePhase: number | null;
+  m_totalRoundsPlayed: number | null;
+  roundsPlayedThisPhase: number | null;
+  overtimePlaying: number | null;
+  hostagesRemaining: number | null;
+  anyHostageReached: boolean | null;
+  mapHasBombTarget: boolean | null;
+  mapHasRescueZone: boolean | null;
+  mapHasBuyZone: boolean | null;
+  isQueuedMatchmaking: boolean | null;
+  queuedMatchmakingMode: number | null;
+  isValveDS: boolean | null;
+  logoMap: boolean | null;
+  playAllStepSoundsOnServer: boolean | null;
+  spectatorSlotCount: number | null;
+  matchDevice: number | null;
+  hasMatchStarted: boolean | null;
+  nextMapInMapgroup: number | null;
+  readonly tournamentEventName: string | null;
+  readonly tournamentEventStage: string | null;
+  readonly matchStatTxt: string | null;
+  readonly tournamentPredictionsTxt: string | null;
+  tournamentPredictionsPct: number | null;
+  cMMItemDropRevealStartTime: number | null;
+  cMMItemDropRevealEndTime: number | null;
+  isDroppingItems: boolean | null;
+  isQuestEligible: boolean | null;
+  isHltvActive: boolean | null;
+  bombPlanted: boolean | null;
+  numBestOfMaps: number | null;
+  halloweenMaskListSeed: number | null;
+  bombDropped: boolean | null;
+  roundWinStatus: number | null;
+  roundWinReason: number | null;
+  tCantBuy: boolean | null;
+  cTCantBuy: boolean | null;
+  readonly minimapMins: Vector | null;
+  readonly minimapMaxs: Vector | null;
+  readonly ullLocalMatchID: string | null;
+  endMatchMapVoteWinner: number | null;
+  numConsecutiveCTLoses: number | null;
+  numConsecutiveTerroristLoses: number | null;
+  hasHostageBeenTouched: boolean | null;
+  intermissionStartTime: number | null;
+  intermissionEndTime: number | null;
+  levelInitialized: boolean | null;
+  m_iTotalRoundsPlayed: number | null;
+  unBalancedRounds: number | null;
+  endMatchOnRoundReset: boolean | null;
+  endMatchOnThink: boolean | null;
+  numTerrorist: number | null;
+  numCT: number | null;
+  numSpawnableTerrorist: number | null;
+  numSpawnableCT: number | null;
+  spawnPointsRandomSeed: number | null;
+  firstConnected: boolean | null;
+  completeReset: boolean | null;
+  pickNewTeamsOnReset: boolean | null;
+  scrambleTeamsOnRestart: boolean | null;
+  swapTeamsOnRestart: boolean | null;
+  needToAskPlayersForContinueVote: boolean | null;
+  numQueuedMatchmakingAccounts: number | null;
+  avgPlayerRank: number | null;
+  numTotalTournamentDrops: number | null;
+  numSpectatorsCountMax: number | null;
+  numSpectatorsCountMaxTV: number | null;
+  numSpectatorsCountMaxLnk: number | null;
+  cTsAliveAtFreezetimeEnd: number | null;
+  terroristsAliveAtFreezetimeEnd: number | null;
+  forceTeamChangeSilent: boolean | null;
+  loadingRoundBackupData: boolean | null;
+  matchInfoShowType: number | null;
+  matchInfoDecidedTime: number | null;
+  mTeamDMLastWinningTeamNumber: number | null;
+  mTeamDMLastThinkTime: number | null;
+  teamDMLastAnnouncementTime: number | null;
+  accountTerrorist: number | null;
+  accountCT: number | null;
+  spawnPointCount_Terrorist: number | null;
+  spawnPointCount_CT: number | null;
+  maxNumTerrorists: number | null;
+  maxNumCTs: number | null;
+  loserBonusMostRecentTeam: number | null;
+  tmNextPeriodicThink: number | null;
+  voiceWonMatchBragFired: boolean | null;
+  warmupNextChatNoticeTime: number | null;
+  hostagesRescued: number | null;
+  hostagesTouched: number | null;
+  nextHostageAnnouncement: number | null;
+  noTerroristsKilled: boolean | null;
+  noCTsKilled: boolean | null;
+  noEnemiesKilled: boolean | null;
+  canDonateWeapons: boolean | null;
+  firstKillTime: number | null;
+  firstBloodTime: number | null;
+  hostageWasInjured: boolean | null;
+  hostageWasKilled: boolean | null;
+  voteCalled: boolean | null;
+  serverVoteOnReset: boolean | null;
+  voteCheckThrottle: number | null;
+  buyTimeEnded: boolean | null;
+  lastFreezeEndBeep: number | null;
+  targetBombed: boolean | null;
+  bombDefused: boolean | null;
+  mapHasBombZone: boolean | null;
+  readonly mainCTSpawnPos: Vector | null;
+  respawningAllRespawnablePlayers: boolean | null;
+  nextCTSpawnPoint: number | null;
+  cTSpawnPointUsedTime: number | null;
+  nextTerroristSpawnPoint: number | null;
+  terroristSpawnPointUsedTime: number | null;
+  isUnreservedGameServer: boolean | null;
+  autobalanceDisplayTime: number | null;
+  allowWeaponSwitch: boolean | null;
+  roundTimeWarningTriggered: boolean | null;
+  phaseChangeAnnouncementTime: number | null;
+  nextUpdateTeamClanNamesTime: number | null;
+  lastThinkTime: number | null;
+  accumulatedRoundOffDamage: number | null;
+  shorthandedBonusLastEvalRound: number | null;
+  matchAbortedEarlyReason: number | null;
+  hasTriggeredRoundStartMusic: boolean | null;
+  switchingTeamsAtRoundReset: boolean | null;
+  readonly playerResource: EntityRef | null;
+  matchEndCount: number | null;
+  tTeamIntroVariant: number | null;
+  cTTeamIntroVariant: number | null;
+  teamIntroPeriod: boolean | null;
+  teamIntroPeriodEnd: number | null;
+  playedTeamIntroVO: boolean | null;
+  roundEndWinnerTeam: number | null;
+  roundEndReason: number | null;
+  roundEndShowTimerDefend: boolean | null;
+  roundEndTimerTime: number | null;
+  roundEndFunFactData1: number | null;
+  roundEndFunFactData2: number | null;
+  roundEndFunFactData3: number | null;
+  roundEndPlayerCount: number | null;
+  roundEndNoMusic: boolean | null;
+  roundEndLegacy: number | null;
+  roundEndCount: number | null;
+  roundStartRoundNumber: number | null;
+  roundStartCount: number | null;
+  readonly lastPerfSampleTime: number | null;
+  readonly retakeRules: CRetakeGameRules;
 }
 
 export interface CCSPlayerController extends CBasePlayerController {
@@ -379,6 +640,46 @@ export interface CCSPlayerController extends CBasePlayerController {
   readonly lastHeldVoteTimer: IntervalTimer;
 }
 
+export interface CCSTeam extends CTeam {
+  lastRecievedShorthandedRoundBonus: number | null;
+  shorthandedRoundBonusStartRound: number | null;
+  surrendered: boolean | null;
+  readonly teamMatchStat: string | null;
+  numMapVictories: number | null;
+  scoreFirstHalf: number | null;
+  scoreSecondHalf: number | null;
+  scoreOvertime: number | null;
+  readonly clanTeamname: string | null;
+  clanID: number | null;
+  readonly teamFlagImage: string | null;
+  readonly teamLogoImage: string | null;
+  nextResourceTime: number | null;
+  lastUpdateSentAt: number | null;
+}
+
+export interface CModelPointEntity extends CBaseModelEntity {
+}
+
+export interface CBaseButton extends CBaseToggle {
+  readonly moveEntitySpace: QAngle | null;
+  stayPushed: boolean | null;
+  rotating: boolean | null;
+  locked: boolean | null;
+  disabled: boolean | null;
+  useLockedTime: number | null;
+  solidBsp: boolean | null;
+  state: number | null;
+  forceNpcExclude: boolean | null;
+  readonly glowEntity: EntityRef | null;
+  usable: boolean | null;
+  readonly ls: locksound_t;
+  readonly onDamaged: CEntityIOOutput;
+  readonly onPressed: CEntityIOOutput;
+  readonly onUseLocked: CEntityIOOutput;
+  readonly onIn: CEntityIOOutput;
+  readonly onOut: CEntityIOOutput;
+}
+
 export interface CBaseCombatCharacter extends CBaseAnimGraph {
   forceServerRagdoll: boolean | null;
   impactEnergyScale: number | null;
@@ -386,6 +687,65 @@ export interface CBaseCombatCharacter extends CBaseAnimGraph {
   deathEventsDispatched: boolean | null;
   navHullIdx: number | null;
   readonly movementStats: CMovementStatsProperty;
+}
+
+export interface CBaseDoor extends CBaseToggle {
+  readonly moveEntitySpace: QAngle | null;
+  readonly moveDirParentSpace: Vector | null;
+  forceClosed: boolean | null;
+  doorGroup: boolean | null;
+  locked: boolean | null;
+  ignoreDebris: boolean | null;
+  noNPCs: boolean | null;
+  blockDamage: number | null;
+  loopMoveSound: boolean | null;
+  createNavObstacle: boolean | null;
+  isChaining: boolean | null;
+  isUsable: boolean | null;
+  readonly ls: locksound_t;
+  readonly onBlockedClosing: CEntityIOOutput;
+  readonly onBlockedOpening: CEntityIOOutput;
+  readonly onUnblockedClosing: CEntityIOOutput;
+  readonly onUnblockedOpening: CEntityIOOutput;
+  readonly onFullyClosed: CEntityIOOutput;
+  readonly onFullyOpen: CEntityIOOutput;
+  readonly onClose: CEntityIOOutput;
+  readonly onOpen: CEntityIOOutput;
+  readonly onLockedUse: CEntityIOOutput;
+}
+
+export interface CBaseGrenade extends CBaseAnimGraph {
+  hasWarnedAI: boolean | null;
+  isSmokeGrenade: boolean | null;
+  isLive: boolean | null;
+  dmgRadius: number | null;
+  detonateTime: number | null;
+  warnAITime: number | null;
+  damage: number | null;
+  readonly thrower: EntityRef | null;
+  nextAttack: number | null;
+  readonly originalThrower: EntityRef | null;
+  readonly onPlayerPickup: CEntityIOOutput;
+  readonly onExplode: CEntityIOOutput;
+}
+
+export interface CBaseProp extends CBaseAnimGraph {
+  modelOverrodeBlockLOS: boolean | null;
+  shapeType: number | null;
+  conformToCollisionBounds: boolean | null;
+}
+
+export interface CBaseTrigger extends CBaseToggle {
+  readonly filter: EntityRef | null;
+  disabled: boolean | null;
+  useAsyncQueries: boolean | null;
+  readonly onStartTouch: CEntityIOOutput;
+  readonly onStartTouchAll: CEntityIOOutput;
+  readonly onEndTouch: CEntityIOOutput;
+  readonly onEndTouchAll: CEntityIOOutput;
+  readonly onTouching: CEntityIOOutput;
+  readonly onTouchingEachEntity: CEntityIOOutput;
+  readonly onNotTouching: CEntityIOOutput;
 }
 
 export interface CEconEntity extends CBaseAnimGraph {
@@ -398,6 +758,93 @@ export interface CEconEntity extends CBaseAnimGraph {
   readonly oldProvidee: EntityRef | null;
   oldOwnerClass: number | null;
   readonly attributeManager: CAttributeContainer;
+}
+
+export interface CPlantedC4 extends CBaseAnimGraph {
+  bombTicking: boolean | null;
+  c4Blow: number | null;
+  bombSite: number | null;
+  sourceSoundscapeHash: number | null;
+  abortDetonationBecauseWorldIsFrozen: boolean | null;
+  cannotBeDefused: boolean | null;
+  spotRules: number | null;
+  hasExploded: boolean | null;
+  bombDefused: boolean | null;
+  trainingPlacedByPlayer: boolean | null;
+  timerLength: number | null;
+  beingDefused: boolean | null;
+  lastDefuseTime: number | null;
+  defuseLength: number | null;
+  defuseCountDown: number | null;
+  readonly bombDefuser: EntityRef | null;
+  progressBarTime: number | null;
+  voiceAlertFired: boolean | null;
+  nextBotBeepTime: number | null;
+  readonly catchUpToPlayerEye: QAngle | null;
+  lastSpinDetectionTime: number | null;
+  readonly attributeManager: CAttributeContainer;
+  readonly onBombDefused: CEntityIOOutput;
+  readonly onBombBeginDefuse: CEntityIOOutput;
+  readonly onBombDefuseAborted: CEntityIOOutput;
+  readonly entitySpottedState: EntitySpottedState_t;
+}
+
+export interface CPointWorldText extends CModelPointEntity {
+  readonly messageText: string | null;
+  readonly fontName: string | null;
+  readonly backgroundMaterialName: string | null;
+  enabled: boolean | null;
+  fullbright: boolean | null;
+  worldUnitsPerPx: number | null;
+  fontSize: number | null;
+  depthOffset: number | null;
+  drawBackground: boolean | null;
+  backgroundBorderWidth: number | null;
+  backgroundBorderHeight: number | null;
+  backgroundWorldToUV: number | null;
+  color: number | null;
+}
+
+export interface CRagdollProp extends CBaseAnimGraph {
+  startDisabled: boolean | null;
+  lastUpdateTickCount: number | null;
+  allAsleep: boolean | null;
+  firstCollisionAfterLaunch: boolean | null;
+  updateNavWhenMoving: boolean | null;
+  forceNavObstacleCut: boolean | null;
+  attachedToReferenceFrame: boolean | null;
+  readonly damageEntity: EntityRef | null;
+  readonly killer: EntityRef | null;
+  readonly physicsAttacker: EntityRef | null;
+  lastPhysicsInfluenceTime: number | null;
+  fadeOutStartTime: number | null;
+  fadeTime: number | null;
+  readonly lastOrigin: Vector | null;
+  awakeTime: number | null;
+  lastOriginChangeTime: number | null;
+  hasBeenPhysgunned: boolean | null;
+  allowStretch: boolean | null;
+  blendWeight: number | null;
+  defaultFadeScale: number | null;
+  shouldDeleteActivationRecord: boolean | null;
+  readonly ragdoll: ragdoll_t;
+}
+
+export interface CBaseCSGrenadeProjectile extends CBaseGrenade {
+  readonly initialPosition: Vector | null;
+  readonly initialVelocity: Vector | null;
+  bounces: number | null;
+  explodeEffectTickBegin: number | null;
+  readonly explodeEffectOrigin: Vector | null;
+  spawnTime: number | null;
+  oGSExtraFlags: number | null;
+  detonationRecorded: boolean | null;
+  itemIndex: number | null;
+  readonly originalSpawnLocation: Vector | null;
+  lastBounceSoundTime: number | null;
+  readonly lastHitSurfaceNormal: Vector | null;
+  ticksAtZeroVelocity: number | null;
+  hasEverHitEnemy: boolean | null;
 }
 
 export interface CBasePlayerPawn extends CBaseCombatCharacter {
@@ -423,6 +870,31 @@ export interface CBasePlayerWeapon extends CEconEntity {
   clip1: number | null;
   clip2: number | null;
   readonly onPlayerUse: CEntityIOOutput;
+}
+
+export interface CBreakableProp extends CBaseProp {
+  impactEnergyScale: number | null;
+  minHealthDmg: number | null;
+  readonly preferredCarryAngles: QAngle | null;
+  pressureDelay: number | null;
+  defBurstScale: number | null;
+  readonly defBurstOffset: Vector | null;
+  readonly breaker: EntityRef | null;
+  preventDamageBeforeTime: number | null;
+  hasBreakPiecesOrCommands: boolean | null;
+  explodeDamage: number | null;
+  explodeRadius: number | null;
+  explosionDelay: number | null;
+  readonly physicsAttacker: EntityRef | null;
+  lastPhysicsInfluenceTime: number | null;
+  defaultFadeScale: number | null;
+  readonly lastAttacker: EntityRef | null;
+  usePuntSound: boolean | null;
+  originalBlockLOS: boolean | null;
+  readonly cPropDataComponent: CPropDataComponent;
+  readonly onStartDeath: CEntityIOOutput;
+  readonly onBreak: CEntityIOOutput;
+  readonly onTakeDamage: CEntityIOOutput;
 }
 
 export interface CCSPlayerPawnBase extends CBasePlayerPawn {
@@ -492,6 +964,69 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
   lastShakeTime: number | null;
   readonly onPlayerPickup: CEntityIOOutput;
   readonly ironSightController: CIronSightController;
+}
+
+export interface CDynamicProp extends CBreakableProp {
+  createNavObstacle: boolean | null;
+  navObstacleUpdatesOverridden: boolean | null;
+  useHitboxesForRenderBox: boolean | null;
+  useAnimGraph: boolean | null;
+  randomizeCycle: boolean | null;
+  startDisabled: boolean | null;
+  firedStartEndOutput: boolean | null;
+  forceNpcExclude: boolean | null;
+  createNonSolid: boolean | null;
+  isOverrideProp: boolean | null;
+  initialGlowState: number | null;
+  glowRange: number | null;
+  glowRangeMin: number | null;
+  glowColor: number | null;
+  glowTeam: number | null;
+  readonly outputAnimBegun: CEntityIOOutput;
+  readonly outputAnimOver: CEntityIOOutput;
+  readonly outputAnimLoopCycleOver: CEntityIOOutput;
+  readonly onAnimReachedStart: CEntityIOOutput;
+  readonly onAnimReachedEnd: CEntityIOOutput;
+}
+
+export interface CPhysicsProp extends CBreakableProp {
+  forceNavIgnore: boolean | null;
+  noNavmeshBlocker: boolean | null;
+  forceNpcExclude: boolean | null;
+  massScale: number | null;
+  buoyancyScale: number | null;
+  damageType: number | null;
+  damageToEnableMotion: number | null;
+  forceToEnableMotion: number | null;
+  thrownByPlayer: boolean | null;
+  droppedByPlayer: boolean | null;
+  touchedByPlayer: boolean | null;
+  firstCollisionAfterLaunch: boolean | null;
+  hasBeenAwakened: boolean | null;
+  isOverrideProp: boolean | null;
+  lastBurn: number | null;
+  nextCheckDisableMotionContactsTime: number | null;
+  initialGlowState: number | null;
+  glowRange: number | null;
+  glowRangeMin: number | null;
+  glowColor: number | null;
+  shouldAutoConvertBackFromDebris: boolean | null;
+  muteImpactEffects: boolean | null;
+  updateNavWhenMoving: boolean | null;
+  forceNavObstacleCut: boolean | null;
+  allowObstacleConvexHullMerging: boolean | null;
+  acceptDamageFromHeldObjects: boolean | null;
+  enableUseOutput: boolean | null;
+  removableForAmmoBalancing: boolean | null;
+  awake: boolean | null;
+  attachedToReferenceFrame: boolean | null;
+  readonly motionEnabled: CEntityIOOutput;
+  readonly onAwakened: CEntityIOOutput;
+  readonly onAwake: CEntityIOOutput;
+  readonly onAsleep: CEntityIOOutput;
+  readonly onPlayerUse: CEntityIOOutput;
+  readonly onOutOfWorld: CEntityIOOutput;
+  readonly onPlayerPickup: CEntityIOOutput;
 }
 
 export interface CCSPlayerPawn extends CCSPlayerPawnBase {
@@ -590,17 +1125,38 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
 /** Every wrappable entity class, by schema name. */
 export interface SchemaClasses {
   CEntityInstance: CEntityInstance;
+  CGameRules: CGameRules;
   CBaseEntity: CBaseEntity;
+  CMultiplayRules: CMultiplayRules;
   CBaseModelEntity: CBaseModelEntity;
   CBasePlayerController: CBasePlayerController;
+  CTeam: CTeam;
+  CTeamplayRules: CTeamplayRules;
   CBaseAnimGraph: CBaseAnimGraph;
+  CBaseToggle: CBaseToggle;
+  CBeam: CBeam;
+  CCSGameRules: CCSGameRules;
   CCSPlayerController: CCSPlayerController;
+  CCSTeam: CCSTeam;
+  CModelPointEntity: CModelPointEntity;
+  CBaseButton: CBaseButton;
   CBaseCombatCharacter: CBaseCombatCharacter;
+  CBaseDoor: CBaseDoor;
+  CBaseGrenade: CBaseGrenade;
+  CBaseProp: CBaseProp;
+  CBaseTrigger: CBaseTrigger;
   CEconEntity: CEconEntity;
+  CPlantedC4: CPlantedC4;
+  CPointWorldText: CPointWorldText;
+  CRagdollProp: CRagdollProp;
+  CBaseCSGrenadeProjectile: CBaseCSGrenadeProjectile;
   CBasePlayerPawn: CBasePlayerPawn;
   CBasePlayerWeapon: CBasePlayerWeapon;
+  CBreakableProp: CBreakableProp;
   CCSPlayerPawnBase: CCSPlayerPawnBase;
   CCSWeaponBase: CCSWeaponBase;
+  CDynamicProp: CDynamicProp;
+  CPhysicsProp: CPhysicsProp;
   CCSPlayerPawn: CCSPlayerPawn;
 }
 

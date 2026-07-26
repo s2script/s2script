@@ -225,13 +225,63 @@ export function buildModel(catalog: Catalog, requested: string[], embeddable: st
   }
   embedded.sort((a, b) => (a.className < b.className ? -1 : a.className > b.className ? 1 : 0));
 
-  // 4. Collision pass: an idiomatic propName shared by >=2 distinct fields -> raw fallback for all.
+  // 4. Collision pass — RESOLVED PER INHERITANCE CHAIN, not globally.
+  //
+  // A property name is only ambiguous when two fields can land on the SAME wrapped object, and
+  // `flattenedFields` builds an object from one inheritance chain. So `CCSPlayerController.m_iScore`
+  // and `CTeam.m_iScore` are both `score` with no ambiguity whatsoever — they never coexist.
+  //
+  // Resolving globally instead made the surface unstable in the worst possible way: adding an
+  // unrelated class silently RENAMED a property on an existing one. Adding CTeam alone turned
+  // `controller.score` into `controller.m_iScore` for every plugin already using it, with no error
+  // anywhere. That is a breaking change disguised as codegen coverage, and it is why this is
+  // per-chain.
+  //
+  // Where a conflict IS real, the ANCESTOR keeps the idiomatic name and descendants fall back to the
+  // raw one. `CBeam.m_fSpeed` genuinely collides with `CBaseEntity.m_flSpeed` on a CBeam wrapper, but
+  // resolving it must not cost `speed` on every other entity in the game. Ancestor-wins also makes
+  // the outcome independent of WHICH descendants happen to be generated — the same property keeps
+  // the same name however the class list grows.
+  const ancestors = (cls: string): Set<string> => {
+    const out = new Set<string>();
+    for (let cur: string | null = catalog[cls]?.parent ?? null; cur && catalog[cur]; cur = catalog[cur].parent) out.add(cur);
+    return out;
+  };
   const byProp = new Map<string, { propName: string; rawName: string; declaringClass: string }[]>();
   for (const c of classes) for (const f of [...c.ownFields, ...c.embeddedFields]) { (byProp.get(f.propName) ?? byProp.set(f.propName, []).get(f.propName)!).push(f); }
   const collisions: string[] = [];
   for (const [prop, fields] of byProp) {
-    const distinct = new Set(fields.map((f) => `${f.declaringClass}.${f.rawName}`));
-    if (distinct.size >= 2) { for (const f of fields) f.propName = f.rawName; collisions.push(`${prop} <- ${[...distinct].sort().join(", ")}`); }
+    // Distinct declarations only: the same field reached through several generated subclasses is one
+    // declaration, not a conflict with itself.
+    const decls = new Map<string, { propName: string; rawName: string; declaringClass: string }[]>();
+    for (const f of fields) (decls.get(`${f.declaringClass}.${f.rawName}`) ?? decls.set(`${f.declaringClass}.${f.rawName}`, []).get(`${f.declaringClass}.${f.rawName}`)!).push(f);
+    if (decls.size < 2) continue;
+
+    const keys = [...decls.keys()].sort();
+    const clsOf = (k: string): string => decls.get(k)![0]!.declaringClass;
+    const conflicting = new Set<string>();
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const a = clsOf(keys[i]!), b = clsOf(keys[j]!);
+        // Same class, or one derives from the other -> they meet on one object.
+        if (a === b || ancestors(a).has(b) || ancestors(b).has(a)) { conflicting.add(keys[i]!); conflicting.add(keys[j]!); }
+      }
+    }
+    if (conflicting.size === 0) continue;
+
+    // The shallowest class in the conflict keeps `prop`; everything else takes its raw name. Two
+    // fields on the SAME class have no ancestor to break the tie, so both fall back.
+    const depthOf = (k: string): number => ancestors(clsOf(k)).size;
+    const inConflict = [...conflicting].sort((x, y) => depthOf(x) - depthOf(y) || (x < y ? -1 : 1));
+    const winnerCls = clsOf(inConflict[0]!);
+    const soleWinner = inConflict.filter((k) => clsOf(k) === winnerCls).length === 1;
+    const renamed: string[] = [];
+    for (const k of inConflict) {
+      if (soleWinner && k === inConflict[0]) continue;
+      for (const f of decls.get(k)!) f.propName = f.rawName;
+      renamed.push(k);
+    }
+    collisions.push(`${prop} <- ${renamed.sort().join(", ")}${soleWinner ? ` (kept by ${winnerCls})` : ""}`);
   }
   collisions.sort();
   return { classes, embedded, collisions };
