@@ -5,7 +5,8 @@ export type Catalog = Record<string, { parent: string | null; fields: CatalogFie
 export interface CatalogField {
   name: string;
   offset: number;
-  type: { kind: string; name?: string; inner?: string };
+  /** `size` is the type's byte width where the SchemaSystem states it — present for enums. */
+  type: { kind: string; name?: string; inner?: string; size?: number };
 }
 
 export type AccessorKind = "f32" | "bool" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "handle" | "u64" | "i64" | "f64" | "str" | "vector" | "qangle";
@@ -76,6 +77,9 @@ const ATOMIC: Record<string, { k: AccessorKind; w: boolean }> = {
   Color: { k: "u32", w: true },
 };
 
+/** Enum byte width → reader. Unsigned: schema enums are non-negative and stored unsigned. */
+const ENUM_WIDTH: Record<number, AccessorKind | undefined> = { 1: "u8", 2: "u16", 4: "u32", 8: "u64" };
+
 // atomic vector-type name → kind (only the fixed-3-float types this slice; 2D/4D/Color/Quaternion deferred).
 const VEC: Record<string, AccessorKind> = { Vector: "vector", VectorWS: "vector", QAngle: "qangle" };
 // kind → value-class + float count, for the emitters + import detection.
@@ -127,7 +131,19 @@ export function classifyField(type: CatalogField["type"], embeddable: ReadonlySe
     if (cm) return { accessorKind: "str", writable: false, strLen: parseInt(cm[1], 10) };
     return { skip: `unmapped 'unknown' type '${type.name ?? ""}'` };
   }
-  if (type.kind === "enum") return { skip: "enum byte-width absent from catalog (deferred)" };
+  if (type.kind === "enum") {
+    // An enum is a plain integer of the width its binding declares; without the width there is no
+    // way to choose a reader, which is why these were skipped wholesale. The catalog now carries it
+    // (dumped from the live SchemaSystem, not assumed), so only a genuinely unstated width skips.
+    //
+    // Read UNSIGNED. Schema enums are non-negative in practice and the underlying storage is
+    // unsigned, so a signed read of a 1-byte enum would turn 0x80.. flag values negative.
+    const w = ENUM_WIDTH[type.size ?? 0];
+    // Writability follows the WRITE table rather than being asserted: there is no narrow 64-bit
+    // writer, so an 8-byte enum is read-only for the same reason uint64 is.
+    if (w) return { accessorKind: w, writable: WRITE[w] !== undefined };
+    return { skip: `enum '${type.name ?? ""}' byte width not stated by the schema` };
+  }
   if (type.kind === "class") {
     const n = type.name ?? "";
     if (embeddable.has(n)) return { embedded: n };
@@ -225,13 +241,63 @@ export function buildModel(catalog: Catalog, requested: string[], embeddable: st
   }
   embedded.sort((a, b) => (a.className < b.className ? -1 : a.className > b.className ? 1 : 0));
 
-  // 4. Collision pass: an idiomatic propName shared by >=2 distinct fields -> raw fallback for all.
+  // 4. Collision pass — RESOLVED PER INHERITANCE CHAIN, not globally.
+  //
+  // A property name is only ambiguous when two fields can land on the SAME wrapped object, and
+  // `flattenedFields` builds an object from one inheritance chain. So `CCSPlayerController.m_iScore`
+  // and `CTeam.m_iScore` are both `score` with no ambiguity whatsoever — they never coexist.
+  //
+  // Resolving globally instead made the surface unstable in the worst possible way: adding an
+  // unrelated class silently RENAMED a property on an existing one. Adding CTeam alone turned
+  // `controller.score` into `controller.m_iScore` for every plugin already using it, with no error
+  // anywhere. That is a breaking change disguised as codegen coverage, and it is why this is
+  // per-chain.
+  //
+  // Where a conflict IS real, the ANCESTOR keeps the idiomatic name and descendants fall back to the
+  // raw one. `CBeam.m_fSpeed` genuinely collides with `CBaseEntity.m_flSpeed` on a CBeam wrapper, but
+  // resolving it must not cost `speed` on every other entity in the game. Ancestor-wins also makes
+  // the outcome independent of WHICH descendants happen to be generated — the same property keeps
+  // the same name however the class list grows.
+  const ancestors = (cls: string): Set<string> => {
+    const out = new Set<string>();
+    for (let cur: string | null = catalog[cls]?.parent ?? null; cur && catalog[cur]; cur = catalog[cur].parent) out.add(cur);
+    return out;
+  };
   const byProp = new Map<string, { propName: string; rawName: string; declaringClass: string }[]>();
   for (const c of classes) for (const f of [...c.ownFields, ...c.embeddedFields]) { (byProp.get(f.propName) ?? byProp.set(f.propName, []).get(f.propName)!).push(f); }
   const collisions: string[] = [];
   for (const [prop, fields] of byProp) {
-    const distinct = new Set(fields.map((f) => `${f.declaringClass}.${f.rawName}`));
-    if (distinct.size >= 2) { for (const f of fields) f.propName = f.rawName; collisions.push(`${prop} <- ${[...distinct].sort().join(", ")}`); }
+    // Distinct declarations only: the same field reached through several generated subclasses is one
+    // declaration, not a conflict with itself.
+    const decls = new Map<string, { propName: string; rawName: string; declaringClass: string }[]>();
+    for (const f of fields) (decls.get(`${f.declaringClass}.${f.rawName}`) ?? decls.set(`${f.declaringClass}.${f.rawName}`, []).get(`${f.declaringClass}.${f.rawName}`)!).push(f);
+    if (decls.size < 2) continue;
+
+    const keys = [...decls.keys()].sort();
+    const clsOf = (k: string): string => decls.get(k)![0]!.declaringClass;
+    const conflicting = new Set<string>();
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const a = clsOf(keys[i]!), b = clsOf(keys[j]!);
+        // Same class, or one derives from the other -> they meet on one object.
+        if (a === b || ancestors(a).has(b) || ancestors(b).has(a)) { conflicting.add(keys[i]!); conflicting.add(keys[j]!); }
+      }
+    }
+    if (conflicting.size === 0) continue;
+
+    // The shallowest class in the conflict keeps `prop`; everything else takes its raw name. Two
+    // fields on the SAME class have no ancestor to break the tie, so both fall back.
+    const depthOf = (k: string): number => ancestors(clsOf(k)).size;
+    const inConflict = [...conflicting].sort((x, y) => depthOf(x) - depthOf(y) || (x < y ? -1 : 1));
+    const winnerCls = clsOf(inConflict[0]!);
+    const soleWinner = inConflict.filter((k) => clsOf(k) === winnerCls).length === 1;
+    const renamed: string[] = [];
+    for (const k of inConflict) {
+      if (soleWinner && k === inConflict[0]) continue;
+      for (const f of decls.get(k)!) f.propName = f.rawName;
+      renamed.push(k);
+    }
+    collisions.push(`${prop} <- ${renamed.sort().join(", ")}${soleWinner ? ` (kept by ${winnerCls})` : ""}`);
   }
   collisions.sort();
   return { classes, embedded, collisions };

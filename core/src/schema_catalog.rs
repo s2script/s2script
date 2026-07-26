@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 
 /// A field's type. `kind` ∈ atomic | handle | class | ptr | enum | unknown (the shim maps the
 /// CSchemaType category → this string). `name` = the type name for atomic/class/enum; `inner` = the
-/// referenced class for handle/ptr. Absent fields are omitted from JSON.
+/// referenced class for handle/ptr; `size` = byte width where the SchemaSystem states it (enums —
+/// the category names the type but not its width, and codegen cannot pick a reader without one).
+/// Absent fields are omitted from JSON.
 #[derive(Serialize)]
 pub struct FieldType {
     pub kind: String,
@@ -15,6 +17,8 @@ pub struct FieldType {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u8>,
 }
 
 #[derive(Serialize)]
@@ -53,7 +57,7 @@ impl Catalog {
 
     /// Append a field to its class. If the class was never added, the field is dropped (degrade,
     /// never panic) — the shim always emits the class before its fields.
-    pub fn add_field(&mut self, class: &str, name: &str, offset: i32, kind: &str, type_name: Option<&str>, inner: Option<&str>) {
+    pub fn add_field(&mut self, class: &str, name: &str, offset: i32, kind: &str, type_name: Option<&str>, inner: Option<&str>, size: i32) {
         if let Some(c) = self.classes.get_mut(class) {
             c.fields.push(Field {
                 name: name.to_string(),
@@ -62,6 +66,9 @@ impl Catalog {
                     kind: kind.to_string(),
                     name: type_name.map(|s| s.to_string()),
                     inner: inner.map(|s| s.to_string()),
+                    // 0 = the SchemaSystem did not state a width; omitted rather than recorded as
+                    // zero, so a consumer cannot mistake "unknown" for "zero-sized".
+                    size: if (1..=8).contains(&size) { Some(size as u8) } else { None },
                 },
             });
         }
@@ -89,10 +96,10 @@ mod tests {
     fn built() -> Catalog {
         let mut c = Catalog::new();
         c.add_class("CEntity", Some("CBaseType"));
-        c.add_field("CEntity", "m_iValue", 844, "atomic", Some("int32"), None);
-        c.add_field("CEntity", "m_hReference", 812, "handle", None, Some("CEntityRef"));
+        c.add_field("CEntity", "m_iValue", 844, "atomic", Some("int32"), None, 0);
+        c.add_field("CEntity", "m_hReference", 812, "handle", None, Some("CEntityRef"), 0);
         c.add_class("CBaseType", None); // root: no parent
-        c.add_field("CBaseType", "m_vPosition", 300, "class", Some("Vector"), None);
+        c.add_field("CBaseType", "m_vPosition", 300, "class", Some("Vector"), None, 0);
         c
     }
 
@@ -125,9 +132,28 @@ mod tests {
     }
 
     #[test]
+    fn enum_width_is_recorded_and_only_when_stated() {
+        let mut c = Catalog::new();
+        c.add_class("CEntity", None);
+        // A stated width is carried through so codegen can pick a reader.
+        c.add_field("CEntity", "m_iTeamNum", 8, "enum", Some("Team_t"), None, 1);
+        c.add_field("CEntity", "m_nMoveType", 12, "enum", Some("MoveType_t"), None, 4);
+        // 0 means the SchemaSystem did not state one; it must be OMITTED, not recorded as zero, so
+        // a consumer cannot read "unknown" as "zero-sized".
+        c.add_field("CEntity", "m_nUnbound", 16, "enum", Some("Mystery_t"), None, 0);
+        // Out-of-range is treated the same way rather than trusted.
+        c.add_field("CEntity", "m_nBogus", 20, "enum", Some("Bogus_t"), None, 99);
+        let j = c.to_json();
+        assert!(j.contains("\"size\": 1"), "1-byte enum width missing: {j}");
+        assert!(j.contains("\"size\": 4"), "4-byte enum width missing: {j}");
+        assert!(!j.contains("\"size\": 0"), "unstated width must be omitted: {j}");
+        assert!(!j.contains("\"size\": 99"), "out-of-range width must be omitted: {j}");
+    }
+
+    #[test]
     fn add_field_to_unknown_class_is_defensive_no_panic() {
         let mut c = Catalog::new();
-        c.add_field("CNeverAdded", "x", 0, "atomic", Some("int32"), None); // must not panic
+        c.add_field("CNeverAdded", "x", 0, "atomic", Some("int32"), None, 0); // must not panic
         // The field is dropped (no class) — degrade, not crash.
         assert_eq!(c.class_count(), 0);
     }
@@ -136,7 +162,7 @@ mod tests {
     fn unknown_kind_round_trips() {
         let mut c = Catalog::new();
         c.add_class("C", None);
-        c.add_field("C", "weird", 4, "unknown", Some("SomeExoticType"), None);
+        c.add_field("C", "weird", 4, "unknown", Some("SomeExoticType"), None, 0);
         let v: Value = serde_json::from_str(&c.to_json()).unwrap();
         assert_eq!(v["C"]["fields"][0]["type"]["kind"], "unknown");
         assert_eq!(v["C"]["fields"][0]["type"]["name"], "SomeExoticType");
