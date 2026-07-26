@@ -10,8 +10,19 @@ export function emitDts(model: SchemaModel): string {
   for (const c of model.classes) for (const f of c.ownFields) {
     const vi = VEC_INFO[f.accessorKind]; if (vi) vecClasses.add(vi.cls);
   }
+  for (const e of model.embedded) for (const f of e.fields) {
+    const vi = VEC_INFO[f.accessorKind]; if (vi) vecClasses.add(vi.cls);
+  }
   if (vecClasses.size) out.push(`import type { ${[...vecClasses].sort().join(", ")} } from "@s2script/sdk/math";`);
   out.push("");
+  // Embedded structs first: an entity interface below refers to these by name.
+  for (const e of model.embedded) {
+    out.push(`export interface ${e.className} {`);
+    for (const f of e.fields) {
+      out.push(`  ${f.writable ? "" : "readonly "}${f.propName}: ${TSTYPE[f.accessorKind]};`);
+    }
+    out.push("}", "");
+  }
   for (const c of model.classes) {
     const ext = c.parent && names.has(c.parent) ? ` extends ${c.parent}` : "";
     out.push(`export interface ${c.className}${ext} {`);
@@ -19,6 +30,8 @@ export function emitDts(model: SchemaModel): string {
       const ro = f.writable ? "" : "readonly ";
       out.push(`  ${ro}${f.propName}: ${TSTYPE[f.accessorKind]};`);
     }
+    // The accessor object itself is always readonly — you mutate its fields, not the binding.
+    for (const f of c.embeddedFields) out.push(`  readonly ${f.propName}: ${f.embeddedClass};`);
     out.push("}", "");
   }
   return out.join("\n");

@@ -6,6 +6,8 @@ import { emitJs } from "./emit-js.ts";
 
 const CATALOG_PATH = "games/cs2/gamedata/schema-catalog.json";
 const LIST_PATH = "games/cs2/codegen-classes.json";
+/** Structs embedded inline in a generated class that should be exposed as nested accessors. */
+const EMBED_PATH = "games/cs2/codegen-embedded.json";
 const JS_OUT = "games/cs2/js/schema.generated.js";
 const DTS_OUT = "packages/cs2/schema.generated.d.ts";
 
@@ -13,7 +15,10 @@ const DTS_OUT = "packages/cs2/schema.generated.d.ts";
 export function runGenSchema(repoRoot: string, opts: { check: boolean }): { classes: number; fields: number; skipped: number; drift: string[] } {
   const catalog: Catalog = JSON.parse(readFileSync(join(repoRoot, CATALOG_PATH), "utf8"));
   const list: string[] = JSON.parse(readFileSync(join(repoRoot, LIST_PATH), "utf8"));
-  const model = buildModel(catalog, list);
+  // Optional: a repo without the file simply generates no embedded structs.
+  let embed: string[] = [];
+  try { embed = JSON.parse(readFileSync(join(repoRoot, EMBED_PATH), "utf8")); } catch { /* absent */ }
+  const model = buildModel(catalog, list, embed);
   const dts = emitDts(model);
   const js = emitJs(model);
 

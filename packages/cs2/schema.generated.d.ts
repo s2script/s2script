@@ -2,6 +2,20 @@
 import type { EntityRef } from "@s2script/sdk/entity";
 import type { QAngle, Vector } from "@s2script/sdk/math";
 
+export interface CGlowProperty {
+  readonly glowColor: Vector | null;
+  glowType: number | null;
+  glowTeam: number | null;
+  glowRange: number | null;
+  glowRangeMin: number | null;
+  glowColorOverride: number | null;
+  flashing: boolean | null;
+  glowTime: number | null;
+  glowStartTime: number | null;
+  eligibleForScreenHighlight: boolean | null;
+  glowing: boolean | null;
+}
+
 export interface CEntityInstance {
 }
 
@@ -71,6 +85,7 @@ export interface CBaseModelEntity extends CBaseEntity {
   destructiblePartInitialStateDestructed3_GenerateBreakpieces: boolean | null;
   destructiblePartInitialStateDestructed4_GenerateBreakpieces: boolean | null;
   allowFadeInView: boolean | null;
+  render: number | null;
   renderToCubemaps: boolean | null;
   noInterpolate: boolean | null;
   glowBackfaceMult: number | null;
@@ -79,6 +94,7 @@ export interface CBaseModelEntity extends CBaseEntity {
   fadeScale: number | null;
   shadowStrength: number | null;
   objectCulling: number | null;
+  readonly glow: CGlowProperty;
 }
 
 export interface CBasePlayerController extends CBaseEntity {
@@ -351,6 +367,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   hasDeathInfo: boolean | null;
   deathInfoTime: number | null;
   readonly deathInfoOrigin: Vector | null;
+  gunGameImmunityColor: number | null;
   grenadeParametersStashed: boolean | null;
   readonly stashedShootAngles: QAngle | null;
   readonly stashedGrenadeThrowPosition: Vector | null;

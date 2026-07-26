@@ -107,9 +107,61 @@ test("buildModel threads strLen onto a char[N] field descriptor", () => {
 test("classifyField maps Vector/QAngle atomics to vector/qangle kinds", () => {
   assert.deepEqual(classifyField({ kind: "atomic", name: "Vector" }), { accessorKind: "vector", writable: false });
   assert.deepEqual(classifyField({ kind: "atomic", name: "QAngle" }), { accessorKind: "qangle", writable: false });
-  // an unmapped vector-ish atomic still skips (Vector2D/Color/Quaternion deferred):
+  // an unmapped vector-ish atomic still skips (Vector2D/Quaternion deferred):
   assert.ok("skip" in classifyField({ kind: "atomic", name: "Vector2D" }));
-  assert.ok("skip" in classifyField({ kind: "atomic", name: "Color" }));
+});
+
+test("Color maps to a writable uint32 (packed RGBA, R in the low byte)", () => {
+  assert.deepEqual(classifyField({ kind: "atomic", name: "Color" }), { accessorKind: "u32", writable: true });
+});
+
+test("class-kind fields skip by default and embed only when allow-listed", () => {
+  const glow = { kind: "class", name: "CGlowProperty" };
+  assert.ok("skip" in classifyField(glow));
+  assert.deepEqual(classifyField(glow, new Set(["CGlowProperty"])), { embedded: "CGlowProperty" });
+  // allow-listing one struct must not drag in every other embedded class:
+  assert.ok("skip" in classifyField({ kind: "class", name: "CCollisionProperty" }, new Set(["CGlowProperty"])));
+});
+
+test("buildModel exposes an allow-listed embedded struct as a nested descriptor", () => {
+  const catalog = {
+    Base: { parent: null, fields: [
+      { name: "m_Glow", offset: 2424, type: { kind: "class", name: "CGlowProperty" } },
+      { name: "m_Collision", offset: 100, type: { kind: "class", name: "CCollisionProperty" } },
+    ] },
+    CGlowProperty: { parent: null, fields: [
+      { name: "m_bGlowing", offset: 81, type: { kind: "atomic", name: "bool" } },
+      { name: "m_glowColorOverride", offset: 64, type: { kind: "atomic", name: "Color" } },
+    ] },
+    CCollisionProperty: { parent: null, fields: [] },
+  };
+  const m = buildModel(catalog, ["Base"], ["CGlowProperty"]);
+  const base = m.classes.find((c) => c.className === "Base");
+
+  // The allow-listed one becomes an embedded field; the other stays skipped.
+  assert.deepEqual(base.embeddedFields.map((f) => [f.propName, f.embeddedClass]), [["glow", "CGlowProperty"]]);
+  assert.ok(base.skipped.some((s) => s.rawName === "m_Collision"));
+  // ...and it is NOT also emitted as a plain scalar field.
+  assert.equal(base.ownFields.find((f) => f.rawName === "m_Glow"), undefined);
+
+  // Only referenced structs are emitted, with their own fields classified normally.
+  assert.deepEqual(m.embedded.map((e) => e.className), ["CGlowProperty"]);
+  assert.deepEqual(
+    m.embedded[0].fields.map((f) => [f.propName, f.accessorKind, f.writable]),
+    [["glowing", "bool", true], ["glowColorOverride", "u32", true]],
+  );
+});
+
+test("buildModel rejects an embedded class that is not in the catalog", () => {
+  assert.throws(() => buildModel({ Base: { parent: null, fields: [] } }, ["Base"], ["CNope"]), /not in the catalog/);
+});
+
+test("an allow-listed struct nothing embeds produces no descriptor", () => {
+  const catalog = {
+    Base: { parent: null, fields: [{ name: "m_iHealth", offset: 8, type: { kind: "atomic", name: "int32" } }] },
+    CGlowProperty: { parent: null, fields: [] },
+  };
+  assert.deepEqual(buildModel(catalog, ["Base"], ["CGlowProperty"]).embedded, []);
 });
 
 test("buildModel emits a vector/qangle field with the right kind + TS type", () => {
