@@ -1,5 +1,55 @@
 # @s2script/cs2
 
+## 0.10.0
+
+### Minor Changes
+
+- b6f1884: Named enum constants: `moveType = MoveType_t.VPHYSICS` instead of `moveType = 5`.
+
+  Enum fields were typed `number`, so every value had to be hardcoded from Source convention or another
+  framework — the borrowed-constant problem, one level below the offsets it was already solved for. The
+  dump now walks each enum's enumerators (`SchemaEnumInfoData_t::m_pEnumerators`) alongside the width it
+  already read, into a sibling `schema-enums.json`.
+
+  87 enums are emitted as frozen const objects with a value-union type, and the fields that hold them
+  narrow from `number` to the enum type — so a stray integer is a compile error. Only enums a generated
+  field can actually hold are emitted; the other 430 in the dump belong to animgraph, particle and
+  renderer classes that are not generated, and would be names for values nothing can be assigned.
+
+  THIS FINDS REAL BUGS. Three of the five constants a TTT port hardcoded the same day were wrong:
+  MOVETYPE_VPHYSICS is 5 (it used 9, which is MOVETYPE_LADDER), MOVETYPE_FLY is 3 (it used 5, which is
+  VPHYSICS), and kRenderNone is 2 (it used 1, which is kRenderTransAlpha — the glow only looked right
+  because transparent happened to be close enough).
+
+  Case is preserved rather than PascalCased: `MOVETYPE_VPHYSICS` has no unambiguous PascalCase form. The
+  enum's own redundant prefix is stripped (`MoveType_t.VPHYSICS`), all-or-nothing per enum — one member
+  that does not fit, or two that would collapse, and that enum keeps raw names, because a
+  partly-stripped enum is worse than an unstripped one.
+
+  Nested schema enums (`CFuncMover::Move_t`) sanitise to `CFuncMover__Move_t`; two that would collapse
+  onto one identifier are both dropped to plain integers rather than emitted ambiguously.
+
+  Absent `schema-enums.json` degrades to exactly the previous output — verified byte-identical.
+
+### Patch Changes
+
+- 3d6702a: Ship `weapon.d.ts`. `Weapon` was resolving to `any` for every consumer.
+
+  `index.d.ts` has always done `export { Weapon } from "./weapon"`, but `weapon.d.ts` was missing from
+  the package's `files` array, so it never reached the tarball. A dangling relative specifier does not
+  error — TypeScript resolves it to `any` — so `pawn.activeWeapon` and everything reached through it
+  silently lost its type and code that should not have compiled compiled fine. A downstream plugin hit
+  this and hand-wrote the interface plus a runtime property probe to work around it.
+
+  Adds a test that walks every `.d.ts` in each publishable package's REAL tarball (via
+  `npm pack --dry-run --json`, so it cannot disagree with npm's own packing rules) and asserts each
+  relative re-export target ships too, plus a companion check that every declared `exports` subpath
+  points at a shipped file. Verified against the bug: reverting the one-line fix fails the test with the
+  offending specifier named.
+
+- Updated dependencies [b6f1884]
+  - @s2script/sdk@0.10.2
+
 ## 0.9.0
 
 ### Minor Changes
