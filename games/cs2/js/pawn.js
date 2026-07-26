@@ -18,6 +18,9 @@
   // --- Slice 5C.2: the Player (controller) model ---
   function Player(ref) { this.ref = ref; }                       // ref = the CONTROLLER EntityRef
   if (schema) schema.applyAccessors(Player.prototype, "CCSPlayerController");  // team, score, ping, ...
+  // Controller-sourced pointer-chain wrappers (matchStats). Separate call from the pawn's: applyNav
+  // keys on the SOURCE class, so a controller target is invisible unless the controller proto asks.
+  if (nav) nav.applyNav(Player.prototype, "CCSPlayerController");
 
   // slot is 0-based (CPlayerSlot); the controller entity index is slot+1.
   Object.defineProperty(Player.prototype, "slot", {

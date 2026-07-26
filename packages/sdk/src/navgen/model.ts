@@ -11,6 +11,16 @@ export interface NavConfigEntry {
   target: string;
   path: NavHop[];
   /**
+   * Hops whose offsets are SUMMED into the final field offset instead of being dereferenced —
+   * i.e. structs embedded inline in the target rather than pointed to from it.
+   *
+   * `CCSPlayerController_ActionTrackingServices::m_matchStats` is one: the match stats live INSIDE
+   * the services object, so reaching `m_iKills` is one pointer hop (to the services) plus a base
+   * offset (to the stats block) plus the field. Without this a target could only expose fields
+   * declared on itself or an ancestor, and anything behind an embedded struct was unreachable.
+   */
+  base?: NavHop[];
+  /**
    * Raw field names (`m_flMaxspeed`) that get a SETTER as well as a getter. Opt-in per field,
    * deliberately: which byte a field lives at is regenerable layout, but whether writing it is
    * SAFE is a behavioural fact that belongs in reviewed config. Blanket-honouring the catalog's
@@ -29,6 +39,7 @@ export interface NavWrapper {
   source: string;
   target: string;
   path: NavHop[];
+  base: NavHop[];
   fields: NavField[];
   skippedKinds: { propName: string; accessorKind: AccessorKind }[];
 }
@@ -109,6 +120,7 @@ export function buildNavModel(config: NavConfigEntry[], catalog: Catalog): NavMo
       source: entry.source,
       target: entry.target,
       path: entry.path,
+      base: entry.base ?? [],
       fields,
       skippedKinds,
     };

@@ -20,6 +20,52 @@ export interface AimPunchServices {
  * see brief mismatch until the next authoritative correction. SourceMod's `SetEntPropFloat`
  * on the same fields behaves the same way.
  */
+export interface MatchStats {
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
+  damage: number | null;
+  readonly equipmentValue: number | null;
+  readonly moneySaved: number | null;
+  readonly killReward: number | null;
+  readonly liveTime: number | null;
+  readonly headShotKills: number | null;
+  readonly objective: number | null;
+  readonly cashEarned: number | null;
+  utilityDamage: number | null;
+  readonly enemiesFlashed: number | null;
+  readonly enemy5Ks: number | null;
+  readonly enemy4Ks: number | null;
+  readonly enemy3Ks: number | null;
+  readonly enemyKnifeKills: number | null;
+  readonly enemyTaserKills: number | null;
+  readonly enemy2Ks: number | null;
+  readonly utility_Count: number | null;
+  readonly utility_Successes: number | null;
+  readonly utility_Enemies: number | null;
+  readonly flash_Count: number | null;
+  readonly flash_Successes: number | null;
+  readonly healthPointsRemovedTotal: number | null;
+  readonly healthPointsDealtTotal: number | null;
+  readonly shotsFiredTotal: number | null;
+  readonly shotsOnTargetTotal: number | null;
+  readonly i1v1Count: number | null;
+  readonly i1v1Wins: number | null;
+  readonly i1v2Count: number | null;
+  readonly i1v2Wins: number | null;
+  readonly entryCount: number | null;
+  readonly entryWins: number | null;
+}
+
+/**
+ * Fields NOT marked `readonly` are writable.
+ *
+ * A write takes effect immediately — the server reads these during movement — but it is **not**
+ * flagged for replication, because this object is reached through a pointer chain and the
+ * change-notifier addresses the root entity. A client predicting the old value may therefore
+ * see brief mismatch until the next authoritative correction. SourceMod's `SetEntPropFloat`
+ * on the same fields behaves the same way.
+ */
 export interface MovementServices {
   readonly impulse: number | null;
   readonly queuedButtonDownMask: string | null;

@@ -1,10 +1,43 @@
 [
-  { "prop": "sceneNode", "wrapper": "SceneNode", "source": "CCSPlayerPawn", "target": "CGameSceneNode",
-    "path": [ {"cls":"CBaseEntity","field":"m_CBodyComponent"}, {"cls":"CBodyComponent","field":"m_pSceneNode"} ] },
-  { "prop": "weaponServices", "wrapper": "WeaponServices", "source": "CCSPlayerPawn", "target": "CCSPlayer_WeaponServices",
-    "path": [ {"cls":"CBasePlayerPawn","field":"m_pWeaponServices"} ] },
-  { "prop": "movementServices", "wrapper": "MovementServices", "source": "CCSPlayerPawn", "target": "CCSPlayer_MovementServices",
-    "path": [ {"cls":"CBasePlayerPawn","field":"m_pMovementServices"} ],
+  {
+    "prop": "sceneNode",
+    "wrapper": "SceneNode",
+    "source": "CCSPlayerPawn",
+    "target": "CGameSceneNode",
+    "path": [
+      {
+        "cls": "CBaseEntity",
+        "field": "m_CBodyComponent"
+      },
+      {
+        "cls": "CBodyComponent",
+        "field": "m_pSceneNode"
+      }
+    ]
+  },
+  {
+    "prop": "weaponServices",
+    "wrapper": "WeaponServices",
+    "source": "CCSPlayerPawn",
+    "target": "CCSPlayer_WeaponServices",
+    "path": [
+      {
+        "cls": "CBasePlayerPawn",
+        "field": "m_pWeaponServices"
+      }
+    ]
+  },
+  {
+    "prop": "movementServices",
+    "wrapper": "MovementServices",
+    "source": "CCSPlayerPawn",
+    "target": "CCSPlayer_MovementServices",
+    "path": [
+      {
+        "cls": "CBasePlayerPawn",
+        "field": "m_pMovementServices"
+      }
+    ],
     "writable": [
       "m_flMaxspeed",
       "m_flStamina",
@@ -20,7 +53,43 @@
       "m_flForwardMove",
       "m_flLeftMove",
       "m_flUpMove"
-    ] },
-  { "prop": "aimPunchServices", "wrapper": "AimPunchServices", "source": "CCSPlayerPawn", "target": "CCSPlayer_AimPunchServices",
-    "path": [ {"cls":"CCSPlayerPawn","field":"m_pAimPunchServices"} ] }
+    ]
+  },
+  {
+    "prop": "aimPunchServices",
+    "wrapper": "AimPunchServices",
+    "source": "CCSPlayerPawn",
+    "target": "CCSPlayer_AimPunchServices",
+    "path": [
+      {
+        "cls": "CCSPlayerPawn",
+        "field": "m_pAimPunchServices"
+      }
+    ]
+  },
+  {
+    "prop": "matchStats",
+    "wrapper": "MatchStats",
+    "source": "CCSPlayerController",
+    "target": "CSMatchStats_t",
+    "path": [
+      {
+        "cls": "CCSPlayerController",
+        "field": "m_pActionTrackingServices"
+      }
+    ],
+    "base": [
+      {
+        "cls": "CCSPlayerController_ActionTrackingServices",
+        "field": "m_matchStats"
+      }
+    ],
+    "writable": [
+      "m_iKills",
+      "m_iDeaths",
+      "m_iAssists",
+      "m_iDamage",
+      "m_iUtilityDamage"
+    ]
+  }
 ]
