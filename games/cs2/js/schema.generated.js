@@ -89,6 +89,10 @@
   };
   A["CMultiplayRules"] = {
   };
+  A["CAI_ChangeHintGroup"] = {
+    "searchType": { get: function () { return this.ref.readInt32(off("CAI_ChangeHintGroup","m_iSearchType")); }, set: function (v) { var o = off("CAI_ChangeHintGroup","m_iSearchType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CAI_ChangeHintGroup","m_flRadius")); }, set: function (v) { var o = off("CAI_ChangeHintGroup","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   A["CBaseModelEntity"] = {
     "destructiblePartInitialStateDestructed0": { get: function () { return this.ref.readUInt32(off("CBaseModelEntity","m_nDestructiblePartInitialStateDestructed0")); }, set: function (v) { var o = off("CBaseModelEntity","m_nDestructiblePartInitialStateDestructed0"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "destructiblePartInitialStateDestructed1": { get: function () { return this.ref.readUInt32(off("CBaseModelEntity","m_nDestructiblePartInitialStateDestructed1")); }, set: function (v) { var o = off("CBaseModelEntity","m_nDestructiblePartInitialStateDestructed1"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -148,11 +152,712 @@
     "noClipEnabled": { get: function () { return this.ref.readBool(off("CBasePlayerController","m_bNoClipEnabled")); }, set: function (v) { var o = off("CBasePlayerController","m_bNoClipEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
     "desiredFOV": { get: function () { return this.ref.readUInt32(off("CBasePlayerController","m_iDesiredFOV")); }, set: function (v) { var o = off("CBasePlayerController","m_iDesiredFOV"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
   };
+  A["CCSGO_TeamPreviewCharacterPosition"] = {
+    "variant": { get: function () { return this.ref.readInt32(off("CCSGO_TeamPreviewCharacterPosition","m_nVariant")); }, set: function (v) { var o = off("CCSGO_TeamPreviewCharacterPosition","m_nVariant"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "random": { get: function () { return this.ref.readInt32(off("CCSGO_TeamPreviewCharacterPosition","m_nRandom")); }, set: function (v) { var o = off("CCSGO_TeamPreviewCharacterPosition","m_nRandom"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ordinal": { get: function () { return this.ref.readInt32(off("CCSGO_TeamPreviewCharacterPosition","m_nOrdinal")); }, set: function (v) { var o = off("CCSGO_TeamPreviewCharacterPosition","m_nOrdinal"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "xuid": { get: function () { var v = this.ref.readUInt64(off("CCSGO_TeamPreviewCharacterPosition","m_xuid")); return v === null ? null : v.toString(); } },
+    "agentItem": { get: function () { return embed("CEconItemView", this.ref, off("CCSGO_TeamPreviewCharacterPosition","m_agentItem")); } },
+    "glovesItem": { get: function () { return embed("CEconItemView", this.ref, off("CCSGO_TeamPreviewCharacterPosition","m_glovesItem")); } },
+    "weaponItem": { get: function () { return embed("CEconItemView", this.ref, off("CCSGO_TeamPreviewCharacterPosition","m_weaponItem")); } },
+  };
+  A["CCSPlayerResource"] = {
+    "bombsiteCenterA": { get: function () { var a = this.ref.readFloats(off("CCSPlayerResource","m_bombsiteCenterA"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "bombsiteCenterB": { get: function () { var a = this.ref.readFloats(off("CCSPlayerResource","m_bombsiteCenterB"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "endMatchNextMapAllVoted": { get: function () { return this.ref.readBool(off("CCSPlayerResource","m_bEndMatchNextMapAllVoted")); }, set: function (v) { var o = off("CCSPlayerResource","m_bEndMatchNextMapAllVoted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "foundGoalPositions": { get: function () { return this.ref.readBool(off("CCSPlayerResource","m_foundGoalPositions")); }, set: function (v) { var o = off("CCSPlayerResource","m_foundGoalPositions"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CCitadelSoundOpvarSetOBB"] = {
+    "distanceInnerMins": { get: function () { var a = this.ref.readFloats(off("CCitadelSoundOpvarSetOBB","m_vDistanceInnerMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceInnerMaxs": { get: function () { var a = this.ref.readFloats(off("CCitadelSoundOpvarSetOBB","m_vDistanceInnerMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceOuterMins": { get: function () { var a = this.ref.readFloats(off("CCitadelSoundOpvarSetOBB","m_vDistanceOuterMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceOuterMaxs": { get: function () { var a = this.ref.readFloats(off("CCitadelSoundOpvarSetOBB","m_vDistanceOuterMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "aABBDirection": { get: function () { return this.ref.readInt32(off("CCitadelSoundOpvarSetOBB","m_nAABBDirection")); }, set: function (v) { var o = off("CCitadelSoundOpvarSetOBB","m_nAABBDirection"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CColorCorrection"] = {
+    "fadeInDuration": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flFadeInDuration")); }, set: function (v) { var o = off("CColorCorrection","m_flFadeInDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeOutDuration": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flFadeOutDuration")); }, set: function (v) { var o = off("CColorCorrection","m_flFadeOutDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startFadeInWeight": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flStartFadeInWeight")); }, set: function (v) { var o = off("CColorCorrection","m_flStartFadeInWeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startFadeOutWeight": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flStartFadeOutWeight")); }, set: function (v) { var o = off("CColorCorrection","m_flStartFadeOutWeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeStartFadeIn": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flTimeStartFadeIn")); }, set: function (v) { var o = off("CColorCorrection","m_flTimeStartFadeIn"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeStartFadeOut": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flTimeStartFadeOut")); }, set: function (v) { var o = off("CColorCorrection","m_flTimeStartFadeOut"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxWeight": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flMaxWeight")); }, set: function (v) { var o = off("CColorCorrection","m_flMaxWeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CColorCorrection","m_bStartDisabled")); }, set: function (v) { var o = off("CColorCorrection","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CColorCorrection","m_bEnabled")); }, set: function (v) { var o = off("CColorCorrection","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "master": { get: function () { return this.ref.readBool(off("CColorCorrection","m_bMaster")); }, set: function (v) { var o = off("CColorCorrection","m_bMaster"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "clientSide": { get: function () { return this.ref.readBool(off("CColorCorrection","m_bClientSide")); }, set: function (v) { var o = off("CColorCorrection","m_bClientSide"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "exclusive": { get: function () { return this.ref.readBool(off("CColorCorrection","m_bExclusive")); }, set: function (v) { var o = off("CColorCorrection","m_bExclusive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minFalloff": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_MinFalloff")); }, set: function (v) { var o = off("CColorCorrection","m_MinFalloff"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxFalloff": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_MaxFalloff")); }, set: function (v) { var o = off("CColorCorrection","m_MaxFalloff"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "curWeight": { get: function () { return this.ref.readFloat32(off("CColorCorrection","m_flCurWeight")); }, set: function (v) { var o = off("CColorCorrection","m_flCurWeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "netlookupFilename": { get: function () { return this.ref.readString(off("CColorCorrection","m_netlookupFilename"), 512); } },
+  };
+  A["CCommentaryAuto"] = {
+    "onCommentaryNewGame": { get: function () { return embed("CEntityIOOutput", this.ref, off("CCommentaryAuto","m_OnCommentaryNewGame")); } },
+    "onCommentaryMidGame": { get: function () { return embed("CEntityIOOutput", this.ref, off("CCommentaryAuto","m_OnCommentaryMidGame")); } },
+    "onCommentaryMultiplayerSpawn": { get: function () { return embed("CEntityIOOutput", this.ref, off("CCommentaryAuto","m_OnCommentaryMultiplayerSpawn")); } },
+  };
+  A["CDebugHistory"] = {
+    "npcEvents": { get: function () { return this.ref.readInt32(off("CDebugHistory","m_nNpcEvents")); }, set: function (v) { var o = off("CDebugHistory","m_nNpcEvents"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEntityFlame"] = {
+    "entAttached": { get: function () { return this.ref.readHandle(off("CEntityFlame","m_hEntAttached")); } },
+    "cheapEffect": { get: function () { return this.ref.readBool(off("CEntityFlame","m_bCheapEffect")); }, set: function (v) { var o = off("CEntityFlame","m_bCheapEffect"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "size": { get: function () { return this.ref.readFloat32(off("CEntityFlame","m_flSize")); }, set: function (v) { var o = off("CEntityFlame","m_flSize"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "useHitboxes": { get: function () { return this.ref.readBool(off("CEntityFlame","m_bUseHitboxes")); }, set: function (v) { var o = off("CEntityFlame","m_bUseHitboxes"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "numHitboxFires": { get: function () { return this.ref.readInt32(off("CEntityFlame","m_iNumHitboxFires")); }, set: function (v) { var o = off("CEntityFlame","m_iNumHitboxFires"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hitboxFireScale": { get: function () { return this.ref.readFloat32(off("CEntityFlame","m_flHitboxFireScale")); }, set: function (v) { var o = off("CEntityFlame","m_flHitboxFireScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lifetime": { get: function () { return this.ref.readFloat32(off("CEntityFlame","m_flLifetime")); }, set: function (v) { var o = off("CEntityFlame","m_flLifetime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attacker": { get: function () { return this.ref.readHandle(off("CEntityFlame","m_hAttacker")); } },
+    "directDamagePerSecond": { get: function () { return this.ref.readFloat32(off("CEntityFlame","m_flDirectDamagePerSecond")); }, set: function (v) { var o = off("CEntityFlame","m_flDirectDamagePerSecond"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "customDamageType": { get: function () { return this.ref.readInt32(off("CEntityFlame","m_iCustomDamageType")); }, set: function (v) { var o = off("CEntityFlame","m_iCustomDamageType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvBeverage"] = {
+    "canInDispenser": { get: function () { return this.ref.readBool(off("CEnvBeverage","m_CanInDispenser")); }, set: function (v) { var o = off("CEnvBeverage","m_CanInDispenser"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "beverageType": { get: function () { return this.ref.readInt32(off("CEnvBeverage","m_nBeverageType")); }, set: function (v) { var o = off("CEnvBeverage","m_nBeverageType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvCombinedLightProbeVolume"] = {
+    "entity_Color": { get: function () { return this.ref.readUInt32(off("CEnvCombinedLightProbeVolume","m_Entity_Color")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_Color"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_flBrightness": { get: function () { return this.ref.readFloat32(off("CEnvCombinedLightProbeVolume","m_Entity_flBrightness")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_flBrightness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bCustomCubemapTexture": { get: function () { return this.ref.readBool(off("CEnvCombinedLightProbeVolume","m_Entity_bCustomCubemapTexture")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_bCustomCubemapTexture"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_vBoxMins": { get: function () { var a = this.ref.readFloats(off("CEnvCombinedLightProbeVolume","m_Entity_vBoxMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_vBoxMaxs": { get: function () { var a = this.ref.readFloats(off("CEnvCombinedLightProbeVolume","m_Entity_vBoxMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_bMoveable": { get: function () { return this.ref.readBool(off("CEnvCombinedLightProbeVolume","m_Entity_bMoveable")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_bMoveable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nHandshake": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nHandshake")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nHandshake"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nEnvCubeMapArrayIndex": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nEnvCubeMapArrayIndex")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nEnvCubeMapArrayIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nPriority": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nPriority")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nPriority"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bStartDisabled": { get: function () { return this.ref.readBool(off("CEnvCombinedLightProbeVolume","m_Entity_bStartDisabled")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_flEdgeFadeDist": { get: function () { return this.ref.readFloat32(off("CEnvCombinedLightProbeVolume","m_Entity_flEdgeFadeDist")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_flEdgeFadeDist"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_vEdgeFadeDists": { get: function () { var a = this.ref.readFloats(off("CEnvCombinedLightProbeVolume","m_Entity_vEdgeFadeDists"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_nLightProbeSizeX": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeSizeX")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeSizeX"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeSizeY": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeSizeY")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeSizeY"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeSizeZ": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeSizeZ")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeSizeZ"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeAtlasX": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeAtlasX")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeAtlasX"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeAtlasY": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeAtlasY")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeAtlasY"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeAtlasZ": { get: function () { return this.ref.readInt32(off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeAtlasZ")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_nLightProbeAtlasZ"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bEnabled": { get: function () { return this.ref.readBool(off("CEnvCombinedLightProbeVolume","m_Entity_bEnabled")); }, set: function (v) { var o = off("CEnvCombinedLightProbeVolume","m_Entity_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvCubemap"] = {
+    "entity_bCustomCubemapTexture": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bCustomCubemapTexture")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bCustomCubemapTexture"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_flInfluenceRadius": { get: function () { return this.ref.readFloat32(off("CEnvCubemap","m_Entity_flInfluenceRadius")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_flInfluenceRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_vBoxProjectMins": { get: function () { var a = this.ref.readFloats(off("CEnvCubemap","m_Entity_vBoxProjectMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_vBoxProjectMaxs": { get: function () { var a = this.ref.readFloats(off("CEnvCubemap","m_Entity_vBoxProjectMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_bMoveable": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bMoveable")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bMoveable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nHandshake": { get: function () { return this.ref.readInt32(off("CEnvCubemap","m_Entity_nHandshake")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_nHandshake"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nEnvCubeMapArrayIndex": { get: function () { return this.ref.readInt32(off("CEnvCubemap","m_Entity_nEnvCubeMapArrayIndex")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_nEnvCubeMapArrayIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nPriority": { get: function () { return this.ref.readInt32(off("CEnvCubemap","m_Entity_nPriority")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_nPriority"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_flEdgeFadeDist": { get: function () { return this.ref.readFloat32(off("CEnvCubemap","m_Entity_flEdgeFadeDist")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_flEdgeFadeDist"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_vEdgeFadeDists": { get: function () { var a = this.ref.readFloats(off("CEnvCubemap","m_Entity_vEdgeFadeDists"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_flDiffuseScale": { get: function () { return this.ref.readFloat32(off("CEnvCubemap","m_Entity_flDiffuseScale")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_flDiffuseScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bStartDisabled": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bStartDisabled")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bDefaultEnvMap": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bDefaultEnvMap")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bDefaultEnvMap"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bDefaultSpecEnvMap": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bDefaultSpecEnvMap")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bDefaultSpecEnvMap"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bIndoorCubeMap": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bIndoorCubeMap")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bIndoorCubeMap"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bCopyDiffuseFromDefaultCubemap": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bCopyDiffuseFromDefaultCubemap")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bCopyDiffuseFromDefaultCubemap"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bEnabled": { get: function () { return this.ref.readBool(off("CEnvCubemap","m_Entity_bEnabled")); }, set: function (v) { var o = off("CEnvCubemap","m_Entity_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvCubemapFog"] = {
+    "endDistance": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flEndDistance")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flEndDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDistance": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flStartDistance")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flStartDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogFalloffExponent": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flFogFalloffExponent")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flFogFalloffExponent"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "heightFogEnabled": { get: function () { return this.ref.readBool(off("CEnvCubemapFog","m_bHeightFogEnabled")); }, set: function (v) { var o = off("CEnvCubemapFog","m_bHeightFogEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogHeightWidth": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flFogHeightWidth")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flFogHeightWidth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogHeightEnd": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flFogHeightEnd")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flFogHeightEnd"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogHeightStart": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flFogHeightStart")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flFogHeightStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogHeightExponent": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flFogHeightExponent")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flFogHeightExponent"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lODBias": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flLODBias")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flLODBias"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "active": { get: function () { return this.ref.readBool(off("CEnvCubemapFog","m_bActive")); }, set: function (v) { var o = off("CEnvCubemapFog","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CEnvCubemapFog","m_bStartDisabled")); }, set: function (v) { var o = off("CEnvCubemapFog","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMaxOpacity": { get: function () { return this.ref.readFloat32(off("CEnvCubemapFog","m_flFogMaxOpacity")); }, set: function (v) { var o = off("CEnvCubemapFog","m_flFogMaxOpacity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "cubemapSourceType": { get: function () { return this.ref.readInt32(off("CEnvCubemapFog","m_nCubemapSourceType")); }, set: function (v) { var o = off("CEnvCubemapFog","m_nCubemapSourceType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "heightFogType": { get: function () { return this.ref.readInt32(off("CEnvCubemapFog","m_nHeightFogType")); }, set: function (v) { var o = off("CEnvCubemapFog","m_nHeightFogType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogHeightBlendMode": { get: function () { return this.ref.readInt32(off("CEnvCubemapFog","m_nFogHeightBlendMode")); }, set: function (v) { var o = off("CEnvCubemapFog","m_nFogHeightBlendMode"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogHeightCoordinateSpace": { get: function () { return this.ref.readInt32(off("CEnvCubemapFog","m_nFogHeightCoordinateSpace")); }, set: function (v) { var o = off("CEnvCubemapFog","m_nFogHeightCoordinateSpace"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceFogType": { get: function () { return this.ref.readInt32(off("CEnvCubemapFog","m_nDistanceFogType")); }, set: function (v) { var o = off("CEnvCubemapFog","m_nDistanceFogType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hasHeightFogEnd": { get: function () { return this.ref.readBool(off("CEnvCubemapFog","m_bHasHeightFogEnd")); }, set: function (v) { var o = off("CEnvCubemapFog","m_bHasHeightFogEnd"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "firstTime": { get: function () { return this.ref.readBool(off("CEnvCubemapFog","m_bFirstTime")); }, set: function (v) { var o = off("CEnvCubemapFog","m_bFirstTime"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvDetailController"] = {
+    "fadeStartDist": { get: function () { return this.ref.readFloat32(off("CEnvDetailController","m_flFadeStartDist")); }, set: function (v) { var o = off("CEnvDetailController","m_flFadeStartDist"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeEndDist": { get: function () { return this.ref.readFloat32(off("CEnvDetailController","m_flFadeEndDist")); }, set: function (v) { var o = off("CEnvDetailController","m_flFadeEndDist"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvEntityIgniter"] = {
+    "lifetime": { get: function () { return this.ref.readFloat32(off("CEnvEntityIgniter","m_flLifetime")); }, set: function (v) { var o = off("CEnvEntityIgniter","m_flLifetime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvLightProbeVolume"] = {
+    "entity_vBoxMins": { get: function () { var a = this.ref.readFloats(off("CEnvLightProbeVolume","m_Entity_vBoxMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_vBoxMaxs": { get: function () { var a = this.ref.readFloats(off("CEnvLightProbeVolume","m_Entity_vBoxMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entity_bMoveable": { get: function () { return this.ref.readBool(off("CEnvLightProbeVolume","m_Entity_bMoveable")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_bMoveable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nHandshake": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nHandshake")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nHandshake"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nPriority": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nPriority")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nPriority"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bStartDisabled": { get: function () { return this.ref.readBool(off("CEnvLightProbeVolume","m_Entity_bStartDisabled")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeSizeX": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nLightProbeSizeX")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nLightProbeSizeX"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeSizeY": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nLightProbeSizeY")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nLightProbeSizeY"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeSizeZ": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nLightProbeSizeZ")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nLightProbeSizeZ"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeAtlasX": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nLightProbeAtlasX")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nLightProbeAtlasX"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeAtlasY": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nLightProbeAtlasY")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nLightProbeAtlasY"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_nLightProbeAtlasZ": { get: function () { return this.ref.readInt32(off("CEnvLightProbeVolume","m_Entity_nLightProbeAtlasZ")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_nLightProbeAtlasZ"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity_bEnabled": { get: function () { return this.ref.readBool(off("CEnvLightProbeVolume","m_Entity_bEnabled")); }, set: function (v) { var o = off("CEnvLightProbeVolume","m_Entity_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvSoundscape"] = {
+    "radius": { get: function () { return this.ref.readFloat32(off("CEnvSoundscape","m_flRadius")); }, set: function (v) { var o = off("CEnvSoundscape","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "overrideWithEvent": { get: function () { return this.ref.readBool(off("CEnvSoundscape","m_bOverrideWithEvent")); }, set: function (v) { var o = off("CEnvSoundscape","m_bOverrideWithEvent"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "soundscapeIndex": { get: function () { return this.ref.readInt32(off("CEnvSoundscape","m_soundscapeIndex")); }, set: function (v) { var o = off("CEnvSoundscape","m_soundscapeIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "soundscapeEntityListId": { get: function () { return this.ref.readInt32(off("CEnvSoundscape","m_soundscapeEntityListId")); }, set: function (v) { var o = off("CEnvSoundscape","m_soundscapeEntityListId"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "proxySoundscape": { get: function () { return this.ref.readHandle(off("CEnvSoundscape","m_hProxySoundscape")); } },
+    "disabled": { get: function () { return this.ref.readBool(off("CEnvSoundscape","m_bDisabled")); }, set: function (v) { var o = off("CEnvSoundscape","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "soundEventHash": { get: function () { return this.ref.readUInt32(off("CEnvSoundscape","m_soundEventHash")); }, set: function (v) { var o = off("CEnvSoundscape","m_soundEventHash"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onPlay": { get: function () { return embed("CEntityIOOutput", this.ref, off("CEnvSoundscape","m_OnPlay")); } },
+  };
+  A["CEnvVolumetricFogController"] = {
+    "scattering": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flScattering")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flScattering"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tintColor": { get: function () { return this.ref.readUInt32(off("CEnvVolumetricFogController","m_TintColor")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_TintColor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "anisotropy": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flAnisotropy")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flAnisotropy"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeSpeed": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flFadeSpeed")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flFadeSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "drawDistance": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flDrawDistance")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flDrawDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeInStart": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flFadeInStart")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flFadeInStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeInEnd": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flFadeInEnd")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flFadeInEnd"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "indirectStrength": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flIndirectStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flIndirectStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volumeDepth": { get: function () { return this.ref.readInt32(off("CEnvVolumetricFogController","m_nVolumeDepth")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_nVolumeDepth"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "firstVolumeSliceThickness": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_fFirstVolumeSliceThickness")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_fFirstVolumeSliceThickness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "indirectTextureDimX": { get: function () { return this.ref.readInt32(off("CEnvVolumetricFogController","m_nIndirectTextureDimX")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_nIndirectTextureDimX"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "indirectTextureDimY": { get: function () { return this.ref.readInt32(off("CEnvVolumetricFogController","m_nIndirectTextureDimY")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_nIndirectTextureDimY"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "indirectTextureDimZ": { get: function () { return this.ref.readInt32(off("CEnvVolumetricFogController","m_nIndirectTextureDimZ")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_nIndirectTextureDimZ"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "boxMins": { get: function () { var a = this.ref.readFloats(off("CEnvVolumetricFogController","m_vBoxMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "boxMaxs": { get: function () { var a = this.ref.readFloats(off("CEnvVolumetricFogController","m_vBoxMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "active": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogController","m_bActive")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startAnisoTime": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flStartAnisoTime")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flStartAnisoTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startScatterTime": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flStartScatterTime")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flStartScatterTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDrawDistanceTime": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flStartDrawDistanceTime")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flStartDrawDistanceTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startAnisotropy": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flStartAnisotropy")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flStartAnisotropy"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startScattering": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flStartScattering")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flStartScattering"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDrawDistance": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flStartDrawDistance")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flStartDrawDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "defaultAnisotropy": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flDefaultAnisotropy")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flDefaultAnisotropy"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "defaultScattering": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flDefaultScattering")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flDefaultScattering"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "defaultDrawDistance": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_flDefaultDrawDistance")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_flDefaultDrawDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogController","m_bStartDisabled")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableIndirect": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogController","m_bEnableIndirect")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_bEnableIndirect"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isMaster": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogController","m_bIsMaster")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_bIsMaster"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceRefreshCount": { get: function () { return this.ref.readInt32(off("CEnvVolumetricFogController","m_nForceRefreshCount")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_nForceRefreshCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noiseSpeed": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_fNoiseSpeed")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_fNoiseSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noiseStrength": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_fNoiseStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_fNoiseStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noiseScale": { get: function () { var a = this.ref.readFloats(off("CEnvVolumetricFogController","m_vNoiseScale"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "windSpeed": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogController","m_fWindSpeed")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_fWindSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windDirection": { get: function () { var a = this.ref.readFloats(off("CEnvVolumetricFogController","m_vWindDirection"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "firstTime": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogController","m_bFirstTime")); }, set: function (v) { var o = off("CEnvVolumetricFogController","m_bFirstTime"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvVolumetricFogVolume"] = {
+    "active": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogVolume","m_bActive")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "boxMins": { get: function () { var a = this.ref.readFloats(off("CEnvVolumetricFogVolume","m_vBoxMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "boxMaxs": { get: function () { var a = this.ref.readFloats(off("CEnvVolumetricFogVolume","m_vBoxMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogVolume","m_bStartDisabled")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "indirectUseLPVs": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogVolume","m_bIndirectUseLPVs")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_bIndirectUseLPVs"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "strength": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogVolume","m_flStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_flStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "falloffShape": { get: function () { return this.ref.readInt32(off("CEnvVolumetricFogVolume","m_nFalloffShape")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_nFalloffShape"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "falloffExponent": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogVolume","m_flFalloffExponent")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_flFalloffExponent"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "heightFogDepth": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogVolume","m_flHeightFogDepth")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_flHeightFogDepth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "heightFogEdgeWidth": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogVolume","m_fHeightFogEdgeWidth")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_fHeightFogEdgeWidth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "indirectLightStrength": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogVolume","m_fIndirectLightStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_fIndirectLightStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "sunLightStrength": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogVolume","m_fSunLightStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_fSunLightStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noiseStrength": { get: function () { return this.ref.readFloat32(off("CEnvVolumetricFogVolume","m_fNoiseStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_fNoiseStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tintColor": { get: function () { return this.ref.readUInt32(off("CEnvVolumetricFogVolume","m_TintColor")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_TintColor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "overrideTintColor": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogVolume","m_bOverrideTintColor")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_bOverrideTintColor"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "overrideIndirectLightStrength": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogVolume","m_bOverrideIndirectLightStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_bOverrideIndirectLightStrength"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "overrideSunLightStrength": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogVolume","m_bOverrideSunLightStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_bOverrideSunLightStrength"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "overrideNoiseStrength": { get: function () { return this.ref.readBool(off("CEnvVolumetricFogVolume","m_bOverrideNoiseStrength")); }, set: function (v) { var o = off("CEnvVolumetricFogVolume","m_bOverrideNoiseStrength"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvWind"] = {
+    "envWindShared": { get: function () { return embed("CEnvWindShared", this.ref, off("CEnvWind","m_EnvWindShared")); } },
+  };
+  A["CEnvWindController"] = {
+    "directionVariation": { get: function () { return this.ref.readFloat32(off("CEnvWindController","m_fDirectionVariation")); }, set: function (v) { var o = off("CEnvWindController","m_fDirectionVariation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speedVariation": { get: function () { return this.ref.readFloat32(off("CEnvWindController","m_fSpeedVariation")); }, set: function (v) { var o = off("CEnvWindController","m_fSpeedVariation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "turbulence": { get: function () { return this.ref.readFloat32(off("CEnvWindController","m_fTurbulence")); }, set: function (v) { var o = off("CEnvWindController","m_fTurbulence"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volumeHalfExtentXY": { get: function () { return this.ref.readFloat32(off("CEnvWindController","m_fVolumeHalfExtentXY")); }, set: function (v) { var o = off("CEnvWindController","m_fVolumeHalfExtentXY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volumeHalfExtentZ": { get: function () { return this.ref.readFloat32(off("CEnvWindController","m_fVolumeHalfExtentZ")); }, set: function (v) { var o = off("CEnvWindController","m_fVolumeHalfExtentZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volumeResolutionXY": { get: function () { return this.ref.readInt32(off("CEnvWindController","m_nVolumeResolutionXY")); }, set: function (v) { var o = off("CEnvWindController","m_nVolumeResolutionXY"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volumeResolutionZ": { get: function () { return this.ref.readInt32(off("CEnvWindController","m_nVolumeResolutionZ")); }, set: function (v) { var o = off("CEnvWindController","m_nVolumeResolutionZ"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "clipmapLevels": { get: function () { return this.ref.readInt32(off("CEnvWindController","m_nClipmapLevels")); }, set: function (v) { var o = off("CEnvWindController","m_nClipmapLevels"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isMaster": { get: function () { return this.ref.readBool(off("CEnvWindController","m_bIsMaster")); }, set: function (v) { var o = off("CEnvWindController","m_bIsMaster"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "firstTime": { get: function () { return this.ref.readBool(off("CEnvWindController","m_bFirstTime")); }, set: function (v) { var o = off("CEnvWindController","m_bFirstTime"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "envWindShared": { get: function () { return embed("CEnvWindShared", this.ref, off("CEnvWindController","m_EnvWindShared")); } },
+  };
+  A["CEnvWindVolume"] = {
+    "active": { get: function () { return this.ref.readBool(off("CEnvWindVolume","m_bActive")); }, set: function (v) { var o = off("CEnvWindVolume","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "boxMins": { get: function () { var a = this.ref.readFloats(off("CEnvWindVolume","m_vBoxMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "boxMaxs": { get: function () { var a = this.ref.readFloats(off("CEnvWindVolume","m_vBoxMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CEnvWindVolume","m_bStartDisabled")); }, set: function (v) { var o = off("CEnvWindVolume","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "shape": { get: function () { return this.ref.readInt32(off("CEnvWindVolume","m_nShape")); }, set: function (v) { var o = off("CEnvWindVolume","m_nShape"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windSpeedMultiplier": { get: function () { return this.ref.readFloat32(off("CEnvWindVolume","m_fWindSpeedMultiplier")); }, set: function (v) { var o = off("CEnvWindVolume","m_fWindSpeedMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windTurbulenceMultiplier": { get: function () { return this.ref.readFloat32(off("CEnvWindVolume","m_fWindTurbulenceMultiplier")); }, set: function (v) { var o = off("CEnvWindVolume","m_fWindTurbulenceMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windSpeedVariationMultiplier": { get: function () { return this.ref.readFloat32(off("CEnvWindVolume","m_fWindSpeedVariationMultiplier")); }, set: function (v) { var o = off("CEnvWindVolume","m_fWindSpeedVariationMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windDirectionVariationMultiplier": { get: function () { return this.ref.readFloat32(off("CEnvWindVolume","m_fWindDirectionVariationMultiplier")); }, set: function (v) { var o = off("CEnvWindVolume","m_fWindDirectionVariationMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFishPool"] = {
+    "fishCount": { get: function () { return this.ref.readInt32(off("CFishPool","m_fishCount")); }, set: function (v) { var o = off("CFishPool","m_fishCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxRange": { get: function () { return this.ref.readFloat32(off("CFishPool","m_maxRange")); }, set: function (v) { var o = off("CFishPool","m_maxRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "swimDepth": { get: function () { return this.ref.readFloat32(off("CFishPool","m_swimDepth")); }, set: function (v) { var o = off("CFishPool","m_swimDepth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "m_waterLevel": { get: function () { return this.ref.readFloat32(off("CFishPool","m_waterLevel")); }, set: function (v) { var o = off("CFishPool","m_waterLevel"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isDormant": { get: function () { return this.ref.readBool(off("CFishPool","m_isDormant")); }, set: function (v) { var o = off("CFishPool","m_isDormant"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "visTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CFishPool","m_visTimer")); } },
+  };
+  A["CFogController"] = {
+    "useAngles": { get: function () { return this.ref.readBool(off("CFogController","m_bUseAngles")); }, set: function (v) { var o = off("CFogController","m_bUseAngles"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "changedVariables": { get: function () { return this.ref.readInt32(off("CFogController","m_iChangedVariables")); }, set: function (v) { var o = off("CFogController","m_iChangedVariables"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fog": { get: function () { return embed("fogparams_t", this.ref, off("CFogController","m_fog")); } },
+  };
+  A["CFuncTimescale"] = {
+    "desiredTimescale": { get: function () { return this.ref.readFloat32(off("CFuncTimescale","m_flDesiredTimescale")); }, set: function (v) { var o = off("CFuncTimescale","m_flDesiredTimescale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "acceleration": { get: function () { return this.ref.readFloat32(off("CFuncTimescale","m_flAcceleration")); }, set: function (v) { var o = off("CFuncTimescale","m_flAcceleration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minBlendRate": { get: function () { return this.ref.readFloat32(off("CFuncTimescale","m_flMinBlendRate")); }, set: function (v) { var o = off("CFuncTimescale","m_flMinBlendRate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "blendDeltaMultiplier": { get: function () { return this.ref.readFloat32(off("CFuncTimescale","m_flBlendDeltaMultiplier")); }, set: function (v) { var o = off("CFuncTimescale","m_flBlendDeltaMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isStarted": { get: function () { return this.ref.readBool(off("CFuncTimescale","m_isStarted")); }, set: function (v) { var o = off("CFuncTimescale","m_isStarted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CGameGibManager"] = {
+    "allowNewGibs": { get: function () { return this.ref.readBool(off("CGameGibManager","m_bAllowNewGibs")); }, set: function (v) { var o = off("CGameGibManager","m_bAllowNewGibs"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentMaxPieces": { get: function () { return this.ref.readInt32(off("CGameGibManager","m_iCurrentMaxPieces")); }, set: function (v) { var o = off("CGameGibManager","m_iCurrentMaxPieces"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxPieces": { get: function () { return this.ref.readInt32(off("CGameGibManager","m_iMaxPieces")); }, set: function (v) { var o = off("CGameGibManager","m_iMaxPieces"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastFrame": { get: function () { return this.ref.readInt32(off("CGameGibManager","m_iLastFrame")); }, set: function (v) { var o = off("CGameGibManager","m_iLastFrame"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CGameRulesProxy"] = {
+  };
+  A["CGradientFog"] = {
+    "fogStartDistance": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogStartDistance")); }, set: function (v) { var o = off("CGradientFog","m_flFogStartDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogEndDistance": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogEndDistance")); }, set: function (v) { var o = off("CGradientFog","m_flFogEndDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "heightFogEnabled": { get: function () { return this.ref.readBool(off("CGradientFog","m_bHeightFogEnabled")); }, set: function (v) { var o = off("CGradientFog","m_bHeightFogEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogStartHeight": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogStartHeight")); }, set: function (v) { var o = off("CGradientFog","m_flFogStartHeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogEndHeight": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogEndHeight")); }, set: function (v) { var o = off("CGradientFog","m_flFogEndHeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "farZ": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFarZ")); }, set: function (v) { var o = off("CGradientFog","m_flFarZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMaxOpacity": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogMaxOpacity")); }, set: function (v) { var o = off("CGradientFog","m_flFogMaxOpacity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogFalloffExponent": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogFalloffExponent")); }, set: function (v) { var o = off("CGradientFog","m_flFogFalloffExponent"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogVerticalExponent": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogVerticalExponent")); }, set: function (v) { var o = off("CGradientFog","m_flFogVerticalExponent"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogColor": { get: function () { return this.ref.readUInt32(off("CGradientFog","m_fogColor")); }, set: function (v) { var o = off("CGradientFog","m_fogColor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogStrength": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFogStrength")); }, set: function (v) { var o = off("CGradientFog","m_flFogStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeTime": { get: function () { return this.ref.readFloat32(off("CGradientFog","m_flFadeTime")); }, set: function (v) { var o = off("CGradientFog","m_flFadeTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CGradientFog","m_bStartDisabled")); }, set: function (v) { var o = off("CGradientFog","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isEnabled": { get: function () { return this.ref.readBool(off("CGradientFog","m_bIsEnabled")); }, set: function (v) { var o = off("CGradientFog","m_bIsEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "gradientFogNeedsTextures": { get: function () { return this.ref.readBool(off("CGradientFog","m_bGradientFogNeedsTextures")); }, set: function (v) { var o = off("CGradientFog","m_bGradientFogNeedsTextures"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CHandleTest"] = {
+    "handle": { get: function () { return this.ref.readHandle(off("CHandleTest","m_Handle")); } },
+    "sendHandle": { get: function () { return this.ref.readBool(off("CHandleTest","m_bSendHandle")); }, set: function (v) { var o = off("CHandleTest","m_bSendHandle"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CInfoVisibilityBox"] = {
+    "mode": { get: function () { return this.ref.readInt32(off("CInfoVisibilityBox","m_nMode")); }, set: function (v) { var o = off("CInfoVisibilityBox","m_nMode"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "boxSize": { get: function () { var a = this.ref.readFloats(off("CInfoVisibilityBox","m_vBoxSize"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CInfoVisibilityBox","m_bEnabled")); }, set: function (v) { var o = off("CInfoVisibilityBox","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CInfoWorldLayer"] = {
+    "worldLayerVisible": { get: function () { return this.ref.readBool(off("CInfoWorldLayer","m_bWorldLayerVisible")); }, set: function (v) { var o = off("CInfoWorldLayer","m_bWorldLayerVisible"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entitiesSpawned": { get: function () { return this.ref.readBool(off("CInfoWorldLayer","m_bEntitiesSpawned")); }, set: function (v) { var o = off("CInfoWorldLayer","m_bEntitiesSpawned"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "createAsChildSpawnGroup": { get: function () { return this.ref.readBool(off("CInfoWorldLayer","m_bCreateAsChildSpawnGroup")); }, set: function (v) { var o = off("CInfoWorldLayer","m_bCreateAsChildSpawnGroup"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "layerSpawnGroup": { get: function () { return this.ref.readUInt32(off("CInfoWorldLayer","m_hLayerSpawnGroup")); }, set: function (v) { var o = off("CInfoWorldLayer","m_hLayerSpawnGroup"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "outputOnEntitiesSpawned": { get: function () { return embed("CEntityIOOutput", this.ref, off("CInfoWorldLayer","m_pOutputOnEntitiesSpawned")); } },
+  };
+  A["CLogicAuto"] = {
+    "onMapSpawn": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnMapSpawn")); } },
+    "onDemoMapSpawn": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnDemoMapSpawn")); } },
+    "onNewGame": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnNewGame")); } },
+    "onLoadGame": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnLoadGame")); } },
+    "onMapTransition": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnMapTransition")); } },
+    "onBackgroundMap": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnBackgroundMap")); } },
+    "onMultiNewMap": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnMultiNewMap")); } },
+    "onMultiNewRound": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnMultiNewRound")); } },
+    "onVREnabled": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnVREnabled")); } },
+    "onVRNotEnabled": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAuto","m_OnVRNotEnabled")); } },
+  };
+  A["CLogicGameStateReport"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CLogicGameStateReport","m_bDisabled")); }, set: function (v) { var o = off("CLogicGameStateReport","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicNPCCounter"] = {
+    "distanceMax": { get: function () { return this.ref.readFloat32(off("CLogicNPCCounter","m_flDistanceMax")); }, set: function (v) { var o = off("CLogicNPCCounter","m_flDistanceMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "disabled": { get: function () { return this.ref.readBool(off("CLogicNPCCounter","m_bDisabled")); }, set: function (v) { var o = off("CLogicNPCCounter","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minCountAll": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinCountAll")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinCountAll"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxCountAll": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxCountAll")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxCountAll"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minFactorAll": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinFactorAll")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinFactorAll"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxFactorAll": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxFactorAll")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxFactorAll"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nPCState_1": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nNPCState_1")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nNPCState_1"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "invertState_1": { get: function () { return this.ref.readBool(off("CLogicNPCCounter","m_bInvertState_1")); }, set: function (v) { var o = off("CLogicNPCCounter","m_bInvertState_1"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minCount_1": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinCount_1")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinCount_1"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxCount_1": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxCount_1")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxCount_1"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minFactor_1": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinFactor_1")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinFactor_1"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxFactor_1": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxFactor_1")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxFactor_1"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "defaultDist_1": { get: function () { return this.ref.readFloat32(off("CLogicNPCCounter","m_flDefaultDist_1")); }, set: function (v) { var o = off("CLogicNPCCounter","m_flDefaultDist_1"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nPCState_2": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nNPCState_2")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nNPCState_2"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "invertState_2": { get: function () { return this.ref.readBool(off("CLogicNPCCounter","m_bInvertState_2")); }, set: function (v) { var o = off("CLogicNPCCounter","m_bInvertState_2"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minCount_2": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinCount_2")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinCount_2"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxCount_2": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxCount_2")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxCount_2"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minFactor_2": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinFactor_2")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinFactor_2"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxFactor_2": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxFactor_2")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxFactor_2"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "defaultDist_2": { get: function () { return this.ref.readFloat32(off("CLogicNPCCounter","m_flDefaultDist_2")); }, set: function (v) { var o = off("CLogicNPCCounter","m_flDefaultDist_2"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nPCState_3": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nNPCState_3")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nNPCState_3"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "invertState_3": { get: function () { return this.ref.readBool(off("CLogicNPCCounter","m_bInvertState_3")); }, set: function (v) { var o = off("CLogicNPCCounter","m_bInvertState_3"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minCount_3": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinCount_3")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinCount_3"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxCount_3": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxCount_3")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxCount_3"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minFactor_3": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMinFactor_3")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMinFactor_3"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxFactor_3": { get: function () { return this.ref.readInt32(off("CLogicNPCCounter","m_nMaxFactor_3")); }, set: function (v) { var o = off("CLogicNPCCounter","m_nMaxFactor_3"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "defaultDist_3": { get: function () { return this.ref.readFloat32(off("CLogicNPCCounter","m_flDefaultDist_3")); }, set: function (v) { var o = off("CLogicNPCCounter","m_flDefaultDist_3"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onMinCountAll": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMinCountAll")); } },
+    "onMaxCountAll": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMaxCountAll")); } },
+    "onMinCount_1": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMinCount_1")); } },
+    "onMaxCount_1": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMaxCount_1")); } },
+    "onMinCount_2": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMinCount_2")); } },
+    "onMaxCount_2": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMaxCount_2")); } },
+    "onMinCount_3": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMinCount_3")); } },
+    "onMaxCount_3": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicNPCCounter","m_OnMaxCount_3")); } },
+  };
+  A["CMapVetoPickController"] = {
+    "playedIntroVcd": { get: function () { return this.ref.readBool(off("CMapVetoPickController","m_bPlayedIntroVcd")); }, set: function (v) { var o = off("CMapVetoPickController","m_bPlayedIntroVcd"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "needToPlayFiveSecondsRemaining": { get: function () { return this.ref.readBool(off("CMapVetoPickController","m_bNeedToPlayFiveSecondsRemaining")); }, set: function (v) { var o = off("CMapVetoPickController","m_bNeedToPlayFiveSecondsRemaining"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dblPreMatchDraftSequenceTime": { get: function () { return this.ref.readFloat64(off("CMapVetoPickController","m_dblPreMatchDraftSequenceTime")); } },
+    "preMatchDraftStateChanged": { get: function () { return this.ref.readBool(off("CMapVetoPickController","m_bPreMatchDraftStateChanged")); }, set: function (v) { var o = off("CMapVetoPickController","m_bPreMatchDraftStateChanged"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "draftType": { get: function () { return this.ref.readInt32(off("CMapVetoPickController","m_nDraftType")); }, set: function (v) { var o = off("CMapVetoPickController","m_nDraftType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "teamWinningCoinToss": { get: function () { return this.ref.readInt32(off("CMapVetoPickController","m_nTeamWinningCoinToss")); }, set: function (v) { var o = off("CMapVetoPickController","m_nTeamWinningCoinToss"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentPhase": { get: function () { return this.ref.readInt32(off("CMapVetoPickController","m_nCurrentPhase")); }, set: function (v) { var o = off("CMapVetoPickController","m_nCurrentPhase"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "phaseStartTick": { get: function () { return this.ref.readInt32(off("CMapVetoPickController","m_nPhaseStartTick")); }, set: function (v) { var o = off("CMapVetoPickController","m_nPhaseStartTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "phaseDurationTicks": { get: function () { return this.ref.readInt32(off("CMapVetoPickController","m_nPhaseDurationTicks")); }, set: function (v) { var o = off("CMapVetoPickController","m_nPhaseDurationTicks"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPathParticleRope"] = {
+    "startActive": { get: function () { return this.ref.readBool(off("CPathParticleRope","m_bStartActive")); }, set: function (v) { var o = off("CPathParticleRope","m_bStartActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxSimulationTime": { get: function () { return this.ref.readFloat32(off("CPathParticleRope","m_flMaxSimulationTime")); }, set: function (v) { var o = off("CPathParticleRope","m_flMaxSimulationTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "particleSpacing": { get: function () { return this.ref.readFloat32(off("CPathParticleRope","m_flParticleSpacing")); }, set: function (v) { var o = off("CPathParticleRope","m_flParticleSpacing"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "slack": { get: function () { return this.ref.readFloat32(off("CPathParticleRope","m_flSlack")); }, set: function (v) { var o = off("CPathParticleRope","m_flSlack"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CPathParticleRope","m_flRadius")); }, set: function (v) { var o = off("CPathParticleRope","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "colorTint": { get: function () { return this.ref.readUInt32(off("CPathParticleRope","m_ColorTint")); }, set: function (v) { var o = off("CPathParticleRope","m_ColorTint"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "effectState": { get: function () { return this.ref.readInt32(off("CPathParticleRope","m_nEffectState")); }, set: function (v) { var o = off("CPathParticleRope","m_nEffectState"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPathSimple"] = {
+    "closedLoop": { get: function () { return this.ref.readBool(off("CPathSimple","m_bClosedLoop")); }, set: function (v) { var o = off("CPathSimple","m_bClosedLoop"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "cPathQueryComponent": { get: function () { return embed("CPathQueryComponent", this.ref, off("CPathSimple","m_CPathQueryComponent")); } },
+  };
+  A["CPhysicsSpring"] = {
+    "frequency": { get: function () { return this.ref.readFloat32(off("CPhysicsSpring","m_flFrequency")); }, set: function (v) { var o = off("CPhysicsSpring","m_flFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dampingRatio": { get: function () { return this.ref.readFloat32(off("CPhysicsSpring","m_flDampingRatio")); }, set: function (v) { var o = off("CPhysicsSpring","m_flDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "restLength": { get: function () { return this.ref.readFloat32(off("CPhysicsSpring","m_flRestLength")); }, set: function (v) { var o = off("CPhysicsSpring","m_flRestLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "start": { get: function () { var a = this.ref.readFloats(off("CPhysicsSpring","m_start"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "end": { get: function () { var a = this.ref.readFloats(off("CPhysicsSpring","m_end"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "teleportTick": { get: function () { return this.ref.readUInt32(off("CPhysicsSpring","m_teleportTick")); }, set: function (v) { var o = off("CPhysicsSpring","m_teleportTick"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPhysicsWire"] = {
+    "density": { get: function () { return this.ref.readInt32(off("CPhysicsWire","m_nDensity")); }, set: function (v) { var o = off("CPhysicsWire","m_nDensity"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPlayerPing"] = {
+    "player": { get: function () { return this.ref.readHandle(off("CPlayerPing","m_hPlayer")); } },
+    "pingedEntity": { get: function () { return this.ref.readHandle(off("CPlayerPing","m_hPingedEntity")); } },
+    "type": { get: function () { return this.ref.readInt32(off("CPlayerPing","m_iType")); }, set: function (v) { var o = off("CPlayerPing","m_iType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "urgent": { get: function () { return this.ref.readBool(off("CPlayerPing","m_bUrgent")); }, set: function (v) { var o = off("CPlayerPing","m_bUrgent"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "placeName": { get: function () { return this.ref.readString(off("CPlayerPing","m_szPlaceName"), 18); } },
+  };
+  A["CPlayerVisibility"] = {
+    "visibilityStrength": { get: function () { return this.ref.readFloat32(off("CPlayerVisibility","m_flVisibilityStrength")); }, set: function (v) { var o = off("CPlayerVisibility","m_flVisibilityStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogDistanceMultiplier": { get: function () { return this.ref.readFloat32(off("CPlayerVisibility","m_flFogDistanceMultiplier")); }, set: function (v) { var o = off("CPlayerVisibility","m_flFogDistanceMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMaxDensityMultiplier": { get: function () { return this.ref.readFloat32(off("CPlayerVisibility","m_flFogMaxDensityMultiplier")); }, set: function (v) { var o = off("CPlayerVisibility","m_flFogMaxDensityMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeTime": { get: function () { return this.ref.readFloat32(off("CPlayerVisibility","m_flFadeTime")); }, set: function (v) { var o = off("CPlayerVisibility","m_flFadeTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CPlayerVisibility","m_bStartDisabled")); }, set: function (v) { var o = off("CPlayerVisibility","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isEnabled": { get: function () { return this.ref.readBool(off("CPlayerVisibility","m_bIsEnabled")); }, set: function (v) { var o = off("CPlayerVisibility","m_bIsEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointCamera"] = {
+    "fOV": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_FOV")); }, set: function (v) { var o = off("CPointCamera","m_FOV"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "resolution": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_Resolution")); }, set: function (v) { var o = off("CPointCamera","m_Resolution"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogEnable": { get: function () { return this.ref.readBool(off("CPointCamera","m_bFogEnable")); }, set: function (v) { var o = off("CPointCamera","m_bFogEnable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogColor": { get: function () { return this.ref.readUInt32(off("CPointCamera","m_FogColor")); }, set: function (v) { var o = off("CPointCamera","m_FogColor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogStart": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flFogStart")); }, set: function (v) { var o = off("CPointCamera","m_flFogStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogEnd": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flFogEnd")); }, set: function (v) { var o = off("CPointCamera","m_flFogEnd"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMaxDensity": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flFogMaxDensity")); }, set: function (v) { var o = off("CPointCamera","m_flFogMaxDensity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "active": { get: function () { return this.ref.readBool(off("CPointCamera","m_bActive")); }, set: function (v) { var o = off("CPointCamera","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "useScreenAspectRatio": { get: function () { return this.ref.readBool(off("CPointCamera","m_bUseScreenAspectRatio")); }, set: function (v) { var o = off("CPointCamera","m_bUseScreenAspectRatio"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "aspectRatio": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flAspectRatio")); }, set: function (v) { var o = off("CPointCamera","m_flAspectRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noSky": { get: function () { return this.ref.readBool(off("CPointCamera","m_bNoSky")); }, set: function (v) { var o = off("CPointCamera","m_bNoSky"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightness": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_fBrightness")); }, set: function (v) { var o = off("CPointCamera","m_fBrightness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "zFar": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flZFar")); }, set: function (v) { var o = off("CPointCamera","m_flZFar"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "zNear": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flZNear")); }, set: function (v) { var o = off("CPointCamera","m_flZNear"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "canHLTVUse": { get: function () { return this.ref.readBool(off("CPointCamera","m_bCanHLTVUse")); }, set: function (v) { var o = off("CPointCamera","m_bCanHLTVUse"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "alignWithParent": { get: function () { return this.ref.readBool(off("CPointCamera","m_bAlignWithParent")); }, set: function (v) { var o = off("CPointCamera","m_bAlignWithParent"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dofEnabled": { get: function () { return this.ref.readBool(off("CPointCamera","m_bDofEnabled")); }, set: function (v) { var o = off("CPointCamera","m_bDofEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dofNearBlurry": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flDofNearBlurry")); }, set: function (v) { var o = off("CPointCamera","m_flDofNearBlurry"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dofNearCrisp": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flDofNearCrisp")); }, set: function (v) { var o = off("CPointCamera","m_flDofNearCrisp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dofFarCrisp": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flDofFarCrisp")); }, set: function (v) { var o = off("CPointCamera","m_flDofFarCrisp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dofFarBlurry": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flDofFarBlurry")); }, set: function (v) { var o = off("CPointCamera","m_flDofFarBlurry"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dofTiltToGround": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_flDofTiltToGround")); }, set: function (v) { var o = off("CPointCamera","m_flDofTiltToGround"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetFOV": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_TargetFOV")); }, set: function (v) { var o = off("CPointCamera","m_TargetFOV"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "degreesPerSecond": { get: function () { return this.ref.readFloat32(off("CPointCamera","m_DegreesPerSecond")); }, set: function (v) { var o = off("CPointCamera","m_DegreesPerSecond"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isOn": { get: function () { return this.ref.readBool(off("CPointCamera","m_bIsOn")); }, set: function (v) { var o = off("CPointCamera","m_bIsOn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointEntity"] = {
+  };
+  A["CPointEntityFinder"] = {
+    "entity": { get: function () { return this.ref.readHandle(off("CPointEntityFinder","m_hEntity")); } },
+    "filter": { get: function () { return this.ref.readHandle(off("CPointEntityFinder","m_hFilter")); } },
+    "reference": { get: function () { return this.ref.readHandle(off("CPointEntityFinder","m_hReference")); } },
+    "findMethod": { get: function () { return this.ref.readUInt32(off("CPointEntityFinder","m_FindMethod")); }, set: function (v) { var o = off("CPointEntityFinder","m_FindMethod"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onFoundEntity": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointEntityFinder","m_OnFoundEntity")); } },
+  };
+  A["CPointOrient"] = {
+    "target": { get: function () { return this.ref.readHandle(off("CPointOrient","m_hTarget")); } },
+    "active": { get: function () { return this.ref.readBool(off("CPointOrient","m_bActive")); }, set: function (v) { var o = off("CPointOrient","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "goalDirection": { get: function () { return this.ref.readUInt32(off("CPointOrient","m_nGoalDirection")); }, set: function (v) { var o = off("CPointOrient","m_nGoalDirection"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "constraint": { get: function () { return this.ref.readUInt32(off("CPointOrient","m_nConstraint")); }, set: function (v) { var o = off("CPointOrient","m_nConstraint"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxTurnRate": { get: function () { return this.ref.readFloat32(off("CPointOrient","m_flMaxTurnRate")); }, set: function (v) { var o = off("CPointOrient","m_flMaxTurnRate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastGameTime": { get: function () { return this.ref.readFloat32(off("CPointOrient","m_flLastGameTime")); }, set: function (v) { var o = off("CPointOrient","m_flLastGameTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointValueRemapper"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CPointValueRemapper","m_bDisabled")); }, set: function (v) { var o = off("CPointValueRemapper","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "updateOnClient": { get: function () { return this.ref.readBool(off("CPointValueRemapper","m_bUpdateOnClient")); }, set: function (v) { var o = off("CPointValueRemapper","m_bUpdateOnClient"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "inputType": { get: function () { return this.ref.readUInt32(off("CPointValueRemapper","m_nInputType")); }, set: function (v) { var o = off("CPointValueRemapper","m_nInputType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "remapLineStart": { get: function () { return this.ref.readHandle(off("CPointValueRemapper","m_hRemapLineStart")); } },
+    "remapLineEnd": { get: function () { return this.ref.readHandle(off("CPointValueRemapper","m_hRemapLineEnd")); } },
+    "maximumChangePerSecond": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flMaximumChangePerSecond")); }, set: function (v) { var o = off("CPointValueRemapper","m_flMaximumChangePerSecond"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "disengageDistance": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flDisengageDistance")); }, set: function (v) { var o = off("CPointValueRemapper","m_flDisengageDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "engageDistance": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flEngageDistance")); }, set: function (v) { var o = off("CPointValueRemapper","m_flEngageDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "requiresUseKey": { get: function () { return this.ref.readBool(off("CPointValueRemapper","m_bRequiresUseKey")); }, set: function (v) { var o = off("CPointValueRemapper","m_bRequiresUseKey"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "outputType": { get: function () { return this.ref.readUInt32(off("CPointValueRemapper","m_nOutputType")); }, set: function (v) { var o = off("CPointValueRemapper","m_nOutputType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hapticsType": { get: function () { return this.ref.readUInt32(off("CPointValueRemapper","m_nHapticsType")); }, set: function (v) { var o = off("CPointValueRemapper","m_nHapticsType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "momentumType": { get: function () { return this.ref.readUInt32(off("CPointValueRemapper","m_nMomentumType")); }, set: function (v) { var o = off("CPointValueRemapper","m_nMomentumType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "momentumModifier": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flMomentumModifier")); }, set: function (v) { var o = off("CPointValueRemapper","m_flMomentumModifier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "snapValue": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flSnapValue")); }, set: function (v) { var o = off("CPointValueRemapper","m_flSnapValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentMomentum": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flCurrentMomentum")); }, set: function (v) { var o = off("CPointValueRemapper","m_flCurrentMomentum"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ratchetType": { get: function () { return this.ref.readUInt32(off("CPointValueRemapper","m_nRatchetType")); }, set: function (v) { var o = off("CPointValueRemapper","m_nRatchetType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ratchetOffset": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flRatchetOffset")); }, set: function (v) { var o = off("CPointValueRemapper","m_flRatchetOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "inputOffset": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flInputOffset")); }, set: function (v) { var o = off("CPointValueRemapper","m_flInputOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "engaged": { get: function () { return this.ref.readBool(off("CPointValueRemapper","m_bEngaged")); }, set: function (v) { var o = off("CPointValueRemapper","m_bEngaged"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "firstUpdate": { get: function () { return this.ref.readBool(off("CPointValueRemapper","m_bFirstUpdate")); }, set: function (v) { var o = off("CPointValueRemapper","m_bFirstUpdate"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "previousValue": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flPreviousValue")); }, set: function (v) { var o = off("CPointValueRemapper","m_flPreviousValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "previousUpdateTickTime": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flPreviousUpdateTickTime")); }, set: function (v) { var o = off("CPointValueRemapper","m_flPreviousUpdateTickTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "previousTestPoint": { get: function () { var a = this.ref.readFloats(off("CPointValueRemapper","m_vecPreviousTestPoint"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "usingPlayer": { get: function () { return this.ref.readHandle(off("CPointValueRemapper","m_hUsingPlayer")); } },
+    "customOutputValue": { get: function () { return this.ref.readFloat32(off("CPointValueRemapper","m_flCustomOutputValue")); }, set: function (v) { var o = off("CPointValueRemapper","m_flCustomOutputValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onReachedValueZero": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointValueRemapper","m_OnReachedValueZero")); } },
+    "onReachedValueOne": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointValueRemapper","m_OnReachedValueOne")); } },
+    "onReachedValueCustom": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointValueRemapper","m_OnReachedValueCustom")); } },
+    "onEngage": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointValueRemapper","m_OnEngage")); } },
+    "onDisengage": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointValueRemapper","m_OnDisengage")); } },
+  };
+  A["CPulseGameBlackboard"] = {
+  };
+  A["CRagdollManager"] = {
+    "currentMaxRagdollCount": { get: function () { return this.ref.readInt8(off("CRagdollManager","m_iCurrentMaxRagdollCount")); }, set: function (v) { var o = off("CRagdollManager","m_iCurrentMaxRagdollCount"); if (this.ref.writeInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxRagdollCount": { get: function () { return this.ref.readInt32(off("CRagdollManager","m_iMaxRagdollCount")); }, set: function (v) { var o = off("CRagdollManager","m_iMaxRagdollCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "saveImportant": { get: function () { return this.ref.readBool(off("CRagdollManager","m_bSaveImportant")); }, set: function (v) { var o = off("CRagdollManager","m_bSaveImportant"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "canTakeDamage": { get: function () { return this.ref.readBool(off("CRagdollManager","m_bCanTakeDamage")); }, set: function (v) { var o = off("CRagdollManager","m_bCanTakeDamage"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CScriptedSequence"] = {
+    "moveTo": { get: function () { return this.ref.readUInt32(off("CScriptedSequence","m_nMoveTo")); }, set: function (v) { var o = off("CScriptedSequence","m_nMoveTo"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveToGait": { get: function () { return this.ref.readUInt8(off("CScriptedSequence","m_nMoveToGait")); }, set: function (v) { var o = off("CScriptedSequence","m_nMoveToGait"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "heldWeaponBehavior": { get: function () { return this.ref.readUInt32(off("CScriptedSequence","m_nHeldWeaponBehavior")); }, set: function (v) { var o = off("CScriptedSequence","m_nHeldWeaponBehavior"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forcedCrouchState": { get: function () { return this.ref.readUInt32(off("CScriptedSequence","m_nForcedCrouchState")); }, set: function (v) { var o = off("CScriptedSequence","m_nForcedCrouchState"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isPlayingPreIdle": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIsPlayingPreIdle")); }, set: function (v) { var o = off("CScriptedSequence","m_bIsPlayingPreIdle"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isPlayingEntry": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIsPlayingEntry")); }, set: function (v) { var o = off("CScriptedSequence","m_bIsPlayingEntry"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isPlayingAction": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIsPlayingAction")); }, set: function (v) { var o = off("CScriptedSequence","m_bIsPlayingAction"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isPlayingPostIdle": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIsPlayingPostIdle")); }, set: function (v) { var o = off("CScriptedSequence","m_bIsPlayingPostIdle"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dontRotateOther": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bDontRotateOther")); }, set: function (v) { var o = off("CScriptedSequence","m_bDontRotateOther"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isRepeatable": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIsRepeatable")); }, set: function (v) { var o = off("CScriptedSequence","m_bIsRepeatable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "shouldLeaveCorpse": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bShouldLeaveCorpse")); }, set: function (v) { var o = off("CScriptedSequence","m_bShouldLeaveCorpse"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startOnSpawn": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bStartOnSpawn")); }, set: function (v) { var o = off("CScriptedSequence","m_bStartOnSpawn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disallowInterrupts": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bDisallowInterrupts")); }, set: function (v) { var o = off("CScriptedSequence","m_bDisallowInterrupts"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "canOverrideNPCState": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bCanOverrideNPCState")); }, set: function (v) { var o = off("CScriptedSequence","m_bCanOverrideNPCState"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dontTeleportAtEnd": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bDontTeleportAtEnd")); }, set: function (v) { var o = off("CScriptedSequence","m_bDontTeleportAtEnd"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "highPriority": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bHighPriority")); }, set: function (v) { var o = off("CScriptedSequence","m_bHighPriority"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hideDebugComplaints": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bHideDebugComplaints")); }, set: function (v) { var o = off("CScriptedSequence","m_bHideDebugComplaints"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "continueOnDeath": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bContinueOnDeath")); }, set: function (v) { var o = off("CScriptedSequence","m_bContinueOnDeath"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "loopPreIdleSequence": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bLoopPreIdleSequence")); }, set: function (v) { var o = off("CScriptedSequence","m_bLoopPreIdleSequence"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "loopActionSequence": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bLoopActionSequence")); }, set: function (v) { var o = off("CScriptedSequence","m_bLoopActionSequence"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "loopPostIdleSequence": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bLoopPostIdleSequence")); }, set: function (v) { var o = off("CScriptedSequence","m_bLoopPostIdleSequence"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "synchPostIdles": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bSynchPostIdles")); }, set: function (v) { var o = off("CScriptedSequence","m_bSynchPostIdles"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "ignoreLookAt": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIgnoreLookAt")); }, set: function (v) { var o = off("CScriptedSequence","m_bIgnoreLookAt"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "ignoreGravity": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIgnoreGravity")); }, set: function (v) { var o = off("CScriptedSequence","m_bIgnoreGravity"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disableNPCCollisions": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bDisableNPCCollisions")); }, set: function (v) { var o = off("CScriptedSequence","m_bDisableNPCCollisions"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "keepAnimgraphLockedPost": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bKeepAnimgraphLockedPost")); }, set: function (v) { var o = off("CScriptedSequence","m_bKeepAnimgraphLockedPost"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dontAddModifiers": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bDontAddModifiers")); }, set: function (v) { var o = off("CScriptedSequence","m_bDontAddModifiers"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disableAimingWhileMoving": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bDisableAimingWhileMoving")); }, set: function (v) { var o = off("CScriptedSequence","m_bDisableAimingWhileMoving"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "ignoreRotation": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIgnoreRotation")); }, set: function (v) { var o = off("CScriptedSequence","m_bIgnoreRotation"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CScriptedSequence","m_flRadius")); }, set: function (v) { var o = off("CScriptedSequence","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "repeat": { get: function () { return this.ref.readFloat32(off("CScriptedSequence","m_flRepeat")); }, set: function (v) { var o = off("CScriptedSequence","m_flRepeat"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "playAnimFadeInTime": { get: function () { return this.ref.readFloat32(off("CScriptedSequence","m_flPlayAnimFadeInTime")); }, set: function (v) { var o = off("CScriptedSequence","m_flPlayAnimFadeInTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveInterpTime": { get: function () { return this.ref.readFloat32(off("CScriptedSequence","m_flMoveInterpTime")); }, set: function (v) { var o = off("CScriptedSequence","m_flMoveInterpTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angRate": { get: function () { return this.ref.readFloat32(off("CScriptedSequence","m_flAngRate")); }, set: function (v) { var o = off("CScriptedSequence","m_flAngRate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveSpeed": { get: function () { return this.ref.readFloat32(off("CScriptedSequence","m_flMoveSpeed")); }, set: function (v) { var o = off("CScriptedSequence","m_flMoveSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "waitUntilMoveCompletesToStartAnimation": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bWaitUntilMoveCompletesToStartAnimation")); }, set: function (v) { var o = off("CScriptedSequence","m_bWaitUntilMoveCompletesToStartAnimation"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "notReadySequenceCount": { get: function () { return this.ref.readInt32(off("CScriptedSequence","m_nNotReadySequenceCount")); }, set: function (v) { var o = off("CScriptedSequence","m_nNotReadySequenceCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startTime": { get: function () { return this.ref.readFloat32(off("CScriptedSequence","m_startTime")); }, set: function (v) { var o = off("CScriptedSequence","m_startTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "waitForBeginSequence": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bWaitForBeginSequence")); }, set: function (v) { var o = off("CScriptedSequence","m_bWaitForBeginSequence"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "saved_effects": { get: function () { return this.ref.readInt32(off("CScriptedSequence","m_saved_effects")); }, set: function (v) { var o = off("CScriptedSequence","m_saved_effects"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "savedFlags": { get: function () { return this.ref.readInt32(off("CScriptedSequence","m_savedFlags")); }, set: function (v) { var o = off("CScriptedSequence","m_savedFlags"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "savedCollisionGroup": { get: function () { return this.ref.readInt32(off("CScriptedSequence","m_savedCollisionGroup")); }, set: function (v) { var o = off("CScriptedSequence","m_savedCollisionGroup"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "interruptable": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bInterruptable")); }, set: function (v) { var o = off("CScriptedSequence","m_bInterruptable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "sequenceStarted": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_sequenceStarted")); }, set: function (v) { var o = off("CScriptedSequence","m_sequenceStarted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "positionRelativeToOtherEntity": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bPositionRelativeToOtherEntity")); }, set: function (v) { var o = off("CScriptedSequence","m_bPositionRelativeToOtherEntity"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetEnt": { get: function () { return this.ref.readHandle(off("CScriptedSequence","m_hTargetEnt")); } },
+    "nextCine": { get: function () { return this.ref.readHandle(off("CScriptedSequence","m_hNextCine")); } },
+    "thinking": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bThinking")); }, set: function (v) { var o = off("CScriptedSequence","m_bThinking"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "initiatedSelfDelete": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bInitiatedSelfDelete")); }, set: function (v) { var o = off("CScriptedSequence","m_bInitiatedSelfDelete"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isTeleportingDueToMoveTo": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bIsTeleportingDueToMoveTo")); }, set: function (v) { var o = off("CScriptedSequence","m_bIsTeleportingDueToMoveTo"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "allowCustomInterruptConditions": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bAllowCustomInterruptConditions")); }, set: function (v) { var o = off("CScriptedSequence","m_bAllowCustomInterruptConditions"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "forcedTarget": { get: function () { return this.ref.readHandle(off("CScriptedSequence","m_hForcedTarget")); } },
+    "dontCancelOtherSequences": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bDontCancelOtherSequences")); }, set: function (v) { var o = off("CScriptedSequence","m_bDontCancelOtherSequences"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceSynch": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bForceSynch")); }, set: function (v) { var o = off("CScriptedSequence","m_bForceSynch"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "preventUpdateYawOnFinish": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bPreventUpdateYawOnFinish")); }, set: function (v) { var o = off("CScriptedSequence","m_bPreventUpdateYawOnFinish"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "ensureOnNavmeshOnFinish": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bEnsureOnNavmeshOnFinish")); }, set: function (v) { var o = off("CScriptedSequence","m_bEnsureOnNavmeshOnFinish"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onDeathBehavior": { get: function () { return this.ref.readUInt32(off("CScriptedSequence","m_onDeathBehavior")); }, set: function (v) { var o = off("CScriptedSequence","m_onDeathBehavior"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "conflictResponse": { get: function () { return this.ref.readUInt32(off("CScriptedSequence","m_ConflictResponse")); }, set: function (v) { var o = off("CScriptedSequence","m_ConflictResponse"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "interactionMainEntity": { get: function () { return this.ref.readHandle(off("CScriptedSequence","m_hInteractionMainEntity")); } },
+    "playerDeathBehavior": { get: function () { return this.ref.readInt32(off("CScriptedSequence","m_iPlayerDeathBehavior")); }, set: function (v) { var o = off("CScriptedSequence","m_iPlayerDeathBehavior"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "skipFadeIn": { get: function () { return this.ref.readBool(off("CScriptedSequence","m_bSkipFadeIn")); }, set: function (v) { var o = off("CScriptedSequence","m_bSkipFadeIn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onBeginSequence": { get: function () { return embed("CEntityIOOutput", this.ref, off("CScriptedSequence","m_OnBeginSequence")); } },
+    "onActionStartOrLoop": { get: function () { return embed("CEntityIOOutput", this.ref, off("CScriptedSequence","m_OnActionStartOrLoop")); } },
+    "onEndSequence": { get: function () { return embed("CEntityIOOutput", this.ref, off("CScriptedSequence","m_OnEndSequence")); } },
+    "onPostIdleEndSequence": { get: function () { return embed("CEntityIOOutput", this.ref, off("CScriptedSequence","m_OnPostIdleEndSequence")); } },
+    "onCancelSequence": { get: function () { return embed("CEntityIOOutput", this.ref, off("CScriptedSequence","m_OnCancelSequence")); } },
+    "onCancelFailedSequence": { get: function () { return embed("CEntityIOOutput", this.ref, off("CScriptedSequence","m_OnCancelFailedSequence")); } },
+  };
+  A["CServerOnlyEntity"] = {
+  };
+  A["CSkyCamera"] = {
+    "useAngles": { get: function () { return this.ref.readBool(off("CSkyCamera","m_bUseAngles")); }, set: function (v) { var o = off("CSkyCamera","m_bUseAngles"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "skyboxData": { get: function () { return embed("sky3dparams_t", this.ref, off("CSkyCamera","m_skyboxData")); } },
+  };
+  A["CSkyboxReference"] = {
+    "skyCamera": { get: function () { return this.ref.readHandle(off("CSkyboxReference","m_hSkyCamera")); } },
+  };
+  A["CSoundAreaEntityBase"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CSoundAreaEntityBase","m_bDisabled")); }, set: function (v) { var o = off("CSoundAreaEntityBase","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pos": { get: function () { var a = this.ref.readFloats(off("CSoundAreaEntityBase","m_vPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CSoundEventEntity"] = {
+    "startOnSpawn": { get: function () { return this.ref.readBool(off("CSoundEventEntity","m_bStartOnSpawn")); }, set: function (v) { var o = off("CSoundEventEntity","m_bStartOnSpawn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "toLocalPlayer": { get: function () { return this.ref.readBool(off("CSoundEventEntity","m_bToLocalPlayer")); }, set: function (v) { var o = off("CSoundEventEntity","m_bToLocalPlayer"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopOnNew": { get: function () { return this.ref.readBool(off("CSoundEventEntity","m_bStopOnNew")); }, set: function (v) { var o = off("CSoundEventEntity","m_bStopOnNew"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "saveRestore": { get: function () { return this.ref.readBool(off("CSoundEventEntity","m_bSaveRestore")); }, set: function (v) { var o = off("CSoundEventEntity","m_bSaveRestore"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "savedIsPlaying": { get: function () { return this.ref.readBool(off("CSoundEventEntity","m_bSavedIsPlaying")); }, set: function (v) { var o = off("CSoundEventEntity","m_bSavedIsPlaying"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "savedElapsedTime": { get: function () { return this.ref.readFloat32(off("CSoundEventEntity","m_flSavedElapsedTime")); }, set: function (v) { var o = off("CSoundEventEntity","m_flSavedElapsedTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "clientCullRadius": { get: function () { return this.ref.readFloat32(off("CSoundEventEntity","m_flClientCullRadius")); }, set: function (v) { var o = off("CSoundEventEntity","m_flClientCullRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entityIndexSelection": { get: function () { return this.ref.readInt32(off("CSoundEventEntity","m_nEntityIndexSelection")); }, set: function (v) { var o = off("CSoundEventEntity","m_nEntityIndexSelection"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onSoundFinished": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSoundEventEntity","m_onSoundFinished")); } },
+  };
+  A["CSoundEventParameter"] = {
+    "floatValue": { get: function () { return this.ref.readFloat32(off("CSoundEventParameter","m_flFloatValue")); }, set: function (v) { var o = off("CSoundEventParameter","m_flFloatValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundOpvarSetEntity"] = {
+    "opvarType": { get: function () { return this.ref.readInt32(off("CSoundOpvarSetEntity","m_nOpvarType")); }, set: function (v) { var o = off("CSoundOpvarSetEntity","m_nOpvarType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "opvarIndex": { get: function () { return this.ref.readInt32(off("CSoundOpvarSetEntity","m_nOpvarIndex")); }, set: function (v) { var o = off("CSoundOpvarSetEntity","m_nOpvarIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "opvarValue": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetEntity","m_flOpvarValue")); }, set: function (v) { var o = off("CSoundOpvarSetEntity","m_flOpvarValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "setOnSpawn": { get: function () { return this.ref.readBool(off("CSoundOpvarSetEntity","m_bSetOnSpawn")); }, set: function (v) { var o = off("CSoundOpvarSetEntity","m_bSetOnSpawn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundOpvarSetPointBase"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CSoundOpvarSetPointBase","m_bDisabled")); }, set: function (v) { var o = off("CSoundOpvarSetPointBase","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastPosition": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetPointBase","m_vLastPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "refreshTime": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointBase","m_flRefreshTime")); }, set: function (v) { var o = off("CSoundOpvarSetPointBase","m_flRefreshTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "opvarIndex": { get: function () { return this.ref.readInt32(off("CSoundOpvarSetPointBase","m_iOpvarIndex")); }, set: function (v) { var o = off("CSoundOpvarSetPointBase","m_iOpvarIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "useAutoCompare": { get: function () { return this.ref.readBool(off("CSoundOpvarSetPointBase","m_bUseAutoCompare")); }, set: function (v) { var o = off("CSoundOpvarSetPointBase","m_bUseAutoCompare"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fastRefresh": { get: function () { return this.ref.readBool(off("CSoundOpvarSetPointBase","m_bFastRefresh")); }, set: function (v) { var o = off("CSoundOpvarSetPointBase","m_bFastRefresh"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   A["CTeam"] = {
     "score": { get: function () { return this.ref.readInt32(off("CTeam","m_iScore")); }, set: function (v) { var o = off("CTeam","m_iScore"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "teamname": { get: function () { return this.ref.readString(off("CTeam","m_szTeamname"), 129); } },
   };
   A["CTeamplayRules"] = {
+  };
+  A["CTestEffect"] = {
+    "loop": { get: function () { return this.ref.readInt32(off("CTestEffect","m_iLoop")); }, set: function (v) { var o = off("CTestEffect","m_iLoop"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "beam": { get: function () { return this.ref.readInt32(off("CTestEffect","m_iBeam")); }, set: function (v) { var o = off("CTestEffect","m_iBeam"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startTime": { get: function () { return this.ref.readFloat32(off("CTestEffect","m_flStartTime")); }, set: function (v) { var o = off("CTestEffect","m_flStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTonemapController2"] = {
+    "autoExposureMin": { get: function () { return this.ref.readFloat32(off("CTonemapController2","m_flAutoExposureMin")); }, set: function (v) { var o = off("CTonemapController2","m_flAutoExposureMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "autoExposureMax": { get: function () { return this.ref.readFloat32(off("CTonemapController2","m_flAutoExposureMax")); }, set: function (v) { var o = off("CTonemapController2","m_flAutoExposureMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "exposureAdaptationSpeedUp": { get: function () { return this.ref.readFloat32(off("CTonemapController2","m_flExposureAdaptationSpeedUp")); }, set: function (v) { var o = off("CTonemapController2","m_flExposureAdaptationSpeedUp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "exposureAdaptationSpeedDown": { get: function () { return this.ref.readFloat32(off("CTonemapController2","m_flExposureAdaptationSpeedDown")); }, set: function (v) { var o = off("CTonemapController2","m_flExposureAdaptationSpeedDown"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tonemapEVSmoothingRange": { get: function () { return this.ref.readFloat32(off("CTonemapController2","m_flTonemapEVSmoothingRange")); }, set: function (v) { var o = off("CTonemapController2","m_flTonemapEVSmoothingRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CVoteController"] = {
+    "activeIssueIndex": { get: function () { return this.ref.readInt32(off("CVoteController","m_iActiveIssueIndex")); }, set: function (v) { var o = off("CVoteController","m_iActiveIssueIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onlyTeamToVote": { get: function () { return this.ref.readInt32(off("CVoteController","m_iOnlyTeamToVote")); }, set: function (v) { var o = off("CVoteController","m_iOnlyTeamToVote"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "potentialVotes": { get: function () { return this.ref.readInt32(off("CVoteController","m_nPotentialVotes")); }, set: function (v) { var o = off("CVoteController","m_nPotentialVotes"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isYesNoVote": { get: function () { return this.ref.readBool(off("CVoteController","m_bIsYesNoVote")); }, set: function (v) { var o = off("CVoteController","m_bIsYesNoVote"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "highestCountIndex": { get: function () { return this.ref.readInt32(off("CVoteController","m_nHighestCountIndex")); }, set: function (v) { var o = off("CVoteController","m_nHighestCountIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "acceptingVotesTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CVoteController","m_acceptingVotesTimer")); } },
+    "executeCommandTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CVoteController","m_executeCommandTimer")); } },
+    "resetVoteTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CVoteController","m_resetVoteTimer")); } },
+  };
+  A["CAmbientGeneric"] = {
+    "radius": { get: function () { return this.ref.readFloat32(off("CAmbientGeneric","m_radius")); }, set: function (v) { var o = off("CAmbientGeneric","m_radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxRadius": { get: function () { return this.ref.readFloat32(off("CAmbientGeneric","m_flMaxRadius")); }, set: function (v) { var o = off("CAmbientGeneric","m_flMaxRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "soundLevel": { get: function () { return this.ref.readUInt32(off("CAmbientGeneric","m_iSoundLevel")); }, set: function (v) { var o = off("CAmbientGeneric","m_iSoundLevel"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "active": { get: function () { return this.ref.readBool(off("CAmbientGeneric","m_fActive")); }, set: function (v) { var o = off("CAmbientGeneric","m_fActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "looping": { get: function () { return this.ref.readBool(off("CAmbientGeneric","m_fLooping")); }, set: function (v) { var o = off("CAmbientGeneric","m_fLooping"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "soundSource": { get: function () { return this.ref.readHandle(off("CAmbientGeneric","m_hSoundSource")); } },
+    "dpv": { get: function () { return embed("dynpitchvol_t", this.ref, off("CAmbientGeneric","m_dpv")); } },
+  };
+  A["CBarnLight"] = {
+    "enabled": { get: function () { return this.ref.readBool(off("CBarnLight","m_bEnabled")); }, set: function (v) { var o = off("CBarnLight","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "colorMode": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nColorMode")); }, set: function (v) { var o = off("CBarnLight","m_nColorMode"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "color": { get: function () { return this.ref.readUInt32(off("CBarnLight","m_Color")); }, set: function (v) { var o = off("CBarnLight","m_Color"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "colorTemperature": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flColorTemperature")); }, set: function (v) { var o = off("CBarnLight","m_flColorTemperature"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightness": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flBrightness")); }, set: function (v) { var o = off("CBarnLight","m_flBrightness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightnessScale": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flBrightnessScale")); }, set: function (v) { var o = off("CBarnLight","m_flBrightnessScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "directLight": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nDirectLight")); }, set: function (v) { var o = off("CBarnLight","m_nDirectLight"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bakedShadowIndex": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nBakedShadowIndex")); }, set: function (v) { var o = off("CBarnLight","m_nBakedShadowIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lightPathUniqueId": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nLightPathUniqueId")); }, set: function (v) { var o = off("CBarnLight","m_nLightPathUniqueId"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lightMapUniqueId": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nLightMapUniqueId")); }, set: function (v) { var o = off("CBarnLight","m_nLightMapUniqueId"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "luminaireShape": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nLuminaireShape")); }, set: function (v) { var o = off("CBarnLight","m_nLuminaireShape"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "luminaireSize": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flLuminaireSize")); }, set: function (v) { var o = off("CBarnLight","m_flLuminaireSize"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "luminaireAnisotropy": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flLuminaireAnisotropy")); }, set: function (v) { var o = off("CBarnLight","m_flLuminaireAnisotropy"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lightStyleStartTime": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flLightStyleStartTime")); }, set: function (v) { var o = off("CBarnLight","m_flLightStyleStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "shape": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flShape")); }, set: function (v) { var o = off("CBarnLight","m_flShape"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "softX": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flSoftX")); }, set: function (v) { var o = off("CBarnLight","m_flSoftX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "softY": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flSoftY")); }, set: function (v) { var o = off("CBarnLight","m_flSoftY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "skirt": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flSkirt")); }, set: function (v) { var o = off("CBarnLight","m_flSkirt"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "skirtNear": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flSkirtNear")); }, set: function (v) { var o = off("CBarnLight","m_flSkirtNear"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "sizeParams": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vSizeParams"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "range": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flRange")); }, set: function (v) { var o = off("CBarnLight","m_flRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "shear": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vShear"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "bakeSpecularToCubemaps": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nBakeSpecularToCubemaps")); }, set: function (v) { var o = off("CBarnLight","m_nBakeSpecularToCubemaps"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bakeSpecularToCubemapsSize": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vBakeSpecularToCubemapsSize"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "bakeSpecularToCubemapsScale": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flBakeSpecularToCubemapsScale")); }, set: function (v) { var o = off("CBarnLight","m_flBakeSpecularToCubemapsScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "castShadows": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nCastShadows")); }, set: function (v) { var o = off("CBarnLight","m_nCastShadows"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "shadowMapSize": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nShadowMapSize")); }, set: function (v) { var o = off("CBarnLight","m_nShadowMapSize"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "shadowPriority": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nShadowPriority")); }, set: function (v) { var o = off("CBarnLight","m_nShadowPriority"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "contactShadow": { get: function () { return this.ref.readBool(off("CBarnLight","m_bContactShadow")); }, set: function (v) { var o = off("CBarnLight","m_bContactShadow"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceShadowsEnabled": { get: function () { return this.ref.readBool(off("CBarnLight","m_bForceShadowsEnabled")); }, set: function (v) { var o = off("CBarnLight","m_bForceShadowsEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "bounceLight": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nBounceLight")); }, set: function (v) { var o = off("CBarnLight","m_nBounceLight"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bounceScale": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flBounceScale")); }, set: function (v) { var o = off("CBarnLight","m_flBounceScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minRoughness": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flMinRoughness")); }, set: function (v) { var o = off("CBarnLight","m_flMinRoughness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "alternateColor": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vAlternateColor"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "alternateColorBrightness": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_fAlternateColorBrightness")); }, set: function (v) { var o = off("CBarnLight","m_fAlternateColorBrightness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fog": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nFog")); }, set: function (v) { var o = off("CBarnLight","m_nFog"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogStrength": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flFogStrength")); }, set: function (v) { var o = off("CBarnLight","m_flFogStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogShadows": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nFogShadows")); }, set: function (v) { var o = off("CBarnLight","m_nFogShadows"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogScale": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flFogScale")); }, set: function (v) { var o = off("CBarnLight","m_flFogScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeSizeStart": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flFadeSizeStart")); }, set: function (v) { var o = off("CBarnLight","m_flFadeSizeStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeSizeEnd": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flFadeSizeEnd")); }, set: function (v) { var o = off("CBarnLight","m_flFadeSizeEnd"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "shadowFadeSizeStart": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flShadowFadeSizeStart")); }, set: function (v) { var o = off("CBarnLight","m_flShadowFadeSizeStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "shadowFadeSizeEnd": { get: function () { return this.ref.readFloat32(off("CBarnLight","m_flShadowFadeSizeEnd")); }, set: function (v) { var o = off("CBarnLight","m_flShadowFadeSizeEnd"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "precomputedFieldsValid": { get: function () { return this.ref.readBool(off("CBarnLight","m_bPrecomputedFieldsValid")); }, set: function (v) { var o = off("CBarnLight","m_bPrecomputedFieldsValid"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "precomputedBoundsMins": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedBoundsMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedBoundsMaxs": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedBoundsMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBOrigin": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBAngles": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "precomputedOBBExtent": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBExtent"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedSubFrusta": { get: function () { return this.ref.readInt32(off("CBarnLight","m_nPrecomputedSubFrusta")); }, set: function (v) { var o = off("CBarnLight","m_nPrecomputedSubFrusta"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "precomputedOBBOrigin0": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBOrigin0"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBAngles0": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBAngles0"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "precomputedOBBExtent0": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBExtent0"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBOrigin1": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBOrigin1"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBAngles1": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBAngles1"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "precomputedOBBExtent1": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBExtent1"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBOrigin2": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBOrigin2"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBAngles2": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBAngles2"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "precomputedOBBExtent2": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBExtent2"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBOrigin3": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBOrigin3"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBAngles3": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBAngles3"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "precomputedOBBExtent3": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBExtent3"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBOrigin4": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBOrigin4"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBAngles4": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBAngles4"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "precomputedOBBExtent4": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBExtent4"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBOrigin5": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBOrigin5"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "precomputedOBBAngles5": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBAngles5"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "precomputedOBBExtent5": { get: function () { var a = this.ref.readFloats(off("CBarnLight","m_vPrecomputedOBBExtent5"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "pvsModifyEntity": { get: function () { return this.ref.readBool(off("CBarnLight","m_bPvsModifyEntity")); }, set: function (v) { var o = off("CBarnLight","m_bPvsModifyEntity"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "transmitAlways": { get: function () { return this.ref.readBool(off("CBarnLight","m_bTransmitAlways")); }, set: function (v) { var o = off("CBarnLight","m_bTransmitAlways"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
   };
   A["CBaseAnimGraph"] = {
     "initiallyPopulateInterpHistory": { get: function () { return this.ref.readBool(off("CBaseAnimGraph","m_bInitiallyPopulateInterpHistory")); }, set: function (v) { var o = off("CBaseAnimGraph","m_bInitiallyPopulateInterpHistory"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -166,6 +871,11 @@
     "mainGraphController": { get: function () { return embed("CAnimGraphControllerPtr", this.ref, off("CBaseAnimGraph","m_pMainGraphController")); } },
     "onExternalChoreoGraphChanged": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseAnimGraph","m_OnExternalChoreoGraphChanged")); } },
     "ragdollPose": { get: function () { return embed("PhysicsRagdollPose_t", this.ref, off("CBaseAnimGraph","m_RagdollPose")); } },
+  };
+  A["CBaseClientUIEntity"] = {
+    "enabled": { get: function () { return this.ref.readBool(off("CBaseClientUIEntity","m_bEnabled")); }, set: function (v) { var o = off("CBaseClientUIEntity","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CBaseDMStart"] = {
   };
   A["CBaseToggle"] = {
     "toggle_state": { get: function () { return this.ref.readUInt32(off("CBaseToggle","m_toggle_state")); }, set: function (v) { var o = off("CBaseToggle","m_toggle_state"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -204,6 +914,27 @@
     "endPos": { get: function () { var a = this.ref.readFloats(off("CBeam","m_vecEndPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
     "endEntity": { get: function () { return this.ref.readHandle(off("CBeam","m_hEndEntity")); } },
     "dissolveType": { get: function () { return this.ref.readInt32(off("CBeam","m_nDissolveType")); }, set: function (v) { var o = off("CBeam","m_nDissolveType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CBlood"] = {
+    "sprayAngles": { get: function () { var a = this.ref.readFloats(off("CBlood","m_vecSprayAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "sprayDir": { get: function () { var a = this.ref.readFloats(off("CBlood","m_vecSprayDir"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "amount": { get: function () { return this.ref.readFloat32(off("CBlood","m_flAmount")); }, set: function (v) { var o = off("CBlood","m_flAmount"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "color": { get: function () { return this.ref.readUInt32(off("CBlood","m_Color")); }, set: function (v) { var o = off("CBlood","m_Color"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CBreakable"] = {
+    "material": { get: function () { return this.ref.readUInt32(off("CBreakable","m_Material")); }, set: function (v) { var o = off("CBreakable","m_Material"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breaker": { get: function () { return this.ref.readHandle(off("CBreakable","m_hBreaker")); } },
+    "explosion": { get: function () { return this.ref.readUInt32(off("CBreakable","m_Explosion")); }, set: function (v) { var o = off("CBreakable","m_Explosion"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pressureDelay": { get: function () { return this.ref.readFloat32(off("CBreakable","m_flPressureDelay")); }, set: function (v) { var o = off("CBreakable","m_flPressureDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minHealthDmg": { get: function () { return this.ref.readInt32(off("CBreakable","m_iMinHealthDmg")); }, set: function (v) { var o = off("CBreakable","m_iMinHealthDmg"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "impactEnergyScale": { get: function () { return this.ref.readFloat32(off("CBreakable","m_impactEnergyScale")); }, set: function (v) { var o = off("CBreakable","m_impactEnergyScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "overrideBlockLOS": { get: function () { return this.ref.readUInt32(off("CBreakable","m_nOverrideBlockLOS")); }, set: function (v) { var o = off("CBreakable","m_nOverrideBlockLOS"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "performanceMode": { get: function () { return this.ref.readUInt32(off("CBreakable","m_PerformanceMode")); }, set: function (v) { var o = off("CBreakable","m_PerformanceMode"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "physicsAttacker": { get: function () { return this.ref.readHandle(off("CBreakable","m_hPhysicsAttacker")); } },
+    "lastPhysicsInfluenceTime": { get: function () { return this.ref.readFloat32(off("CBreakable","m_flLastPhysicsInfluenceTime")); }, set: function (v) { var o = off("CBreakable","m_flLastPhysicsInfluenceTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "cPropDataComponent": { get: function () { return embed("CPropDataComponent", this.ref, off("CBreakable","m_CPropDataComponent")); } },
+    "onStartDeath": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBreakable","m_OnStartDeath")); } },
+    "onBreak": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBreakable","m_OnBreak")); } },
   };
   A["CCSGameRules"] = {
     "freezePeriod": { get: function () { return this.ref.readBool(off("CCSGameRules","m_bFreezePeriod")); }, set: function (v) { var o = off("CCSGameRules","m_bFreezePeriod"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -372,6 +1103,8 @@
     "lastPerfSampleTime": { get: function () { return this.ref.readFloat64(off("CCSGameRules","m_flLastPerfSampleTime")); } },
     "retakeRules": { get: function () { return embed("CRetakeGameRules", this.ref, off("CCSGameRules","m_RetakeRules")); } },
   };
+  A["CCSGameRulesProxy"] = {
+  };
   A["CCSPlayerController"] = {
     "ping": { get: function () { return this.ref.readUInt32(off("CCSPlayerController","m_iPing")); }, set: function (v) { var o = off("CCSPlayerController","m_iPing"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "hasCommunicationAbuseMute": { get: function () { return this.ref.readBool(off("CCSPlayerController","m_bHasCommunicationAbuseMute")); }, set: function (v) { var o = off("CCSPlayerController","m_bHasCommunicationAbuseMute"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -474,7 +1207,824 @@
     "nextResourceTime": { get: function () { return this.ref.readFloat32(off("CCSTeam","m_flNextResourceTime")); }, set: function (v) { var o = off("CCSTeam","m_flNextResourceTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
     "lastUpdateSentAt": { get: function () { return this.ref.readInt32(off("CCSTeam","m_iLastUpdateSentAt")); }, set: function (v) { var o = off("CCSTeam","m_iLastUpdateSentAt"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
   };
+  A["CCashStack"] = {
+    "cashStackValue": { get: function () { return this.ref.readInt32(off("CCashStack","m_nCashStackValue")); }, set: function (v) { var o = off("CCashStack","m_nCashStackValue"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CCredits"] = {
+    "rolledOutroCredits": { get: function () { return this.ref.readBool(off("CCredits","m_bRolledOutroCredits")); }, set: function (v) { var o = off("CCredits","m_bRolledOutroCredits"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "logoLength": { get: function () { return this.ref.readFloat32(off("CCredits","m_flLogoLength")); }, set: function (v) { var o = off("CCredits","m_flLogoLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onCreditsDone": { get: function () { return embed("CEntityIOOutput", this.ref, off("CCredits","m_OnCreditsDone")); } },
+  };
+  A["CDynamicLight"] = {
+    "actualFlags": { get: function () { return this.ref.readUInt8(off("CDynamicLight","m_ActualFlags")); }, set: function (v) { var o = off("CDynamicLight","m_ActualFlags"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "m_Flags": { get: function () { return this.ref.readUInt8(off("CDynamicLight","m_Flags")); }, set: function (v) { var o = off("CDynamicLight","m_Flags"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "lightStyle": { get: function () { return this.ref.readUInt8(off("CDynamicLight","m_LightStyle")); }, set: function (v) { var o = off("CDynamicLight","m_LightStyle"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "on": { get: function () { return this.ref.readBool(off("CDynamicLight","m_On")); }, set: function (v) { var o = off("CDynamicLight","m_On"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CDynamicLight","m_Radius")); }, set: function (v) { var o = off("CDynamicLight","m_Radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "exponent": { get: function () { return this.ref.readInt32(off("CDynamicLight","m_Exponent")); }, set: function (v) { var o = off("CDynamicLight","m_Exponent"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "innerAngle": { get: function () { return this.ref.readFloat32(off("CDynamicLight","m_InnerAngle")); }, set: function (v) { var o = off("CDynamicLight","m_InnerAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "outerAngle": { get: function () { return this.ref.readFloat32(off("CDynamicLight","m_OuterAngle")); }, set: function (v) { var o = off("CDynamicLight","m_OuterAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spotRadius": { get: function () { return this.ref.readFloat32(off("CDynamicLight","m_SpotRadius")); }, set: function (v) { var o = off("CDynamicLight","m_SpotRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEntityDissolve"] = {
+    "fadeInStart": { get: function () { return this.ref.readFloat32(off("CEntityDissolve","m_flFadeInStart")); }, set: function (v) { var o = off("CEntityDissolve","m_flFadeInStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeInLength": { get: function () { return this.ref.readFloat32(off("CEntityDissolve","m_flFadeInLength")); }, set: function (v) { var o = off("CEntityDissolve","m_flFadeInLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeOutModelStart": { get: function () { return this.ref.readFloat32(off("CEntityDissolve","m_flFadeOutModelStart")); }, set: function (v) { var o = off("CEntityDissolve","m_flFadeOutModelStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeOutModelLength": { get: function () { return this.ref.readFloat32(off("CEntityDissolve","m_flFadeOutModelLength")); }, set: function (v) { var o = off("CEntityDissolve","m_flFadeOutModelLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeOutStart": { get: function () { return this.ref.readFloat32(off("CEntityDissolve","m_flFadeOutStart")); }, set: function (v) { var o = off("CEntityDissolve","m_flFadeOutStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeOutLength": { get: function () { return this.ref.readFloat32(off("CEntityDissolve","m_flFadeOutLength")); }, set: function (v) { var o = off("CEntityDissolve","m_flFadeOutLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startTime": { get: function () { return this.ref.readFloat32(off("CEntityDissolve","m_flStartTime")); }, set: function (v) { var o = off("CEntityDissolve","m_flStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dissolveType": { get: function () { return this.ref.readUInt32(off("CEntityDissolve","m_nDissolveType")); }, set: function (v) { var o = off("CEntityDissolve","m_nDissolveType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dissolverOrigin": { get: function () { var a = this.ref.readFloats(off("CEntityDissolve","m_vDissolverOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "magnitude": { get: function () { return this.ref.readUInt32(off("CEntityDissolve","m_nMagnitude")); }, set: function (v) { var o = off("CEntityDissolve","m_nMagnitude"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvDecal"] = {
+    "width": { get: function () { return this.ref.readFloat32(off("CEnvDecal","m_flWidth")); }, set: function (v) { var o = off("CEnvDecal","m_flWidth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "height": { get: function () { return this.ref.readFloat32(off("CEnvDecal","m_flHeight")); }, set: function (v) { var o = off("CEnvDecal","m_flHeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "depth": { get: function () { return this.ref.readFloat32(off("CEnvDecal","m_flDepth")); }, set: function (v) { var o = off("CEnvDecal","m_flDepth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "renderOrder": { get: function () { return this.ref.readUInt32(off("CEnvDecal","m_nRenderOrder")); }, set: function (v) { var o = off("CEnvDecal","m_nRenderOrder"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "projectOnWorld": { get: function () { return this.ref.readBool(off("CEnvDecal","m_bProjectOnWorld")); }, set: function (v) { var o = off("CEnvDecal","m_bProjectOnWorld"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "projectOnCharacters": { get: function () { return this.ref.readBool(off("CEnvDecal","m_bProjectOnCharacters")); }, set: function (v) { var o = off("CEnvDecal","m_bProjectOnCharacters"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "projectOnWater": { get: function () { return this.ref.readBool(off("CEnvDecal","m_bProjectOnWater")); }, set: function (v) { var o = off("CEnvDecal","m_bProjectOnWater"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "depthSortBias": { get: function () { return this.ref.readFloat32(off("CEnvDecal","m_flDepthSortBias")); }, set: function (v) { var o = off("CEnvDecal","m_flDepthSortBias"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvEntityMaker"] = {
+    "entityMins": { get: function () { var a = this.ref.readFloats(off("CEnvEntityMaker","m_vecEntityMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entityMaxs": { get: function () { var a = this.ref.readFloats(off("CEnvEntityMaker","m_vecEntityMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "currentInstance": { get: function () { return this.ref.readHandle(off("CEnvEntityMaker","m_hCurrentInstance")); } },
+    "currentBlocker": { get: function () { return this.ref.readHandle(off("CEnvEntityMaker","m_hCurrentBlocker")); } },
+    "blockerOrigin": { get: function () { var a = this.ref.readFloats(off("CEnvEntityMaker","m_vecBlockerOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "postSpawnDirection": { get: function () { var a = this.ref.readFloats(off("CEnvEntityMaker","m_angPostSpawnDirection"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "postSpawnDirectionVariance": { get: function () { return this.ref.readFloat32(off("CEnvEntityMaker","m_flPostSpawnDirectionVariance")); }, set: function (v) { var o = off("CEnvEntityMaker","m_flPostSpawnDirectionVariance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "postSpawnSpeed": { get: function () { return this.ref.readFloat32(off("CEnvEntityMaker","m_flPostSpawnSpeed")); }, set: function (v) { var o = off("CEnvEntityMaker","m_flPostSpawnSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "postSpawnUseAngles": { get: function () { return this.ref.readBool(off("CEnvEntityMaker","m_bPostSpawnUseAngles")); }, set: function (v) { var o = off("CEnvEntityMaker","m_bPostSpawnUseAngles"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "outputOnSpawned": { get: function () { return embed("CEntityIOOutput", this.ref, off("CEnvEntityMaker","m_pOutputOnSpawned")); } },
+    "outputOnFailedSpawn": { get: function () { return embed("CEntityIOOutput", this.ref, off("CEnvEntityMaker","m_pOutputOnFailedSpawn")); } },
+  };
+  A["CEnvHudHint"] = {
+  };
+  A["CEnvInstructorHint"] = {
+    "timeout": { get: function () { return this.ref.readInt32(off("CEnvInstructorHint","m_iTimeout")); }, set: function (v) { var o = off("CEnvInstructorHint","m_iTimeout"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "displayLimit": { get: function () { return this.ref.readInt32(off("CEnvInstructorHint","m_iDisplayLimit")); }, set: function (v) { var o = off("CEnvInstructorHint","m_iDisplayLimit"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "color": { get: function () { return this.ref.readUInt32(off("CEnvInstructorHint","m_Color")); }, set: function (v) { var o = off("CEnvInstructorHint","m_Color"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "iconOffset": { get: function () { return this.ref.readFloat32(off("CEnvInstructorHint","m_fIconOffset")); }, set: function (v) { var o = off("CEnvInstructorHint","m_fIconOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "range": { get: function () { return this.ref.readFloat32(off("CEnvInstructorHint","m_fRange")); }, set: function (v) { var o = off("CEnvInstructorHint","m_fRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pulseOption": { get: function () { return this.ref.readUInt8(off("CEnvInstructorHint","m_iPulseOption")); }, set: function (v) { var o = off("CEnvInstructorHint","m_iPulseOption"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "alphaOption": { get: function () { return this.ref.readUInt8(off("CEnvInstructorHint","m_iAlphaOption")); }, set: function (v) { var o = off("CEnvInstructorHint","m_iAlphaOption"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "shakeOption": { get: function () { return this.ref.readUInt8(off("CEnvInstructorHint","m_iShakeOption")); }, set: function (v) { var o = off("CEnvInstructorHint","m_iShakeOption"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "static": { get: function () { return this.ref.readBool(off("CEnvInstructorHint","m_bStatic")); }, set: function (v) { var o = off("CEnvInstructorHint","m_bStatic"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "noOffscreen": { get: function () { return this.ref.readBool(off("CEnvInstructorHint","m_bNoOffscreen")); }, set: function (v) { var o = off("CEnvInstructorHint","m_bNoOffscreen"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceCaption": { get: function () { return this.ref.readBool(off("CEnvInstructorHint","m_bForceCaption")); }, set: function (v) { var o = off("CEnvInstructorHint","m_bForceCaption"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "instanceType": { get: function () { return this.ref.readInt32(off("CEnvInstructorHint","m_iInstanceType")); }, set: function (v) { var o = off("CEnvInstructorHint","m_iInstanceType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "suppressRest": { get: function () { return this.ref.readBool(off("CEnvInstructorHint","m_bSuppressRest")); }, set: function (v) { var o = off("CEnvInstructorHint","m_bSuppressRest"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "allowNoDrawTarget": { get: function () { return this.ref.readBool(off("CEnvInstructorHint","m_bAllowNoDrawTarget")); }, set: function (v) { var o = off("CEnvInstructorHint","m_bAllowNoDrawTarget"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "autoStart": { get: function () { return this.ref.readBool(off("CEnvInstructorHint","m_bAutoStart")); }, set: function (v) { var o = off("CEnvInstructorHint","m_bAutoStart"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "localPlayerOnly": { get: function () { return this.ref.readBool(off("CEnvInstructorHint","m_bLocalPlayerOnly")); }, set: function (v) { var o = off("CEnvInstructorHint","m_bLocalPlayerOnly"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvInstructorVRHint"] = {
+    "timeout": { get: function () { return this.ref.readInt32(off("CEnvInstructorVRHint","m_iTimeout")); }, set: function (v) { var o = off("CEnvInstructorVRHint","m_iTimeout"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "layoutFileType": { get: function () { return this.ref.readInt32(off("CEnvInstructorVRHint","m_iLayoutFileType")); }, set: function (v) { var o = off("CEnvInstructorVRHint","m_iLayoutFileType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attachType": { get: function () { return this.ref.readInt32(off("CEnvInstructorVRHint","m_iAttachType")); }, set: function (v) { var o = off("CEnvInstructorVRHint","m_iAttachType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "heightOffset": { get: function () { return this.ref.readFloat32(off("CEnvInstructorVRHint","m_flHeightOffset")); }, set: function (v) { var o = off("CEnvInstructorVRHint","m_flHeightOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvMuzzleFlash"] = {
+    "scale": { get: function () { return this.ref.readFloat32(off("CEnvMuzzleFlash","m_flScale")); }, set: function (v) { var o = off("CEnvMuzzleFlash","m_flScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvShake"] = {
+    "amplitude": { get: function () { return this.ref.readFloat32(off("CEnvShake","m_Amplitude")); }, set: function (v) { var o = off("CEnvShake","m_Amplitude"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "frequency": { get: function () { return this.ref.readFloat32(off("CEnvShake","m_Frequency")); }, set: function (v) { var o = off("CEnvShake","m_Frequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "duration": { get: function () { return this.ref.readFloat32(off("CEnvShake","m_Duration")); }, set: function (v) { var o = off("CEnvShake","m_Duration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CEnvShake","m_Radius")); }, set: function (v) { var o = off("CEnvShake","m_Radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopTime": { get: function () { return this.ref.readFloat32(off("CEnvShake","m_stopTime")); }, set: function (v) { var o = off("CEnvShake","m_stopTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextShake": { get: function () { return this.ref.readFloat32(off("CEnvShake","m_nextShake")); }, set: function (v) { var o = off("CEnvShake","m_nextShake"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentAmp": { get: function () { return this.ref.readFloat32(off("CEnvShake","m_currentAmp")); }, set: function (v) { var o = off("CEnvShake","m_currentAmp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxForce": { get: function () { var a = this.ref.readFloats(off("CEnvShake","m_maxForce"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "shakeCallback": { get: function () { return embed("CPhysicsShake", this.ref, off("CEnvShake","m_shakeCallback")); } },
+  };
+  A["CEnvSky"] = {
+    "startDisabled": { get: function () { return this.ref.readBool(off("CEnvSky","m_bStartDisabled")); }, set: function (v) { var o = off("CEnvSky","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "tintColor": { get: function () { return this.ref.readUInt32(off("CEnvSky","m_vTintColor")); }, set: function (v) { var o = off("CEnvSky","m_vTintColor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tintColorLightingOnly": { get: function () { return this.ref.readUInt32(off("CEnvSky","m_vTintColorLightingOnly")); }, set: function (v) { var o = off("CEnvSky","m_vTintColorLightingOnly"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightnessScale": { get: function () { return this.ref.readFloat32(off("CEnvSky","m_flBrightnessScale")); }, set: function (v) { var o = off("CEnvSky","m_flBrightnessScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogType": { get: function () { return this.ref.readInt32(off("CEnvSky","m_nFogType")); }, set: function (v) { var o = off("CEnvSky","m_nFogType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMinStart": { get: function () { return this.ref.readFloat32(off("CEnvSky","m_flFogMinStart")); }, set: function (v) { var o = off("CEnvSky","m_flFogMinStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMinEnd": { get: function () { return this.ref.readFloat32(off("CEnvSky","m_flFogMinEnd")); }, set: function (v) { var o = off("CEnvSky","m_flFogMinEnd"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMaxStart": { get: function () { return this.ref.readFloat32(off("CEnvSky","m_flFogMaxStart")); }, set: function (v) { var o = off("CEnvSky","m_flFogMaxStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fogMaxEnd": { get: function () { return this.ref.readFloat32(off("CEnvSky","m_flFogMaxEnd")); }, set: function (v) { var o = off("CEnvSky","m_flFogMaxEnd"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CEnvSky","m_bEnabled")); }, set: function (v) { var o = off("CEnvSky","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvSoundscapeProxy"] = {
+  };
+  A["CEnvSpark"] = {
+    "delay": { get: function () { return this.ref.readFloat32(off("CEnvSpark","m_flDelay")); }, set: function (v) { var o = off("CEnvSpark","m_flDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "magnitude": { get: function () { return this.ref.readInt32(off("CEnvSpark","m_nMagnitude")); }, set: function (v) { var o = off("CEnvSpark","m_nMagnitude"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "trailLength": { get: function () { return this.ref.readInt32(off("CEnvSpark","m_nTrailLength")); }, set: function (v) { var o = off("CEnvSpark","m_nTrailLength"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "type": { get: function () { return this.ref.readInt32(off("CEnvSpark","m_nType")); }, set: function (v) { var o = off("CEnvSpark","m_nType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onSpark": { get: function () { return embed("CEntityIOOutput", this.ref, off("CEnvSpark","m_OnSpark")); } },
+  };
+  A["CEnvSplash"] = {
+    "scale": { get: function () { return this.ref.readFloat32(off("CEnvSplash","m_flScale")); }, set: function (v) { var o = off("CEnvSplash","m_flScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvTilt"] = {
+    "duration": { get: function () { return this.ref.readFloat32(off("CEnvTilt","m_Duration")); }, set: function (v) { var o = off("CEnvTilt","m_Duration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CEnvTilt","m_Radius")); }, set: function (v) { var o = off("CEnvTilt","m_Radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tiltTime": { get: function () { return this.ref.readFloat32(off("CEnvTilt","m_TiltTime")); }, set: function (v) { var o = off("CEnvTilt","m_TiltTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopTime": { get: function () { return this.ref.readFloat32(off("CEnvTilt","m_stopTime")); }, set: function (v) { var o = off("CEnvTilt","m_stopTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvViewPunch"] = {
+    "radius": { get: function () { return this.ref.readFloat32(off("CEnvViewPunch","m_flRadius")); }, set: function (v) { var o = off("CEnvViewPunch","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "viewPunch": { get: function () { var a = this.ref.readFloats(off("CEnvViewPunch","m_angViewPunch"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+  };
+  A["CFuncBrush"] = {
+    "solidity": { get: function () { return this.ref.readUInt32(off("CFuncBrush","m_iSolidity")); }, set: function (v) { var o = off("CFuncBrush","m_iSolidity"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "disabled": { get: function () { return this.ref.readInt32(off("CFuncBrush","m_iDisabled")); }, set: function (v) { var o = off("CFuncBrush","m_iDisabled"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "solidBsp": { get: function () { return this.ref.readBool(off("CFuncBrush","m_bSolidBsp")); }, set: function (v) { var o = off("CFuncBrush","m_bSolidBsp"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "invertExclusion": { get: function () { return this.ref.readBool(off("CFuncBrush","m_bInvertExclusion")); }, set: function (v) { var o = off("CFuncBrush","m_bInvertExclusion"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "scriptedMovement": { get: function () { return this.ref.readBool(off("CFuncBrush","m_bScriptedMovement")); }, set: function (v) { var o = off("CFuncBrush","m_bScriptedMovement"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncConveyor"] = {
+    "transitionDurationSeconds": { get: function () { return this.ref.readFloat32(off("CFuncConveyor","m_flTransitionDurationSeconds")); }, set: function (v) { var o = off("CFuncConveyor","m_flTransitionDurationSeconds"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncConveyor","m_flSpeed")); }, set: function (v) { var o = off("CFuncConveyor","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveEntitySpace": { get: function () { var a = this.ref.readFloats(off("CFuncConveyor","m_angMoveEntitySpace"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "moveDirEntitySpace": { get: function () { var a = this.ref.readFloats(off("CFuncConveyor","m_vecMoveDirEntitySpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "targetSpeed": { get: function () { return this.ref.readFloat32(off("CFuncConveyor","m_flTargetSpeed")); }, set: function (v) { var o = off("CFuncConveyor","m_flTargetSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "transitionStartTick": { get: function () { return this.ref.readInt32(off("CFuncConveyor","m_nTransitionStartTick")); }, set: function (v) { var o = off("CFuncConveyor","m_nTransitionStartTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "transitionDurationTicks": { get: function () { return this.ref.readInt32(off("CFuncConveyor","m_nTransitionDurationTicks")); }, set: function (v) { var o = off("CFuncConveyor","m_nTransitionDurationTicks"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "transitionStartSpeed": { get: function () { return this.ref.readFloat32(off("CFuncConveyor","m_flTransitionStartSpeed")); }, set: function (v) { var o = off("CFuncConveyor","m_flTransitionStartSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncInteractionLayerClip"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CFuncInteractionLayerClip","m_bDisabled")); }, set: function (v) { var o = off("CFuncInteractionLayerClip","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncLadder"] = {
+    "ladderDir": { get: function () { var a = this.ref.readFloats(off("CFuncLadder","m_vecLadderDir"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "localTop": { get: function () { var a = this.ref.readFloats(off("CFuncLadder","m_vecLocalTop"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "playerMountPositionTop": { get: function () { var a = this.ref.readFloats(off("CFuncLadder","m_vecPlayerMountPositionTop"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "playerMountPositionBottom": { get: function () { var a = this.ref.readFloats(off("CFuncLadder","m_vecPlayerMountPositionBottom"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "autoRideSpeed": { get: function () { return this.ref.readFloat32(off("CFuncLadder","m_flAutoRideSpeed")); }, set: function (v) { var o = off("CFuncLadder","m_flAutoRideSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "disabled": { get: function () { return this.ref.readBool(off("CFuncLadder","m_bDisabled")); }, set: function (v) { var o = off("CFuncLadder","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fakeLadder": { get: function () { return this.ref.readBool(off("CFuncLadder","m_bFakeLadder")); }, set: function (v) { var o = off("CFuncLadder","m_bFakeLadder"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hasSlack": { get: function () { return this.ref.readBool(off("CFuncLadder","m_bHasSlack")); }, set: function (v) { var o = off("CFuncLadder","m_bHasSlack"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onPlayerGotOnLadder": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncLadder","m_OnPlayerGotOnLadder")); } },
+    "onPlayerGotOffLadder": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncLadder","m_OnPlayerGotOffLadder")); } },
+  };
+  A["CFuncMover"] = {
+    "pathMover": { get: function () { return this.ref.readHandle(off("CFuncMover","m_hPathMover")); } },
+    "prevPathMover": { get: function () { return this.ref.readHandle(off("CFuncMover","m_hPrevPathMover")); } },
+    "ignoreEndNode": { get: function () { return this.ref.readBool(off("CFuncMover","m_bIgnoreEndNode")); }, set: function (v) { var o = off("CFuncMover","m_bIgnoreEndNode"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "m_eMoveType": { get: function () { return this.ref.readUInt32(off("CFuncMover","m_eMoveType")); }, set: function (v) { var o = off("CFuncMover","m_eMoveType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isReversing": { get: function () { return this.ref.readBool(off("CFuncMover","m_bIsReversing")); }, set: function (v) { var o = off("CFuncMover","m_bIsReversing"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flStartSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flStartSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathLocation": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flPathLocation")); }, set: function (v) { var o = off("CFuncMover","m_flPathLocation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "t": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flT")); }, set: function (v) { var o = off("CFuncMover","m_flT"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentNodeIndex": { get: function () { return this.ref.readInt32(off("CFuncMover","m_nCurrentNodeIndex")); }, set: function (v) { var o = off("CFuncMover","m_nCurrentNodeIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "previousNodeIndex": { get: function () { return this.ref.readInt32(off("CFuncMover","m_nPreviousNodeIndex")); }, set: function (v) { var o = off("CFuncMover","m_nPreviousNodeIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "solidType": { get: function () { return this.ref.readUInt8(off("CFuncMover","m_eSolidType")); }, set: function (v) { var o = off("CFuncMover","m_eSolidType"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "isMoving": { get: function () { return this.ref.readBool(off("CFuncMover","m_bIsMoving")); }, set: function (v) { var o = off("CFuncMover","m_bIsMoving"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeToReachMaxSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flTimeToReachMaxSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flTimeToReachMaxSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceToReachMaxSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flDistanceToReachMaxSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flDistanceToReachMaxSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeToReachZeroSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flTimeToReachZeroSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flTimeToReachZeroSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "computedDistanceToReachMaxSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flComputedDistanceToReachMaxSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flComputedDistanceToReachMaxSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "computedDistanceToReachZeroSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flComputedDistanceToReachZeroSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flComputedDistanceToReachZeroSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startCurveScale": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flStartCurveScale")); }, set: function (v) { var o = off("CFuncMover","m_flStartCurveScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopCurveScale": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flStopCurveScale")); }, set: function (v) { var o = off("CFuncMover","m_flStopCurveScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceToReachZeroSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flDistanceToReachZeroSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flDistanceToReachZeroSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeMovementStart": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flTimeMovementStart")); }, set: function (v) { var o = off("CFuncMover","m_flTimeMovementStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeMovementStop": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flTimeMovementStop")); }, set: function (v) { var o = off("CFuncMover","m_flTimeMovementStop"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopAtNode": { get: function () { return this.ref.readHandle(off("CFuncMover","m_hStopAtNode")); } },
+    "pathLocationToBeginStop": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flPathLocationToBeginStop")); }, set: function (v) { var o = off("CFuncMover","m_flPathLocationToBeginStop"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathLocationStart": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flPathLocationStart")); }, set: function (v) { var o = off("CFuncMover","m_flPathLocationStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "beginStopT": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flBeginStopT")); }, set: function (v) { var o = off("CFuncMover","m_flBeginStopT"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startAtClosestPoint": { get: function () { return this.ref.readBool(off("CFuncMover","m_bStartAtClosestPoint")); }, set: function (v) { var o = off("CFuncMover","m_bStartAtClosestPoint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startAtEnd": { get: function () { return this.ref.readBool(off("CFuncMover","m_bStartAtEnd")); }, set: function (v) { var o = off("CFuncMover","m_bStartAtEnd"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startFollowingClosestMover": { get: function () { return this.ref.readBool(off("CFuncMover","m_bStartFollowingClosestMover")); }, set: function (v) { var o = off("CFuncMover","m_bStartFollowingClosestMover"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "orientationUpdate": { get: function () { return this.ref.readUInt32(off("CFuncMover","m_eOrientationUpdate")); }, set: function (v) { var o = off("CFuncMover","m_eOrientationUpdate"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeStartOrientationChange": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flTimeStartOrientationChange")); }, set: function (v) { var o = off("CFuncMover","m_flTimeStartOrientationChange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeToBlendToNewOrientation": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flTimeToBlendToNewOrientation")); }, set: function (v) { var o = off("CFuncMover","m_flTimeToBlendToNewOrientation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "durationBlendToNewOrientationRan": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flDurationBlendToNewOrientationRan")); }, set: function (v) { var o = off("CFuncMover","m_flDurationBlendToNewOrientationRan"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "createMovableNavMesh": { get: function () { return this.ref.readBool(off("CFuncMover","m_bCreateMovableNavMesh")); }, set: function (v) { var o = off("CFuncMover","m_bCreateMovableNavMesh"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "createMovableSurfaceGraph": { get: function () { return this.ref.readBool(off("CFuncMover","m_bCreateMovableSurfaceGraph")); }, set: function (v) { var o = off("CFuncMover","m_bCreateMovableSurfaceGraph"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "allowMovableNavMeshDockingOnEntireEntity": { get: function () { return this.ref.readBool(off("CFuncMover","m_bAllowMovableNavMeshDockingOnEntireEntity")); }, set: function (v) { var o = off("CFuncMover","m_bAllowMovableNavMeshDockingOnEntireEntity"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "orientationMatchEntity": { get: function () { return this.ref.readHandle(off("CFuncMover","m_hOrientationMatchEntity")); } },
+    "timeToTraverseToNextNode": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flTimeToTraverseToNextNode")); }, set: function (v) { var o = off("CFuncMover","m_flTimeToTraverseToNextNode"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lerpToNewPosStartInPathEntitySpace": { get: function () { var a = this.ref.readFloats(off("CFuncMover","m_vLerpToNewPosStartInPathEntitySpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "lerpToNewPosEndInPathEntitySpace": { get: function () { var a = this.ref.readFloats(off("CFuncMover","m_vLerpToNewPosEndInPathEntitySpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "lerpToPositionT": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flLerpToPositionT")); }, set: function (v) { var o = off("CFuncMover","m_flLerpToPositionT"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lerpToPositionDeltaT": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flLerpToPositionDeltaT")); }, set: function (v) { var o = off("CFuncMover","m_flLerpToPositionDeltaT"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isPaused": { get: function () { return this.ref.readBool(off("CFuncMover","m_bIsPaused")); }, set: function (v) { var o = off("CFuncMover","m_bIsPaused"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "transitionedToPathNodeAction": { get: function () { return this.ref.readUInt32(off("CFuncMover","m_eTransitionedToPathNodeAction")); }, set: function (v) { var o = off("CFuncMover","m_eTransitionedToPathNodeAction"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "delayedTeleportToNode": { get: function () { return this.ref.readInt32(off("CFuncMover","m_nDelayedTeleportToNode")); }, set: function (v) { var o = off("CFuncMover","m_nDelayedTeleportToNode"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isImGuiLogging": { get: function () { return this.ref.readBool(off("CFuncMover","m_bIsImGuiLogging")); }, set: function (v) { var o = off("CFuncMover","m_bIsImGuiLogging"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isImGuiEntTextLogging": { get: function () { return this.ref.readBool(off("CFuncMover","m_bIsImGuiEntTextLogging")); }, set: function (v) { var o = off("CFuncMover","m_bIsImGuiEntTextLogging"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followEntity": { get: function () { return this.ref.readHandle(off("CFuncMover","m_hFollowEntity")); } },
+    "followDistance": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowDistance")); }, set: function (v) { var o = off("CFuncMover","m_flFollowDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMinimumSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowMinimumSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flFollowMinimumSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "curFollowEntityT": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flCurFollowEntityT")); }, set: function (v) { var o = off("CFuncMover","m_flCurFollowEntityT"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "curFollowSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flCurFollowSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flCurFollowSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "orientationFaceEntity": { get: function () { return this.ref.readHandle(off("CFuncMover","m_hOrientationFaceEntity")); } },
+    "nextNodeReturnsCurrent": { get: function () { return this.ref.readBool(off("CFuncMover","m_bNextNodeReturnsCurrent")); }, set: function (v) { var o = off("CFuncMover","m_bNextNodeReturnsCurrent"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startedMoving": { get: function () { return this.ref.readBool(off("CFuncMover","m_bStartedMoving")); }, set: function (v) { var o = off("CFuncMover","m_bStartedMoving"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "followEntityDirection": { get: function () { return this.ref.readUInt32(off("CFuncMover","m_eFollowEntityDirection")); }, set: function (v) { var o = off("CFuncMover","m_eFollowEntityDirection"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMover": { get: function () { return this.ref.readHandle(off("CFuncMover","m_hFollowMover")); } },
+    "followMoverDistance": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowMoverDistance")); }, set: function (v) { var o = off("CFuncMover","m_flFollowMoverDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMoverRatio": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowMoverRatio")); }, set: function (v) { var o = off("CFuncMover","m_flFollowMoverRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMoverCalculatedDistance": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowMoverCalculatedDistance")); }, set: function (v) { var o = off("CFuncMover","m_flFollowMoverCalculatedDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMoverSpringStrength": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowMoverSpringStrength")); }, set: function (v) { var o = off("CFuncMover","m_flFollowMoverSpringStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMoverConstraintPriority": { get: function () { return this.ref.readInt32(off("CFuncMover","m_nFollowMoverConstraintPriority")); }, set: function (v) { var o = off("CFuncMover","m_nFollowMoverConstraintPriority"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followConstraintsInitialized": { get: function () { return this.ref.readBool(off("CFuncMover","m_bFollowConstraintsInitialized")); }, set: function (v) { var o = off("CFuncMover","m_bFollowConstraintsInitialized"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "followConstraint": { get: function () { return this.ref.readUInt32(off("CFuncMover","m_eFollowConstraint")); }, set: function (v) { var o = off("CFuncMover","m_eFollowConstraint"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMoverSpeed": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowMoverSpeed")); }, set: function (v) { var o = off("CFuncMover","m_flFollowMoverSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "followMoverVelocity": { get: function () { return this.ref.readFloat32(off("CFuncMover","m_flFollowMoverVelocity")); }, set: function (v) { var o = off("CFuncMover","m_flFollowMoverVelocity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tickMovementRan": { get: function () { return this.ref.readInt32(off("CFuncMover","m_nTickMovementRan")); }, set: function (v) { var o = off("CFuncMover","m_nTickMovementRan"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopFromBeginStopTarget": { get: function () { return this.ref.readBool(off("CFuncMover","m_bStopFromBeginStopTarget")); }, set: function (v) { var o = off("CFuncMover","m_bStopFromBeginStopTarget"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "queueStop": { get: function () { return this.ref.readBool(off("CFuncMover","m_bQueueStop")); }, set: function (v) { var o = off("CFuncMover","m_bQueueStop"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "queueStopMoving": { get: function () { return this.ref.readBool(off("CFuncMover","m_bQueueStopMoving")); }, set: function (v) { var o = off("CFuncMover","m_bQueueStopMoving"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "queueSetupPathMover": { get: function () { return this.ref.readBool(off("CFuncMover","m_bQueueSetupPathMover")); }, set: function (v) { var o = off("CFuncMover","m_bQueueSetupPathMover"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathRebuildStrategy": { get: function () { return this.ref.readUInt32(off("CFuncMover","m_ePathRebuildStrategy")); }, set: function (v) { var o = off("CFuncMover","m_ePathRebuildStrategy"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onMovementEnd": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMover","m_OnMovementEnd")); } },
+    "onLerpToPositionComplete": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMover","m_OnLerpToPositionComplete")); } },
+    "onStart": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMover","m_OnStart")); } },
+    "onStartForward": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMover","m_OnStartForward")); } },
+    "onStartReverse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMover","m_OnStartReverse")); } },
+    "onStop": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMover","m_OnStop")); } },
+    "onStopped": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMover","m_OnStopped")); } },
+    "movementSummary": { get: function () { return embed("FuncMoverMovementSummary_t", this.ref, off("CFuncMover","m_movementSummary")); } },
+  };
+  A["CFuncNavBlocker"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CFuncNavBlocker","m_bDisabled")); }, set: function (v) { var o = off("CFuncNavBlocker","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "blockedTeamNumber": { get: function () { return this.ref.readInt32(off("CFuncNavBlocker","m_nBlockedTeamNumber")); }, set: function (v) { var o = off("CFuncNavBlocker","m_nBlockedTeamNumber"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncNavObstruction"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CFuncNavObstruction","m_bDisabled")); }, set: function (v) { var o = off("CFuncNavObstruction","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "useAsyncObstacleUpdate": { get: function () { return this.ref.readBool(off("CFuncNavObstruction","m_bUseAsyncObstacleUpdate")); }, set: function (v) { var o = off("CFuncNavObstruction","m_bUseAsyncObstacleUpdate"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncRotating"] = {
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncRotating","m_flSpeed")); }, set: function (v) { var o = off("CFuncRotating","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fanFriction": { get: function () { return this.ref.readFloat32(off("CFuncRotating","m_flFanFriction")); }, set: function (v) { var o = off("CFuncRotating","m_flFanFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attenuation": { get: function () { return this.ref.readFloat32(off("CFuncRotating","m_flAttenuation")); }, set: function (v) { var o = off("CFuncRotating","m_flAttenuation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volume": { get: function () { return this.ref.readFloat32(off("CFuncRotating","m_flVolume")); }, set: function (v) { var o = off("CFuncRotating","m_flVolume"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetSpeed": { get: function () { return this.ref.readFloat32(off("CFuncRotating","m_flTargetSpeed")); }, set: function (v) { var o = off("CFuncRotating","m_flTargetSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxSpeed": { get: function () { return this.ref.readFloat32(off("CFuncRotating","m_flMaxSpeed")); }, set: function (v) { var o = off("CFuncRotating","m_flMaxSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "blockDamage": { get: function () { return this.ref.readFloat32(off("CFuncRotating","m_flBlockDamage")); }, set: function (v) { var o = off("CFuncRotating","m_flBlockDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "reversed": { get: function () { return this.ref.readBool(off("CFuncRotating","m_bReversed")); }, set: function (v) { var o = off("CFuncRotating","m_bReversed"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "accelDecel": { get: function () { return this.ref.readBool(off("CFuncRotating","m_bAccelDecel")); }, set: function (v) { var o = off("CFuncRotating","m_bAccelDecel"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "prevLocalAngles": { get: function () { var a = this.ref.readFloats(off("CFuncRotating","m_prevLocalAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "start": { get: function () { var a = this.ref.readFloats(off("CFuncRotating","m_angStart"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "stopAtStartPos": { get: function () { return this.ref.readBool(off("CFuncRotating","m_bStopAtStartPos")); }, set: function (v) { var o = off("CFuncRotating","m_bStopAtStartPos"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "clientOrigin": { get: function () { var a = this.ref.readFloats(off("CFuncRotating","m_vecClientOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "clientAngles": { get: function () { var a = this.ref.readFloats(off("CFuncRotating","m_vecClientAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "onStopped": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotating","m_OnStopped")); } },
+    "onStarted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotating","m_OnStarted")); } },
+    "onReachedStart": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotating","m_OnReachedStart")); } },
+  };
+  A["CFuncRotator"] = {
+    "rotateType": { get: function () { return this.ref.readUInt32(off("CFuncRotator","m_eRotateType")); }, set: function (v) { var o = off("CFuncRotator","m_eRotateType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isRotating": { get: function () { return this.ref.readBool(off("CFuncRotator","m_bIsRotating")); }, set: function (v) { var o = off("CFuncRotator","m_bIsRotating"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "solidType": { get: function () { return this.ref.readUInt8(off("CFuncRotator","m_eSolidType")); }, set: function (v) { var o = off("CFuncRotator","m_eSolidType"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flSpeed")); }, set: function (v) { var o = off("CFuncRotator","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeToCompleteRotation": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flTimeToCompleteRotation")); }, set: function (v) { var o = off("CFuncRotator","m_flTimeToCompleteRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "rotatorTarget": { get: function () { return this.ref.readHandle(off("CFuncRotator","m_hRotatorTarget")); } },
+    "tickRotateRan": { get: function () { return this.ref.readInt32(off("CFuncRotator","m_nTickRotateRan")); }, set: function (v) { var o = off("CFuncRotator","m_nTickRotateRan"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startedRotating": { get: function () { return this.ref.readBool(off("CFuncRotator","m_bStartedRotating")); }, set: function (v) { var o = off("CFuncRotator","m_bStartedRotating"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeToReachMaxSpeed": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flTimeToReachMaxSpeed")); }, set: function (v) { var o = off("CFuncRotator","m_flTimeToReachMaxSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeToReachZeroSpeed": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flTimeToReachZeroSpeed")); }, set: function (v) { var o = off("CFuncRotator","m_flTimeToReachZeroSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeRotationStart": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flTimeRotationStart")); }, set: function (v) { var o = off("CFuncRotator","m_flTimeRotationStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeRotationStop": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flTimeRotationStop")); }, set: function (v) { var o = off("CFuncRotator","m_flTimeRotationStop"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startSpeed": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flStartSpeed")); }, set: function (v) { var o = off("CFuncRotator","m_flStartSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "recordHistory": { get: function () { return this.ref.readBool(off("CFuncRotator","m_bRecordHistory")); }, set: function (v) { var o = off("CFuncRotator","m_bRecordHistory"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "returningToPreviousRotation": { get: function () { return this.ref.readBool(off("CFuncRotator","m_bReturningToPreviousRotation")); }, set: function (v) { var o = off("CFuncRotator","m_bReturningToPreviousRotation"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "returningToInitialRotation": { get: function () { return this.ref.readBool(off("CFuncRotator","m_bReturningToInitialRotation")); }, set: function (v) { var o = off("CFuncRotator","m_bReturningToInitialRotation"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minYawRotation": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flMinYawRotation")); }, set: function (v) { var o = off("CFuncRotator","m_flMinYawRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxYawRotation": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flMaxYawRotation")); }, set: function (v) { var o = off("CFuncRotator","m_flMaxYawRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "oscillationCount": { get: function () { return this.ref.readInt32(off("CFuncRotator","m_nOscillationCount")); }, set: function (v) { var o = off("CFuncRotator","m_nOscillationCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "oscillationFromStart": { get: function () { return this.ref.readBool(off("CFuncRotator","m_bOscillationFromStart")); }, set: function (v) { var o = off("CFuncRotator","m_bOscillationFromStart"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetAngle": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flTargetAngle")); }, set: function (v) { var o = off("CFuncRotator","m_flTargetAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentAngle": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flCurrentAngle")); }, set: function (v) { var o = off("CFuncRotator","m_flCurrentAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "rotationAxis": { get: function () { return this.ref.readUInt32(off("CFuncRotator","m_eRotationAxis")); }, set: function (v) { var o = off("CFuncRotator","m_eRotationAxis"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speedDriftFromOverRotate": { get: function () { return this.ref.readFloat32(off("CFuncRotator","m_flSpeedDriftFromOverRotate")); }, set: function (v) { var o = off("CFuncRotator","m_flSpeedDriftFromOverRotate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onRotationStarted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotator","m_OnRotationStarted")); } },
+    "onRotationCompleted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotator","m_OnRotationCompleted")); } },
+    "onOscillate": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotator","m_OnOscillate")); } },
+    "onOscillateStartArrive": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotator","m_OnOscillateStartArrive")); } },
+    "onOscillateStartDepart": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotator","m_OnOscillateStartDepart")); } },
+    "onOscillateEndArrive": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotator","m_OnOscillateEndArrive")); } },
+    "onOscillateEndDepart": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncRotator","m_OnOscillateEndDepart")); } },
+    "rotationSummary": { get: function () { return embed("FuncRotatorRotationSummary_t", this.ref, off("CFuncRotator","m_rotationSummary")); } },
+  };
+  A["CFuncShatterglass"] = {
+    "lastShatterSoundEmitTime": { get: function () { return this.ref.readFloat32(off("CFuncShatterglass","m_flLastShatterSoundEmitTime")); }, set: function (v) { var o = off("CFuncShatterglass","m_flLastShatterSoundEmitTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastCleanupTime": { get: function () { return this.ref.readFloat32(off("CFuncShatterglass","m_flLastCleanupTime")); }, set: function (v) { var o = off("CFuncShatterglass","m_flLastCleanupTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "initAtTime": { get: function () { return this.ref.readFloat32(off("CFuncShatterglass","m_flInitAtTime")); }, set: function (v) { var o = off("CFuncShatterglass","m_flInitAtTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "glassThickness": { get: function () { return this.ref.readFloat32(off("CFuncShatterglass","m_flGlassThickness")); }, set: function (v) { var o = off("CFuncShatterglass","m_flGlassThickness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spawnInvulnerability": { get: function () { return this.ref.readFloat32(off("CFuncShatterglass","m_flSpawnInvulnerability")); }, set: function (v) { var o = off("CFuncShatterglass","m_flSpawnInvulnerability"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakSilent": { get: function () { return this.ref.readBool(off("CFuncShatterglass","m_bBreakSilent")); }, set: function (v) { var o = off("CFuncShatterglass","m_bBreakSilent"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakShardless": { get: function () { return this.ref.readBool(off("CFuncShatterglass","m_bBreakShardless")); }, set: function (v) { var o = off("CFuncShatterglass","m_bBreakShardless"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "broken": { get: function () { return this.ref.readBool(off("CFuncShatterglass","m_bBroken")); }, set: function (v) { var o = off("CFuncShatterglass","m_bBroken"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "glassNavIgnore": { get: function () { return this.ref.readBool(off("CFuncShatterglass","m_bGlassNavIgnore")); }, set: function (v) { var o = off("CFuncShatterglass","m_bGlassNavIgnore"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "glassInFrame": { get: function () { return this.ref.readBool(off("CFuncShatterglass","m_bGlassInFrame")); }, set: function (v) { var o = off("CFuncShatterglass","m_bGlassInFrame"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startBroken": { get: function () { return this.ref.readBool(off("CFuncShatterglass","m_bStartBroken")); }, set: function (v) { var o = off("CFuncShatterglass","m_bStartBroken"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "initialDamageType": { get: function () { return this.ref.readUInt8(off("CFuncShatterglass","m_iInitialDamageType")); }, set: function (v) { var o = off("CFuncShatterglass","m_iInitialDamageType"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "surfaceType": { get: function () { return this.ref.readUInt8(off("CFuncShatterglass","m_iSurfaceType")); }, set: function (v) { var o = off("CFuncShatterglass","m_iSurfaceType"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "onBroken": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncShatterglass","m_OnBroken")); } },
+  };
+  A["CFuncTrackTrain"] = {
+    "ppath": { get: function () { return this.ref.readHandle(off("CFuncTrackTrain","m_ppath")); } },
+    "length": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_length")); }, set: function (v) { var o = off("CFuncTrackTrain","m_length"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "posPrev": { get: function () { var a = this.ref.readFloats(off("CFuncTrackTrain","m_vPosPrev"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "prev": { get: function () { var a = this.ref.readFloats(off("CFuncTrackTrain","m_angPrev"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flSpeed")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "controlMins": { get: function () { var a = this.ref.readFloats(off("CFuncTrackTrain","m_controlMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "controlMaxs": { get: function () { var a = this.ref.readFloats(off("CFuncTrackTrain","m_controlMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "lastBlockPos": { get: function () { var a = this.ref.readFloats(off("CFuncTrackTrain","m_lastBlockPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "lastBlockTick": { get: function () { return this.ref.readInt32(off("CFuncTrackTrain","m_lastBlockTick")); }, set: function (v) { var o = off("CFuncTrackTrain","m_lastBlockTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volume": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flVolume")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flVolume"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bank": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flBank")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flBank"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "oldSpeed": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_oldSpeed")); }, set: function (v) { var o = off("CFuncTrackTrain","m_oldSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "blockDamage": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flBlockDamage")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flBlockDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "height": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_height")); }, set: function (v) { var o = off("CFuncTrackTrain","m_height"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxSpeed": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_maxSpeed")); }, set: function (v) { var o = off("CFuncTrackTrain","m_maxSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dir": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_dir")); }, set: function (v) { var o = off("CFuncTrackTrain","m_dir"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveSoundMinDuration": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flMoveSoundMinDuration")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flMoveSoundMinDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveSoundMaxDuration": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flMoveSoundMaxDuration")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flMoveSoundMaxDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextMoveSoundTime": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flNextMoveSoundTime")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flNextMoveSoundTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveSoundMinPitch": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flMoveSoundMinPitch")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flMoveSoundMinPitch"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveSoundMaxPitch": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flMoveSoundMaxPitch")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flMoveSoundMaxPitch"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "orientationType": { get: function () { return this.ref.readUInt32(off("CFuncTrackTrain","m_eOrientationType")); }, set: function (v) { var o = off("CFuncTrackTrain","m_eOrientationType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "velocityType": { get: function () { return this.ref.readUInt32(off("CFuncTrackTrain","m_eVelocityType")); }, set: function (v) { var o = off("CFuncTrackTrain","m_eVelocityType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "manualSpeedChanges": { get: function () { return this.ref.readBool(off("CFuncTrackTrain","m_bManualSpeedChanges")); }, set: function (v) { var o = off("CFuncTrackTrain","m_bManualSpeedChanges"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "desiredSpeed": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flDesiredSpeed")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flDesiredSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speedChangeTime": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flSpeedChangeTime")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flSpeedChangeTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "accelSpeed": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flAccelSpeed")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flAccelSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "decelSpeed": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flDecelSpeed")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flDecelSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "accelToSpeed": { get: function () { return this.ref.readBool(off("CFuncTrackTrain","m_bAccelToSpeed")); }, set: function (v) { var o = off("CFuncTrackTrain","m_bAccelToSpeed"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextMPSoundTime": { get: function () { return this.ref.readFloat32(off("CFuncTrackTrain","m_flNextMPSoundTime")); }, set: function (v) { var o = off("CFuncTrackTrain","m_flNextMPSoundTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onStart": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncTrackTrain","m_OnStart")); } },
+    "onNext": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncTrackTrain","m_OnNext")); } },
+    "onArrivedAtDestinationNode": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncTrackTrain","m_OnArrivedAtDestinationNode")); } },
+  };
+  A["CFuncVPhysicsClip"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CFuncVPhysicsClip","m_bDisabled")); }, set: function (v) { var o = off("CFuncVPhysicsClip","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncWall"] = {
+    "state": { get: function () { return this.ref.readInt32(off("CFuncWall","m_nState")); }, set: function (v) { var o = off("CFuncWall","m_nState"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncWater"] = {
+    "buoyancyHelper": { get: function () { return embed("CBuoyancyHelper", this.ref, off("CFuncWater","m_BuoyancyHelper")); } },
+  };
+  A["CInferno"] = {
+    "fireCount": { get: function () { return this.ref.readInt32(off("CInferno","m_fireCount")); }, set: function (v) { var o = off("CInferno","m_fireCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "infernoType": { get: function () { return this.ref.readInt32(off("CInferno","m_nInfernoType")); }, set: function (v) { var o = off("CInferno","m_nInfernoType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fireEffectTickBegin": { get: function () { return this.ref.readInt32(off("CInferno","m_nFireEffectTickBegin")); }, set: function (v) { var o = off("CInferno","m_nFireEffectTickBegin"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fireLifetime": { get: function () { return this.ref.readFloat32(off("CInferno","m_nFireLifetime")); }, set: function (v) { var o = off("CInferno","m_nFireLifetime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "inPostEffectTime": { get: function () { return this.ref.readBool(off("CInferno","m_bInPostEffectTime")); }, set: function (v) { var o = off("CInferno","m_bInPostEffectTime"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "wasCreatedInSmoke": { get: function () { return this.ref.readBool(off("CInferno","m_bWasCreatedInSmoke")); }, set: function (v) { var o = off("CInferno","m_bWasCreatedInSmoke"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "splashVelocity": { get: function () { var a = this.ref.readFloats(off("CInferno","m_splashVelocity"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "initialSplashVelocity": { get: function () { var a = this.ref.readFloats(off("CInferno","m_InitialSplashVelocity"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "startPos": { get: function () { var a = this.ref.readFloats(off("CInferno","m_startPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "originalSpawnLocation": { get: function () { var a = this.ref.readFloats(off("CInferno","m_vecOriginalSpawnLocation"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "fireSpawnOffset": { get: function () { return this.ref.readInt32(off("CInferno","m_fireSpawnOffset")); }, set: function (v) { var o = off("CInferno","m_fireSpawnOffset"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxFlames": { get: function () { return this.ref.readInt32(off("CInferno","m_nMaxFlames")); }, set: function (v) { var o = off("CInferno","m_nMaxFlames"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spreadCount": { get: function () { return this.ref.readInt32(off("CInferno","m_nSpreadCount")); }, set: function (v) { var o = off("CInferno","m_nSpreadCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "sourceItemDefIndex": { get: function () { return this.ref.readUInt16(off("CInferno","m_nSourceItemDefIndex")); }, set: function (v) { var o = off("CInferno","m_nSourceItemDefIndex"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "extent": { get: function () { return embed("Extent", this.ref, off("CInferno","m_extent")); } },
+    "damageTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CInferno","m_damageTimer")); } },
+    "damageRampTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CInferno","m_damageRampTimer")); } },
+    "activeTimer": { get: function () { return embed("IntervalTimer", this.ref, off("CInferno","m_activeTimer")); } },
+    "bookkeepingTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CInferno","m_BookkeepingTimer")); } },
+    "nextSpreadTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CInferno","m_NextSpreadTimer")); } },
+  };
+  A["CInfoChoreoAnchor"] = {
+  };
+  A["CInfoDynamicShadowHint"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CInfoDynamicShadowHint","m_bDisabled")); }, set: function (v) { var o = off("CInfoDynamicShadowHint","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "range": { get: function () { return this.ref.readFloat32(off("CInfoDynamicShadowHint","m_flRange")); }, set: function (v) { var o = off("CInfoDynamicShadowHint","m_flRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "importance": { get: function () { return this.ref.readInt32(off("CInfoDynamicShadowHint","m_nImportance")); }, set: function (v) { var o = off("CInfoDynamicShadowHint","m_nImportance"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lightChoice": { get: function () { return this.ref.readInt32(off("CInfoDynamicShadowHint","m_nLightChoice")); }, set: function (v) { var o = off("CInfoDynamicShadowHint","m_nLightChoice"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "light": { get: function () { return this.ref.readHandle(off("CInfoDynamicShadowHint","m_hLight")); } },
+  };
+  A["CInfoFan"] = {
+    "fanForceMaxRadius": { get: function () { return this.ref.readFloat32(off("CInfoFan","m_fFanForceMaxRadius")); }, set: function (v) { var o = off("CInfoFan","m_fFanForceMaxRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fanForceMinRadius": { get: function () { return this.ref.readFloat32(off("CInfoFan","m_fFanForceMinRadius")); }, set: function (v) { var o = off("CInfoFan","m_fFanForceMinRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "curveDistRange": { get: function () { return this.ref.readFloat32(off("CInfoFan","m_flCurveDistRange")); }, set: function (v) { var o = off("CInfoFan","m_flCurveDistRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CInfoGameEventProxy"] = {
+    "range": { get: function () { return this.ref.readFloat32(off("CInfoGameEventProxy","m_flRange")); }, set: function (v) { var o = off("CInfoGameEventProxy","m_flRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CInfoOffscreenPanoramaTexture"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CInfoOffscreenPanoramaTexture","m_bDisabled")); }, set: function (v) { var o = off("CInfoOffscreenPanoramaTexture","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "resolutionX": { get: function () { return this.ref.readInt32(off("CInfoOffscreenPanoramaTexture","m_nResolutionX")); }, set: function (v) { var o = off("CInfoOffscreenPanoramaTexture","m_nResolutionX"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "resolutionY": { get: function () { return this.ref.readInt32(off("CInfoOffscreenPanoramaTexture","m_nResolutionY")); }, set: function (v) { var o = off("CInfoOffscreenPanoramaTexture","m_nResolutionY"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetChangeCount": { get: function () { return this.ref.readInt32(off("CInfoOffscreenPanoramaTexture","m_nTargetChangeCount")); }, set: function (v) { var o = off("CInfoOffscreenPanoramaTexture","m_nTargetChangeCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CInfoPlayerStart"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CInfoPlayerStart","m_bDisabled")); }, set: function (v) { var o = off("CInfoPlayerStart","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isMaster": { get: function () { return this.ref.readBool(off("CInfoPlayerStart","m_bIsMaster")); }, set: function (v) { var o = off("CInfoPlayerStart","m_bIsMaster"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CInstructorEventEntity"] = {
+    "targetPlayer": { get: function () { return this.ref.readHandle(off("CInstructorEventEntity","m_hTargetPlayer")); } },
+  };
+  A["CItemGenericTriggerHelper"] = {
+    "parentItem": { get: function () { return this.ref.readHandle(off("CItemGenericTriggerHelper","m_hParentItem")); } },
+  };
+  A["CKeepUpright"] = {
+    "worldGoalAxis": { get: function () { var a = this.ref.readFloats(off("CKeepUpright","m_worldGoalAxis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "localTestAxis": { get: function () { var a = this.ref.readFloats(off("CKeepUpright","m_localTestAxis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "attachedObject": { get: function () { return this.ref.readHandle(off("CKeepUpright","m_attachedObject")); } },
+    "angularLimit": { get: function () { return this.ref.readFloat32(off("CKeepUpright","m_angularLimit")); }, set: function (v) { var o = off("CKeepUpright","m_angularLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "active": { get: function () { return this.ref.readBool(off("CKeepUpright","m_bActive")); }, set: function (v) { var o = off("CKeepUpright","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dampAllRotation": { get: function () { return this.ref.readBool(off("CKeepUpright","m_bDampAllRotation")); }, set: function (v) { var o = off("CKeepUpright","m_bDampAllRotation"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLightEntity"] = {
+  };
+  A["CLogicNPCCounterAABB"] = {
+    "distanceOuterMins": { get: function () { var a = this.ref.readFloats(off("CLogicNPCCounterAABB","m_vDistanceOuterMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceOuterMaxs": { get: function () { var a = this.ref.readFloats(off("CLogicNPCCounterAABB","m_vDistanceOuterMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "outerMins": { get: function () { var a = this.ref.readFloats(off("CLogicNPCCounterAABB","m_vOuterMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "outerMaxs": { get: function () { var a = this.ref.readFloats(off("CLogicNPCCounterAABB","m_vOuterMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CLogicalEntity"] = {
+  };
+  A["CMapInfo"] = {
+    "buyingStatus": { get: function () { return this.ref.readInt32(off("CMapInfo","m_iBuyingStatus")); }, set: function (v) { var o = off("CMapInfo","m_iBuyingStatus"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bombRadius": { get: function () { return this.ref.readFloat32(off("CMapInfo","m_flBombRadius")); }, set: function (v) { var o = off("CMapInfo","m_flBombRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "petPopulation": { get: function () { return this.ref.readInt32(off("CMapInfo","m_iPetPopulation")); }, set: function (v) { var o = off("CMapInfo","m_iPetPopulation"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "useNormalSpawnsForDM": { get: function () { return this.ref.readBool(off("CMapInfo","m_bUseNormalSpawnsForDM")); }, set: function (v) { var o = off("CMapInfo","m_bUseNormalSpawnsForDM"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disableAutoGeneratedDMSpawns": { get: function () { return this.ref.readBool(off("CMapInfo","m_bDisableAutoGeneratedDMSpawns")); }, set: function (v) { var o = off("CMapInfo","m_bDisableAutoGeneratedDMSpawns"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "botMaxVisionDistance": { get: function () { return this.ref.readFloat32(off("CMapInfo","m_flBotMaxVisionDistance")); }, set: function (v) { var o = off("CMapInfo","m_flBotMaxVisionDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hostageCount": { get: function () { return this.ref.readInt32(off("CMapInfo","m_iHostageCount")); }, set: function (v) { var o = off("CMapInfo","m_iHostageCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadePlayerVisibilityFarZ": { get: function () { return this.ref.readBool(off("CMapInfo","m_bFadePlayerVisibilityFarZ")); }, set: function (v) { var o = off("CMapInfo","m_bFadePlayerVisibilityFarZ"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "rainTraceToSkyEnabled": { get: function () { return this.ref.readBool(off("CMapInfo","m_bRainTraceToSkyEnabled")); }, set: function (v) { var o = off("CMapInfo","m_bRainTraceToSkyEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "gPUCullSkybox": { get: function () { return this.ref.readBool(off("CMapInfo","m_bGPUCullSkybox")); }, set: function (v) { var o = off("CMapInfo","m_bGPUCullSkybox"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "envRainStrength": { get: function () { return this.ref.readFloat32(off("CMapInfo","m_flEnvRainStrength")); }, set: function (v) { var o = off("CMapInfo","m_flEnvRainStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "envPuddleRippleStrength": { get: function () { return this.ref.readFloat32(off("CMapInfo","m_flEnvPuddleRippleStrength")); }, set: function (v) { var o = off("CMapInfo","m_flEnvPuddleRippleStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "envPuddleRippleDirection": { get: function () { return this.ref.readFloat32(off("CMapInfo","m_flEnvPuddleRippleDirection")); }, set: function (v) { var o = off("CMapInfo","m_flEnvPuddleRippleDirection"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "envWetnessCoverage": { get: function () { return this.ref.readFloat32(off("CMapInfo","m_flEnvWetnessCoverage")); }, set: function (v) { var o = off("CMapInfo","m_flEnvWetnessCoverage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "envWetnessDryingAmount": { get: function () { return this.ref.readFloat32(off("CMapInfo","m_flEnvWetnessDryingAmount")); }, set: function (v) { var o = off("CMapInfo","m_flEnvWetnessDryingAmount"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMarkupVolume"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CMarkupVolume","m_bDisabled")); }, set: function (v) { var o = off("CMarkupVolume","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMessage"] = {
+    "messageVolume": { get: function () { return this.ref.readFloat32(off("CMessage","m_MessageVolume")); }, set: function (v) { var o = off("CMessage","m_MessageVolume"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "messageAttenuation": { get: function () { return this.ref.readInt32(off("CMessage","m_MessageAttenuation")); }, set: function (v) { var o = off("CMessage","m_MessageAttenuation"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CMessage","m_Radius")); }, set: function (v) { var o = off("CMessage","m_Radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onShowMessage": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMessage","m_OnShowMessage")); } },
+  };
+  A["CMessageEntity"] = {
+    "radius": { get: function () { return this.ref.readInt32(off("CMessageEntity","m_radius")); }, set: function (v) { var o = off("CMessageEntity","m_radius"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "drawText": { get: function () { return this.ref.readBool(off("CMessageEntity","m_drawText")); }, set: function (v) { var o = off("CMessageEntity","m_drawText"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "developerOnly": { get: function () { return this.ref.readBool(off("CMessageEntity","m_bDeveloperOnly")); }, set: function (v) { var o = off("CMessageEntity","m_bDeveloperOnly"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CMessageEntity","m_bEnabled")); }, set: function (v) { var o = off("CMessageEntity","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   A["CModelPointEntity"] = {
+  };
+  A["CParticleSystem"] = {
+    "snapshotFileName": { get: function () { return this.ref.readString(off("CParticleSystem","m_szSnapshotFileName"), 512); } },
+    "active": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bActive")); }, set: function (v) { var o = off("CParticleSystem","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "frozen": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bFrozen")); }, set: function (v) { var o = off("CParticleSystem","m_bFrozen"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "freezeTransitionDuration": { get: function () { return this.ref.readFloat32(off("CParticleSystem","m_flFreezeTransitionDuration")); }, set: function (v) { var o = off("CParticleSystem","m_flFreezeTransitionDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopType": { get: function () { return this.ref.readInt32(off("CParticleSystem","m_nStopType")); }, set: function (v) { var o = off("CParticleSystem","m_nStopType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "animateDuringGameplayPause": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bAnimateDuringGameplayPause")); }, set: function (v) { var o = off("CParticleSystem","m_bAnimateDuringGameplayPause"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startTime": { get: function () { return this.ref.readFloat32(off("CParticleSystem","m_flStartTime")); }, set: function (v) { var o = off("CParticleSystem","m_flStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "preSimTime": { get: function () { return this.ref.readFloat32(off("CParticleSystem","m_flPreSimTime")); }, set: function (v) { var o = off("CParticleSystem","m_flPreSimTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dataStringLocalized": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bDataStringLocalized")); }, set: function (v) { var o = off("CParticleSystem","m_bDataStringLocalized"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "noSave": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bNoSave")); }, set: function (v) { var o = off("CParticleSystem","m_bNoSave"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "noFreeze": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bNoFreeze")); }, set: function (v) { var o = off("CParticleSystem","m_bNoFreeze"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "noRamp": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bNoRamp")); }, set: function (v) { var o = off("CParticleSystem","m_bNoRamp"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startActive": { get: function () { return this.ref.readBool(off("CParticleSystem","m_bStartActive")); }, set: function (v) { var o = off("CParticleSystem","m_bStartActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dataCP": { get: function () { return this.ref.readInt32(off("CParticleSystem","m_nDataCP")); }, set: function (v) { var o = off("CParticleSystem","m_nDataCP"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dataCPValue": { get: function () { var a = this.ref.readFloats(off("CParticleSystem","m_vecDataCPValue"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "tintCP": { get: function () { return this.ref.readInt32(off("CParticleSystem","m_nTintCP")); }, set: function (v) { var o = off("CParticleSystem","m_nTintCP"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tint": { get: function () { return this.ref.readUInt32(off("CParticleSystem","m_clrTint")); }, set: function (v) { var o = off("CParticleSystem","m_clrTint"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPathCorner"] = {
+    "speed": { get: function () { return this.ref.readFloat32(off("CPathCorner","m_flSpeed")); }, set: function (v) { var o = off("CPathCorner","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "wait": { get: function () { return this.ref.readFloat32(off("CPathCorner","m_flWait")); }, set: function (v) { var o = off("CPathCorner","m_flWait"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CPathCorner","m_flRadius")); }, set: function (v) { var o = off("CPathCorner","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onPass": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPathCorner","m_OnPass")); } },
+  };
+  A["CPathNode"] = {
+    "inTangentLocal": { get: function () { var a = this.ref.readFloats(off("CPathNode","m_vInTangentLocal"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "outTangentLocal": { get: function () { var a = this.ref.readFloats(off("CPathNode","m_vOutTangentLocal"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "path": { get: function () { return this.ref.readHandle(off("CPathNode","m_hPath")); } },
+  };
+  A["CPathTrack"] = {
+    "pnext": { get: function () { return this.ref.readHandle(off("CPathTrack","m_pnext")); } },
+    "pprevious": { get: function () { return this.ref.readHandle(off("CPathTrack","m_pprevious")); } },
+    "paltpath": { get: function () { return this.ref.readHandle(off("CPathTrack","m_paltpath")); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CPathTrack","m_flSpeed")); }, set: function (v) { var o = off("CPathTrack","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CPathTrack","m_flRadius")); }, set: function (v) { var o = off("CPathTrack","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "length": { get: function () { return this.ref.readFloat32(off("CPathTrack","m_length")); }, set: function (v) { var o = off("CPathTrack","m_length"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "iterVal": { get: function () { return this.ref.readInt32(off("CPathTrack","m_nIterVal")); }, set: function (v) { var o = off("CPathTrack","m_nIterVal"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "orientationType": { get: function () { return this.ref.readUInt32(off("CPathTrack","m_eOrientationType")); }, set: function (v) { var o = off("CPathTrack","m_eOrientationType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onPass": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPathTrack","m_OnPass")); } },
+  };
+  A["CPathWithDynamicNodes"] = {
+  };
+  A["CPhysExplosion"] = {
+    "explodeOnSpawn": { get: function () { return this.ref.readBool(off("CPhysExplosion","m_bExplodeOnSpawn")); }, set: function (v) { var o = off("CPhysExplosion","m_bExplodeOnSpawn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "magnitude": { get: function () { return this.ref.readFloat32(off("CPhysExplosion","m_flMagnitude")); }, set: function (v) { var o = off("CPhysExplosion","m_flMagnitude"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "damage": { get: function () { return this.ref.readFloat32(off("CPhysExplosion","m_flDamage")); }, set: function (v) { var o = off("CPhysExplosion","m_flDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CPhysExplosion","m_radius")); }, set: function (v) { var o = off("CPhysExplosion","m_radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "innerRadius": { get: function () { return this.ref.readFloat32(off("CPhysExplosion","m_flInnerRadius")); }, set: function (v) { var o = off("CPhysExplosion","m_flInnerRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pushScale": { get: function () { return this.ref.readFloat32(off("CPhysExplosion","m_flPushScale")); }, set: function (v) { var o = off("CPhysExplosion","m_flPushScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "convertToDebrisWhenPossible": { get: function () { return this.ref.readBool(off("CPhysExplosion","m_bConvertToDebrisWhenPossible")); }, set: function (v) { var o = off("CPhysExplosion","m_bConvertToDebrisWhenPossible"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "affectInvulnerableEnts": { get: function () { return this.ref.readBool(off("CPhysExplosion","m_bAffectInvulnerableEnts")); }, set: function (v) { var o = off("CPhysExplosion","m_bAffectInvulnerableEnts"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disablePushClamp": { get: function () { return this.ref.readBool(off("CPhysExplosion","m_bDisablePushClamp")); }, set: function (v) { var o = off("CPhysExplosion","m_bDisablePushClamp"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onPushedPlayer": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysExplosion","m_OnPushedPlayer")); } },
+  };
+  A["CPhysForce"] = {
+    "force": { get: function () { return this.ref.readFloat32(off("CPhysForce","m_force")); }, set: function (v) { var o = off("CPhysForce","m_force"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceTime": { get: function () { return this.ref.readFloat32(off("CPhysForce","m_forceTime")); }, set: function (v) { var o = off("CPhysForce","m_forceTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attachedObject": { get: function () { return this.ref.readHandle(off("CPhysForce","m_attachedObject")); } },
+    "wasRestored": { get: function () { return this.ref.readBool(off("CPhysForce","m_wasRestored")); }, set: function (v) { var o = off("CPhysForce","m_wasRestored"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "integrator": { get: function () { return embed("CConstantForceController", this.ref, off("CPhysForce","m_integrator")); } },
+  };
+  A["CPhysImpact"] = {
+    "damage": { get: function () { return this.ref.readFloat32(off("CPhysImpact","m_damage")); }, set: function (v) { var o = off("CPhysImpact","m_damage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distance": { get: function () { return this.ref.readFloat32(off("CPhysImpact","m_distance")); }, set: function (v) { var o = off("CPhysImpact","m_distance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPlatTrigger"] = {
+    "platform": { get: function () { return this.ref.readHandle(off("CPlatTrigger","m_pPlatform")); } },
+  };
+  A["CPointAngleSensor"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CPointAngleSensor","m_bDisabled")); }, set: function (v) { var o = off("CPointAngleSensor","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetEntity": { get: function () { return this.ref.readHandle(off("CPointAngleSensor","m_hTargetEntity")); } },
+    "lookAtEntity": { get: function () { return this.ref.readHandle(off("CPointAngleSensor","m_hLookAtEntity")); } },
+    "duration": { get: function () { return this.ref.readFloat32(off("CPointAngleSensor","m_flDuration")); }, set: function (v) { var o = off("CPointAngleSensor","m_flDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dotTolerance": { get: function () { return this.ref.readFloat32(off("CPointAngleSensor","m_flDotTolerance")); }, set: function (v) { var o = off("CPointAngleSensor","m_flDotTolerance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "facingTime": { get: function () { return this.ref.readFloat32(off("CPointAngleSensor","m_flFacingTime")); }, set: function (v) { var o = off("CPointAngleSensor","m_flFacingTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fired": { get: function () { return this.ref.readBool(off("CPointAngleSensor","m_bFired")); }, set: function (v) { var o = off("CPointAngleSensor","m_bFired"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onFacingLookat": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointAngleSensor","m_OnFacingLookat")); } },
+    "onNotFacingLookat": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointAngleSensor","m_OnNotFacingLookat")); } },
+  };
+  A["CPointAngularVelocitySensor"] = {
+    "targetEntity": { get: function () { return this.ref.readHandle(off("CPointAngularVelocitySensor","m_hTargetEntity")); } },
+    "threshold": { get: function () { return this.ref.readFloat32(off("CPointAngularVelocitySensor","m_flThreshold")); }, set: function (v) { var o = off("CPointAngularVelocitySensor","m_flThreshold"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastCompareResult": { get: function () { return this.ref.readInt32(off("CPointAngularVelocitySensor","m_nLastCompareResult")); }, set: function (v) { var o = off("CPointAngularVelocitySensor","m_nLastCompareResult"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastFireResult": { get: function () { return this.ref.readInt32(off("CPointAngularVelocitySensor","m_nLastFireResult")); }, set: function (v) { var o = off("CPointAngularVelocitySensor","m_nLastFireResult"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fireTime": { get: function () { return this.ref.readFloat32(off("CPointAngularVelocitySensor","m_flFireTime")); }, set: function (v) { var o = off("CPointAngularVelocitySensor","m_flFireTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fireInterval": { get: function () { return this.ref.readFloat32(off("CPointAngularVelocitySensor","m_flFireInterval")); }, set: function (v) { var o = off("CPointAngularVelocitySensor","m_flFireInterval"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastAngVelocity": { get: function () { return this.ref.readFloat32(off("CPointAngularVelocitySensor","m_flLastAngVelocity")); }, set: function (v) { var o = off("CPointAngularVelocitySensor","m_flLastAngVelocity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastOrientation": { get: function () { var a = this.ref.readFloats(off("CPointAngularVelocitySensor","m_lastOrientation"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "axis": { get: function () { var a = this.ref.readFloats(off("CPointAngularVelocitySensor","m_vecAxis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "useHelper": { get: function () { return this.ref.readBool(off("CPointAngularVelocitySensor","m_bUseHelper")); }, set: function (v) { var o = off("CPointAngularVelocitySensor","m_bUseHelper"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onLessThan": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointAngularVelocitySensor","m_OnLessThan")); } },
+    "onLessThanOrEqualTo": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointAngularVelocitySensor","m_OnLessThanOrEqualTo")); } },
+    "onGreaterThan": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointAngularVelocitySensor","m_OnGreaterThan")); } },
+    "onGreaterThanOrEqualTo": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointAngularVelocitySensor","m_OnGreaterThanOrEqualTo")); } },
+    "onEqualTo": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointAngularVelocitySensor","m_OnEqualTo")); } },
+  };
+  A["CPointCameraVFOV"] = {
+    "verticalFOV": { get: function () { return this.ref.readFloat32(off("CPointCameraVFOV","m_flVerticalFOV")); }, set: function (v) { var o = off("CPointCameraVFOV","m_flVerticalFOV"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointChildModifier"] = {
+    "orphanInsteadOfDeletingChildrenOnRemove": { get: function () { return this.ref.readBool(off("CPointChildModifier","m_bOrphanInsteadOfDeletingChildrenOnRemove")); }, set: function (v) { var o = off("CPointChildModifier","m_bOrphanInsteadOfDeletingChildrenOnRemove"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointGamestatsCounter"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CPointGamestatsCounter","m_bDisabled")); }, set: function (v) { var o = off("CPointGamestatsCounter","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointGiveAmmo"] = {
+    "activator": { get: function () { return this.ref.readHandle(off("CPointGiveAmmo","m_pActivator")); } },
+  };
+  A["CPointHurt"] = {
+    "damage": { get: function () { return this.ref.readInt32(off("CPointHurt","m_nDamage")); }, set: function (v) { var o = off("CPointHurt","m_nDamage"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bitsDamageType": { get: function () { return this.ref.readUInt32(off("CPointHurt","m_bitsDamageType")); }, set: function (v) { var o = off("CPointHurt","m_bitsDamageType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CPointHurt","m_flRadius")); }, set: function (v) { var o = off("CPointHurt","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "delay": { get: function () { return this.ref.readFloat32(off("CPointHurt","m_flDelay")); }, set: function (v) { var o = off("CPointHurt","m_flDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "activator": { get: function () { return this.ref.readHandle(off("CPointHurt","m_pActivator")); } },
+  };
+  A["CPointProximitySensor"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CPointProximitySensor","m_bDisabled")); }, set: function (v) { var o = off("CPointProximitySensor","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetEntity": { get: function () { return this.ref.readHandle(off("CPointProximitySensor","m_hTargetEntity")); } },
+  };
+  A["CPointPush"] = {
+    "enabled": { get: function () { return this.ref.readBool(off("CPointPush","m_bEnabled")); }, set: function (v) { var o = off("CPointPush","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "magnitude": { get: function () { return this.ref.readFloat32(off("CPointPush","m_flMagnitude")); }, set: function (v) { var o = off("CPointPush","m_flMagnitude"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CPointPush","m_flRadius")); }, set: function (v) { var o = off("CPointPush","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "innerRadius": { get: function () { return this.ref.readFloat32(off("CPointPush","m_flInnerRadius")); }, set: function (v) { var o = off("CPointPush","m_flInnerRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "coneOfInfluence": { get: function () { return this.ref.readFloat32(off("CPointPush","m_flConeOfInfluence")); }, set: function (v) { var o = off("CPointPush","m_flConeOfInfluence"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "filter": { get: function () { return this.ref.readHandle(off("CPointPush","m_hFilter")); } },
+  };
+  A["CPointVelocitySensor"] = {
+    "targetEntity": { get: function () { return this.ref.readHandle(off("CPointVelocitySensor","m_hTargetEntity")); } },
+    "axis": { get: function () { var a = this.ref.readFloats(off("CPointVelocitySensor","m_vecAxis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CPointVelocitySensor","m_bEnabled")); }, set: function (v) { var o = off("CPointVelocitySensor","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "prevVelocity": { get: function () { return this.ref.readFloat32(off("CPointVelocitySensor","m_fPrevVelocity")); }, set: function (v) { var o = off("CPointVelocitySensor","m_fPrevVelocity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "avgInterval": { get: function () { return this.ref.readFloat32(off("CPointVelocitySensor","m_flAvgInterval")); }, set: function (v) { var o = off("CPointVelocitySensor","m_flAvgInterval"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CRagdollMagnet"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CRagdollMagnet","m_bDisabled")); }, set: function (v) { var o = off("CRagdollMagnet","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CRagdollMagnet","m_radius")); }, set: function (v) { var o = off("CRagdollMagnet","m_radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "force": { get: function () { return this.ref.readFloat32(off("CRagdollMagnet","m_force")); }, set: function (v) { var o = off("CRagdollMagnet","m_force"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "axis": { get: function () { var a = this.ref.readFloats(off("CRagdollMagnet","m_axis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CRopeKeyframe"] = {
+    "ropeFlags": { get: function () { return this.ref.readUInt16(off("CRopeKeyframe","m_RopeFlags")); }, set: function (v) { var o = off("CRopeKeyframe","m_RopeFlags"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "slack": { get: function () { return this.ref.readInt16(off("CRopeKeyframe","m_Slack")); }, set: function (v) { var o = off("CRopeKeyframe","m_Slack"); if (this.ref.writeInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "width": { get: function () { return this.ref.readFloat32(off("CRopeKeyframe","m_Width")); }, set: function (v) { var o = off("CRopeKeyframe","m_Width"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "textureScale": { get: function () { return this.ref.readFloat32(off("CRopeKeyframe","m_TextureScale")); }, set: function (v) { var o = off("CRopeKeyframe","m_TextureScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "segments": { get: function () { return this.ref.readUInt8(off("CRopeKeyframe","m_nSegments")); }, set: function (v) { var o = off("CRopeKeyframe","m_nSegments"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "constrainBetweenEndpoints": { get: function () { return this.ref.readBool(off("CRopeKeyframe","m_bConstrainBetweenEndpoints")); }, set: function (v) { var o = off("CRopeKeyframe","m_bConstrainBetweenEndpoints"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "subdiv": { get: function () { return this.ref.readUInt8(off("CRopeKeyframe","m_Subdiv")); }, set: function (v) { var o = off("CRopeKeyframe","m_Subdiv"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "changeCount": { get: function () { return this.ref.readUInt8(off("CRopeKeyframe","m_nChangeCount")); }, set: function (v) { var o = off("CRopeKeyframe","m_nChangeCount"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "ropeLength": { get: function () { return this.ref.readInt16(off("CRopeKeyframe","m_RopeLength")); }, set: function (v) { var o = off("CRopeKeyframe","m_RopeLength"); if (this.ref.writeInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "lockedPoints": { get: function () { return this.ref.readUInt8(off("CRopeKeyframe","m_fLockedPoints")); }, set: function (v) { var o = off("CRopeKeyframe","m_fLockedPoints"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "createdFromMapFile": { get: function () { return this.ref.readBool(off("CRopeKeyframe","m_bCreatedFromMapFile")); }, set: function (v) { var o = off("CRopeKeyframe","m_bCreatedFromMapFile"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "scrollSpeed": { get: function () { return this.ref.readFloat32(off("CRopeKeyframe","m_flScrollSpeed")); }, set: function (v) { var o = off("CRopeKeyframe","m_flScrollSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startPointValid": { get: function () { return this.ref.readBool(off("CRopeKeyframe","m_bStartPointValid")); }, set: function (v) { var o = off("CRopeKeyframe","m_bStartPointValid"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "endPointValid": { get: function () { return this.ref.readBool(off("CRopeKeyframe","m_bEndPointValid")); }, set: function (v) { var o = off("CRopeKeyframe","m_bEndPointValid"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startPoint": { get: function () { return this.ref.readHandle(off("CRopeKeyframe","m_hStartPoint")); } },
+    "endPoint": { get: function () { return this.ref.readHandle(off("CRopeKeyframe","m_hEndPoint")); } },
+    "startAttachment": { get: function () { return this.ref.readUInt8(off("CRopeKeyframe","m_iStartAttachment")); }, set: function (v) { var o = off("CRopeKeyframe","m_iStartAttachment"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "endAttachment": { get: function () { return this.ref.readUInt8(off("CRopeKeyframe","m_iEndAttachment")); }, set: function (v) { var o = off("CRopeKeyframe","m_iEndAttachment"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CRotatorTarget"] = {
+    "space": { get: function () { return this.ref.readUInt32(off("CRotatorTarget","m_eSpace")); }, set: function (v) { var o = off("CRotatorTarget","m_eSpace"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onArrivedAt": { get: function () { return embed("CEntityIOOutput", this.ref, off("CRotatorTarget","m_OnArrivedAt")); } },
+  };
+  A["CRuleEntity"] = {
+  };
+  A["CSceneEntity"] = {
+    "target1": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget1")); } },
+    "target2": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget2")); } },
+    "target3": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget3")); } },
+    "target4": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget4")); } },
+    "target5": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget5")); } },
+    "target6": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget6")); } },
+    "target7": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget7")); } },
+    "target8": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hTarget8")); } },
+    "locatorOrigin": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hLocatorOrigin")); } },
+    "isPlayingBack": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bIsPlayingBack")); }, set: function (v) { var o = off("CSceneEntity","m_bIsPlayingBack"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "paused": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bPaused")); }, set: function (v) { var o = off("CSceneEntity","m_bPaused"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "multiplayer": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bMultiplayer")); }, set: function (v) { var o = off("CSceneEntity","m_bMultiplayer"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "autogenerated": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bAutogenerated")); }, set: function (v) { var o = off("CSceneEntity","m_bAutogenerated"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceClientTime": { get: function () { return this.ref.readFloat32(off("CSceneEntity","m_flForceClientTime")); }, set: function (v) { var o = off("CSceneEntity","m_flForceClientTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentTime": { get: function () { return this.ref.readFloat32(off("CSceneEntity","m_flCurrentTime")); }, set: function (v) { var o = off("CSceneEntity","m_flCurrentTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "frameTime": { get: function () { return this.ref.readFloat32(off("CSceneEntity","m_flFrameTime")); }, set: function (v) { var o = off("CSceneEntity","m_flFrameTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "cancelAtNextInterrupt": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bCancelAtNextInterrupt")); }, set: function (v) { var o = off("CSceneEntity","m_bCancelAtNextInterrupt"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pitch": { get: function () { return this.ref.readFloat32(off("CSceneEntity","m_fPitch")); }, set: function (v) { var o = off("CSceneEntity","m_fPitch"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "automated": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bAutomated")); }, set: function (v) { var o = off("CSceneEntity","m_bAutomated"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "automatedAction": { get: function () { return this.ref.readInt32(off("CSceneEntity","m_nAutomatedAction")); }, set: function (v) { var o = off("CSceneEntity","m_nAutomatedAction"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "automationDelay": { get: function () { return this.ref.readFloat32(off("CSceneEntity","m_flAutomationDelay")); }, set: function (v) { var o = off("CSceneEntity","m_flAutomationDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "automationTime": { get: function () { return this.ref.readFloat32(off("CSceneEntity","m_flAutomationTime")); }, set: function (v) { var o = off("CSceneEntity","m_flAutomationTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speechPriority": { get: function () { return this.ref.readInt32(off("CSceneEntity","m_nSpeechPriority")); }, set: function (v) { var o = off("CSceneEntity","m_nSpeechPriority"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pausedViaInput": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bPausedViaInput")); }, set: function (v) { var o = off("CSceneEntity","m_bPausedViaInput"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pauseAtNextInterrupt": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bPauseAtNextInterrupt")); }, set: function (v) { var o = off("CSceneEntity","m_bPauseAtNextInterrupt"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "waitingForActor": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bWaitingForActor")); }, set: function (v) { var o = off("CSceneEntity","m_bWaitingForActor"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "waitingForInterrupt": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bWaitingForInterrupt")); }, set: function (v) { var o = off("CSceneEntity","m_bWaitingForInterrupt"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "interruptedActorsScenes": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bInterruptedActorsScenes")); }, set: function (v) { var o = off("CSceneEntity","m_bInterruptedActorsScenes"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakOnNonIdle": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bBreakOnNonIdle")); }, set: function (v) { var o = off("CSceneEntity","m_bBreakOnNonIdle"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "sceneFinished": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bSceneFinished")); }, set: function (v) { var o = off("CSceneEntity","m_bSceneFinished"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "sceneStringIndex": { get: function () { return this.ref.readUInt16(off("CSceneEntity","m_nSceneStringIndex")); }, set: function (v) { var o = off("CSceneEntity","m_nSceneStringIndex"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "interruptScene": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hInterruptScene")); } },
+    "interruptCount": { get: function () { return this.ref.readInt32(off("CSceneEntity","m_nInterruptCount")); }, set: function (v) { var o = off("CSceneEntity","m_nInterruptCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "sceneMissing": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bSceneMissing")); }, set: function (v) { var o = off("CSceneEntity","m_bSceneMissing"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "interrupted": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bInterrupted")); }, set: function (v) { var o = off("CSceneEntity","m_bInterrupted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "completedEarly": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bCompletedEarly")); }, set: function (v) { var o = off("CSceneEntity","m_bCompletedEarly"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "interruptSceneFinished": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bInterruptSceneFinished")); }, set: function (v) { var o = off("CSceneEntity","m_bInterruptSceneFinished"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "restoring": { get: function () { return this.ref.readBool(off("CSceneEntity","m_bRestoring")); }, set: function (v) { var o = off("CSceneEntity","m_bRestoring"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "actor": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hActor")); } },
+    "activator": { get: function () { return this.ref.readHandle(off("CSceneEntity","m_hActivator")); } },
+    "busyActor": { get: function () { return this.ref.readInt32(off("CSceneEntity","m_BusyActor")); }, set: function (v) { var o = off("CSceneEntity","m_BusyActor"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "playerDeathBehavior": { get: function () { return this.ref.readUInt32(off("CSceneEntity","m_iPlayerDeathBehavior")); }, set: function (v) { var o = off("CSceneEntity","m_iPlayerDeathBehavior"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onStart": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSceneEntity","m_OnStart")); } },
+    "onCompletion": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSceneEntity","m_OnCompletion")); } },
+    "onCanceled": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSceneEntity","m_OnCanceled")); } },
+    "onPaused": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSceneEntity","m_OnPaused")); } },
+    "onResumed": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSceneEntity","m_OnResumed")); } },
+    "onPulseRequirement": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSceneEntity","m_OnPulseRequirement")); } },
+  };
+  A["CServerOnlyModelEntity"] = {
+  };
+  A["CServerOnlyPointEntity"] = {
+  };
+  A["CShatterGlassShardPhysics"] = {
+    "parentShard": { get: function () { return this.ref.readUInt32(off("CShatterGlassShardPhysics","m_hParentShard")); }, set: function (v) { var o = off("CShatterGlassShardPhysics","m_hParentShard"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "poolState": { get: function () { return this.ref.readUInt32(off("CShatterGlassShardPhysics","m_nPoolState")); }, set: function (v) { var o = off("CShatterGlassShardPhysics","m_nPoolState"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "touchedByPlayer": { get: function () { return this.ref.readBool(off("CShatterGlassShardPhysics","m_bTouchedByPlayer")); }, set: function (v) { var o = off("CShatterGlassShardPhysics","m_bTouchedByPlayer"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "shardDesc": { get: function () { return embed("shard_model_desc_t", this.ref, off("CShatterGlassShardPhysics","m_ShardDesc")); } },
+  };
+  A["CSoundAreaEntityOrientedBox"] = {
+    "min": { get: function () { var a = this.ref.readFloats(off("CSoundAreaEntityOrientedBox","m_vMin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "max": { get: function () { var a = this.ref.readFloats(off("CSoundAreaEntityOrientedBox","m_vMax"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CSoundAreaEntitySphere"] = {
+    "radius": { get: function () { return this.ref.readFloat32(off("CSoundAreaEntitySphere","m_flRadius")); }, set: function (v) { var o = off("CSoundAreaEntitySphere","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundEventAABBEntity"] = {
+    "mins": { get: function () { var a = this.ref.readFloats(off("CSoundEventAABBEntity","m_vMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "maxs": { get: function () { var a = this.ref.readFloats(off("CSoundEventAABBEntity","m_vMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CSoundEventConeEntity"] = {
+    "emitterAngle": { get: function () { return this.ref.readFloat32(off("CSoundEventConeEntity","m_flEmitterAngle")); }, set: function (v) { var o = off("CSoundEventConeEntity","m_flEmitterAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "sweetSpotAngle": { get: function () { return this.ref.readFloat32(off("CSoundEventConeEntity","m_flSweetSpotAngle")); }, set: function (v) { var o = off("CSoundEventConeEntity","m_flSweetSpotAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attenMin": { get: function () { return this.ref.readFloat32(off("CSoundEventConeEntity","m_flAttenMin")); }, set: function (v) { var o = off("CSoundEventConeEntity","m_flAttenMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attenMax": { get: function () { return this.ref.readFloat32(off("CSoundEventConeEntity","m_flAttenMax")); }, set: function (v) { var o = off("CSoundEventConeEntity","m_flAttenMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundEventOBBEntity"] = {
+    "mins": { get: function () { var a = this.ref.readFloats(off("CSoundEventOBBEntity","m_vMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "maxs": { get: function () { var a = this.ref.readFloats(off("CSoundEventOBBEntity","m_vMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CSoundEventPathCornerEntity"] = {
+    "countMax": { get: function () { return this.ref.readInt32(off("CSoundEventPathCornerEntity","m_iCountMax")); }, set: function (v) { var o = off("CSoundEventPathCornerEntity","m_iCountMax"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceMax": { get: function () { return this.ref.readFloat32(off("CSoundEventPathCornerEntity","m_flDistanceMax")); }, set: function (v) { var o = off("CSoundEventPathCornerEntity","m_flDistanceMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distMaxSqr": { get: function () { return this.ref.readFloat32(off("CSoundEventPathCornerEntity","m_flDistMaxSqr")); }, set: function (v) { var o = off("CSoundEventPathCornerEntity","m_flDistMaxSqr"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dotProductMax": { get: function () { return this.ref.readFloat32(off("CSoundEventPathCornerEntity","m_flDotProductMax")); }, set: function (v) { var o = off("CSoundEventPathCornerEntity","m_flDotProductMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "playing": { get: function () { return this.ref.readBool(off("CSoundEventPathCornerEntity","m_bPlaying")); }, set: function (v) { var o = off("CSoundEventPathCornerEntity","m_bPlaying"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundEventSphereEntity"] = {
+    "radius": { get: function () { return this.ref.readFloat32(off("CSoundEventSphereEntity","m_flRadius")); }, set: function (v) { var o = off("CSoundEventSphereEntity","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundOpvarSetOBBWindEntity"] = {
+    "mins": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetOBBWindEntity","m_vMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "maxs": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetOBBWindEntity","m_vMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceMins": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetOBBWindEntity","m_vDistanceMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceMaxs": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetOBBWindEntity","m_vDistanceMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "windMin": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetOBBWindEntity","m_flWindMin")); }, set: function (v) { var o = off("CSoundOpvarSetOBBWindEntity","m_flWindMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windMax": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetOBBWindEntity","m_flWindMax")); }, set: function (v) { var o = off("CSoundOpvarSetOBBWindEntity","m_flWindMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windMapMin": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetOBBWindEntity","m_flWindMapMin")); }, set: function (v) { var o = off("CSoundOpvarSetOBBWindEntity","m_flWindMapMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windMapMax": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetOBBWindEntity","m_flWindMapMax")); }, set: function (v) { var o = off("CSoundOpvarSetOBBWindEntity","m_flWindMapMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundOpvarSetPointEntity"] = {
+    "autoDisable": { get: function () { return this.ref.readBool(off("CSoundOpvarSetPointEntity","m_bAutoDisable")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_bAutoDisable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceMin": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flDistanceMin")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flDistanceMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceMax": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flDistanceMax")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flDistanceMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceMapMin": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flDistanceMapMin")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flDistanceMapMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distanceMapMax": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flDistanceMapMax")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flDistanceMapMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "occlusionRadius": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flOcclusionRadius")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flOcclusionRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "occlusionMin": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flOcclusionMin")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flOcclusionMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "occlusionMax": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flOcclusionMax")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flOcclusionMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "valSetOnDisable": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flValSetOnDisable")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flValSetOnDisable"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "setValueOnDisable": { get: function () { return this.ref.readBool(off("CSoundOpvarSetPointEntity","m_bSetValueOnDisable")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_bSetValueOnDisable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "reloading": { get: function () { return this.ref.readBool(off("CSoundOpvarSetPointEntity","m_bReloading")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_bReloading"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "simulationMode": { get: function () { return this.ref.readInt32(off("CSoundOpvarSetPointEntity","m_nSimulationMode")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_nSimulationMode"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "visibilitySamples": { get: function () { return this.ref.readInt32(off("CSoundOpvarSetPointEntity","m_nVisibilitySamples")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_nVisibilitySamples"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dynamicProxyPoint": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetPointEntity","m_vDynamicProxyPoint"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "dynamicMaximumOcclusion": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flDynamicMaximumOcclusion")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flDynamicMaximumOcclusion"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathingDistanceNormFactor": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPointEntity","m_flPathingDistanceNormFactor")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_flPathingDistanceNormFactor"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathingSourcePos": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetPointEntity","m_vPathingSourcePos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "pathingListenerPos": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetPointEntity","m_vPathingListenerPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "pathingDirection": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetPointEntity","m_vPathingDirection"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "pathingSourceIndex": { get: function () { return this.ref.readInt32(off("CSoundOpvarSetPointEntity","m_nPathingSourceIndex")); }, set: function (v) { var o = off("CSoundOpvarSetPointEntity","m_nPathingSourceIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onEnter": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSoundOpvarSetPointEntity","m_OnEnter")); } },
+    "onExit": { get: function () { return embed("CEntityIOOutput", this.ref, off("CSoundOpvarSetPointEntity","m_OnExit")); } },
+  };
+  A["CSpotlightEnd"] = {
+    "lightScale": { get: function () { return this.ref.readFloat32(off("CSpotlightEnd","m_flLightScale")); }, set: function (v) { var o = off("CSpotlightEnd","m_flLightScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CSpotlightEnd","m_Radius")); }, set: function (v) { var o = off("CSpotlightEnd","m_Radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spotlightDir": { get: function () { var a = this.ref.readFloats(off("CSpotlightEnd","m_vSpotlightDir"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "spotlightOrg": { get: function () { var a = this.ref.readFloats(off("CSpotlightEnd","m_vSpotlightOrg"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CSprite"] = {
+    "attachedToEntity": { get: function () { return this.ref.readHandle(off("CSprite","m_hAttachedToEntity")); } },
+    "attachment": { get: function () { return this.ref.readUInt8(off("CSprite","m_nAttachment")); }, set: function (v) { var o = off("CSprite","m_nAttachment"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "spriteFramerate": { get: function () { return this.ref.readFloat32(off("CSprite","m_flSpriteFramerate")); }, set: function (v) { var o = off("CSprite","m_flSpriteFramerate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "frame": { get: function () { return this.ref.readFloat32(off("CSprite","m_flFrame")); }, set: function (v) { var o = off("CSprite","m_flFrame"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dieTime": { get: function () { return this.ref.readFloat32(off("CSprite","m_flDieTime")); }, set: function (v) { var o = off("CSprite","m_flDieTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightness": { get: function () { return this.ref.readUInt32(off("CSprite","m_nBrightness")); }, set: function (v) { var o = off("CSprite","m_nBrightness"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightnessDuration": { get: function () { return this.ref.readFloat32(off("CSprite","m_flBrightnessDuration")); }, set: function (v) { var o = off("CSprite","m_flBrightnessDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spriteScale": { get: function () { return this.ref.readFloat32(off("CSprite","m_flSpriteScale")); }, set: function (v) { var o = off("CSprite","m_flSpriteScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "scaleDuration": { get: function () { return this.ref.readFloat32(off("CSprite","m_flScaleDuration")); }, set: function (v) { var o = off("CSprite","m_flScaleDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "worldSpaceScale": { get: function () { return this.ref.readBool(off("CSprite","m_bWorldSpaceScale")); }, set: function (v) { var o = off("CSprite","m_bWorldSpaceScale"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "glowProxySize": { get: function () { return this.ref.readFloat32(off("CSprite","m_flGlowProxySize")); }, set: function (v) { var o = off("CSprite","m_flGlowProxySize"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hDRColorScale": { get: function () { return this.ref.readFloat32(off("CSprite","m_flHDRColorScale")); }, set: function (v) { var o = off("CSprite","m_flHDRColorScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastTime": { get: function () { return this.ref.readFloat32(off("CSprite","m_flLastTime")); }, set: function (v) { var o = off("CSprite","m_flLastTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxFrame": { get: function () { return this.ref.readFloat32(off("CSprite","m_flMaxFrame")); }, set: function (v) { var o = off("CSprite","m_flMaxFrame"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startScale": { get: function () { return this.ref.readFloat32(off("CSprite","m_flStartScale")); }, set: function (v) { var o = off("CSprite","m_flStartScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "destScale": { get: function () { return this.ref.readFloat32(off("CSprite","m_flDestScale")); }, set: function (v) { var o = off("CSprite","m_flDestScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "scaleTimeStart": { get: function () { return this.ref.readFloat32(off("CSprite","m_flScaleTimeStart")); }, set: function (v) { var o = off("CSprite","m_flScaleTimeStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startBrightness": { get: function () { return this.ref.readInt32(off("CSprite","m_nStartBrightness")); }, set: function (v) { var o = off("CSprite","m_nStartBrightness"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "destBrightness": { get: function () { return this.ref.readInt32(off("CSprite","m_nDestBrightness")); }, set: function (v) { var o = off("CSprite","m_nDestBrightness"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightnessTimeStart": { get: function () { return this.ref.readFloat32(off("CSprite","m_flBrightnessTimeStart")); }, set: function (v) { var o = off("CSprite","m_flBrightnessTimeStart"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spriteWidth": { get: function () { return this.ref.readInt32(off("CSprite","m_nSpriteWidth")); }, set: function (v) { var o = off("CSprite","m_nSpriteWidth"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spriteHeight": { get: function () { return this.ref.readInt32(off("CSprite","m_nSpriteHeight")); }, set: function (v) { var o = off("CSprite","m_nSpriteHeight"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CSprite","m_flSpeed")); }, set: function (v) { var o = off("CSprite","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTankTargetChange"] = {
+  };
+  A["CTankTrainAI"] = {
+    "train": { get: function () { return this.ref.readHandle(off("CTankTrainAI","m_hTrain")); } },
+    "targetEntity": { get: function () { return this.ref.readHandle(off("CTankTrainAI","m_hTargetEntity")); } },
+    "soundPlaying": { get: function () { return this.ref.readInt32(off("CTankTrainAI","m_soundPlaying")); }, set: function (v) { var o = off("CTankTrainAI","m_soundPlaying"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTextureBasedAnimatable"] = {
+    "loop": { get: function () { return this.ref.readBool(off("CTextureBasedAnimatable","m_bLoop")); }, set: function (v) { var o = off("CTextureBasedAnimatable","m_bLoop"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fPS": { get: function () { return this.ref.readFloat32(off("CTextureBasedAnimatable","m_flFPS")); }, set: function (v) { var o = off("CTextureBasedAnimatable","m_flFPS"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "animationBoundsMin": { get: function () { var a = this.ref.readFloats(off("CTextureBasedAnimatable","m_vAnimationBoundsMin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "animationBoundsMax": { get: function () { var a = this.ref.readFloats(off("CTextureBasedAnimatable","m_vAnimationBoundsMax"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "startTime": { get: function () { return this.ref.readFloat32(off("CTextureBasedAnimatable","m_flStartTime")); }, set: function (v) { var o = off("CTextureBasedAnimatable","m_flStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startFrame": { get: function () { return this.ref.readFloat32(off("CTextureBasedAnimatable","m_flStartFrame")); }, set: function (v) { var o = off("CTextureBasedAnimatable","m_flStartFrame"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerBrush"] = {
+    "inputFilter": { get: function () { return this.ref.readInt32(off("CTriggerBrush","m_iInputFilter")); }, set: function (v) { var o = off("CTriggerBrush","m_iInputFilter"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dontMessageParent": { get: function () { return this.ref.readInt32(off("CTriggerBrush","m_iDontMessageParent")); }, set: function (v) { var o = off("CTriggerBrush","m_iDontMessageParent"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onStartTouch": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerBrush","m_OnStartTouch")); } },
+    "onEndTouch": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerBrush","m_OnEndTouch")); } },
+    "onUse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerBrush","m_OnUse")); } },
+  };
+  A["CTriggerVolume"] = {
+    "filter": { get: function () { return this.ref.readHandle(off("CTriggerVolume","m_hFilter")); } },
   };
   A["CBaseButton"] = {
     "moveEntitySpace": { get: function () { var a = this.ref.readFloats(off("CBaseButton","m_angMoveEntitySpace"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
@@ -531,6 +2081,11 @@
     "onOpen": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseDoor","m_OnOpen")); } },
     "onLockedUse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseDoor","m_OnLockedUse")); } },
   };
+  A["CBaseFilter"] = {
+    "negated": { get: function () { return this.ref.readBool(off("CBaseFilter","m_bNegated")); }, set: function (v) { var o = off("CBaseFilter","m_bNegated"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onPass": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseFilter","m_OnPass")); } },
+    "onFail": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseFilter","m_OnFail")); } },
+  };
   A["CBaseGrenade"] = {
     "damageDetonating": { get: function () { return this.ref.readBool(off("CBaseGrenade","m_bDamageDetonating")); }, set: function (v) { var o = off("CBaseGrenade","m_bDamageDetonating"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
     "hasWarnedAI": { get: function () { return this.ref.readBool(off("CBaseGrenade","m_bHasWarnedAI")); }, set: function (v) { var o = off("CBaseGrenade","m_bHasWarnedAI"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -545,6 +2100,11 @@
     "originalThrower": { get: function () { return this.ref.readHandle(off("CBaseGrenade","m_hOriginalThrower")); } },
     "onPlayerPickup": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseGrenade","m_OnPlayerPickup")); } },
     "onExplode": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseGrenade","m_OnExplode")); } },
+  };
+  A["CBasePlatTrain"] = {
+    "volume": { get: function () { return this.ref.readFloat32(off("CBasePlatTrain","m_volume")); }, set: function (v) { var o = off("CBasePlatTrain","m_volume"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tWidth": { get: function () { return this.ref.readFloat32(off("CBasePlatTrain","m_flTWidth")); }, set: function (v) { var o = off("CBasePlatTrain","m_flTWidth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tLength": { get: function () { return this.ref.readFloat32(off("CBasePlatTrain","m_flTLength")); }, set: function (v) { var o = off("CBasePlatTrain","m_flTLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   A["CBaseProp"] = {
     "modelOverrodeBlockLOS": { get: function () { return this.ref.readBool(off("CBaseProp","m_bModelOverrodeBlockLOS")); }, set: function (v) { var o = off("CBaseProp","m_bModelOverrodeBlockLOS"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -564,6 +2124,11 @@
     "onNotTouching": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseTrigger","m_OnNotTouching")); } },
     "onTouchingChanged": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBaseTrigger","m_OnTouchingChanged")); } },
   };
+  A["CCSPlace"] = {
+  };
+  A["CConstraintAnchor"] = {
+    "massScale": { get: function () { return this.ref.readFloat32(off("CConstraintAnchor","m_massScale")); }, set: function (v) { var o = off("CConstraintAnchor","m_massScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   A["CEconEntity"] = {
     "originalOwnerXuidLow": { get: function () { return this.ref.readUInt32(off("CEconEntity","m_OriginalOwnerXuidLow")); }, set: function (v) { var o = off("CEconEntity","m_OriginalOwnerXuidLow"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "originalOwnerXuidHigh": { get: function () { return this.ref.readUInt32(off("CEconEntity","m_OriginalOwnerXuidHigh")); }, set: function (v) { var o = off("CEconEntity","m_OriginalOwnerXuidHigh"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -574,6 +2139,399 @@
     "oldProvidee": { get: function () { return this.ref.readHandle(off("CEconEntity","m_hOldProvidee")); } },
     "oldOwnerClass": { get: function () { return this.ref.readInt32(off("CEconEntity","m_iOldOwnerClass")); }, set: function (v) { var o = off("CEconEntity","m_iOldOwnerClass"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "attributeManager": { get: function () { return embed("CAttributeContainer", this.ref, off("CEconEntity","m_AttributeManager")); } },
+  };
+  A["CEnvBeam"] = {
+    "active": { get: function () { return this.ref.readInt32(off("CEnvBeam","m_active")); }, set: function (v) { var o = off("CEnvBeam","m_active"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "life": { get: function () { return this.ref.readFloat32(off("CEnvBeam","m_life")); }, set: function (v) { var o = off("CEnvBeam","m_life"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "boltWidth": { get: function () { return this.ref.readFloat32(off("CEnvBeam","m_boltWidth")); }, set: function (v) { var o = off("CEnvBeam","m_boltWidth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noiseAmplitude": { get: function () { return this.ref.readFloat32(off("CEnvBeam","m_noiseAmplitude")); }, set: function (v) { var o = off("CEnvBeam","m_noiseAmplitude"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "m_speed": { get: function () { return this.ref.readInt32(off("CEnvBeam","m_speed")); }, set: function (v) { var o = off("CEnvBeam","m_speed"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "restrike": { get: function () { return this.ref.readFloat32(off("CEnvBeam","m_restrike")); }, set: function (v) { var o = off("CEnvBeam","m_restrike"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "frameStart": { get: function () { return this.ref.readInt32(off("CEnvBeam","m_frameStart")); }, set: function (v) { var o = off("CEnvBeam","m_frameStart"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "endPointWorld": { get: function () { var a = this.ref.readFloats(off("CEnvBeam","m_vEndPointWorld"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "endPointRelative": { get: function () { var a = this.ref.readFloats(off("CEnvBeam","m_vEndPointRelative"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CEnvBeam","m_radius")); }, set: function (v) { var o = off("CEnvBeam","m_radius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "touchType": { get: function () { return this.ref.readUInt32(off("CEnvBeam","m_TouchType")); }, set: function (v) { var o = off("CEnvBeam","m_TouchType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "filter": { get: function () { return this.ref.readHandle(off("CEnvBeam","m_hFilter")); } },
+    "onTouchedByEntity": { get: function () { return embed("CEntityIOOutput", this.ref, off("CEnvBeam","m_OnTouchedByEntity")); } },
+  };
+  A["CEnvExplosion"] = {
+    "magnitude": { get: function () { return this.ref.readInt32(off("CEnvExplosion","m_iMagnitude")); }, set: function (v) { var o = off("CEnvExplosion","m_iMagnitude"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "playerDamage": { get: function () { return this.ref.readFloat32(off("CEnvExplosion","m_flPlayerDamage")); }, set: function (v) { var o = off("CEnvExplosion","m_flPlayerDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radiusOverride": { get: function () { return this.ref.readInt32(off("CEnvExplosion","m_iRadiusOverride")); }, set: function (v) { var o = off("CEnvExplosion","m_iRadiusOverride"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "innerRadius": { get: function () { return this.ref.readFloat32(off("CEnvExplosion","m_flInnerRadius")); }, set: function (v) { var o = off("CEnvExplosion","m_flInnerRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "damageForce": { get: function () { return this.ref.readFloat32(off("CEnvExplosion","m_flDamageForce")); }, set: function (v) { var o = off("CEnvExplosion","m_flDamageForce"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "inflictor": { get: function () { return this.ref.readHandle(off("CEnvExplosion","m_hInflictor")); } },
+    "customDamageType": { get: function () { return this.ref.readUInt32(off("CEnvExplosion","m_iCustomDamageType")); }, set: function (v) { var o = off("CEnvExplosion","m_iCustomDamageType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "createDebris": { get: function () { return this.ref.readBool(off("CEnvExplosion","m_bCreateDebris")); }, set: function (v) { var o = off("CEnvExplosion","m_bCreateDebris"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "suppressParticleImpulse": { get: function () { return this.ref.readBool(off("CEnvExplosion","m_bSuppressParticleImpulse")); }, set: function (v) { var o = off("CEnvExplosion","m_bSuppressParticleImpulse"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "classIgnore": { get: function () { return this.ref.readUInt32(off("CEnvExplosion","m_iClassIgnore")); }, set: function (v) { var o = off("CEnvExplosion","m_iClassIgnore"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "classIgnore2": { get: function () { return this.ref.readUInt32(off("CEnvExplosion","m_iClassIgnore2")); }, set: function (v) { var o = off("CEnvExplosion","m_iClassIgnore2"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entityIgnore": { get: function () { return this.ref.readHandle(off("CEnvExplosion","m_hEntityIgnore")); } },
+  };
+  A["CEnvFade"] = {
+    "fadeColor": { get: function () { return this.ref.readUInt32(off("CEnvFade","m_fadeColor")); }, set: function (v) { var o = off("CEnvFade","m_fadeColor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "duration": { get: function () { return this.ref.readFloat32(off("CEnvFade","m_Duration")); }, set: function (v) { var o = off("CEnvFade","m_Duration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "holdDuration": { get: function () { return this.ref.readFloat32(off("CEnvFade","m_HoldDuration")); }, set: function (v) { var o = off("CEnvFade","m_HoldDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onBeginFade": { get: function () { return embed("CEntityIOOutput", this.ref, off("CEnvFade","m_OnBeginFade")); } },
+  };
+  A["CEnvGlobal"] = {
+    "triggermode": { get: function () { return this.ref.readInt32(off("CEnvGlobal","m_triggermode")); }, set: function (v) { var o = off("CEnvGlobal","m_triggermode"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "initialstate": { get: function () { return this.ref.readInt32(off("CEnvGlobal","m_initialstate")); }, set: function (v) { var o = off("CEnvGlobal","m_initialstate"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "counter": { get: function () { return this.ref.readInt32(off("CEnvGlobal","m_counter")); }, set: function (v) { var o = off("CEnvGlobal","m_counter"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvLaser"] = {
+    "sprite": { get: function () { return this.ref.readHandle(off("CEnvLaser","m_pSprite")); } },
+    "firePosition": { get: function () { var a = this.ref.readFloats(off("CEnvLaser","m_firePosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "m_flStartFrame": { get: function () { return this.ref.readFloat32(off("CEnvLaser","m_flStartFrame")); }, set: function (v) { var o = off("CEnvLaser","m_flStartFrame"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEnvParticleGlow"] = {
+    "alphaScale": { get: function () { return this.ref.readFloat32(off("CEnvParticleGlow","m_flAlphaScale")); }, set: function (v) { var o = off("CEnvParticleGlow","m_flAlphaScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radiusScale": { get: function () { return this.ref.readFloat32(off("CEnvParticleGlow","m_flRadiusScale")); }, set: function (v) { var o = off("CEnvParticleGlow","m_flRadiusScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "selfIllumScale": { get: function () { return this.ref.readFloat32(off("CEnvParticleGlow","m_flSelfIllumScale")); }, set: function (v) { var o = off("CEnvParticleGlow","m_flSelfIllumScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "colorTint": { get: function () { return this.ref.readUInt32(off("CEnvParticleGlow","m_ColorTint")); }, set: function (v) { var o = off("CEnvParticleGlow","m_ColorTint"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFish"] = {
+    "pool": { get: function () { return this.ref.readHandle(off("CFish","m_pool")); } },
+    "id": { get: function () { return this.ref.readUInt32(off("CFish","m_id")); }, set: function (v) { var o = off("CFish","m_id"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "x": { get: function () { return this.ref.readFloat32(off("CFish","m_x")); }, set: function (v) { var o = off("CFish","m_x"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "y": { get: function () { return this.ref.readFloat32(off("CFish","m_y")); }, set: function (v) { var o = off("CFish","m_y"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "z": { get: function () { return this.ref.readFloat32(off("CFish","m_z")); }, set: function (v) { var o = off("CFish","m_z"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angle": { get: function () { return this.ref.readFloat32(off("CFish","m_angle")); }, set: function (v) { var o = off("CFish","m_angle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angleChange": { get: function () { return this.ref.readFloat32(off("CFish","m_angleChange")); }, set: function (v) { var o = off("CFish","m_angleChange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forward": { get: function () { var a = this.ref.readFloats(off("CFish","m_forward"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "perp": { get: function () { var a = this.ref.readFloats(off("CFish","m_perp"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "poolOrigin": { get: function () { var a = this.ref.readFloats(off("CFish","m_poolOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "m_waterLevel": { get: function () { return this.ref.readFloat32(off("CFish","m_waterLevel")); }, set: function (v) { var o = off("CFish","m_waterLevel"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CFish","m_speed")); }, set: function (v) { var o = off("CFish","m_speed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "desiredSpeed": { get: function () { return this.ref.readFloat32(off("CFish","m_desiredSpeed")); }, set: function (v) { var o = off("CFish","m_desiredSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "calmSpeed": { get: function () { return this.ref.readFloat32(off("CFish","m_calmSpeed")); }, set: function (v) { var o = off("CFish","m_calmSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "panicSpeed": { get: function () { return this.ref.readFloat32(off("CFish","m_panicSpeed")); }, set: function (v) { var o = off("CFish","m_panicSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "avoidRange": { get: function () { return this.ref.readFloat32(off("CFish","m_avoidRange")); }, set: function (v) { var o = off("CFish","m_avoidRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "turnClockwise": { get: function () { return this.ref.readBool(off("CFish","m_turnClockwise")); }, set: function (v) { var o = off("CFish","m_turnClockwise"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "turnTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CFish","m_turnTimer")); } },
+    "goTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CFish","m_goTimer")); } },
+    "moveTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CFish","m_moveTimer")); } },
+    "panicTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CFish","m_panicTimer")); } },
+    "disperseTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CFish","m_disperseTimer")); } },
+    "proximityTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CFish","m_proximityTimer")); } },
+  };
+  A["CFogVolume"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CFogVolume","m_bDisabled")); }, set: function (v) { var o = off("CFogVolume","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "inFogVolumesList": { get: function () { return this.ref.readBool(off("CFogVolume","m_bInFogVolumesList")); }, set: function (v) { var o = off("CFogVolume","m_bInFogVolumesList"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncElectrifiedVolume"] = {
+  };
+  A["CFuncMonitor"] = {
+    "resolutionEnum": { get: function () { return this.ref.readInt32(off("CFuncMonitor","m_nResolutionEnum")); }, set: function (v) { var o = off("CFuncMonitor","m_nResolutionEnum"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "renderShadows": { get: function () { return this.ref.readBool(off("CFuncMonitor","m_bRenderShadows")); }, set: function (v) { var o = off("CFuncMonitor","m_bRenderShadows"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "useUniqueColorTarget": { get: function () { return this.ref.readBool(off("CFuncMonitor","m_bUseUniqueColorTarget")); }, set: function (v) { var o = off("CFuncMonitor","m_bUseUniqueColorTarget"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetCamera": { get: function () { return this.ref.readHandle(off("CFuncMonitor","m_hTargetCamera")); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CFuncMonitor","m_bEnabled")); }, set: function (v) { var o = off("CFuncMonitor","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "draw3DSkybox": { get: function () { return this.ref.readBool(off("CFuncMonitor","m_bDraw3DSkybox")); }, set: function (v) { var o = off("CFuncMonitor","m_bDraw3DSkybox"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startEnabled": { get: function () { return this.ref.readBool(off("CFuncMonitor","m_bStartEnabled")); }, set: function (v) { var o = off("CFuncMonitor","m_bStartEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncMoveLinear"] = {
+    "authoredPosition": { get: function () { return this.ref.readUInt32(off("CFuncMoveLinear","m_authoredPosition")); }, set: function (v) { var o = off("CFuncMoveLinear","m_authoredPosition"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "moveEntitySpace": { get: function () { var a = this.ref.readFloats(off("CFuncMoveLinear","m_angMoveEntitySpace"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "moveDirParentSpace": { get: function () { var a = this.ref.readFloats(off("CFuncMoveLinear","m_vecMoveDirParentSpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "blockDamage": { get: function () { return this.ref.readFloat32(off("CFuncMoveLinear","m_flBlockDamage")); }, set: function (v) { var o = off("CFuncMoveLinear","m_flBlockDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startPosition": { get: function () { return this.ref.readFloat32(off("CFuncMoveLinear","m_flStartPosition")); }, set: function (v) { var o = off("CFuncMoveLinear","m_flStartPosition"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncMoveLinear","m_flSpeed")); }, set: function (v) { var o = off("CFuncMoveLinear","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "createMovableNavMesh": { get: function () { return this.ref.readBool(off("CFuncMoveLinear","m_bCreateMovableNavMesh")); }, set: function (v) { var o = off("CFuncMoveLinear","m_bCreateMovableNavMesh"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "allowMovableNavMeshDockingOnEntireEntity": { get: function () { return this.ref.readBool(off("CFuncMoveLinear","m_bAllowMovableNavMeshDockingOnEntireEntity")); }, set: function (v) { var o = off("CFuncMoveLinear","m_bAllowMovableNavMeshDockingOnEntireEntity"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "createNavObstacle": { get: function () { return this.ref.readBool(off("CFuncMoveLinear","m_bCreateNavObstacle")); }, set: function (v) { var o = off("CFuncMoveLinear","m_bCreateNavObstacle"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onFullyOpen": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMoveLinear","m_OnFullyOpen")); } },
+    "onFullyClosed": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncMoveLinear","m_OnFullyClosed")); } },
+  };
+  A["CFuncMoverRouter"] = {
+    "moverIndex": { get: function () { return this.ref.readInt32(off("CFuncMoverRouter","m_nMoverIndex")); }, set: function (v) { var o = off("CFuncMoverRouter","m_nMoverIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "routeToAllMovers": { get: function () { return this.ref.readBool(off("CFuncMoverRouter","m_bRouteToAllMovers")); }, set: function (v) { var o = off("CFuncMoverRouter","m_bRouteToAllMovers"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathMover": { get: function () { return this.ref.readHandle(off("CFuncMoverRouter","m_hPathMover")); } },
+  };
+  A["CFuncTankTrain"] = {
+    "onDeath": { get: function () { return embed("CEntityIOOutput", this.ref, off("CFuncTankTrain","m_OnDeath")); } },
+  };
+  A["CGunTarget"] = {
+    "speed": { get: function () { return this.ref.readFloat32(off("CGunTarget","m_flSpeed")); }, set: function (v) { var o = off("CGunTarget","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "on": { get: function () { return this.ref.readBool(off("CGunTarget","m_on")); }, set: function (v) { var o = off("CGunTarget","m_on"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetEnt": { get: function () { return this.ref.readHandle(off("CGunTarget","m_hTargetEnt")); } },
+    "onDeath": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGunTarget","m_OnDeath")); } },
+  };
+  A["CInfoDynamicShadowHintBox"] = {
+    "boxMins": { get: function () { var a = this.ref.readFloats(off("CInfoDynamicShadowHintBox","m_vBoxMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "boxMaxs": { get: function () { var a = this.ref.readFloats(off("CInfoDynamicShadowHintBox","m_vBoxMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CInfoSpawnGroupLoadUnload"] = {
+    "timeoutInterval": { get: function () { return this.ref.readFloat32(off("CInfoSpawnGroupLoadUnload","m_flTimeoutInterval")); }, set: function (v) { var o = off("CInfoSpawnGroupLoadUnload","m_flTimeoutInterval"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "autoActivate": { get: function () { return this.ref.readBool(off("CInfoSpawnGroupLoadUnload","m_bAutoActivate")); }, set: function (v) { var o = off("CInfoSpawnGroupLoadUnload","m_bAutoActivate"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "unloadingStarted": { get: function () { return this.ref.readBool(off("CInfoSpawnGroupLoadUnload","m_bUnloadingStarted")); }, set: function (v) { var o = off("CInfoSpawnGroupLoadUnload","m_bUnloadingStarted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "queueActiveSpawnGroupChange": { get: function () { return this.ref.readBool(off("CInfoSpawnGroupLoadUnload","m_bQueueActiveSpawnGroupChange")); }, set: function (v) { var o = off("CInfoSpawnGroupLoadUnload","m_bQueueActiveSpawnGroupChange"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "queueFinishLoading": { get: function () { return this.ref.readBool(off("CInfoSpawnGroupLoadUnload","m_bQueueFinishLoading")); }, set: function (v) { var o = off("CInfoSpawnGroupLoadUnload","m_bQueueFinishLoading"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onSpawnGroupLoadStarted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CInfoSpawnGroupLoadUnload","m_OnSpawnGroupLoadStarted")); } },
+    "onSpawnGroupLoadFinished": { get: function () { return embed("CEntityIOOutput", this.ref, off("CInfoSpawnGroupLoadUnload","m_OnSpawnGroupLoadFinished")); } },
+    "onSpawnGroupUnloadStarted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CInfoSpawnGroupLoadUnload","m_OnSpawnGroupUnloadStarted")); } },
+    "onSpawnGroupUnloadFinished": { get: function () { return embed("CEntityIOOutput", this.ref, off("CInfoSpawnGroupLoadUnload","m_OnSpawnGroupUnloadFinished")); } },
+  };
+  A["CInstancedSceneEntity"] = {
+    "owner": { get: function () { return this.ref.readHandle(off("CInstancedSceneEntity","m_hOwner")); } },
+    "hadOwner": { get: function () { return this.ref.readBool(off("CInstancedSceneEntity","m_bHadOwner")); }, set: function (v) { var o = off("CInstancedSceneEntity","m_bHadOwner"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "postSpeakDelay": { get: function () { return this.ref.readFloat32(off("CInstancedSceneEntity","m_flPostSpeakDelay")); }, set: function (v) { var o = off("CInstancedSceneEntity","m_flPostSpeakDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "preDelay": { get: function () { return this.ref.readFloat32(off("CInstancedSceneEntity","m_flPreDelay")); }, set: function (v) { var o = off("CInstancedSceneEntity","m_flPreDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isBackground": { get: function () { return this.ref.readBool(off("CInstancedSceneEntity","m_bIsBackground")); }, set: function (v) { var o = off("CInstancedSceneEntity","m_bIsBackground"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "removeOnCompletion": { get: function () { return this.ref.readBool(off("CInstancedSceneEntity","m_bRemoveOnCompletion")); }, set: function (v) { var o = off("CInstancedSceneEntity","m_bRemoveOnCompletion"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "target": { get: function () { return this.ref.readHandle(off("CInstancedSceneEntity","m_hTarget")); } },
+  };
+  A["CItem"] = {
+    "activateWhenAtRest": { get: function () { return this.ref.readBool(off("CItem","m_bActivateWhenAtRest")); }, set: function (v) { var o = off("CItem","m_bActivateWhenAtRest"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "originalSpawnOrigin": { get: function () { var a = this.ref.readFloats(off("CItem","m_vOriginalSpawnOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "originalSpawnAngles": { get: function () { var a = this.ref.readFloats(off("CItem","m_vOriginalSpawnAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "physStartAsleep": { get: function () { return this.ref.readBool(off("CItem","m_bPhysStartAsleep")); }, set: function (v) { var o = off("CItem","m_bPhysStartAsleep"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onPlayerTouch": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItem","m_OnPlayerTouch")); } },
+    "onPlayerPickup": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItem","m_OnPlayerPickup")); } },
+    "onCacheInteraction": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItem","m_OnCacheInteraction")); } },
+    "onGlovePulled": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItem","m_OnGlovePulled")); } },
+  };
+  A["CLogicAchievement"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CLogicAchievement","m_bDisabled")); }, set: function (v) { var o = off("CLogicAchievement","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onFired": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicAchievement","m_OnFired")); } },
+  };
+  A["CLogicActivityEvent"] = {
+    "eventType": { get: function () { return this.ref.readInt32(off("CLogicActivityEvent","m_nEventType")); }, set: function (v) { var o = off("CLogicActivityEvent","m_nEventType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "duration": { get: function () { return this.ref.readFloat32(off("CLogicActivityEvent","m_flDuration")); }, set: function (v) { var o = off("CLogicActivityEvent","m_flDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicAutosave"] = {
+    "forceNewLevelUnit": { get: function () { return this.ref.readBool(off("CLogicAutosave","m_bForceNewLevelUnit")); }, set: function (v) { var o = off("CLogicAutosave","m_bForceNewLevelUnit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minHitPoints": { get: function () { return this.ref.readInt32(off("CLogicAutosave","m_minHitPoints")); }, set: function (v) { var o = off("CLogicAutosave","m_minHitPoints"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minHitPointsToCommit": { get: function () { return this.ref.readInt32(off("CLogicAutosave","m_minHitPointsToCommit")); }, set: function (v) { var o = off("CLogicAutosave","m_minHitPointsToCommit"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicBranch"] = {
+    "inValue": { get: function () { return this.ref.readBool(off("CLogicBranch","m_bInValue")); }, set: function (v) { var o = off("CLogicBranch","m_bInValue"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onTrue": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicBranch","m_OnTrue")); } },
+    "onFalse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicBranch","m_OnFalse")); } },
+  };
+  A["CLogicBranchList"] = {
+    "lastState": { get: function () { return this.ref.readUInt32(off("CLogicBranchList","m_eLastState")); }, set: function (v) { var o = off("CLogicBranchList","m_eLastState"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onAllTrue": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicBranchList","m_OnAllTrue")); } },
+    "onAllFalse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicBranchList","m_OnAllFalse")); } },
+    "onMixed": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicBranchList","m_OnMixed")); } },
+  };
+  A["CLogicCase"] = {
+    "shuffleCases": { get: function () { return this.ref.readInt32(off("CLogicCase","m_nShuffleCases")); }, set: function (v) { var o = off("CLogicCase","m_nShuffleCases"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastShuffleCase": { get: function () { return this.ref.readInt32(off("CLogicCase","m_nLastShuffleCase")); }, set: function (v) { var o = off("CLogicCase","m_nLastShuffleCase"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicCollisionPair"] = {
+    "includeHierarchy": { get: function () { return this.ref.readBool(off("CLogicCollisionPair","m_includeHierarchy")); }, set: function (v) { var o = off("CLogicCollisionPair","m_includeHierarchy"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "supportMultipleEntitiesWithSameName": { get: function () { return this.ref.readBool(off("CLogicCollisionPair","m_supportMultipleEntitiesWithSameName")); }, set: function (v) { var o = off("CLogicCollisionPair","m_supportMultipleEntitiesWithSameName"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disabled": { get: function () { return this.ref.readBool(off("CLogicCollisionPair","m_disabled")); }, set: function (v) { var o = off("CLogicCollisionPair","m_disabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "succeeded": { get: function () { return this.ref.readBool(off("CLogicCollisionPair","m_succeeded")); }, set: function (v) { var o = off("CLogicCollisionPair","m_succeeded"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "allowMissing": { get: function () { return this.ref.readBool(off("CLogicCollisionPair","m_allowMissing")); }, set: function (v) { var o = off("CLogicCollisionPair","m_allowMissing"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicCompare"] = {
+    "inValue": { get: function () { return this.ref.readFloat32(off("CLogicCompare","m_flInValue")); }, set: function (v) { var o = off("CLogicCompare","m_flInValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "compareValue": { get: function () { return this.ref.readFloat32(off("CLogicCompare","m_flCompareValue")); }, set: function (v) { var o = off("CLogicCompare","m_flCompareValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicDistanceAutosave"] = {
+    "distanceToPlayer": { get: function () { return this.ref.readFloat32(off("CLogicDistanceAutosave","m_flDistanceToPlayer")); }, set: function (v) { var o = off("CLogicDistanceAutosave","m_flDistanceToPlayer"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceNewLevelUnit": { get: function () { return this.ref.readBool(off("CLogicDistanceAutosave","m_bForceNewLevelUnit")); }, set: function (v) { var o = off("CLogicDistanceAutosave","m_bForceNewLevelUnit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "checkCough": { get: function () { return this.ref.readBool(off("CLogicDistanceAutosave","m_bCheckCough")); }, set: function (v) { var o = off("CLogicDistanceAutosave","m_bCheckCough"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "thinkDangerous": { get: function () { return this.ref.readBool(off("CLogicDistanceAutosave","m_bThinkDangerous")); }, set: function (v) { var o = off("CLogicDistanceAutosave","m_bThinkDangerous"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dangerousTime": { get: function () { return this.ref.readFloat32(off("CLogicDistanceAutosave","m_flDangerousTime")); }, set: function (v) { var o = off("CLogicDistanceAutosave","m_flDangerousTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicDistanceCheck"] = {
+    "zone1Distance": { get: function () { return this.ref.readFloat32(off("CLogicDistanceCheck","m_flZone1Distance")); }, set: function (v) { var o = off("CLogicDistanceCheck","m_flZone1Distance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "zone2Distance": { get: function () { return this.ref.readFloat32(off("CLogicDistanceCheck","m_flZone2Distance")); }, set: function (v) { var o = off("CLogicDistanceCheck","m_flZone2Distance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "inZone1": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicDistanceCheck","m_InZone1")); } },
+    "inZone2": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicDistanceCheck","m_InZone2")); } },
+    "inZone3": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicDistanceCheck","m_InZone3")); } },
+  };
+  A["CLogicEventListener"] = {
+    "isEnabled": { get: function () { return this.ref.readBool(off("CLogicEventListener","m_bIsEnabled")); }, set: function (v) { var o = off("CLogicEventListener","m_bIsEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "team": { get: function () { return this.ref.readInt32(off("CLogicEventListener","m_nTeam")); }, set: function (v) { var o = off("CLogicEventListener","m_nTeam"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicGameEvent"] = {
+  };
+  A["CLogicGameEventListener"] = {
+    "enabled": { get: function () { return this.ref.readBool(off("CLogicGameEventListener","m_bEnabled")); }, set: function (v) { var o = off("CLogicGameEventListener","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startDisabled": { get: function () { return this.ref.readBool(off("CLogicGameEventListener","m_bStartDisabled")); }, set: function (v) { var o = off("CLogicGameEventListener","m_bStartDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onEventFired": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicGameEventListener","m_OnEventFired")); } },
+  };
+  A["CLogicLineToEntity"] = {
+    "startEntity": { get: function () { return this.ref.readHandle(off("CLogicLineToEntity","m_StartEntity")); } },
+    "endEntity": { get: function () { return this.ref.readHandle(off("CLogicLineToEntity","m_EndEntity")); } },
+  };
+  A["CLogicMeasureMovement"] = {
+    "measureTarget": { get: function () { return this.ref.readHandle(off("CLogicMeasureMovement","m_hMeasureTarget")); } },
+    "measureReference": { get: function () { return this.ref.readHandle(off("CLogicMeasureMovement","m_hMeasureReference")); } },
+    "target": { get: function () { return this.ref.readHandle(off("CLogicMeasureMovement","m_hTarget")); } },
+    "targetReference": { get: function () { return this.ref.readHandle(off("CLogicMeasureMovement","m_hTargetReference")); } },
+    "scale": { get: function () { return this.ref.readFloat32(off("CLogicMeasureMovement","m_flScale")); }, set: function (v) { var o = off("CLogicMeasureMovement","m_flScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "measureType": { get: function () { return this.ref.readInt32(off("CLogicMeasureMovement","m_nMeasureType")); }, set: function (v) { var o = off("CLogicMeasureMovement","m_nMeasureType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicNavigation"] = {
+    "isOn": { get: function () { return this.ref.readBool(off("CLogicNavigation","m_isOn")); }, set: function (v) { var o = off("CLogicNavigation","m_isOn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "navProperty": { get: function () { return this.ref.readUInt32(off("CLogicNavigation","m_navProperty")); }, set: function (v) { var o = off("CLogicNavigation","m_navProperty"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CLogicPlayerProxy"] = {
+    "player": { get: function () { return this.ref.readHandle(off("CLogicPlayerProxy","m_hPlayer")); } },
+    "playerHasAmmo": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicPlayerProxy","m_PlayerHasAmmo")); } },
+    "playerHasNoAmmo": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicPlayerProxy","m_PlayerHasNoAmmo")); } },
+    "playerDied": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicPlayerProxy","m_PlayerDied")); } },
+  };
+  A["CLogicRelay"] = {
+    "disabled": { get: function () { return this.ref.readBool(off("CLogicRelay","m_bDisabled")); }, set: function (v) { var o = off("CLogicRelay","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "waitForRefire": { get: function () { return this.ref.readBool(off("CLogicRelay","m_bWaitForRefire")); }, set: function (v) { var o = off("CLogicRelay","m_bWaitForRefire"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "triggerOnce": { get: function () { return this.ref.readBool(off("CLogicRelay","m_bTriggerOnce")); }, set: function (v) { var o = off("CLogicRelay","m_bTriggerOnce"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fastRetrigger": { get: function () { return this.ref.readBool(off("CLogicRelay","m_bFastRetrigger")); }, set: function (v) { var o = off("CLogicRelay","m_bFastRetrigger"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "passthoughCaller": { get: function () { return this.ref.readBool(off("CLogicRelay","m_bPassthoughCaller")); }, set: function (v) { var o = off("CLogicRelay","m_bPassthoughCaller"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onSpawn": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicRelay","m_OnSpawn")); } },
+    "onTrigger": { get: function () { return embed("CEntityIOOutput", this.ref, off("CLogicRelay","m_OnTrigger")); } },
+  };
+  A["CMapSharedEnvironment"] = {
+  };
+  A["CMarkupVolumeTagged"] = {
+    "isGroup": { get: function () { return this.ref.readBool(off("CMarkupVolumeTagged","m_bIsGroup")); }, set: function (v) { var o = off("CMarkupVolumeTagged","m_bIsGroup"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "groupByPrefab": { get: function () { return this.ref.readBool(off("CMarkupVolumeTagged","m_bGroupByPrefab")); }, set: function (v) { var o = off("CMarkupVolumeTagged","m_bGroupByPrefab"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "groupByVolume": { get: function () { return this.ref.readBool(off("CMarkupVolumeTagged","m_bGroupByVolume")); }, set: function (v) { var o = off("CMarkupVolumeTagged","m_bGroupByVolume"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "groupOtherGroups": { get: function () { return this.ref.readBool(off("CMarkupVolumeTagged","m_bGroupOtherGroups")); }, set: function (v) { var o = off("CMarkupVolumeTagged","m_bGroupOtherGroups"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isInGroup": { get: function () { return this.ref.readBool(off("CMarkupVolumeTagged","m_bIsInGroup")); }, set: function (v) { var o = off("CMarkupVolumeTagged","m_bIsInGroup"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMathColorBlend"] = {
+    "inMin": { get: function () { return this.ref.readFloat32(off("CMathColorBlend","m_flInMin")); }, set: function (v) { var o = off("CMathColorBlend","m_flInMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "inMax": { get: function () { return this.ref.readFloat32(off("CMathColorBlend","m_flInMax")); }, set: function (v) { var o = off("CMathColorBlend","m_flInMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "outColor1": { get: function () { return this.ref.readUInt32(off("CMathColorBlend","m_OutColor1")); }, set: function (v) { var o = off("CMathColorBlend","m_OutColor1"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "outColor2": { get: function () { return this.ref.readUInt32(off("CMathColorBlend","m_OutColor2")); }, set: function (v) { var o = off("CMathColorBlend","m_OutColor2"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMathCounter"] = {
+    "min": { get: function () { return this.ref.readFloat32(off("CMathCounter","m_flMin")); }, set: function (v) { var o = off("CMathCounter","m_flMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "max": { get: function () { return this.ref.readFloat32(off("CMathCounter","m_flMax")); }, set: function (v) { var o = off("CMathCounter","m_flMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hitMin": { get: function () { return this.ref.readBool(off("CMathCounter","m_bHitMin")); }, set: function (v) { var o = off("CMathCounter","m_bHitMin"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hitMax": { get: function () { return this.ref.readBool(off("CMathCounter","m_bHitMax")); }, set: function (v) { var o = off("CMathCounter","m_bHitMax"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disabled": { get: function () { return this.ref.readBool(off("CMathCounter","m_bDisabled")); }, set: function (v) { var o = off("CMathCounter","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onHitMin": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathCounter","m_OnHitMin")); } },
+    "onHitMax": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathCounter","m_OnHitMax")); } },
+    "onChangedFromMin": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathCounter","m_OnChangedFromMin")); } },
+    "onChangedFromMax": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathCounter","m_OnChangedFromMax")); } },
+  };
+  A["CMathRemap"] = {
+    "inMin": { get: function () { return this.ref.readFloat32(off("CMathRemap","m_flInMin")); }, set: function (v) { var o = off("CMathRemap","m_flInMin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "inMax": { get: function () { return this.ref.readFloat32(off("CMathRemap","m_flInMax")); }, set: function (v) { var o = off("CMathRemap","m_flInMax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "out1": { get: function () { return this.ref.readFloat32(off("CMathRemap","m_flOut1")); }, set: function (v) { var o = off("CMathRemap","m_flOut1"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "out2": { get: function () { return this.ref.readFloat32(off("CMathRemap","m_flOut2")); }, set: function (v) { var o = off("CMathRemap","m_flOut2"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "oldInValue": { get: function () { return this.ref.readFloat32(off("CMathRemap","m_flOldInValue")); }, set: function (v) { var o = off("CMathRemap","m_flOldInValue"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CMathRemap","m_bEnabled")); }, set: function (v) { var o = off("CMathRemap","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onRoseAboveMin": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathRemap","m_OnRoseAboveMin")); } },
+    "onRoseAboveMax": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathRemap","m_OnRoseAboveMax")); } },
+    "onFellBelowMin": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathRemap","m_OnFellBelowMin")); } },
+    "onFellBelowMax": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMathRemap","m_OnFellBelowMax")); } },
+  };
+  A["CMoverPathNode"] = {
+  };
+  A["CMultiLightProxy"] = {
+    "lightRadiusFilter": { get: function () { return this.ref.readFloat32(off("CMultiLightProxy","m_flLightRadiusFilter")); }, set: function (v) { var o = off("CMultiLightProxy","m_flLightRadiusFilter"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "brightnessDelta": { get: function () { return this.ref.readFloat32(off("CMultiLightProxy","m_flBrightnessDelta")); }, set: function (v) { var o = off("CMultiLightProxy","m_flBrightnessDelta"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "performScreenFade": { get: function () { return this.ref.readBool(off("CMultiLightProxy","m_bPerformScreenFade")); }, set: function (v) { var o = off("CMultiLightProxy","m_bPerformScreenFade"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetBrightnessMultiplier": { get: function () { return this.ref.readFloat32(off("CMultiLightProxy","m_flTargetBrightnessMultiplier")); }, set: function (v) { var o = off("CMultiLightProxy","m_flTargetBrightnessMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentBrightnessMultiplier": { get: function () { return this.ref.readFloat32(off("CMultiLightProxy","m_flCurrentBrightnessMultiplier")); }, set: function (v) { var o = off("CMultiLightProxy","m_flCurrentBrightnessMultiplier"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMultiSource"] = {
+    "total": { get: function () { return this.ref.readInt32(off("CMultiSource","m_iTotal")); }, set: function (v) { var o = off("CMultiSource","m_iTotal"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onTrigger": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMultiSource","m_OnTrigger")); } },
+  };
+  A["COmniLight"] = {
+    "innerAngle": { get: function () { return this.ref.readFloat32(off("COmniLight","m_flInnerAngle")); }, set: function (v) { var o = off("COmniLight","m_flInnerAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "outerAngle": { get: function () { return this.ref.readFloat32(off("COmniLight","m_flOuterAngle")); }, set: function (v) { var o = off("COmniLight","m_flOuterAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "showLight": { get: function () { return this.ref.readBool(off("COmniLight","m_bShowLight")); }, set: function (v) { var o = off("COmniLight","m_bShowLight"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPathKeyFrame"] = {
+    "origin": { get: function () { var a = this.ref.readFloats(off("CPathKeyFrame","m_Origin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "angles": { get: function () { var a = this.ref.readFloats(off("CPathKeyFrame","m_Angles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "nextTime": { get: function () { return this.ref.readFloat32(off("CPathKeyFrame","m_flNextTime")); }, set: function (v) { var o = off("CPathKeyFrame","m_flNextTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextKey": { get: function () { return this.ref.readHandle(off("CPathKeyFrame","m_pNextKey")); } },
+    "prevKey": { get: function () { return this.ref.readHandle(off("CPathKeyFrame","m_pPrevKey")); } },
+    "moveSpeed": { get: function () { return this.ref.readFloat32(off("CPathKeyFrame","m_flMoveSpeed")); }, set: function (v) { var o = off("CPathKeyFrame","m_flMoveSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPathMover"] = {
+    "moverRouter": { get: function () { return this.ref.readHandle(off("CPathMover","m_hMoverRouter")); } },
+    "sampleSpacing": { get: function () { return this.ref.readFloat32(off("CPathMover","m_flSampleSpacing")); }, set: function (v) { var o = off("CPathMover","m_flSampleSpacing"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPathMoverEntitySpawner"] = {
+    "spawnIndex": { get: function () { return this.ref.readInt32(off("CPathMoverEntitySpawner","m_nSpawnIndex")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_nSpawnIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathMover": { get: function () { return this.ref.readHandle(off("CPathMoverEntitySpawner","m_hPathMover")); } },
+    "spawnFrequencySeconds": { get: function () { return this.ref.readFloat32(off("CPathMoverEntitySpawner","m_flSpawnFrequencySeconds")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_flSpawnFrequencySeconds"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spawnFrequencyDistToNearestMover": { get: function () { return this.ref.readFloat32(off("CPathMoverEntitySpawner","m_flSpawnFrequencyDistToNearestMover")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_flSpawnFrequencyDistToNearestMover"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxActive": { get: function () { return this.ref.readInt32(off("CPathMoverEntitySpawner","m_nMaxActive")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_nMaxActive"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spawnNum": { get: function () { return this.ref.readInt32(off("CPathMoverEntitySpawner","m_nSpawnNum")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_nSpawnNum"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastSpawnTime": { get: function () { return this.ref.readFloat32(off("CPathMoverEntitySpawner","m_flLastSpawnTime")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_flLastSpawnTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enabled": { get: function () { return this.ref.readBool(off("CPathMoverEntitySpawner","m_bEnabled")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "destroyMoverOnArrivedAtEnd": { get: function () { return this.ref.readBool(off("CPathMoverEntitySpawner","m_bDestroyMoverOnArrivedAtEnd")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_bDestroyMoverOnArrivedAtEnd"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "prepopulateOnSpawn": { get: function () { return this.ref.readBool(off("CPathMoverEntitySpawner","m_bPrepopulateOnSpawn")); }, set: function (v) { var o = off("CPathMoverEntitySpawner","m_bPrepopulateOnSpawn"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onTemplateSpawned": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPathMoverEntitySpawner","m_OnTemplateSpawned")); } },
+    "onTemplateGroupSpawned": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPathMoverEntitySpawner","m_OnTemplateGroupSpawned")); } },
+  };
+  A["CPhysBox"] = {
+    "damageType": { get: function () { return this.ref.readInt32(off("CPhysBox","m_damageType")); }, set: function (v) { var o = off("CPhysBox","m_damageType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "damageToEnableMotion": { get: function () { return this.ref.readInt32(off("CPhysBox","m_damageToEnableMotion")); }, set: function (v) { var o = off("CPhysBox","m_damageToEnableMotion"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceToEnableMotion": { get: function () { return this.ref.readFloat32(off("CPhysBox","m_flForceToEnableMotion")); }, set: function (v) { var o = off("CPhysBox","m_flForceToEnableMotion"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hoverPosePosition": { get: function () { var a = this.ref.readFloats(off("CPhysBox","m_vHoverPosePosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "hoverPoseAngles": { get: function () { var a = this.ref.readFloats(off("CPhysBox","m_angHoverPoseAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "notSolidToWorld": { get: function () { return this.ref.readBool(off("CPhysBox","m_bNotSolidToWorld")); }, set: function (v) { var o = off("CPhysBox","m_bNotSolidToWorld"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableUseOutput": { get: function () { return this.ref.readBool(off("CPhysBox","m_bEnableUseOutput")); }, set: function (v) { var o = off("CPhysBox","m_bEnableUseOutput"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hoverPoseFlags": { get: function () { return this.ref.readUInt8(off("CPhysBox","m_nHoverPoseFlags")); }, set: function (v) { var o = off("CPhysBox","m_nHoverPoseFlags"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "touchOutputPerEntityDelay": { get: function () { return this.ref.readFloat32(off("CPhysBox","m_flTouchOutputPerEntityDelay")); }, set: function (v) { var o = off("CPhysBox","m_flTouchOutputPerEntityDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onDamaged": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysBox","m_OnDamaged")); } },
+    "onAwakened": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysBox","m_OnAwakened")); } },
+    "onMotionEnabled": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysBox","m_OnMotionEnabled")); } },
+    "onPlayerUse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysBox","m_OnPlayerUse")); } },
+    "onStartTouch": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysBox","m_OnStartTouch")); } },
+  };
+  A["CPhysConstraint"] = {
+    "attach1": { get: function () { return this.ref.readHandle(off("CPhysConstraint","m_hAttach1")); } },
+    "attach2": { get: function () { return this.ref.readHandle(off("CPhysConstraint","m_hAttach2")); } },
+    "forceLimit": { get: function () { return this.ref.readFloat32(off("CPhysConstraint","m_forceLimit")); }, set: function (v) { var o = off("CPhysConstraint","m_forceLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "torqueLimit": { get: function () { return this.ref.readFloat32(off("CPhysConstraint","m_torqueLimit")); }, set: function (v) { var o = off("CPhysConstraint","m_torqueLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minTeleportDistance": { get: function () { return this.ref.readFloat32(off("CPhysConstraint","m_minTeleportDistance")); }, set: function (v) { var o = off("CPhysConstraint","m_minTeleportDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "snapObjectPositions": { get: function () { return this.ref.readBool(off("CPhysConstraint","m_bSnapObjectPositions")); }, set: function (v) { var o = off("CPhysConstraint","m_bSnapObjectPositions"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "treatEntity1AsInfiniteMass": { get: function () { return this.ref.readBool(off("CPhysConstraint","m_bTreatEntity1AsInfiniteMass")); }, set: function (v) { var o = off("CPhysConstraint","m_bTreatEntity1AsInfiniteMass"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onBreak": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysConstraint","m_OnBreak")); } },
+  };
+  A["CPhysMagnet"] = {
+    "massScale": { get: function () { return this.ref.readFloat32(off("CPhysMagnet","m_massScale")); }, set: function (v) { var o = off("CPhysMagnet","m_massScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceLimit": { get: function () { return this.ref.readFloat32(off("CPhysMagnet","m_forceLimit")); }, set: function (v) { var o = off("CPhysMagnet","m_forceLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "torqueLimit": { get: function () { return this.ref.readFloat32(off("CPhysMagnet","m_torqueLimit")); }, set: function (v) { var o = off("CPhysMagnet","m_torqueLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "active": { get: function () { return this.ref.readBool(off("CPhysMagnet","m_bActive")); }, set: function (v) { var o = off("CPhysMagnet","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hasHitSomething": { get: function () { return this.ref.readBool(off("CPhysMagnet","m_bHasHitSomething")); }, set: function (v) { var o = off("CPhysMagnet","m_bHasHitSomething"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "totalMass": { get: function () { return this.ref.readFloat32(off("CPhysMagnet","m_flTotalMass")); }, set: function (v) { var o = off("CPhysMagnet","m_flTotalMass"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CPhysMagnet","m_flRadius")); }, set: function (v) { var o = off("CPhysMagnet","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextSuckTime": { get: function () { return this.ref.readFloat32(off("CPhysMagnet","m_flNextSuckTime")); }, set: function (v) { var o = off("CPhysMagnet","m_flNextSuckTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxObjectsAttached": { get: function () { return this.ref.readInt32(off("CPhysMagnet","m_iMaxObjectsAttached")); }, set: function (v) { var o = off("CPhysMagnet","m_iMaxObjectsAttached"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onMagnetAttach": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysMagnet","m_OnMagnetAttach")); } },
+    "onMagnetDetach": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysMagnet","m_OnMagnetDetach")); } },
+  };
+  A["CPhysMotor"] = {
+    "attachedObject": { get: function () { return this.ref.readHandle(off("CPhysMotor","m_hAttachedObject")); } },
+    "anchorObject": { get: function () { return this.ref.readHandle(off("CPhysMotor","m_hAnchorObject")); } },
+    "spinUp": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_spinUp")); }, set: function (v) { var o = off("CPhysMotor","m_spinUp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spinDown": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_spinDown")); }, set: function (v) { var o = off("CPhysMotor","m_spinDown"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "motorFriction": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_flMotorFriction")); }, set: function (v) { var o = off("CPhysMotor","m_flMotorFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "additionalAcceleration": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_additionalAcceleration")); }, set: function (v) { var o = off("CPhysMotor","m_additionalAcceleration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularAcceleration": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_angularAcceleration")); }, set: function (v) { var o = off("CPhysMotor","m_angularAcceleration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "torqueScale": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_flTorqueScale")); }, set: function (v) { var o = off("CPhysMotor","m_flTorqueScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetSpeed": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_flTargetSpeed")); }, set: function (v) { var o = off("CPhysMotor","m_flTargetSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speedWhenSpinUpOrSpinDownStarted": { get: function () { return this.ref.readFloat32(off("CPhysMotor","m_flSpeedWhenSpinUpOrSpinDownStarted")); }, set: function (v) { var o = off("CPhysMotor","m_flSpeedWhenSpinUpOrSpinDownStarted"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "motor": { get: function () { return embed("CMotorController", this.ref, off("CPhysMotor","m_motor")); } },
+  };
+  A["CPhysThruster"] = {
+    "localOrigin": { get: function () { var a = this.ref.readFloats(off("CPhysThruster","m_localOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CPhysTorque"] = {
+    "axis": { get: function () { var a = this.ref.readFloats(off("CPhysTorque","m_axis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CPhysicsEntitySolver"] = {
+    "movingEntity": { get: function () { return this.ref.readHandle(off("CPhysicsEntitySolver","m_hMovingEntity")); } },
+    "physicsBlocker": { get: function () { return this.ref.readHandle(off("CPhysicsEntitySolver","m_hPhysicsBlocker")); } },
+    "separationDuration": { get: function () { return this.ref.readFloat32(off("CPhysicsEntitySolver","m_separationDuration")); }, set: function (v) { var o = off("CPhysicsEntitySolver","m_separationDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "cancelTime": { get: function () { return this.ref.readFloat32(off("CPhysicsEntitySolver","m_cancelTime")); }, set: function (v) { var o = off("CPhysicsEntitySolver","m_cancelTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   A["CPlantedC4"] = {
     "bombTicking": { get: function () { return this.ref.readBool(off("CPlantedC4","m_bBombTicking")); }, set: function (v) { var o = off("CPlantedC4","m_bBombTicking"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -602,6 +2560,94 @@
     "onBombBeginDefuse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPlantedC4","m_OnBombBeginDefuse")); } },
     "onBombDefuseAborted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPlantedC4","m_OnBombDefuseAborted")); } },
     "entitySpottedState": { get: function () { return embed("EntitySpottedState_t", this.ref, off("CPlantedC4","m_entitySpottedState")); } },
+  };
+  A["CPlayerSprayDecal"] = {
+    "uniqueID": { get: function () { return this.ref.readInt32(off("CPlayerSprayDecal","m_nUniqueID")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_nUniqueID"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "accountID": { get: function () { return this.ref.readUInt32(off("CPlayerSprayDecal","m_unAccountID")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_unAccountID"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "traceID": { get: function () { return this.ref.readUInt32(off("CPlayerSprayDecal","m_unTraceID")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_unTraceID"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "rtGcTime": { get: function () { return this.ref.readUInt32(off("CPlayerSprayDecal","m_rtGcTime")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_rtGcTime"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "endPos": { get: function () { var a = this.ref.readFloats(off("CPlayerSprayDecal","m_vecEndPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "start": { get: function () { var a = this.ref.readFloats(off("CPlayerSprayDecal","m_vecStart"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "left": { get: function () { var a = this.ref.readFloats(off("CPlayerSprayDecal","m_vecLeft"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "normal": { get: function () { var a = this.ref.readFloats(off("CPlayerSprayDecal","m_vecNormal"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "player": { get: function () { return this.ref.readInt32(off("CPlayerSprayDecal","m_nPlayer")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_nPlayer"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entity": { get: function () { return this.ref.readInt32(off("CPlayerSprayDecal","m_nEntity")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_nEntity"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hitbox": { get: function () { return this.ref.readInt32(off("CPlayerSprayDecal","m_nHitbox")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_nHitbox"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "creationTime": { get: function () { return this.ref.readFloat32(off("CPlayerSprayDecal","m_flCreationTime")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_flCreationTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tintID": { get: function () { return this.ref.readInt32(off("CPlayerSprayDecal","m_nTintID")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_nTintID"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "version": { get: function () { return this.ref.readUInt8(off("CPlayerSprayDecal","m_nVersion")); }, set: function (v) { var o = off("CPlayerSprayDecal","m_nVersion"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointClientUIDialog"] = {
+    "activator": { get: function () { return this.ref.readHandle(off("CPointClientUIDialog","m_hActivator")); } },
+    "startEnabled": { get: function () { return this.ref.readBool(off("CPointClientUIDialog","m_bStartEnabled")); }, set: function (v) { var o = off("CPointClientUIDialog","m_bStartEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointClientUIWorldPanel"] = {
+    "ignoreInput": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bIgnoreInput")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bIgnoreInput"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "lit": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bLit")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bLit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "followPlayerAcrossTeleport": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bFollowPlayerAcrossTeleport")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bFollowPlayerAcrossTeleport"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "width": { get: function () { return this.ref.readFloat32(off("CPointClientUIWorldPanel","m_flWidth")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_flWidth"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "height": { get: function () { return this.ref.readFloat32(off("CPointClientUIWorldPanel","m_flHeight")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_flHeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dPI": { get: function () { return this.ref.readFloat32(off("CPointClientUIWorldPanel","m_flDPI")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_flDPI"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "interactDistance": { get: function () { return this.ref.readFloat32(off("CPointClientUIWorldPanel","m_flInteractDistance")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_flInteractDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "depthOffset": { get: function () { return this.ref.readFloat32(off("CPointClientUIWorldPanel","m_flDepthOffset")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_flDepthOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ownerContext": { get: function () { return this.ref.readUInt32(off("CPointClientUIWorldPanel","m_unOwnerContext")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_unOwnerContext"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "horizontalAlign": { get: function () { return this.ref.readUInt32(off("CPointClientUIWorldPanel","m_unHorizontalAlign")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_unHorizontalAlign"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "verticalAlign": { get: function () { return this.ref.readUInt32(off("CPointClientUIWorldPanel","m_unVerticalAlign")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_unVerticalAlign"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "orientation": { get: function () { return this.ref.readUInt32(off("CPointClientUIWorldPanel","m_unOrientation")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_unOrientation"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "allowInteractionFromAllSceneWorlds": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bAllowInteractionFromAllSceneWorlds")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bAllowInteractionFromAllSceneWorlds"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "opaque": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bOpaque")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bOpaque"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "noDepth": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bNoDepth")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bNoDepth"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "visibleWhenParentNoDraw": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bVisibleWhenParentNoDraw")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bVisibleWhenParentNoDraw"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "renderBackface": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bRenderBackface")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bRenderBackface"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "useOffScreenIndicator": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bUseOffScreenIndicator")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bUseOffScreenIndicator"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "excludeFromSaveGames": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bExcludeFromSaveGames")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bExcludeFromSaveGames"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "grabbable": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bGrabbable")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bGrabbable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onlyRenderToTexture": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bOnlyRenderToTexture")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bOnlyRenderToTexture"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disableMipGen": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bDisableMipGen")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bDisableMipGen"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "explicitImageLayout": { get: function () { return this.ref.readInt32(off("CPointClientUIWorldPanel","m_nExplicitImageLayout")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_nExplicitImageLayout"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ignoreParentOrientation": { get: function () { return this.ref.readBool(off("CPointClientUIWorldPanel","m_bIgnoreParentOrientation")); }, set: function (v) { var o = off("CPointClientUIWorldPanel","m_bIgnoreParentOrientation"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointCommentaryNode"] = {
+    "viewTarget": { get: function () { return this.ref.readHandle(off("CPointCommentaryNode","m_hViewTarget")); } },
+    "viewTargetAngles": { get: function () { return this.ref.readHandle(off("CPointCommentaryNode","m_hViewTargetAngles")); } },
+    "viewPosition": { get: function () { return this.ref.readHandle(off("CPointCommentaryNode","m_hViewPosition")); } },
+    "viewPositionMover": { get: function () { return this.ref.readHandle(off("CPointCommentaryNode","m_hViewPositionMover")); } },
+    "preventMovement": { get: function () { return this.ref.readBool(off("CPointCommentaryNode","m_bPreventMovement")); }, set: function (v) { var o = off("CPointCommentaryNode","m_bPreventMovement"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "underCrosshair": { get: function () { return this.ref.readBool(off("CPointCommentaryNode","m_bUnderCrosshair")); }, set: function (v) { var o = off("CPointCommentaryNode","m_bUnderCrosshair"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "unstoppable": { get: function () { return this.ref.readBool(off("CPointCommentaryNode","m_bUnstoppable")); }, set: function (v) { var o = off("CPointCommentaryNode","m_bUnstoppable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "finishedTime": { get: function () { return this.ref.readFloat32(off("CPointCommentaryNode","m_flFinishedTime")); }, set: function (v) { var o = off("CPointCommentaryNode","m_flFinishedTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "finishOrigin": { get: function () { var a = this.ref.readFloats(off("CPointCommentaryNode","m_vecFinishOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "originalAngles": { get: function () { var a = this.ref.readFloats(off("CPointCommentaryNode","m_vecOriginalAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "finishAngles": { get: function () { var a = this.ref.readFloats(off("CPointCommentaryNode","m_vecFinishAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "preventChangesWhileMoving": { get: function () { return this.ref.readBool(off("CPointCommentaryNode","m_bPreventChangesWhileMoving")); }, set: function (v) { var o = off("CPointCommentaryNode","m_bPreventChangesWhileMoving"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "disabled": { get: function () { return this.ref.readBool(off("CPointCommentaryNode","m_bDisabled")); }, set: function (v) { var o = off("CPointCommentaryNode","m_bDisabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "teleportOrigin": { get: function () { var a = this.ref.readFloats(off("CPointCommentaryNode","m_vecTeleportOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "abortedPlaybackAt": { get: function () { return this.ref.readFloat32(off("CPointCommentaryNode","m_flAbortedPlaybackAt")); }, set: function (v) { var o = off("CPointCommentaryNode","m_flAbortedPlaybackAt"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "active": { get: function () { return this.ref.readBool(off("CPointCommentaryNode","m_bActive")); }, set: function (v) { var o = off("CPointCommentaryNode","m_bActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startTime": { get: function () { return this.ref.readFloat32(off("CPointCommentaryNode","m_flStartTime")); }, set: function (v) { var o = off("CPointCommentaryNode","m_flStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startTimeInCommentary": { get: function () { return this.ref.readFloat32(off("CPointCommentaryNode","m_flStartTimeInCommentary")); }, set: function (v) { var o = off("CPointCommentaryNode","m_flStartTimeInCommentary"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nodeNumber": { get: function () { return this.ref.readInt32(off("CPointCommentaryNode","m_iNodeNumber")); }, set: function (v) { var o = off("CPointCommentaryNode","m_iNodeNumber"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nodeNumberMax": { get: function () { return this.ref.readInt32(off("CPointCommentaryNode","m_iNodeNumberMax")); }, set: function (v) { var o = off("CPointCommentaryNode","m_iNodeNumberMax"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "listenedTo": { get: function () { return this.ref.readBool(off("CPointCommentaryNode","m_bListenedTo")); }, set: function (v) { var o = off("CPointCommentaryNode","m_bListenedTo"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onCommentaryStarted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointCommentaryNode","m_pOnCommentaryStarted")); } },
+    "onCommentaryStopped": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPointCommentaryNode","m_pOnCommentaryStopped")); } },
+  };
+  A["CPointPrefab"] = {
+    "fixupNames": { get: function () { return this.ref.readBool(off("CPointPrefab","m_fixupNames")); }, set: function (v) { var o = off("CPointPrefab","m_fixupNames"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "loadDynamic": { get: function () { return this.ref.readBool(off("CPointPrefab","m_bLoadDynamic")); }, set: function (v) { var o = off("CPointPrefab","m_bLoadDynamic"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "associatedRelayEntity": { get: function () { return this.ref.readHandle(off("CPointPrefab","m_associatedRelayEntity")); } },
+  };
+  A["CPointTeleport"] = {
+    "saveOrigin": { get: function () { var a = this.ref.readFloats(off("CPointTeleport","m_vSaveOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "saveAngles": { get: function () { var a = this.ref.readFloats(off("CPointTeleport","m_vSaveAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "teleportParentedEntities": { get: function () { return this.ref.readBool(off("CPointTeleport","m_bTeleportParentedEntities")); }, set: function (v) { var o = off("CPointTeleport","m_bTeleportParentedEntities"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "teleportUseCurrentAngle": { get: function () { return this.ref.readBool(off("CPointTeleport","m_bTeleportUseCurrentAngle")); }, set: function (v) { var o = off("CPointTeleport","m_bTeleportUseCurrentAngle"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPointTemplate"] = {
+    "timeoutInterval": { get: function () { return this.ref.readFloat32(off("CPointTemplate","m_flTimeoutInterval")); }, set: function (v) { var o = off("CPointTemplate","m_flTimeoutInterval"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "asynchronouslySpawnEntities": { get: function () { return this.ref.readBool(off("CPointTemplate","m_bAsynchronouslySpawnEntities")); }, set: function (v) { var o = off("CPointTemplate","m_bAsynchronouslySpawnEntities"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "clientOnlyEntityBehavior": { get: function () { return this.ref.readUInt32(off("CPointTemplate","m_clientOnlyEntityBehavior")); }, set: function (v) { var o = off("CPointTemplate","m_clientOnlyEntityBehavior"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ownerSpawnGroupType": { get: function () { return this.ref.readUInt32(off("CPointTemplate","m_ownerSpawnGroupType")); }, set: function (v) { var o = off("CPointTemplate","m_ownerSpawnGroupType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   A["CPointWorldText"] = {
     "messageText": { get: function () { return this.ref.readString(off("CPointWorldText","m_messageText"), 512); } },
@@ -649,6 +2695,76 @@
     "cPropDataComponent": { get: function () { return embed("CPropDataComponent", this.ref, off("CRagdollProp","m_CPropDataComponent")); } },
     "ragdoll": { get: function () { return embed("ragdoll_t", this.ref, off("CRagdollProp","m_ragdoll")); } },
   };
+  A["CRectLight"] = {
+    "showLight": { get: function () { return this.ref.readBool(off("CRectLight","m_bShowLight")); }, set: function (v) { var o = off("CRectLight","m_bShowLight"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CRevertSaved"] = {
+    "loadTime": { get: function () { return this.ref.readFloat32(off("CRevertSaved","m_loadTime")); }, set: function (v) { var o = off("CRevertSaved","m_loadTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "duration": { get: function () { return this.ref.readFloat32(off("CRevertSaved","m_Duration")); }, set: function (v) { var o = off("CRevertSaved","m_Duration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "holdTime": { get: function () { return this.ref.readFloat32(off("CRevertSaved","m_HoldTime")); }, set: function (v) { var o = off("CRevertSaved","m_HoldTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CRuleBrushEntity"] = {
+  };
+  A["CRulePointEntity"] = {
+    "score": { get: function () { return this.ref.readInt32(off("CRulePointEntity","m_Score")); }, set: function (v) { var o = off("CRulePointEntity","m_Score"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSceneListManager"] = {
+  };
+  A["CScriptNavBlocker"] = {
+    "extent": { get: function () { var a = this.ref.readFloats(off("CScriptNavBlocker","m_vExtent"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CShower"] = {
+    "speed": { get: function () { return this.ref.readFloat32(off("CShower","m_flSpeed")); }, set: function (v) { var o = off("CShower","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundOpvarSetAutoRoomEntity"] = {
+    "size": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetAutoRoomEntity","m_flSize")); }, set: function (v) { var o = off("CSoundOpvarSetAutoRoomEntity","m_flSize"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "heightTolerance": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetAutoRoomEntity","m_flHeightTolerance")); }, set: function (v) { var o = off("CSoundOpvarSetAutoRoomEntity","m_flHeightTolerance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "sizeSqr": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetAutoRoomEntity","m_flSizeSqr")); }, set: function (v) { var o = off("CSoundOpvarSetAutoRoomEntity","m_flSizeSqr"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundOpvarSetBoxEntity"] = {
+    "distanceInnerMins": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vDistanceInnerMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceInnerMaxs": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vDistanceInnerMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceOuterMins": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vDistanceOuterMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distanceOuterMaxs": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vDistanceOuterMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "boxDirection": { get: function () { return this.ref.readInt32(off("CSoundOpvarSetBoxEntity","m_nBoxDirection")); }, set: function (v) { var o = off("CSoundOpvarSetBoxEntity","m_nBoxDirection"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "innerMins": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vInnerMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "innerMaxs": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vInnerMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "outerMins": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vOuterMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "outerMaxs": { get: function () { var a = this.ref.readFloats(off("CSoundOpvarSetBoxEntity","m_vOuterMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CSoundOpvarSetPathCornerEntity"] = {
+    "useParentedPath": { get: function () { return this.ref.readBool(off("CSoundOpvarSetPathCornerEntity","m_bUseParentedPath")); }, set: function (v) { var o = off("CSoundOpvarSetPathCornerEntity","m_bUseParentedPath"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "distMinSqr": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPathCornerEntity","m_flDistMinSqr")); }, set: function (v) { var o = off("CSoundOpvarSetPathCornerEntity","m_flDistMinSqr"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "distMaxSqr": { get: function () { return this.ref.readFloat32(off("CSoundOpvarSetPathCornerEntity","m_flDistMaxSqr")); }, set: function (v) { var o = off("CSoundOpvarSetPathCornerEntity","m_flDistMaxSqr"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSoundStackSave"] = {
+  };
+  A["CTestPulseIO"] = {
+    "allowEmptyInputs": { get: function () { return this.ref.readBool(off("CTestPulseIO","m_bAllowEmptyInputs")); }, set: function (v) { var o = off("CTestPulseIO","m_bAllowEmptyInputs"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onVariantVoid": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTestPulseIO","m_OnVariantVoid")); } },
+    "testComponent": { get: function () { return embed("CTestPulseIOComponent_Derived", this.ref, off("CTestPulseIO","m_TestComponent")); } },
+    "onInternalTestVoid": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTestPulseIO","m_OnInternalTestVoid")); } },
+  };
+  A["CTimerEntity"] = {
+    "disabled": { get: function () { return this.ref.readInt32(off("CTimerEntity","m_iDisabled")); }, set: function (v) { var o = off("CTimerEntity","m_iDisabled"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "initialDelay": { get: function () { return this.ref.readFloat32(off("CTimerEntity","m_flInitialDelay")); }, set: function (v) { var o = off("CTimerEntity","m_flInitialDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "refireTime": { get: function () { return this.ref.readFloat32(off("CTimerEntity","m_flRefireTime")); }, set: function (v) { var o = off("CTimerEntity","m_flRefireTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "upDownState": { get: function () { return this.ref.readBool(off("CTimerEntity","m_bUpDownState")); }, set: function (v) { var o = off("CTimerEntity","m_bUpDownState"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "useRandomTime": { get: function () { return this.ref.readInt32(off("CTimerEntity","m_iUseRandomTime")); }, set: function (v) { var o = off("CTimerEntity","m_iUseRandomTime"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pauseAfterFiring": { get: function () { return this.ref.readBool(off("CTimerEntity","m_bPauseAfterFiring")); }, set: function (v) { var o = off("CTimerEntity","m_bPauseAfterFiring"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "lowerRandomBound": { get: function () { return this.ref.readFloat32(off("CTimerEntity","m_flLowerRandomBound")); }, set: function (v) { var o = off("CTimerEntity","m_flLowerRandomBound"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "upperRandomBound": { get: function () { return this.ref.readFloat32(off("CTimerEntity","m_flUpperRandomBound")); }, set: function (v) { var o = off("CTimerEntity","m_flUpperRandomBound"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "remainingTime": { get: function () { return this.ref.readFloat32(off("CTimerEntity","m_flRemainingTime")); }, set: function (v) { var o = off("CTimerEntity","m_flRemainingTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "paused": { get: function () { return this.ref.readBool(off("CTimerEntity","m_bPaused")); }, set: function (v) { var o = off("CTimerEntity","m_bPaused"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onTimer": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTimerEntity","m_OnTimer")); } },
+    "onTimerHigh": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTimerEntity","m_OnTimerHigh")); } },
+    "onTimerLow": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTimerEntity","m_OnTimerLow")); } },
+  };
+  A["SpawnPoint"] = {
+    "priority": { get: function () { return this.ref.readInt32(off("SpawnPoint","m_iPriority")); }, set: function (v) { var o = off("SpawnPoint","m_iPriority"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enabled": { get: function () { return this.ref.readBool(off("SpawnPoint","m_bEnabled")); }, set: function (v) { var o = off("SpawnPoint","m_bEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "type": { get: function () { return this.ref.readInt32(off("SpawnPoint","m_nType")); }, set: function (v) { var o = off("SpawnPoint","m_nType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   A["CBaseCSGrenadeProjectile"] = {
     "initialPosition": { get: function () { var a = this.ref.readFloats(off("CBaseCSGrenadeProjectile","m_vInitialPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
     "initialVelocity": { get: function () { var a = this.ref.readFloats(off("CBaseCSGrenadeProjectile","m_vInitialVelocity"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
@@ -664,6 +2780,19 @@
     "lastHitSurfaceNormal": { get: function () { var a = this.ref.readFloats(off("CBaseCSGrenadeProjectile","m_vecLastHitSurfaceNormal"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
     "ticksAtZeroVelocity": { get: function () { return this.ref.readInt32(off("CBaseCSGrenadeProjectile","m_nTicksAtZeroVelocity")); }, set: function (v) { var o = off("CBaseCSGrenadeProjectile","m_nTicksAtZeroVelocity"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "hasEverHitEnemy": { get: function () { return this.ref.readBool(off("CBaseCSGrenadeProjectile","m_bHasEverHitEnemy")); }, set: function (v) { var o = off("CBaseCSGrenadeProjectile","m_bHasEverHitEnemy"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CBaseMoveBehavior"] = {
+    "positionInterpolator": { get: function () { return this.ref.readInt32(off("CBaseMoveBehavior","m_iPositionInterpolator")); }, set: function (v) { var o = off("CBaseMoveBehavior","m_iPositionInterpolator"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "rotationInterpolator": { get: function () { return this.ref.readInt32(off("CBaseMoveBehavior","m_iRotationInterpolator")); }, set: function (v) { var o = off("CBaseMoveBehavior","m_iRotationInterpolator"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "animStartTime": { get: function () { return this.ref.readFloat32(off("CBaseMoveBehavior","m_flAnimStartTime")); }, set: function (v) { var o = off("CBaseMoveBehavior","m_flAnimStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "animEndTime": { get: function () { return this.ref.readFloat32(off("CBaseMoveBehavior","m_flAnimEndTime")); }, set: function (v) { var o = off("CBaseMoveBehavior","m_flAnimEndTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "averageSpeedAcrossFrame": { get: function () { return this.ref.readFloat32(off("CBaseMoveBehavior","m_flAverageSpeedAcrossFrame")); }, set: function (v) { var o = off("CBaseMoveBehavior","m_flAverageSpeedAcrossFrame"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentKeyFrame": { get: function () { return this.ref.readHandle(off("CBaseMoveBehavior","m_pCurrentKeyFrame")); } },
+    "targetKeyFrame": { get: function () { return this.ref.readHandle(off("CBaseMoveBehavior","m_pTargetKeyFrame")); } },
+    "preKeyFrame": { get: function () { return this.ref.readHandle(off("CBaseMoveBehavior","m_pPreKeyFrame")); } },
+    "postKeyFrame": { get: function () { return this.ref.readHandle(off("CBaseMoveBehavior","m_pPostKeyFrame")); } },
+    "timeIntoFrame": { get: function () { return this.ref.readFloat32(off("CBaseMoveBehavior","m_flTimeIntoFrame")); }, set: function (v) { var o = off("CBaseMoveBehavior","m_flTimeIntoFrame"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "direction": { get: function () { return this.ref.readInt32(off("CBaseMoveBehavior","m_iDirection")); }, set: function (v) { var o = off("CBaseMoveBehavior","m_iDirection"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   A["CBasePlayerPawn"] = {
     "v_angle": { get: function () { var a = this.ref.readFloats(off("CBasePlayerPawn","v_angle"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
@@ -687,6 +2816,16 @@
     "clip1": { get: function () { return this.ref.readInt32(off("CBasePlayerWeapon","m_iClip1")); }, set: function (v) { var o = off("CBasePlayerWeapon","m_iClip1"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "clip2": { get: function () { return this.ref.readInt32(off("CBasePlayerWeapon","m_iClip2")); }, set: function (v) { var o = off("CBasePlayerWeapon","m_iClip2"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "onPlayerUse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePlayerWeapon","m_OnPlayerUse")); } },
+  };
+  A["CBombTarget"] = {
+    "isBombSiteB": { get: function () { return this.ref.readBool(off("CBombTarget","m_bIsBombSiteB")); }, set: function (v) { var o = off("CBombTarget","m_bIsBombSiteB"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isHeistBombTarget": { get: function () { return this.ref.readBool(off("CBombTarget","m_bIsHeistBombTarget")); }, set: function (v) { var o = off("CBombTarget","m_bIsHeistBombTarget"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "bombPlantedHere": { get: function () { return this.ref.readBool(off("CBombTarget","m_bBombPlantedHere")); }, set: function (v) { var o = off("CBombTarget","m_bBombPlantedHere"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "instructorHint": { get: function () { return this.ref.readHandle(off("CBombTarget","m_hInstructorHint")); } },
+    "bombSiteDesignation": { get: function () { return this.ref.readInt32(off("CBombTarget","m_nBombSiteDesignation")); }, set: function (v) { var o = off("CBombTarget","m_nBombSiteDesignation"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onBombExplode": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBombTarget","m_OnBombExplode")); } },
+    "onBombPlanted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBombTarget","m_OnBombPlanted")); } },
+    "onBombDefused": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBombTarget","m_OnBombDefused")); } },
   };
   A["CBreakableProp"] = {
     "impactEnergyScale": { get: function () { return this.ref.readFloat32(off("CBreakableProp","m_impactEnergyScale")); }, set: function (v) { var o = off("CBreakableProp","m_impactEnergyScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -713,6 +2852,456 @@
     "onStartDeath": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBreakableProp","m_OnStartDeath")); } },
     "onBreak": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBreakableProp","m_OnBreak")); } },
     "onTakeDamage": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBreakableProp","m_OnTakeDamage")); } },
+  };
+  A["CBuyZone"] = {
+    "legacyTeamNum": { get: function () { return this.ref.readInt32(off("CBuyZone","m_LegacyTeamNum")); }, set: function (v) { var o = off("CBuyZone","m_LegacyTeamNum"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CChangeLevel"] = {
+    "touched": { get: function () { return this.ref.readBool(off("CChangeLevel","m_bTouched")); }, set: function (v) { var o = off("CChangeLevel","m_bTouched"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "noTouch": { get: function () { return this.ref.readBool(off("CChangeLevel","m_bNoTouch")); }, set: function (v) { var o = off("CChangeLevel","m_bNoTouch"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "newChapter": { get: function () { return this.ref.readBool(off("CChangeLevel","m_bNewChapter")); }, set: function (v) { var o = off("CChangeLevel","m_bNewChapter"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onChangeLevelFired": { get: function () { return this.ref.readBool(off("CChangeLevel","m_bOnChangeLevelFired")); }, set: function (v) { var o = off("CChangeLevel","m_bOnChangeLevelFired"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onChangeLevel": { get: function () { return embed("CEntityIOOutput", this.ref, off("CChangeLevel","m_OnChangeLevel")); } },
+  };
+  A["CColorCorrectionVolume"] = {
+    "maxWeight": { get: function () { return this.ref.readFloat32(off("CColorCorrectionVolume","m_MaxWeight")); }, set: function (v) { var o = off("CColorCorrectionVolume","m_MaxWeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeDuration": { get: function () { return this.ref.readFloat32(off("CColorCorrectionVolume","m_FadeDuration")); }, set: function (v) { var o = off("CColorCorrectionVolume","m_FadeDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "weight": { get: function () { return this.ref.readFloat32(off("CColorCorrectionVolume","m_Weight")); }, set: function (v) { var o = off("CColorCorrectionVolume","m_Weight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lookupFilename": { get: function () { return this.ref.readString(off("CColorCorrectionVolume","m_lookupFilename"), 512); } },
+    "lastEnterWeight": { get: function () { return this.ref.readFloat32(off("CColorCorrectionVolume","m_LastEnterWeight")); }, set: function (v) { var o = off("CColorCorrectionVolume","m_LastEnterWeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastEnterTime": { get: function () { return this.ref.readFloat32(off("CColorCorrectionVolume","m_LastEnterTime")); }, set: function (v) { var o = off("CColorCorrectionVolume","m_LastEnterTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastExitWeight": { get: function () { return this.ref.readFloat32(off("CColorCorrectionVolume","m_LastExitWeight")); }, set: function (v) { var o = off("CColorCorrectionVolume","m_LastExitWeight"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastExitTime": { get: function () { return this.ref.readFloat32(off("CColorCorrectionVolume","m_LastExitTime")); }, set: function (v) { var o = off("CColorCorrectionVolume","m_LastExitTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CEconWearable"] = {
+    "forceSkin": { get: function () { return this.ref.readInt32(off("CEconWearable","m_nForceSkin")); }, set: function (v) { var o = off("CEconWearable","m_nForceSkin"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "alwaysAllow": { get: function () { return this.ref.readBool(off("CEconWearable","m_bAlwaysAllow")); }, set: function (v) { var o = off("CEconWearable","m_bAlwaysAllow"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFilterAttributeInt"] = {
+  };
+  A["CFilterClass"] = {
+  };
+  A["CFilterContext"] = {
+  };
+  A["CFilterEnemy"] = {
+    "radius": { get: function () { return this.ref.readFloat32(off("CFilterEnemy","m_flRadius")); }, set: function (v) { var o = off("CFilterEnemy","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "outerRadius": { get: function () { return this.ref.readFloat32(off("CFilterEnemy","m_flOuterRadius")); }, set: function (v) { var o = off("CFilterEnemy","m_flOuterRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxSquadmatesPerEnemy": { get: function () { return this.ref.readInt32(off("CFilterEnemy","m_nMaxSquadmatesPerEnemy")); }, set: function (v) { var o = off("CFilterEnemy","m_nMaxSquadmatesPerEnemy"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFilterMassGreater"] = {
+    "filterMass": { get: function () { return this.ref.readFloat32(off("CFilterMassGreater","m_fFilterMass")); }, set: function (v) { var o = off("CFilterMassGreater","m_fFilterMass"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFilterModel"] = {
+  };
+  A["CFilterMultiple"] = {
+    "filterType": { get: function () { return this.ref.readUInt32(off("CFilterMultiple","m_nFilterType")); }, set: function (v) { var o = off("CFilterMultiple","m_nFilterType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFilterName"] = {
+  };
+  A["CFilterProximity"] = {
+    "radius": { get: function () { return this.ref.readFloat32(off("CFilterProximity","m_flRadius")); }, set: function (v) { var o = off("CFilterProximity","m_flRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFilterTeam"] = {
+    "filterTeam": { get: function () { return this.ref.readInt32(off("CFilterTeam","m_iFilterTeam")); }, set: function (v) { var o = off("CFilterTeam","m_iFilterTeam"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFogTrigger"] = {
+    "fog": { get: function () { return embed("fogparams_t", this.ref, off("CFogTrigger","m_fog")); } },
+  };
+  A["CFootstepControl"] = {
+  };
+  A["CFuncPlat"] = {
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncPlat","m_flSpeed")); }, set: function (v) { var o = off("CFuncPlat","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncTrain"] = {
+    "currentTarget": { get: function () { return this.ref.readHandle(off("CFuncTrain","m_hCurrentTarget")); } },
+    "activated": { get: function () { return this.ref.readBool(off("CFuncTrain","m_activated")); }, set: function (v) { var o = off("CFuncTrain","m_activated"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enemy": { get: function () { return this.ref.readHandle(off("CFuncTrain","m_hEnemy")); } },
+    "blockDamage": { get: function () { return this.ref.readFloat32(off("CFuncTrain","m_flBlockDamage")); }, set: function (v) { var o = off("CFuncTrain","m_flBlockDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextBlockTime": { get: function () { return this.ref.readFloat32(off("CFuncTrain","m_flNextBlockTime")); }, set: function (v) { var o = off("CFuncTrain","m_flNextBlockTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CFuncTrain","m_flSpeed")); }, set: function (v) { var o = off("CFuncTrain","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CGameMoney"] = {
+    "money": { get: function () { return this.ref.readInt32(off("CGameMoney","m_nMoney")); }, set: function (v) { var o = off("CGameMoney","m_nMoney"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onMoneySpent": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGameMoney","m_OnMoneySpent")); } },
+    "onMoneySpentFail": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGameMoney","m_OnMoneySpentFail")); } },
+  };
+  A["CGamePlayerZone"] = {
+    "onPlayerInZone": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGamePlayerZone","m_OnPlayerInZone")); } },
+    "onPlayerOutZone": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGamePlayerZone","m_OnPlayerOutZone")); } },
+  };
+  A["CGameText"] = {
+    "textParms": { get: function () { return embed("hudtextparms_t", this.ref, off("CGameText","m_textParms")); } },
+  };
+  A["CGenericConstraint"] = {
+    "placeAnchorsAtConstraintTransform": { get: function () { return this.ref.readBool(off("CGenericConstraint","m_bPlaceAnchorsAtConstraintTransform")); }, set: function (v) { var o = off("CGenericConstraint","m_bPlaceAnchorsAtConstraintTransform"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearMotionX": { get: function () { return this.ref.readUInt32(off("CGenericConstraint","m_nLinearMotionX")); }, set: function (v) { var o = off("CGenericConstraint","m_nLinearMotionX"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearMotionY": { get: function () { return this.ref.readUInt32(off("CGenericConstraint","m_nLinearMotionY")); }, set: function (v) { var o = off("CGenericConstraint","m_nLinearMotionY"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearMotionZ": { get: function () { return this.ref.readUInt32(off("CGenericConstraint","m_nLinearMotionZ")); }, set: function (v) { var o = off("CGenericConstraint","m_nLinearMotionZ"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearFrequencyX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flLinearFrequencyX")); }, set: function (v) { var o = off("CGenericConstraint","m_flLinearFrequencyX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearFrequencyY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flLinearFrequencyY")); }, set: function (v) { var o = off("CGenericConstraint","m_flLinearFrequencyY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearFrequencyZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flLinearFrequencyZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flLinearFrequencyZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearDampingRatioX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flLinearDampingRatioX")); }, set: function (v) { var o = off("CGenericConstraint","m_flLinearDampingRatioX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearDampingRatioY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flLinearDampingRatioY")); }, set: function (v) { var o = off("CGenericConstraint","m_flLinearDampingRatioY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearDampingRatioZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flLinearDampingRatioZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flLinearDampingRatioZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxLinearImpulseX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flMaxLinearImpulseX")); }, set: function (v) { var o = off("CGenericConstraint","m_flMaxLinearImpulseX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxLinearImpulseY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flMaxLinearImpulseY")); }, set: function (v) { var o = off("CGenericConstraint","m_flMaxLinearImpulseY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxLinearImpulseZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flMaxLinearImpulseZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flMaxLinearImpulseZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeX")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeY")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeStartTimeX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeStartTimeX")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeStartTimeX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeStartTimeY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeStartTimeY")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeStartTimeY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeStartTimeZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeStartTimeZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeStartTimeZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeThresholdX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeThresholdX")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeThresholdX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeThresholdY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeThresholdY")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeThresholdY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "breakAfterTimeThresholdZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flBreakAfterTimeThresholdZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flBreakAfterTimeThresholdZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceX")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceY")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceMinTimeX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceMinTimeX")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceMinTimeX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceMinTimeY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceMinTimeY")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceMinTimeY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceMinTimeZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceMinTimeZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceMinTimeZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceLastTimeX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceLastTimeX")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceLastTimeX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceLastTimeY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceLastTimeY")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceLastTimeY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceLastTimeZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flNotifyForceLastTimeZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flNotifyForceLastTimeZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "axisNotifiedX": { get: function () { return this.ref.readBool(off("CGenericConstraint","m_bAxisNotifiedX")); }, set: function (v) { var o = off("CGenericConstraint","m_bAxisNotifiedX"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "axisNotifiedY": { get: function () { return this.ref.readBool(off("CGenericConstraint","m_bAxisNotifiedY")); }, set: function (v) { var o = off("CGenericConstraint","m_bAxisNotifiedY"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "axisNotifiedZ": { get: function () { return this.ref.readBool(off("CGenericConstraint","m_bAxisNotifiedZ")); }, set: function (v) { var o = off("CGenericConstraint","m_bAxisNotifiedZ"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularMotionX": { get: function () { return this.ref.readUInt32(off("CGenericConstraint","m_nAngularMotionX")); }, set: function (v) { var o = off("CGenericConstraint","m_nAngularMotionX"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularMotionY": { get: function () { return this.ref.readUInt32(off("CGenericConstraint","m_nAngularMotionY")); }, set: function (v) { var o = off("CGenericConstraint","m_nAngularMotionY"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularMotionZ": { get: function () { return this.ref.readUInt32(off("CGenericConstraint","m_nAngularMotionZ")); }, set: function (v) { var o = off("CGenericConstraint","m_nAngularMotionZ"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularFrequencyX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flAngularFrequencyX")); }, set: function (v) { var o = off("CGenericConstraint","m_flAngularFrequencyX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularFrequencyY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flAngularFrequencyY")); }, set: function (v) { var o = off("CGenericConstraint","m_flAngularFrequencyY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularFrequencyZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flAngularFrequencyZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flAngularFrequencyZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularDampingRatioX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flAngularDampingRatioX")); }, set: function (v) { var o = off("CGenericConstraint","m_flAngularDampingRatioX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularDampingRatioY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flAngularDampingRatioY")); }, set: function (v) { var o = off("CGenericConstraint","m_flAngularDampingRatioY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularDampingRatioZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flAngularDampingRatioZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flAngularDampingRatioZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxAngularImpulseX": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flMaxAngularImpulseX")); }, set: function (v) { var o = off("CGenericConstraint","m_flMaxAngularImpulseX"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxAngularImpulseY": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flMaxAngularImpulseY")); }, set: function (v) { var o = off("CGenericConstraint","m_flMaxAngularImpulseY"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxAngularImpulseZ": { get: function () { return this.ref.readFloat32(off("CGenericConstraint","m_flMaxAngularImpulseZ")); }, set: function (v) { var o = off("CGenericConstraint","m_flMaxAngularImpulseZ"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "notifyForceReachedX": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGenericConstraint","m_NotifyForceReachedX")); } },
+    "notifyForceReachedY": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGenericConstraint","m_NotifyForceReachedY")); } },
+    "notifyForceReachedZ": { get: function () { return embed("CEntityIOOutput", this.ref, off("CGenericConstraint","m_NotifyForceReachedZ")); } },
+  };
+  A["CHostageExpresserShim"] = {
+  };
+  A["CItemDefuser"] = {
+    "spotRules": { get: function () { return this.ref.readInt32(off("CItemDefuser","m_nSpotRules")); }, set: function (v) { var o = off("CItemDefuser","m_nSpotRules"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "entitySpottedState": { get: function () { return embed("EntitySpottedState_t", this.ref, off("CItemDefuser","m_entitySpottedState")); } },
+  };
+  A["CItemDogtags"] = {
+    "owningPlayer": { get: function () { return this.ref.readHandle(off("CItemDogtags","m_OwningPlayer")); } },
+    "killingPlayer": { get: function () { return this.ref.readHandle(off("CItemDogtags","m_KillingPlayer")); } },
+  };
+  A["CItemGeneric"] = {
+    "hasTriggerRadius": { get: function () { return this.ref.readBool(off("CItemGeneric","m_bHasTriggerRadius")); }, set: function (v) { var o = off("CItemGeneric","m_bHasTriggerRadius"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hasPickupRadius": { get: function () { return this.ref.readBool(off("CItemGeneric","m_bHasPickupRadius")); }, set: function (v) { var o = off("CItemGeneric","m_bHasPickupRadius"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pickupRadiusSqr": { get: function () { return this.ref.readFloat32(off("CItemGeneric","m_flPickupRadiusSqr")); }, set: function (v) { var o = off("CItemGeneric","m_flPickupRadiusSqr"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "triggerRadiusSqr": { get: function () { return this.ref.readFloat32(off("CItemGeneric","m_flTriggerRadiusSqr")); }, set: function (v) { var o = off("CItemGeneric","m_flTriggerRadiusSqr"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastPickupCheck": { get: function () { return this.ref.readFloat32(off("CItemGeneric","m_flLastPickupCheck")); }, set: function (v) { var o = off("CItemGeneric","m_flLastPickupCheck"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "playerCounterListenerAdded": { get: function () { return this.ref.readBool(off("CItemGeneric","m_bPlayerCounterListenerAdded")); }, set: function (v) { var o = off("CItemGeneric","m_bPlayerCounterListenerAdded"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "playerInTriggerRadius": { get: function () { return this.ref.readBool(off("CItemGeneric","m_bPlayerInTriggerRadius")); }, set: function (v) { var o = off("CItemGeneric","m_bPlayerInTriggerRadius"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "autoStartAmbientSound": { get: function () { return this.ref.readBool(off("CItemGeneric","m_bAutoStartAmbientSound")); }, set: function (v) { var o = off("CItemGeneric","m_bAutoStartAmbientSound"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pickupFilter": { get: function () { return this.ref.readHandle(off("CItemGeneric","m_hPickupFilter")); } },
+    "pickupRadius": { get: function () { return this.ref.readFloat32(off("CItemGeneric","m_flPickupRadius")); }, set: function (v) { var o = off("CItemGeneric","m_flPickupRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "triggerRadius": { get: function () { return this.ref.readFloat32(off("CItemGeneric","m_flTriggerRadius")); }, set: function (v) { var o = off("CItemGeneric","m_flTriggerRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "glowWhenInTrigger": { get: function () { return this.ref.readBool(off("CItemGeneric","m_bGlowWhenInTrigger")); }, set: function (v) { var o = off("CItemGeneric","m_bGlowWhenInTrigger"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "glowColor": { get: function () { return this.ref.readUInt32(off("CItemGeneric","m_glowColor")); }, set: function (v) { var o = off("CItemGeneric","m_glowColor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "useable": { get: function () { return this.ref.readBool(off("CItemGeneric","m_bUseable")); }, set: function (v) { var o = off("CItemGeneric","m_bUseable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "triggerHelper": { get: function () { return this.ref.readHandle(off("CItemGeneric","m_hTriggerHelper")); } },
+    "onPickup": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItemGeneric","m_OnPickup")); } },
+    "onTimeout": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItemGeneric","m_OnTimeout")); } },
+    "onTriggerStartTouch": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItemGeneric","m_OnTriggerStartTouch")); } },
+    "onTriggerTouch": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItemGeneric","m_OnTriggerTouch")); } },
+    "onTriggerEndTouch": { get: function () { return embed("CEntityIOOutput", this.ref, off("CItemGeneric","m_OnTriggerEndTouch")); } },
+  };
+  A["CLogicActiveAutosave"] = {
+    "triggerHitPoints": { get: function () { return this.ref.readInt32(off("CLogicActiveAutosave","m_TriggerHitPoints")); }, set: function (v) { var o = off("CLogicActiveAutosave","m_TriggerHitPoints"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeToTrigger": { get: function () { return this.ref.readFloat32(off("CLogicActiveAutosave","m_flTimeToTrigger")); }, set: function (v) { var o = off("CLogicActiveAutosave","m_flTimeToTrigger"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startTime": { get: function () { return this.ref.readFloat32(off("CLogicActiveAutosave","m_flStartTime")); }, set: function (v) { var o = off("CLogicActiveAutosave","m_flStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dangerousTime": { get: function () { return this.ref.readFloat32(off("CLogicActiveAutosave","m_flDangerousTime")); }, set: function (v) { var o = off("CLogicActiveAutosave","m_flDangerousTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMarkupVolumeTagged_Nav"] = {
+    "scopes": { get: function () { return this.ref.readUInt8(off("CMarkupVolumeTagged_Nav","m_nScopes")); }, set: function (v) { var o = off("CMarkupVolumeTagged_Nav","m_nScopes"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMarkupVolumeWithRef"] = {
+    "useRef": { get: function () { return this.ref.readBool(off("CMarkupVolumeWithRef","m_bUseRef")); }, set: function (v) { var o = off("CMarkupVolumeWithRef","m_bUseRef"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "refPosEntitySpace": { get: function () { var a = this.ref.readFloats(off("CMarkupVolumeWithRef","m_vRefPosEntitySpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "refPosWorldSpace": { get: function () { var a = this.ref.readFloats(off("CMarkupVolumeWithRef","m_vRefPosWorldSpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "refDot": { get: function () { return this.ref.readFloat32(off("CMarkupVolumeWithRef","m_flRefDot")); }, set: function (v) { var o = off("CMarkupVolumeWithRef","m_flRefDot"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPhysBallSocket"] = {
+    "jointFriction": { get: function () { return this.ref.readFloat32(off("CPhysBallSocket","m_flJointFriction")); }, set: function (v) { var o = off("CPhysBallSocket","m_flJointFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableSwingLimit": { get: function () { return this.ref.readBool(off("CPhysBallSocket","m_bEnableSwingLimit")); }, set: function (v) { var o = off("CPhysBallSocket","m_bEnableSwingLimit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "swingLimit": { get: function () { return this.ref.readFloat32(off("CPhysBallSocket","m_flSwingLimit")); }, set: function (v) { var o = off("CPhysBallSocket","m_flSwingLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableTwistLimit": { get: function () { return this.ref.readBool(off("CPhysBallSocket","m_bEnableTwistLimit")); }, set: function (v) { var o = off("CPhysBallSocket","m_bEnableTwistLimit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minTwistAngle": { get: function () { return this.ref.readFloat32(off("CPhysBallSocket","m_flMinTwistAngle")); }, set: function (v) { var o = off("CPhysBallSocket","m_flMinTwistAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxTwistAngle": { get: function () { return this.ref.readFloat32(off("CPhysBallSocket","m_flMaxTwistAngle")); }, set: function (v) { var o = off("CPhysBallSocket","m_flMaxTwistAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPhysFixed"] = {
+    "linearFrequency": { get: function () { return this.ref.readFloat32(off("CPhysFixed","m_flLinearFrequency")); }, set: function (v) { var o = off("CPhysFixed","m_flLinearFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearDampingRatio": { get: function () { return this.ref.readFloat32(off("CPhysFixed","m_flLinearDampingRatio")); }, set: function (v) { var o = off("CPhysFixed","m_flLinearDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularFrequency": { get: function () { return this.ref.readFloat32(off("CPhysFixed","m_flAngularFrequency")); }, set: function (v) { var o = off("CPhysFixed","m_flAngularFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularDampingRatio": { get: function () { return this.ref.readFloat32(off("CPhysFixed","m_flAngularDampingRatio")); }, set: function (v) { var o = off("CPhysFixed","m_flAngularDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableLinearConstraint": { get: function () { return this.ref.readBool(off("CPhysFixed","m_bEnableLinearConstraint")); }, set: function (v) { var o = off("CPhysFixed","m_bEnableLinearConstraint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableAngularConstraint": { get: function () { return this.ref.readBool(off("CPhysFixed","m_bEnableAngularConstraint")); }, set: function (v) { var o = off("CPhysFixed","m_bEnableAngularConstraint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPhysHinge"] = {
+    "atMinLimit": { get: function () { return this.ref.readBool(off("CPhysHinge","m_bAtMinLimit")); }, set: function (v) { var o = off("CPhysHinge","m_bAtMinLimit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "atMaxLimit": { get: function () { return this.ref.readBool(off("CPhysHinge","m_bAtMaxLimit")); }, set: function (v) { var o = off("CPhysHinge","m_bAtMaxLimit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hingeFriction": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_hingeFriction")); }, set: function (v) { var o = off("CPhysHinge","m_hingeFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "systemLoadScale": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_systemLoadScale")); }, set: function (v) { var o = off("CPhysHinge","m_systemLoadScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isAxisLocal": { get: function () { return this.ref.readBool(off("CPhysHinge","m_bIsAxisLocal")); }, set: function (v) { var o = off("CPhysHinge","m_bIsAxisLocal"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minRotation": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flMinRotation")); }, set: function (v) { var o = off("CPhysHinge","m_flMinRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxRotation": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flMaxRotation")); }, set: function (v) { var o = off("CPhysHinge","m_flMaxRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "initialRotation": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flInitialRotation")); }, set: function (v) { var o = off("CPhysHinge","m_flInitialRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "motorFrequency": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flMotorFrequency")); }, set: function (v) { var o = off("CPhysHinge","m_flMotorFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "motorDampingRatio": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flMotorDampingRatio")); }, set: function (v) { var o = off("CPhysHinge","m_flMotorDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angleSpeed": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flAngleSpeed")); }, set: function (v) { var o = off("CPhysHinge","m_flAngleSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angleSpeedThreshold": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flAngleSpeedThreshold")); }, set: function (v) { var o = off("CPhysHinge","m_flAngleSpeedThreshold"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "limitsDebugVisRotation": { get: function () { return this.ref.readFloat32(off("CPhysHinge","m_flLimitsDebugVisRotation")); }, set: function (v) { var o = off("CPhysHinge","m_flLimitsDebugVisRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "soundInfo": { get: function () { return embed("ConstraintSoundInfo", this.ref, off("CPhysHinge","m_soundInfo")); } },
+    "notifyMinLimitReached": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysHinge","m_NotifyMinLimitReached")); } },
+    "notifyMaxLimitReached": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysHinge","m_NotifyMaxLimitReached")); } },
+    "hinge": { get: function () { return embed("constraint_hingeparams_t", this.ref, off("CPhysHinge","m_hinge")); } },
+    "onStartMoving": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysHinge","m_OnStartMoving")); } },
+    "onStopMoving": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysHinge","m_OnStopMoving")); } },
+  };
+  A["CPhysLength"] = {
+    "attach": { get: function () { var a = this.ref.readFloats(off("CPhysLength","m_vecAttach"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "addLength": { get: function () { return this.ref.readFloat32(off("CPhysLength","m_addLength")); }, set: function (v) { var o = off("CPhysLength","m_addLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minLength": { get: function () { return this.ref.readFloat32(off("CPhysLength","m_minLength")); }, set: function (v) { var o = off("CPhysLength","m_minLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "totalLength": { get: function () { return this.ref.readFloat32(off("CPhysLength","m_totalLength")); }, set: function (v) { var o = off("CPhysLength","m_totalLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPhysPulley"] = {
+    "position2": { get: function () { var a = this.ref.readFloats(off("CPhysPulley","m_position2"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "addLength": { get: function () { return this.ref.readFloat32(off("CPhysPulley","m_addLength")); }, set: function (v) { var o = off("CPhysPulley","m_addLength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "gearRatio": { get: function () { return this.ref.readFloat32(off("CPhysPulley","m_gearRatio")); }, set: function (v) { var o = off("CPhysPulley","m_gearRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPhysSlideConstraint"] = {
+    "axisEnd": { get: function () { var a = this.ref.readFloats(off("CPhysSlideConstraint","m_axisEnd"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "slideFriction": { get: function () { return this.ref.readFloat32(off("CPhysSlideConstraint","m_slideFriction")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_slideFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "systemLoadScale": { get: function () { return this.ref.readFloat32(off("CPhysSlideConstraint","m_systemLoadScale")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_systemLoadScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "initialOffset": { get: function () { return this.ref.readFloat32(off("CPhysSlideConstraint","m_initialOffset")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_initialOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableLinearConstraint": { get: function () { return this.ref.readBool(off("CPhysSlideConstraint","m_bEnableLinearConstraint")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_bEnableLinearConstraint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableAngularConstraint": { get: function () { return this.ref.readBool(off("CPhysSlideConstraint","m_bEnableAngularConstraint")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_bEnableAngularConstraint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "motorFrequency": { get: function () { return this.ref.readFloat32(off("CPhysSlideConstraint","m_flMotorFrequency")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_flMotorFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "motorDampingRatio": { get: function () { return this.ref.readFloat32(off("CPhysSlideConstraint","m_flMotorDampingRatio")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_flMotorDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "useEntityPivot": { get: function () { return this.ref.readBool(off("CPhysSlideConstraint","m_bUseEntityPivot")); }, set: function (v) { var o = off("CPhysSlideConstraint","m_bUseEntityPivot"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "soundInfo": { get: function () { return embed("ConstraintSoundInfo", this.ref, off("CPhysSlideConstraint","m_soundInfo")); } },
+  };
+  A["CPhysWheelConstraint"] = {
+    "suspensionFrequency": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flSuspensionFrequency")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flSuspensionFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "suspensionDampingRatio": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flSuspensionDampingRatio")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flSuspensionDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "suspensionHeightOffset": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flSuspensionHeightOffset")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flSuspensionHeightOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableSuspensionLimit": { get: function () { return this.ref.readBool(off("CPhysWheelConstraint","m_bEnableSuspensionLimit")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_bEnableSuspensionLimit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minSuspensionOffset": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flMinSuspensionOffset")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flMinSuspensionOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxSuspensionOffset": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flMaxSuspensionOffset")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flMaxSuspensionOffset"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableSteeringLimit": { get: function () { return this.ref.readBool(off("CPhysWheelConstraint","m_bEnableSteeringLimit")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_bEnableSteeringLimit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "minSteeringAngle": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flMinSteeringAngle")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flMinSteeringAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxSteeringAngle": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flMaxSteeringAngle")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flMaxSteeringAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "steeringAxisFriction": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flSteeringAxisFriction")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flSteeringAxisFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spinAxisFriction": { get: function () { return this.ref.readFloat32(off("CPhysWheelConstraint","m_flSpinAxisFriction")); }, set: function (v) { var o = off("CPhysWheelConstraint","m_flSpinAxisFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "steeringMimicsEntity": { get: function () { return this.ref.readHandle(off("CPhysWheelConstraint","m_hSteeringMimicsEntity")); } },
+  };
+  A["CPointClientUIWorldTextPanel"] = {
+    "messageText": { get: function () { return this.ref.readString(off("CPointClientUIWorldTextPanel","m_messageText"), 512); } },
+  };
+  A["CPostProcessingVolume"] = {
+    "fadeDuration": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flFadeDuration")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flFadeDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minLogExposure": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flMinLogExposure")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flMinLogExposure"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxLogExposure": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flMaxLogExposure")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flMaxLogExposure"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minExposure": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flMinExposure")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flMinExposure"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxExposure": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flMaxExposure")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flMaxExposure"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "exposureCompensation": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flExposureCompensation")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flExposureCompensation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "exposureFadeSpeedUp": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flExposureFadeSpeedUp")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flExposureFadeSpeedUp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "exposureFadeSpeedDown": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flExposureFadeSpeedDown")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flExposureFadeSpeedDown"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tonemapEVSmoothingRange": { get: function () { return this.ref.readFloat32(off("CPostProcessingVolume","m_flTonemapEVSmoothingRange")); }, set: function (v) { var o = off("CPostProcessingVolume","m_flTonemapEVSmoothingRange"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "master": { get: function () { return this.ref.readBool(off("CPostProcessingVolume","m_bMaster")); }, set: function (v) { var o = off("CPostProcessingVolume","m_bMaster"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "exposureControl": { get: function () { return this.ref.readBool(off("CPostProcessingVolume","m_bExposureControl")); }, set: function (v) { var o = off("CPostProcessingVolume","m_bExposureControl"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CRagdollConstraint"] = {
+    "xmin": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_xmin")); }, set: function (v) { var o = off("CRagdollConstraint","m_xmin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "xmax": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_xmax")); }, set: function (v) { var o = off("CRagdollConstraint","m_xmax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ymin": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_ymin")); }, set: function (v) { var o = off("CRagdollConstraint","m_ymin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ymax": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_ymax")); }, set: function (v) { var o = off("CRagdollConstraint","m_ymax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "zmin": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_zmin")); }, set: function (v) { var o = off("CRagdollConstraint","m_zmin"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "zmax": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_zmax")); }, set: function (v) { var o = off("CRagdollConstraint","m_zmax"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "xfriction": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_xfriction")); }, set: function (v) { var o = off("CRagdollConstraint","m_xfriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "yfriction": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_yfriction")); }, set: function (v) { var o = off("CRagdollConstraint","m_yfriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "zfriction": { get: function () { return this.ref.readFloat32(off("CRagdollConstraint","m_zfriction")); }, set: function (v) { var o = off("CRagdollConstraint","m_zfriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CRagdollPropAttached"] = {
+    "boneIndexAttached": { get: function () { return this.ref.readUInt32(off("CRagdollPropAttached","m_boneIndexAttached")); }, set: function (v) { var o = off("CRagdollPropAttached","m_boneIndexAttached"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ragdollAttachedObjectIndex": { get: function () { return this.ref.readUInt32(off("CRagdollPropAttached","m_ragdollAttachedObjectIndex")); }, set: function (v) { var o = off("CRagdollPropAttached","m_ragdollAttachedObjectIndex"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attachmentPointBoneSpace": { get: function () { var a = this.ref.readFloats(off("CRagdollPropAttached","m_attachmentPointBoneSpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "attachmentPointRagdollSpace": { get: function () { var a = this.ref.readFloats(off("CRagdollPropAttached","m_attachmentPointRagdollSpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "shouldDetach": { get: function () { return this.ref.readBool(off("CRagdollPropAttached","m_bShouldDetach")); }, set: function (v) { var o = off("CRagdollPropAttached","m_bShouldDetach"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "shouldDeleteAttachedActivationRecord": { get: function () { return this.ref.readBool(off("CRagdollPropAttached","m_bShouldDeleteAttachedActivationRecord")); }, set: function (v) { var o = off("CRagdollPropAttached","m_bShouldDeleteAttachedActivationRecord"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CRotButton"] = {
+  };
+  A["CRotDoor"] = {
+    "solidBsp": { get: function () { return this.ref.readBool(off("CRotDoor","m_bSolidBsp")); }, set: function (v) { var o = off("CRotDoor","m_bSolidBsp"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CScriptItem"] = {
+    "moveTypeOverride": { get: function () { return this.ref.readUInt8(off("CScriptItem","m_MoveTypeOverride")); }, set: function (v) { var o = off("CScriptItem","m_MoveTypeOverride"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CSplineConstraint"] = {
+    "anchorOffsetRestore": { get: function () { var a = this.ref.readFloats(off("CSplineConstraint","m_vAnchorOffsetRestore"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "splineEntity": { get: function () { return this.ref.readHandle(off("CSplineConstraint","m_hSplineEntity")); } },
+    "enableLateralConstraint": { get: function () { return this.ref.readBool(off("CSplineConstraint","m_bEnableLateralConstraint")); }, set: function (v) { var o = off("CSplineConstraint","m_bEnableLateralConstraint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableVerticalConstraint": { get: function () { return this.ref.readBool(off("CSplineConstraint","m_bEnableVerticalConstraint")); }, set: function (v) { var o = off("CSplineConstraint","m_bEnableVerticalConstraint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableAngularConstraint": { get: function () { return this.ref.readBool(off("CSplineConstraint","m_bEnableAngularConstraint")); }, set: function (v) { var o = off("CSplineConstraint","m_bEnableAngularConstraint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "enableLimit": { get: function () { return this.ref.readBool(off("CSplineConstraint","m_bEnableLimit")); }, set: function (v) { var o = off("CSplineConstraint","m_bEnableLimit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fireEventsOnPath": { get: function () { return this.ref.readBool(off("CSplineConstraint","m_bFireEventsOnPath")); }, set: function (v) { var o = off("CSplineConstraint","m_bFireEventsOnPath"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearFrequency": { get: function () { return this.ref.readFloat32(off("CSplineConstraint","m_flLinearFrequency")); }, set: function (v) { var o = off("CSplineConstraint","m_flLinearFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linarDampingRatio": { get: function () { return this.ref.readFloat32(off("CSplineConstraint","m_flLinarDampingRatio")); }, set: function (v) { var o = off("CSplineConstraint","m_flLinarDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "jointFriction": { get: function () { return this.ref.readFloat32(off("CSplineConstraint","m_flJointFriction")); }, set: function (v) { var o = off("CSplineConstraint","m_flJointFriction"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "transitionTime": { get: function () { return this.ref.readFloat32(off("CSplineConstraint","m_flTransitionTime")); }, set: function (v) { var o = off("CSplineConstraint","m_flTransitionTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "preSolveAnchorPos": { get: function () { var a = this.ref.readFloats(off("CSplineConstraint","m_vPreSolveAnchorPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "startTransitionTime": { get: function () { return this.ref.readFloat32(off("CSplineConstraint","m_StartTransitionTime")); }, set: function (v) { var o = off("CSplineConstraint","m_StartTransitionTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tangentSpaceAnchorAtTransitionStart": { get: function () { var a = this.ref.readFloats(off("CSplineConstraint","m_vTangentSpaceAnchorAtTransitionStart"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CTonemapTrigger"] = {
+  };
+  A["CTriggerActiveWeaponDetect"] = {
+    "onTouchedActiveWeapon": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerActiveWeaponDetect","m_OnTouchedActiveWeapon")); } },
+  };
+  A["CTriggerBuoyancy"] = {
+    "fluidDensity": { get: function () { return this.ref.readFloat32(off("CTriggerBuoyancy","m_flFluidDensity")); }, set: function (v) { var o = off("CTriggerBuoyancy","m_flFluidDensity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "buoyancyHelper": { get: function () { return embed("CBuoyancyHelper", this.ref, off("CTriggerBuoyancy","m_BuoyancyHelper")); } },
+  };
+  A["CTriggerDetectBulletFire"] = {
+    "playerFireOnly": { get: function () { return this.ref.readBool(off("CTriggerDetectBulletFire","m_bPlayerFireOnly")); }, set: function (v) { var o = off("CTriggerDetectBulletFire","m_bPlayerFireOnly"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onDetectedBulletFire": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerDetectBulletFire","m_OnDetectedBulletFire")); } },
+  };
+  A["CTriggerDetectExplosion"] = {
+    "onDetectedExplosion": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerDetectExplosion","m_OnDetectedExplosion")); } },
+  };
+  A["CTriggerFan"] = {
+    "fanOriginOffset": { get: function () { var a = this.ref.readFloats(off("CTriggerFan","m_vFanOriginOffset"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "direction": { get: function () { var a = this.ref.readFloats(off("CTriggerFan","m_vDirection"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "pushTowardsInfoTarget": { get: function () { return this.ref.readBool(off("CTriggerFan","m_bPushTowardsInfoTarget")); }, set: function (v) { var o = off("CTriggerFan","m_bPushTowardsInfoTarget"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pushAwayFromInfoTarget": { get: function () { return this.ref.readBool(off("CTriggerFan","m_bPushAwayFromInfoTarget")); }, set: function (v) { var o = off("CTriggerFan","m_bPushAwayFromInfoTarget"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "infoFan": { get: function () { return this.ref.readHandle(off("CTriggerFan","m_hInfoFan")); } },
+    "force": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_flForce")); }, set: function (v) { var o = off("CTriggerFan","m_flForce"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "falloff": { get: function () { return this.ref.readBool(off("CTriggerFan","m_bFalloff")); }, set: function (v) { var o = off("CTriggerFan","m_bFalloff"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fanOriginWS": { get: function () { var a = this.ref.readFloats(off("CTriggerFan","m_vFanOriginWS"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "fanOriginLS": { get: function () { var a = this.ref.readFloats(off("CTriggerFan","m_vFanOriginLS"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "fanEndLS": { get: function () { var a = this.ref.readFloats(off("CTriggerFan","m_vFanEndLS"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "noiseDirectionTarget": { get: function () { var a = this.ref.readFloats(off("CTriggerFan","m_vNoiseDirectionTarget"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "ropeForceScale": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_flRopeForceScale")); }, set: function (v) { var o = off("CTriggerFan","m_flRopeForceScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "particleForceScale": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_flParticleForceScale")); }, set: function (v) { var o = off("CTriggerFan","m_flParticleForceScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "playerForce": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_flPlayerForce")); }, set: function (v) { var o = off("CTriggerFan","m_flPlayerForce"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "playerWindblock": { get: function () { return this.ref.readBool(off("CTriggerFan","m_bPlayerWindblock")); }, set: function (v) { var o = off("CTriggerFan","m_bPlayerWindblock"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "nPCForce": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_flNPCForce")); }, set: function (v) { var o = off("CTriggerFan","m_flNPCForce"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "rampTime": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_flRampTime")); }, set: function (v) { var o = off("CTriggerFan","m_flRampTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noiseDegrees": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_fNoiseDegrees")); }, set: function (v) { var o = off("CTriggerFan","m_fNoiseDegrees"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noiseSpeed": { get: function () { return this.ref.readFloat32(off("CTriggerFan","m_fNoiseSpeed")); }, set: function (v) { var o = off("CTriggerFan","m_fNoiseSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pushPlayer": { get: function () { return this.ref.readBool(off("CTriggerFan","m_bPushPlayer")); }, set: function (v) { var o = off("CTriggerFan","m_bPushPlayer"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "rampDown": { get: function () { return this.ref.readBool(off("CTriggerFan","m_bRampDown")); }, set: function (v) { var o = off("CTriggerFan","m_bRampDown"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "managerFanIdx": { get: function () { return this.ref.readInt32(off("CTriggerFan","m_nManagerFanIdx")); }, set: function (v) { var o = off("CTriggerFan","m_nManagerFanIdx"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "rampTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CTriggerFan","m_RampTimer")); } },
+  };
+  A["CTriggerGameEvent"] = {
+  };
+  A["CTriggerHurt"] = {
+    "originalDamage": { get: function () { return this.ref.readFloat32(off("CTriggerHurt","m_flOriginalDamage")); }, set: function (v) { var o = off("CTriggerHurt","m_flOriginalDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "damage": { get: function () { return this.ref.readFloat32(off("CTriggerHurt","m_flDamage")); }, set: function (v) { var o = off("CTriggerHurt","m_flDamage"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "damageCap": { get: function () { return this.ref.readFloat32(off("CTriggerHurt","m_flDamageCap")); }, set: function (v) { var o = off("CTriggerHurt","m_flDamageCap"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastDmgTime": { get: function () { return this.ref.readFloat32(off("CTriggerHurt","m_flLastDmgTime")); }, set: function (v) { var o = off("CTriggerHurt","m_flLastDmgTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forgivenessDelay": { get: function () { return this.ref.readFloat32(off("CTriggerHurt","m_flForgivenessDelay")); }, set: function (v) { var o = off("CTriggerHurt","m_flForgivenessDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bitsDamageInflict": { get: function () { return this.ref.readUInt32(off("CTriggerHurt","m_bitsDamageInflict")); }, set: function (v) { var o = off("CTriggerHurt","m_bitsDamageInflict"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "damageModel": { get: function () { return this.ref.readInt32(off("CTriggerHurt","m_damageModel")); }, set: function (v) { var o = off("CTriggerHurt","m_damageModel"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noDmgForce": { get: function () { return this.ref.readBool(off("CTriggerHurt","m_bNoDmgForce")); }, set: function (v) { var o = off("CTriggerHurt","m_bNoDmgForce"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "damageForce": { get: function () { var a = this.ref.readFloats(off("CTriggerHurt","m_vDamageForce"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "thinkAlways": { get: function () { return this.ref.readBool(off("CTriggerHurt","m_thinkAlways")); }, set: function (v) { var o = off("CTriggerHurt","m_thinkAlways"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hurtThinkPeriod": { get: function () { return this.ref.readFloat32(off("CTriggerHurt","m_hurtThinkPeriod")); }, set: function (v) { var o = off("CTriggerHurt","m_hurtThinkPeriod"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onHurt": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerHurt","m_OnHurt")); } },
+    "onHurtPlayer": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerHurt","m_OnHurtPlayer")); } },
+  };
+  A["CTriggerLerpObject"] = {
+    "lerpTarget": { get: function () { return this.ref.readHandle(off("CTriggerLerpObject","m_hLerpTarget")); } },
+    "lerpTargetAttachment": { get: function () { return this.ref.readUInt8(off("CTriggerLerpObject","m_hLerpTargetAttachment")); }, set: function (v) { var o = off("CTriggerLerpObject","m_hLerpTargetAttachment"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "lerpDuration": { get: function () { return this.ref.readFloat32(off("CTriggerLerpObject","m_flLerpDuration")); }, set: function (v) { var o = off("CTriggerLerpObject","m_flLerpDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attachedEntityWasParented": { get: function () { return this.ref.readBool(off("CTriggerLerpObject","m_bAttachedEntityWasParented")); }, set: function (v) { var o = off("CTriggerLerpObject","m_bAttachedEntityWasParented"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "lerpRestoreMoveType": { get: function () { return this.ref.readBool(off("CTriggerLerpObject","m_bLerpRestoreMoveType")); }, set: function (v) { var o = off("CTriggerLerpObject","m_bLerpRestoreMoveType"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "singleLerpObject": { get: function () { return this.ref.readBool(off("CTriggerLerpObject","m_bSingleLerpObject")); }, set: function (v) { var o = off("CTriggerLerpObject","m_bSingleLerpObject"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "attachTouchingObject": { get: function () { return this.ref.readBool(off("CTriggerLerpObject","m_bAttachTouchingObject")); }, set: function (v) { var o = off("CTriggerLerpObject","m_bAttachTouchingObject"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entityToWaitForDisconnect": { get: function () { return this.ref.readHandle(off("CTriggerLerpObject","m_hEntityToWaitForDisconnect")); } },
+    "onLerpStarted": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerLerpObject","m_OnLerpStarted")); } },
+    "onLerpFinished": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerLerpObject","m_OnLerpFinished")); } },
+    "onDetached": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerLerpObject","m_OnDetached")); } },
+  };
+  A["CTriggerMultiple"] = {
+    "onTrigger": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerMultiple","m_OnTrigger")); } },
+  };
+  A["CTriggerPhysics"] = {
+    "m_gravityScale": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_gravityScale")); }, set: function (v) { var o = off("CTriggerPhysics","m_gravityScale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearLimit": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_linearLimit")); }, set: function (v) { var o = off("CTriggerPhysics","m_linearLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearDamping": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_linearDamping")); }, set: function (v) { var o = off("CTriggerPhysics","m_linearDamping"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularLimit": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_angularLimit")); }, set: function (v) { var o = off("CTriggerPhysics","m_angularLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "angularDamping": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_angularDamping")); }, set: function (v) { var o = off("CTriggerPhysics","m_angularDamping"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearForce": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_linearForce")); }, set: function (v) { var o = off("CTriggerPhysics","m_linearForce"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "frequency": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_flFrequency")); }, set: function (v) { var o = off("CTriggerPhysics","m_flFrequency"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dampingRatio": { get: function () { return this.ref.readFloat32(off("CTriggerPhysics","m_flDampingRatio")); }, set: function (v) { var o = off("CTriggerPhysics","m_flDampingRatio"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearForcePointAt": { get: function () { var a = this.ref.readFloats(off("CTriggerPhysics","m_vecLinearForcePointAt"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "collapseToForcePoint": { get: function () { return this.ref.readBool(off("CTriggerPhysics","m_bCollapseToForcePoint")); }, set: function (v) { var o = off("CTriggerPhysics","m_bCollapseToForcePoint"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "linearForcePointAtWorld": { get: function () { var a = this.ref.readFloats(off("CTriggerPhysics","m_vecLinearForcePointAtWorld"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "linearForceDirection": { get: function () { var a = this.ref.readFloats(off("CTriggerPhysics","m_vecLinearForceDirection"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "convertToDebrisWhenPossible": { get: function () { return this.ref.readBool(off("CTriggerPhysics","m_bConvertToDebrisWhenPossible")); }, set: function (v) { var o = off("CTriggerPhysics","m_bConvertToDebrisWhenPossible"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerProximity"] = {
+    "measureTarget": { get: function () { return this.ref.readHandle(off("CTriggerProximity","m_hMeasureTarget")); } },
+    "radius": { get: function () { return this.ref.readFloat32(off("CTriggerProximity","m_fRadius")); }, set: function (v) { var o = off("CTriggerProximity","m_fRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "touchers": { get: function () { return this.ref.readInt32(off("CTriggerProximity","m_nTouchers")); }, set: function (v) { var o = off("CTriggerProximity","m_nTouchers"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerPush"] = {
+    "pushEntitySpace": { get: function () { var a = this.ref.readFloats(off("CTriggerPush","m_angPushEntitySpace"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "pushDirEntitySpace": { get: function () { var a = this.ref.readFloats(off("CTriggerPush","m_vecPushDirEntitySpace"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "triggerOnStartTouch": { get: function () { return this.ref.readBool(off("CTriggerPush","m_bTriggerOnStartTouch")); }, set: function (v) { var o = off("CTriggerPush","m_bTriggerOnStartTouch"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "usePathSimple": { get: function () { return this.ref.readBool(off("CTriggerPush","m_bUsePathSimple")); }, set: function (v) { var o = off("CTriggerPush","m_bUsePathSimple"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathSimple": { get: function () { return this.ref.readHandle(off("CTriggerPush","m_PathSimple")); } },
+    "splinePushType": { get: function () { return this.ref.readUInt32(off("CTriggerPush","m_splinePushType")); }, set: function (v) { var o = off("CTriggerPush","m_splinePushType"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CTriggerPush","m_flSpeed")); }, set: function (v) { var o = off("CTriggerPush","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerRemove"] = {
+    "onRemove": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerRemove","m_OnRemove")); } },
+  };
+  A["CTriggerSave"] = {
+    "forceNewLevelUnit": { get: function () { return this.ref.readBool(off("CTriggerSave","m_bForceNewLevelUnit")); }, set: function (v) { var o = off("CTriggerSave","m_bForceNewLevelUnit"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "dangerousTimer": { get: function () { return this.ref.readFloat32(off("CTriggerSave","m_fDangerousTimer")); }, set: function (v) { var o = off("CTriggerSave","m_fDangerousTimer"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minHitPoints": { get: function () { return this.ref.readInt32(off("CTriggerSave","m_minHitPoints")); }, set: function (v) { var o = off("CTriggerSave","m_minHitPoints"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "retriggerDelay": { get: function () { return this.ref.readFloat32(off("CTriggerSave","m_flRetriggerDelay")); }, set: function (v) { var o = off("CTriggerSave","m_flRetriggerDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerSndSosOpvar"] = {
+    "position": { get: function () { var a = this.ref.readFloats(off("CTriggerSndSosOpvar","m_flPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "centerSize": { get: function () { return this.ref.readFloat32(off("CTriggerSndSosOpvar","m_flCenterSize")); }, set: function (v) { var o = off("CTriggerSndSosOpvar","m_flCenterSize"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minVal": { get: function () { return this.ref.readFloat32(off("CTriggerSndSosOpvar","m_flMinVal")); }, set: function (v) { var o = off("CTriggerSndSosOpvar","m_flMinVal"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxVal": { get: function () { return this.ref.readFloat32(off("CTriggerSndSosOpvar","m_flMaxVal")); }, set: function (v) { var o = off("CTriggerSndSosOpvar","m_flMaxVal"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volIs2D": { get: function () { return this.ref.readBool(off("CTriggerSndSosOpvar","m_bVolIs2D")); }, set: function (v) { var o = off("CTriggerSndSosOpvar","m_bVolIs2D"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "opvarNameChar": { get: function () { return this.ref.readString(off("CTriggerSndSosOpvar","m_opvarNameChar"), 256); } },
+    "stackNameChar": { get: function () { return this.ref.readString(off("CTriggerSndSosOpvar","m_stackNameChar"), 256); } },
+    "operatorNameChar": { get: function () { return this.ref.readString(off("CTriggerSndSosOpvar","m_operatorNameChar"), 256); } },
+    "vecNormPos": { get: function () { var a = this.ref.readFloats(off("CTriggerSndSosOpvar","m_VecNormPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "normCenterSize": { get: function () { return this.ref.readFloat32(off("CTriggerSndSosOpvar","m_flNormCenterSize")); }, set: function (v) { var o = off("CTriggerSndSosOpvar","m_flNormCenterSize"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerSoundscape"] = {
+    "soundscape": { get: function () { return this.ref.readHandle(off("CTriggerSoundscape","m_hSoundscape")); } },
+  };
+  A["CTriggerTeleport"] = {
+    "useLandmarkAngles": { get: function () { return this.ref.readBool(off("CTriggerTeleport","m_bUseLandmarkAngles")); }, set: function (v) { var o = off("CTriggerTeleport","m_bUseLandmarkAngles"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "mirrorPlayer": { get: function () { return this.ref.readBool(off("CTriggerTeleport","m_bMirrorPlayer")); }, set: function (v) { var o = off("CTriggerTeleport","m_bMirrorPlayer"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "checkDestIfClearForPlayer": { get: function () { return this.ref.readBool(off("CTriggerTeleport","m_bCheckDestIfClearForPlayer")); }, set: function (v) { var o = off("CTriggerTeleport","m_bCheckDestIfClearForPlayer"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["FilterDamageType"] = {
+    "damageType": { get: function () { return this.ref.readInt32(off("FilterDamageType","m_iDamageType")); }, set: function (v) { var o = off("FilterDamageType","m_iDamageType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["FilterHealth"] = {
+    "adrenalineActive": { get: function () { return this.ref.readBool(off("FilterHealth","m_bAdrenalineActive")); }, set: function (v) { var o = off("FilterHealth","m_bAdrenalineActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "healthMin": { get: function () { return this.ref.readInt32(off("FilterHealth","m_iHealthMin")); }, set: function (v) { var o = off("FilterHealth","m_iHealthMin"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "healthMax": { get: function () { return this.ref.readInt32(off("FilterHealth","m_iHealthMax")); }, set: function (v) { var o = off("FilterHealth","m_iHealthMax"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   A["CCSPlayerPawnBase"] = {
     "blindUntilTime": { get: function () { return this.ref.readFloat32(off("CCSPlayerPawnBase","m_blindUntilTime")); }, set: function (v) { var o = off("CCSPlayerPawnBase","m_blindUntilTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -784,6 +3373,18 @@
     "onPlayerPickup": { get: function () { return embed("CEntityIOOutput", this.ref, off("CCSWeaponBase","m_OnPlayerPickup")); } },
     "ironSightController": { get: function () { return embed("CIronSightController", this.ref, off("CCSWeaponBase","m_IronSightController")); } },
   };
+  A["CDecoyProjectile"] = {
+    "decoyShotTick": { get: function () { return this.ref.readInt32(off("CDecoyProjectile","m_nDecoyShotTick")); }, set: function (v) { var o = off("CDecoyProjectile","m_nDecoyShotTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "shotsRemaining": { get: function () { return this.ref.readInt32(off("CDecoyProjectile","m_shotsRemaining")); }, set: function (v) { var o = off("CDecoyProjectile","m_shotsRemaining"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "expireTime": { get: function () { return this.ref.readFloat32(off("CDecoyProjectile","m_fExpireTime")); }, set: function (v) { var o = off("CDecoyProjectile","m_fExpireTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "decoyWeaponDefIndex": { get: function () { return this.ref.readUInt16(off("CDecoyProjectile","m_decoyWeaponDefIndex")); }, set: function (v) { var o = off("CDecoyProjectile","m_decoyWeaponDefIndex"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CDynamicNavConnectionsVolume"] = {
+    "connectionsEnabled": { get: function () { return this.ref.readBool(off("CDynamicNavConnectionsVolume","m_bConnectionsEnabled")); }, set: function (v) { var o = off("CDynamicNavConnectionsVolume","m_bConnectionsEnabled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetAreaSearchRadius": { get: function () { return this.ref.readFloat32(off("CDynamicNavConnectionsVolume","m_flTargetAreaSearchRadius")); }, set: function (v) { var o = off("CDynamicNavConnectionsVolume","m_flTargetAreaSearchRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "updateDistance": { get: function () { return this.ref.readFloat32(off("CDynamicNavConnectionsVolume","m_flUpdateDistance")); }, set: function (v) { var o = off("CDynamicNavConnectionsVolume","m_flUpdateDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxConnectionDistance": { get: function () { return this.ref.readFloat32(off("CDynamicNavConnectionsVolume","m_flMaxConnectionDistance")); }, set: function (v) { var o = off("CDynamicNavConnectionsVolume","m_flMaxConnectionDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   A["CDynamicProp"] = {
     "createNavObstacle": { get: function () { return this.ref.readBool(off("CDynamicProp","m_bCreateNavObstacle")); }, set: function (v) { var o = off("CDynamicProp","m_bCreateNavObstacle"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
     "navObstacleUpdatesOverridden": { get: function () { return this.ref.readBool(off("CDynamicProp","m_bNavObstacleUpdatesOverridden")); }, set: function (v) { var o = off("CDynamicProp","m_bNavObstacleUpdatesOverridden"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -807,6 +3408,80 @@
     "outputAnimLoopCycleOver": { get: function () { return embed("CEntityIOOutput", this.ref, off("CDynamicProp","m_pOutputAnimLoopCycleOver")); } },
     "onAnimReachedStart": { get: function () { return embed("CEntityIOOutput", this.ref, off("CDynamicProp","m_OnAnimReachedStart")); } },
     "onAnimReachedEnd": { get: function () { return embed("CEntityIOOutput", this.ref, off("CDynamicProp","m_OnAnimReachedEnd")); } },
+  };
+  A["CFlashbangProjectile"] = {
+    "timeToDetonate": { get: function () { return this.ref.readFloat32(off("CFlashbangProjectile","m_flTimeToDetonate")); }, set: function (v) { var o = off("CFlashbangProjectile","m_flTimeToDetonate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "numOpponentsHit": { get: function () { return this.ref.readUInt8(off("CFlashbangProjectile","m_numOpponentsHit")); }, set: function (v) { var o = off("CFlashbangProjectile","m_numOpponentsHit"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "numTeammatesHit": { get: function () { return this.ref.readUInt8(off("CFlashbangProjectile","m_numTeammatesHit")); }, set: function (v) { var o = off("CFlashbangProjectile","m_numTeammatesHit"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CFuncPlatRot"] = {
+    "end": { get: function () { var a = this.ref.readFloats(off("CFuncPlatRot","m_end"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "start": { get: function () { var a = this.ref.readFloats(off("CFuncPlatRot","m_start"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+  };
+  A["CHostage"] = {
+    "spotRules": { get: function () { return this.ref.readInt32(off("CHostage","m_nSpotRules")); }, set: function (v) { var o = off("CHostage","m_nSpotRules"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "uiHostageSpawnExclusionGroupMask": { get: function () { return this.ref.readUInt32(off("CHostage","m_uiHostageSpawnExclusionGroupMask")); }, set: function (v) { var o = off("CHostage","m_uiHostageSpawnExclusionGroupMask"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hostageSpawnRandomFactor": { get: function () { return this.ref.readUInt32(off("CHostage","m_nHostageSpawnRandomFactor")); }, set: function (v) { var o = off("CHostage","m_nHostageSpawnRandomFactor"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "remove": { get: function () { return this.ref.readBool(off("CHostage","m_bRemove")); }, set: function (v) { var o = off("CHostage","m_bRemove"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "vel": { get: function () { var a = this.ref.readFloats(off("CHostage","m_vel"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "isRescued": { get: function () { return this.ref.readBool(off("CHostage","m_isRescued")); }, set: function (v) { var o = off("CHostage","m_isRescued"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "jumpedThisFrame": { get: function () { return this.ref.readBool(off("CHostage","m_jumpedThisFrame")); }, set: function (v) { var o = off("CHostage","m_jumpedThisFrame"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hostageState": { get: function () { return this.ref.readInt32(off("CHostage","m_nHostageState")); }, set: function (v) { var o = off("CHostage","m_nHostageState"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "leader": { get: function () { return this.ref.readHandle(off("CHostage","m_leader")); } },
+    "lastLeader": { get: function () { return this.ref.readHandle(off("CHostage","m_lastLeader")); } },
+    "hasBeenUsed": { get: function () { return this.ref.readBool(off("CHostage","m_hasBeenUsed")); }, set: function (v) { var o = off("CHostage","m_hasBeenUsed"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "accel": { get: function () { var a = this.ref.readFloats(off("CHostage","m_accel"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "isRunning": { get: function () { return this.ref.readBool(off("CHostage","m_isRunning")); }, set: function (v) { var o = off("CHostage","m_isRunning"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isCrouching": { get: function () { return this.ref.readBool(off("CHostage","m_isCrouching")); }, set: function (v) { var o = off("CHostage","m_isCrouching"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isWaitingForLeader": { get: function () { return this.ref.readBool(off("CHostage","m_isWaitingForLeader")); }, set: function (v) { var o = off("CHostage","m_isWaitingForLeader"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isAdjusted": { get: function () { return this.ref.readBool(off("CHostage","m_isAdjusted")); }, set: function (v) { var o = off("CHostage","m_isAdjusted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "handsHaveBeenCut": { get: function () { return this.ref.readBool(off("CHostage","m_bHandsHaveBeenCut")); }, set: function (v) { var o = off("CHostage","m_bHandsHaveBeenCut"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "hostageGrabber": { get: function () { return this.ref.readHandle(off("CHostage","m_hHostageGrabber")); } },
+    "lastGrabTime": { get: function () { return this.ref.readFloat32(off("CHostage","m_fLastGrabTime")); }, set: function (v) { var o = off("CHostage","m_fLastGrabTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "positionWhenStartedDroppingToGround": { get: function () { var a = this.ref.readFloats(off("CHostage","m_vecPositionWhenStartedDroppingToGround"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "grabbedPos": { get: function () { var a = this.ref.readFloats(off("CHostage","m_vecGrabbedPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "rescueStartTime": { get: function () { return this.ref.readFloat32(off("CHostage","m_flRescueStartTime")); }, set: function (v) { var o = off("CHostage","m_flRescueStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "grabSuccessTime": { get: function () { return this.ref.readFloat32(off("CHostage","m_flGrabSuccessTime")); }, set: function (v) { var o = off("CHostage","m_flGrabSuccessTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dropStartTime": { get: function () { return this.ref.readFloat32(off("CHostage","m_flDropStartTime")); }, set: function (v) { var o = off("CHostage","m_flDropStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "approachRewardPayouts": { get: function () { return this.ref.readInt32(off("CHostage","m_nApproachRewardPayouts")); }, set: function (v) { var o = off("CHostage","m_nApproachRewardPayouts"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pickupEventCount": { get: function () { return this.ref.readInt32(off("CHostage","m_nPickupEventCount")); }, set: function (v) { var o = off("CHostage","m_nPickupEventCount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spawnGroundPos": { get: function () { var a = this.ref.readFloats(off("CHostage","m_vecSpawnGroundPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "hostageResetPosition": { get: function () { var a = this.ref.readFloats(off("CHostage","m_vecHostageResetPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "onHostageBeginGrab": { get: function () { return embed("CEntityIOOutput", this.ref, off("CHostage","m_OnHostageBeginGrab")); } },
+    "onFirstPickedUp": { get: function () { return embed("CEntityIOOutput", this.ref, off("CHostage","m_OnFirstPickedUp")); } },
+    "onDroppedNotRescued": { get: function () { return embed("CEntityIOOutput", this.ref, off("CHostage","m_OnDroppedNotRescued")); } },
+    "onRescued": { get: function () { return embed("CEntityIOOutput", this.ref, off("CHostage","m_OnRescued")); } },
+    "entitySpottedState": { get: function () { return embed("EntitySpottedState_t", this.ref, off("CHostage","m_entitySpottedState")); } },
+    "reuseTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CHostage","m_reuseTimer")); } },
+    "jumpTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CHostage","m_jumpTimer")); } },
+    "repathTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CHostage","m_repathTimer")); } },
+    "inhibitDoorTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CHostage","m_inhibitDoorTimer")); } },
+    "inhibitObstacleAvoidanceTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CHostage","m_inhibitObstacleAvoidanceTimer")); } },
+    "wiggleTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CHostage","m_wiggleTimer")); } },
+  };
+  A["CMarkupVolumeTagged_NavGame"] = {
+    "scopes": { get: function () { return this.ref.readUInt8(off("CMarkupVolumeTagged_NavGame","m_nScopes")); }, set: function (v) { var o = off("CMarkupVolumeTagged_NavGame","m_nScopes"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "floodFillAttribute": { get: function () { return this.ref.readBool(off("CMarkupVolumeTagged_NavGame","m_bFloodFillAttribute")); }, set: function (v) { var o = off("CMarkupVolumeTagged_NavGame","m_bFloodFillAttribute"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "splitNavSpace": { get: function () { return this.ref.readBool(off("CMarkupVolumeTagged_NavGame","m_bSplitNavSpace")); }, set: function (v) { var o = off("CMarkupVolumeTagged_NavGame","m_bSplitNavSpace"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CMolotovProjectile"] = {
+    "isIncGrenade": { get: function () { return this.ref.readBool(off("CMolotovProjectile","m_bIsIncGrenade")); }, set: function (v) { var o = off("CMolotovProjectile","m_bIsIncGrenade"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "detonated": { get: function () { return this.ref.readBool(off("CMolotovProjectile","m_bDetonated")); }, set: function (v) { var o = off("CMolotovProjectile","m_bDetonated"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "stillTimer": { get: function () { return embed("IntervalTimer", this.ref, off("CMolotovProjectile","m_stillTimer")); } },
+  };
+  A["CMomentaryRotButton"] = {
+    "lastUsed": { get: function () { return this.ref.readInt32(off("CMomentaryRotButton","m_lastUsed")); }, set: function (v) { var o = off("CMomentaryRotButton","m_lastUsed"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "start": { get: function () { var a = this.ref.readFloats(off("CMomentaryRotButton","m_start"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "end": { get: function () { var a = this.ref.readFloats(off("CMomentaryRotButton","m_end"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "idealYaw": { get: function () { return this.ref.readFloat32(off("CMomentaryRotButton","m_IdealYaw")); }, set: function (v) { var o = off("CMomentaryRotButton","m_IdealYaw"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "updateTarget": { get: function () { return this.ref.readBool(off("CMomentaryRotButton","m_bUpdateTarget")); }, set: function (v) { var o = off("CMomentaryRotButton","m_bUpdateTarget"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "direction": { get: function () { return this.ref.readInt32(off("CMomentaryRotButton","m_direction")); }, set: function (v) { var o = off("CMomentaryRotButton","m_direction"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "returnSpeed": { get: function () { return this.ref.readFloat32(off("CMomentaryRotButton","m_returnSpeed")); }, set: function (v) { var o = off("CMomentaryRotButton","m_returnSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startPosition": { get: function () { return this.ref.readFloat32(off("CMomentaryRotButton","m_flStartPosition")); }, set: function (v) { var o = off("CMomentaryRotButton","m_flStartPosition"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "onUnpressed": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMomentaryRotButton","m_OnUnpressed")); } },
+    "onFullyOpen": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMomentaryRotButton","m_OnFullyOpen")); } },
+    "onFullyClosed": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMomentaryRotButton","m_OnFullyClosed")); } },
+    "onReachedPosition": { get: function () { return embed("CEntityIOOutput", this.ref, off("CMomentaryRotButton","m_OnReachedPosition")); } },
   };
   A["CPhysicsProp"] = {
     "forceNavIgnore": { get: function () { return this.ref.readBool(off("CPhysicsProp","m_bForceNavIgnore")); }, set: function (v) { var o = off("CPhysicsProp","m_bForceNavIgnore"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
@@ -849,6 +3524,91 @@
     "onPlayerUse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysicsProp","m_OnPlayerUse")); } },
     "onOutOfWorld": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysicsProp","m_OnOutOfWorld")); } },
     "onPlayerPickup": { get: function () { return embed("CEntityIOOutput", this.ref, off("CPhysicsProp","m_OnPlayerPickup")); } },
+  };
+  A["CScriptTriggerHurt"] = {
+    "extent": { get: function () { var a = this.ref.readFloats(off("CScriptTriggerHurt","m_vExtent"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CScriptTriggerMultiple"] = {
+    "extent": { get: function () { var a = this.ref.readFloats(off("CScriptTriggerMultiple","m_vExtent"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CScriptTriggerPush"] = {
+    "extent": { get: function () { var a = this.ref.readFloats(off("CScriptTriggerPush","m_vExtent"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CSmokeGrenadeProjectile"] = {
+    "smokeEffectTickBegin": { get: function () { return this.ref.readInt32(off("CSmokeGrenadeProjectile","m_nSmokeEffectTickBegin")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_nSmokeEffectTickBegin"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "didSmokeEffect": { get: function () { return this.ref.readBool(off("CSmokeGrenadeProjectile","m_bDidSmokeEffect")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_bDidSmokeEffect"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "randomSeed": { get: function () { return this.ref.readInt32(off("CSmokeGrenadeProjectile","m_nRandomSeed")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_nRandomSeed"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "smokeColor": { get: function () { var a = this.ref.readFloats(off("CSmokeGrenadeProjectile","m_vSmokeColor"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "smokeDetonationPos": { get: function () { var a = this.ref.readFloats(off("CSmokeGrenadeProjectile","m_vSmokeDetonationPos"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "voxelFrameDataSize": { get: function () { return this.ref.readInt32(off("CSmokeGrenadeProjectile","m_nVoxelFrameDataSize")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_nVoxelFrameDataSize"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "voxelUpdate": { get: function () { return this.ref.readInt32(off("CSmokeGrenadeProjectile","m_nVoxelUpdate")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_nVoxelUpdate"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastBounce": { get: function () { return this.ref.readFloat32(off("CSmokeGrenadeProjectile","m_flLastBounce")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_flLastBounce"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fllastSimulationTime": { get: function () { return this.ref.readFloat32(off("CSmokeGrenadeProjectile","m_fllastSimulationTime")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_fllastSimulationTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "explodeFromInferno": { get: function () { return this.ref.readBool(off("CSmokeGrenadeProjectile","m_bExplodeFromInferno")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_bExplodeFromInferno"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "didGroundScorch": { get: function () { return this.ref.readBool(off("CSmokeGrenadeProjectile","m_bDidGroundScorch")); }, set: function (v) { var o = off("CSmokeGrenadeProjectile","m_bDidGroundScorch"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerImpact"] = {
+    "magnitude": { get: function () { return this.ref.readFloat32(off("CTriggerImpact","m_flMagnitude")); }, set: function (v) { var o = off("CTriggerImpact","m_flMagnitude"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "noise": { get: function () { return this.ref.readFloat32(off("CTriggerImpact","m_flNoise")); }, set: function (v) { var o = off("CTriggerImpact","m_flNoise"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "viewkick": { get: function () { return this.ref.readFloat32(off("CTriggerImpact","m_flViewkick")); }, set: function (v) { var o = off("CTriggerImpact","m_flViewkick"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CTriggerOnce"] = {
+  };
+  A["CBaseCSGrenade"] = {
+    "redraw": { get: function () { return this.ref.readBool(off("CBaseCSGrenade","m_bRedraw")); }, set: function (v) { var o = off("CBaseCSGrenade","m_bRedraw"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isHeldByPlayer": { get: function () { return this.ref.readBool(off("CBaseCSGrenade","m_bIsHeldByPlayer")); }, set: function (v) { var o = off("CBaseCSGrenade","m_bIsHeldByPlayer"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "pinPulled": { get: function () { return this.ref.readBool(off("CBaseCSGrenade","m_bPinPulled")); }, set: function (v) { var o = off("CBaseCSGrenade","m_bPinPulled"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "jumpThrow": { get: function () { return this.ref.readBool(off("CBaseCSGrenade","m_bJumpThrow")); }, set: function (v) { var o = off("CBaseCSGrenade","m_bJumpThrow"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "throwAnimating": { get: function () { return this.ref.readBool(off("CBaseCSGrenade","m_bThrowAnimating")); }, set: function (v) { var o = off("CBaseCSGrenade","m_bThrowAnimating"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "throwTime": { get: function () { return this.ref.readFloat32(off("CBaseCSGrenade","m_fThrowTime")); }, set: function (v) { var o = off("CBaseCSGrenade","m_fThrowTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "throwStrength": { get: function () { return this.ref.readFloat32(off("CBaseCSGrenade","m_flThrowStrength")); }, set: function (v) { var o = off("CBaseCSGrenade","m_flThrowStrength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "dropTime": { get: function () { return this.ref.readFloat32(off("CBaseCSGrenade","m_fDropTime")); }, set: function (v) { var o = off("CBaseCSGrenade","m_fDropTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pinPullTime": { get: function () { return this.ref.readFloat32(off("CBaseCSGrenade","m_fPinPullTime")); }, set: function (v) { var o = off("CBaseCSGrenade","m_fPinPullTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "justPulledPin": { get: function () { return this.ref.readBool(off("CBaseCSGrenade","m_bJustPulledPin")); }, set: function (v) { var o = off("CBaseCSGrenade","m_bJustPulledPin"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextHoldTick": { get: function () { return this.ref.readInt32(off("CBaseCSGrenade","m_nNextHoldTick")); }, set: function (v) { var o = off("CBaseCSGrenade","m_nNextHoldTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "nextHoldFrac": { get: function () { return this.ref.readFloat32(off("CBaseCSGrenade","m_flNextHoldFrac")); }, set: function (v) { var o = off("CBaseCSGrenade","m_flNextHoldFrac"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "switchToWeaponAfterThrow": { get: function () { return this.ref.readHandle(off("CBaseCSGrenade","m_hSwitchToWeaponAfterThrow")); } },
+  };
+  A["CBasePropDoor"] = {
+    "autoReturnDelay": { get: function () { return this.ref.readFloat32(off("CBasePropDoor","m_flAutoReturnDelay")); }, set: function (v) { var o = off("CBasePropDoor","m_flAutoReturnDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hardwareType": { get: function () { return this.ref.readInt32(off("CBasePropDoor","m_nHardwareType")); }, set: function (v) { var o = off("CBasePropDoor","m_nHardwareType"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "needsHardware": { get: function () { return this.ref.readBool(off("CBasePropDoor","m_bNeedsHardware")); }, set: function (v) { var o = off("CBasePropDoor","m_bNeedsHardware"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "doorState": { get: function () { return this.ref.readUInt32(off("CBasePropDoor","m_eDoorState")); }, set: function (v) { var o = off("CBasePropDoor","m_eDoorState"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "locked": { get: function () { return this.ref.readBool(off("CBasePropDoor","m_bLocked")); }, set: function (v) { var o = off("CBasePropDoor","m_bLocked"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "noNPCs": { get: function () { return this.ref.readBool(off("CBasePropDoor","m_bNoNPCs")); }, set: function (v) { var o = off("CBasePropDoor","m_bNoNPCs"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "closedPosition": { get: function () { var a = this.ref.readFloats(off("CBasePropDoor","m_closedPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "closedAngles": { get: function () { var a = this.ref.readFloats(off("CBasePropDoor","m_closedAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "m_hBlocker": { get: function () { return this.ref.readHandle(off("CBasePropDoor","m_hBlocker")); } },
+    "firstBlocked": { get: function () { return this.ref.readBool(off("CBasePropDoor","m_bFirstBlocked")); }, set: function (v) { var o = off("CBasePropDoor","m_bFirstBlocked"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceClosed": { get: function () { return this.ref.readBool(off("CBasePropDoor","m_bForceClosed")); }, set: function (v) { var o = off("CBasePropDoor","m_bForceClosed"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "latchWorldPosition": { get: function () { var a = this.ref.readFloats(off("CBasePropDoor","m_vecLatchWorldPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "activator": { get: function () { return this.ref.readHandle(off("CBasePropDoor","m_hActivator")); } },
+    "speed": { get: function () { return this.ref.readFloat32(off("CBasePropDoor","m_flSpeed")); }, set: function (v) { var o = off("CBasePropDoor","m_flSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "numCloseAttempts": { get: function () { return this.ref.readInt32(off("CBasePropDoor","m_numCloseAttempts")); }, set: function (v) { var o = off("CBasePropDoor","m_numCloseAttempts"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "master": { get: function () { return this.ref.readHandle(off("CBasePropDoor","m_hMaster")); } },
+    "ls": { get: function () { return embed("locksound_t", this.ref, off("CBasePropDoor","m_ls")); } },
+    "onBlockedClosing": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnBlockedClosing")); } },
+    "onBlockedOpening": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnBlockedOpening")); } },
+    "onUnblockedClosing": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnUnblockedClosing")); } },
+    "onUnblockedOpening": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnUnblockedOpening")); } },
+    "onFullyClosed": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnFullyClosed")); } },
+    "onFullyOpen": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnFullyOpen")); } },
+    "onClose": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnClose")); } },
+    "onOpen": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnOpen")); } },
+    "onLockedUse": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnLockedUse")); } },
+    "onAjarOpen": { get: function () { return embed("CEntityIOOutput", this.ref, off("CBasePropDoor","m_OnAjarOpen")); } },
+  };
+  A["CC4"] = {
+    "lastValidPlayerHeldPosition": { get: function () { var a = this.ref.readFloats(off("CC4","m_vecLastValidPlayerHeldPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "lastValidDroppedPosition": { get: function () { var a = this.ref.readFloats(off("CC4","m_vecLastValidDroppedPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "doValidDroppedPositionCheck": { get: function () { return this.ref.readBool(off("CC4","m_bDoValidDroppedPositionCheck")); }, set: function (v) { var o = off("CC4","m_bDoValidDroppedPositionCheck"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "startedArming": { get: function () { return this.ref.readBool(off("CC4","m_bStartedArming")); }, set: function (v) { var o = off("CC4","m_bStartedArming"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "armedTime": { get: function () { return this.ref.readFloat32(off("CC4","m_fArmedTime")); }, set: function (v) { var o = off("CC4","m_fArmedTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bombPlacedAnimation": { get: function () { return this.ref.readBool(off("CC4","m_bBombPlacedAnimation")); }, set: function (v) { var o = off("CC4","m_bBombPlacedAnimation"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isPlantingViaUse": { get: function () { return this.ref.readBool(off("CC4","m_bIsPlantingViaUse")); }, set: function (v) { var o = off("CC4","m_bIsPlantingViaUse"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "spotRules": { get: function () { return this.ref.readInt32(off("CC4","m_nSpotRules")); }, set: function (v) { var o = off("CC4","m_nSpotRules"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "bombPlanted": { get: function () { return this.ref.readBool(off("CC4","m_bBombPlanted")); }, set: function (v) { var o = off("CC4","m_bBombPlanted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entitySpottedState": { get: function () { return embed("EntitySpottedState_t", this.ref, off("CC4","m_entitySpottedState")); } },
   };
   A["CCSPlayerPawn"] = {
     "characterDefIndex": { get: function () { return this.ref.readUInt16(off("CCSPlayerPawn","m_nCharacterDefIndex")); }, set: function (v) { var o = off("CCSPlayerPawn","m_nCharacterDefIndex"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
@@ -943,6 +3703,119 @@
     "econGloves": { get: function () { return embed("CEconItemView", this.ref, off("CCSPlayerPawn","m_EconGloves")); } },
     "entitySpottedState": { get: function () { return embed("EntitySpottedState_t", this.ref, off("CCSPlayerPawn","m_entitySpottedState")); } },
   };
+  A["CCSWeaponBaseGun"] = {
+    "zoomLevel": { get: function () { return this.ref.readInt32(off("CCSWeaponBaseGun","m_zoomLevel")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_zoomLevel"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "burstShotsRemaining": { get: function () { return this.ref.readInt32(off("CCSWeaponBaseGun","m_iBurstShotsRemaining")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_iBurstShotsRemaining"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "silencedModelIndex": { get: function () { return this.ref.readInt32(off("CCSWeaponBaseGun","m_silencedModelIndex")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_silencedModelIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "inPrecache": { get: function () { return this.ref.readBool(off("CCSWeaponBaseGun","m_inPrecache")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_inPrecache"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "needsBoltAction": { get: function () { return this.ref.readBool(off("CCSWeaponBaseGun","m_bNeedsBoltAction")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_bNeedsBoltAction"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "revolverCylinderIdx": { get: function () { return this.ref.readInt32(off("CCSWeaponBaseGun","m_nRevolverCylinderIdx")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_nRevolverCylinderIdx"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "skillReloadAvailable": { get: function () { return this.ref.readBool(off("CCSWeaponBaseGun","m_bSkillReloadAvailable")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_bSkillReloadAvailable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "skillReloadLiftedReloadKey": { get: function () { return this.ref.readBool(off("CCSWeaponBaseGun","m_bSkillReloadLiftedReloadKey")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_bSkillReloadLiftedReloadKey"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "skillBoltInterruptAvailable": { get: function () { return this.ref.readBool(off("CCSWeaponBaseGun","m_bSkillBoltInterruptAvailable")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_bSkillBoltInterruptAvailable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "skillBoltLiftedFireKey": { get: function () { return this.ref.readBool(off("CCSWeaponBaseGun","m_bSkillBoltLiftedFireKey")); }, set: function (v) { var o = off("CCSWeaponBaseGun","m_bSkillBoltLiftedFireKey"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CChicken"] = {
+    "stuckAnchor": { get: function () { var a = this.ref.readFloats(off("CChicken","m_stuckAnchor"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "isOnGround": { get: function () { return this.ref.readBool(off("CChicken","m_isOnGround")); }, set: function (v) { var o = off("CChicken","m_isOnGround"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "fallVelocity": { get: function () { var a = this.ref.readFloats(off("CChicken","m_vFallVelocity"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "desiredActivity": { get: function () { return this.ref.readUInt32(off("CChicken","m_desiredActivity")); }, set: function (v) { var o = off("CChicken","m_desiredActivity"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentActivity": { get: function () { return this.ref.readUInt32(off("CChicken","m_currentActivity")); }, set: function (v) { var o = off("CChicken","m_currentActivity"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "turnRate": { get: function () { return this.ref.readFloat32(off("CChicken","m_turnRate")); }, set: function (v) { var o = off("CChicken","m_turnRate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fleeFrom": { get: function () { return this.ref.readHandle(off("CChicken","m_fleeFrom")); } },
+    "leader": { get: function () { return this.ref.readHandle(off("CChicken","m_leader")); } },
+    "lastJumpTime": { get: function () { return this.ref.readFloat32(off("CChicken","m_flLastJumpTime")); }, set: function (v) { var o = off("CChicken","m_flLastJumpTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathGoal": { get: function () { var a = this.ref.readFloats(off("CChicken","m_vecPathGoal"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "activeFollowStartTime": { get: function () { return this.ref.readFloat32(off("CChicken","m_flActiveFollowStartTime")); }, set: function (v) { var o = off("CChicken","m_flActiveFollowStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "attributeManager": { get: function () { return embed("CAttributeContainer", this.ref, off("CChicken","m_AttributeManager")); } },
+    "updateTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_updateTimer")); } },
+    "collisionStuckTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_collisionStuckTimer")); } },
+    "activityTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_activityTimer")); } },
+    "moveRateThrottleTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_moveRateThrottleTimer")); } },
+    "startleTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_startleTimer")); } },
+    "vocalizeTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_vocalizeTimer")); } },
+    "reuseTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_reuseTimer")); } },
+    "jumpTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_jumpTimer")); } },
+    "repathTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_repathTimer")); } },
+    "followMinuteTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_followMinuteTimer")); } },
+    "blockDirectionTimer": { get: function () { return embed("CountdownTimer", this.ref, off("CChicken","m_BlockDirectionTimer")); } },
+  };
+  A["CFuncTrackChange"] = {
+    "trackTop": { get: function () { return this.ref.readHandle(off("CFuncTrackChange","m_trackTop")); } },
+    "trackBottom": { get: function () { return this.ref.readHandle(off("CFuncTrackChange","m_trackBottom")); } },
+    "train": { get: function () { return this.ref.readHandle(off("CFuncTrackChange","m_train")); } },
+    "code": { get: function () { return this.ref.readUInt32(off("CFuncTrackChange","m_code")); }, set: function (v) { var o = off("CFuncTrackChange","m_code"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "targetState": { get: function () { return this.ref.readInt32(off("CFuncTrackChange","m_targetState")); }, set: function (v) { var o = off("CFuncTrackChange","m_targetState"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "use": { get: function () { return this.ref.readInt32(off("CFuncTrackChange","m_use")); }, set: function (v) { var o = off("CFuncTrackChange","m_use"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CKnife"] = {
+    "firstAttack": { get: function () { return this.ref.readBool(off("CKnife","m_bFirstAttack")); }, set: function (v) { var o = off("CKnife","m_bFirstAttack"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["COrnamentProp"] = {
+  };
+  A["CPhysicsPropRespawnable"] = {
+    "originalSpawnOrigin": { get: function () { var a = this.ref.readFloats(off("CPhysicsPropRespawnable","m_vOriginalSpawnOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "originalSpawnAngles": { get: function () { var a = this.ref.readFloats(off("CPhysicsPropRespawnable","m_vOriginalSpawnAngles"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "originalMins": { get: function () { var a = this.ref.readFloats(off("CPhysicsPropRespawnable","m_vOriginalMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "originalMaxs": { get: function () { var a = this.ref.readFloats(off("CPhysicsPropRespawnable","m_vOriginalMaxs"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "respawnDuration": { get: function () { return this.ref.readFloat32(off("CPhysicsPropRespawnable","m_flRespawnDuration")); }, set: function (v) { var o = off("CPhysicsPropRespawnable","m_flRespawnDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CScriptTriggerOnce"] = {
+    "extent": { get: function () { var a = this.ref.readFloats(off("CScriptTriggerOnce","m_vExtent"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  A["CTriggerLook"] = {
+    "lookTarget": { get: function () { return this.ref.readHandle(off("CTriggerLook","m_hLookTarget")); } },
+    "fieldOfView": { get: function () { return this.ref.readFloat32(off("CTriggerLook","m_flFieldOfView")); }, set: function (v) { var o = off("CTriggerLook","m_flFieldOfView"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lookTime": { get: function () { return this.ref.readFloat32(off("CTriggerLook","m_flLookTime")); }, set: function (v) { var o = off("CTriggerLook","m_flLookTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lookTimeTotal": { get: function () { return this.ref.readFloat32(off("CTriggerLook","m_flLookTimeTotal")); }, set: function (v) { var o = off("CTriggerLook","m_flLookTimeTotal"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lookTimeLast": { get: function () { return this.ref.readFloat32(off("CTriggerLook","m_flLookTimeLast")); }, set: function (v) { var o = off("CTriggerLook","m_flLookTimeLast"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeoutDuration": { get: function () { return this.ref.readFloat32(off("CTriggerLook","m_flTimeoutDuration")); }, set: function (v) { var o = off("CTriggerLook","m_flTimeoutDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timeoutFired": { get: function () { return this.ref.readBool(off("CTriggerLook","m_bTimeoutFired")); }, set: function (v) { var o = off("CTriggerLook","m_bTimeoutFired"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isLooking": { get: function () { return this.ref.readBool(off("CTriggerLook","m_bIsLooking")); }, set: function (v) { var o = off("CTriggerLook","m_bIsLooking"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "b2DFOV": { get: function () { return this.ref.readBool(off("CTriggerLook","m_b2DFOV")); }, set: function (v) { var o = off("CTriggerLook","m_b2DFOV"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "useVelocity": { get: function () { return this.ref.readBool(off("CTriggerLook","m_bUseVelocity")); }, set: function (v) { var o = off("CTriggerLook","m_bUseVelocity"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "testOcclusion": { get: function () { return this.ref.readBool(off("CTriggerLook","m_bTestOcclusion")); }, set: function (v) { var o = off("CTriggerLook","m_bTestOcclusion"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "testAllVisibleOcclusion": { get: function () { return this.ref.readBool(off("CTriggerLook","m_bTestAllVisibleOcclusion")); }, set: function (v) { var o = off("CTriggerLook","m_bTestAllVisibleOcclusion"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "onTimeout": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerLook","m_OnTimeout")); } },
+    "onStartLook": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerLook","m_OnStartLook")); } },
+    "onEndLook": { get: function () { return embed("CEntityIOOutput", this.ref, off("CTriggerLook","m_OnEndLook")); } },
+  };
+  A["CWeaponBaseItem"] = {
+    "sequenceInProgress": { get: function () { return this.ref.readBool(off("CWeaponBaseItem","m_bSequenceInProgress")); }, set: function (v) { var o = off("CWeaponBaseItem","m_bSequenceInProgress"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "redraw": { get: function () { return this.ref.readBool(off("CWeaponBaseItem","m_bRedraw")); }, set: function (v) { var o = off("CWeaponBaseItem","m_bRedraw"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPropDoorRotating"] = {
+    "axis": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_vecAxis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "distance": { get: function () { return this.ref.readFloat32(off("CPropDoorRotating","m_flDistance")); }, set: function (v) { var o = off("CPropDoorRotating","m_flDistance"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spawnPosition": { get: function () { return this.ref.readUInt32(off("CPropDoorRotating","m_eSpawnPosition")); }, set: function (v) { var o = off("CPropDoorRotating","m_eSpawnPosition"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "openDirection": { get: function () { return this.ref.readUInt32(off("CPropDoorRotating","m_eOpenDirection")); }, set: function (v) { var o = off("CPropDoorRotating","m_eOpenDirection"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentOpenDirection": { get: function () { return this.ref.readUInt32(off("CPropDoorRotating","m_eCurrentOpenDirection")); }, set: function (v) { var o = off("CPropDoorRotating","m_eCurrentOpenDirection"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "defaultCheckDirection": { get: function () { return this.ref.readUInt32(off("CPropDoorRotating","m_eDefaultCheckDirection")); }, set: function (v) { var o = off("CPropDoorRotating","m_eDefaultCheckDirection"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "ajarAngle": { get: function () { return this.ref.readFloat32(off("CPropDoorRotating","m_flAjarAngle")); }, set: function (v) { var o = off("CPropDoorRotating","m_flAjarAngle"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "rotationAjarDeprecated": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_angRotationAjarDeprecated"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "rotationClosed": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_angRotationClosed"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "rotationOpenForward": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_angRotationOpenForward"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "rotationOpenBack": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_angRotationOpenBack"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "goal": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_angGoal"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "forwardBoundsMin": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_vecForwardBoundsMin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "forwardBoundsMax": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_vecForwardBoundsMax"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "backBoundsMin": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_vecBackBoundsMin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "backBoundsMax": { get: function () { var a = this.ref.readFloats(off("CPropDoorRotating","m_vecBackBoundsMax"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "ajarDoorShouldntAlwaysOpen": { get: function () { return this.ref.readBool(off("CPropDoorRotating","m_bAjarDoorShouldntAlwaysOpen")); }, set: function (v) { var o = off("CPropDoorRotating","m_bAjarDoorShouldntAlwaysOpen"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "entityBlocker": { get: function () { return this.ref.readHandle(off("CPropDoorRotating","m_hEntityBlocker")); } },
+  };
+  A["CWeaponCZ75a"] = {
+    "magazineRemoved": { get: function () { return this.ref.readBool(off("CWeaponCZ75a","m_bMagazineRemoved")); }, set: function (v) { var o = off("CWeaponCZ75a","m_bMagazineRemoved"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CWeaponTaser"] = {
+    "fireTime": { get: function () { return this.ref.readFloat32(off("CWeaponTaser","m_fFireTime")); }, set: function (v) { var o = off("CWeaponTaser","m_fFireTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lastAttackTick": { get: function () { return this.ref.readInt32(off("CWeaponTaser","m_nLastAttackTick")); }, set: function (v) { var o = off("CWeaponTaser","m_nLastAttackTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  A["CPropDoorRotatingBreakable"] = {
+    "breakable": { get: function () { return this.ref.readBool(off("CPropDoorRotatingBreakable","m_bBreakable")); }, set: function (v) { var o = off("CPropDoorRotatingBreakable","m_bBreakable"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "isAbleToCloseAreaPortals": { get: function () { return this.ref.readBool(off("CPropDoorRotatingBreakable","m_isAbleToCloseAreaPortals")); }, set: function (v) { var o = off("CPropDoorRotatingBreakable","m_isAbleToCloseAreaPortals"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "currentDamageState": { get: function () { return this.ref.readInt32(off("CPropDoorRotatingBreakable","m_currentDamageState")); }, set: function (v) { var o = off("CPropDoorRotatingBreakable","m_currentDamageState"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   E["CAnimGraphControllerManager"] = {
     "graphBindingsCreated": { get: function () { if (this.base < 0 || off("CAnimGraphControllerManager","m_bGraphBindingsCreated") < 0) return null; return this.ref.readBool(this.base + off("CAnimGraphControllerManager","m_bGraphBindingsCreated")); }, set: function (v) { if (this.base < 0 || off("CAnimGraphControllerManager","m_bGraphBindingsCreated") < 0) return; var o = this.base + off("CAnimGraphControllerManager","m_bGraphBindingsCreated"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
   };
@@ -956,6 +3829,13 @@
     "item": { get: function () { var s = off("CAttributeContainer","m_Item"); return embed("CEconItemView", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
   };
   E["CAttributeList"] = {
+  };
+  E["CBuoyancyHelper"] = {
+    "fluidDensity": { get: function () { if (this.base < 0 || off("CBuoyancyHelper","m_flFluidDensity") < 0) return null; return this.ref.readFloat32(this.base + off("CBuoyancyHelper","m_flFluidDensity")); }, set: function (v) { if (this.base < 0 || off("CBuoyancyHelper","m_flFluidDensity") < 0) return; var o = this.base + off("CBuoyancyHelper","m_flFluidDensity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "neutrallyBuoyantGravity": { get: function () { if (this.base < 0 || off("CBuoyancyHelper","m_flNeutrallyBuoyantGravity") < 0) return null; return this.ref.readFloat32(this.base + off("CBuoyancyHelper","m_flNeutrallyBuoyantGravity")); }, set: function (v) { if (this.base < 0 || off("CBuoyancyHelper","m_flNeutrallyBuoyantGravity") < 0) return; var o = this.base + off("CBuoyancyHelper","m_flNeutrallyBuoyantGravity"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "neutrallyBuoyantLinearDamping": { get: function () { if (this.base < 0 || off("CBuoyancyHelper","m_flNeutrallyBuoyantLinearDamping") < 0) return null; return this.ref.readFloat32(this.base + off("CBuoyancyHelper","m_flNeutrallyBuoyantLinearDamping")); }, set: function (v) { if (this.base < 0 || off("CBuoyancyHelper","m_flNeutrallyBuoyantLinearDamping") < 0) return; var o = this.base + off("CBuoyancyHelper","m_flNeutrallyBuoyantLinearDamping"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "neutrallyBuoyantAngularDamping": { get: function () { if (this.base < 0 || off("CBuoyancyHelper","m_flNeutrallyBuoyantAngularDamping") < 0) return null; return this.ref.readFloat32(this.base + off("CBuoyancyHelper","m_flNeutrallyBuoyantAngularDamping")); }, set: function (v) { if (this.base < 0 || off("CBuoyancyHelper","m_flNeutrallyBuoyantAngularDamping") < 0) return; var o = this.base + off("CBuoyancyHelper","m_flNeutrallyBuoyantAngularDamping"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "neutrallyBuoyant": { get: function () { if (this.base < 0 || off("CBuoyancyHelper","m_bNeutrallyBuoyant") < 0) return null; return this.ref.readBool(this.base + off("CBuoyancyHelper","m_bNeutrallyBuoyant")); }, set: function (v) { if (this.base < 0 || off("CBuoyancyHelper","m_bNeutrallyBuoyant") < 0) return; var o = this.base + off("CBuoyancyHelper","m_bNeutrallyBuoyant"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
   };
   E["CCollisionProperty"] = {
     "mins": { get: function () { if (this.base < 0 || off("CCollisionProperty","m_vecMins") < 0) return null; var a = this.ref.readFloats(this.base + off("CCollisionProperty","m_vecMins"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
@@ -976,6 +3856,10 @@
     "capsuleRadius": { get: function () { if (this.base < 0 || off("CCollisionProperty","m_flCapsuleRadius") < 0) return null; return this.ref.readFloat32(this.base + off("CCollisionProperty","m_flCapsuleRadius")); }, set: function (v) { if (this.base < 0 || off("CCollisionProperty","m_flCapsuleRadius") < 0) return; var o = this.base + off("CCollisionProperty","m_flCapsuleRadius"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
     "collisionAttribute": { get: function () { var s = off("CCollisionProperty","m_collisionAttribute"); return embed("VPhysicsCollisionAttribute_t", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
   };
+  E["CConstantForceController"] = {
+    "linear": { get: function () { if (this.base < 0 || off("CConstantForceController","m_linear") < 0) return null; var a = this.ref.readFloats(this.base + off("CConstantForceController","m_linear"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "linearSave": { get: function () { if (this.base < 0 || off("CConstantForceController","m_linearSave") < 0) return null; var a = this.ref.readFloats(this.base + off("CConstantForceController","m_linearSave"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
   E["CEconItemView"] = {
     "itemDefinitionIndex": { get: function () { if (this.base < 0 || off("CEconItemView","m_iItemDefinitionIndex") < 0) return null; return this.ref.readUInt16(this.base + off("CEconItemView","m_iItemDefinitionIndex")); }, set: function (v) { if (this.base < 0 || off("CEconItemView","m_iItemDefinitionIndex") < 0) return; var o = this.base + off("CEconItemView","m_iItemDefinitionIndex"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
     "entityQuality": { get: function () { if (this.base < 0 || off("CEconItemView","m_iEntityQuality") < 0) return null; return this.ref.readInt32(this.base + off("CEconItemView","m_iEntityQuality")); }, set: function (v) { if (this.base < 0 || off("CEconItemView","m_iEntityQuality") < 0) return; var o = this.base + off("CEconItemView","m_iEntityQuality"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -992,6 +3876,25 @@
     "networkedDynamicAttributes": { get: function () { var s = off("CEconItemView","m_NetworkedDynamicAttributes"); return embed("CAttributeList", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
   };
   E["CEntityIOOutput"] = {
+  };
+  E["CEnvWindShared"] = {
+    "startTime": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_flStartTime") < 0) return null; return this.ref.readFloat32(this.base + off("CEnvWindShared","m_flStartTime")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_flStartTime") < 0) return; var o = this.base + off("CEnvWindShared","m_flStartTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "windSeed": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_iWindSeed") < 0) return null; return this.ref.readUInt32(this.base + off("CEnvWindShared","m_iWindSeed")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_iWindSeed") < 0) return; var o = this.base + off("CEnvWindShared","m_iWindSeed"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minWind": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_iMinWind") < 0) return null; return this.ref.readUInt16(this.base + off("CEnvWindShared","m_iMinWind")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_iMinWind") < 0) return; var o = this.base + off("CEnvWindShared","m_iMinWind"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxWind": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_iMaxWind") < 0) return null; return this.ref.readUInt16(this.base + off("CEnvWindShared","m_iMaxWind")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_iMaxWind") < 0) return; var o = this.base + off("CEnvWindShared","m_iMaxWind"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "windRadius": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_windRadius") < 0) return null; return this.ref.readInt32(this.base + off("CEnvWindShared","m_windRadius")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_windRadius") < 0) return; var o = this.base + off("CEnvWindShared","m_windRadius"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "minGust": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_iMinGust") < 0) return null; return this.ref.readUInt16(this.base + off("CEnvWindShared","m_iMinGust")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_iMinGust") < 0) return; var o = this.base + off("CEnvWindShared","m_iMinGust"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxGust": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_iMaxGust") < 0) return null; return this.ref.readUInt16(this.base + off("CEnvWindShared","m_iMaxGust")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_iMaxGust") < 0) return; var o = this.base + off("CEnvWindShared","m_iMaxGust"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "minGustDelay": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_flMinGustDelay") < 0) return null; return this.ref.readFloat32(this.base + off("CEnvWindShared","m_flMinGustDelay")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_flMinGustDelay") < 0) return; var o = this.base + off("CEnvWindShared","m_flMinGustDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxGustDelay": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_flMaxGustDelay") < 0) return null; return this.ref.readFloat32(this.base + off("CEnvWindShared","m_flMaxGustDelay")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_flMaxGustDelay") < 0) return; var o = this.base + off("CEnvWindShared","m_flMaxGustDelay"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "gustDuration": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_flGustDuration") < 0) return null; return this.ref.readFloat32(this.base + off("CEnvWindShared","m_flGustDuration")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_flGustDuration") < 0) return; var o = this.base + off("CEnvWindShared","m_flGustDuration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "gustDirChange": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_iGustDirChange") < 0) return null; return this.ref.readUInt16(this.base + off("CEnvWindShared","m_iGustDirChange")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_iGustDirChange") < 0) return; var o = this.base + off("CEnvWindShared","m_iGustDirChange"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "initialWindDir": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_iInitialWindDir") < 0) return null; return this.ref.readUInt16(this.base + off("CEnvWindShared","m_iInitialWindDir")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_iInitialWindDir") < 0) return; var o = this.base + off("CEnvWindShared","m_iInitialWindDir"); if (this.ref.writeUInt16(o, v)) this.ref.notifyStateChanged(o); } },
+    "initialWindSpeed": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_flInitialWindSpeed") < 0) return null; return this.ref.readFloat32(this.base + off("CEnvWindShared","m_flInitialWindSpeed")); }, set: function (v) { if (this.base < 0 || off("CEnvWindShared","m_flInitialWindSpeed") < 0) return; var o = this.base + off("CEnvWindShared","m_flInitialWindSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "location": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_location") < 0) return null; var a = this.ref.readFloats(this.base + off("CEnvWindShared","m_location"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "entOwner": { get: function () { if (this.base < 0 || off("CEnvWindShared","m_hEntOwner") < 0) return null; return this.ref.readHandle(this.base + off("CEnvWindShared","m_hEntOwner")); } },
+    "onGustStart": { get: function () { var s = off("CEnvWindShared","m_OnGustStart"); return embed("CEntityIOOutput", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
+    "onGustEnd": { get: function () { var s = off("CEnvWindShared","m_OnGustEnd"); return embed("CEntityIOOutput", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
   };
   E["CGlowProperty"] = {
     "glowColor": { get: function () { if (this.base < 0 || off("CGlowProperty","m_fGlowColor") < 0) return null; var a = this.ref.readFloats(this.base + off("CGlowProperty","m_fGlowColor"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
@@ -1015,6 +3918,12 @@
     "ironSightAmountGained": { get: function () { if (this.base < 0 || off("CIronSightController","m_flIronSightAmountGained") < 0) return null; return this.ref.readFloat32(this.base + off("CIronSightController","m_flIronSightAmountGained")); }, set: function (v) { if (this.base < 0 || off("CIronSightController","m_flIronSightAmountGained") < 0) return; var o = this.base + off("CIronSightController","m_flIronSightAmountGained"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
     "ironSightAmountBiased": { get: function () { if (this.base < 0 || off("CIronSightController","m_flIronSightAmountBiased") < 0) return null; return this.ref.readFloat32(this.base + off("CIronSightController","m_flIronSightAmountBiased")); }, set: function (v) { if (this.base < 0 || off("CIronSightController","m_flIronSightAmountBiased") < 0) return; var o = this.base + off("CIronSightController","m_flIronSightAmountBiased"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
   };
+  E["CMotorController"] = {
+    "speed": { get: function () { if (this.base < 0 || off("CMotorController","m_speed") < 0) return null; return this.ref.readFloat32(this.base + off("CMotorController","m_speed")); }, set: function (v) { if (this.base < 0 || off("CMotorController","m_speed") < 0) return; var o = this.base + off("CMotorController","m_speed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxTorque": { get: function () { if (this.base < 0 || off("CMotorController","m_maxTorque") < 0) return null; return this.ref.readFloat32(this.base + off("CMotorController","m_maxTorque")); }, set: function (v) { if (this.base < 0 || off("CMotorController","m_maxTorque") < 0) return; var o = this.base + off("CMotorController","m_maxTorque"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "axis": { get: function () { if (this.base < 0 || off("CMotorController","m_axis") < 0) return null; var a = this.ref.readFloats(this.base + off("CMotorController","m_axis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "inertiaFactor": { get: function () { if (this.base < 0 || off("CMotorController","m_inertiaFactor") < 0) return null; return this.ref.readFloat32(this.base + off("CMotorController","m_inertiaFactor")); }, set: function (v) { if (this.base < 0 || off("CMotorController","m_inertiaFactor") < 0) return; var o = this.base + off("CMotorController","m_inertiaFactor"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   E["CMovementStatsProperty"] = {
     "useCounter": { get: function () { if (this.base < 0 || off("CMovementStatsProperty","m_nUseCounter") < 0) return null; return this.ref.readInt32(this.base + off("CMovementStatsProperty","m_nUseCounter")); }, set: function (v) { if (this.base < 0 || off("CMovementStatsProperty","m_nUseCounter") < 0) return; var o = this.base + off("CMovementStatsProperty","m_nUseCounter"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "emaMovementDirection": { get: function () { var s = off("CMovementStatsProperty","m_emaMovementDirection"); return embed("CVectorExponentialMovingAverage", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
@@ -1028,6 +3937,11 @@
   E["CNetworkVelocityVector"] = {
   };
   E["CNetworkViewOffsetVector"] = {
+  };
+  E["CPathQueryComponent"] = {
+  };
+  E["CPhysicsShake"] = {
+    "force": { get: function () { if (this.base < 0 || off("CPhysicsShake","m_force") < 0) return null; var a = this.ref.readFloats(this.base + off("CPhysicsShake","m_force"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
   };
   E["CPropDataComponent"] = {
     "dmgModBullet": { get: function () { if (this.base < 0 || off("CPropDataComponent","m_flDmgModBullet") < 0) return null; return this.ref.readFloat32(this.base + off("CPropDataComponent","m_flDmgModBullet")); }, set: function (v) { if (this.base < 0 || off("CPropDataComponent","m_flDmgModBullet") < 0) return; var o = this.base + off("CPropDataComponent","m_flDmgModBullet"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -1047,12 +3961,44 @@
     "bombSite": { get: function () { if (this.base < 0 || off("CRetakeGameRules","m_iBombSite") < 0) return null; return this.ref.readInt32(this.base + off("CRetakeGameRules","m_iBombSite")); }, set: function (v) { if (this.base < 0 || off("CRetakeGameRules","m_iBombSite") < 0) return; var o = this.base + off("CRetakeGameRules","m_iBombSite"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
     "bombPlanter": { get: function () { if (this.base < 0 || off("CRetakeGameRules","m_hBombPlanter") < 0) return null; return this.ref.readHandle(this.base + off("CRetakeGameRules","m_hBombPlanter")); } },
   };
+  E["CTestPulseIOComponent_Derived"] = {
+  };
   E["CTouchExpansionComponent"] = {
   };
   E["CVectorExponentialMovingAverage"] = {
   };
+  E["ConstraintSoundInfo"] = {
+    "forwardAxis": { get: function () { if (this.base < 0 || off("ConstraintSoundInfo","m_forwardAxis") < 0) return null; var a = this.ref.readFloats(this.base + off("ConstraintSoundInfo","m_forwardAxis"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "playTravelSound": { get: function () { if (this.base < 0 || off("ConstraintSoundInfo","m_bPlayTravelSound") < 0) return null; return this.ref.readBool(this.base + off("ConstraintSoundInfo","m_bPlayTravelSound")); }, set: function (v) { if (this.base < 0 || off("ConstraintSoundInfo","m_bPlayTravelSound") < 0) return; var o = this.base + off("ConstraintSoundInfo","m_bPlayTravelSound"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "playReversalSound": { get: function () { if (this.base < 0 || off("ConstraintSoundInfo","m_bPlayReversalSound") < 0) return null; return this.ref.readBool(this.base + off("ConstraintSoundInfo","m_bPlayReversalSound")); }, set: function (v) { if (this.base < 0 || off("ConstraintSoundInfo","m_bPlayReversalSound") < 0) return; var o = this.base + off("ConstraintSoundInfo","m_bPlayReversalSound"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "sampler": { get: function () { var s = off("ConstraintSoundInfo","m_vSampler"); return embed("VelocitySampler", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
+    "soundProfile": { get: function () { var s = off("ConstraintSoundInfo","m_soundProfile"); return embed("SimpleConstraintSoundProfile", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
+  };
+  E["CountdownTimer"] = {
+    "duration": { get: function () { if (this.base < 0 || off("CountdownTimer","m_duration") < 0) return null; return this.ref.readFloat32(this.base + off("CountdownTimer","m_duration")); }, set: function (v) { if (this.base < 0 || off("CountdownTimer","m_duration") < 0) return; var o = this.base + off("CountdownTimer","m_duration"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timestamp": { get: function () { if (this.base < 0 || off("CountdownTimer","m_timestamp") < 0) return null; return this.ref.readFloat32(this.base + off("CountdownTimer","m_timestamp")); }, set: function (v) { if (this.base < 0 || off("CountdownTimer","m_timestamp") < 0) return; var o = this.base + off("CountdownTimer","m_timestamp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "timescale": { get: function () { if (this.base < 0 || off("CountdownTimer","m_timescale") < 0) return null; return this.ref.readFloat32(this.base + off("CountdownTimer","m_timescale")); }, set: function (v) { if (this.base < 0 || off("CountdownTimer","m_timescale") < 0) return; var o = this.base + off("CountdownTimer","m_timescale"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   E["EntitySpottedState_t"] = {
     "spotted": { get: function () { if (this.base < 0 || off("EntitySpottedState_t","m_bSpotted") < 0) return null; return this.ref.readBool(this.base + off("EntitySpottedState_t","m_bSpotted")); }, set: function (v) { if (this.base < 0 || off("EntitySpottedState_t","m_bSpotted") < 0) return; var o = this.base + off("EntitySpottedState_t","m_bSpotted"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  E["Extent"] = {
+    "lo": { get: function () { if (this.base < 0 || off("Extent","lo") < 0) return null; var a = this.ref.readFloats(this.base + off("Extent","lo"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "hi": { get: function () { if (this.base < 0 || off("Extent","hi") < 0) return null; var a = this.ref.readFloats(this.base + off("Extent","hi"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+  };
+  E["FuncMoverMovementSummary_t"] = {
+    "startT": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","flStartT") < 0) return null; return this.ref.readFloat32(this.base + off("FuncMoverMovementSummary_t","flStartT")); }, set: function (v) { if (this.base < 0 || off("FuncMoverMovementSummary_t","flStartT") < 0) return; var o = this.base + off("FuncMoverMovementSummary_t","flStartT"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "endT": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","flEndT") < 0) return null; return this.ref.readFloat32(this.base + off("FuncMoverMovementSummary_t","flEndT")); }, set: function (v) { if (this.base < 0 || off("FuncMoverMovementSummary_t","flEndT") < 0) return; var o = this.base + off("FuncMoverMovementSummary_t","flEndT"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "startNodeIndex": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","nStartNodeIndex") < 0) return null; return this.ref.readInt32(this.base + off("FuncMoverMovementSummary_t","nStartNodeIndex")); }, set: function (v) { if (this.base < 0 || off("FuncMoverMovementSummary_t","nStartNodeIndex") < 0) return; var o = this.base + off("FuncMoverMovementSummary_t","nStartNodeIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "stopNodeIndex": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","nStopNodeIndex") < 0) return null; return this.ref.readInt32(this.base + off("FuncMoverMovementSummary_t","nStopNodeIndex")); }, set: function (v) { if (this.base < 0 || off("FuncMoverMovementSummary_t","nStopNodeIndex") < 0) return; var o = this.base + off("FuncMoverMovementSummary_t","nStopNodeIndex"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "movementMode": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","nMovementMode") < 0) return null; return this.ref.readInt32(this.base + off("FuncMoverMovementSummary_t","nMovementMode")); }, set: function (v) { if (this.base < 0 || off("FuncMoverMovementSummary_t","nMovementMode") < 0) return; var o = this.base + off("FuncMoverMovementSummary_t","nMovementMode"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "flags": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","nFlags") < 0) return null; return this.ref.readUInt32(this.base + off("FuncMoverMovementSummary_t","nFlags")); }, set: function (v) { if (this.base < 0 || off("FuncMoverMovementSummary_t","nFlags") < 0) return; var o = this.base + off("FuncMoverMovementSummary_t","nFlags"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "tick": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","nTick") < 0) return null; return this.ref.readInt32(this.base + off("FuncMoverMovementSummary_t","nTick")); }, set: function (v) { if (this.base < 0 || off("FuncMoverMovementSummary_t","nTick") < 0) return; var o = this.base + off("FuncMoverMovementSummary_t","nTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pathMover": { get: function () { if (this.base < 0 || off("FuncMoverMovementSummary_t","hPathMover") < 0) return null; return this.ref.readHandle(this.base + off("FuncMoverMovementSummary_t","hPathMover")); } },
+  };
+  E["FuncRotatorRotationSummary_t"] = {
+    "tick": { get: function () { if (this.base < 0 || off("FuncRotatorRotationSummary_t","nTick") < 0) return null; return this.ref.readInt32(this.base + off("FuncRotatorRotationSummary_t","nTick")); }, set: function (v) { if (this.base < 0 || off("FuncRotatorRotationSummary_t","nTick") < 0) return; var o = this.base + off("FuncRotatorRotationSummary_t","nTick"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "flags": { get: function () { if (this.base < 0 || off("FuncRotatorRotationSummary_t","nFlags") < 0) return null; return this.ref.readUInt32(this.base + off("FuncRotatorRotationSummary_t","nFlags")); }, set: function (v) { if (this.base < 0 || off("FuncRotatorRotationSummary_t","nFlags") < 0) return; var o = this.base + off("FuncRotatorRotationSummary_t","nFlags"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   E["IntervalTimer"] = {
     "timestamp": { get: function () { if (this.base < 0 || off("IntervalTimer","m_timestamp") < 0) return null; return this.ref.readFloat32(this.base + off("IntervalTimer","m_timestamp")); }, set: function (v) { if (this.base < 0 || off("IntervalTimer","m_timestamp") < 0) return; var o = this.base + off("IntervalTimer","m_timestamp"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
@@ -1060,6 +4006,13 @@
   E["PhysicsRagdollPose_t"] = {
     "owner": { get: function () { if (this.base < 0 || off("PhysicsRagdollPose_t","m_hOwner") < 0) return null; return this.ref.readHandle(this.base + off("PhysicsRagdollPose_t","m_hOwner")); } },
     "setFromDebugHistory": { get: function () { if (this.base < 0 || off("PhysicsRagdollPose_t","m_bSetFromDebugHistory") < 0) return null; return this.ref.readBool(this.base + off("PhysicsRagdollPose_t","m_bSetFromDebugHistory")); }, set: function (v) { if (this.base < 0 || off("PhysicsRagdollPose_t","m_bSetFromDebugHistory") < 0) return; var o = this.base + off("PhysicsRagdollPose_t","m_bSetFromDebugHistory"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  E["SimpleConstraintSoundProfile"] = {
+    "keyPointMinSoundThreshold": { get: function () { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_flKeyPointMinSoundThreshold") < 0) return null; return this.ref.readFloat32(this.base + off("SimpleConstraintSoundProfile","m_flKeyPointMinSoundThreshold")); }, set: function (v) { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_flKeyPointMinSoundThreshold") < 0) return; var o = this.base + off("SimpleConstraintSoundProfile","m_flKeyPointMinSoundThreshold"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "keyPointMaxSoundThreshold": { get: function () { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_flKeyPointMaxSoundThreshold") < 0) return null; return this.ref.readFloat32(this.base + off("SimpleConstraintSoundProfile","m_flKeyPointMaxSoundThreshold")); }, set: function (v) { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_flKeyPointMaxSoundThreshold") < 0) return; var o = this.base + off("SimpleConstraintSoundProfile","m_flKeyPointMaxSoundThreshold"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "reversalSoundThresholdSmall": { get: function () { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_reversalSoundThresholdSmall") < 0) return null; return this.ref.readFloat32(this.base + off("SimpleConstraintSoundProfile","m_reversalSoundThresholdSmall")); }, set: function (v) { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_reversalSoundThresholdSmall") < 0) return; var o = this.base + off("SimpleConstraintSoundProfile","m_reversalSoundThresholdSmall"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "reversalSoundThresholdMedium": { get: function () { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_reversalSoundThresholdMedium") < 0) return null; return this.ref.readFloat32(this.base + off("SimpleConstraintSoundProfile","m_reversalSoundThresholdMedium")); }, set: function (v) { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_reversalSoundThresholdMedium") < 0) return; var o = this.base + off("SimpleConstraintSoundProfile","m_reversalSoundThresholdMedium"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "reversalSoundThresholdLarge": { get: function () { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_reversalSoundThresholdLarge") < 0) return null; return this.ref.readFloat32(this.base + off("SimpleConstraintSoundProfile","m_reversalSoundThresholdLarge")); }, set: function (v) { if (this.base < 0 || off("SimpleConstraintSoundProfile","m_reversalSoundThresholdLarge") < 0) return; var o = this.base + off("SimpleConstraintSoundProfile","m_reversalSoundThresholdLarge"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   E["VPhysicsCollisionAttribute_t"] = {
     "interactsAs": { get: function () { if (this.base < 0 || off("VPhysicsCollisionAttribute_t","m_nInteractsAs") < 0) return null; var v = this.ref.readUInt64(this.base + off("VPhysicsCollisionAttribute_t","m_nInteractsAs")); return v === null ? null : v.toString(); } },
@@ -1073,6 +4026,56 @@
     "targetDetailLayer": { get: function () { if (this.base < 0 || off("VPhysicsCollisionAttribute_t","m_nTargetDetailLayer") < 0) return null; return this.ref.readUInt8(this.base + off("VPhysicsCollisionAttribute_t","m_nTargetDetailLayer")); }, set: function (v) { if (this.base < 0 || off("VPhysicsCollisionAttribute_t","m_nTargetDetailLayer") < 0) return; var o = this.base + off("VPhysicsCollisionAttribute_t","m_nTargetDetailLayer"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
     "collisionGroup": { get: function () { if (this.base < 0 || off("VPhysicsCollisionAttribute_t","m_nCollisionGroup") < 0) return null; return this.ref.readUInt8(this.base + off("VPhysicsCollisionAttribute_t","m_nCollisionGroup")); }, set: function (v) { if (this.base < 0 || off("VPhysicsCollisionAttribute_t","m_nCollisionGroup") < 0) return; var o = this.base + off("VPhysicsCollisionAttribute_t","m_nCollisionGroup"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
     "collisionFunctionMask": { get: function () { if (this.base < 0 || off("VPhysicsCollisionAttribute_t","m_nCollisionFunctionMask") < 0) return null; return this.ref.readUInt8(this.base + off("VPhysicsCollisionAttribute_t","m_nCollisionFunctionMask")); }, set: function (v) { if (this.base < 0 || off("VPhysicsCollisionAttribute_t","m_nCollisionFunctionMask") < 0) return; var o = this.base + off("VPhysicsCollisionAttribute_t","m_nCollisionFunctionMask"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  E["VelocitySampler"] = {
+    "prevSample": { get: function () { if (this.base < 0 || off("VelocitySampler","m_prevSample") < 0) return null; var a = this.ref.readFloats(this.base + off("VelocitySampler","m_prevSample"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "prevSampleTime": { get: function () { if (this.base < 0 || off("VelocitySampler","m_fPrevSampleTime") < 0) return null; return this.ref.readFloat32(this.base + off("VelocitySampler","m_fPrevSampleTime")); }, set: function (v) { if (this.base < 0 || off("VelocitySampler","m_fPrevSampleTime") < 0) return; var o = this.base + off("VelocitySampler","m_fPrevSampleTime"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "idealSampleRate": { get: function () { if (this.base < 0 || off("VelocitySampler","m_fIdealSampleRate") < 0) return null; return this.ref.readFloat32(this.base + off("VelocitySampler","m_fIdealSampleRate")); }, set: function (v) { if (this.base < 0 || off("VelocitySampler","m_fIdealSampleRate") < 0) return; var o = this.base + off("VelocitySampler","m_fIdealSampleRate"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  E["constraint_axislimit_t"] = {
+    "minRotation": { get: function () { if (this.base < 0 || off("constraint_axislimit_t","flMinRotation") < 0) return null; return this.ref.readFloat32(this.base + off("constraint_axislimit_t","flMinRotation")); }, set: function (v) { if (this.base < 0 || off("constraint_axislimit_t","flMinRotation") < 0) return; var o = this.base + off("constraint_axislimit_t","flMinRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "maxRotation": { get: function () { if (this.base < 0 || off("constraint_axislimit_t","flMaxRotation") < 0) return null; return this.ref.readFloat32(this.base + off("constraint_axislimit_t","flMaxRotation")); }, set: function (v) { if (this.base < 0 || off("constraint_axislimit_t","flMaxRotation") < 0) return; var o = this.base + off("constraint_axislimit_t","flMaxRotation"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "motorTargetAngSpeed": { get: function () { if (this.base < 0 || off("constraint_axislimit_t","flMotorTargetAngSpeed") < 0) return null; return this.ref.readFloat32(this.base + off("constraint_axislimit_t","flMotorTargetAngSpeed")); }, set: function (v) { if (this.base < 0 || off("constraint_axislimit_t","flMotorTargetAngSpeed") < 0) return; var o = this.base + off("constraint_axislimit_t","flMotorTargetAngSpeed"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "motorMaxTorque": { get: function () { if (this.base < 0 || off("constraint_axislimit_t","flMotorMaxTorque") < 0) return null; return this.ref.readFloat32(this.base + off("constraint_axislimit_t","flMotorMaxTorque")); }, set: function (v) { if (this.base < 0 || off("constraint_axislimit_t","flMotorMaxTorque") < 0) return; var o = this.base + off("constraint_axislimit_t","flMotorMaxTorque"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  E["constraint_breakableparams_t"] = {
+    "strength": { get: function () { if (this.base < 0 || off("constraint_breakableparams_t","strength") < 0) return null; return this.ref.readFloat32(this.base + off("constraint_breakableparams_t","strength")); }, set: function (v) { if (this.base < 0 || off("constraint_breakableparams_t","strength") < 0) return; var o = this.base + off("constraint_breakableparams_t","strength"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "forceLimit": { get: function () { if (this.base < 0 || off("constraint_breakableparams_t","forceLimit") < 0) return null; return this.ref.readFloat32(this.base + off("constraint_breakableparams_t","forceLimit")); }, set: function (v) { if (this.base < 0 || off("constraint_breakableparams_t","forceLimit") < 0) return; var o = this.base + off("constraint_breakableparams_t","forceLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "torqueLimit": { get: function () { if (this.base < 0 || off("constraint_breakableparams_t","torqueLimit") < 0) return null; return this.ref.readFloat32(this.base + off("constraint_breakableparams_t","torqueLimit")); }, set: function (v) { if (this.base < 0 || off("constraint_breakableparams_t","torqueLimit") < 0) return; var o = this.base + off("constraint_breakableparams_t","torqueLimit"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "isActive": { get: function () { if (this.base < 0 || off("constraint_breakableparams_t","isActive") < 0) return null; return this.ref.readBool(this.base + off("constraint_breakableparams_t","isActive")); }, set: function (v) { if (this.base < 0 || off("constraint_breakableparams_t","isActive") < 0) return; var o = this.base + off("constraint_breakableparams_t","isActive"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  E["constraint_hingeparams_t"] = {
+    "worldPosition": { get: function () { if (this.base < 0 || off("constraint_hingeparams_t","worldPosition") < 0) return null; var a = this.ref.readFloats(this.base + off("constraint_hingeparams_t","worldPosition"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "worldAxisDirection": { get: function () { if (this.base < 0 || off("constraint_hingeparams_t","worldAxisDirection") < 0) return null; var a = this.ref.readFloats(this.base + off("constraint_hingeparams_t","worldAxisDirection"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
+    "hingeAxis": { get: function () { var s = off("constraint_hingeparams_t","hingeAxis"); return embed("constraint_axislimit_t", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
+    "constraint": { get: function () { var s = off("constraint_hingeparams_t","constraint"); return embed("constraint_breakableparams_t", this.ref, (this.base < 0 || s < 0) ? -1 : this.base + s); } },
+  };
+  E["dynpitchvol_t"] = {
+    "preset": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","preset") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","preset")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","preset") < 0) return; var o = this.base + off("dynpitchvol_base_t","preset"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pitchrun": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","pitchrun") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","pitchrun")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","pitchrun") < 0) return; var o = this.base + off("dynpitchvol_base_t","pitchrun"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pitchstart": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","pitchstart") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","pitchstart")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","pitchstart") < 0) return; var o = this.base + off("dynpitchvol_base_t","pitchstart"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spinup": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","spinup") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","spinup")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","spinup") < 0) return; var o = this.base + off("dynpitchvol_base_t","spinup"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spindown": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","spindown") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","spindown")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","spindown") < 0) return; var o = this.base + off("dynpitchvol_base_t","spindown"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volrun": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","volrun") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","volrun")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","volrun") < 0) return; var o = this.base + off("dynpitchvol_base_t","volrun"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volstart": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","volstart") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","volstart")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","volstart") < 0) return; var o = this.base + off("dynpitchvol_base_t","volstart"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadein": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","fadein") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","fadein")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","fadein") < 0) return; var o = this.base + off("dynpitchvol_base_t","fadein"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeout": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","fadeout") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","fadeout")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","fadeout") < 0) return; var o = this.base + off("dynpitchvol_base_t","fadeout"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lfotype": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","lfotype") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","lfotype")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","lfotype") < 0) return; var o = this.base + off("dynpitchvol_base_t","lfotype"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lforate": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","lforate") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","lforate")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","lforate") < 0) return; var o = this.base + off("dynpitchvol_base_t","lforate"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lfomodpitch": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","lfomodpitch") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","lfomodpitch")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","lfomodpitch") < 0) return; var o = this.base + off("dynpitchvol_base_t","lfomodpitch"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lfomodvol": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","lfomodvol") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","lfomodvol")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","lfomodvol") < 0) return; var o = this.base + off("dynpitchvol_base_t","lfomodvol"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "cspinup": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","cspinup") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","cspinup")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","cspinup") < 0) return; var o = this.base + off("dynpitchvol_base_t","cspinup"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "cspincount": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","cspincount") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","cspincount")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","cspincount") < 0) return; var o = this.base + off("dynpitchvol_base_t","cspincount"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pitch": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","pitch") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","pitch")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","pitch") < 0) return; var o = this.base + off("dynpitchvol_base_t","pitch"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spinupsav": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","spinupsav") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","spinupsav")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","spinupsav") < 0) return; var o = this.base + off("dynpitchvol_base_t","spinupsav"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "spindownsav": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","spindownsav") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","spindownsav")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","spindownsav") < 0) return; var o = this.base + off("dynpitchvol_base_t","spindownsav"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "pitchfrac": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","pitchfrac") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","pitchfrac")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","pitchfrac") < 0) return; var o = this.base + off("dynpitchvol_base_t","pitchfrac"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "vol": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","vol") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","vol")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","vol") < 0) return; var o = this.base + off("dynpitchvol_base_t","vol"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeinsav": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","fadeinsav") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","fadeinsav")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","fadeinsav") < 0) return; var o = this.base + off("dynpitchvol_base_t","fadeinsav"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "fadeoutsav": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","fadeoutsav") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","fadeoutsav")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","fadeoutsav") < 0) return; var o = this.base + off("dynpitchvol_base_t","fadeoutsav"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "volfrac": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","volfrac") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","volfrac")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","volfrac") < 0) return; var o = this.base + off("dynpitchvol_base_t","volfrac"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lfofrac": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","lfofrac") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","lfofrac")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","lfofrac") < 0) return; var o = this.base + off("dynpitchvol_base_t","lfofrac"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "lfomult": { get: function () { if (this.base < 0 || off("dynpitchvol_base_t","lfomult") < 0) return null; return this.ref.readInt32(this.base + off("dynpitchvol_base_t","lfomult")); }, set: function (v) { if (this.base < 0 || off("dynpitchvol_base_t","lfomult") < 0) return; var o = this.base + off("dynpitchvol_base_t","lfomult"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   E["fogparams_t"] = {
     "dirPrimary": { get: function () { if (this.base < 0 || off("fogparams_t","dirPrimary") < 0) return null; var a = this.ref.readFloats(this.base + off("fogparams_t","dirPrimary"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
@@ -1101,12 +4104,27 @@
     "padding2": { get: function () { if (this.base < 0 || off("fogparams_t","m_bPadding2") < 0) return null; return this.ref.readBool(this.base + off("fogparams_t","m_bPadding2")); }, set: function (v) { if (this.base < 0 || off("fogparams_t","m_bPadding2") < 0) return; var o = this.base + off("fogparams_t","m_bPadding2"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
     "padding": { get: function () { if (this.base < 0 || off("fogparams_t","m_bPadding") < 0) return null; return this.ref.readBool(this.base + off("fogparams_t","m_bPadding")); }, set: function (v) { if (this.base < 0 || off("fogparams_t","m_bPadding") < 0) return; var o = this.base + off("fogparams_t","m_bPadding"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
   };
+  E["hudtextparms_t"] = {
+    "color1": { get: function () { if (this.base < 0 || off("hudtextparms_t","color1") < 0) return null; return this.ref.readUInt32(this.base + off("hudtextparms_t","color1")); }, set: function (v) { if (this.base < 0 || off("hudtextparms_t","color1") < 0) return; var o = this.base + off("hudtextparms_t","color1"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "color2": { get: function () { if (this.base < 0 || off("hudtextparms_t","color2") < 0) return null; return this.ref.readUInt32(this.base + off("hudtextparms_t","color2")); }, set: function (v) { if (this.base < 0 || off("hudtextparms_t","color2") < 0) return; var o = this.base + off("hudtextparms_t","color2"); if (this.ref.writeUInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "effect": { get: function () { if (this.base < 0 || off("hudtextparms_t","effect") < 0) return null; return this.ref.readUInt8(this.base + off("hudtextparms_t","effect")); }, set: function (v) { if (this.base < 0 || off("hudtextparms_t","effect") < 0) return; var o = this.base + off("hudtextparms_t","effect"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "channel": { get: function () { if (this.base < 0 || off("hudtextparms_t","channel") < 0) return null; return this.ref.readUInt8(this.base + off("hudtextparms_t","channel")); }, set: function (v) { if (this.base < 0 || off("hudtextparms_t","channel") < 0) return; var o = this.base + off("hudtextparms_t","channel"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "x": { get: function () { if (this.base < 0 || off("hudtextparms_t","x") < 0) return null; return this.ref.readFloat32(this.base + off("hudtextparms_t","x")); }, set: function (v) { if (this.base < 0 || off("hudtextparms_t","x") < 0) return; var o = this.base + off("hudtextparms_t","x"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "y": { get: function () { if (this.base < 0 || off("hudtextparms_t","y") < 0) return null; return this.ref.readFloat32(this.base + off("hudtextparms_t","y")); }, set: function (v) { if (this.base < 0 || off("hudtextparms_t","y") < 0) return; var o = this.base + off("hudtextparms_t","y"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+  };
   E["locksound_t"] = {
     "flwaitSound": { get: function () { if (this.base < 0 || off("locksound_t","flwaitSound") < 0) return null; return this.ref.readFloat32(this.base + off("locksound_t","flwaitSound")); }, set: function (v) { if (this.base < 0 || off("locksound_t","flwaitSound") < 0) return; var o = this.base + off("locksound_t","flwaitSound"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
   };
   E["ragdoll_t"] = {
     "allowStretch": { get: function () { if (this.base < 0 || off("ragdoll_t","allowStretch") < 0) return null; return this.ref.readBool(this.base + off("ragdoll_t","allowStretch")); }, set: function (v) { if (this.base < 0 || off("ragdoll_t","allowStretch") < 0) return; var o = this.base + off("ragdoll_t","allowStretch"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
     "unused": { get: function () { if (this.base < 0 || off("ragdoll_t","unused") < 0) return null; return this.ref.readBool(this.base + off("ragdoll_t","unused")); }, set: function (v) { if (this.base < 0 || off("ragdoll_t","unused") < 0) return; var o = this.base + off("ragdoll_t","unused"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+  };
+  E["shard_model_desc_t"] = {
+    "modelID": { get: function () { if (this.base < 0 || off("shard_model_desc_t","m_nModelID") < 0) return null; return this.ref.readInt32(this.base + off("shard_model_desc_t","m_nModelID")); }, set: function (v) { if (this.base < 0 || off("shard_model_desc_t","m_nModelID") < 0) return; var o = this.base + off("shard_model_desc_t","m_nModelID"); if (this.ref.writeInt32(o, v)) this.ref.notifyStateChanged(o); } },
+    "solid": { get: function () { if (this.base < 0 || off("shard_model_desc_t","m_solid") < 0) return null; return this.ref.readUInt8(this.base + off("shard_model_desc_t","m_solid")); }, set: function (v) { if (this.base < 0 || off("shard_model_desc_t","m_solid") < 0) return; var o = this.base + off("shard_model_desc_t","m_solid"); if (this.ref.writeUInt8(o, v)) this.ref.notifyStateChanged(o); } },
+    "glassHalfThickness": { get: function () { if (this.base < 0 || off("shard_model_desc_t","m_flGlassHalfThickness") < 0) return null; return this.ref.readFloat32(this.base + off("shard_model_desc_t","m_flGlassHalfThickness")); }, set: function (v) { if (this.base < 0 || off("shard_model_desc_t","m_flGlassHalfThickness") < 0) return; var o = this.base + off("shard_model_desc_t","m_flGlassHalfThickness"); if (this.ref.writeFloat32(o, v)) this.ref.notifyStateChanged(o); } },
+    "hasParent": { get: function () { if (this.base < 0 || off("shard_model_desc_t","m_bHasParent") < 0) return null; return this.ref.readBool(this.base + off("shard_model_desc_t","m_bHasParent")); }, set: function (v) { if (this.base < 0 || off("shard_model_desc_t","m_bHasParent") < 0) return; var o = this.base + off("shard_model_desc_t","m_bHasParent"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
+    "parentFrozen": { get: function () { if (this.base < 0 || off("shard_model_desc_t","m_bParentFrozen") < 0) return null; return this.ref.readBool(this.base + off("shard_model_desc_t","m_bParentFrozen")); }, set: function (v) { if (this.base < 0 || off("shard_model_desc_t","m_bParentFrozen") < 0) return; var o = this.base + off("shard_model_desc_t","m_bParentFrozen"); if (this.ref.writeBool(o, v)) this.ref.notifyStateChanged(o); } },
   };
   E["sky3dparams_t"] = {
     "scale": { get: function () { if (this.base < 0 || off("sky3dparams_t","scale") < 0) return null; return this.ref.readInt16(this.base + off("sky3dparams_t","scale")); }, set: function (v) { if (this.base < 0 || off("sky3dparams_t","scale") < 0) return; var o = this.base + off("sky3dparams_t","scale"); if (this.ref.writeInt16(o, v)) this.ref.notifyStateChanged(o); } },
@@ -1118,36 +4136,369 @@
   var P = {
     "CBaseEntity": "CEntityInstance",
     "CMultiplayRules": "CGameRules",
+    "CAI_ChangeHintGroup": "CBaseEntity",
     "CBaseModelEntity": "CBaseEntity",
     "CBasePlayerController": "CBaseEntity",
+    "CCSGO_TeamPreviewCharacterPosition": "CBaseEntity",
+    "CCSPlayerResource": "CBaseEntity",
+    "CCitadelSoundOpvarSetOBB": "CBaseEntity",
+    "CColorCorrection": "CBaseEntity",
+    "CCommentaryAuto": "CBaseEntity",
+    "CDebugHistory": "CBaseEntity",
+    "CEntityFlame": "CBaseEntity",
+    "CEnvBeverage": "CBaseEntity",
+    "CEnvCombinedLightProbeVolume": "CBaseEntity",
+    "CEnvCubemap": "CBaseEntity",
+    "CEnvCubemapFog": "CBaseEntity",
+    "CEnvDetailController": "CBaseEntity",
+    "CEnvEntityIgniter": "CBaseEntity",
+    "CEnvLightProbeVolume": "CBaseEntity",
+    "CEnvSoundscape": "CBaseEntity",
+    "CEnvVolumetricFogController": "CBaseEntity",
+    "CEnvVolumetricFogVolume": "CBaseEntity",
+    "CEnvWind": "CBaseEntity",
+    "CEnvWindController": "CBaseEntity",
+    "CEnvWindVolume": "CBaseEntity",
+    "CFishPool": "CBaseEntity",
+    "CFogController": "CBaseEntity",
+    "CFuncTimescale": "CBaseEntity",
+    "CGameGibManager": "CBaseEntity",
+    "CGameRulesProxy": "CBaseEntity",
+    "CGradientFog": "CBaseEntity",
+    "CHandleTest": "CBaseEntity",
+    "CInfoVisibilityBox": "CBaseEntity",
+    "CInfoWorldLayer": "CBaseEntity",
+    "CLogicAuto": "CBaseEntity",
+    "CLogicGameStateReport": "CBaseEntity",
+    "CLogicNPCCounter": "CBaseEntity",
+    "CMapVetoPickController": "CBaseEntity",
+    "CPathParticleRope": "CBaseEntity",
+    "CPathSimple": "CBaseEntity",
+    "CPhysicsSpring": "CBaseEntity",
+    "CPhysicsWire": "CBaseEntity",
+    "CPlayerPing": "CBaseEntity",
+    "CPlayerVisibility": "CBaseEntity",
+    "CPointCamera": "CBaseEntity",
+    "CPointEntity": "CBaseEntity",
+    "CPointEntityFinder": "CBaseEntity",
+    "CPointOrient": "CBaseEntity",
+    "CPointValueRemapper": "CBaseEntity",
+    "CPulseGameBlackboard": "CBaseEntity",
+    "CRagdollManager": "CBaseEntity",
+    "CScriptedSequence": "CBaseEntity",
+    "CServerOnlyEntity": "CBaseEntity",
+    "CSkyCamera": "CBaseEntity",
+    "CSkyboxReference": "CBaseEntity",
+    "CSoundAreaEntityBase": "CBaseEntity",
+    "CSoundEventEntity": "CBaseEntity",
+    "CSoundEventParameter": "CBaseEntity",
+    "CSoundOpvarSetEntity": "CBaseEntity",
+    "CSoundOpvarSetPointBase": "CBaseEntity",
     "CTeam": "CBaseEntity",
     "CTeamplayRules": "CMultiplayRules",
+    "CTestEffect": "CBaseEntity",
+    "CTonemapController2": "CBaseEntity",
+    "CVoteController": "CBaseEntity",
+    "CAmbientGeneric": "CPointEntity",
+    "CBarnLight": "CBaseModelEntity",
     "CBaseAnimGraph": "CBaseModelEntity",
+    "CBaseClientUIEntity": "CBaseModelEntity",
+    "CBaseDMStart": "CPointEntity",
     "CBaseToggle": "CBaseModelEntity",
     "CBeam": "CBaseModelEntity",
+    "CBlood": "CPointEntity",
+    "CBreakable": "CBaseModelEntity",
     "CCSGameRules": "CTeamplayRules",
+    "CCSGameRulesProxy": "CGameRulesProxy",
     "CCSPlayerController": "CBasePlayerController",
     "CCSTeam": "CTeam",
+    "CCashStack": "CBaseModelEntity",
+    "CCredits": "CPointEntity",
+    "CDynamicLight": "CBaseModelEntity",
+    "CEntityDissolve": "CBaseModelEntity",
+    "CEnvDecal": "CBaseModelEntity",
+    "CEnvEntityMaker": "CPointEntity",
+    "CEnvHudHint": "CPointEntity",
+    "CEnvInstructorHint": "CPointEntity",
+    "CEnvInstructorVRHint": "CPointEntity",
+    "CEnvMuzzleFlash": "CPointEntity",
+    "CEnvShake": "CPointEntity",
+    "CEnvSky": "CBaseModelEntity",
+    "CEnvSoundscapeProxy": "CEnvSoundscape",
+    "CEnvSpark": "CPointEntity",
+    "CEnvSplash": "CPointEntity",
+    "CEnvTilt": "CPointEntity",
+    "CEnvViewPunch": "CPointEntity",
+    "CFuncBrush": "CBaseModelEntity",
+    "CFuncConveyor": "CBaseModelEntity",
+    "CFuncInteractionLayerClip": "CBaseModelEntity",
+    "CFuncLadder": "CBaseModelEntity",
+    "CFuncMover": "CBaseModelEntity",
+    "CFuncNavBlocker": "CBaseModelEntity",
+    "CFuncNavObstruction": "CBaseModelEntity",
+    "CFuncRotating": "CBaseModelEntity",
+    "CFuncRotator": "CBaseModelEntity",
+    "CFuncShatterglass": "CBaseModelEntity",
+    "CFuncTrackTrain": "CBaseModelEntity",
+    "CFuncVPhysicsClip": "CBaseModelEntity",
+    "CFuncWall": "CBaseModelEntity",
+    "CFuncWater": "CBaseModelEntity",
+    "CInferno": "CBaseModelEntity",
+    "CInfoChoreoAnchor": "CPointEntity",
+    "CInfoDynamicShadowHint": "CPointEntity",
+    "CInfoFan": "CPointEntity",
+    "CInfoGameEventProxy": "CPointEntity",
+    "CInfoOffscreenPanoramaTexture": "CPointEntity",
+    "CInfoPlayerStart": "CPointEntity",
+    "CInstructorEventEntity": "CPointEntity",
+    "CItemGenericTriggerHelper": "CBaseModelEntity",
+    "CKeepUpright": "CPointEntity",
+    "CLightEntity": "CBaseModelEntity",
+    "CLogicNPCCounterAABB": "CLogicNPCCounter",
+    "CLogicalEntity": "CServerOnlyEntity",
+    "CMapInfo": "CPointEntity",
+    "CMarkupVolume": "CBaseModelEntity",
+    "CMessage": "CPointEntity",
+    "CMessageEntity": "CPointEntity",
     "CModelPointEntity": "CBaseModelEntity",
+    "CParticleSystem": "CBaseModelEntity",
+    "CPathCorner": "CPointEntity",
+    "CPathNode": "CPointEntity",
+    "CPathTrack": "CPointEntity",
+    "CPathWithDynamicNodes": "CPathSimple",
+    "CPhysExplosion": "CPointEntity",
+    "CPhysForce": "CPointEntity",
+    "CPhysImpact": "CPointEntity",
+    "CPlatTrigger": "CBaseModelEntity",
+    "CPointAngleSensor": "CPointEntity",
+    "CPointAngularVelocitySensor": "CPointEntity",
+    "CPointCameraVFOV": "CPointCamera",
+    "CPointChildModifier": "CPointEntity",
+    "CPointGamestatsCounter": "CPointEntity",
+    "CPointGiveAmmo": "CPointEntity",
+    "CPointHurt": "CPointEntity",
+    "CPointProximitySensor": "CPointEntity",
+    "CPointPush": "CPointEntity",
+    "CPointVelocitySensor": "CPointEntity",
+    "CRagdollMagnet": "CPointEntity",
+    "CRopeKeyframe": "CBaseModelEntity",
+    "CRotatorTarget": "CPointEntity",
+    "CRuleEntity": "CBaseModelEntity",
+    "CSceneEntity": "CPointEntity",
+    "CServerOnlyModelEntity": "CBaseModelEntity",
+    "CServerOnlyPointEntity": "CServerOnlyEntity",
+    "CShatterGlassShardPhysics": "CBaseModelEntity",
+    "CSoundAreaEntityOrientedBox": "CSoundAreaEntityBase",
+    "CSoundAreaEntitySphere": "CSoundAreaEntityBase",
+    "CSoundEventAABBEntity": "CSoundEventEntity",
+    "CSoundEventConeEntity": "CSoundEventEntity",
+    "CSoundEventOBBEntity": "CSoundEventEntity",
+    "CSoundEventPathCornerEntity": "CSoundEventEntity",
+    "CSoundEventSphereEntity": "CSoundEventEntity",
+    "CSoundOpvarSetOBBWindEntity": "CSoundOpvarSetPointBase",
+    "CSoundOpvarSetPointEntity": "CSoundOpvarSetPointBase",
+    "CSpotlightEnd": "CBaseModelEntity",
+    "CSprite": "CBaseModelEntity",
+    "CTankTargetChange": "CPointEntity",
+    "CTankTrainAI": "CPointEntity",
+    "CTextureBasedAnimatable": "CBaseModelEntity",
+    "CTriggerBrush": "CBaseModelEntity",
+    "CTriggerVolume": "CBaseModelEntity",
     "CBaseButton": "CBaseToggle",
     "CBaseCombatCharacter": "CBaseAnimGraph",
     "CBaseDoor": "CBaseToggle",
+    "CBaseFilter": "CLogicalEntity",
     "CBaseGrenade": "CBaseAnimGraph",
+    "CBasePlatTrain": "CBaseToggle",
     "CBaseProp": "CBaseAnimGraph",
     "CBaseTrigger": "CBaseToggle",
+    "CCSPlace": "CServerOnlyModelEntity",
+    "CConstraintAnchor": "CBaseAnimGraph",
     "CEconEntity": "CBaseAnimGraph",
+    "CEnvBeam": "CBeam",
+    "CEnvExplosion": "CModelPointEntity",
+    "CEnvFade": "CLogicalEntity",
+    "CEnvGlobal": "CLogicalEntity",
+    "CEnvLaser": "CBeam",
+    "CEnvParticleGlow": "CParticleSystem",
+    "CFish": "CBaseAnimGraph",
+    "CFogVolume": "CServerOnlyModelEntity",
+    "CFuncElectrifiedVolume": "CFuncBrush",
+    "CFuncMonitor": "CFuncBrush",
+    "CFuncMoveLinear": "CBaseToggle",
+    "CFuncMoverRouter": "CLogicalEntity",
+    "CFuncTankTrain": "CFuncTrackTrain",
+    "CGunTarget": "CBaseToggle",
+    "CInfoDynamicShadowHintBox": "CInfoDynamicShadowHint",
+    "CInfoSpawnGroupLoadUnload": "CLogicalEntity",
+    "CInstancedSceneEntity": "CSceneEntity",
+    "CItem": "CBaseAnimGraph",
+    "CLogicAchievement": "CLogicalEntity",
+    "CLogicActivityEvent": "CLogicalEntity",
+    "CLogicAutosave": "CLogicalEntity",
+    "CLogicBranch": "CLogicalEntity",
+    "CLogicBranchList": "CLogicalEntity",
+    "CLogicCase": "CLogicalEntity",
+    "CLogicCollisionPair": "CLogicalEntity",
+    "CLogicCompare": "CLogicalEntity",
+    "CLogicDistanceAutosave": "CLogicalEntity",
+    "CLogicDistanceCheck": "CLogicalEntity",
+    "CLogicEventListener": "CLogicalEntity",
+    "CLogicGameEvent": "CLogicalEntity",
+    "CLogicGameEventListener": "CLogicalEntity",
+    "CLogicLineToEntity": "CLogicalEntity",
+    "CLogicMeasureMovement": "CLogicalEntity",
+    "CLogicNavigation": "CLogicalEntity",
+    "CLogicPlayerProxy": "CLogicalEntity",
+    "CLogicRelay": "CLogicalEntity",
+    "CMapSharedEnvironment": "CLogicalEntity",
+    "CMarkupVolumeTagged": "CMarkupVolume",
+    "CMathColorBlend": "CLogicalEntity",
+    "CMathCounter": "CLogicalEntity",
+    "CMathRemap": "CLogicalEntity",
+    "CMoverPathNode": "CPathNode",
+    "CMultiLightProxy": "CLogicalEntity",
+    "CMultiSource": "CLogicalEntity",
+    "COmniLight": "CBarnLight",
+    "CPathKeyFrame": "CLogicalEntity",
+    "CPathMover": "CPathWithDynamicNodes",
+    "CPathMoverEntitySpawner": "CLogicalEntity",
+    "CPhysBox": "CBreakable",
+    "CPhysConstraint": "CLogicalEntity",
+    "CPhysMagnet": "CBaseAnimGraph",
+    "CPhysMotor": "CLogicalEntity",
+    "CPhysThruster": "CPhysForce",
+    "CPhysTorque": "CPhysForce",
+    "CPhysicsEntitySolver": "CLogicalEntity",
     "CPlantedC4": "CBaseAnimGraph",
+    "CPlayerSprayDecal": "CModelPointEntity",
+    "CPointClientUIDialog": "CBaseClientUIEntity",
+    "CPointClientUIWorldPanel": "CBaseClientUIEntity",
+    "CPointCommentaryNode": "CBaseAnimGraph",
+    "CPointPrefab": "CServerOnlyPointEntity",
+    "CPointTeleport": "CServerOnlyPointEntity",
+    "CPointTemplate": "CLogicalEntity",
     "CPointWorldText": "CModelPointEntity",
     "CRagdollProp": "CBaseAnimGraph",
+    "CRectLight": "CBarnLight",
+    "CRevertSaved": "CModelPointEntity",
+    "CRuleBrushEntity": "CRuleEntity",
+    "CRulePointEntity": "CRuleEntity",
+    "CSceneListManager": "CLogicalEntity",
+    "CScriptNavBlocker": "CFuncNavBlocker",
+    "CShower": "CModelPointEntity",
+    "CSoundOpvarSetAutoRoomEntity": "CSoundOpvarSetPointEntity",
+    "CSoundOpvarSetBoxEntity": "CSoundOpvarSetPointEntity",
+    "CSoundOpvarSetPathCornerEntity": "CSoundOpvarSetPointEntity",
+    "CSoundStackSave": "CLogicalEntity",
+    "CTestPulseIO": "CLogicalEntity",
+    "CTimerEntity": "CLogicalEntity",
+    "SpawnPoint": "CServerOnlyPointEntity",
     "CBaseCSGrenadeProjectile": "CBaseGrenade",
+    "CBaseMoveBehavior": "CPathKeyFrame",
     "CBasePlayerPawn": "CBaseCombatCharacter",
     "CBasePlayerWeapon": "CEconEntity",
+    "CBombTarget": "CBaseTrigger",
     "CBreakableProp": "CBaseProp",
+    "CBuyZone": "CBaseTrigger",
+    "CChangeLevel": "CBaseTrigger",
+    "CColorCorrectionVolume": "CBaseTrigger",
+    "CEconWearable": "CEconEntity",
+    "CFilterAttributeInt": "CBaseFilter",
+    "CFilterClass": "CBaseFilter",
+    "CFilterContext": "CBaseFilter",
+    "CFilterEnemy": "CBaseFilter",
+    "CFilterMassGreater": "CBaseFilter",
+    "CFilterModel": "CBaseFilter",
+    "CFilterMultiple": "CBaseFilter",
+    "CFilterName": "CBaseFilter",
+    "CFilterProximity": "CBaseFilter",
+    "CFilterTeam": "CBaseFilter",
+    "CFogTrigger": "CBaseTrigger",
+    "CFootstepControl": "CBaseTrigger",
+    "CFuncPlat": "CBasePlatTrain",
+    "CFuncTrain": "CBasePlatTrain",
+    "CGameMoney": "CRulePointEntity",
+    "CGamePlayerZone": "CRuleBrushEntity",
+    "CGameText": "CRulePointEntity",
+    "CGenericConstraint": "CPhysConstraint",
+    "CHostageExpresserShim": "CBaseCombatCharacter",
+    "CItemDefuser": "CItem",
+    "CItemDogtags": "CItem",
+    "CItemGeneric": "CItem",
+    "CLogicActiveAutosave": "CLogicAutosave",
+    "CMarkupVolumeTagged_Nav": "CMarkupVolumeTagged",
+    "CMarkupVolumeWithRef": "CMarkupVolumeTagged",
+    "CPhysBallSocket": "CPhysConstraint",
+    "CPhysFixed": "CPhysConstraint",
+    "CPhysHinge": "CPhysConstraint",
+    "CPhysLength": "CPhysConstraint",
+    "CPhysPulley": "CPhysConstraint",
+    "CPhysSlideConstraint": "CPhysConstraint",
+    "CPhysWheelConstraint": "CPhysConstraint",
+    "CPointClientUIWorldTextPanel": "CPointClientUIWorldPanel",
+    "CPostProcessingVolume": "CBaseTrigger",
+    "CRagdollConstraint": "CPhysConstraint",
+    "CRagdollPropAttached": "CRagdollProp",
+    "CRotButton": "CBaseButton",
+    "CRotDoor": "CBaseDoor",
+    "CScriptItem": "CItem",
+    "CSplineConstraint": "CPhysConstraint",
+    "CTonemapTrigger": "CBaseTrigger",
+    "CTriggerActiveWeaponDetect": "CBaseTrigger",
+    "CTriggerBuoyancy": "CBaseTrigger",
+    "CTriggerDetectBulletFire": "CBaseTrigger",
+    "CTriggerDetectExplosion": "CBaseTrigger",
+    "CTriggerFan": "CBaseTrigger",
+    "CTriggerGameEvent": "CBaseTrigger",
+    "CTriggerHurt": "CBaseTrigger",
+    "CTriggerLerpObject": "CBaseTrigger",
+    "CTriggerMultiple": "CBaseTrigger",
+    "CTriggerPhysics": "CBaseTrigger",
+    "CTriggerProximity": "CBaseTrigger",
+    "CTriggerPush": "CBaseTrigger",
+    "CTriggerRemove": "CBaseTrigger",
+    "CTriggerSave": "CBaseTrigger",
+    "CTriggerSndSosOpvar": "CBaseTrigger",
+    "CTriggerSoundscape": "CBaseTrigger",
+    "CTriggerTeleport": "CBaseTrigger",
+    "FilterDamageType": "CBaseFilter",
+    "FilterHealth": "CBaseFilter",
     "CCSPlayerPawnBase": "CBasePlayerPawn",
     "CCSWeaponBase": "CBasePlayerWeapon",
+    "CDecoyProjectile": "CBaseCSGrenadeProjectile",
+    "CDynamicNavConnectionsVolume": "CTriggerMultiple",
     "CDynamicProp": "CBreakableProp",
+    "CFlashbangProjectile": "CBaseCSGrenadeProjectile",
+    "CFuncPlatRot": "CFuncPlat",
+    "CHostage": "CHostageExpresserShim",
+    "CMarkupVolumeTagged_NavGame": "CMarkupVolumeWithRef",
+    "CMolotovProjectile": "CBaseCSGrenadeProjectile",
+    "CMomentaryRotButton": "CRotButton",
     "CPhysicsProp": "CBreakableProp",
+    "CScriptTriggerHurt": "CTriggerHurt",
+    "CScriptTriggerMultiple": "CTriggerMultiple",
+    "CScriptTriggerPush": "CTriggerPush",
+    "CSmokeGrenadeProjectile": "CBaseCSGrenadeProjectile",
+    "CTriggerImpact": "CTriggerMultiple",
+    "CTriggerOnce": "CTriggerMultiple",
+    "CBaseCSGrenade": "CCSWeaponBase",
+    "CBasePropDoor": "CDynamicProp",
+    "CC4": "CCSWeaponBase",
     "CCSPlayerPawn": "CCSPlayerPawnBase",
+    "CCSWeaponBaseGun": "CCSWeaponBase",
+    "CChicken": "CDynamicProp",
+    "CFuncTrackChange": "CFuncPlatRot",
+    "CKnife": "CCSWeaponBase",
+    "COrnamentProp": "CDynamicProp",
+    "CPhysicsPropRespawnable": "CPhysicsProp",
+    "CScriptTriggerOnce": "CTriggerOnce",
+    "CTriggerLook": "CTriggerOnce",
+    "CWeaponBaseItem": "CCSWeaponBase",
+    "CPropDoorRotating": "CBasePropDoor",
+    "CWeaponCZ75a": "CCSWeaponBaseGun",
+    "CWeaponTaser": "CCSWeaponBaseGun",
+    "CPropDoorRotatingBreakable": "CPropDoorRotating",
   };
   // Walk the ancestor chain rather than storing every inherited accessor per class. Flattening
   // into each table duplicated the whole chain 3.77x on the CS2 class set and grew as
