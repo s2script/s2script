@@ -71,7 +71,6 @@ export interface MovementServices {
   readonly madeFootstepNoise: boolean | null;
   readonly footsteps: number | null;
   readonly stashGrenadeParameterWhen: number | null;
-  readonly buttonDownMaskPrev: string | null;
   readonly useFrictionStashedSpeed: boolean | null;
   readonly useFrictionStashedSpeedUntilFrac: number | null;
   readonly frictionStashedSpeed: number | null;
@@ -87,7 +86,6 @@ export interface MovementServices {
   readonly lastJumpVelocityZ: number | null;
   readonly jumpApexPending: boolean | null;
   readonly ticksSinceLastSurfingDetected: number | null;
-  readonly wasSurfing: boolean | null;
   readonly hasEverProcessedCommand: boolean | null;
 }
 
@@ -105,7 +103,6 @@ export interface SceneNode {
   readonly hierarchyType: number | null;
   readonly doNotSetAnimTimeInInvalidatePhysicsCount: number | null;
   readonly clientLocalScale: number | null;
-  readonly renderOrigin: Vector | null;
 }
 
 export interface WeaponServices {

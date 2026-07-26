@@ -6,10 +6,14 @@ export interface CAnimGraphControllerManager {
   graphBindingsCreated: boolean | null;
 }
 
+export interface CAnimGraphControllerPtr {
+}
+
 export interface CAttributeContainer {
   reapplyProvisionParity: number | null;
   readonly outer: EntityRef | null;
   preventLoopback: boolean | null;
+  providerType: number | null;
   readonly item: CEconItemView;
 }
 
@@ -20,7 +24,9 @@ export interface CCollisionProperty {
   readonly mins: Vector | null;
   readonly maxs: Vector | null;
   usSolidFlags: number | null;
+  solidType: number | null;
   triggerBloat: number | null;
+  surroundType: number | null;
   collisionGroup: number | null;
   enablePhysics: number | null;
   boundingRadius: number | null;
@@ -219,6 +225,12 @@ export interface CBaseEntity extends CEntityInstance {
   lifeState: number | null;
   damageAccumulator: number | null;
   takesDamage: boolean | null;
+  readonly takeDamageFlags: string | null;
+  platformType: number | null;
+  moveCollide: number | null;
+  moveType: number | null;
+  previouslySetMoveType: number | null;
+  actualMoveType: number | null;
   waterTouch: number | null;
   slimeTouch: number | null;
   restoreInHierarchy: boolean | null;
@@ -232,7 +244,6 @@ export interface CBaseEntity extends CEntityInstance {
   readonly prevVPhysicsUpdatePos: Vector | null;
   teamNum: number | null;
   sentToClients: number | null;
-  speed: number | null;
   spawnflags: number | null;
   nextThinkTick: number | null;
   simulationTick: number | null;
@@ -265,6 +276,7 @@ export interface CBaseEntity extends CEntityInstance {
   readonly blocker: EntityRef | null;
   localTime: number | null;
   vPhysicsUpdateLocalTime: number | null;
+  bloodType: number | null;
   readonly networkTransmitComponent: CNetworkTransmitComponent;
   readonly onKilled: CEntityIOOutput;
   readonly velocity: CNetworkVelocityVector;
@@ -278,6 +290,11 @@ export interface CMultiplayRules extends CGameRules {
 }
 
 export interface CBaseModelEntity extends CBaseEntity {
+  destructiblePartInitialStateDestructed0: number | null;
+  destructiblePartInitialStateDestructed1: number | null;
+  destructiblePartInitialStateDestructed2: number | null;
+  destructiblePartInitialStateDestructed3: number | null;
+  destructiblePartInitialStateDestructed4: number | null;
   destructiblePartInitialStateDestructed0_PartIndex: number | null;
   destructiblePartInitialStateDestructed1_PartIndex: number | null;
   destructiblePartInitialStateDestructed2_PartIndex: number | null;
@@ -289,6 +306,8 @@ export interface CBaseModelEntity extends CBaseEntity {
   destructiblePartInitialStateDestructed3_GenerateBreakpieces: boolean | null;
   destructiblePartInitialStateDestructed4_GenerateBreakpieces: boolean | null;
   dissolveStartTime: number | null;
+  renderMode: number | null;
+  renderFX: number | null;
   allowFadeInView: boolean | null;
   render: number | null;
   renderToCubemaps: boolean | null;
@@ -313,12 +332,15 @@ export interface CBasePlayerController extends CBaseEntity {
   knownTeamMismatch: boolean | null;
   readonly splitOwner: EntityRef | null;
   isHLTV: boolean | null;
+  connected: number | null;
+  mostConnected: number | null;
   readonly playerName: string | null;
   lerpTime: number | null;
   lagCompensation: boolean | null;
   predict: boolean | null;
   isLowViolence: boolean | null;
   gamePaused: boolean | null;
+  ignoreGlobalChat: number | null;
   lastPlayerTalkTime: number | null;
   lastEntitySteadyState: number | null;
   availableEntitySteadyState: number | null;
@@ -345,10 +367,13 @@ export interface CBaseAnimGraph extends CBaseModelEntity {
   ragdollEnabled: boolean | null;
   ragdollClientSide: boolean | null;
   readonly graphControllerManager: CAnimGraphControllerManager;
+  readonly mainGraphController: CAnimGraphControllerPtr;
+  readonly onExternalChoreoGraphChanged: CEntityIOOutput;
   readonly ragdollPose: PhysicsRagdollPose_t;
 }
 
 export interface CBaseToggle extends CBaseModelEntity {
+  toggle_state: number | null;
   moveDistance: number | null;
   wait: number | null;
   lip: number | null;
@@ -371,6 +396,7 @@ export interface CBeam extends CBaseModelEntity {
   fireTime: number | null;
   damage: number | null;
   numBeamEnts: number | null;
+  beamType: number | null;
   beamFlags: number | null;
   width: number | null;
   endWidth: number | null;
@@ -378,7 +404,7 @@ export interface CBeam extends CBaseModelEntity {
   haloScale: number | null;
   amplitude: number | null;
   startFrame: number | null;
-  m_fSpeed: number | null;
+  speed: number | null;
   frame: number | null;
   turnedOff: boolean | null;
   readonly endPos: Vector | null;
@@ -583,6 +609,7 @@ export interface CCSPlayerController extends CBasePlayerController {
   endMatchNextMapVote: number | null;
   activeQuestId: number | null;
   rtActiveMissionPeriod: number | null;
+  questProgressReason: number | null;
   playerTvControlFlags: number | null;
   draftIndex: number | null;
   msQueuedModeDisconnectionTimestamp: number | null;
@@ -666,6 +693,7 @@ export interface CBaseButton extends CBaseToggle {
   rotating: boolean | null;
   locked: boolean | null;
   disabled: boolean | null;
+  speed: number | null;
   useLockedTime: number | null;
   solidBsp: boolean | null;
   state: number | null;
@@ -685,6 +713,7 @@ export interface CBaseCombatCharacter extends CBaseAnimGraph {
   impactEnergyScale: number | null;
   applyStressDamage: boolean | null;
   deathEventsDispatched: boolean | null;
+  hull: number | null;
   navHullIdx: number | null;
   readonly movementStats: CMovementStatsProperty;
 }
@@ -697,9 +726,11 @@ export interface CBaseDoor extends CBaseToggle {
   locked: boolean | null;
   ignoreDebris: boolean | null;
   noNPCs: boolean | null;
+  spawnPosition: number | null;
   blockDamage: number | null;
   loopMoveSound: boolean | null;
   createNavObstacle: boolean | null;
+  speed: number | null;
   isChaining: boolean | null;
   isUsable: boolean | null;
   readonly ls: locksound_t;
@@ -715,6 +746,7 @@ export interface CBaseDoor extends CBaseToggle {
 }
 
 export interface CBaseGrenade extends CBaseAnimGraph {
+  damageDetonating: boolean | null;
   hasWarnedAI: boolean | null;
   isSmokeGrenade: boolean | null;
   isLive: boolean | null;
@@ -746,6 +778,7 @@ export interface CBaseTrigger extends CBaseToggle {
   readonly onTouching: CEntityIOOutput;
   readonly onTouchingEachEntity: CEntityIOOutput;
   readonly onNotTouching: CEntityIOOutput;
+  readonly onTouchingChanged: CEntityIOOutput;
 }
 
 export interface CEconEntity extends CBaseAnimGraph {
@@ -803,13 +836,19 @@ export interface CPointWorldText extends CModelPointEntity {
   backgroundBorderHeight: number | null;
   backgroundWorldToUV: number | null;
   color: number | null;
+  justifyHorizontal: number | null;
+  justifyVertical: number | null;
+  reorientMode: number | null;
 }
 
 export interface CRagdollProp extends CBaseAnimGraph {
   startDisabled: boolean | null;
+  massScale: number | null;
+  buoyancyScale: number | null;
   lastUpdateTickCount: number | null;
   allAsleep: boolean | null;
   firstCollisionAfterLaunch: boolean | null;
+  navObstacleType: number | null;
   updateNavWhenMoving: boolean | null;
   forceNavObstacleCut: boolean | null;
   attachedToReferenceFrame: boolean | null;
@@ -827,6 +866,7 @@ export interface CRagdollProp extends CBaseAnimGraph {
   blendWeight: number | null;
   defaultFadeScale: number | null;
   shouldDeleteActivationRecord: boolean | null;
+  readonly cPropDataComponent: CPropDataComponent;
   readonly ragdoll: ragdoll_t;
 }
 
@@ -880,7 +920,9 @@ export interface CBreakableProp extends CBaseProp {
   defBurstScale: number | null;
   readonly defBurstOffset: Vector | null;
   readonly breaker: EntityRef | null;
+  performanceMode: number | null;
   preventDamageBeforeTime: number | null;
+  breakableContentsType: number | null;
   hasBreakPiecesOrCommands: boolean | null;
   explodeDamage: number | null;
   explodeRadius: number | null;
@@ -900,6 +942,7 @@ export interface CBreakableProp extends CBaseProp {
 export interface CCSPlayerPawnBase extends CBasePlayerPawn {
   blindUntilTime: number | null;
   blindStartTime: number | null;
+  playerState: number | null;
   respawning: boolean | null;
   hasMovedSinceSpawn: boolean | null;
   numSpawns: number | null;
@@ -917,12 +960,14 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
   removeable: boolean | null;
   playerAmmoStockOnPickup: boolean | null;
   requireUseToTouch: boolean | null;
+  weaponGameplayAnimState: number | null;
   weaponGameplayAnimStateTimestamp: number | null;
   inspectCancelCompleteTime: number | null;
   inspectPending: boolean | null;
   inspectShouldLoop: boolean | null;
   lastEmptySoundCmdNum: number | null;
   fireOnEmpty: boolean | null;
+  weaponMode: number | null;
   turningInaccuracyDelta: number | null;
   readonly turningInaccuracyEyeDirLast: Vector | null;
   turningInaccuracy: number | null;
@@ -971,10 +1016,12 @@ export interface CDynamicProp extends CBreakableProp {
   navObstacleUpdatesOverridden: boolean | null;
   useHitboxesForRenderBox: boolean | null;
   useAnimGraph: boolean | null;
+  idleAnimLoopMode: number | null;
   randomizeCycle: boolean | null;
   startDisabled: boolean | null;
   firedStartEndOutput: boolean | null;
   forceNpcExclude: boolean | null;
+  createMovableSurfaceGraph: boolean | null;
   createNonSolid: boolean | null;
   isOverrideProp: boolean | null;
   initialGlowState: number | null;
@@ -1005,6 +1052,7 @@ export interface CPhysicsProp extends CBreakableProp {
   hasBeenAwakened: boolean | null;
   isOverrideProp: boolean | null;
   lastBurn: number | null;
+  dynamicContinuousContactBehavior: number | null;
   nextCheckDisableMotionContactsTime: number | null;
   initialGlowState: number | null;
   glowRange: number | null;
@@ -1012,11 +1060,13 @@ export interface CPhysicsProp extends CBreakableProp {
   glowColor: number | null;
   shouldAutoConvertBackFromDebris: boolean | null;
   muteImpactEffects: boolean | null;
+  navObstacleType: number | null;
   updateNavWhenMoving: boolean | null;
   forceNavObstacleCut: boolean | null;
   allowObstacleConvexHullMerging: boolean | null;
   acceptDamageFromHeldObjects: boolean | null;
   enableUseOutput: boolean | null;
+  crateType: number | null;
   removableForAmmoBalancing: boolean | null;
   awake: boolean | null;
   attachedToReferenceFrame: boolean | null;
@@ -1044,6 +1094,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   retakesHasDefuseKit: boolean | null;
   retakesMVPLastRound: boolean | null;
   retakesMVPBoostItem: number | null;
+  retakesMVPBoostExtraUtility: number | null;
   healthShotBoostExpirationTime: number | null;
   landingTimeSeconds: number | null;
   isBuyMenuOpen: boolean | null;
@@ -1055,7 +1106,6 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   nextSprayDecalTimeExpedited: boolean | null;
   ragdollDamageBone: number | null;
   readonly ragdollDamageForce: Vector | null;
-  readonly ragdollDamagePosition: Vector | null;
   readonly ragdollDamageWeaponName: string | null;
   ragdollDamageHeadshot: boolean | null;
   readonly ragdollServerOrigin: Vector | null;
@@ -1080,6 +1130,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   resumeZoom: boolean | null;
   isDefusing: boolean | null;
   isGrabbingHostage: boolean | null;
+  blockingUseActionInProgress: number | null;
   emitSoundTime: number | null;
   inNoDefuseArea: boolean | null;
   whichBombZone: number | null;

@@ -64,7 +64,6 @@
     "madeFootstepNoise": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bMadeFootstepNoise")); } },
     "footsteps": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_iFootsteps")); } },
     "stashGrenadeParameterWhen": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_fStashGrenadeParameterWhen")); } },
-    "buttonDownMaskPrev": { get: function () { var v = this.root.readUInt64Via(this.path, off("CCSPlayer_MovementServices","m_nButtonDownMaskPrev")); return v === null ? null : v.toString(); } },
     "useFrictionStashedSpeed": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bUseFrictionStashedSpeed")); } },
     "useFrictionStashedSpeedUntilFrac": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flUseFrictionStashedSpeedUntilFrac")); } },
     "frictionStashedSpeed": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flFrictionStashedSpeed")); } },
@@ -80,7 +79,6 @@
     "lastJumpVelocityZ": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastJumpVelocityZ")); } },
     "jumpApexPending": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bJumpApexPending")); } },
     "ticksSinceLastSurfingDetected": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flTicksSinceLastSurfingDetected")); } },
-    "wasSurfing": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bWasSurfing")); } },
     "hasEverProcessedCommand": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bHasEverProcessedCommand")); } },
   });
   function SceneNode(root, path) { this.root = root; this.path = path; }
@@ -98,7 +96,6 @@
     "hierarchyType": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nHierarchyType")); } },
     "doNotSetAnimTimeInInvalidatePhysicsCount": { get: function () { return this.root.readUInt8Via(this.path, off("CGameSceneNode","m_nDoNotSetAnimTimeInInvalidatePhysicsCount")); } },
     "clientLocalScale": { get: function () { return this.root.readFloat32Via(this.path, off("CGameSceneNode","m_flClientLocalScale")); } },
-    "renderOrigin": { get: function () { var a = this.root.readFloatsChain(this.path, off("CGameSceneNode","m_vRenderOrigin"), 3); return a === null ? null : new Vector(a[0], a[1], a[2]); } },
   });
   function WeaponServices(root, path) { this.root = root; this.path = path; }
   Object.defineProperties(WeaponServices.prototype, {
