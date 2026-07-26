@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { idiomaticName, classifyField, buildModel, flattenedFields, transparentValue, TSTYPE } from "../src/schemagen/model.ts";
+import { idiomaticName, classifyField, buildModel, flattenedFields, transparentValue, enumMemberNames, enumTsName, TSTYPE } from "../src/schemagen/model.ts";
 
 test("idiomaticName strips m_ + Hungarian tag, camelCases", () => {
   assert.equal(idiomaticName("m_iHealth"), "health");
@@ -315,10 +315,11 @@ test("ancestor-wins makes naming independent of which descendants are generated"
 // --- enums ------------------------------------------------------------------
 
 test("an enum maps to an unsigned reader of its stated width", () => {
-  assert.deepEqual(classifyField({ kind: "enum", name: "Team_t", size: 1 }), { accessorKind: "u8", writable: true });
-  assert.deepEqual(classifyField({ kind: "enum", name: "MoveType_t", size: 2 }), { accessorKind: "u16", writable: true });
-  assert.deepEqual(classifyField({ kind: "enum", name: "SolidType_t", size: 4 }), { accessorKind: "u32", writable: true });
-  assert.deepEqual(classifyField({ kind: "enum", name: "Big_t", size: 8 }), { accessorKind: "u64", writable: false });
+  // enumType rides along so the emitters can declare the field as the enum rather than a bare number.
+  assert.deepEqual(classifyField({ kind: "enum", name: "Team_t", size: 1 }), { accessorKind: "u8", writable: true, enumType: "Team_t" });
+  assert.deepEqual(classifyField({ kind: "enum", name: "MoveType_t", size: 2 }), { accessorKind: "u16", writable: true, enumType: "MoveType_t" });
+  assert.deepEqual(classifyField({ kind: "enum", name: "SolidType_t", size: 4 }), { accessorKind: "u32", writable: true, enumType: "SolidType_t" });
+  assert.deepEqual(classifyField({ kind: "enum", name: "Big_t", size: 8 }), { accessorKind: "u64", writable: false, enumType: "Big_t" });
 });
 
 test("an enum with no stated width still skips, and says why", () => {
@@ -339,4 +340,84 @@ test("enum fields become real properties on the generated class", () => {
   assert.deepEqual(m.classes[0].ownFields.map((f) => [f.propName, f.accessorKind, f.writable]),
     [["teamNum", "u8", true]]);
   assert.ok(m.classes[0].skipped.some((s) => s.rawName === "m_nUnbound"));
+});
+
+// --- enumerator naming ------------------------------------------------------
+
+test("a shared enum prefix is stripped", () => {
+  // Case is PRESERVED, not converted. `MOVETYPE_VPHYSICS` has no unambiguous PascalCase form
+  // (`Vphysics`? `VPhysics`?), so guessing would be lossy and could collide.
+  assert.deepEqual(enumMemberNames("MoveType_t", ["MOVETYPE_NONE", "MOVETYPE_FLY"]),
+    { MOVETYPE_NONE: "NONE", MOVETYPE_FLY: "FLY" });
+  // the `kRenderNone` convention
+  assert.deepEqual(enumMemberNames("RenderMode_t", ["kRenderNormal", "kRenderNone"]),
+    { kRenderNormal: "RenderNormal", kRenderNone: "RenderNone" });
+});
+
+test("stripping is all-or-nothing per enum", () => {
+  // One member that does not share the prefix keeps the WHOLE enum raw — a partly-stripped enum is
+  // worse than an unstripped one, because the caller cannot predict which form a member takes.
+  assert.deepEqual(enumMemberNames("MoveType_t", ["MOVETYPE_NONE", "SOMETHING_ELSE"]),
+    { MOVETYPE_NONE: "MOVETYPE_NONE", SOMETHING_ELSE: "SOMETHING_ELSE" });
+});
+
+test("stripping that would collide keeps raw names", () => {
+  // Both would become "X"; silently dropping one would lose a constant.
+  assert.deepEqual(enumMemberNames("E_t", ["E_X", "EX"]), { E_X: "E_X", EX: "EX" });
+});
+
+test("a stripped name that would start with a digit is prefixed, not emitted invalid", () => {
+  assert.deepEqual(enumMemberNames("Slot_t", ["SLOT_1", "SLOT_2"]), { SLOT_1: "_1", SLOT_2: "_2" });
+});
+
+test("an enum whose member IS the prefix keeps raw names", () => {
+  // Stripping would leave an empty identifier.
+  assert.deepEqual(enumMemberNames("Foo_t", ["FOO"]), { FOO: "FOO" });
+});
+
+test("a nested enum name is sanitised into a legal identifier", () => {
+  // The schema names nested enums `CFuncMover::Move_t`. Emitting `::` produced a .d.ts that would
+  // not parse at all — every consumer's typecheck failed, not just the enum's own users.
+  assert.equal(enumTsName("CFuncMover::Move_t"), "CFuncMover__Move_t");
+  assert.equal(enumTsName("MoveType_t"), "MoveType_t");
+  assert.equal(enumTsName("9Lives"), "_9Lives");
+});
+
+test("enums that sanitise to the SAME identifier are dropped, not emitted ambiguously", () => {
+  const catalog = { Base: { parent: null, fields: [
+    { name: "m_a", offset: 8, type: { kind: "enum", name: "A::B_t", size: 1 } },
+    { name: "m_b", offset: 12, type: { kind: "enum", name: "A:.B_t", size: 1 } },
+    { name: "m_c", offset: 16, type: { kind: "enum", name: "Fine_t", size: 1 } },
+  ] } };
+  const enums = {
+    "A::B_t": { size: 1, values: { X: 1 } },
+    "A:.B_t": { size: 1, values: { Y: 2 } },
+    "Fine_t": { size: 1, values: { Z: 3 } },
+  };
+  const m = buildModel(catalog, ["Base"], [], enums);
+  // Both collapse to A__B_t; emitting either would silently bind the wrong constants.
+  assert.deepEqual(m.enums.map((e) => e.tsName), ["Fine_t"]);
+  assert.ok(m.collisions.some((c) => c.includes("ambiguous")));
+  // The dropped ones fall back to plain integers rather than dangling on a missing type.
+  const fa = m.classes[0].ownFields.find((f) => f.rawName === "m_a");
+  assert.equal(fa.accessorKind, "u8");
+});
+
+test("only enums a generated field references are emitted", () => {
+  const catalog = { Base: { parent: null, fields: [
+    { name: "m_used", offset: 8, type: { kind: "enum", name: "Used_t", size: 1 } },
+  ] } };
+  const enums = { Used_t: { size: 1, values: { A: 1 } }, Unused_t: { size: 1, values: { B: 2 } } };
+  const m = buildModel(catalog, ["Base"], [], enums);
+  // The dump describes 500+ game enums; shipping constants nothing can be assigned to is noise.
+  assert.deepEqual(m.enums.map((e) => e.className), ["Used_t"]);
+});
+
+test("an enum field with no dumped table stays a plain integer", () => {
+  const catalog = { Base: { parent: null, fields: [
+    { name: "m_x", offset: 8, type: { kind: "enum", name: "Undumped_t", size: 4 } },
+  ] } };
+  const m = buildModel(catalog, ["Base"], [], {});
+  assert.deepEqual(m.enums, []);
+  assert.equal(m.classes[0].ownFields[0].accessorKind, "u32");
 });

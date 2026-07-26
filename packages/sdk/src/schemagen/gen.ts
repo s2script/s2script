@@ -5,6 +5,8 @@ import { emitDts } from "./emit-dts.ts";
 import { emitJs } from "./emit-js.ts";
 
 const CATALOG_PATH = "games/cs2/gamedata/schema-catalog.json";
+/** Enum widths + enumerators. Its own file: the catalog serializes as a bare class map. */
+const ENUMS_PATH = "games/cs2/gamedata/schema-enums.json";
 const LIST_PATH = "games/cs2/codegen-classes.json";
 /** Structs embedded inline in a generated class that should be exposed as nested accessors. */
 const EMBED_PATH = "games/cs2/codegen-embedded.json";
@@ -18,7 +20,10 @@ export function runGenSchema(repoRoot: string, opts: { check: boolean }): { clas
   // Optional: a repo without the file simply generates no embedded structs.
   let embed: string[] = [];
   try { embed = JSON.parse(readFileSync(join(repoRoot, EMBED_PATH), "utf8")); } catch { /* absent */ }
-  const model = buildModel(catalog, list, embed);
+  // Absent enum table = enum fields stay plain integers, exactly as before it existed.
+  let enumCatalog = {};
+  try { enumCatalog = JSON.parse(readFileSync(join(repoRoot, ENUMS_PATH), "utf8")); } catch { /* absent */ }
+  const model = buildModel(catalog, list, embed, enumCatalog);
   const dts = emitDts(model);
   const js = emitJs(model);
 

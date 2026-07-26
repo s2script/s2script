@@ -58,7 +58,10 @@ pub type EmitFieldFn = extern "C" fn(
     ctx: *mut c_void, cls: *const c_char, name: *const c_char, offset: c_int,
     kind: *const c_char, type_name: *const c_char, inner: *const c_char, size: c_int,
 );
-pub type SchemaEnumerateFn = extern "C" fn(ctx: *mut c_void, emit_class: EmitClassFn, emit_field: EmitFieldFn) -> c_int;
+pub type EmitEnumFn = extern "C" fn(
+    ctx: *mut c_void, enum_name: *const c_char, size: c_int, enumerator: *const c_char, value: i64,
+);
+pub type SchemaEnumerateFn = extern "C" fn(ctx: *mut c_void, emit_class: EmitClassFn, emit_field: EmitFieldFn, emit_enum: EmitEnumFn) -> c_int;
 
 // ---------------------------------------------------------------------------
 // Slice 5D.1: game-event engine-ops (C-ABI; T3's C header must match exactly).
@@ -5238,7 +5241,19 @@ extern "C" fn cb_emit_field(
     }));
 }
 
-/// Native `__s2_schema_dump(path: string) -> boolean`.
+/// C-ABI callback invoked by the shim's `schema_enumerate` once per ENUMERATOR.
+extern "C" fn cb_emit_enum(
+    ctx: *mut c_void, enum_name: *const c_char, size: c_int, enumerator: *const c_char, value: i64,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if ctx.is_null() || enum_name.is_null() || enumerator.is_null() { return; }
+        let catalog = unsafe { &mut *(ctx as *mut crate::schema_catalog::Catalog) };
+        let s = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        catalog.add_enum(&s(enum_name), size as i32, &s(enumerator), value);
+    }));
+}
+
+/// Native `__s2_schema_dump(path: string, enumsPath?: string) -> boolean`.
 ///
 /// Drives the shim's `schema_enumerate` op: builds a `Catalog` from the live SchemaSystem (via the
 /// `cb_emit_class`/`cb_emit_field` C-ABI callbacks), then serializes it and writes JSON to `path`.
@@ -5253,6 +5268,13 @@ fn s2_schema_dump(
         rv.set_bool(false);
         if args.length() < 1 { return; }
         let path = args.get(0).to_rust_string_lossy(scope);
+        // Optional: enums go in their OWN file. The catalog serializes as a bare class map, so a
+        // sibling section would change that shape for every existing consumer.
+        let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+            Some(args.get(1).to_rust_string_lossy(scope))
+        } else {
+            None
+        };
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
             log_warn("WARN: __s2_schema_dump: no engine ops table");
             return;
@@ -5262,15 +5284,26 @@ fn s2_schema_dump(
             return;
         };
         let mut catalog = crate::schema_catalog::Catalog::new();
-        let ok = enumerate(&mut catalog as *mut _ as *mut c_void, cb_emit_class, cb_emit_field);
+        let ok = enumerate(&mut catalog as *mut _ as *mut c_void, cb_emit_class, cb_emit_field, cb_emit_enum);
         if ok == 0 || catalog.class_count() == 0 {
             log_warn("WARN: __s2_schema_dump: schema not ready (no classes) — try again once a map is live");
             return;
         }
-        match std::fs::write(&path, catalog.to_json()) {
-            Ok(()) => rv.set_bool(true),
-            Err(e) => log_warn(&format!("WARN: __s2_schema_dump: write '{}' failed: {}", path, e)),
+        if let Err(e) = std::fs::write(&path, catalog.to_json()) {
+            log_warn(&format!("WARN: __s2_schema_dump: write '{}' failed: {}", path, e));
+            return;
         }
+        // A requested enums file that cannot be written is a FAILURE, not a partial success: the
+        // caller asked for both, and returning true would leave a stale enum table paired with a
+        // fresh catalog — the two would disagree about which enums exist.
+        if let Some(ep) = enums_path {
+            if let Err(e) = std::fs::write(&ep, catalog.enums_json()) {
+                log_warn(&format!("WARN: __s2_schema_dump: write '{}' failed: {}", ep, e));
+                return;
+            }
+            log_warn(&format!("__s2_schema_dump: {} enums -> {}", catalog.enum_count(), ep));
+        }
+        rv.set_bool(true);
     }));
 }
 
@@ -6859,6 +6892,13 @@ fn s2_usermsg_read_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
         let path = args.get(0).to_rust_string_lossy(scope);
+        // Optional: enums go in their OWN file. The catalog serializes as a bare class map, so a
+        // sibling section would change that shape for every existing consumer.
+        let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+            Some(args.get(1).to_rust_string_lossy(scope))
+        } else {
+            None
+        };
         let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
         let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_read_int) else { return };
         let mut out: i64 = 0;
@@ -6874,6 +6914,13 @@ fn s2_usermsg_read_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
         let path = args.get(0).to_rust_string_lossy(scope);
+        // Optional: enums go in their OWN file. The catalog serializes as a bare class map, so a
+        // sibling section would change that shape for every existing consumer.
+        let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+            Some(args.get(1).to_rust_string_lossy(scope))
+        } else {
+            None
+        };
         let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
         let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_read_float) else { return };
         let mut out: f64 = 0.0;
@@ -6889,6 +6936,13 @@ fn s2_usermsg_read_string(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
         let path = args.get(0).to_rust_string_lossy(scope);
+        // Optional: enums go in their OWN file. The catalog serializes as a bare class map, so a
+        // sibling section would change that shape for every existing consumer.
+        let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+            Some(args.get(1).to_rust_string_lossy(scope))
+        } else {
+            None
+        };
         let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
         let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_read_string) else { return };
         let mut buf = [0u8; 4096];
@@ -6906,6 +6960,13 @@ fn s2_usermsg_has_field(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_int32(-1);
         let path = args.get(0).to_rust_string_lossy(scope);
+        // Optional: enums go in their OWN file. The catalog serializes as a bare class map, so a
+        // sibling section would change that shape for every existing consumer.
+        let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+            Some(args.get(1).to_rust_string_lossy(scope))
+        } else {
+            None
+        };
         let pc = match std::ffi::CString::new(path) { Ok(c) => c, Err(_) => return };
         if let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_has_field) {
             rv.set_int32(f(pc.as_ptr()));
@@ -7036,6 +7097,13 @@ fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         let ops = ENGINE_OPS.with(|o| o.get());
         let Some(f) = ops.and_then(|o| o.sound_precache_add) else { return };
         let path = args.get(0).to_rust_string_lossy(scope);
+        // Optional: enums go in their OWN file. The catalog serializes as a bare class map, so a
+        // sibling section would change that shape for every existing consumer.
+        let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+            Some(args.get(1).to_rust_string_lossy(scope))
+        } else {
+            None
+        };
         let Ok(c_path) = std::ffi::CString::new(path) else { return };
         rv.set_bool(f(c_path.as_ptr()) == 1);
     }));
@@ -14181,12 +14249,15 @@ mod frame_tests {
 
     /// A stub shim-side enumerate: emits one class + two fields via the core callbacks.
     /// Generic names only (CTest/CBase/m_x/m_h/CThing) — no CS2 identifiers.
-    extern "C" fn stub_enumerate(ctx: *mut c_void, ec: EmitClassFn, ef: EmitFieldFn) -> c_int {
+    extern "C" fn stub_enumerate(ctx: *mut c_void, ec: EmitClassFn, ef: EmitFieldFn, ee: EmitEnumFn) -> c_int {
         ec(ctx, b"CTest\0".as_ptr() as *const c_char, b"CBase\0".as_ptr() as *const c_char);
         ef(ctx, b"CTest\0".as_ptr() as *const c_char, b"m_x\0".as_ptr() as *const c_char, 8,
            b"atomic\0".as_ptr() as *const c_char, b"int32\0".as_ptr() as *const c_char, std::ptr::null(), 0);
         ef(ctx, b"CTest\0".as_ptr() as *const c_char, b"m_h\0".as_ptr() as *const c_char, 12,
            b"handle\0".as_ptr() as *const c_char, std::ptr::null(), b"CThing\0".as_ptr() as *const c_char, 0);
+        // Two enumerators of one enum, so the dump's enum table has something to serialize.
+        ee(ctx, b"MoveType_t\0".as_ptr() as *const c_char, 1, b"MOVETYPE_NONE\0".as_ptr() as *const c_char, 0);
+        ee(ctx, b"MoveType_t\0".as_ptr() as *const c_char, 1, b"MOVETYPE_FLY\0".as_ptr() as *const c_char, 5);
         1
     }
 

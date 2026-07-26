@@ -31,7 +31,14 @@ typedef void (*s2_emit_class_fn)(void* ctx, const char* name, const char* parent
 typedef void (*s2_emit_field_fn)(void* ctx, const char* cls, const char* name, int offset,
                                  const char* kind, const char* type_name, const char* inner,
                                  int size);
-typedef int  (*s2_schema_enumerate_fn)(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field);
+/* One enumerator of one declared enum. `size` is the enum's byte width (1/2/4/8); `value` is the
+ * enumerator's value, widened to 64-bit signed because the schema stores it as int64. Emitted for
+ * every enum in the type scope, so an enum no field happens to use is still described — a plugin can
+ * legitimately want the constants without the field. */
+typedef void (*s2_emit_enum_fn)(void* ctx, const char* enum_name, int size,
+                                const char* enumerator, long long value);
+typedef int  (*s2_schema_enumerate_fn)(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field,
+                                       s2_emit_enum_fn emit_enum);
 
 /* Game-event engine-ops (Slice 5D.1). The shim implements these; the core calls them.
  * event_subscribe/unsubscribe track which events the JS layer has subscribed to and
