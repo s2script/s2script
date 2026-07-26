@@ -2188,16 +2188,23 @@ static void Detour_HostSay(void* pController, void* pCmd, bool teamonly, int a4,
 /// kind stays "unknown" for unmapped categories; the raw type name is still forwarded so core
 /// records {kind:"unknown", name:...} rather than dropping the field.
 static void schema_type_to_kind(CSchemaType* t, const char** kind,
-                                const char** type_name, const char** inner) {
-    *kind = "unknown"; *type_name = nullptr; *inner = nullptr;
+                                const char** type_name, const char** inner, int* size) {
+    *kind = "unknown"; *type_name = nullptr; *inner = nullptr; *size = 0;
     if (!t) return;
     switch (t->m_eTypeCategory) {
         case SCHEMA_TYPE_BUILTIN:
             *kind = "atomic"; *type_name = t->m_sTypeName.Get(); break;
         case SCHEMA_TYPE_DECLARED_CLASS:
             *kind = "class";  *type_name = t->m_sTypeName.Get(); break;
-        case SCHEMA_TYPE_DECLARED_ENUM:
-            *kind = "enum";   *type_name = t->m_sTypeName.Get(); break;
+        case SCHEMA_TYPE_DECLARED_ENUM: {
+            *kind = "enum";   *type_name = t->m_sTypeName.Get();
+            // The width comes off the enum's own binding (SchemaEnumInfoData_t::m_nSize, 1/2/4/8).
+            // Null-guarded: an enum whose binding has not been installed yet reports 0, and the
+            // codegen then skips it exactly as before rather than guessing a width.
+            auto* e = static_cast<CSchemaType_DeclaredEnum*>(t);
+            if (e->m_pEnumInfo) *size = (int)e->m_pEnumInfo->m_nSize;
+            break;
+        }
         case SCHEMA_TYPE_POINTER: {
             *kind = "ptr";
             auto* p = static_cast<CSchemaType_Ptr*>(t);
@@ -2244,9 +2251,10 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
             const SchemaClassFieldData_t& f = ci->m_pFields[j];
             if (!f.m_pszName) continue;
             const char* kind = "unknown"; const char* type_name = nullptr; const char* inner = nullptr;
-            schema_type_to_kind(f.m_pType, &kind, &type_name, &inner);
+            int size = 0;
+            schema_type_to_kind(f.m_pType, &kind, &type_name, &inner, &size);
             emit_field(ctx, ci->m_pszName, f.m_pszName, f.m_nSingleInheritanceOffset,
-                       kind, type_name, inner);
+                       kind, type_name, inner, size);
         }
     };
 

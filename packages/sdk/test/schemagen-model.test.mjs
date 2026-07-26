@@ -311,3 +311,32 @@ test("ancestor-wins makes naming independent of which descendants are generated"
   const nameIn = (m) => m.classes.find((c) => c.className === "Root").ownFields[0].propName;
   assert.equal(nameIn(withLeaf), nameIn(without));
 });
+
+// --- enums ------------------------------------------------------------------
+
+test("an enum maps to an unsigned reader of its stated width", () => {
+  assert.deepEqual(classifyField({ kind: "enum", name: "Team_t", size: 1 }), { accessorKind: "u8", writable: true });
+  assert.deepEqual(classifyField({ kind: "enum", name: "MoveType_t", size: 2 }), { accessorKind: "u16", writable: true });
+  assert.deepEqual(classifyField({ kind: "enum", name: "SolidType_t", size: 4 }), { accessorKind: "u32", writable: true });
+  assert.deepEqual(classifyField({ kind: "enum", name: "Big_t", size: 8 }), { accessorKind: "u64", writable: false });
+});
+
+test("an enum with no stated width still skips, and says why", () => {
+  // The width is dumped from the live SchemaSystem, never assumed -- an enum whose binding did not
+  // report one must skip rather than be guessed at.
+  const noSize = classifyField({ kind: "enum", name: "Mystery_t" });
+  assert.ok("skip" in noSize);
+  assert.match(noSize.skip, /byte width not stated/);
+  assert.ok("skip" in classifyField({ kind: "enum", name: "Odd_t", size: 3 }));
+});
+
+test("enum fields become real properties on the generated class", () => {
+  const catalog = { Base: { parent: null, fields: [
+    { name: "m_iTeamNum", offset: 8, type: { kind: "enum", name: "Team_t", size: 1 } },
+    { name: "m_nUnbound", offset: 12, type: { kind: "enum", name: "Mystery_t" } },
+  ] } };
+  const m = buildModel(catalog, ["Base"]);
+  assert.deepEqual(m.classes[0].ownFields.map((f) => [f.propName, f.accessorKind, f.writable]),
+    [["teamNum", "u8", true]]);
+  assert.ok(m.classes[0].skipped.some((s) => s.rawName === "m_nUnbound"));
+});

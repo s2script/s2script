@@ -56,7 +56,7 @@ pub type ConCommandRegisterFn = extern "C" fn(name: *const c_char);
 pub type EmitClassFn = extern "C" fn(ctx: *mut c_void, name: *const c_char, parent: *const c_char);
 pub type EmitFieldFn = extern "C" fn(
     ctx: *mut c_void, cls: *const c_char, name: *const c_char, offset: c_int,
-    kind: *const c_char, type_name: *const c_char, inner: *const c_char,
+    kind: *const c_char, type_name: *const c_char, inner: *const c_char, size: c_int,
 );
 pub type SchemaEnumerateFn = extern "C" fn(ctx: *mut c_void, emit_class: EmitClassFn, emit_field: EmitFieldFn) -> c_int;
 
@@ -5226,7 +5226,7 @@ extern "C" fn cb_emit_class(ctx: *mut c_void, name: *const c_char, parent: *cons
 /// C-ABI callback invoked by the shim's `schema_enumerate` once per field.
 extern "C" fn cb_emit_field(
     ctx: *mut c_void, cls: *const c_char, name: *const c_char, offset: c_int,
-    kind: *const c_char, type_name: *const c_char, inner: *const c_char,
+    kind: *const c_char, type_name: *const c_char, inner: *const c_char, size: c_int,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if ctx.is_null() || cls.is_null() || name.is_null() || kind.is_null() { return; }
@@ -5234,7 +5234,7 @@ extern "C" fn cb_emit_field(
         let s = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
         let opt = |p: *const c_char| if p.is_null() { None } else { Some(s(p)) };
         catalog.add_field(&s(cls), &s(name), offset as i32, &s(kind),
-                          opt(type_name).as_deref(), opt(inner).as_deref());
+                          opt(type_name).as_deref(), opt(inner).as_deref(), size as i32);
     }));
 }
 
@@ -14184,9 +14184,9 @@ mod frame_tests {
     extern "C" fn stub_enumerate(ctx: *mut c_void, ec: EmitClassFn, ef: EmitFieldFn) -> c_int {
         ec(ctx, b"CTest\0".as_ptr() as *const c_char, b"CBase\0".as_ptr() as *const c_char);
         ef(ctx, b"CTest\0".as_ptr() as *const c_char, b"m_x\0".as_ptr() as *const c_char, 8,
-           b"atomic\0".as_ptr() as *const c_char, b"int32\0".as_ptr() as *const c_char, std::ptr::null());
+           b"atomic\0".as_ptr() as *const c_char, b"int32\0".as_ptr() as *const c_char, std::ptr::null(), 0);
         ef(ctx, b"CTest\0".as_ptr() as *const c_char, b"m_h\0".as_ptr() as *const c_char, 12,
-           b"handle\0".as_ptr() as *const c_char, std::ptr::null(), b"CThing\0".as_ptr() as *const c_char);
+           b"handle\0".as_ptr() as *const c_char, std::ptr::null(), b"CThing\0".as_ptr() as *const c_char, 0);
         1
     }
 

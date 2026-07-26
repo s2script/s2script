@@ -21,10 +21,16 @@ typedef void  (*s2_concommand_register_fn)(const char* name);
 
 /* Schema enumeration (5B.1). The shim walks the SchemaSystem and streams each class/field to core
  * via these callbacks (core provides them + an opaque ctx). kind ∈ atomic|handle|class|ptr|enum|unknown.
- * A null parent/name/inner is an absent value. */
+ * A null parent/name/inner is an absent value.
+ *
+ * `size` is the field type's byte width where the SchemaSystem states it, else 0 (= unknown, omit).
+ * It exists for `enum`: the category gives a type NAME but no width, and without a width there is no
+ * way to pick a reader, so every enum field was being skipped. Derived from the enum binding on our
+ * own binary, so it is a resolved fact rather than a borrowed constant. */
 typedef void (*s2_emit_class_fn)(void* ctx, const char* name, const char* parent);
 typedef void (*s2_emit_field_fn)(void* ctx, const char* cls, const char* name, int offset,
-                                 const char* kind, const char* type_name, const char* inner);
+                                 const char* kind, const char* type_name, const char* inner,
+                                 int size);
 typedef int  (*s2_schema_enumerate_fn)(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field);
 
 /* Game-event engine-ops (Slice 5D.1). The shim implements these; the core calls them.

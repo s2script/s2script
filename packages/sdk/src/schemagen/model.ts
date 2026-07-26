@@ -5,7 +5,8 @@ export type Catalog = Record<string, { parent: string | null; fields: CatalogFie
 export interface CatalogField {
   name: string;
   offset: number;
-  type: { kind: string; name?: string; inner?: string };
+  /** `size` is the type's byte width where the SchemaSystem states it — present for enums. */
+  type: { kind: string; name?: string; inner?: string; size?: number };
 }
 
 export type AccessorKind = "f32" | "bool" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "handle" | "u64" | "i64" | "f64" | "str" | "vector" | "qangle";
@@ -76,6 +77,9 @@ const ATOMIC: Record<string, { k: AccessorKind; w: boolean }> = {
   Color: { k: "u32", w: true },
 };
 
+/** Enum byte width → reader. Unsigned: schema enums are non-negative and stored unsigned. */
+const ENUM_WIDTH: Record<number, AccessorKind | undefined> = { 1: "u8", 2: "u16", 4: "u32", 8: "u64" };
+
 // atomic vector-type name → kind (only the fixed-3-float types this slice; 2D/4D/Color/Quaternion deferred).
 const VEC: Record<string, AccessorKind> = { Vector: "vector", VectorWS: "vector", QAngle: "qangle" };
 // kind → value-class + float count, for the emitters + import detection.
@@ -127,7 +131,19 @@ export function classifyField(type: CatalogField["type"], embeddable: ReadonlySe
     if (cm) return { accessorKind: "str", writable: false, strLen: parseInt(cm[1], 10) };
     return { skip: `unmapped 'unknown' type '${type.name ?? ""}'` };
   }
-  if (type.kind === "enum") return { skip: "enum byte-width absent from catalog (deferred)" };
+  if (type.kind === "enum") {
+    // An enum is a plain integer of the width its binding declares; without the width there is no
+    // way to choose a reader, which is why these were skipped wholesale. The catalog now carries it
+    // (dumped from the live SchemaSystem, not assumed), so only a genuinely unstated width skips.
+    //
+    // Read UNSIGNED. Schema enums are non-negative in practice and the underlying storage is
+    // unsigned, so a signed read of a 1-byte enum would turn 0x80.. flag values negative.
+    const w = ENUM_WIDTH[type.size ?? 0];
+    // Writability follows the WRITE table rather than being asserted: there is no narrow 64-bit
+    // writer, so an 8-byte enum is read-only for the same reason uint64 is.
+    if (w) return { accessorKind: w, writable: WRITE[w] !== undefined };
+    return { skip: `enum '${type.name ?? ""}' byte width not stated by the schema` };
+  }
   if (type.kind === "class") {
     const n = type.name ?? "";
     if (embeddable.has(n)) return { embedded: n };
