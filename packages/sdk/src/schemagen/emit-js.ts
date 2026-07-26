@@ -97,6 +97,8 @@ export function emitJs(model: SchemaModel): string {
     "    return o;",
     "  }",
     "  globalThis.__s2pkg_cs2_schema = { applyAccessors: applyAccessors, wrap: wrap };",
+    "  // Merge (not overwrite): this prelude runs FIRST, and pawn.js merges onto whatever it finds.",
+    "  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { wrapEntity: wrap });",
     "})();",
   );
   return out.join("\n");

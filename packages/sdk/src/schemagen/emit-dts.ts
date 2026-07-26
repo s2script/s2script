@@ -35,5 +35,31 @@ export function emitDts(model: SchemaModel): string {
     for (const f of c.embeddedFields) out.push(`  readonly ${f.propName}: ${f.embeddedClass};`);
     out.push("}", "");
   }
+
+  // Entity classes only. An embedded struct is not independently addressable — it has no entity of
+  // its own, only a base offset inside one — so it is reached through its owner, never wrapped.
+  out.push("/** Every wrappable entity class, by schema name. */", "export interface SchemaClasses {");
+  for (const c of model.classes) out.push(`  ${c.className}: ${c.className};`);
+  out.push("}", "");
+  out.push(
+    "/**",
+    " * Apply this schema class's field accessors to an entity reference.",
+    " *",
+    " * `createEntity` returns a bare `EntityRef` with no schema fields on it — this is how you get",
+    " * them. `Player.pawn` is already wrapped; this is for entities you create or resolve yourself.",
+    " *",
+    " * The wrapper is a view, not a copy: it holds the ref and reads through it on every access, so",
+    " * it stays correct as the entity changes and costs nothing to keep. Field reads return null",
+    " * once the ref goes stale, exactly as they do on a pawn.",
+    " *",
+    " * @example",
+    " * const prop = createEntity(\"prop_dynamic\");",
+    " * prop.spawn();",
+    " * const fields = wrapEntity(\"CBaseModelEntity\", prop);",
+    " * fields.glow.glowing = true;",
+    " */",
+    "export declare function wrapEntity<K extends keyof SchemaClasses>(className: K, ref: EntityRef): SchemaClasses[K];",
+    "",
+  );
   return out.join("\n");
 }

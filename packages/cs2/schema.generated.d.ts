@@ -586,3 +586,38 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   readonly econGloves: CEconItemView;
   readonly entitySpottedState: EntitySpottedState_t;
 }
+
+/** Every wrappable entity class, by schema name. */
+export interface SchemaClasses {
+  CEntityInstance: CEntityInstance;
+  CBaseEntity: CBaseEntity;
+  CBaseModelEntity: CBaseModelEntity;
+  CBasePlayerController: CBasePlayerController;
+  CBaseAnimGraph: CBaseAnimGraph;
+  CCSPlayerController: CCSPlayerController;
+  CBaseCombatCharacter: CBaseCombatCharacter;
+  CEconEntity: CEconEntity;
+  CBasePlayerPawn: CBasePlayerPawn;
+  CBasePlayerWeapon: CBasePlayerWeapon;
+  CCSPlayerPawnBase: CCSPlayerPawnBase;
+  CCSWeaponBase: CCSWeaponBase;
+  CCSPlayerPawn: CCSPlayerPawn;
+}
+
+/**
+ * Apply this schema class's field accessors to an entity reference.
+ *
+ * `createEntity` returns a bare `EntityRef` with no schema fields on it — this is how you get
+ * them. `Player.pawn` is already wrapped; this is for entities you create or resolve yourself.
+ *
+ * The wrapper is a view, not a copy: it holds the ref and reads through it on every access, so
+ * it stays correct as the entity changes and costs nothing to keep. Field reads return null
+ * once the ref goes stale, exactly as they do on a pawn.
+ *
+ * @example
+ * const prop = createEntity("prop_dynamic");
+ * prop.spawn();
+ * const fields = wrapEntity("CBaseModelEntity", prop);
+ * fields.glow.glowing = true;
+ */
+export declare function wrapEntity<K extends keyof SchemaClasses>(className: K, ref: EntityRef): SchemaClasses[K];
