@@ -10,8 +10,20 @@ export function emitDts(model: SchemaModel): string {
   for (const c of model.classes) for (const f of c.ownFields) {
     const vi = VEC_INFO[f.accessorKind]; if (vi) vecClasses.add(vi.cls);
   }
+  for (const e of model.embedded) for (const f of e.fields) {
+    const vi = VEC_INFO[f.accessorKind]; if (vi) vecClasses.add(vi.cls);
+  }
   if (vecClasses.size) out.push(`import type { ${[...vecClasses].sort().join(", ")} } from "@s2script/sdk/math";`);
   out.push("");
+  // Embedded structs first: an entity interface below refers to these by name.
+  for (const e of model.embedded) {
+    out.push(`export interface ${e.className} {`);
+    for (const f of e.fields) {
+      out.push(`  ${f.writable ? "" : "readonly "}${f.propName}: ${TSTYPE[f.accessorKind]};`);
+    }
+    for (const f of e.embeddedFields) out.push(`  readonly ${f.propName}: ${f.embeddedClass};`);
+    out.push("}", "");
+  }
   for (const c of model.classes) {
     const ext = c.parent && names.has(c.parent) ? ` extends ${c.parent}` : "";
     out.push(`export interface ${c.className}${ext} {`);
@@ -19,7 +31,35 @@ export function emitDts(model: SchemaModel): string {
       const ro = f.writable ? "" : "readonly ";
       out.push(`  ${ro}${f.propName}: ${TSTYPE[f.accessorKind]};`);
     }
+    // The accessor object itself is always readonly — you mutate its fields, not the binding.
+    for (const f of c.embeddedFields) out.push(`  readonly ${f.propName}: ${f.embeddedClass};`);
     out.push("}", "");
   }
+
+  // Entity classes only. An embedded struct is not independently addressable — it has no entity of
+  // its own, only a base offset inside one — so it is reached through its owner, never wrapped.
+  out.push("/** Every wrappable entity class, by schema name. */", "export interface SchemaClasses {");
+  for (const c of model.classes) out.push(`  ${c.className}: ${c.className};`);
+  out.push("}", "");
+  out.push(
+    "/**",
+    " * Apply this schema class's field accessors to an entity reference.",
+    " *",
+    " * `createEntity` returns a bare `EntityRef` with no schema fields on it — this is how you get",
+    " * them. `Player.pawn` is already wrapped; this is for entities you create or resolve yourself.",
+    " *",
+    " * The wrapper is a view, not a copy: it holds the ref and reads through it on every access, so",
+    " * it stays correct as the entity changes and costs nothing to keep. Field reads return null",
+    " * once the ref goes stale, exactly as they do on a pawn.",
+    " *",
+    " * @example",
+    " * const prop = createEntity(\"prop_dynamic\");",
+    " * prop.spawn();",
+    " * const fields = wrapEntity(\"CBaseModelEntity\", prop);",
+    " * fields.glow.glowing = true;",
+    " */",
+    "export declare function wrapEntity<K extends keyof SchemaClasses>(className: K, ref: EntityRef): SchemaClasses[K];",
+    "",
+  );
   return out.join("\n");
 }

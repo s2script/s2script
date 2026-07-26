@@ -3,9 +3,11 @@ import type { Vector, QAngle } from "@s2script/sdk/math";
 import type { EntityRef } from "@s2script/sdk/entity";
 
 export interface AimPunchServices {
+  readonly predictableBaseTick: number | null;
   readonly predictableBaseTickInterpAmount: number | null;
   readonly predictableBaseAngle: QAngle | null;
   readonly predictableBaseAngleVel: QAngle | null;
+  readonly unpredictableBaseTick: number | null;
   readonly unpredictableBaseAngle: QAngle | null;
 }
 
@@ -68,6 +70,7 @@ export interface MovementServices {
   readonly gameCodeHasMovedPlayerAfterCommand: number | null;
   readonly madeFootstepNoise: boolean | null;
   readonly footsteps: number | null;
+  readonly stashGrenadeParameterWhen: number | null;
   readonly buttonDownMaskPrev: string | null;
   readonly useFrictionStashedSpeed: boolean | null;
   readonly useFrictionStashedSpeedUntilFrac: number | null;
@@ -79,6 +82,7 @@ export interface MovementServices {
   readonly staminaAtJumpStart: number | null;
   readonly velMulAtJumpStart: number | null;
   readonly accumulatedJumpError: number | null;
+  readonly lastJumpTick: number | null;
   readonly lastJumpFrac: number | null;
   readonly lastJumpVelocityZ: number | null;
   readonly jumpApexPending: boolean | null;
@@ -108,6 +112,7 @@ export interface WeaponServices {
   readonly activeWeapon: EntityRef | null;
   readonly lastWeapon: EntityRef | null;
   readonly preventWeaponPickup: boolean | null;
+  readonly nextAttack: number | null;
   readonly savedWeapon: EntityRef | null;
   readonly timeToMelee: number | null;
   readonly timeToSecondary: number | null;

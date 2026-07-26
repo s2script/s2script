@@ -49,7 +49,12 @@ export function emitNavJs(model: NavModel): string {
     out.push(`  function ${w.wrapper}(root, path) { this.root = root; this.path = path; }`);
     out.push(`  Object.defineProperties(${w.wrapper}.prototype, {`);
     for (const f of w.fields) {
-      const resolve = `off(${S(f.declaringClass)},${S(f.rawName)})`;
+      // `addOffset` is non-zero only for a flattened value wrapper, where the scalar sits at
+      // wrapperOffset + delta. Both wrappers reachable from nav today (GameTime_t, GameTick_t) put
+      // m_Value at +0, so this changes no current output — but omitting it would silently read the
+      // wrong bytes the moment a wrapper with a non-zero value offset came into range.
+      const base = `off(${S(f.declaringClass)},${S(f.rawName)})`;
+      const resolve = f.addOffset ? `${base} + ${f.addOffset}` : base;
       let getter: string;
       const kind = f.accessorKind;
       if (kind === "u64") {

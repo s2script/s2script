@@ -17,10 +17,32 @@ export interface FieldDescriptor {
   accessorKind: AccessorKind;
   writable: boolean;
   strLen?: number;
+  /** Extra bytes added to the resolved offset — non-zero only for a flattened value wrapper,
+   *  where the scalar sits at `wrapperOffset + this`. See {@link transparentValue}. */
+  addOffset?: number;
 }
 export interface SkippedField { className: string; rawName: string; reason: string; }
-export interface ClassDescriptor { className: string; parent: string | null; ownFields: FieldDescriptor[]; skipped: SkippedField[]; }
-export interface SchemaModel { classes: ClassDescriptor[]; collisions: string[]; }
+
+/**
+ * A field whose type is a struct embedded INLINE in the owner (`m_Glow`, `m_Collision`), exposed as
+ * a nested accessor object rather than flattened.
+ *
+ * Embedding is opt-in per struct (`codegen-embedded.json`). Most `kind: "class"` fields in the
+ * catalog are single-scalar wrappers such as `GameTime_t`, and surfacing all ~63 of them as nested
+ * objects would bloat the generated surface for no gain — so only structs that are genuinely worth
+ * addressing as a unit are listed.
+ */
+export interface EmbeddedFieldDescriptor {
+  propName: string;
+  rawName: string;
+  /** The class that OWNS the embedded field — the offset base is resolved against this. */
+  declaringClass: string;
+  /** The struct type; its own accessors are resolved against this. */
+  embeddedClass: string;
+}
+export interface EmbeddedClassDescriptor { className: string; fields: FieldDescriptor[]; embeddedFields: EmbeddedFieldDescriptor[]; skipped: SkippedField[]; }
+export interface ClassDescriptor { className: string; parent: string | null; ownFields: FieldDescriptor[]; embeddedFields: EmbeddedFieldDescriptor[]; skipped: SkippedField[]; }
+export interface SchemaModel { classes: ClassDescriptor[]; embedded: EmbeddedClassDescriptor[]; collisions: string[]; }
 
 // AccessorKind → EntityRef method (5B.2 surface) + TS type. Writable ⇔ a WRITE entry exists.
 export const READ: Record<AccessorKind, string> = {
@@ -47,6 +69,11 @@ const ATOMIC: Record<string, { k: AccessorKind; w: boolean }> = {
   int8: { k: "i8", w: true }, int16: { k: "i16", w: true }, int32: { k: "i32", w: true },
   uint8: { k: "u8", w: true }, uint16: { k: "u16", w: true }, uint32: { k: "u32", w: true },
   uint64: { k: "u64", w: false }, int64: { k: "i64", w: false }, float64: { k: "f64", w: false },   // no narrow 64-bit writers
+  // `Color` is a 4-byte RGBA struct, not a scalar, but it is laid out exactly as a little-endian
+  // uint32 (R in the low byte) and every engine consumer treats it that way. Mapping it here rather
+  // than adding a value class keeps the surface small and matches how packed colours are already
+  // passed elsewhere in the SDK (e.g. the fade user-message).
+  Color: { k: "u32", w: true },
 };
 
 // atomic vector-type name → kind (only the fixed-3-float types this slice; 2D/4D/Color/Quaternion deferred).
@@ -65,7 +92,28 @@ export function idiomaticName(raw: string): string {
   return core.charAt(0).toLowerCase() + core.slice(1);
 }
 
-export function classifyField(type: CatalogField["type"]): { accessorKind: AccessorKind; writable: boolean; strLen?: number } | { skip: string } {
+/**
+ * A struct that exists only to name a scalar: exactly one field, called `m_Value`.
+ *
+ * `GameTime_t` (float32) and `GameTick_t` (int32) are these, and between them they account for 39 of
+ * the 63 embedded fields in the CS2 closure — `m_flDeathTime`, `m_flCreateTime`, `m_fTimeLastHurt`
+ * and so on. Exposing them as nested objects would mean writing `pawn.deathTime.value`, which is
+ * strictly worse than the scalar it wraps, so they are FLATTENED: the field takes the wrapper's
+ * name and the inner field's kind, read at `wrapperOffset + valueOffset`.
+ *
+ * The rule is deliberately narrow. `CHitboxComponent` also has a single field, but it is called
+ * `m_flBoundsExpandRadius` and carries its own meaning — flattening that would produce a property
+ * whose name says "hitbox component" and whose value is a radius. Only `m_Value` is anonymous
+ * enough to absorb.
+ */
+export function transparentValue(catalog: Catalog, className: string): CatalogField | null {
+  const e = catalog[className];
+  if (!e || e.parent || e.fields.length !== 1) return null;
+  const f = e.fields[0]!;
+  return f.name === "m_Value" && f.type.kind === "atomic" ? f : null;
+}
+
+export function classifyField(type: CatalogField["type"], embeddable: ReadonlySet<string> = new Set()): { accessorKind: AccessorKind; writable: boolean; strLen?: number } | { embedded: string } | { skip: string } {
   if (type.kind === "handle") return { accessorKind: "handle", writable: false };
   if (type.kind === "atomic") {
     const vk = VEC[type.name ?? ""];
@@ -80,20 +128,33 @@ export function classifyField(type: CatalogField["type"]): { accessorKind: Acces
     return { skip: `unmapped 'unknown' type '${type.name ?? ""}'` };
   }
   if (type.kind === "enum") return { skip: "enum byte-width absent from catalog (deferred)" };
-  if (type.kind === "class") return { skip: `embedded class '${type.name ?? ""}' deferred` };
+  if (type.kind === "class") {
+    const n = type.name ?? "";
+    if (embeddable.has(n)) return { embedded: n };
+    return { skip: `embedded class '${n}' deferred` };
+  }
   if (type.kind === "ptr") return { skip: "raw pointer" };
   return { skip: `unmapped kind '${type.kind}'` };
 }
 
 export function flattenedFields(model: SchemaModel, className: string): FieldDescriptor[] {
-  const byName = new Map(model.classes.map((c) => [c.className, c]));
+  const byName = new Map<string, ClassDescriptor>(model.classes.map((c): [string, ClassDescriptor] => [c.className, c]));
   const chain: ClassDescriptor[] = [];
   let cur: string | null = className;
-  while (cur && byName.has(cur)) { const c = byName.get(cur)!; chain.unshift(c); cur = c.parent; }
+  while (cur && byName.has(cur)) { const c: ClassDescriptor = byName.get(cur)!; chain.unshift(c); cur = c.parent; }
   return chain.flatMap((c) => c.ownFields);
 }
 
-export function buildModel(catalog: Catalog, requested: string[]): SchemaModel {
+export function buildModel(catalog: Catalog, requested: string[], embeddable: string[] = []): SchemaModel {
+  for (const n of embeddable) if (!catalog[n]) throw new Error(`gen-schema: embedded class '${n}' is not in the catalog`);
+  // An explicit list, when given, restricts which structs embed; empty/absent means "every struct
+  // the catalog describes". Curation stopped being necessary once transparent wrappers flatten —
+  // those were the only reason the naive expansion was noisy.
+  const restrict = embeddable.length > 0 ? new Set(embeddable) : null;
+  const canEmbed = (n: string): boolean =>
+    !!catalog[n] && transparentValue(catalog, n) === null && (restrict === null || restrict.has(n));
+  const embedSet = new Set(Object.keys(catalog).filter(canEmbed));
+
   // 1. Closure: requested + ancestor chains (stop at null parent or a parent absent from the catalog).
   const inClosure = new Set<string>();
   for (const start of requested) {
@@ -104,26 +165,74 @@ export function buildModel(catalog: Catalog, requested: string[]): SchemaModel {
   // 2. Stable topological order: by depth-to-root, ties by name.
   const depth = (c: string): number => { let d = 0, cur: string | null = c; while (cur && catalog[cur]?.parent && inClosure.has(catalog[cur]!.parent!)) { d++; cur = catalog[cur]!.parent; } return d; };
   const ordered = [...inClosure].sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0));
+
+  const usedEmbeds = new Set<string>();
+  /** Classify one catalog field, resolving a transparent wrapper to the scalar it wraps. */
+  const classify = (f: CatalogField): ReturnType<typeof classifyField> & { addOffset?: number } => {
+    if (f.type.kind === "class") {
+      const inner = transparentValue(catalog, f.type.name ?? "");
+      if (inner) {
+        const c = classifyField(inner.type);
+        if (!("skip" in c) && !("embedded" in c)) return { ...c, addOffset: inner.offset };
+      }
+    }
+    return classifyField(f.type, embedSet);
+  };
+
+  const fieldsOf = (owner: string, out: FieldDescriptor[], emb: EmbeddedFieldDescriptor[], skipped: SkippedField[]): void => {
+    for (const f of catalog[owner]!.fields) {
+      const c = classify(f);
+      if ("skip" in c) { skipped.push({ className: owner, rawName: f.name, reason: c.skip }); continue; }
+      if ("embedded" in c) {
+        usedEmbeds.add(c.embedded);
+        emb.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: owner, embeddedClass: c.embedded });
+        continue;
+      }
+      out.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: owner, accessorKind: c.accessorKind, writable: c.writable, strLen: c.strLen, addOffset: c.addOffset });
+    }
+  };
+
   // 3. Per class: classify own fields.
   const classes: ClassDescriptor[] = ordered.map((className) => {
     const parent = catalog[className].parent;
     const ownFields: FieldDescriptor[] = [];
+    const embeddedFields: EmbeddedFieldDescriptor[] = [];
     const skipped: SkippedField[] = [];
-    for (const f of catalog[className].fields) {
-      const c = classifyField(f.type);
-      if ("skip" in c) { skipped.push({ className, rawName: f.name, reason: c.skip }); continue; }
-      ownFields.push({ propName: idiomaticName(f.name), rawName: f.name, declaringClass: className, accessorKind: c.accessorKind, writable: c.writable, strLen: c.strLen });
-    }
-    return { className, parent: parent && inClosure.has(parent) ? parent : null, ownFields, skipped };
+    fieldsOf(className, ownFields, embeddedFields, skipped);
+    return { className, parent: parent && inClosure.has(parent) ? parent : null, ownFields, embeddedFields, skipped };
   });
-  // 4. Collision pass: an idiomatic propName shared by ≥2 distinct fields (by declaringClass+rawName) → raw fallback for all.
-  const byProp = new Map<string, FieldDescriptor[]>();
-  for (const c of classes) for (const f of c.ownFields) { (byProp.get(f.propName) ?? byProp.set(f.propName, []).get(f.propName)!).push(f); }
+
+  // 3b. Descriptors for every embedded struct reached, transitively. A struct may itself embed one
+  //     (CAttributeContainer -> CEconItemView, CCollisionProperty -> VPhysicsCollisionAttribute_t);
+  //     the accessor mechanism is identical at any depth, since a nested wrapper is just another
+  //     (ref, base) pair with base = outerBase + fieldOffset. `done` both dedupes and breaks the
+  //     cycle a self-referential struct would otherwise send this into.
+  const embedded: EmbeddedClassDescriptor[] = [];
+  const done = new Set<string>();
+  for (;;) {
+    const next = [...usedEmbeds].filter((n) => !done.has(n)).sort();
+    if (next.length === 0) break;
+    for (const className of next) {
+      done.add(className);
+      const fields: FieldDescriptor[] = [];
+      const embeddedFields: EmbeddedFieldDescriptor[] = [];
+      const skipped: SkippedField[] = [];
+      const chain: string[] = [];
+      for (let cur: string | null = className; cur && catalog[cur]; cur = catalog[cur].parent) chain.unshift(cur);
+      for (const owner of chain) fieldsOf(owner, fields, embeddedFields, skipped);
+      embedded.push({ className, fields, embeddedFields, skipped });
+    }
+  }
+  embedded.sort((a, b) => (a.className < b.className ? -1 : a.className > b.className ? 1 : 0));
+
+  // 4. Collision pass: an idiomatic propName shared by >=2 distinct fields -> raw fallback for all.
+  const byProp = new Map<string, { propName: string; rawName: string; declaringClass: string }[]>();
+  for (const c of classes) for (const f of [...c.ownFields, ...c.embeddedFields]) { (byProp.get(f.propName) ?? byProp.set(f.propName, []).get(f.propName)!).push(f); }
   const collisions: string[] = [];
   for (const [prop, fields] of byProp) {
     const distinct = new Set(fields.map((f) => `${f.declaringClass}.${f.rawName}`));
-    if (distinct.size >= 2) { for (const f of fields) f.propName = f.rawName; collisions.push(`${prop} ← ${[...distinct].sort().join(", ")}`); }
+    if (distinct.size >= 2) { for (const f of fields) f.propName = f.rawName; collisions.push(`${prop} <- ${[...distinct].sort().join(", ")}`); }
   }
   collisions.sort();
-  return { classes, collisions };
+  return { classes, embedded, collisions };
 }

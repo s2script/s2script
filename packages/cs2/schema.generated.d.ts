@@ -2,11 +2,172 @@
 import type { EntityRef } from "@s2script/sdk/entity";
 import type { QAngle, Vector } from "@s2script/sdk/math";
 
+export interface CAnimGraphControllerManager {
+  graphBindingsCreated: boolean | null;
+}
+
+export interface CAttributeContainer {
+  reapplyProvisionParity: number | null;
+  readonly outer: EntityRef | null;
+  preventLoopback: boolean | null;
+  readonly item: CEconItemView;
+}
+
+export interface CAttributeList {
+}
+
+export interface CCollisionProperty {
+  readonly mins: Vector | null;
+  readonly maxs: Vector | null;
+  usSolidFlags: number | null;
+  triggerBloat: number | null;
+  collisionGroup: number | null;
+  enablePhysics: number | null;
+  boundingRadius: number | null;
+  readonly specifiedSurroundingMins: Vector | null;
+  readonly specifiedSurroundingMaxs: Vector | null;
+  readonly surroundingMaxs: Vector | null;
+  readonly surroundingMins: Vector | null;
+  readonly capsuleCenter1: Vector | null;
+  readonly capsuleCenter2: Vector | null;
+  capsuleRadius: number | null;
+  readonly collisionAttribute: VPhysicsCollisionAttribute_t;
+}
+
+export interface CEconItemView {
+  itemDefinitionIndex: number | null;
+  entityQuality: number | null;
+  entityLevel: number | null;
+  readonly itemID: string | null;
+  itemIDHigh: number | null;
+  itemIDLow: number | null;
+  accountID: number | null;
+  inventoryPosition: number | null;
+  initialized: boolean | null;
+  readonly customName: string | null;
+  readonly customNameOverride: string | null;
+  readonly attributeList: CAttributeList;
+  readonly networkedDynamicAttributes: CAttributeList;
+}
+
+export interface CEntityIOOutput {
+}
+
+export interface CGlowProperty {
+  readonly glowColor: Vector | null;
+  glowType: number | null;
+  glowTeam: number | null;
+  glowRange: number | null;
+  glowRangeMin: number | null;
+  glowColorOverride: number | null;
+  flashing: boolean | null;
+  glowTime: number | null;
+  glowStartTime: number | null;
+  eligibleForScreenHighlight: boolean | null;
+  glowing: boolean | null;
+}
+
+export interface CHitboxComponent {
+  boundsExpandRadius: number | null;
+}
+
+export interface CIronSightController {
+  ironSightAvailable: boolean | null;
+  ironSightAmount: number | null;
+  ironSightAmountGained: number | null;
+  ironSightAmountBiased: number | null;
+}
+
+export interface CMovementStatsProperty {
+  useCounter: number | null;
+  readonly emaMovementDirection: CVectorExponentialMovingAverage;
+}
+
+export interface CNetworkTransmitComponent {
+  transmitStateOwnedCounter: number | null;
+}
+
+export interface CNetworkVelocityVector {
+}
+
+export interface CNetworkViewOffsetVector {
+}
+
+export interface CTouchExpansionComponent {
+}
+
+export interface CVectorExponentialMovingAverage {
+}
+
+export interface EntitySpottedState_t {
+  spotted: boolean | null;
+}
+
+export interface IntervalTimer {
+  timestamp: number | null;
+}
+
+export interface PhysicsRagdollPose_t {
+  readonly owner: EntityRef | null;
+  setFromDebugHistory: boolean | null;
+}
+
+export interface VPhysicsCollisionAttribute_t {
+  readonly interactsAs: string | null;
+  readonly interactsWith: string | null;
+  readonly interactsExclude: string | null;
+  entityId: number | null;
+  ownerId: number | null;
+  hierarchyId: number | null;
+  detailLayerMask: number | null;
+  detailLayerMaskType: number | null;
+  targetDetailLayer: number | null;
+  collisionGroup: number | null;
+  collisionFunctionMask: number | null;
+}
+
+export interface fogparams_t {
+  readonly dirPrimary: Vector | null;
+  colorPrimary: number | null;
+  colorSecondary: number | null;
+  colorPrimaryLerpTo: number | null;
+  colorSecondaryLerpTo: number | null;
+  start: number | null;
+  end: number | null;
+  farz: number | null;
+  maxdensity: number | null;
+  exponent: number | null;
+  hDRColorScale: number | null;
+  skyboxFogFactor: number | null;
+  skyboxFogFactorLerpTo: number | null;
+  startLerpTo: number | null;
+  endLerpTo: number | null;
+  maxdensityLerpTo: number | null;
+  lerptime: number | null;
+  duration: number | null;
+  blendtobackground: number | null;
+  scattering: number | null;
+  locallightscale: number | null;
+  enable: boolean | null;
+  blend: boolean | null;
+  padding2: boolean | null;
+  padding: boolean | null;
+}
+
+export interface sky3dparams_t {
+  scale: number | null;
+  readonly origin: Vector | null;
+  clip3DSkyBoxNearToWorldFar: boolean | null;
+  clip3DSkyBoxNearToWorldFarOffset: number | null;
+  readonly fog: fogparams_t;
+}
+
 export interface CEntityInstance {
 }
 
 export interface CBaseEntity extends CEntityInstance {
   currentThinkContext: number | null;
+  lastThinkTick: number | null;
   disabledContextThinks: boolean | null;
   lastNetworkChange: number | null;
   health: number | null;
@@ -21,6 +182,7 @@ export interface CBaseEntity extends CEntityInstance {
   moveDoneTime: number | null;
   animTime: number | null;
   simulationTime: number | null;
+  createTime: number | null;
   clientSideRagdoll: boolean | null;
   ubInterpolationFrame: number | null;
   readonly prevVPhysicsUpdatePos: Vector | null;
@@ -28,6 +190,7 @@ export interface CBaseEntity extends CEntityInstance {
   sentToClients: number | null;
   speed: number | null;
   spawnflags: number | null;
+  nextThinkTick: number | null;
   simulationTick: number | null;
   flags: number | null;
   readonly absVelocity: Vector | null;
@@ -51,12 +214,20 @@ export interface CBaseEntity extends CEntityInstance {
   waterType: number | null;
   eFlags: number | null;
   initialTeamNum: number | null;
+  navIgnoreUntilTime: number | null;
   readonly angVelocity: QAngle | null;
   networkQuantizeOriginAndAngles: boolean | null;
   lagCompensate: boolean | null;
   readonly blocker: EntityRef | null;
   localTime: number | null;
   vPhysicsUpdateLocalTime: number | null;
+  readonly networkTransmitComponent: CNetworkTransmitComponent;
+  readonly onKilled: CEntityIOOutput;
+  readonly velocity: CNetworkVelocityVector;
+  readonly onUser1: CEntityIOOutput;
+  readonly onUser2: CEntityIOOutput;
+  readonly onUser3: CEntityIOOutput;
+  readonly onUser4: CEntityIOOutput;
 }
 
 export interface CBaseModelEntity extends CBaseEntity {
@@ -70,7 +241,9 @@ export interface CBaseModelEntity extends CBaseEntity {
   destructiblePartInitialStateDestructed2_GenerateBreakpieces: boolean | null;
   destructiblePartInitialStateDestructed3_GenerateBreakpieces: boolean | null;
   destructiblePartInitialStateDestructed4_GenerateBreakpieces: boolean | null;
+  dissolveStartTime: number | null;
   allowFadeInView: boolean | null;
+  render: number | null;
   renderToCubemaps: boolean | null;
   noInterpolate: boolean | null;
   glowBackfaceMult: number | null;
@@ -79,6 +252,11 @@ export interface CBaseModelEntity extends CBaseEntity {
   fadeScale: number | null;
   shadowStrength: number | null;
   objectCulling: number | null;
+  readonly cHitboxComponent: CHitboxComponent;
+  readonly onIgnite: CEntityIOOutput;
+  readonly collision: CCollisionProperty;
+  readonly glow: CGlowProperty;
+  readonly viewOffset: CNetworkViewOffsetVector;
 }
 
 export interface CBasePlayerController extends CBaseEntity {
@@ -111,6 +289,8 @@ export interface CBaseAnimGraph extends CBaseModelEntity {
   forceBone: number | null;
   ragdollEnabled: boolean | null;
   ragdollClientSide: boolean | null;
+  readonly graphControllerManager: CAnimGraphControllerManager;
+  readonly ragdollPose: PhysicsRagdollPose_t;
 }
 
 export interface CCSPlayerController extends CBasePlayerController {
@@ -118,6 +298,7 @@ export interface CCSPlayerController extends CBasePlayerController {
   hasCommunicationAbuseMute: boolean | null;
   uiCommunicationMuteFlags: number | null;
   pendingTeamNum: number | null;
+  forceTeamTime: number | null;
   compTeammateColor: number | null;
   everPlayedOnTeam: boolean | null;
   attemptedToGetColor: boolean | null;
@@ -128,6 +309,7 @@ export interface CCSPlayerController extends CBasePlayerController {
   justBecameSpectator: boolean | null;
   switchTeamsOnNextRoundReset: boolean | null;
   removeAllItemsOnNextRoundReset: boolean | null;
+  lastJoinTeamTime: number | null;
   coachingTeam: number | null;
   readonly playerDominated: string | null;
   readonly playerDominatingMe: string | null;
@@ -189,9 +371,12 @@ export interface CCSPlayerController extends CBasePlayerController {
   gaveTeamDamageWarning: boolean | null;
   gaveTeamDamageWarningThisRound: boolean | null;
   readonly dblLastReceivedPacketPlatFloatTime: number | null;
+  lastTeamDamageWarningTime: number | null;
+  lastTimePlayerWasDisconnectedForPawnsRemove: number | null;
   suspiciousHitCount: number | null;
   nonSuspiciousHitStreak: number | null;
   fireBulletsSeedSynchronized: boolean | null;
+  readonly lastHeldVoteTimer: IntervalTimer;
 }
 
 export interface CBaseCombatCharacter extends CBaseAnimGraph {
@@ -200,6 +385,7 @@ export interface CBaseCombatCharacter extends CBaseAnimGraph {
   applyStressDamage: boolean | null;
   deathEventsDispatched: boolean | null;
   navHullIdx: number | null;
+  readonly movementStats: CMovementStatsProperty;
 }
 
 export interface CEconEntity extends CBaseAnimGraph {
@@ -211,27 +397,37 @@ export interface CEconEntity extends CBaseAnimGraph {
   fallbackStatTrak: number | null;
   readonly oldProvidee: EntityRef | null;
   oldOwnerClass: number | null;
+  readonly attributeManager: CAttributeContainer;
 }
 
 export interface CBasePlayerPawn extends CBaseCombatCharacter {
   readonly v_angle: QAngle | null;
   readonly v_anglePrevious: QAngle | null;
   hideHUD: number | null;
+  timeLastHurt: number | null;
+  deathTime: number | null;
+  nextSuicideTime: number | null;
   initHUD: boolean | null;
   readonly controller: EntityRef | null;
   readonly defaultController: EntityRef | null;
   hltvReplayDelay: number | null;
   hltvReplayEnd: number | null;
+  readonly skybox3d: sky3dparams_t;
 }
 
 export interface CBasePlayerWeapon extends CEconEntity {
+  nextPrimaryAttackTick: number | null;
   nextPrimaryAttackTickRatio: number | null;
+  nextSecondaryAttackTick: number | null;
   nextSecondaryAttackTickRatio: number | null;
   clip1: number | null;
   clip2: number | null;
+  readonly onPlayerUse: CEntityIOOutput;
 }
 
 export interface CCSPlayerPawnBase extends CBasePlayerPawn {
+  blindUntilTime: number | null;
+  blindStartTime: number | null;
   respawning: boolean | null;
   hasMovedSinceSpawn: boolean | null;
   numSpawns: number | null;
@@ -242,12 +438,15 @@ export interface CCSPlayerPawnBase extends CBasePlayerPawn {
   progressBarStartTime: number | null;
   progressBarDuration: number | null;
   readonly originalController: EntityRef | null;
+  readonly cTouchExpansionComponent: CTouchExpansionComponent;
 }
 
 export interface CCSWeaponBase extends CBasePlayerWeapon {
   removeable: boolean | null;
   playerAmmoStockOnPickup: boolean | null;
   requireUseToTouch: boolean | null;
+  weaponGameplayAnimStateTimestamp: number | null;
+  inspectCancelCompleteTime: number | null;
   inspectPending: boolean | null;
   inspectShouldLoop: boolean | null;
   lastEmptySoundCmdNum: number | null;
@@ -256,14 +455,19 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
   readonly turningInaccuracyEyeDirLast: Vector | null;
   turningInaccuracy: number | null;
   accuracyPenalty: number | null;
+  lastAccuracyUpdateTime: number | null;
   accuracySmoothedForZoom: number | null;
   m_iRecoilIndex: number | null;
   m_flRecoilIndex: number | null;
   burstMode: boolean | null;
+  postponeFireReadyTicks: number | null;
   postponeFireReadyFrac: number | null;
   inReload: boolean | null;
+  deployTick: number | null;
+  droppedAtTime: number | null;
   isHauledBack: boolean | null;
   silencerOn: boolean | null;
+  timeSilencerSwitchComplete: number | null;
   weaponActionPlaybackRate: number | null;
   originalTeamNumber: number | null;
   mostRecentTeamNumber: number | null;
@@ -271,14 +475,23 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
   nextAttackRenderTimeOffset: number | null;
   canBePickedUp: boolean | null;
   useCanOverrideNextOwnerTouchTime: boolean | null;
+  nextOwnerTouchTime: number | null;
+  nextPrevOwnerTouchTime: number | null;
+  nextPrevOwnerUseTime: number | null;
   readonly prevOwner: EntityRef | null;
+  dropTick: number | null;
   wasActiveWeaponWhenDropped: boolean | null;
   donated: boolean | null;
+  lastShotTime: number | null;
   wasOwnedByCT: boolean | null;
   wasOwnedByTerrorist: boolean | null;
   numRemoveUnownedWeaponThink: number | null;
   ironSightMode: number | null;
+  lastLOSTraceFailureTime: number | null;
   watTickOffset: number | null;
+  lastShakeTime: number | null;
+  readonly onPlayerPickup: CEntityIOOutput;
+  readonly ironSightController: CIronSightController;
 }
 
 export interface CCSPlayerPawn extends CCSPlayerPawnBase {
@@ -296,10 +509,14 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   retakesHasDefuseKit: boolean | null;
   retakesMVPLastRound: boolean | null;
   retakesMVPBoostItem: number | null;
+  healthShotBoostExpirationTime: number | null;
   landingTimeSeconds: number | null;
   isBuyMenuOpen: boolean | null;
+  lastLandTime: number | null;
   onGroundLastTick: boolean | null;
   playerLocked: number | null;
+  timeOfLastInjury: number | null;
+  nextSprayDecalTime: number | null;
   nextSprayDecalTimeExpedited: boolean | null;
   ragdollDamageBone: number | null;
   readonly ragdollDamageForce: Vector | null;
@@ -310,6 +527,7 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   econGlovesChanged: number | null;
   readonly deathEyeAngles: QAngle | null;
   leftHanded: boolean | null;
+  switchedHandednessTime: number | null;
   viewmodelOffsetX: number | null;
   viewmodelOffsetY: number | null;
   viewmodelOffsetZ: number | null;
@@ -320,12 +538,14 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   dealtDamageToEnemyMostRecentTimestamp: number | null;
   displayHistoryBits: number | null;
   lastAttackedTeammate: number | null;
+  allowAutoFollowTime: number | null;
   resetArmorNextSpawn: boolean | null;
   spotRules: number | null;
   isScoped: boolean | null;
   resumeZoom: boolean | null;
   isDefusing: boolean | null;
   isGrabbingHostage: boolean | null;
+  emitSoundTime: number | null;
   inNoDefuseArea: boolean | null;
   whichBombZone: number | null;
   inBombZoneTrigger: boolean | null;
@@ -351,13 +571,53 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   hasDeathInfo: boolean | null;
   deathInfoTime: number | null;
   readonly deathInfoOrigin: Vector | null;
+  gunGameImmunityColor: number | null;
+  grenadeParameterStashTime: number | null;
   grenadeParametersStashed: boolean | null;
   readonly stashedShootAngles: QAngle | null;
   readonly stashedGrenadeThrowPosition: Vector | null;
   readonly stashedVelocity: Vector | null;
   committingSuicideOnTeamChange: boolean | null;
   wasNotKilledNaturally: boolean | null;
+  immuneToGunGameDamageTime: number | null;
   gunGameImmunity: boolean | null;
   molotovDamageTime: number | null;
   readonly eyeAngles: QAngle | null;
+  readonly econGloves: CEconItemView;
+  readonly entitySpottedState: EntitySpottedState_t;
 }
+
+/** Every wrappable entity class, by schema name. */
+export interface SchemaClasses {
+  CEntityInstance: CEntityInstance;
+  CBaseEntity: CBaseEntity;
+  CBaseModelEntity: CBaseModelEntity;
+  CBasePlayerController: CBasePlayerController;
+  CBaseAnimGraph: CBaseAnimGraph;
+  CCSPlayerController: CCSPlayerController;
+  CBaseCombatCharacter: CBaseCombatCharacter;
+  CEconEntity: CEconEntity;
+  CBasePlayerPawn: CBasePlayerPawn;
+  CBasePlayerWeapon: CBasePlayerWeapon;
+  CCSPlayerPawnBase: CCSPlayerPawnBase;
+  CCSWeaponBase: CCSWeaponBase;
+  CCSPlayerPawn: CCSPlayerPawn;
+}
+
+/**
+ * Apply this schema class's field accessors to an entity reference.
+ *
+ * `createEntity` returns a bare `EntityRef` with no schema fields on it — this is how you get
+ * them. `Player.pawn` is already wrapped; this is for entities you create or resolve yourself.
+ *
+ * The wrapper is a view, not a copy: it holds the ref and reads through it on every access, so
+ * it stays correct as the entity changes and costs nothing to keep. Field reads return null
+ * once the ref goes stale, exactly as they do on a pawn.
+ *
+ * @example
+ * const prop = createEntity("prop_dynamic");
+ * prop.spawn();
+ * const fields = wrapEntity("CBaseModelEntity", prop);
+ * fields.glow.glowing = true;
+ */
+export declare function wrapEntity<K extends keyof SchemaClasses>(className: K, ref: EntityRef): SchemaClasses[K];

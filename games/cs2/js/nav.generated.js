@@ -5,9 +5,11 @@
   var Vector = __s2require("@s2script/sdk/math").Vector;
   function AimPunchServices(root, path) { this.root = root; this.path = path; }
   Object.defineProperties(AimPunchServices.prototype, {
+    "predictableBaseTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTick")); } },
     "predictableBaseTickInterpAmount": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseTickInterpAmount")); } },
     "predictableBaseAngle": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseAngle"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
     "predictableBaseAngleVel": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_predictableBaseAngleVel"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
+    "unpredictableBaseTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_AimPunchServices","m_unpredictableBaseTick")); } },
     "unpredictableBaseAngle": { get: function () { var a = this.root.readFloatsChain(this.path, off("CCSPlayer_AimPunchServices","m_unpredictableBaseAngle"), 3); return a === null ? null : new QAngle(a[0], a[1], a[2]); } },
   });
   function MovementServices(root, path) { this.root = root; this.path = path; }
@@ -61,6 +63,7 @@
     "gameCodeHasMovedPlayerAfterCommand": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nGameCodeHasMovedPlayerAfterCommand")); } },
     "madeFootstepNoise": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bMadeFootstepNoise")); } },
     "footsteps": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_iFootsteps")); } },
+    "stashGrenadeParameterWhen": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_fStashGrenadeParameterWhen")); } },
     "buttonDownMaskPrev": { get: function () { var v = this.root.readUInt64Via(this.path, off("CCSPlayer_MovementServices","m_nButtonDownMaskPrev")); return v === null ? null : v.toString(); } },
     "useFrictionStashedSpeed": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bUseFrictionStashedSpeed")); } },
     "useFrictionStashedSpeedUntilFrac": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flUseFrictionStashedSpeedUntilFrac")); } },
@@ -72,6 +75,7 @@
     "staminaAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flStaminaAtJumpStart")); } },
     "velMulAtJumpStart": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flVelMulAtJumpStart")); } },
     "accumulatedJumpError": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flAccumulatedJumpError")); } },
+    "lastJumpTick": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_MovementServices","m_nLastJumpTick")); } },
     "lastJumpFrac": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastJumpFrac")); } },
     "lastJumpVelocityZ": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_MovementServices","m_flLastJumpVelocityZ")); } },
     "jumpApexPending": { get: function () { return this.root.readBoolVia(this.path, off("CCSPlayer_MovementServices","m_bJumpApexPending")); } },
@@ -101,6 +105,7 @@
     "activeWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hActiveWeapon")); } },
     "lastWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CPlayer_WeaponServices","m_hLastWeapon")); } },
     "preventWeaponPickup": { get: function () { return this.root.readBoolVia(this.path, off("CPlayer_WeaponServices","m_bPreventWeaponPickup")); } },
+    "nextAttack": { get: function () { return this.root.readFloat32Via(this.path, off("CCSPlayer_WeaponServices","m_flNextAttack")); } },
     "savedWeapon": { get: function () { return this.root.readHandleVia(this.path, off("CCSPlayer_WeaponServices","m_hSavedWeapon")); } },
     "timeToMelee": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToMelee")); } },
     "timeToSecondary": { get: function () { return this.root.readInt32Via(this.path, off("CCSPlayer_WeaponServices","m_nTimeToSecondary")); } },

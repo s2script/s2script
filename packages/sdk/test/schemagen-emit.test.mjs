@@ -104,3 +104,24 @@ test("emitDts: a Vector/QAngle field adds the @s2script/sdk/math import + the fi
   assert.match(dts, /import type \{ Vector \} from "@s2script\/sdk\/math";/);
   assert.match(dts, /absVelocity: Vector \| null;/);
 });
+
+test("emits a typed wrapEntity keyed on entity classes only", () => {
+  const catalog = {
+    Base: { parent: null, fields: [
+      { name: "m_iHealth", offset: 8, type: { kind: "atomic", name: "int32" } },
+      { name: "m_Glow", offset: 64, type: { kind: "class", name: "CGlowProperty" } },
+    ] },
+    CGlowProperty: { parent: null, fields: [{ name: "m_bGlowing", offset: 81, type: { kind: "atomic", name: "bool" } }] },
+  };
+  const m = buildModel(catalog, ["Base"]);
+  const dts = emitDts(m);
+
+  assert.match(dts, /export interface SchemaClasses \{\n  Base: Base;\n\}/);
+  // An embedded struct has no entity of its own -- only a base offset inside one -- so it must not
+  // appear as something you can hand an EntityRef to.
+  assert.doesNotMatch(dts, /CGlowProperty: CGlowProperty;/);
+  assert.match(dts, /export declare function wrapEntity<K extends keyof SchemaClasses>/);
+
+  // And it has to actually exist at runtime, on the package object plugins import from.
+  assert.match(emitJs(m), /globalThis\.__s2pkg_cs2 = Object\.assign\(\{\}, globalThis\.__s2pkg_cs2, \{ wrapEntity: wrap \}\)/);
+});
