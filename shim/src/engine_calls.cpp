@@ -58,7 +58,15 @@ constexpr const char* kEngineModule = "libserver.so";
 // Arg budget (spec §4): `this` consumes the first of SysV's six GP argument registers, so at most 5
 // integer-class args, and at most 8 float args. The SDK's build-time validator rejects a descriptor
 // that exceeds either bound; these are the belt-and-braces runtime guards.
-constexpr int kMaxGpArgs = 5;
+// 9 declared integer-class args, plus the optional receiver = 10 integer slots total.
+//
+// SysV passes the first SIX integer-class args in registers (rdi..r9) and SPILLS the rest to the
+// stack. The prototypes below therefore declare ten uint64 slots: the compiler puts slots 7..10 on
+// the stack in order, which is exactly where a callee declaring that many expects them. Raising the
+// budget past six is what lets a static factory taking seven args be declared at all -- with the old
+// limit of five (+ receiver) such a descriptor was rejected at load with "stack-passed args are out
+// of scope".
+constexpr int kMaxGpArgs = 9;
 constexpr int kMaxFpArgs = 8;
 
 // A vtable has a naturally small bound; cap the index BEFORE the vt[] read so a corrupt/hostile
@@ -213,9 +221,14 @@ int Fail(char* out, int cap, const char* reason) {
 // sees 0.0f. That is a SILENT wrong value — no crash, no diagnostic — and it is exactly the
 // misbehaviour class this slice exists to prevent. Verified by compiled repro; guarded by the
 // float-round-trip test in core/src/gamedata_calls.rs.
-using FnU64 = uint64_t (*)(void*, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+// The receiver is no longer a distinct `void*` parameter: it is simply integer slot 0 when the
+// descriptor HAS a receiver, and the first declared arg when it does not. One prototype serves both,
+// so a receiverless call is not a second code path with its own way to be wrong.
+using FnU64 = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                           uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                            float, float, float, float, float, float, float, float);
-using FnF32 = float    (*)(void*, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+using FnF32 = float    (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                           uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                            float, float, float, float, float, float, float, float);
 
 }  // namespace
@@ -312,15 +325,24 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     // Receiver: a books-gated (index, serial) pair, optionally hopping through ONE schema-named
     // sub-object pointer (`receiver.via`, whose offset the core live-resolves via the cached
     // __s2_schema_offset and passes here; < 0 means "no hop").
-    CEntityInstance* self = ResolveEntity(entIndex, entSerial);
-    if (!self) return 0;
-    void* thisPtr = self;
-    if (subObjOff >= 0) {
-        thisPtr = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(self) + subObjOff);
-        if (!thisPtr) return 0;      // sub-object absent on this entity — degrade this invocation
+    //
+    // entIndex < 0 is the RECEIVERLESS marker (`receiver.kind: "none"` — a static/free engine
+    // function, which has no `this` at all). Nothing is resolved and no slot is consumed: the first
+    // declared arg takes rdi. Kept as a sentinel on the existing parameter rather than a new ABI
+    // field so the op signature is unchanged.
+    const bool hasReceiver = entIndex >= 0;
+    void* thisPtr = nullptr;
+    if (hasReceiver) {
+        CEntityInstance* self = ResolveEntity(entIndex, entSerial);
+        if (!self) return 0;
+        thisPtr = self;
+        if (subObjOff >= 0) {
+            thisPtr = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(self) + subObjOff);
+            if (!thisPtr) return 0;  // sub-object absent on this entity — degrade this invocation
+        }
     }
 
-    uint64_t g[kMaxGpArgs] = { 0, 0, 0, 0, 0 };
+    uint64_t g[kMaxGpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     // `float`, not `double` — see the FnU64/FnF32 note above. The core hands us f64 across the ABI
     // (JS numbers are doubles); the narrowing to the engine's 32-bit float happens HERE, once.
     float    f[kMaxFpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -360,8 +382,15 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     }
     for (int i = 0; i < fpCount; i++) f[i] = static_cast<float>(fp[i]);   // explicit f64 -> f32 narrow
 
+    // Lay the integer slots out once: receiver first when there is one, then the declared args.
+    uint64_t s_[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    int base = 0;
+    if (hasReceiver) { s_[0] = reinterpret_cast<uint64_t>(thisPtr); base = 1; }
+    for (int i = 0; i < gpCount && (base + i) < 10; i++) s_[base + i] = g[i];
+
     if (retKind == kRetFloat) {
-        float r = reinterpret_cast<FnF32>(fn)(thisPtr, g[0], g[1], g[2], g[3], g[4],
+        float r = reinterpret_cast<FnF32>(fn)(s_[0], s_[1], s_[2], s_[3], s_[4],
+                                              s_[5], s_[6], s_[7], s_[8], s_[9],
                                               f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
         if (retOut) {
             uint32_t bits = 0;
@@ -371,7 +400,8 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
         return 1;
     }
 
-    uint64_t r = reinterpret_cast<FnU64>(fn)(thisPtr, g[0], g[1], g[2], g[3], g[4],
+    uint64_t r = reinterpret_cast<FnU64>(fn)(s_[0], s_[1], s_[2], s_[3], s_[4],
+                                             s_[5], s_[6], s_[7], s_[8], s_[9],
                                              f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
     if (retOut) {
         switch (retKind) {

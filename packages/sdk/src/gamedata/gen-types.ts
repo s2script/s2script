@@ -28,8 +28,12 @@ export function generateGamedataTypes(gd: PluginGamedata): string {
       // Author-supplied names when present (validated as identifiers, positionally matched), else
       // positional aN. On an unsafe FFI surface the parameter names ARE the documentation.
       const names = decl.argNames;
+      // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading
+      // `self`. Emitting one would make the generated type disagree with the runtime callable, and
+      // every call site would pass its first real argument into a parameter that does not exist.
+      const receiverless = decl.receiver?.kind === "none";
       const params = [
-        "self: EntityRef",
+        ...(receiverless ? [] : ["self: EntityRef"]),
         ...decl.args.map((a, i) => `${names?.[i] ?? `a${i}`}: ${ARG_TS[a]}`),
       ];
       return `    ${name}: (${params.join(", ")}) => ${RET_TS[decl.returns]};`;

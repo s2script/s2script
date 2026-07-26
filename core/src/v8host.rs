@@ -2004,6 +2004,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       call: function (name) {
         var pid = __s2_current_plugin();
         if (!__s2_engine_call_ready(pid, name)) return null;
+        // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading
+        // `self`: shifting one off would silently eat the first real argument.
+        if (__s2_engine_call_receiverless(pid, name)) {
+          return function () {
+            return __s2_engine_call_invoke(pid, name, 0, 0, Array.prototype.slice.call(arguments));
+          };
+        }
         return function () {
           var args = Array.prototype.slice.call(arguments);
           var self = args.shift();
@@ -7409,6 +7416,18 @@ fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
     }));
 }
 
+/// Native `__s2_engine_call_receiverless(pluginId, callName) -> boolean`. True for a descriptor
+/// declaring `receiver.kind: "none"` — the generated callable then takes no leading `self`.
+fn s2_engine_call_receiverless(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let pid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        rv.set_bool(crate::gamedata_calls::is_receiverless(&pid, &name));
+    }));
+}
+
 /// Native `__s2_engine_call_status(pluginId, callName) -> string`. `"available"`, or the named reason
 /// the descriptor is not (spec §12) — for diagnostics and operator reports.
 fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -7443,7 +7462,18 @@ fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         // synchronously fire an output/event that dispatches into JS and calls Engine.call again.
         let Some(plan) = crate::gamedata_calls::plan(&pid, &name) else { return };
         // Receiver: books-gated (index, id) → (index, engine serial). Not-live → no-op, never a deref.
-        let Some((index, serial)) = ent_op_serial(scope, args.get(2), args.get(3)) else { return };
+        //
+        // A receiverless descriptor (`receiver.kind: "none"`) has no entity to gate: it passes the
+        // shim's receiverless sentinel (index < 0) so no resolve is attempted and the first declared
+        // arg takes the slot `this` would have occupied.
+        let (index, serial) = if plan.receiverless {
+            (-1, 0)
+        } else {
+            match ent_op_serial(scope, args.get(2), args.get(3)) {
+                Some(pair) => pair,
+                None => return,
+            }
+        };
 
         // `receiver.via`: resolved LAZILY through the same cached resolver JS's `__s2_schema_offset`
         // uses — schema resolves at map-live, not at Load (spec §11). A miss no-ops THIS invocation
@@ -8831,6 +8861,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Plugin-declared engine calls (`@s2script/sdk/unsafe`): ask-by-name only — there is deliberately
     // NO registration native (core registers descriptors itself from the packed gamedata.json).
     set_native(scope, global_obj, "__s2_engine_call_ready", s2_engine_call_ready);
+    set_native(scope, global_obj, "__s2_engine_call_receiverless", s2_engine_call_receiverless);
     set_native(scope, global_obj, "__s2_engine_call_status", s2_engine_call_status);
     set_native(scope, global_obj, "__s2_engine_call_invoke", s2_engine_call_invoke);
 }

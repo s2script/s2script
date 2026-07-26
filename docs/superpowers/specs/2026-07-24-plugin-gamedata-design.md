@@ -68,7 +68,13 @@ why v1 ships this one and defers xref-style validators (§14).
 - Calling convention: C++ member function under SysV — `this` in `rdi`, integer-class args in the
   remaining GP registers, float args in `xmm`. Overloads and variadics are out of scope.
 
-**Arg budget.** Everything except `float` is **integer-class**: `bool`, `int`, `entity` (an entity
+**Arg budget: 9 integer-class args**, plus the receiver when the descriptor has one. Six is the SysV
+*register* count, not a limit on the call — further integer args spill to the **stack**, and the
+shim's max-arity prototypes declare enough slots to cover them. (The original budget was five + `this`
+and rejected anything more with "stack-passed args are out of scope"; a seven-argument engine factory
+was therefore undeclarable.)
+
+Everything except `float` is **integer-class**: `bool`, `int`, `entity` (an entity
 pointer), `string` (a `char*`), and `vector` (passed by address). SysV gives six GP argument
 registers and `this` consumes the first, so the limit is:
 
@@ -93,6 +99,13 @@ of the call. A callee that *retains* the pointer will dangle. v1 does not detect
 
 `receiver.kind` is a **tagged** field so that non-entity receivers (named Valve interface, game
 system) are an additive kind in a later slice, not a format redesign.
+
+**`receiver.kind: "none"`** — a STATIC/free engine function, which has no `this` at all. The generated
+callable takes no leading `self`, and the first declared arg occupies the register the receiver would
+have used. `via` is rejected on a receiverless descriptor: a sub-object hop is a hop *from* a
+receiver, so the combination is contradictory rather than merely redundant. This is what makes engine
+FACTORIES declarable — they are static by nature, and without it a plugin needing one had no route
+except a game-specific op in the core, which the boundary gates forbid.
 
 ## 5. Descriptor format
 

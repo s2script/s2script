@@ -23,10 +23,28 @@ test("vtable target without validate.prologue is rejected", () => {
   assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("validate.prologue")));
 });
 
-test("six integer-class args are rejected (this occupies rdi)", () => {
+test("ten integer-class args are rejected (one past the budget)", () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.args = Array(10).fill("int");
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("integer-class")));
+});
+
+test("six integer-class args are accepted (args past the sixth spill to the stack)", () => {
   const gd = structuredClone(sigCall);
   gd.calls.foo.args = ["int", "int", "int", "bool", "entity", "string"];
-  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("integer-class")));
+  assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), []);
+});
+
+test('receiver.kind "none" is accepted (a static engine function)', () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.receiver = { kind: "none" };
+  assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), []);
+});
+
+test('receiver.kind "none" cannot carry a via hop', () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.receiver = { kind: "none", via: { class: "C", field: "m_f" } };
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("via")));
 });
 
 test("five integer-class plus eight float args are accepted", () => {

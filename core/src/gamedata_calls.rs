@@ -49,7 +49,12 @@ pub(crate) const INVALID_ENTITY_HANDLE: u32 = 0xFFFF_FFFF;
 /// SysV budget (spec §4): `this` consumes the first of the six GP argument registers, leaving 5;
 /// there are 8 xmm argument registers. The SDK fails the BUILD past either bound — these are the
 /// runtime backstop for a hand-rolled or older `.s2sp`.
-const MAX_GP_ARGS: usize = 5;
+/// Declared integer-class args. Mirrors `kMaxGpArgs` in `engine_calls.cpp` — this is an ABI.
+///
+/// Six is the SysV *register* count, not a call-shape limit: further integer args spill to the
+/// stack, which the shim's prototypes now cover. The budget is 9 declared args plus the optional
+/// receiver, so a static factory taking seven can be declared.
+const MAX_GP_ARGS: usize = 9;
 const MAX_FP_ARGS: usize = 8;
 
 /// Buffer size for a degrade reason written back by the shim.
@@ -118,6 +123,9 @@ pub(crate) struct InvokePlan {
     /// `receiver.via` — an opaque (class, field) pair resolved LAZILY at first invoke through the
     /// cached schema-offset resolver (spec §11: schema resolves at map-live, not at Load).
     pub via: Option<(String, String)>,
+    /// `receiver.kind: "none"` — a static/free function. The callable takes no `self`, and the
+    /// invoke passes the receiverless sentinel instead of an entity pair.
+    pub receiverless: bool,
 }
 
 /// One registered descriptor. `Ready` carries the resolved plan; `Degraded` carries the named reason
@@ -261,12 +269,23 @@ fn prepare(plugin_id: &str, decl_json: &str, ops_available: bool) -> Result<Invo
     let decl: serde_json::Value =
         serde_json::from_str(decl_json).map_err(|e| format!("malformed descriptor: {}", e))?;
 
-    // Receiver: v1 is entity-only, and `kind` is a TAGGED field so a later slice adds a kind
-    // additively rather than redesigning the format (spec §4).
+    // Receiver: `kind` is a TAGGED field, so kinds are added additively rather than by redesigning
+    // the format (spec §4).
+    //
+    //   "entity" — the default: a books-gated (index, serial) pair supplies `this`.
+    //   "none"   — a STATIC/free function with no `this` at all. The generated callable takes no
+    //              `self`, and the first declared arg lands where the receiver would have.
+    //
+    // A receiverless descriptor must not also carry `via`: a sub-object hop is a hop FROM a
+    // receiver, so the pair is contradictory and is rejected rather than silently ignored.
     let receiver = decl.get("receiver");
     let rkind = receiver.and_then(|r| r.get("kind")).and_then(|v| v.as_str()).unwrap_or("entity");
-    if rkind != "entity" {
+    if rkind != "entity" && rkind != "none" {
         return Err(format!("unsupported receiver kind '{}'", rkind));
+    }
+    let receiverless = rkind == "none";
+    if receiverless && receiver.and_then(|r| r.get("via")).is_some() {
+        return Err("receiver.kind 'none' cannot carry a 'via' sub-object hop".to_string());
     }
     let via = receiver.and_then(|r| r.get("via")).and_then(|v| {
         let class = v.get("class").and_then(|x| x.as_str())?;
@@ -287,7 +306,7 @@ fn prepare(plugin_id: &str, decl_json: &str, ops_available: bool) -> Result<Invo
     let (gp_kinds, fp_count) = classify_args(&args);
     if gp_kinds.len() > MAX_GP_ARGS {
         return Err(format!(
-            "too many integer-class args ({} > {}) — stack-passed args are out of scope",
+            "too many integer-class args ({} > {})",
             gp_kinds.len(),
             MAX_GP_ARGS
         ));
@@ -302,7 +321,7 @@ fn prepare(plugin_id: &str, decl_json: &str, ops_available: bool) -> Result<Invo
     let target = decl.get("target").ok_or_else(|| "descriptor has no target".to_string())?;
     let call_id = resolve_target(target)?;
 
-    Ok(InvokePlan { call_id, args, ret_code: ret, via })
+    Ok(InvokePlan { call_id, args, ret_code: ret, via, receiverless })
 }
 
 /// Call the shim's resolve op with the descriptor's opaque strings. Returns the call id, or the
@@ -469,6 +488,13 @@ pub(crate) fn is_ready(plugin_id: &str, name: &str) -> bool {
     REGISTRY.with(|r| r.borrow().is_ready(plugin_id, name))
 }
 
+/// Backs `__s2_engine_call_receiverless` — whether the callable should take a leading `self`.
+/// False for an unknown or degraded descriptor, which is the safe default (the receiver form is
+/// what every pre-existing descriptor uses).
+pub(crate) fn is_receiverless(plugin_id: &str, name: &str) -> bool {
+    REGISTRY.with(|r| r.borrow().plan(plugin_id, name).map(|p| p.receiverless).unwrap_or(false))
+}
+
 /// Backs `__s2_engine_call_status`.
 pub(crate) fn status(plugin_id: &str, name: &str) -> String {
     REGISTRY.with(|r| r.borrow().status(plugin_id, name))
@@ -610,10 +636,19 @@ mod tests {
         reg.register("@demo/gd", "badRet", bad_ret, true);
         assert!(reg.status("@demo/gd", "badRet").contains("unknown return kind"));
 
+        // Ten integer-class args: one past the 9-arg budget. Six used to be over-budget, back when
+        // the limit was the SysV register count; args beyond the sixth now spill to the stack.
         let too_many = r#"{"receiver":{"kind":"entity"},"target":{"kind":"signature","pattern":"55"},
-                           "args":["int","int","int","int","int","int"],"returns":"void"}"#;
+                           "args":["int","int","int","int","int","int","int","int","int","int"],
+                           "returns":"void"}"#;
         reg.register("@demo/gd", "tooMany", too_many, true);
         assert!(reg.status("@demo/gd", "tooMany").contains("too many integer-class args"));
+
+        // `none` is a SUPPORTED kind now — a static/free function with no receiver.
+        let static_via = r#"{"receiver":{"kind":"none","via":{"class":"C","field":"m_f"}},
+                             "target":{"kind":"signature","pattern":"55"},"args":[],"returns":"void"}"#;
+        reg.register("@demo/gd", "staticVia", static_via, true);
+        assert!(reg.status("@demo/gd", "staticVia").contains("cannot carry a 'via'"));
 
         let bad_receiver = r#"{"receiver":{"kind":"interface"},"target":{"kind":"signature","pattern":"55"},
                                "args":[],"returns":"void"}"#;
