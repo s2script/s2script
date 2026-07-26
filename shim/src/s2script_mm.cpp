@@ -5012,14 +5012,20 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
 // 1 = validated (mode cached), 0 = undecidable this snapshot (stay pending), -1 = hard mismatch.
 static int TransmitValidateLayout(CCheckTransmitInfo** ppInfoList, int nInfoCount) {
     if (nInfoCount <= 0) return 0;
-    int slotWitness = 0, entWitness = 0;
+    int slotWitness = 0, entWitness = 0, sane = 0;
     for (int i = 0; i < nInfoCount; i++) {
         const uint8_t* raw = reinterpret_cast<const uint8_t*>(ppInfoList[i]);
         if (!raw) continue;                                     // non-evidence
+        // Evidence gate: the info must have a transmit bitvec. It must NOT additionally require
+        // bit 0 (the world entity) to be set — that was the original gate and it never passes on
+        // this build, so the loop collected zero witnesses on every one of the 512 attempts and
+        // disabled transmit filtering with an UNDECIDABLE verdict that looked like a bad offset.
+        // It was not: +576 is confirmed correct (see the semantics note below).
         const CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
-        if (!bv || !bv->IsBitSet(0)) continue;                  // non-evidence (HLTV/full-update?)
+        if (!bv) continue;                                      // non-evidence
         int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
         if (v < 0 || v > 128) return -1;    // the ONLY hard fail: garbage far outside client range
+        sane++;
         bool slotOk = (v < kMaxClientSlots && s_trackedSignon[v] != kSignonNone);
         bool entOk  = (v >= 1 && (v - 1) < kMaxClientSlots && s_trackedSignon[v - 1] != kSignonNone);
         if (slotOk && !entOk) slotWitness++;
@@ -5027,7 +5033,26 @@ static int TransmitValidateLayout(CCheckTransmitInfo** ppInfoList, int nInfoCoun
     }
     if (slotWitness > 0 && entWitness == 0) { s_transmitClientIsEntIndex = false; return 1; }
     if (entWitness > 0 && slotWitness == 0) { s_transmitClientIsEntIndex = true;  return 1; }
-    return 0;                               // no or conflicting exclusive witnesses -> retry
+
+    // No EXCLUSIVE witness, but the reads were all in client range (a garbage offset would have
+    // hard-failed above). That is the expected steady state on a normally-populated server: with
+    // slots 0..N contiguously occupied, every value in 1..N is simultaneously a valid slot AND a
+    // valid entindex-1, so neither interpretation can ever be excluded. Demanding exclusivity is
+    // therefore unsatisfiable in exactly the common case, which is how a CORRECT offset ended up
+    // reported as UNDECIDABLE and the whole feature disabled.
+    //
+    // Fall back to the declared semantics rather than failing. Slot is not a coin flip: the field
+    // is `int32_t m_nPlayerSlot` at +576 in CounterStrikeSharp (CBitVec* at 0, then int8 pad[568]),
+    // and `CPlayerSlot m_nPlayerSlot` in Swiftly's iservernetworkable.h. Two independent
+    // implementations agree on both the offset and that it holds a SLOT, not an entindex.
+    //
+    // Still evidence-gated: `sane` only counts infos that passed the range check, so this cannot
+    // fire on a snapshot that produced no readable data at all.
+    if (sane > 0) {
+        s_transmitClientIsEntIndex = false;
+        return 2;                           // validated by agreement, not by exclusive witness
+    }
+    return 0;                               // nothing readable yet -> retry
 }
 
 void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
@@ -5044,10 +5069,15 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
             if (s_trackedSignon[i] != kSignonNone) { anyTracked = true; break; }
         if (!anyTracked) RETURN_META(MRES_IGNORED);
         int r = TransmitValidateLayout(ppInfoList, nInfoCount);
-        if (r == 1) {
+        if (r == 1 || r == 2) {
             s_transmitLayoutState = 1;
-            META_CONPRINTF("[s2script] transmit: CheckTransmitInfo layout VALIDATED (client int @%d = %s)\n",
-                           s_ctiClientOff, s_transmitClientIsEntIndex ? "entindex (slot+1)" : "slot");
+            // r==2 distinguishes "no interpretation could be excluded, using the declared
+            // semantics" from a genuine exclusive witness, so the log never overstates what was
+            // actually proven.
+            META_CONPRINTF("[s2script] transmit: CheckTransmitInfo layout VALIDATED (client int @%d = %s, %s)\n",
+                           s_ctiClientOff, s_transmitClientIsEntIndex ? "entindex (slot+1)" : "slot",
+                           (r == 2) ? "declared semantics; slot/entindex indistinguishable on this roster"
+                                    : "exclusive witness");
         } else if (r == -1 || ++s_transmitValidateAttempts >= kTransmitValidateMaxAttempts) {
             s_transmitLayoutState = -1;
             s_transmitTable.clear();
