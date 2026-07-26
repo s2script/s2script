@@ -20,6 +20,14 @@ export interface CAttributeContainer {
 export interface CAttributeList {
 }
 
+export interface CBuoyancyHelper {
+  fluidDensity: number | null;
+  neutrallyBuoyantGravity: number | null;
+  neutrallyBuoyantLinearDamping: number | null;
+  neutrallyBuoyantAngularDamping: number | null;
+  neutrallyBuoyant: boolean | null;
+}
+
 export interface CCollisionProperty {
   readonly mins: Vector | null;
   readonly maxs: Vector | null;
@@ -40,6 +48,11 @@ export interface CCollisionProperty {
   readonly collisionAttribute: VPhysicsCollisionAttribute_t;
 }
 
+export interface CConstantForceController {
+  readonly linear: Vector | null;
+  readonly linearSave: Vector | null;
+}
+
 export interface CEconItemView {
   itemDefinitionIndex: number | null;
   entityQuality: number | null;
@@ -57,6 +70,26 @@ export interface CEconItemView {
 }
 
 export interface CEntityIOOutput {
+}
+
+export interface CEnvWindShared {
+  startTime: number | null;
+  windSeed: number | null;
+  minWind: number | null;
+  maxWind: number | null;
+  windRadius: number | null;
+  minGust: number | null;
+  maxGust: number | null;
+  minGustDelay: number | null;
+  maxGustDelay: number | null;
+  gustDuration: number | null;
+  gustDirChange: number | null;
+  initialWindDir: number | null;
+  initialWindSpeed: number | null;
+  readonly location: Vector | null;
+  readonly entOwner: EntityRef | null;
+  readonly onGustStart: CEntityIOOutput;
+  readonly onGustEnd: CEntityIOOutput;
 }
 
 export interface CGlowProperty {
@@ -84,6 +117,13 @@ export interface CIronSightController {
   ironSightAmountBiased: number | null;
 }
 
+export interface CMotorController {
+  speed: number | null;
+  maxTorque: number | null;
+  readonly axis: Vector | null;
+  inertiaFactor: number | null;
+}
+
 export interface CMovementStatsProperty {
   useCounter: number | null;
   readonly emaMovementDirection: CVectorExponentialMovingAverage;
@@ -101,6 +141,13 @@ export interface CNetworkVelocityVector {
 }
 
 export interface CNetworkViewOffsetVector {
+}
+
+export interface CPathQueryComponent {
+}
+
+export interface CPhysicsShake {
+  readonly force: Vector | null;
 }
 
 export interface CPropDataComponent {
@@ -123,14 +170,52 @@ export interface CRetakeGameRules {
   readonly bombPlanter: EntityRef | null;
 }
 
+export interface CTestPulseIOComponent_Derived {
+}
+
 export interface CTouchExpansionComponent {
 }
 
 export interface CVectorExponentialMovingAverage {
 }
 
+export interface ConstraintSoundInfo {
+  readonly forwardAxis: Vector | null;
+  playTravelSound: boolean | null;
+  playReversalSound: boolean | null;
+  readonly sampler: VelocitySampler;
+  readonly soundProfile: SimpleConstraintSoundProfile;
+}
+
+export interface CountdownTimer {
+  duration: number | null;
+  timestamp: number | null;
+  timescale: number | null;
+}
+
 export interface EntitySpottedState_t {
   spotted: boolean | null;
+}
+
+export interface Extent {
+  readonly lo: Vector | null;
+  readonly hi: Vector | null;
+}
+
+export interface FuncMoverMovementSummary_t {
+  startT: number | null;
+  endT: number | null;
+  startNodeIndex: number | null;
+  stopNodeIndex: number | null;
+  movementMode: number | null;
+  flags: number | null;
+  tick: number | null;
+  readonly pathMover: EntityRef | null;
+}
+
+export interface FuncRotatorRotationSummary_t {
+  tick: number | null;
+  flags: number | null;
 }
 
 export interface IntervalTimer {
@@ -140,6 +225,14 @@ export interface IntervalTimer {
 export interface PhysicsRagdollPose_t {
   readonly owner: EntityRef | null;
   setFromDebugHistory: boolean | null;
+}
+
+export interface SimpleConstraintSoundProfile {
+  keyPointMinSoundThreshold: number | null;
+  keyPointMaxSoundThreshold: number | null;
+  reversalSoundThresholdSmall: number | null;
+  reversalSoundThresholdMedium: number | null;
+  reversalSoundThresholdLarge: number | null;
 }
 
 export interface VPhysicsCollisionAttribute_t {
@@ -154,6 +247,61 @@ export interface VPhysicsCollisionAttribute_t {
   targetDetailLayer: number | null;
   collisionGroup: number | null;
   collisionFunctionMask: number | null;
+}
+
+export interface VelocitySampler {
+  readonly prevSample: Vector | null;
+  prevSampleTime: number | null;
+  idealSampleRate: number | null;
+}
+
+export interface constraint_axislimit_t {
+  minRotation: number | null;
+  maxRotation: number | null;
+  motorTargetAngSpeed: number | null;
+  motorMaxTorque: number | null;
+}
+
+export interface constraint_breakableparams_t {
+  strength: number | null;
+  forceLimit: number | null;
+  torqueLimit: number | null;
+  isActive: boolean | null;
+}
+
+export interface constraint_hingeparams_t {
+  readonly worldPosition: Vector | null;
+  readonly worldAxisDirection: Vector | null;
+  readonly hingeAxis: constraint_axislimit_t;
+  readonly constraint: constraint_breakableparams_t;
+}
+
+export interface dynpitchvol_t {
+  preset: number | null;
+  pitchrun: number | null;
+  pitchstart: number | null;
+  spinup: number | null;
+  spindown: number | null;
+  volrun: number | null;
+  volstart: number | null;
+  fadein: number | null;
+  fadeout: number | null;
+  lfotype: number | null;
+  lforate: number | null;
+  lfomodpitch: number | null;
+  lfomodvol: number | null;
+  cspinup: number | null;
+  cspincount: number | null;
+  pitch: number | null;
+  spinupsav: number | null;
+  spindownsav: number | null;
+  pitchfrac: number | null;
+  vol: number | null;
+  fadeinsav: number | null;
+  fadeoutsav: number | null;
+  volfrac: number | null;
+  lfofrac: number | null;
+  lfomult: number | null;
 }
 
 export interface fogparams_t {
@@ -184,6 +332,15 @@ export interface fogparams_t {
   padding: boolean | null;
 }
 
+export interface hudtextparms_t {
+  color1: number | null;
+  color2: number | null;
+  effect: number | null;
+  channel: number | null;
+  x: number | null;
+  y: number | null;
+}
+
 export interface locksound_t {
   flwaitSound: number | null;
 }
@@ -191,6 +348,14 @@ export interface locksound_t {
 export interface ragdoll_t {
   allowStretch: boolean | null;
   unused: boolean | null;
+}
+
+export interface shard_model_desc_t {
+  modelID: number | null;
+  solid: number | null;
+  glassHalfThickness: number | null;
+  hasParent: boolean | null;
+  parentFrozen: boolean | null;
 }
 
 export interface sky3dparams_t {
@@ -289,6 +454,11 @@ export interface CBaseEntity extends CEntityInstance {
 export interface CMultiplayRules extends CGameRules {
 }
 
+export interface CAI_ChangeHintGroup extends CBaseEntity {
+  searchType: number | null;
+  radius: number | null;
+}
+
 export interface CBaseModelEntity extends CBaseEntity {
   destructiblePartInitialStateDestructed0: number | null;
   destructiblePartInitialStateDestructed1: number | null;
@@ -350,12 +520,773 @@ export interface CBasePlayerController extends CBaseEntity {
   desiredFOV: number | null;
 }
 
+export interface CCSGO_TeamPreviewCharacterPosition extends CBaseEntity {
+  variant: number | null;
+  random: number | null;
+  ordinal: number | null;
+  readonly xuid: string | null;
+  readonly agentItem: CEconItemView;
+  readonly glovesItem: CEconItemView;
+  readonly weaponItem: CEconItemView;
+}
+
+export interface CCSPlayerResource extends CBaseEntity {
+  readonly bombsiteCenterA: Vector | null;
+  readonly bombsiteCenterB: Vector | null;
+  endMatchNextMapAllVoted: boolean | null;
+  foundGoalPositions: boolean | null;
+}
+
+export interface CCitadelSoundOpvarSetOBB extends CBaseEntity {
+  readonly distanceInnerMins: Vector | null;
+  readonly distanceInnerMaxs: Vector | null;
+  readonly distanceOuterMins: Vector | null;
+  readonly distanceOuterMaxs: Vector | null;
+  aABBDirection: number | null;
+}
+
+export interface CColorCorrection extends CBaseEntity {
+  fadeInDuration: number | null;
+  fadeOutDuration: number | null;
+  startFadeInWeight: number | null;
+  startFadeOutWeight: number | null;
+  timeStartFadeIn: number | null;
+  timeStartFadeOut: number | null;
+  maxWeight: number | null;
+  startDisabled: boolean | null;
+  enabled: boolean | null;
+  master: boolean | null;
+  clientSide: boolean | null;
+  exclusive: boolean | null;
+  minFalloff: number | null;
+  maxFalloff: number | null;
+  curWeight: number | null;
+  readonly netlookupFilename: string | null;
+}
+
+export interface CCommentaryAuto extends CBaseEntity {
+  readonly onCommentaryNewGame: CEntityIOOutput;
+  readonly onCommentaryMidGame: CEntityIOOutput;
+  readonly onCommentaryMultiplayerSpawn: CEntityIOOutput;
+}
+
+export interface CDebugHistory extends CBaseEntity {
+  npcEvents: number | null;
+}
+
+export interface CEntityFlame extends CBaseEntity {
+  readonly entAttached: EntityRef | null;
+  cheapEffect: boolean | null;
+  size: number | null;
+  useHitboxes: boolean | null;
+  numHitboxFires: number | null;
+  hitboxFireScale: number | null;
+  lifetime: number | null;
+  readonly attacker: EntityRef | null;
+  directDamagePerSecond: number | null;
+  customDamageType: number | null;
+}
+
+export interface CEnvBeverage extends CBaseEntity {
+  canInDispenser: boolean | null;
+  beverageType: number | null;
+}
+
+export interface CEnvCombinedLightProbeVolume extends CBaseEntity {
+  entity_Color: number | null;
+  entity_flBrightness: number | null;
+  entity_bCustomCubemapTexture: boolean | null;
+  readonly entity_vBoxMins: Vector | null;
+  readonly entity_vBoxMaxs: Vector | null;
+  entity_bMoveable: boolean | null;
+  entity_nHandshake: number | null;
+  entity_nEnvCubeMapArrayIndex: number | null;
+  entity_nPriority: number | null;
+  entity_bStartDisabled: boolean | null;
+  entity_flEdgeFadeDist: number | null;
+  readonly entity_vEdgeFadeDists: Vector | null;
+  entity_nLightProbeSizeX: number | null;
+  entity_nLightProbeSizeY: number | null;
+  entity_nLightProbeSizeZ: number | null;
+  entity_nLightProbeAtlasX: number | null;
+  entity_nLightProbeAtlasY: number | null;
+  entity_nLightProbeAtlasZ: number | null;
+  entity_bEnabled: boolean | null;
+}
+
+export interface CEnvCubemap extends CBaseEntity {
+  entity_bCustomCubemapTexture: boolean | null;
+  entity_flInfluenceRadius: number | null;
+  readonly entity_vBoxProjectMins: Vector | null;
+  readonly entity_vBoxProjectMaxs: Vector | null;
+  entity_bMoveable: boolean | null;
+  entity_nHandshake: number | null;
+  entity_nEnvCubeMapArrayIndex: number | null;
+  entity_nPriority: number | null;
+  entity_flEdgeFadeDist: number | null;
+  readonly entity_vEdgeFadeDists: Vector | null;
+  entity_flDiffuseScale: number | null;
+  entity_bStartDisabled: boolean | null;
+  entity_bDefaultEnvMap: boolean | null;
+  entity_bDefaultSpecEnvMap: boolean | null;
+  entity_bIndoorCubeMap: boolean | null;
+  entity_bCopyDiffuseFromDefaultCubemap: boolean | null;
+  entity_bEnabled: boolean | null;
+}
+
+export interface CEnvCubemapFog extends CBaseEntity {
+  endDistance: number | null;
+  startDistance: number | null;
+  fogFalloffExponent: number | null;
+  heightFogEnabled: boolean | null;
+  fogHeightWidth: number | null;
+  fogHeightEnd: number | null;
+  fogHeightStart: number | null;
+  fogHeightExponent: number | null;
+  lODBias: number | null;
+  active: boolean | null;
+  startDisabled: boolean | null;
+  fogMaxOpacity: number | null;
+  cubemapSourceType: number | null;
+  heightFogType: number | null;
+  fogHeightBlendMode: number | null;
+  fogHeightCoordinateSpace: number | null;
+  distanceFogType: number | null;
+  hasHeightFogEnd: boolean | null;
+  firstTime: boolean | null;
+}
+
+export interface CEnvDetailController extends CBaseEntity {
+  fadeStartDist: number | null;
+  fadeEndDist: number | null;
+}
+
+export interface CEnvEntityIgniter extends CBaseEntity {
+  lifetime: number | null;
+}
+
+export interface CEnvLightProbeVolume extends CBaseEntity {
+  readonly entity_vBoxMins: Vector | null;
+  readonly entity_vBoxMaxs: Vector | null;
+  entity_bMoveable: boolean | null;
+  entity_nHandshake: number | null;
+  entity_nPriority: number | null;
+  entity_bStartDisabled: boolean | null;
+  entity_nLightProbeSizeX: number | null;
+  entity_nLightProbeSizeY: number | null;
+  entity_nLightProbeSizeZ: number | null;
+  entity_nLightProbeAtlasX: number | null;
+  entity_nLightProbeAtlasY: number | null;
+  entity_nLightProbeAtlasZ: number | null;
+  entity_bEnabled: boolean | null;
+}
+
+export interface CEnvSoundscape extends CBaseEntity {
+  radius: number | null;
+  overrideWithEvent: boolean | null;
+  soundscapeIndex: number | null;
+  soundscapeEntityListId: number | null;
+  readonly proxySoundscape: EntityRef | null;
+  disabled: boolean | null;
+  soundEventHash: number | null;
+  readonly onPlay: CEntityIOOutput;
+}
+
+export interface CEnvVolumetricFogController extends CBaseEntity {
+  scattering: number | null;
+  tintColor: number | null;
+  anisotropy: number | null;
+  fadeSpeed: number | null;
+  drawDistance: number | null;
+  fadeInStart: number | null;
+  fadeInEnd: number | null;
+  indirectStrength: number | null;
+  volumeDepth: number | null;
+  firstVolumeSliceThickness: number | null;
+  indirectTextureDimX: number | null;
+  indirectTextureDimY: number | null;
+  indirectTextureDimZ: number | null;
+  readonly boxMins: Vector | null;
+  readonly boxMaxs: Vector | null;
+  active: boolean | null;
+  startAnisoTime: number | null;
+  startScatterTime: number | null;
+  startDrawDistanceTime: number | null;
+  startAnisotropy: number | null;
+  startScattering: number | null;
+  startDrawDistance: number | null;
+  defaultAnisotropy: number | null;
+  defaultScattering: number | null;
+  defaultDrawDistance: number | null;
+  startDisabled: boolean | null;
+  enableIndirect: boolean | null;
+  isMaster: boolean | null;
+  forceRefreshCount: number | null;
+  noiseSpeed: number | null;
+  noiseStrength: number | null;
+  readonly noiseScale: Vector | null;
+  windSpeed: number | null;
+  readonly windDirection: Vector | null;
+  firstTime: boolean | null;
+}
+
+export interface CEnvVolumetricFogVolume extends CBaseEntity {
+  active: boolean | null;
+  readonly boxMins: Vector | null;
+  readonly boxMaxs: Vector | null;
+  startDisabled: boolean | null;
+  indirectUseLPVs: boolean | null;
+  strength: number | null;
+  falloffShape: number | null;
+  falloffExponent: number | null;
+  heightFogDepth: number | null;
+  heightFogEdgeWidth: number | null;
+  indirectLightStrength: number | null;
+  sunLightStrength: number | null;
+  noiseStrength: number | null;
+  tintColor: number | null;
+  overrideTintColor: boolean | null;
+  overrideIndirectLightStrength: boolean | null;
+  overrideSunLightStrength: boolean | null;
+  overrideNoiseStrength: boolean | null;
+}
+
+export interface CEnvWind extends CBaseEntity {
+  readonly envWindShared: CEnvWindShared;
+}
+
+export interface CEnvWindController extends CBaseEntity {
+  directionVariation: number | null;
+  speedVariation: number | null;
+  turbulence: number | null;
+  volumeHalfExtentXY: number | null;
+  volumeHalfExtentZ: number | null;
+  volumeResolutionXY: number | null;
+  volumeResolutionZ: number | null;
+  clipmapLevels: number | null;
+  isMaster: boolean | null;
+  firstTime: boolean | null;
+  readonly envWindShared: CEnvWindShared;
+}
+
+export interface CEnvWindVolume extends CBaseEntity {
+  active: boolean | null;
+  readonly boxMins: Vector | null;
+  readonly boxMaxs: Vector | null;
+  startDisabled: boolean | null;
+  shape: number | null;
+  windSpeedMultiplier: number | null;
+  windTurbulenceMultiplier: number | null;
+  windSpeedVariationMultiplier: number | null;
+  windDirectionVariationMultiplier: number | null;
+}
+
+export interface CFishPool extends CBaseEntity {
+  fishCount: number | null;
+  maxRange: number | null;
+  swimDepth: number | null;
+  m_waterLevel: number | null;
+  isDormant: boolean | null;
+  readonly visTimer: CountdownTimer;
+}
+
+export interface CFogController extends CBaseEntity {
+  useAngles: boolean | null;
+  changedVariables: number | null;
+  readonly fog: fogparams_t;
+}
+
+export interface CFuncTimescale extends CBaseEntity {
+  desiredTimescale: number | null;
+  acceleration: number | null;
+  minBlendRate: number | null;
+  blendDeltaMultiplier: number | null;
+  isStarted: boolean | null;
+}
+
+export interface CGameGibManager extends CBaseEntity {
+  allowNewGibs: boolean | null;
+  currentMaxPieces: number | null;
+  maxPieces: number | null;
+  lastFrame: number | null;
+}
+
+export interface CGameRulesProxy extends CBaseEntity {
+}
+
+export interface CGradientFog extends CBaseEntity {
+  fogStartDistance: number | null;
+  fogEndDistance: number | null;
+  heightFogEnabled: boolean | null;
+  fogStartHeight: number | null;
+  fogEndHeight: number | null;
+  farZ: number | null;
+  fogMaxOpacity: number | null;
+  fogFalloffExponent: number | null;
+  fogVerticalExponent: number | null;
+  fogColor: number | null;
+  fogStrength: number | null;
+  fadeTime: number | null;
+  startDisabled: boolean | null;
+  isEnabled: boolean | null;
+  gradientFogNeedsTextures: boolean | null;
+}
+
+export interface CHandleTest extends CBaseEntity {
+  readonly handle: EntityRef | null;
+  sendHandle: boolean | null;
+}
+
+export interface CInfoVisibilityBox extends CBaseEntity {
+  mode: number | null;
+  readonly boxSize: Vector | null;
+  enabled: boolean | null;
+}
+
+export interface CInfoWorldLayer extends CBaseEntity {
+  worldLayerVisible: boolean | null;
+  entitiesSpawned: boolean | null;
+  createAsChildSpawnGroup: boolean | null;
+  layerSpawnGroup: number | null;
+  readonly outputOnEntitiesSpawned: CEntityIOOutput;
+}
+
+export interface CLogicAuto extends CBaseEntity {
+  readonly onMapSpawn: CEntityIOOutput;
+  readonly onDemoMapSpawn: CEntityIOOutput;
+  readonly onNewGame: CEntityIOOutput;
+  readonly onLoadGame: CEntityIOOutput;
+  readonly onMapTransition: CEntityIOOutput;
+  readonly onBackgroundMap: CEntityIOOutput;
+  readonly onMultiNewMap: CEntityIOOutput;
+  readonly onMultiNewRound: CEntityIOOutput;
+  readonly onVREnabled: CEntityIOOutput;
+  readonly onVRNotEnabled: CEntityIOOutput;
+}
+
+export interface CLogicGameStateReport extends CBaseEntity {
+  disabled: boolean | null;
+}
+
+export interface CLogicNPCCounter extends CBaseEntity {
+  distanceMax: number | null;
+  disabled: boolean | null;
+  minCountAll: number | null;
+  maxCountAll: number | null;
+  minFactorAll: number | null;
+  maxFactorAll: number | null;
+  nPCState_1: number | null;
+  invertState_1: boolean | null;
+  minCount_1: number | null;
+  maxCount_1: number | null;
+  minFactor_1: number | null;
+  maxFactor_1: number | null;
+  defaultDist_1: number | null;
+  nPCState_2: number | null;
+  invertState_2: boolean | null;
+  minCount_2: number | null;
+  maxCount_2: number | null;
+  minFactor_2: number | null;
+  maxFactor_2: number | null;
+  defaultDist_2: number | null;
+  nPCState_3: number | null;
+  invertState_3: boolean | null;
+  minCount_3: number | null;
+  maxCount_3: number | null;
+  minFactor_3: number | null;
+  maxFactor_3: number | null;
+  defaultDist_3: number | null;
+  readonly onMinCountAll: CEntityIOOutput;
+  readonly onMaxCountAll: CEntityIOOutput;
+  readonly onMinCount_1: CEntityIOOutput;
+  readonly onMaxCount_1: CEntityIOOutput;
+  readonly onMinCount_2: CEntityIOOutput;
+  readonly onMaxCount_2: CEntityIOOutput;
+  readonly onMinCount_3: CEntityIOOutput;
+  readonly onMaxCount_3: CEntityIOOutput;
+}
+
+export interface CMapVetoPickController extends CBaseEntity {
+  playedIntroVcd: boolean | null;
+  needToPlayFiveSecondsRemaining: boolean | null;
+  readonly dblPreMatchDraftSequenceTime: number | null;
+  preMatchDraftStateChanged: boolean | null;
+  draftType: number | null;
+  teamWinningCoinToss: number | null;
+  currentPhase: number | null;
+  phaseStartTick: number | null;
+  phaseDurationTicks: number | null;
+}
+
+export interface CPathParticleRope extends CBaseEntity {
+  startActive: boolean | null;
+  maxSimulationTime: number | null;
+  particleSpacing: number | null;
+  slack: number | null;
+  radius: number | null;
+  colorTint: number | null;
+  effectState: number | null;
+}
+
+export interface CPathSimple extends CBaseEntity {
+  closedLoop: boolean | null;
+  readonly cPathQueryComponent: CPathQueryComponent;
+}
+
+export interface CPhysicsSpring extends CBaseEntity {
+  frequency: number | null;
+  dampingRatio: number | null;
+  restLength: number | null;
+  readonly start: Vector | null;
+  readonly end: Vector | null;
+  teleportTick: number | null;
+}
+
+export interface CPhysicsWire extends CBaseEntity {
+  density: number | null;
+}
+
+export interface CPlayerPing extends CBaseEntity {
+  readonly player: EntityRef | null;
+  readonly pingedEntity: EntityRef | null;
+  type: number | null;
+  urgent: boolean | null;
+  readonly placeName: string | null;
+}
+
+export interface CPlayerVisibility extends CBaseEntity {
+  visibilityStrength: number | null;
+  fogDistanceMultiplier: number | null;
+  fogMaxDensityMultiplier: number | null;
+  fadeTime: number | null;
+  startDisabled: boolean | null;
+  isEnabled: boolean | null;
+}
+
+export interface CPointCamera extends CBaseEntity {
+  fOV: number | null;
+  resolution: number | null;
+  fogEnable: boolean | null;
+  fogColor: number | null;
+  fogStart: number | null;
+  fogEnd: number | null;
+  fogMaxDensity: number | null;
+  active: boolean | null;
+  useScreenAspectRatio: boolean | null;
+  aspectRatio: number | null;
+  noSky: boolean | null;
+  brightness: number | null;
+  zFar: number | null;
+  zNear: number | null;
+  canHLTVUse: boolean | null;
+  alignWithParent: boolean | null;
+  dofEnabled: boolean | null;
+  dofNearBlurry: number | null;
+  dofNearCrisp: number | null;
+  dofFarCrisp: number | null;
+  dofFarBlurry: number | null;
+  dofTiltToGround: number | null;
+  targetFOV: number | null;
+  degreesPerSecond: number | null;
+  isOn: boolean | null;
+}
+
+export interface CPointEntity extends CBaseEntity {
+}
+
+export interface CPointEntityFinder extends CBaseEntity {
+  readonly entity: EntityRef | null;
+  readonly filter: EntityRef | null;
+  readonly reference: EntityRef | null;
+  findMethod: number | null;
+  readonly onFoundEntity: CEntityIOOutput;
+}
+
+export interface CPointOrient extends CBaseEntity {
+  readonly target: EntityRef | null;
+  active: boolean | null;
+  goalDirection: number | null;
+  constraint: number | null;
+  maxTurnRate: number | null;
+  lastGameTime: number | null;
+}
+
+export interface CPointValueRemapper extends CBaseEntity {
+  disabled: boolean | null;
+  updateOnClient: boolean | null;
+  inputType: number | null;
+  readonly remapLineStart: EntityRef | null;
+  readonly remapLineEnd: EntityRef | null;
+  maximumChangePerSecond: number | null;
+  disengageDistance: number | null;
+  engageDistance: number | null;
+  requiresUseKey: boolean | null;
+  outputType: number | null;
+  hapticsType: number | null;
+  momentumType: number | null;
+  momentumModifier: number | null;
+  snapValue: number | null;
+  currentMomentum: number | null;
+  ratchetType: number | null;
+  ratchetOffset: number | null;
+  inputOffset: number | null;
+  engaged: boolean | null;
+  firstUpdate: boolean | null;
+  previousValue: number | null;
+  previousUpdateTickTime: number | null;
+  readonly previousTestPoint: Vector | null;
+  readonly usingPlayer: EntityRef | null;
+  customOutputValue: number | null;
+  readonly onReachedValueZero: CEntityIOOutput;
+  readonly onReachedValueOne: CEntityIOOutput;
+  readonly onReachedValueCustom: CEntityIOOutput;
+  readonly onEngage: CEntityIOOutput;
+  readonly onDisengage: CEntityIOOutput;
+}
+
+export interface CPulseGameBlackboard extends CBaseEntity {
+}
+
+export interface CRagdollManager extends CBaseEntity {
+  currentMaxRagdollCount: number | null;
+  maxRagdollCount: number | null;
+  saveImportant: boolean | null;
+  canTakeDamage: boolean | null;
+}
+
+export interface CScriptedSequence extends CBaseEntity {
+  moveTo: number | null;
+  moveToGait: number | null;
+  heldWeaponBehavior: number | null;
+  forcedCrouchState: number | null;
+  isPlayingPreIdle: boolean | null;
+  isPlayingEntry: boolean | null;
+  isPlayingAction: boolean | null;
+  isPlayingPostIdle: boolean | null;
+  dontRotateOther: boolean | null;
+  isRepeatable: boolean | null;
+  shouldLeaveCorpse: boolean | null;
+  startOnSpawn: boolean | null;
+  disallowInterrupts: boolean | null;
+  canOverrideNPCState: boolean | null;
+  dontTeleportAtEnd: boolean | null;
+  highPriority: boolean | null;
+  hideDebugComplaints: boolean | null;
+  continueOnDeath: boolean | null;
+  loopPreIdleSequence: boolean | null;
+  loopActionSequence: boolean | null;
+  loopPostIdleSequence: boolean | null;
+  synchPostIdles: boolean | null;
+  ignoreLookAt: boolean | null;
+  ignoreGravity: boolean | null;
+  disableNPCCollisions: boolean | null;
+  keepAnimgraphLockedPost: boolean | null;
+  dontAddModifiers: boolean | null;
+  disableAimingWhileMoving: boolean | null;
+  ignoreRotation: boolean | null;
+  radius: number | null;
+  repeat: number | null;
+  playAnimFadeInTime: number | null;
+  moveInterpTime: number | null;
+  angRate: number | null;
+  moveSpeed: number | null;
+  waitUntilMoveCompletesToStartAnimation: boolean | null;
+  notReadySequenceCount: number | null;
+  startTime: number | null;
+  waitForBeginSequence: boolean | null;
+  saved_effects: number | null;
+  savedFlags: number | null;
+  savedCollisionGroup: number | null;
+  interruptable: boolean | null;
+  sequenceStarted: boolean | null;
+  positionRelativeToOtherEntity: boolean | null;
+  readonly targetEnt: EntityRef | null;
+  readonly nextCine: EntityRef | null;
+  thinking: boolean | null;
+  initiatedSelfDelete: boolean | null;
+  isTeleportingDueToMoveTo: boolean | null;
+  allowCustomInterruptConditions: boolean | null;
+  readonly forcedTarget: EntityRef | null;
+  dontCancelOtherSequences: boolean | null;
+  forceSynch: boolean | null;
+  preventUpdateYawOnFinish: boolean | null;
+  ensureOnNavmeshOnFinish: boolean | null;
+  onDeathBehavior: number | null;
+  conflictResponse: number | null;
+  readonly interactionMainEntity: EntityRef | null;
+  playerDeathBehavior: number | null;
+  skipFadeIn: boolean | null;
+  readonly onBeginSequence: CEntityIOOutput;
+  readonly onActionStartOrLoop: CEntityIOOutput;
+  readonly onEndSequence: CEntityIOOutput;
+  readonly onPostIdleEndSequence: CEntityIOOutput;
+  readonly onCancelSequence: CEntityIOOutput;
+  readonly onCancelFailedSequence: CEntityIOOutput;
+}
+
+export interface CServerOnlyEntity extends CBaseEntity {
+}
+
+export interface CSkyCamera extends CBaseEntity {
+  useAngles: boolean | null;
+  readonly skyboxData: sky3dparams_t;
+}
+
+export interface CSkyboxReference extends CBaseEntity {
+  readonly skyCamera: EntityRef | null;
+}
+
+export interface CSoundAreaEntityBase extends CBaseEntity {
+  disabled: boolean | null;
+  readonly pos: Vector | null;
+}
+
+export interface CSoundEventEntity extends CBaseEntity {
+  startOnSpawn: boolean | null;
+  toLocalPlayer: boolean | null;
+  stopOnNew: boolean | null;
+  saveRestore: boolean | null;
+  savedIsPlaying: boolean | null;
+  savedElapsedTime: number | null;
+  clientCullRadius: number | null;
+  entityIndexSelection: number | null;
+  readonly onSoundFinished: CEntityIOOutput;
+}
+
+export interface CSoundEventParameter extends CBaseEntity {
+  floatValue: number | null;
+}
+
+export interface CSoundOpvarSetEntity extends CBaseEntity {
+  opvarType: number | null;
+  opvarIndex: number | null;
+  opvarValue: number | null;
+  setOnSpawn: boolean | null;
+}
+
+export interface CSoundOpvarSetPointBase extends CBaseEntity {
+  disabled: boolean | null;
+  readonly lastPosition: Vector | null;
+  refreshTime: number | null;
+  opvarIndex: number | null;
+  useAutoCompare: boolean | null;
+  fastRefresh: boolean | null;
+}
+
 export interface CTeam extends CBaseEntity {
   score: number | null;
   readonly teamname: string | null;
 }
 
 export interface CTeamplayRules extends CMultiplayRules {
+}
+
+export interface CTestEffect extends CBaseEntity {
+  loop: number | null;
+  beam: number | null;
+  startTime: number | null;
+}
+
+export interface CTonemapController2 extends CBaseEntity {
+  autoExposureMin: number | null;
+  autoExposureMax: number | null;
+  exposureAdaptationSpeedUp: number | null;
+  exposureAdaptationSpeedDown: number | null;
+  tonemapEVSmoothingRange: number | null;
+}
+
+export interface CVoteController extends CBaseEntity {
+  activeIssueIndex: number | null;
+  onlyTeamToVote: number | null;
+  potentialVotes: number | null;
+  isYesNoVote: boolean | null;
+  highestCountIndex: number | null;
+  readonly acceptingVotesTimer: CountdownTimer;
+  readonly executeCommandTimer: CountdownTimer;
+  readonly resetVoteTimer: CountdownTimer;
+}
+
+export interface CAmbientGeneric extends CPointEntity {
+  radius: number | null;
+  maxRadius: number | null;
+  soundLevel: number | null;
+  active: boolean | null;
+  looping: boolean | null;
+  readonly soundSource: EntityRef | null;
+  readonly dpv: dynpitchvol_t;
+}
+
+export interface CBarnLight extends CBaseModelEntity {
+  enabled: boolean | null;
+  colorMode: number | null;
+  color: number | null;
+  colorTemperature: number | null;
+  brightness: number | null;
+  brightnessScale: number | null;
+  directLight: number | null;
+  bakedShadowIndex: number | null;
+  lightPathUniqueId: number | null;
+  lightMapUniqueId: number | null;
+  luminaireShape: number | null;
+  luminaireSize: number | null;
+  luminaireAnisotropy: number | null;
+  lightStyleStartTime: number | null;
+  shape: number | null;
+  softX: number | null;
+  softY: number | null;
+  skirt: number | null;
+  skirtNear: number | null;
+  readonly sizeParams: Vector | null;
+  range: number | null;
+  readonly shear: Vector | null;
+  bakeSpecularToCubemaps: number | null;
+  readonly bakeSpecularToCubemapsSize: Vector | null;
+  bakeSpecularToCubemapsScale: number | null;
+  castShadows: number | null;
+  shadowMapSize: number | null;
+  shadowPriority: number | null;
+  contactShadow: boolean | null;
+  forceShadowsEnabled: boolean | null;
+  bounceLight: number | null;
+  bounceScale: number | null;
+  minRoughness: number | null;
+  readonly alternateColor: Vector | null;
+  alternateColorBrightness: number | null;
+  fog: number | null;
+  fogStrength: number | null;
+  fogShadows: number | null;
+  fogScale: number | null;
+  fadeSizeStart: number | null;
+  fadeSizeEnd: number | null;
+  shadowFadeSizeStart: number | null;
+  shadowFadeSizeEnd: number | null;
+  precomputedFieldsValid: boolean | null;
+  readonly precomputedBoundsMins: Vector | null;
+  readonly precomputedBoundsMaxs: Vector | null;
+  readonly precomputedOBBOrigin: Vector | null;
+  readonly precomputedOBBAngles: QAngle | null;
+  readonly precomputedOBBExtent: Vector | null;
+  precomputedSubFrusta: number | null;
+  readonly precomputedOBBOrigin0: Vector | null;
+  readonly precomputedOBBAngles0: QAngle | null;
+  readonly precomputedOBBExtent0: Vector | null;
+  readonly precomputedOBBOrigin1: Vector | null;
+  readonly precomputedOBBAngles1: QAngle | null;
+  readonly precomputedOBBExtent1: Vector | null;
+  readonly precomputedOBBOrigin2: Vector | null;
+  readonly precomputedOBBAngles2: QAngle | null;
+  readonly precomputedOBBExtent2: Vector | null;
+  readonly precomputedOBBOrigin3: Vector | null;
+  readonly precomputedOBBAngles3: QAngle | null;
+  readonly precomputedOBBExtent3: Vector | null;
+  readonly precomputedOBBOrigin4: Vector | null;
+  readonly precomputedOBBAngles4: QAngle | null;
+  readonly precomputedOBBExtent4: Vector | null;
+  readonly precomputedOBBOrigin5: Vector | null;
+  readonly precomputedOBBAngles5: QAngle | null;
+  readonly precomputedOBBExtent5: Vector | null;
+  pvsModifyEntity: boolean | null;
+  transmitAlways: boolean | null;
 }
 
 export interface CBaseAnimGraph extends CBaseModelEntity {
@@ -370,6 +1301,13 @@ export interface CBaseAnimGraph extends CBaseModelEntity {
   readonly mainGraphController: CAnimGraphControllerPtr;
   readonly onExternalChoreoGraphChanged: CEntityIOOutput;
   readonly ragdollPose: PhysicsRagdollPose_t;
+}
+
+export interface CBaseClientUIEntity extends CBaseModelEntity {
+  enabled: boolean | null;
+}
+
+export interface CBaseDMStart extends CPointEntity {
 }
 
 export interface CBaseToggle extends CBaseModelEntity {
@@ -410,6 +1348,29 @@ export interface CBeam extends CBaseModelEntity {
   readonly endPos: Vector | null;
   readonly endEntity: EntityRef | null;
   dissolveType: number | null;
+}
+
+export interface CBlood extends CPointEntity {
+  readonly sprayAngles: QAngle | null;
+  readonly sprayDir: Vector | null;
+  amount: number | null;
+  color: number | null;
+}
+
+export interface CBreakable extends CBaseModelEntity {
+  material: number | null;
+  readonly breaker: EntityRef | null;
+  explosion: number | null;
+  pressureDelay: number | null;
+  minHealthDmg: number | null;
+  impactEnergyScale: number | null;
+  overrideBlockLOS: number | null;
+  performanceMode: number | null;
+  readonly physicsAttacker: EntityRef | null;
+  lastPhysicsInfluenceTime: number | null;
+  readonly cPropDataComponent: CPropDataComponent;
+  readonly onStartDeath: CEntityIOOutput;
+  readonly onBreak: CEntityIOOutput;
 }
 
 export interface CCSGameRules extends CTeamplayRules {
@@ -580,6 +1541,9 @@ export interface CCSGameRules extends CTeamplayRules {
   readonly retakeRules: CRetakeGameRules;
 }
 
+export interface CCSGameRulesProxy extends CGameRulesProxy {
+}
+
 export interface CCSPlayerController extends CBasePlayerController {
   ping: number | null;
   hasCommunicationAbuseMute: boolean | null;
@@ -684,7 +1648,915 @@ export interface CCSTeam extends CTeam {
   lastUpdateSentAt: number | null;
 }
 
+export interface CCashStack extends CBaseModelEntity {
+  cashStackValue: number | null;
+}
+
+export interface CCredits extends CPointEntity {
+  rolledOutroCredits: boolean | null;
+  logoLength: number | null;
+  readonly onCreditsDone: CEntityIOOutput;
+}
+
+export interface CDynamicLight extends CBaseModelEntity {
+  actualFlags: number | null;
+  m_Flags: number | null;
+  lightStyle: number | null;
+  on: boolean | null;
+  radius: number | null;
+  exponent: number | null;
+  innerAngle: number | null;
+  outerAngle: number | null;
+  spotRadius: number | null;
+}
+
+export interface CEntityDissolve extends CBaseModelEntity {
+  fadeInStart: number | null;
+  fadeInLength: number | null;
+  fadeOutModelStart: number | null;
+  fadeOutModelLength: number | null;
+  fadeOutStart: number | null;
+  fadeOutLength: number | null;
+  startTime: number | null;
+  dissolveType: number | null;
+  readonly dissolverOrigin: Vector | null;
+  magnitude: number | null;
+}
+
+export interface CEnvDecal extends CBaseModelEntity {
+  width: number | null;
+  height: number | null;
+  depth: number | null;
+  renderOrder: number | null;
+  projectOnWorld: boolean | null;
+  projectOnCharacters: boolean | null;
+  projectOnWater: boolean | null;
+  depthSortBias: number | null;
+}
+
+export interface CEnvEntityMaker extends CPointEntity {
+  readonly entityMins: Vector | null;
+  readonly entityMaxs: Vector | null;
+  readonly currentInstance: EntityRef | null;
+  readonly currentBlocker: EntityRef | null;
+  readonly blockerOrigin: Vector | null;
+  readonly postSpawnDirection: QAngle | null;
+  postSpawnDirectionVariance: number | null;
+  postSpawnSpeed: number | null;
+  postSpawnUseAngles: boolean | null;
+  readonly outputOnSpawned: CEntityIOOutput;
+  readonly outputOnFailedSpawn: CEntityIOOutput;
+}
+
+export interface CEnvHudHint extends CPointEntity {
+}
+
+export interface CEnvInstructorHint extends CPointEntity {
+  timeout: number | null;
+  displayLimit: number | null;
+  color: number | null;
+  iconOffset: number | null;
+  range: number | null;
+  pulseOption: number | null;
+  alphaOption: number | null;
+  shakeOption: number | null;
+  static: boolean | null;
+  noOffscreen: boolean | null;
+  forceCaption: boolean | null;
+  instanceType: number | null;
+  suppressRest: boolean | null;
+  allowNoDrawTarget: boolean | null;
+  autoStart: boolean | null;
+  localPlayerOnly: boolean | null;
+}
+
+export interface CEnvInstructorVRHint extends CPointEntity {
+  timeout: number | null;
+  layoutFileType: number | null;
+  attachType: number | null;
+  heightOffset: number | null;
+}
+
+export interface CEnvMuzzleFlash extends CPointEntity {
+  scale: number | null;
+}
+
+export interface CEnvShake extends CPointEntity {
+  amplitude: number | null;
+  frequency: number | null;
+  duration: number | null;
+  radius: number | null;
+  stopTime: number | null;
+  nextShake: number | null;
+  currentAmp: number | null;
+  readonly maxForce: Vector | null;
+  readonly shakeCallback: CPhysicsShake;
+}
+
+export interface CEnvSky extends CBaseModelEntity {
+  startDisabled: boolean | null;
+  tintColor: number | null;
+  tintColorLightingOnly: number | null;
+  brightnessScale: number | null;
+  fogType: number | null;
+  fogMinStart: number | null;
+  fogMinEnd: number | null;
+  fogMaxStart: number | null;
+  fogMaxEnd: number | null;
+  enabled: boolean | null;
+}
+
+export interface CEnvSoundscapeProxy extends CEnvSoundscape {
+}
+
+export interface CEnvSpark extends CPointEntity {
+  delay: number | null;
+  magnitude: number | null;
+  trailLength: number | null;
+  type: number | null;
+  readonly onSpark: CEntityIOOutput;
+}
+
+export interface CEnvSplash extends CPointEntity {
+  scale: number | null;
+}
+
+export interface CEnvTilt extends CPointEntity {
+  duration: number | null;
+  radius: number | null;
+  tiltTime: number | null;
+  stopTime: number | null;
+}
+
+export interface CEnvViewPunch extends CPointEntity {
+  radius: number | null;
+  readonly viewPunch: QAngle | null;
+}
+
+export interface CFuncBrush extends CBaseModelEntity {
+  solidity: number | null;
+  disabled: number | null;
+  solidBsp: boolean | null;
+  invertExclusion: boolean | null;
+  scriptedMovement: boolean | null;
+}
+
+export interface CFuncConveyor extends CBaseModelEntity {
+  transitionDurationSeconds: number | null;
+  speed: number | null;
+  readonly moveEntitySpace: QAngle | null;
+  readonly moveDirEntitySpace: Vector | null;
+  targetSpeed: number | null;
+  transitionStartTick: number | null;
+  transitionDurationTicks: number | null;
+  transitionStartSpeed: number | null;
+}
+
+export interface CFuncInteractionLayerClip extends CBaseModelEntity {
+  disabled: boolean | null;
+}
+
+export interface CFuncLadder extends CBaseModelEntity {
+  readonly ladderDir: Vector | null;
+  readonly localTop: Vector | null;
+  readonly playerMountPositionTop: Vector | null;
+  readonly playerMountPositionBottom: Vector | null;
+  autoRideSpeed: number | null;
+  disabled: boolean | null;
+  fakeLadder: boolean | null;
+  hasSlack: boolean | null;
+  readonly onPlayerGotOnLadder: CEntityIOOutput;
+  readonly onPlayerGotOffLadder: CEntityIOOutput;
+}
+
+export interface CFuncMover extends CBaseModelEntity {
+  readonly pathMover: EntityRef | null;
+  readonly prevPathMover: EntityRef | null;
+  ignoreEndNode: boolean | null;
+  m_eMoveType: number | null;
+  isReversing: boolean | null;
+  startSpeed: number | null;
+  pathLocation: number | null;
+  t: number | null;
+  currentNodeIndex: number | null;
+  previousNodeIndex: number | null;
+  solidType: number | null;
+  isMoving: boolean | null;
+  timeToReachMaxSpeed: number | null;
+  distanceToReachMaxSpeed: number | null;
+  timeToReachZeroSpeed: number | null;
+  computedDistanceToReachMaxSpeed: number | null;
+  computedDistanceToReachZeroSpeed: number | null;
+  startCurveScale: number | null;
+  stopCurveScale: number | null;
+  distanceToReachZeroSpeed: number | null;
+  timeMovementStart: number | null;
+  timeMovementStop: number | null;
+  readonly stopAtNode: EntityRef | null;
+  pathLocationToBeginStop: number | null;
+  pathLocationStart: number | null;
+  beginStopT: number | null;
+  startAtClosestPoint: boolean | null;
+  startAtEnd: boolean | null;
+  startFollowingClosestMover: boolean | null;
+  orientationUpdate: number | null;
+  timeStartOrientationChange: number | null;
+  timeToBlendToNewOrientation: number | null;
+  durationBlendToNewOrientationRan: number | null;
+  createMovableNavMesh: boolean | null;
+  createMovableSurfaceGraph: boolean | null;
+  allowMovableNavMeshDockingOnEntireEntity: boolean | null;
+  readonly orientationMatchEntity: EntityRef | null;
+  timeToTraverseToNextNode: number | null;
+  readonly lerpToNewPosStartInPathEntitySpace: Vector | null;
+  readonly lerpToNewPosEndInPathEntitySpace: Vector | null;
+  lerpToPositionT: number | null;
+  lerpToPositionDeltaT: number | null;
+  isPaused: boolean | null;
+  transitionedToPathNodeAction: number | null;
+  delayedTeleportToNode: number | null;
+  isImGuiLogging: boolean | null;
+  isImGuiEntTextLogging: boolean | null;
+  speed: number | null;
+  readonly followEntity: EntityRef | null;
+  followDistance: number | null;
+  followMinimumSpeed: number | null;
+  curFollowEntityT: number | null;
+  curFollowSpeed: number | null;
+  readonly orientationFaceEntity: EntityRef | null;
+  nextNodeReturnsCurrent: boolean | null;
+  startedMoving: boolean | null;
+  followEntityDirection: number | null;
+  readonly followMover: EntityRef | null;
+  followMoverDistance: number | null;
+  followMoverRatio: number | null;
+  followMoverCalculatedDistance: number | null;
+  followMoverSpringStrength: number | null;
+  followMoverConstraintPriority: number | null;
+  followConstraintsInitialized: boolean | null;
+  followConstraint: number | null;
+  followMoverSpeed: number | null;
+  followMoverVelocity: number | null;
+  tickMovementRan: number | null;
+  stopFromBeginStopTarget: boolean | null;
+  queueStop: boolean | null;
+  queueStopMoving: boolean | null;
+  queueSetupPathMover: boolean | null;
+  pathRebuildStrategy: number | null;
+  readonly onMovementEnd: CEntityIOOutput;
+  readonly onLerpToPositionComplete: CEntityIOOutput;
+  readonly onStart: CEntityIOOutput;
+  readonly onStartForward: CEntityIOOutput;
+  readonly onStartReverse: CEntityIOOutput;
+  readonly onStop: CEntityIOOutput;
+  readonly onStopped: CEntityIOOutput;
+  readonly movementSummary: FuncMoverMovementSummary_t;
+}
+
+export interface CFuncNavBlocker extends CBaseModelEntity {
+  disabled: boolean | null;
+  blockedTeamNumber: number | null;
+}
+
+export interface CFuncNavObstruction extends CBaseModelEntity {
+  disabled: boolean | null;
+  useAsyncObstacleUpdate: boolean | null;
+}
+
+export interface CFuncRotating extends CBaseModelEntity {
+  speed: number | null;
+  fanFriction: number | null;
+  attenuation: number | null;
+  volume: number | null;
+  targetSpeed: number | null;
+  maxSpeed: number | null;
+  blockDamage: number | null;
+  reversed: boolean | null;
+  accelDecel: boolean | null;
+  readonly prevLocalAngles: QAngle | null;
+  readonly start: QAngle | null;
+  stopAtStartPos: boolean | null;
+  readonly clientOrigin: Vector | null;
+  readonly clientAngles: QAngle | null;
+  readonly onStopped: CEntityIOOutput;
+  readonly onStarted: CEntityIOOutput;
+  readonly onReachedStart: CEntityIOOutput;
+}
+
+export interface CFuncRotator extends CBaseModelEntity {
+  rotateType: number | null;
+  isRotating: boolean | null;
+  solidType: number | null;
+  speed: number | null;
+  timeToCompleteRotation: number | null;
+  readonly rotatorTarget: EntityRef | null;
+  tickRotateRan: number | null;
+  startedRotating: boolean | null;
+  timeToReachMaxSpeed: number | null;
+  timeToReachZeroSpeed: number | null;
+  timeRotationStart: number | null;
+  timeRotationStop: number | null;
+  startSpeed: number | null;
+  recordHistory: boolean | null;
+  returningToPreviousRotation: boolean | null;
+  returningToInitialRotation: boolean | null;
+  minYawRotation: number | null;
+  maxYawRotation: number | null;
+  oscillationCount: number | null;
+  oscillationFromStart: boolean | null;
+  targetAngle: number | null;
+  currentAngle: number | null;
+  rotationAxis: number | null;
+  speedDriftFromOverRotate: number | null;
+  readonly onRotationStarted: CEntityIOOutput;
+  readonly onRotationCompleted: CEntityIOOutput;
+  readonly onOscillate: CEntityIOOutput;
+  readonly onOscillateStartArrive: CEntityIOOutput;
+  readonly onOscillateStartDepart: CEntityIOOutput;
+  readonly onOscillateEndArrive: CEntityIOOutput;
+  readonly onOscillateEndDepart: CEntityIOOutput;
+  readonly rotationSummary: FuncRotatorRotationSummary_t;
+}
+
+export interface CFuncShatterglass extends CBaseModelEntity {
+  lastShatterSoundEmitTime: number | null;
+  lastCleanupTime: number | null;
+  initAtTime: number | null;
+  glassThickness: number | null;
+  spawnInvulnerability: number | null;
+  breakSilent: boolean | null;
+  breakShardless: boolean | null;
+  broken: boolean | null;
+  glassNavIgnore: boolean | null;
+  glassInFrame: boolean | null;
+  startBroken: boolean | null;
+  initialDamageType: number | null;
+  surfaceType: number | null;
+  readonly onBroken: CEntityIOOutput;
+}
+
+export interface CFuncTrackTrain extends CBaseModelEntity {
+  readonly ppath: EntityRef | null;
+  length: number | null;
+  readonly posPrev: Vector | null;
+  readonly prev: QAngle | null;
+  speed: number | null;
+  readonly controlMins: Vector | null;
+  readonly controlMaxs: Vector | null;
+  readonly lastBlockPos: Vector | null;
+  lastBlockTick: number | null;
+  volume: number | null;
+  bank: number | null;
+  oldSpeed: number | null;
+  blockDamage: number | null;
+  height: number | null;
+  maxSpeed: number | null;
+  dir: number | null;
+  moveSoundMinDuration: number | null;
+  moveSoundMaxDuration: number | null;
+  nextMoveSoundTime: number | null;
+  moveSoundMinPitch: number | null;
+  moveSoundMaxPitch: number | null;
+  orientationType: number | null;
+  velocityType: number | null;
+  manualSpeedChanges: boolean | null;
+  desiredSpeed: number | null;
+  speedChangeTime: number | null;
+  accelSpeed: number | null;
+  decelSpeed: number | null;
+  accelToSpeed: boolean | null;
+  nextMPSoundTime: number | null;
+  readonly onStart: CEntityIOOutput;
+  readonly onNext: CEntityIOOutput;
+  readonly onArrivedAtDestinationNode: CEntityIOOutput;
+}
+
+export interface CFuncVPhysicsClip extends CBaseModelEntity {
+  disabled: boolean | null;
+}
+
+export interface CFuncWall extends CBaseModelEntity {
+  state: number | null;
+}
+
+export interface CFuncWater extends CBaseModelEntity {
+  readonly buoyancyHelper: CBuoyancyHelper;
+}
+
+export interface CInferno extends CBaseModelEntity {
+  fireCount: number | null;
+  infernoType: number | null;
+  fireEffectTickBegin: number | null;
+  fireLifetime: number | null;
+  inPostEffectTime: boolean | null;
+  wasCreatedInSmoke: boolean | null;
+  readonly splashVelocity: Vector | null;
+  readonly initialSplashVelocity: Vector | null;
+  readonly startPos: Vector | null;
+  readonly originalSpawnLocation: Vector | null;
+  fireSpawnOffset: number | null;
+  maxFlames: number | null;
+  spreadCount: number | null;
+  sourceItemDefIndex: number | null;
+  readonly extent: Extent;
+  readonly damageTimer: CountdownTimer;
+  readonly damageRampTimer: CountdownTimer;
+  readonly activeTimer: IntervalTimer;
+  readonly bookkeepingTimer: CountdownTimer;
+  readonly nextSpreadTimer: CountdownTimer;
+}
+
+export interface CInfoChoreoAnchor extends CPointEntity {
+}
+
+export interface CInfoDynamicShadowHint extends CPointEntity {
+  disabled: boolean | null;
+  range: number | null;
+  importance: number | null;
+  lightChoice: number | null;
+  readonly light: EntityRef | null;
+}
+
+export interface CInfoFan extends CPointEntity {
+  fanForceMaxRadius: number | null;
+  fanForceMinRadius: number | null;
+  curveDistRange: number | null;
+}
+
+export interface CInfoGameEventProxy extends CPointEntity {
+  range: number | null;
+}
+
+export interface CInfoOffscreenPanoramaTexture extends CPointEntity {
+  disabled: boolean | null;
+  resolutionX: number | null;
+  resolutionY: number | null;
+  targetChangeCount: number | null;
+}
+
+export interface CInfoPlayerStart extends CPointEntity {
+  disabled: boolean | null;
+  isMaster: boolean | null;
+}
+
+export interface CInstructorEventEntity extends CPointEntity {
+  readonly targetPlayer: EntityRef | null;
+}
+
+export interface CItemGenericTriggerHelper extends CBaseModelEntity {
+  readonly parentItem: EntityRef | null;
+}
+
+export interface CKeepUpright extends CPointEntity {
+  readonly worldGoalAxis: Vector | null;
+  readonly localTestAxis: Vector | null;
+  readonly attachedObject: EntityRef | null;
+  angularLimit: number | null;
+  active: boolean | null;
+  dampAllRotation: boolean | null;
+}
+
+export interface CLightEntity extends CBaseModelEntity {
+}
+
+export interface CLogicNPCCounterAABB extends CLogicNPCCounter {
+  readonly distanceOuterMins: Vector | null;
+  readonly distanceOuterMaxs: Vector | null;
+  readonly outerMins: Vector | null;
+  readonly outerMaxs: Vector | null;
+}
+
+export interface CLogicalEntity extends CServerOnlyEntity {
+}
+
+export interface CMapInfo extends CPointEntity {
+  buyingStatus: number | null;
+  bombRadius: number | null;
+  petPopulation: number | null;
+  useNormalSpawnsForDM: boolean | null;
+  disableAutoGeneratedDMSpawns: boolean | null;
+  botMaxVisionDistance: number | null;
+  hostageCount: number | null;
+  fadePlayerVisibilityFarZ: boolean | null;
+  rainTraceToSkyEnabled: boolean | null;
+  gPUCullSkybox: boolean | null;
+  envRainStrength: number | null;
+  envPuddleRippleStrength: number | null;
+  envPuddleRippleDirection: number | null;
+  envWetnessCoverage: number | null;
+  envWetnessDryingAmount: number | null;
+}
+
+export interface CMarkupVolume extends CBaseModelEntity {
+  disabled: boolean | null;
+}
+
+export interface CMessage extends CPointEntity {
+  messageVolume: number | null;
+  messageAttenuation: number | null;
+  radius: number | null;
+  readonly onShowMessage: CEntityIOOutput;
+}
+
+export interface CMessageEntity extends CPointEntity {
+  radius: number | null;
+  drawText: boolean | null;
+  developerOnly: boolean | null;
+  enabled: boolean | null;
+}
+
 export interface CModelPointEntity extends CBaseModelEntity {
+}
+
+export interface CParticleSystem extends CBaseModelEntity {
+  readonly snapshotFileName: string | null;
+  active: boolean | null;
+  frozen: boolean | null;
+  freezeTransitionDuration: number | null;
+  stopType: number | null;
+  animateDuringGameplayPause: boolean | null;
+  startTime: number | null;
+  preSimTime: number | null;
+  dataStringLocalized: boolean | null;
+  noSave: boolean | null;
+  noFreeze: boolean | null;
+  noRamp: boolean | null;
+  startActive: boolean | null;
+  dataCP: number | null;
+  readonly dataCPValue: Vector | null;
+  tintCP: number | null;
+  tint: number | null;
+}
+
+export interface CPathCorner extends CPointEntity {
+  speed: number | null;
+  wait: number | null;
+  radius: number | null;
+  readonly onPass: CEntityIOOutput;
+}
+
+export interface CPathNode extends CPointEntity {
+  readonly inTangentLocal: Vector | null;
+  readonly outTangentLocal: Vector | null;
+  readonly path: EntityRef | null;
+}
+
+export interface CPathTrack extends CPointEntity {
+  readonly pnext: EntityRef | null;
+  readonly pprevious: EntityRef | null;
+  readonly paltpath: EntityRef | null;
+  speed: number | null;
+  radius: number | null;
+  length: number | null;
+  iterVal: number | null;
+  orientationType: number | null;
+  readonly onPass: CEntityIOOutput;
+}
+
+export interface CPathWithDynamicNodes extends CPathSimple {
+}
+
+export interface CPhysExplosion extends CPointEntity {
+  explodeOnSpawn: boolean | null;
+  magnitude: number | null;
+  damage: number | null;
+  radius: number | null;
+  innerRadius: number | null;
+  pushScale: number | null;
+  convertToDebrisWhenPossible: boolean | null;
+  affectInvulnerableEnts: boolean | null;
+  disablePushClamp: boolean | null;
+  readonly onPushedPlayer: CEntityIOOutput;
+}
+
+export interface CPhysForce extends CPointEntity {
+  force: number | null;
+  forceTime: number | null;
+  readonly attachedObject: EntityRef | null;
+  wasRestored: boolean | null;
+  readonly integrator: CConstantForceController;
+}
+
+export interface CPhysImpact extends CPointEntity {
+  damage: number | null;
+  distance: number | null;
+}
+
+export interface CPlatTrigger extends CBaseModelEntity {
+  readonly platform: EntityRef | null;
+}
+
+export interface CPointAngleSensor extends CPointEntity {
+  disabled: boolean | null;
+  readonly targetEntity: EntityRef | null;
+  readonly lookAtEntity: EntityRef | null;
+  duration: number | null;
+  dotTolerance: number | null;
+  facingTime: number | null;
+  fired: boolean | null;
+  readonly onFacingLookat: CEntityIOOutput;
+  readonly onNotFacingLookat: CEntityIOOutput;
+}
+
+export interface CPointAngularVelocitySensor extends CPointEntity {
+  readonly targetEntity: EntityRef | null;
+  threshold: number | null;
+  lastCompareResult: number | null;
+  lastFireResult: number | null;
+  fireTime: number | null;
+  fireInterval: number | null;
+  lastAngVelocity: number | null;
+  readonly lastOrientation: QAngle | null;
+  readonly axis: Vector | null;
+  useHelper: boolean | null;
+  readonly onLessThan: CEntityIOOutput;
+  readonly onLessThanOrEqualTo: CEntityIOOutput;
+  readonly onGreaterThan: CEntityIOOutput;
+  readonly onGreaterThanOrEqualTo: CEntityIOOutput;
+  readonly onEqualTo: CEntityIOOutput;
+}
+
+export interface CPointCameraVFOV extends CPointCamera {
+  verticalFOV: number | null;
+}
+
+export interface CPointChildModifier extends CPointEntity {
+  orphanInsteadOfDeletingChildrenOnRemove: boolean | null;
+}
+
+export interface CPointGamestatsCounter extends CPointEntity {
+  disabled: boolean | null;
+}
+
+export interface CPointGiveAmmo extends CPointEntity {
+  readonly activator: EntityRef | null;
+}
+
+export interface CPointHurt extends CPointEntity {
+  damage: number | null;
+  bitsDamageType: number | null;
+  radius: number | null;
+  delay: number | null;
+  readonly activator: EntityRef | null;
+}
+
+export interface CPointProximitySensor extends CPointEntity {
+  disabled: boolean | null;
+  readonly targetEntity: EntityRef | null;
+}
+
+export interface CPointPush extends CPointEntity {
+  enabled: boolean | null;
+  magnitude: number | null;
+  radius: number | null;
+  innerRadius: number | null;
+  coneOfInfluence: number | null;
+  readonly filter: EntityRef | null;
+}
+
+export interface CPointVelocitySensor extends CPointEntity {
+  readonly targetEntity: EntityRef | null;
+  readonly axis: Vector | null;
+  enabled: boolean | null;
+  prevVelocity: number | null;
+  avgInterval: number | null;
+}
+
+export interface CRagdollMagnet extends CPointEntity {
+  disabled: boolean | null;
+  radius: number | null;
+  force: number | null;
+  readonly axis: Vector | null;
+}
+
+export interface CRopeKeyframe extends CBaseModelEntity {
+  ropeFlags: number | null;
+  slack: number | null;
+  width: number | null;
+  textureScale: number | null;
+  segments: number | null;
+  constrainBetweenEndpoints: boolean | null;
+  subdiv: number | null;
+  changeCount: number | null;
+  ropeLength: number | null;
+  lockedPoints: number | null;
+  createdFromMapFile: boolean | null;
+  scrollSpeed: number | null;
+  startPointValid: boolean | null;
+  endPointValid: boolean | null;
+  readonly startPoint: EntityRef | null;
+  readonly endPoint: EntityRef | null;
+  startAttachment: number | null;
+  endAttachment: number | null;
+}
+
+export interface CRotatorTarget extends CPointEntity {
+  space: number | null;
+  readonly onArrivedAt: CEntityIOOutput;
+}
+
+export interface CRuleEntity extends CBaseModelEntity {
+}
+
+export interface CSceneEntity extends CPointEntity {
+  readonly target1: EntityRef | null;
+  readonly target2: EntityRef | null;
+  readonly target3: EntityRef | null;
+  readonly target4: EntityRef | null;
+  readonly target5: EntityRef | null;
+  readonly target6: EntityRef | null;
+  readonly target7: EntityRef | null;
+  readonly target8: EntityRef | null;
+  readonly locatorOrigin: EntityRef | null;
+  isPlayingBack: boolean | null;
+  paused: boolean | null;
+  multiplayer: boolean | null;
+  autogenerated: boolean | null;
+  forceClientTime: number | null;
+  currentTime: number | null;
+  frameTime: number | null;
+  cancelAtNextInterrupt: boolean | null;
+  pitch: number | null;
+  automated: boolean | null;
+  automatedAction: number | null;
+  automationDelay: number | null;
+  automationTime: number | null;
+  speechPriority: number | null;
+  pausedViaInput: boolean | null;
+  pauseAtNextInterrupt: boolean | null;
+  waitingForActor: boolean | null;
+  waitingForInterrupt: boolean | null;
+  interruptedActorsScenes: boolean | null;
+  breakOnNonIdle: boolean | null;
+  sceneFinished: boolean | null;
+  sceneStringIndex: number | null;
+  readonly interruptScene: EntityRef | null;
+  interruptCount: number | null;
+  sceneMissing: boolean | null;
+  interrupted: boolean | null;
+  completedEarly: boolean | null;
+  interruptSceneFinished: boolean | null;
+  restoring: boolean | null;
+  readonly actor: EntityRef | null;
+  readonly activator: EntityRef | null;
+  busyActor: number | null;
+  playerDeathBehavior: number | null;
+  readonly onStart: CEntityIOOutput;
+  readonly onCompletion: CEntityIOOutput;
+  readonly onCanceled: CEntityIOOutput;
+  readonly onPaused: CEntityIOOutput;
+  readonly onResumed: CEntityIOOutput;
+  readonly onPulseRequirement: CEntityIOOutput;
+}
+
+export interface CServerOnlyModelEntity extends CBaseModelEntity {
+}
+
+export interface CServerOnlyPointEntity extends CServerOnlyEntity {
+}
+
+export interface CShatterGlassShardPhysics extends CBaseModelEntity {
+  parentShard: number | null;
+  poolState: number | null;
+  touchedByPlayer: boolean | null;
+  readonly shardDesc: shard_model_desc_t;
+}
+
+export interface CSoundAreaEntityOrientedBox extends CSoundAreaEntityBase {
+  readonly min: Vector | null;
+  readonly max: Vector | null;
+}
+
+export interface CSoundAreaEntitySphere extends CSoundAreaEntityBase {
+  radius: number | null;
+}
+
+export interface CSoundEventAABBEntity extends CSoundEventEntity {
+  readonly mins: Vector | null;
+  readonly maxs: Vector | null;
+}
+
+export interface CSoundEventConeEntity extends CSoundEventEntity {
+  emitterAngle: number | null;
+  sweetSpotAngle: number | null;
+  attenMin: number | null;
+  attenMax: number | null;
+}
+
+export interface CSoundEventOBBEntity extends CSoundEventEntity {
+  readonly mins: Vector | null;
+  readonly maxs: Vector | null;
+}
+
+export interface CSoundEventPathCornerEntity extends CSoundEventEntity {
+  countMax: number | null;
+  distanceMax: number | null;
+  distMaxSqr: number | null;
+  dotProductMax: number | null;
+  playing: boolean | null;
+}
+
+export interface CSoundEventSphereEntity extends CSoundEventEntity {
+  radius: number | null;
+}
+
+export interface CSoundOpvarSetOBBWindEntity extends CSoundOpvarSetPointBase {
+  readonly mins: Vector | null;
+  readonly maxs: Vector | null;
+  readonly distanceMins: Vector | null;
+  readonly distanceMaxs: Vector | null;
+  windMin: number | null;
+  windMax: number | null;
+  windMapMin: number | null;
+  windMapMax: number | null;
+}
+
+export interface CSoundOpvarSetPointEntity extends CSoundOpvarSetPointBase {
+  autoDisable: boolean | null;
+  distanceMin: number | null;
+  distanceMax: number | null;
+  distanceMapMin: number | null;
+  distanceMapMax: number | null;
+  occlusionRadius: number | null;
+  occlusionMin: number | null;
+  occlusionMax: number | null;
+  valSetOnDisable: number | null;
+  setValueOnDisable: boolean | null;
+  reloading: boolean | null;
+  simulationMode: number | null;
+  visibilitySamples: number | null;
+  readonly dynamicProxyPoint: Vector | null;
+  dynamicMaximumOcclusion: number | null;
+  pathingDistanceNormFactor: number | null;
+  readonly pathingSourcePos: Vector | null;
+  readonly pathingListenerPos: Vector | null;
+  readonly pathingDirection: Vector | null;
+  pathingSourceIndex: number | null;
+  readonly onEnter: CEntityIOOutput;
+  readonly onExit: CEntityIOOutput;
+}
+
+export interface CSpotlightEnd extends CBaseModelEntity {
+  lightScale: number | null;
+  radius: number | null;
+  readonly spotlightDir: Vector | null;
+  readonly spotlightOrg: Vector | null;
+}
+
+export interface CSprite extends CBaseModelEntity {
+  readonly attachedToEntity: EntityRef | null;
+  attachment: number | null;
+  spriteFramerate: number | null;
+  frame: number | null;
+  dieTime: number | null;
+  brightness: number | null;
+  brightnessDuration: number | null;
+  spriteScale: number | null;
+  scaleDuration: number | null;
+  worldSpaceScale: boolean | null;
+  glowProxySize: number | null;
+  hDRColorScale: number | null;
+  lastTime: number | null;
+  maxFrame: number | null;
+  startScale: number | null;
+  destScale: number | null;
+  scaleTimeStart: number | null;
+  startBrightness: number | null;
+  destBrightness: number | null;
+  brightnessTimeStart: number | null;
+  spriteWidth: number | null;
+  spriteHeight: number | null;
+  speed: number | null;
+}
+
+export interface CTankTargetChange extends CPointEntity {
+}
+
+export interface CTankTrainAI extends CPointEntity {
+  readonly train: EntityRef | null;
+  readonly targetEntity: EntityRef | null;
+  soundPlaying: number | null;
+}
+
+export interface CTextureBasedAnimatable extends CBaseModelEntity {
+  loop: boolean | null;
+  fPS: number | null;
+  readonly animationBoundsMin: Vector | null;
+  readonly animationBoundsMax: Vector | null;
+  startTime: number | null;
+  startFrame: number | null;
+}
+
+export interface CTriggerBrush extends CBaseModelEntity {
+  inputFilter: number | null;
+  dontMessageParent: number | null;
+  readonly onStartTouch: CEntityIOOutput;
+  readonly onEndTouch: CEntityIOOutput;
+  readonly onUse: CEntityIOOutput;
+}
+
+export interface CTriggerVolume extends CBaseModelEntity {
+  readonly filter: EntityRef | null;
 }
 
 export interface CBaseButton extends CBaseToggle {
@@ -745,6 +2617,12 @@ export interface CBaseDoor extends CBaseToggle {
   readonly onLockedUse: CEntityIOOutput;
 }
 
+export interface CBaseFilter extends CLogicalEntity {
+  negated: boolean | null;
+  readonly onPass: CEntityIOOutput;
+  readonly onFail: CEntityIOOutput;
+}
+
 export interface CBaseGrenade extends CBaseAnimGraph {
   damageDetonating: boolean | null;
   hasWarnedAI: boolean | null;
@@ -759,6 +2637,12 @@ export interface CBaseGrenade extends CBaseAnimGraph {
   readonly originalThrower: EntityRef | null;
   readonly onPlayerPickup: CEntityIOOutput;
   readonly onExplode: CEntityIOOutput;
+}
+
+export interface CBasePlatTrain extends CBaseToggle {
+  volume: number | null;
+  tWidth: number | null;
+  tLength: number | null;
 }
 
 export interface CBaseProp extends CBaseAnimGraph {
@@ -781,6 +2665,13 @@ export interface CBaseTrigger extends CBaseToggle {
   readonly onTouchingChanged: CEntityIOOutput;
 }
 
+export interface CCSPlace extends CServerOnlyModelEntity {
+}
+
+export interface CConstraintAnchor extends CBaseAnimGraph {
+  massScale: number | null;
+}
+
 export interface CEconEntity extends CBaseAnimGraph {
   originalOwnerXuidLow: number | null;
   originalOwnerXuidHigh: number | null;
@@ -791,6 +2682,454 @@ export interface CEconEntity extends CBaseAnimGraph {
   readonly oldProvidee: EntityRef | null;
   oldOwnerClass: number | null;
   readonly attributeManager: CAttributeContainer;
+}
+
+export interface CEnvBeam extends CBeam {
+  active: number | null;
+  life: number | null;
+  boltWidth: number | null;
+  noiseAmplitude: number | null;
+  m_speed: number | null;
+  restrike: number | null;
+  frameStart: number | null;
+  readonly endPointWorld: Vector | null;
+  readonly endPointRelative: Vector | null;
+  radius: number | null;
+  touchType: number | null;
+  readonly filter: EntityRef | null;
+  readonly onTouchedByEntity: CEntityIOOutput;
+}
+
+export interface CEnvExplosion extends CModelPointEntity {
+  magnitude: number | null;
+  playerDamage: number | null;
+  radiusOverride: number | null;
+  innerRadius: number | null;
+  damageForce: number | null;
+  readonly inflictor: EntityRef | null;
+  customDamageType: number | null;
+  createDebris: boolean | null;
+  suppressParticleImpulse: boolean | null;
+  classIgnore: number | null;
+  classIgnore2: number | null;
+  readonly entityIgnore: EntityRef | null;
+}
+
+export interface CEnvFade extends CLogicalEntity {
+  fadeColor: number | null;
+  duration: number | null;
+  holdDuration: number | null;
+  readonly onBeginFade: CEntityIOOutput;
+}
+
+export interface CEnvGlobal extends CLogicalEntity {
+  triggermode: number | null;
+  initialstate: number | null;
+  counter: number | null;
+}
+
+export interface CEnvLaser extends CBeam {
+  readonly sprite: EntityRef | null;
+  readonly firePosition: Vector | null;
+  m_flStartFrame: number | null;
+}
+
+export interface CEnvParticleGlow extends CParticleSystem {
+  alphaScale: number | null;
+  radiusScale: number | null;
+  selfIllumScale: number | null;
+  colorTint: number | null;
+}
+
+export interface CFish extends CBaseAnimGraph {
+  readonly pool: EntityRef | null;
+  id: number | null;
+  x: number | null;
+  y: number | null;
+  z: number | null;
+  angle: number | null;
+  angleChange: number | null;
+  readonly forward: Vector | null;
+  readonly perp: Vector | null;
+  readonly poolOrigin: Vector | null;
+  m_waterLevel: number | null;
+  speed: number | null;
+  desiredSpeed: number | null;
+  calmSpeed: number | null;
+  panicSpeed: number | null;
+  avoidRange: number | null;
+  turnClockwise: boolean | null;
+  readonly turnTimer: CountdownTimer;
+  readonly goTimer: CountdownTimer;
+  readonly moveTimer: CountdownTimer;
+  readonly panicTimer: CountdownTimer;
+  readonly disperseTimer: CountdownTimer;
+  readonly proximityTimer: CountdownTimer;
+}
+
+export interface CFogVolume extends CServerOnlyModelEntity {
+  disabled: boolean | null;
+  inFogVolumesList: boolean | null;
+}
+
+export interface CFuncElectrifiedVolume extends CFuncBrush {
+}
+
+export interface CFuncMonitor extends CFuncBrush {
+  resolutionEnum: number | null;
+  renderShadows: boolean | null;
+  useUniqueColorTarget: boolean | null;
+  readonly targetCamera: EntityRef | null;
+  enabled: boolean | null;
+  draw3DSkybox: boolean | null;
+  startEnabled: boolean | null;
+}
+
+export interface CFuncMoveLinear extends CBaseToggle {
+  authoredPosition: number | null;
+  readonly moveEntitySpace: QAngle | null;
+  readonly moveDirParentSpace: Vector | null;
+  blockDamage: number | null;
+  startPosition: number | null;
+  speed: number | null;
+  createMovableNavMesh: boolean | null;
+  allowMovableNavMeshDockingOnEntireEntity: boolean | null;
+  createNavObstacle: boolean | null;
+  readonly onFullyOpen: CEntityIOOutput;
+  readonly onFullyClosed: CEntityIOOutput;
+}
+
+export interface CFuncMoverRouter extends CLogicalEntity {
+  moverIndex: number | null;
+  routeToAllMovers: boolean | null;
+  readonly pathMover: EntityRef | null;
+}
+
+export interface CFuncTankTrain extends CFuncTrackTrain {
+  readonly onDeath: CEntityIOOutput;
+}
+
+export interface CGunTarget extends CBaseToggle {
+  speed: number | null;
+  on: boolean | null;
+  readonly targetEnt: EntityRef | null;
+  readonly onDeath: CEntityIOOutput;
+}
+
+export interface CInfoDynamicShadowHintBox extends CInfoDynamicShadowHint {
+  readonly boxMins: Vector | null;
+  readonly boxMaxs: Vector | null;
+}
+
+export interface CInfoSpawnGroupLoadUnload extends CLogicalEntity {
+  timeoutInterval: number | null;
+  autoActivate: boolean | null;
+  unloadingStarted: boolean | null;
+  queueActiveSpawnGroupChange: boolean | null;
+  queueFinishLoading: boolean | null;
+  readonly onSpawnGroupLoadStarted: CEntityIOOutput;
+  readonly onSpawnGroupLoadFinished: CEntityIOOutput;
+  readonly onSpawnGroupUnloadStarted: CEntityIOOutput;
+  readonly onSpawnGroupUnloadFinished: CEntityIOOutput;
+}
+
+export interface CInstancedSceneEntity extends CSceneEntity {
+  readonly owner: EntityRef | null;
+  hadOwner: boolean | null;
+  postSpeakDelay: number | null;
+  preDelay: number | null;
+  isBackground: boolean | null;
+  removeOnCompletion: boolean | null;
+  readonly target: EntityRef | null;
+}
+
+export interface CItem extends CBaseAnimGraph {
+  activateWhenAtRest: boolean | null;
+  readonly originalSpawnOrigin: Vector | null;
+  readonly originalSpawnAngles: QAngle | null;
+  physStartAsleep: boolean | null;
+  readonly onPlayerTouch: CEntityIOOutput;
+  readonly onPlayerPickup: CEntityIOOutput;
+  readonly onCacheInteraction: CEntityIOOutput;
+  readonly onGlovePulled: CEntityIOOutput;
+}
+
+export interface CLogicAchievement extends CLogicalEntity {
+  disabled: boolean | null;
+  readonly onFired: CEntityIOOutput;
+}
+
+export interface CLogicActivityEvent extends CLogicalEntity {
+  eventType: number | null;
+  duration: number | null;
+}
+
+export interface CLogicAutosave extends CLogicalEntity {
+  forceNewLevelUnit: boolean | null;
+  minHitPoints: number | null;
+  minHitPointsToCommit: number | null;
+}
+
+export interface CLogicBranch extends CLogicalEntity {
+  inValue: boolean | null;
+  readonly onTrue: CEntityIOOutput;
+  readonly onFalse: CEntityIOOutput;
+}
+
+export interface CLogicBranchList extends CLogicalEntity {
+  lastState: number | null;
+  readonly onAllTrue: CEntityIOOutput;
+  readonly onAllFalse: CEntityIOOutput;
+  readonly onMixed: CEntityIOOutput;
+}
+
+export interface CLogicCase extends CLogicalEntity {
+  shuffleCases: number | null;
+  lastShuffleCase: number | null;
+}
+
+export interface CLogicCollisionPair extends CLogicalEntity {
+  includeHierarchy: boolean | null;
+  supportMultipleEntitiesWithSameName: boolean | null;
+  disabled: boolean | null;
+  succeeded: boolean | null;
+  allowMissing: boolean | null;
+}
+
+export interface CLogicCompare extends CLogicalEntity {
+  inValue: number | null;
+  compareValue: number | null;
+}
+
+export interface CLogicDistanceAutosave extends CLogicalEntity {
+  distanceToPlayer: number | null;
+  forceNewLevelUnit: boolean | null;
+  checkCough: boolean | null;
+  thinkDangerous: boolean | null;
+  dangerousTime: number | null;
+}
+
+export interface CLogicDistanceCheck extends CLogicalEntity {
+  zone1Distance: number | null;
+  zone2Distance: number | null;
+  readonly inZone1: CEntityIOOutput;
+  readonly inZone2: CEntityIOOutput;
+  readonly inZone3: CEntityIOOutput;
+}
+
+export interface CLogicEventListener extends CLogicalEntity {
+  isEnabled: boolean | null;
+  team: number | null;
+}
+
+export interface CLogicGameEvent extends CLogicalEntity {
+}
+
+export interface CLogicGameEventListener extends CLogicalEntity {
+  enabled: boolean | null;
+  startDisabled: boolean | null;
+  readonly onEventFired: CEntityIOOutput;
+}
+
+export interface CLogicLineToEntity extends CLogicalEntity {
+  readonly startEntity: EntityRef | null;
+  readonly endEntity: EntityRef | null;
+}
+
+export interface CLogicMeasureMovement extends CLogicalEntity {
+  readonly measureTarget: EntityRef | null;
+  readonly measureReference: EntityRef | null;
+  readonly target: EntityRef | null;
+  readonly targetReference: EntityRef | null;
+  scale: number | null;
+  measureType: number | null;
+}
+
+export interface CLogicNavigation extends CLogicalEntity {
+  isOn: boolean | null;
+  navProperty: number | null;
+}
+
+export interface CLogicPlayerProxy extends CLogicalEntity {
+  readonly player: EntityRef | null;
+  readonly playerHasAmmo: CEntityIOOutput;
+  readonly playerHasNoAmmo: CEntityIOOutput;
+  readonly playerDied: CEntityIOOutput;
+}
+
+export interface CLogicRelay extends CLogicalEntity {
+  disabled: boolean | null;
+  waitForRefire: boolean | null;
+  triggerOnce: boolean | null;
+  fastRetrigger: boolean | null;
+  passthoughCaller: boolean | null;
+  readonly onSpawn: CEntityIOOutput;
+  readonly onTrigger: CEntityIOOutput;
+}
+
+export interface CMapSharedEnvironment extends CLogicalEntity {
+}
+
+export interface CMarkupVolumeTagged extends CMarkupVolume {
+  isGroup: boolean | null;
+  groupByPrefab: boolean | null;
+  groupByVolume: boolean | null;
+  groupOtherGroups: boolean | null;
+  isInGroup: boolean | null;
+}
+
+export interface CMathColorBlend extends CLogicalEntity {
+  inMin: number | null;
+  inMax: number | null;
+  outColor1: number | null;
+  outColor2: number | null;
+}
+
+export interface CMathCounter extends CLogicalEntity {
+  min: number | null;
+  max: number | null;
+  hitMin: boolean | null;
+  hitMax: boolean | null;
+  disabled: boolean | null;
+  readonly onHitMin: CEntityIOOutput;
+  readonly onHitMax: CEntityIOOutput;
+  readonly onChangedFromMin: CEntityIOOutput;
+  readonly onChangedFromMax: CEntityIOOutput;
+}
+
+export interface CMathRemap extends CLogicalEntity {
+  inMin: number | null;
+  inMax: number | null;
+  out1: number | null;
+  out2: number | null;
+  oldInValue: number | null;
+  enabled: boolean | null;
+  readonly onRoseAboveMin: CEntityIOOutput;
+  readonly onRoseAboveMax: CEntityIOOutput;
+  readonly onFellBelowMin: CEntityIOOutput;
+  readonly onFellBelowMax: CEntityIOOutput;
+}
+
+export interface CMoverPathNode extends CPathNode {
+}
+
+export interface CMultiLightProxy extends CLogicalEntity {
+  lightRadiusFilter: number | null;
+  brightnessDelta: number | null;
+  performScreenFade: boolean | null;
+  targetBrightnessMultiplier: number | null;
+  currentBrightnessMultiplier: number | null;
+}
+
+export interface CMultiSource extends CLogicalEntity {
+  total: number | null;
+  readonly onTrigger: CEntityIOOutput;
+}
+
+export interface COmniLight extends CBarnLight {
+  innerAngle: number | null;
+  outerAngle: number | null;
+  showLight: boolean | null;
+}
+
+export interface CPathKeyFrame extends CLogicalEntity {
+  readonly origin: Vector | null;
+  readonly angles: QAngle | null;
+  nextTime: number | null;
+  readonly nextKey: EntityRef | null;
+  readonly prevKey: EntityRef | null;
+  moveSpeed: number | null;
+}
+
+export interface CPathMover extends CPathWithDynamicNodes {
+  readonly moverRouter: EntityRef | null;
+  sampleSpacing: number | null;
+}
+
+export interface CPathMoverEntitySpawner extends CLogicalEntity {
+  spawnIndex: number | null;
+  readonly pathMover: EntityRef | null;
+  spawnFrequencySeconds: number | null;
+  spawnFrequencyDistToNearestMover: number | null;
+  maxActive: number | null;
+  spawnNum: number | null;
+  lastSpawnTime: number | null;
+  enabled: boolean | null;
+  destroyMoverOnArrivedAtEnd: boolean | null;
+  prepopulateOnSpawn: boolean | null;
+  readonly onTemplateSpawned: CEntityIOOutput;
+  readonly onTemplateGroupSpawned: CEntityIOOutput;
+}
+
+export interface CPhysBox extends CBreakable {
+  damageType: number | null;
+  damageToEnableMotion: number | null;
+  forceToEnableMotion: number | null;
+  readonly hoverPosePosition: Vector | null;
+  readonly hoverPoseAngles: QAngle | null;
+  notSolidToWorld: boolean | null;
+  enableUseOutput: boolean | null;
+  hoverPoseFlags: number | null;
+  touchOutputPerEntityDelay: number | null;
+  readonly onDamaged: CEntityIOOutput;
+  readonly onAwakened: CEntityIOOutput;
+  readonly onMotionEnabled: CEntityIOOutput;
+  readonly onPlayerUse: CEntityIOOutput;
+  readonly onStartTouch: CEntityIOOutput;
+}
+
+export interface CPhysConstraint extends CLogicalEntity {
+  readonly attach1: EntityRef | null;
+  readonly attach2: EntityRef | null;
+  forceLimit: number | null;
+  torqueLimit: number | null;
+  minTeleportDistance: number | null;
+  snapObjectPositions: boolean | null;
+  treatEntity1AsInfiniteMass: boolean | null;
+  readonly onBreak: CEntityIOOutput;
+}
+
+export interface CPhysMagnet extends CBaseAnimGraph {
+  massScale: number | null;
+  forceLimit: number | null;
+  torqueLimit: number | null;
+  active: boolean | null;
+  hasHitSomething: boolean | null;
+  totalMass: number | null;
+  radius: number | null;
+  nextSuckTime: number | null;
+  maxObjectsAttached: number | null;
+  readonly onMagnetAttach: CEntityIOOutput;
+  readonly onMagnetDetach: CEntityIOOutput;
+}
+
+export interface CPhysMotor extends CLogicalEntity {
+  readonly attachedObject: EntityRef | null;
+  readonly anchorObject: EntityRef | null;
+  spinUp: number | null;
+  spinDown: number | null;
+  motorFriction: number | null;
+  additionalAcceleration: number | null;
+  angularAcceleration: number | null;
+  torqueScale: number | null;
+  targetSpeed: number | null;
+  speedWhenSpinUpOrSpinDownStarted: number | null;
+  readonly motor: CMotorController;
+}
+
+export interface CPhysThruster extends CPhysForce {
+  readonly localOrigin: Vector | null;
+}
+
+export interface CPhysTorque extends CPhysForce {
+  readonly axis: Vector | null;
+}
+
+export interface CPhysicsEntitySolver extends CLogicalEntity {
+  readonly movingEntity: EntityRef | null;
+  readonly physicsBlocker: EntityRef | null;
+  separationDuration: number | null;
+  cancelTime: number | null;
 }
 
 export interface CPlantedC4 extends CBaseAnimGraph {
@@ -820,6 +3159,101 @@ export interface CPlantedC4 extends CBaseAnimGraph {
   readonly onBombBeginDefuse: CEntityIOOutput;
   readonly onBombDefuseAborted: CEntityIOOutput;
   readonly entitySpottedState: EntitySpottedState_t;
+}
+
+export interface CPlayerSprayDecal extends CModelPointEntity {
+  uniqueID: number | null;
+  accountID: number | null;
+  traceID: number | null;
+  rtGcTime: number | null;
+  readonly endPos: Vector | null;
+  readonly start: Vector | null;
+  readonly left: Vector | null;
+  readonly normal: Vector | null;
+  player: number | null;
+  entity: number | null;
+  hitbox: number | null;
+  creationTime: number | null;
+  tintID: number | null;
+  version: number | null;
+}
+
+export interface CPointClientUIDialog extends CBaseClientUIEntity {
+  readonly activator: EntityRef | null;
+  startEnabled: boolean | null;
+}
+
+export interface CPointClientUIWorldPanel extends CBaseClientUIEntity {
+  ignoreInput: boolean | null;
+  lit: boolean | null;
+  followPlayerAcrossTeleport: boolean | null;
+  width: number | null;
+  height: number | null;
+  dPI: number | null;
+  interactDistance: number | null;
+  depthOffset: number | null;
+  ownerContext: number | null;
+  horizontalAlign: number | null;
+  verticalAlign: number | null;
+  orientation: number | null;
+  allowInteractionFromAllSceneWorlds: boolean | null;
+  opaque: boolean | null;
+  noDepth: boolean | null;
+  visibleWhenParentNoDraw: boolean | null;
+  renderBackface: boolean | null;
+  useOffScreenIndicator: boolean | null;
+  excludeFromSaveGames: boolean | null;
+  grabbable: boolean | null;
+  onlyRenderToTexture: boolean | null;
+  disableMipGen: boolean | null;
+  explicitImageLayout: number | null;
+  ignoreParentOrientation: boolean | null;
+}
+
+export interface CPointCommentaryNode extends CBaseAnimGraph {
+  readonly viewTarget: EntityRef | null;
+  readonly viewTargetAngles: EntityRef | null;
+  readonly viewPosition: EntityRef | null;
+  readonly viewPositionMover: EntityRef | null;
+  preventMovement: boolean | null;
+  underCrosshair: boolean | null;
+  unstoppable: boolean | null;
+  finishedTime: number | null;
+  readonly finishOrigin: Vector | null;
+  readonly originalAngles: QAngle | null;
+  readonly finishAngles: QAngle | null;
+  preventChangesWhileMoving: boolean | null;
+  disabled: boolean | null;
+  readonly teleportOrigin: Vector | null;
+  abortedPlaybackAt: number | null;
+  active: boolean | null;
+  startTime: number | null;
+  startTimeInCommentary: number | null;
+  nodeNumber: number | null;
+  nodeNumberMax: number | null;
+  listenedTo: boolean | null;
+  readonly onCommentaryStarted: CEntityIOOutput;
+  readonly onCommentaryStopped: CEntityIOOutput;
+}
+
+export interface CPointPrefab extends CServerOnlyPointEntity {
+  fixupNames: boolean | null;
+  loadDynamic: boolean | null;
+  readonly associatedRelayEntity: EntityRef | null;
+}
+
+export interface CPointTeleport extends CServerOnlyPointEntity {
+  readonly saveOrigin: Vector | null;
+  readonly saveAngles: QAngle | null;
+  teleportParentedEntities: boolean | null;
+  teleportUseCurrentAngle: boolean | null;
+}
+
+export interface CPointTemplate extends CLogicalEntity {
+  timeoutInterval: number | null;
+  asynchronouslySpawnEntities: boolean | null;
+  clientOnlyEntityBehavior: number | null;
+  ownerSpawnGroupType: number | null;
 }
 
 export interface CPointWorldText extends CModelPointEntity {
@@ -870,6 +3304,90 @@ export interface CRagdollProp extends CBaseAnimGraph {
   readonly ragdoll: ragdoll_t;
 }
 
+export interface CRectLight extends CBarnLight {
+  showLight: boolean | null;
+}
+
+export interface CRevertSaved extends CModelPointEntity {
+  loadTime: number | null;
+  duration: number | null;
+  holdTime: number | null;
+}
+
+export interface CRuleBrushEntity extends CRuleEntity {
+}
+
+export interface CRulePointEntity extends CRuleEntity {
+  score: number | null;
+}
+
+export interface CSceneListManager extends CLogicalEntity {
+}
+
+export interface CScriptNavBlocker extends CFuncNavBlocker {
+  readonly extent: Vector | null;
+}
+
+export interface CShower extends CModelPointEntity {
+  speed: number | null;
+}
+
+export interface CSoundOpvarSetAutoRoomEntity extends CSoundOpvarSetPointEntity {
+  size: number | null;
+  heightTolerance: number | null;
+  sizeSqr: number | null;
+}
+
+export interface CSoundOpvarSetBoxEntity extends CSoundOpvarSetPointEntity {
+  readonly distanceInnerMins: Vector | null;
+  readonly distanceInnerMaxs: Vector | null;
+  readonly distanceOuterMins: Vector | null;
+  readonly distanceOuterMaxs: Vector | null;
+  boxDirection: number | null;
+  readonly innerMins: Vector | null;
+  readonly innerMaxs: Vector | null;
+  readonly outerMins: Vector | null;
+  readonly outerMaxs: Vector | null;
+}
+
+export interface CSoundOpvarSetPathCornerEntity extends CSoundOpvarSetPointEntity {
+  useParentedPath: boolean | null;
+  distMinSqr: number | null;
+  distMaxSqr: number | null;
+}
+
+export interface CSoundStackSave extends CLogicalEntity {
+}
+
+export interface CTestPulseIO extends CLogicalEntity {
+  allowEmptyInputs: boolean | null;
+  readonly onVariantVoid: CEntityIOOutput;
+  readonly testComponent: CTestPulseIOComponent_Derived;
+  readonly onInternalTestVoid: CEntityIOOutput;
+}
+
+export interface CTimerEntity extends CLogicalEntity {
+  disabled: number | null;
+  initialDelay: number | null;
+  refireTime: number | null;
+  upDownState: boolean | null;
+  useRandomTime: number | null;
+  pauseAfterFiring: boolean | null;
+  lowerRandomBound: number | null;
+  upperRandomBound: number | null;
+  remainingTime: number | null;
+  paused: boolean | null;
+  readonly onTimer: CEntityIOOutput;
+  readonly onTimerHigh: CEntityIOOutput;
+  readonly onTimerLow: CEntityIOOutput;
+}
+
+export interface SpawnPoint extends CServerOnlyPointEntity {
+  priority: number | null;
+  enabled: boolean | null;
+  type: number | null;
+}
+
 export interface CBaseCSGrenadeProjectile extends CBaseGrenade {
   readonly initialPosition: Vector | null;
   readonly initialVelocity: Vector | null;
@@ -885,6 +3403,20 @@ export interface CBaseCSGrenadeProjectile extends CBaseGrenade {
   readonly lastHitSurfaceNormal: Vector | null;
   ticksAtZeroVelocity: number | null;
   hasEverHitEnemy: boolean | null;
+}
+
+export interface CBaseMoveBehavior extends CPathKeyFrame {
+  positionInterpolator: number | null;
+  rotationInterpolator: number | null;
+  animStartTime: number | null;
+  animEndTime: number | null;
+  averageSpeedAcrossFrame: number | null;
+  readonly currentKeyFrame: EntityRef | null;
+  readonly targetKeyFrame: EntityRef | null;
+  readonly preKeyFrame: EntityRef | null;
+  readonly postKeyFrame: EntityRef | null;
+  timeIntoFrame: number | null;
+  direction: number | null;
 }
 
 export interface CBasePlayerPawn extends CBaseCombatCharacter {
@@ -912,6 +3444,17 @@ export interface CBasePlayerWeapon extends CEconEntity {
   readonly onPlayerUse: CEntityIOOutput;
 }
 
+export interface CBombTarget extends CBaseTrigger {
+  isBombSiteB: boolean | null;
+  isHeistBombTarget: boolean | null;
+  bombPlantedHere: boolean | null;
+  readonly instructorHint: EntityRef | null;
+  bombSiteDesignation: number | null;
+  readonly onBombExplode: CEntityIOOutput;
+  readonly onBombPlanted: CEntityIOOutput;
+  readonly onBombDefused: CEntityIOOutput;
+}
+
 export interface CBreakableProp extends CBaseProp {
   impactEnergyScale: number | null;
   minHealthDmg: number | null;
@@ -937,6 +3480,520 @@ export interface CBreakableProp extends CBaseProp {
   readonly onStartDeath: CEntityIOOutput;
   readonly onBreak: CEntityIOOutput;
   readonly onTakeDamage: CEntityIOOutput;
+}
+
+export interface CBuyZone extends CBaseTrigger {
+  legacyTeamNum: number | null;
+}
+
+export interface CChangeLevel extends CBaseTrigger {
+  touched: boolean | null;
+  noTouch: boolean | null;
+  newChapter: boolean | null;
+  onChangeLevelFired: boolean | null;
+  readonly onChangeLevel: CEntityIOOutput;
+}
+
+export interface CColorCorrectionVolume extends CBaseTrigger {
+  maxWeight: number | null;
+  fadeDuration: number | null;
+  weight: number | null;
+  readonly lookupFilename: string | null;
+  lastEnterWeight: number | null;
+  lastEnterTime: number | null;
+  lastExitWeight: number | null;
+  lastExitTime: number | null;
+}
+
+export interface CEconWearable extends CEconEntity {
+  forceSkin: number | null;
+  alwaysAllow: boolean | null;
+}
+
+export interface CFilterAttributeInt extends CBaseFilter {
+}
+
+export interface CFilterClass extends CBaseFilter {
+}
+
+export interface CFilterContext extends CBaseFilter {
+}
+
+export interface CFilterEnemy extends CBaseFilter {
+  radius: number | null;
+  outerRadius: number | null;
+  maxSquadmatesPerEnemy: number | null;
+}
+
+export interface CFilterMassGreater extends CBaseFilter {
+  filterMass: number | null;
+}
+
+export interface CFilterModel extends CBaseFilter {
+}
+
+export interface CFilterMultiple extends CBaseFilter {
+  filterType: number | null;
+}
+
+export interface CFilterName extends CBaseFilter {
+}
+
+export interface CFilterProximity extends CBaseFilter {
+  radius: number | null;
+}
+
+export interface CFilterTeam extends CBaseFilter {
+  filterTeam: number | null;
+}
+
+export interface CFogTrigger extends CBaseTrigger {
+  readonly fog: fogparams_t;
+}
+
+export interface CFootstepControl extends CBaseTrigger {
+}
+
+export interface CFuncPlat extends CBasePlatTrain {
+  speed: number | null;
+}
+
+export interface CFuncTrain extends CBasePlatTrain {
+  readonly currentTarget: EntityRef | null;
+  activated: boolean | null;
+  readonly enemy: EntityRef | null;
+  blockDamage: number | null;
+  nextBlockTime: number | null;
+  speed: number | null;
+}
+
+export interface CGameMoney extends CRulePointEntity {
+  money: number | null;
+  readonly onMoneySpent: CEntityIOOutput;
+  readonly onMoneySpentFail: CEntityIOOutput;
+}
+
+export interface CGamePlayerZone extends CRuleBrushEntity {
+  readonly onPlayerInZone: CEntityIOOutput;
+  readonly onPlayerOutZone: CEntityIOOutput;
+}
+
+export interface CGameText extends CRulePointEntity {
+  readonly textParms: hudtextparms_t;
+}
+
+export interface CGenericConstraint extends CPhysConstraint {
+  placeAnchorsAtConstraintTransform: boolean | null;
+  linearMotionX: number | null;
+  linearMotionY: number | null;
+  linearMotionZ: number | null;
+  linearFrequencyX: number | null;
+  linearFrequencyY: number | null;
+  linearFrequencyZ: number | null;
+  linearDampingRatioX: number | null;
+  linearDampingRatioY: number | null;
+  linearDampingRatioZ: number | null;
+  maxLinearImpulseX: number | null;
+  maxLinearImpulseY: number | null;
+  maxLinearImpulseZ: number | null;
+  breakAfterTimeX: number | null;
+  breakAfterTimeY: number | null;
+  breakAfterTimeZ: number | null;
+  breakAfterTimeStartTimeX: number | null;
+  breakAfterTimeStartTimeY: number | null;
+  breakAfterTimeStartTimeZ: number | null;
+  breakAfterTimeThresholdX: number | null;
+  breakAfterTimeThresholdY: number | null;
+  breakAfterTimeThresholdZ: number | null;
+  notifyForceX: number | null;
+  notifyForceY: number | null;
+  notifyForceZ: number | null;
+  notifyForceMinTimeX: number | null;
+  notifyForceMinTimeY: number | null;
+  notifyForceMinTimeZ: number | null;
+  notifyForceLastTimeX: number | null;
+  notifyForceLastTimeY: number | null;
+  notifyForceLastTimeZ: number | null;
+  axisNotifiedX: boolean | null;
+  axisNotifiedY: boolean | null;
+  axisNotifiedZ: boolean | null;
+  angularMotionX: number | null;
+  angularMotionY: number | null;
+  angularMotionZ: number | null;
+  angularFrequencyX: number | null;
+  angularFrequencyY: number | null;
+  angularFrequencyZ: number | null;
+  angularDampingRatioX: number | null;
+  angularDampingRatioY: number | null;
+  angularDampingRatioZ: number | null;
+  maxAngularImpulseX: number | null;
+  maxAngularImpulseY: number | null;
+  maxAngularImpulseZ: number | null;
+  readonly notifyForceReachedX: CEntityIOOutput;
+  readonly notifyForceReachedY: CEntityIOOutput;
+  readonly notifyForceReachedZ: CEntityIOOutput;
+}
+
+export interface CHostageExpresserShim extends CBaseCombatCharacter {
+}
+
+export interface CItemDefuser extends CItem {
+  spotRules: number | null;
+  readonly entitySpottedState: EntitySpottedState_t;
+}
+
+export interface CItemDogtags extends CItem {
+  readonly owningPlayer: EntityRef | null;
+  readonly killingPlayer: EntityRef | null;
+}
+
+export interface CItemGeneric extends CItem {
+  hasTriggerRadius: boolean | null;
+  hasPickupRadius: boolean | null;
+  pickupRadiusSqr: number | null;
+  triggerRadiusSqr: number | null;
+  lastPickupCheck: number | null;
+  playerCounterListenerAdded: boolean | null;
+  playerInTriggerRadius: boolean | null;
+  autoStartAmbientSound: boolean | null;
+  readonly pickupFilter: EntityRef | null;
+  pickupRadius: number | null;
+  triggerRadius: number | null;
+  glowWhenInTrigger: boolean | null;
+  glowColor: number | null;
+  useable: boolean | null;
+  readonly triggerHelper: EntityRef | null;
+  readonly onPickup: CEntityIOOutput;
+  readonly onTimeout: CEntityIOOutput;
+  readonly onTriggerStartTouch: CEntityIOOutput;
+  readonly onTriggerTouch: CEntityIOOutput;
+  readonly onTriggerEndTouch: CEntityIOOutput;
+}
+
+export interface CLogicActiveAutosave extends CLogicAutosave {
+  triggerHitPoints: number | null;
+  timeToTrigger: number | null;
+  startTime: number | null;
+  dangerousTime: number | null;
+}
+
+export interface CMarkupVolumeTagged_Nav extends CMarkupVolumeTagged {
+  scopes: number | null;
+}
+
+export interface CMarkupVolumeWithRef extends CMarkupVolumeTagged {
+  useRef: boolean | null;
+  readonly refPosEntitySpace: Vector | null;
+  readonly refPosWorldSpace: Vector | null;
+  refDot: number | null;
+}
+
+export interface CPhysBallSocket extends CPhysConstraint {
+  jointFriction: number | null;
+  enableSwingLimit: boolean | null;
+  swingLimit: number | null;
+  enableTwistLimit: boolean | null;
+  minTwistAngle: number | null;
+  maxTwistAngle: number | null;
+}
+
+export interface CPhysFixed extends CPhysConstraint {
+  linearFrequency: number | null;
+  linearDampingRatio: number | null;
+  angularFrequency: number | null;
+  angularDampingRatio: number | null;
+  enableLinearConstraint: boolean | null;
+  enableAngularConstraint: boolean | null;
+}
+
+export interface CPhysHinge extends CPhysConstraint {
+  atMinLimit: boolean | null;
+  atMaxLimit: boolean | null;
+  hingeFriction: number | null;
+  systemLoadScale: number | null;
+  isAxisLocal: boolean | null;
+  minRotation: number | null;
+  maxRotation: number | null;
+  initialRotation: number | null;
+  motorFrequency: number | null;
+  motorDampingRatio: number | null;
+  angleSpeed: number | null;
+  angleSpeedThreshold: number | null;
+  limitsDebugVisRotation: number | null;
+  readonly soundInfo: ConstraintSoundInfo;
+  readonly notifyMinLimitReached: CEntityIOOutput;
+  readonly notifyMaxLimitReached: CEntityIOOutput;
+  readonly hinge: constraint_hingeparams_t;
+  readonly onStartMoving: CEntityIOOutput;
+  readonly onStopMoving: CEntityIOOutput;
+}
+
+export interface CPhysLength extends CPhysConstraint {
+  readonly attach: Vector | null;
+  addLength: number | null;
+  minLength: number | null;
+  totalLength: number | null;
+}
+
+export interface CPhysPulley extends CPhysConstraint {
+  readonly position2: Vector | null;
+  addLength: number | null;
+  gearRatio: number | null;
+}
+
+export interface CPhysSlideConstraint extends CPhysConstraint {
+  readonly axisEnd: Vector | null;
+  slideFriction: number | null;
+  systemLoadScale: number | null;
+  initialOffset: number | null;
+  enableLinearConstraint: boolean | null;
+  enableAngularConstraint: boolean | null;
+  motorFrequency: number | null;
+  motorDampingRatio: number | null;
+  useEntityPivot: boolean | null;
+  readonly soundInfo: ConstraintSoundInfo;
+}
+
+export interface CPhysWheelConstraint extends CPhysConstraint {
+  suspensionFrequency: number | null;
+  suspensionDampingRatio: number | null;
+  suspensionHeightOffset: number | null;
+  enableSuspensionLimit: boolean | null;
+  minSuspensionOffset: number | null;
+  maxSuspensionOffset: number | null;
+  enableSteeringLimit: boolean | null;
+  minSteeringAngle: number | null;
+  maxSteeringAngle: number | null;
+  steeringAxisFriction: number | null;
+  spinAxisFriction: number | null;
+  readonly steeringMimicsEntity: EntityRef | null;
+}
+
+export interface CPointClientUIWorldTextPanel extends CPointClientUIWorldPanel {
+  readonly messageText: string | null;
+}
+
+export interface CPostProcessingVolume extends CBaseTrigger {
+  fadeDuration: number | null;
+  minLogExposure: number | null;
+  maxLogExposure: number | null;
+  minExposure: number | null;
+  maxExposure: number | null;
+  exposureCompensation: number | null;
+  exposureFadeSpeedUp: number | null;
+  exposureFadeSpeedDown: number | null;
+  tonemapEVSmoothingRange: number | null;
+  master: boolean | null;
+  exposureControl: boolean | null;
+}
+
+export interface CRagdollConstraint extends CPhysConstraint {
+  xmin: number | null;
+  xmax: number | null;
+  ymin: number | null;
+  ymax: number | null;
+  zmin: number | null;
+  zmax: number | null;
+  xfriction: number | null;
+  yfriction: number | null;
+  zfriction: number | null;
+}
+
+export interface CRagdollPropAttached extends CRagdollProp {
+  boneIndexAttached: number | null;
+  ragdollAttachedObjectIndex: number | null;
+  readonly attachmentPointBoneSpace: Vector | null;
+  readonly attachmentPointRagdollSpace: Vector | null;
+  shouldDetach: boolean | null;
+  shouldDeleteAttachedActivationRecord: boolean | null;
+}
+
+export interface CRotButton extends CBaseButton {
+}
+
+export interface CRotDoor extends CBaseDoor {
+  solidBsp: boolean | null;
+}
+
+export interface CScriptItem extends CItem {
+  moveTypeOverride: number | null;
+}
+
+export interface CSplineConstraint extends CPhysConstraint {
+  readonly anchorOffsetRestore: Vector | null;
+  readonly splineEntity: EntityRef | null;
+  enableLateralConstraint: boolean | null;
+  enableVerticalConstraint: boolean | null;
+  enableAngularConstraint: boolean | null;
+  enableLimit: boolean | null;
+  fireEventsOnPath: boolean | null;
+  linearFrequency: number | null;
+  linarDampingRatio: number | null;
+  jointFriction: number | null;
+  transitionTime: number | null;
+  readonly preSolveAnchorPos: Vector | null;
+  startTransitionTime: number | null;
+  readonly tangentSpaceAnchorAtTransitionStart: Vector | null;
+}
+
+export interface CTonemapTrigger extends CBaseTrigger {
+}
+
+export interface CTriggerActiveWeaponDetect extends CBaseTrigger {
+  readonly onTouchedActiveWeapon: CEntityIOOutput;
+}
+
+export interface CTriggerBuoyancy extends CBaseTrigger {
+  fluidDensity: number | null;
+  readonly buoyancyHelper: CBuoyancyHelper;
+}
+
+export interface CTriggerDetectBulletFire extends CBaseTrigger {
+  playerFireOnly: boolean | null;
+  readonly onDetectedBulletFire: CEntityIOOutput;
+}
+
+export interface CTriggerDetectExplosion extends CBaseTrigger {
+  readonly onDetectedExplosion: CEntityIOOutput;
+}
+
+export interface CTriggerFan extends CBaseTrigger {
+  readonly fanOriginOffset: Vector | null;
+  readonly direction: Vector | null;
+  pushTowardsInfoTarget: boolean | null;
+  pushAwayFromInfoTarget: boolean | null;
+  readonly infoFan: EntityRef | null;
+  force: number | null;
+  falloff: boolean | null;
+  readonly fanOriginWS: Vector | null;
+  readonly fanOriginLS: Vector | null;
+  readonly fanEndLS: Vector | null;
+  readonly noiseDirectionTarget: Vector | null;
+  ropeForceScale: number | null;
+  particleForceScale: number | null;
+  playerForce: number | null;
+  playerWindblock: boolean | null;
+  nPCForce: number | null;
+  rampTime: number | null;
+  noiseDegrees: number | null;
+  noiseSpeed: number | null;
+  pushPlayer: boolean | null;
+  rampDown: boolean | null;
+  managerFanIdx: number | null;
+  readonly rampTimer: CountdownTimer;
+}
+
+export interface CTriggerGameEvent extends CBaseTrigger {
+}
+
+export interface CTriggerHurt extends CBaseTrigger {
+  originalDamage: number | null;
+  damage: number | null;
+  damageCap: number | null;
+  lastDmgTime: number | null;
+  forgivenessDelay: number | null;
+  bitsDamageInflict: number | null;
+  damageModel: number | null;
+  noDmgForce: boolean | null;
+  readonly damageForce: Vector | null;
+  thinkAlways: boolean | null;
+  hurtThinkPeriod: number | null;
+  readonly onHurt: CEntityIOOutput;
+  readonly onHurtPlayer: CEntityIOOutput;
+}
+
+export interface CTriggerLerpObject extends CBaseTrigger {
+  readonly lerpTarget: EntityRef | null;
+  lerpTargetAttachment: number | null;
+  lerpDuration: number | null;
+  attachedEntityWasParented: boolean | null;
+  lerpRestoreMoveType: boolean | null;
+  singleLerpObject: boolean | null;
+  attachTouchingObject: boolean | null;
+  readonly entityToWaitForDisconnect: EntityRef | null;
+  readonly onLerpStarted: CEntityIOOutput;
+  readonly onLerpFinished: CEntityIOOutput;
+  readonly onDetached: CEntityIOOutput;
+}
+
+export interface CTriggerMultiple extends CBaseTrigger {
+  readonly onTrigger: CEntityIOOutput;
+}
+
+export interface CTriggerPhysics extends CBaseTrigger {
+  m_gravityScale: number | null;
+  linearLimit: number | null;
+  linearDamping: number | null;
+  angularLimit: number | null;
+  angularDamping: number | null;
+  linearForce: number | null;
+  frequency: number | null;
+  dampingRatio: number | null;
+  readonly linearForcePointAt: Vector | null;
+  collapseToForcePoint: boolean | null;
+  readonly linearForcePointAtWorld: Vector | null;
+  readonly linearForceDirection: Vector | null;
+  convertToDebrisWhenPossible: boolean | null;
+}
+
+export interface CTriggerProximity extends CBaseTrigger {
+  readonly measureTarget: EntityRef | null;
+  radius: number | null;
+  touchers: number | null;
+}
+
+export interface CTriggerPush extends CBaseTrigger {
+  readonly pushEntitySpace: QAngle | null;
+  readonly pushDirEntitySpace: Vector | null;
+  triggerOnStartTouch: boolean | null;
+  usePathSimple: boolean | null;
+  readonly pathSimple: EntityRef | null;
+  splinePushType: number | null;
+  speed: number | null;
+}
+
+export interface CTriggerRemove extends CBaseTrigger {
+  readonly onRemove: CEntityIOOutput;
+}
+
+export interface CTriggerSave extends CBaseTrigger {
+  forceNewLevelUnit: boolean | null;
+  dangerousTimer: number | null;
+  minHitPoints: number | null;
+  retriggerDelay: number | null;
+}
+
+export interface CTriggerSndSosOpvar extends CBaseTrigger {
+  readonly position: Vector | null;
+  centerSize: number | null;
+  minVal: number | null;
+  maxVal: number | null;
+  volIs2D: boolean | null;
+  readonly opvarNameChar: string | null;
+  readonly stackNameChar: string | null;
+  readonly operatorNameChar: string | null;
+  readonly vecNormPos: Vector | null;
+  normCenterSize: number | null;
+}
+
+export interface CTriggerSoundscape extends CBaseTrigger {
+  readonly soundscape: EntityRef | null;
+}
+
+export interface CTriggerTeleport extends CBaseTrigger {
+  useLandmarkAngles: boolean | null;
+  mirrorPlayer: boolean | null;
+  checkDestIfClearForPlayer: boolean | null;
+}
+
+export interface FilterDamageType extends CBaseFilter {
+  damageType: number | null;
+}
+
+export interface FilterHealth extends CBaseFilter {
+  adrenalineActive: boolean | null;
+  healthMin: number | null;
+  healthMax: number | null;
 }
 
 export interface CCSPlayerPawnBase extends CBasePlayerPawn {
@@ -1011,6 +4068,20 @@ export interface CCSWeaponBase extends CBasePlayerWeapon {
   readonly ironSightController: CIronSightController;
 }
 
+export interface CDecoyProjectile extends CBaseCSGrenadeProjectile {
+  decoyShotTick: number | null;
+  shotsRemaining: number | null;
+  expireTime: number | null;
+  decoyWeaponDefIndex: number | null;
+}
+
+export interface CDynamicNavConnectionsVolume extends CTriggerMultiple {
+  connectionsEnabled: boolean | null;
+  targetAreaSearchRadius: number | null;
+  updateDistance: number | null;
+  maxConnectionDistance: number | null;
+}
+
 export interface CDynamicProp extends CBreakableProp {
   createNavObstacle: boolean | null;
   navObstacleUpdatesOverridden: boolean | null;
@@ -1034,6 +4105,86 @@ export interface CDynamicProp extends CBreakableProp {
   readonly outputAnimLoopCycleOver: CEntityIOOutput;
   readonly onAnimReachedStart: CEntityIOOutput;
   readonly onAnimReachedEnd: CEntityIOOutput;
+}
+
+export interface CFlashbangProjectile extends CBaseCSGrenadeProjectile {
+  timeToDetonate: number | null;
+  numOpponentsHit: number | null;
+  numTeammatesHit: number | null;
+}
+
+export interface CFuncPlatRot extends CFuncPlat {
+  readonly end: QAngle | null;
+  readonly start: QAngle | null;
+}
+
+export interface CHostage extends CHostageExpresserShim {
+  spotRules: number | null;
+  uiHostageSpawnExclusionGroupMask: number | null;
+  hostageSpawnRandomFactor: number | null;
+  remove: boolean | null;
+  readonly vel: Vector | null;
+  isRescued: boolean | null;
+  jumpedThisFrame: boolean | null;
+  hostageState: number | null;
+  readonly leader: EntityRef | null;
+  readonly lastLeader: EntityRef | null;
+  hasBeenUsed: boolean | null;
+  readonly accel: Vector | null;
+  isRunning: boolean | null;
+  isCrouching: boolean | null;
+  isWaitingForLeader: boolean | null;
+  isAdjusted: boolean | null;
+  handsHaveBeenCut: boolean | null;
+  readonly hostageGrabber: EntityRef | null;
+  lastGrabTime: number | null;
+  readonly positionWhenStartedDroppingToGround: Vector | null;
+  readonly grabbedPos: Vector | null;
+  rescueStartTime: number | null;
+  grabSuccessTime: number | null;
+  dropStartTime: number | null;
+  approachRewardPayouts: number | null;
+  pickupEventCount: number | null;
+  readonly spawnGroundPos: Vector | null;
+  readonly hostageResetPosition: Vector | null;
+  readonly onHostageBeginGrab: CEntityIOOutput;
+  readonly onFirstPickedUp: CEntityIOOutput;
+  readonly onDroppedNotRescued: CEntityIOOutput;
+  readonly onRescued: CEntityIOOutput;
+  readonly entitySpottedState: EntitySpottedState_t;
+  readonly reuseTimer: CountdownTimer;
+  readonly jumpTimer: CountdownTimer;
+  readonly repathTimer: CountdownTimer;
+  readonly inhibitDoorTimer: CountdownTimer;
+  readonly inhibitObstacleAvoidanceTimer: CountdownTimer;
+  readonly wiggleTimer: CountdownTimer;
+}
+
+export interface CMarkupVolumeTagged_NavGame extends CMarkupVolumeWithRef {
+  scopes: number | null;
+  floodFillAttribute: boolean | null;
+  splitNavSpace: boolean | null;
+}
+
+export interface CMolotovProjectile extends CBaseCSGrenadeProjectile {
+  isIncGrenade: boolean | null;
+  detonated: boolean | null;
+  readonly stillTimer: IntervalTimer;
+}
+
+export interface CMomentaryRotButton extends CRotButton {
+  lastUsed: number | null;
+  readonly start: QAngle | null;
+  readonly end: QAngle | null;
+  idealYaw: number | null;
+  updateTarget: boolean | null;
+  direction: number | null;
+  returnSpeed: number | null;
+  startPosition: number | null;
+  readonly onUnpressed: CEntityIOOutput;
+  readonly onFullyOpen: CEntityIOOutput;
+  readonly onFullyClosed: CEntityIOOutput;
+  readonly onReachedPosition: CEntityIOOutput;
 }
 
 export interface CPhysicsProp extends CBreakableProp {
@@ -1077,6 +4228,100 @@ export interface CPhysicsProp extends CBreakableProp {
   readonly onPlayerUse: CEntityIOOutput;
   readonly onOutOfWorld: CEntityIOOutput;
   readonly onPlayerPickup: CEntityIOOutput;
+}
+
+export interface CScriptTriggerHurt extends CTriggerHurt {
+  readonly extent: Vector | null;
+}
+
+export interface CScriptTriggerMultiple extends CTriggerMultiple {
+  readonly extent: Vector | null;
+}
+
+export interface CScriptTriggerPush extends CTriggerPush {
+  readonly extent: Vector | null;
+}
+
+export interface CSmokeGrenadeProjectile extends CBaseCSGrenadeProjectile {
+  smokeEffectTickBegin: number | null;
+  didSmokeEffect: boolean | null;
+  randomSeed: number | null;
+  readonly smokeColor: Vector | null;
+  readonly smokeDetonationPos: Vector | null;
+  voxelFrameDataSize: number | null;
+  voxelUpdate: number | null;
+  lastBounce: number | null;
+  fllastSimulationTime: number | null;
+  explodeFromInferno: boolean | null;
+  didGroundScorch: boolean | null;
+}
+
+export interface CTriggerImpact extends CTriggerMultiple {
+  magnitude: number | null;
+  noise: number | null;
+  viewkick: number | null;
+}
+
+export interface CTriggerOnce extends CTriggerMultiple {
+}
+
+export interface CBaseCSGrenade extends CCSWeaponBase {
+  redraw: boolean | null;
+  isHeldByPlayer: boolean | null;
+  pinPulled: boolean | null;
+  jumpThrow: boolean | null;
+  throwAnimating: boolean | null;
+  throwTime: number | null;
+  throwStrength: number | null;
+  dropTime: number | null;
+  pinPullTime: number | null;
+  justPulledPin: boolean | null;
+  nextHoldTick: number | null;
+  nextHoldFrac: number | null;
+  readonly switchToWeaponAfterThrow: EntityRef | null;
+}
+
+export interface CBasePropDoor extends CDynamicProp {
+  autoReturnDelay: number | null;
+  hardwareType: number | null;
+  needsHardware: boolean | null;
+  doorState: number | null;
+  locked: boolean | null;
+  noNPCs: boolean | null;
+  readonly closedPosition: Vector | null;
+  readonly closedAngles: QAngle | null;
+  readonly m_hBlocker: EntityRef | null;
+  firstBlocked: boolean | null;
+  forceClosed: boolean | null;
+  readonly latchWorldPosition: Vector | null;
+  readonly activator: EntityRef | null;
+  speed: number | null;
+  numCloseAttempts: number | null;
+  readonly master: EntityRef | null;
+  readonly ls: locksound_t;
+  readonly onBlockedClosing: CEntityIOOutput;
+  readonly onBlockedOpening: CEntityIOOutput;
+  readonly onUnblockedClosing: CEntityIOOutput;
+  readonly onUnblockedOpening: CEntityIOOutput;
+  readonly onFullyClosed: CEntityIOOutput;
+  readonly onFullyOpen: CEntityIOOutput;
+  readonly onClose: CEntityIOOutput;
+  readonly onOpen: CEntityIOOutput;
+  readonly onLockedUse: CEntityIOOutput;
+  readonly onAjarOpen: CEntityIOOutput;
+}
+
+export interface CC4 extends CCSWeaponBase {
+  readonly lastValidPlayerHeldPosition: Vector | null;
+  readonly lastValidDroppedPosition: Vector | null;
+  doValidDroppedPositionCheck: boolean | null;
+  startedArming: boolean | null;
+  armedTime: number | null;
+  bombPlacedAnimation: boolean | null;
+  isPlantingViaUse: boolean | null;
+  spotRules: number | null;
+  bombPlanted: boolean | null;
+  readonly entitySpottedState: EntitySpottedState_t;
 }
 
 export interface CCSPlayerPawn extends CCSPlayerPawnBase {
@@ -1173,42 +4418,501 @@ export interface CCSPlayerPawn extends CCSPlayerPawnBase {
   readonly entitySpottedState: EntitySpottedState_t;
 }
 
+export interface CCSWeaponBaseGun extends CCSWeaponBase {
+  zoomLevel: number | null;
+  burstShotsRemaining: number | null;
+  silencedModelIndex: number | null;
+  inPrecache: boolean | null;
+  needsBoltAction: boolean | null;
+  revolverCylinderIdx: number | null;
+  skillReloadAvailable: boolean | null;
+  skillReloadLiftedReloadKey: boolean | null;
+  skillBoltInterruptAvailable: boolean | null;
+  skillBoltLiftedFireKey: boolean | null;
+}
+
+export interface CChicken extends CDynamicProp {
+  readonly stuckAnchor: Vector | null;
+  isOnGround: boolean | null;
+  readonly fallVelocity: Vector | null;
+  desiredActivity: number | null;
+  currentActivity: number | null;
+  turnRate: number | null;
+  readonly fleeFrom: EntityRef | null;
+  readonly leader: EntityRef | null;
+  lastJumpTime: number | null;
+  readonly pathGoal: Vector | null;
+  activeFollowStartTime: number | null;
+  readonly attributeManager: CAttributeContainer;
+  readonly updateTimer: CountdownTimer;
+  readonly collisionStuckTimer: CountdownTimer;
+  readonly activityTimer: CountdownTimer;
+  readonly moveRateThrottleTimer: CountdownTimer;
+  readonly startleTimer: CountdownTimer;
+  readonly vocalizeTimer: CountdownTimer;
+  readonly reuseTimer: CountdownTimer;
+  readonly jumpTimer: CountdownTimer;
+  readonly repathTimer: CountdownTimer;
+  readonly followMinuteTimer: CountdownTimer;
+  readonly blockDirectionTimer: CountdownTimer;
+}
+
+export interface CFuncTrackChange extends CFuncPlatRot {
+  readonly trackTop: EntityRef | null;
+  readonly trackBottom: EntityRef | null;
+  readonly train: EntityRef | null;
+  code: number | null;
+  targetState: number | null;
+  use: number | null;
+}
+
+export interface CKnife extends CCSWeaponBase {
+  firstAttack: boolean | null;
+}
+
+export interface COrnamentProp extends CDynamicProp {
+}
+
+export interface CPhysicsPropRespawnable extends CPhysicsProp {
+  readonly originalSpawnOrigin: Vector | null;
+  readonly originalSpawnAngles: QAngle | null;
+  readonly originalMins: Vector | null;
+  readonly originalMaxs: Vector | null;
+  respawnDuration: number | null;
+}
+
+export interface CScriptTriggerOnce extends CTriggerOnce {
+  readonly extent: Vector | null;
+}
+
+export interface CTriggerLook extends CTriggerOnce {
+  readonly lookTarget: EntityRef | null;
+  fieldOfView: number | null;
+  lookTime: number | null;
+  lookTimeTotal: number | null;
+  lookTimeLast: number | null;
+  timeoutDuration: number | null;
+  timeoutFired: boolean | null;
+  isLooking: boolean | null;
+  b2DFOV: boolean | null;
+  useVelocity: boolean | null;
+  testOcclusion: boolean | null;
+  testAllVisibleOcclusion: boolean | null;
+  readonly onTimeout: CEntityIOOutput;
+  readonly onStartLook: CEntityIOOutput;
+  readonly onEndLook: CEntityIOOutput;
+}
+
+export interface CWeaponBaseItem extends CCSWeaponBase {
+  sequenceInProgress: boolean | null;
+  redraw: boolean | null;
+}
+
+export interface CPropDoorRotating extends CBasePropDoor {
+  readonly axis: Vector | null;
+  distance: number | null;
+  spawnPosition: number | null;
+  openDirection: number | null;
+  currentOpenDirection: number | null;
+  defaultCheckDirection: number | null;
+  ajarAngle: number | null;
+  readonly rotationAjarDeprecated: QAngle | null;
+  readonly rotationClosed: QAngle | null;
+  readonly rotationOpenForward: QAngle | null;
+  readonly rotationOpenBack: QAngle | null;
+  readonly goal: QAngle | null;
+  readonly forwardBoundsMin: Vector | null;
+  readonly forwardBoundsMax: Vector | null;
+  readonly backBoundsMin: Vector | null;
+  readonly backBoundsMax: Vector | null;
+  ajarDoorShouldntAlwaysOpen: boolean | null;
+  readonly entityBlocker: EntityRef | null;
+}
+
+export interface CWeaponCZ75a extends CCSWeaponBaseGun {
+  magazineRemoved: boolean | null;
+}
+
+export interface CWeaponTaser extends CCSWeaponBaseGun {
+  fireTime: number | null;
+  lastAttackTick: number | null;
+}
+
+export interface CPropDoorRotatingBreakable extends CPropDoorRotating {
+  breakable: boolean | null;
+  isAbleToCloseAreaPortals: boolean | null;
+  currentDamageState: number | null;
+}
+
 /** Every wrappable entity class, by schema name. */
 export interface SchemaClasses {
   CEntityInstance: CEntityInstance;
   CGameRules: CGameRules;
   CBaseEntity: CBaseEntity;
   CMultiplayRules: CMultiplayRules;
+  CAI_ChangeHintGroup: CAI_ChangeHintGroup;
   CBaseModelEntity: CBaseModelEntity;
   CBasePlayerController: CBasePlayerController;
+  CCSGO_TeamPreviewCharacterPosition: CCSGO_TeamPreviewCharacterPosition;
+  CCSPlayerResource: CCSPlayerResource;
+  CCitadelSoundOpvarSetOBB: CCitadelSoundOpvarSetOBB;
+  CColorCorrection: CColorCorrection;
+  CCommentaryAuto: CCommentaryAuto;
+  CDebugHistory: CDebugHistory;
+  CEntityFlame: CEntityFlame;
+  CEnvBeverage: CEnvBeverage;
+  CEnvCombinedLightProbeVolume: CEnvCombinedLightProbeVolume;
+  CEnvCubemap: CEnvCubemap;
+  CEnvCubemapFog: CEnvCubemapFog;
+  CEnvDetailController: CEnvDetailController;
+  CEnvEntityIgniter: CEnvEntityIgniter;
+  CEnvLightProbeVolume: CEnvLightProbeVolume;
+  CEnvSoundscape: CEnvSoundscape;
+  CEnvVolumetricFogController: CEnvVolumetricFogController;
+  CEnvVolumetricFogVolume: CEnvVolumetricFogVolume;
+  CEnvWind: CEnvWind;
+  CEnvWindController: CEnvWindController;
+  CEnvWindVolume: CEnvWindVolume;
+  CFishPool: CFishPool;
+  CFogController: CFogController;
+  CFuncTimescale: CFuncTimescale;
+  CGameGibManager: CGameGibManager;
+  CGameRulesProxy: CGameRulesProxy;
+  CGradientFog: CGradientFog;
+  CHandleTest: CHandleTest;
+  CInfoVisibilityBox: CInfoVisibilityBox;
+  CInfoWorldLayer: CInfoWorldLayer;
+  CLogicAuto: CLogicAuto;
+  CLogicGameStateReport: CLogicGameStateReport;
+  CLogicNPCCounter: CLogicNPCCounter;
+  CMapVetoPickController: CMapVetoPickController;
+  CPathParticleRope: CPathParticleRope;
+  CPathSimple: CPathSimple;
+  CPhysicsSpring: CPhysicsSpring;
+  CPhysicsWire: CPhysicsWire;
+  CPlayerPing: CPlayerPing;
+  CPlayerVisibility: CPlayerVisibility;
+  CPointCamera: CPointCamera;
+  CPointEntity: CPointEntity;
+  CPointEntityFinder: CPointEntityFinder;
+  CPointOrient: CPointOrient;
+  CPointValueRemapper: CPointValueRemapper;
+  CPulseGameBlackboard: CPulseGameBlackboard;
+  CRagdollManager: CRagdollManager;
+  CScriptedSequence: CScriptedSequence;
+  CServerOnlyEntity: CServerOnlyEntity;
+  CSkyCamera: CSkyCamera;
+  CSkyboxReference: CSkyboxReference;
+  CSoundAreaEntityBase: CSoundAreaEntityBase;
+  CSoundEventEntity: CSoundEventEntity;
+  CSoundEventParameter: CSoundEventParameter;
+  CSoundOpvarSetEntity: CSoundOpvarSetEntity;
+  CSoundOpvarSetPointBase: CSoundOpvarSetPointBase;
   CTeam: CTeam;
   CTeamplayRules: CTeamplayRules;
+  CTestEffect: CTestEffect;
+  CTonemapController2: CTonemapController2;
+  CVoteController: CVoteController;
+  CAmbientGeneric: CAmbientGeneric;
+  CBarnLight: CBarnLight;
   CBaseAnimGraph: CBaseAnimGraph;
+  CBaseClientUIEntity: CBaseClientUIEntity;
+  CBaseDMStart: CBaseDMStart;
   CBaseToggle: CBaseToggle;
   CBeam: CBeam;
+  CBlood: CBlood;
+  CBreakable: CBreakable;
   CCSGameRules: CCSGameRules;
+  CCSGameRulesProxy: CCSGameRulesProxy;
   CCSPlayerController: CCSPlayerController;
   CCSTeam: CCSTeam;
+  CCashStack: CCashStack;
+  CCredits: CCredits;
+  CDynamicLight: CDynamicLight;
+  CEntityDissolve: CEntityDissolve;
+  CEnvDecal: CEnvDecal;
+  CEnvEntityMaker: CEnvEntityMaker;
+  CEnvHudHint: CEnvHudHint;
+  CEnvInstructorHint: CEnvInstructorHint;
+  CEnvInstructorVRHint: CEnvInstructorVRHint;
+  CEnvMuzzleFlash: CEnvMuzzleFlash;
+  CEnvShake: CEnvShake;
+  CEnvSky: CEnvSky;
+  CEnvSoundscapeProxy: CEnvSoundscapeProxy;
+  CEnvSpark: CEnvSpark;
+  CEnvSplash: CEnvSplash;
+  CEnvTilt: CEnvTilt;
+  CEnvViewPunch: CEnvViewPunch;
+  CFuncBrush: CFuncBrush;
+  CFuncConveyor: CFuncConveyor;
+  CFuncInteractionLayerClip: CFuncInteractionLayerClip;
+  CFuncLadder: CFuncLadder;
+  CFuncMover: CFuncMover;
+  CFuncNavBlocker: CFuncNavBlocker;
+  CFuncNavObstruction: CFuncNavObstruction;
+  CFuncRotating: CFuncRotating;
+  CFuncRotator: CFuncRotator;
+  CFuncShatterglass: CFuncShatterglass;
+  CFuncTrackTrain: CFuncTrackTrain;
+  CFuncVPhysicsClip: CFuncVPhysicsClip;
+  CFuncWall: CFuncWall;
+  CFuncWater: CFuncWater;
+  CInferno: CInferno;
+  CInfoChoreoAnchor: CInfoChoreoAnchor;
+  CInfoDynamicShadowHint: CInfoDynamicShadowHint;
+  CInfoFan: CInfoFan;
+  CInfoGameEventProxy: CInfoGameEventProxy;
+  CInfoOffscreenPanoramaTexture: CInfoOffscreenPanoramaTexture;
+  CInfoPlayerStart: CInfoPlayerStart;
+  CInstructorEventEntity: CInstructorEventEntity;
+  CItemGenericTriggerHelper: CItemGenericTriggerHelper;
+  CKeepUpright: CKeepUpright;
+  CLightEntity: CLightEntity;
+  CLogicNPCCounterAABB: CLogicNPCCounterAABB;
+  CLogicalEntity: CLogicalEntity;
+  CMapInfo: CMapInfo;
+  CMarkupVolume: CMarkupVolume;
+  CMessage: CMessage;
+  CMessageEntity: CMessageEntity;
   CModelPointEntity: CModelPointEntity;
+  CParticleSystem: CParticleSystem;
+  CPathCorner: CPathCorner;
+  CPathNode: CPathNode;
+  CPathTrack: CPathTrack;
+  CPathWithDynamicNodes: CPathWithDynamicNodes;
+  CPhysExplosion: CPhysExplosion;
+  CPhysForce: CPhysForce;
+  CPhysImpact: CPhysImpact;
+  CPlatTrigger: CPlatTrigger;
+  CPointAngleSensor: CPointAngleSensor;
+  CPointAngularVelocitySensor: CPointAngularVelocitySensor;
+  CPointCameraVFOV: CPointCameraVFOV;
+  CPointChildModifier: CPointChildModifier;
+  CPointGamestatsCounter: CPointGamestatsCounter;
+  CPointGiveAmmo: CPointGiveAmmo;
+  CPointHurt: CPointHurt;
+  CPointProximitySensor: CPointProximitySensor;
+  CPointPush: CPointPush;
+  CPointVelocitySensor: CPointVelocitySensor;
+  CRagdollMagnet: CRagdollMagnet;
+  CRopeKeyframe: CRopeKeyframe;
+  CRotatorTarget: CRotatorTarget;
+  CRuleEntity: CRuleEntity;
+  CSceneEntity: CSceneEntity;
+  CServerOnlyModelEntity: CServerOnlyModelEntity;
+  CServerOnlyPointEntity: CServerOnlyPointEntity;
+  CShatterGlassShardPhysics: CShatterGlassShardPhysics;
+  CSoundAreaEntityOrientedBox: CSoundAreaEntityOrientedBox;
+  CSoundAreaEntitySphere: CSoundAreaEntitySphere;
+  CSoundEventAABBEntity: CSoundEventAABBEntity;
+  CSoundEventConeEntity: CSoundEventConeEntity;
+  CSoundEventOBBEntity: CSoundEventOBBEntity;
+  CSoundEventPathCornerEntity: CSoundEventPathCornerEntity;
+  CSoundEventSphereEntity: CSoundEventSphereEntity;
+  CSoundOpvarSetOBBWindEntity: CSoundOpvarSetOBBWindEntity;
+  CSoundOpvarSetPointEntity: CSoundOpvarSetPointEntity;
+  CSpotlightEnd: CSpotlightEnd;
+  CSprite: CSprite;
+  CTankTargetChange: CTankTargetChange;
+  CTankTrainAI: CTankTrainAI;
+  CTextureBasedAnimatable: CTextureBasedAnimatable;
+  CTriggerBrush: CTriggerBrush;
+  CTriggerVolume: CTriggerVolume;
   CBaseButton: CBaseButton;
   CBaseCombatCharacter: CBaseCombatCharacter;
   CBaseDoor: CBaseDoor;
+  CBaseFilter: CBaseFilter;
   CBaseGrenade: CBaseGrenade;
+  CBasePlatTrain: CBasePlatTrain;
   CBaseProp: CBaseProp;
   CBaseTrigger: CBaseTrigger;
+  CCSPlace: CCSPlace;
+  CConstraintAnchor: CConstraintAnchor;
   CEconEntity: CEconEntity;
+  CEnvBeam: CEnvBeam;
+  CEnvExplosion: CEnvExplosion;
+  CEnvFade: CEnvFade;
+  CEnvGlobal: CEnvGlobal;
+  CEnvLaser: CEnvLaser;
+  CEnvParticleGlow: CEnvParticleGlow;
+  CFish: CFish;
+  CFogVolume: CFogVolume;
+  CFuncElectrifiedVolume: CFuncElectrifiedVolume;
+  CFuncMonitor: CFuncMonitor;
+  CFuncMoveLinear: CFuncMoveLinear;
+  CFuncMoverRouter: CFuncMoverRouter;
+  CFuncTankTrain: CFuncTankTrain;
+  CGunTarget: CGunTarget;
+  CInfoDynamicShadowHintBox: CInfoDynamicShadowHintBox;
+  CInfoSpawnGroupLoadUnload: CInfoSpawnGroupLoadUnload;
+  CInstancedSceneEntity: CInstancedSceneEntity;
+  CItem: CItem;
+  CLogicAchievement: CLogicAchievement;
+  CLogicActivityEvent: CLogicActivityEvent;
+  CLogicAutosave: CLogicAutosave;
+  CLogicBranch: CLogicBranch;
+  CLogicBranchList: CLogicBranchList;
+  CLogicCase: CLogicCase;
+  CLogicCollisionPair: CLogicCollisionPair;
+  CLogicCompare: CLogicCompare;
+  CLogicDistanceAutosave: CLogicDistanceAutosave;
+  CLogicDistanceCheck: CLogicDistanceCheck;
+  CLogicEventListener: CLogicEventListener;
+  CLogicGameEvent: CLogicGameEvent;
+  CLogicGameEventListener: CLogicGameEventListener;
+  CLogicLineToEntity: CLogicLineToEntity;
+  CLogicMeasureMovement: CLogicMeasureMovement;
+  CLogicNavigation: CLogicNavigation;
+  CLogicPlayerProxy: CLogicPlayerProxy;
+  CLogicRelay: CLogicRelay;
+  CMapSharedEnvironment: CMapSharedEnvironment;
+  CMarkupVolumeTagged: CMarkupVolumeTagged;
+  CMathColorBlend: CMathColorBlend;
+  CMathCounter: CMathCounter;
+  CMathRemap: CMathRemap;
+  CMoverPathNode: CMoverPathNode;
+  CMultiLightProxy: CMultiLightProxy;
+  CMultiSource: CMultiSource;
+  COmniLight: COmniLight;
+  CPathKeyFrame: CPathKeyFrame;
+  CPathMover: CPathMover;
+  CPathMoverEntitySpawner: CPathMoverEntitySpawner;
+  CPhysBox: CPhysBox;
+  CPhysConstraint: CPhysConstraint;
+  CPhysMagnet: CPhysMagnet;
+  CPhysMotor: CPhysMotor;
+  CPhysThruster: CPhysThruster;
+  CPhysTorque: CPhysTorque;
+  CPhysicsEntitySolver: CPhysicsEntitySolver;
   CPlantedC4: CPlantedC4;
+  CPlayerSprayDecal: CPlayerSprayDecal;
+  CPointClientUIDialog: CPointClientUIDialog;
+  CPointClientUIWorldPanel: CPointClientUIWorldPanel;
+  CPointCommentaryNode: CPointCommentaryNode;
+  CPointPrefab: CPointPrefab;
+  CPointTeleport: CPointTeleport;
+  CPointTemplate: CPointTemplate;
   CPointWorldText: CPointWorldText;
   CRagdollProp: CRagdollProp;
+  CRectLight: CRectLight;
+  CRevertSaved: CRevertSaved;
+  CRuleBrushEntity: CRuleBrushEntity;
+  CRulePointEntity: CRulePointEntity;
+  CSceneListManager: CSceneListManager;
+  CScriptNavBlocker: CScriptNavBlocker;
+  CShower: CShower;
+  CSoundOpvarSetAutoRoomEntity: CSoundOpvarSetAutoRoomEntity;
+  CSoundOpvarSetBoxEntity: CSoundOpvarSetBoxEntity;
+  CSoundOpvarSetPathCornerEntity: CSoundOpvarSetPathCornerEntity;
+  CSoundStackSave: CSoundStackSave;
+  CTestPulseIO: CTestPulseIO;
+  CTimerEntity: CTimerEntity;
+  SpawnPoint: SpawnPoint;
   CBaseCSGrenadeProjectile: CBaseCSGrenadeProjectile;
+  CBaseMoveBehavior: CBaseMoveBehavior;
   CBasePlayerPawn: CBasePlayerPawn;
   CBasePlayerWeapon: CBasePlayerWeapon;
+  CBombTarget: CBombTarget;
   CBreakableProp: CBreakableProp;
+  CBuyZone: CBuyZone;
+  CChangeLevel: CChangeLevel;
+  CColorCorrectionVolume: CColorCorrectionVolume;
+  CEconWearable: CEconWearable;
+  CFilterAttributeInt: CFilterAttributeInt;
+  CFilterClass: CFilterClass;
+  CFilterContext: CFilterContext;
+  CFilterEnemy: CFilterEnemy;
+  CFilterMassGreater: CFilterMassGreater;
+  CFilterModel: CFilterModel;
+  CFilterMultiple: CFilterMultiple;
+  CFilterName: CFilterName;
+  CFilterProximity: CFilterProximity;
+  CFilterTeam: CFilterTeam;
+  CFogTrigger: CFogTrigger;
+  CFootstepControl: CFootstepControl;
+  CFuncPlat: CFuncPlat;
+  CFuncTrain: CFuncTrain;
+  CGameMoney: CGameMoney;
+  CGamePlayerZone: CGamePlayerZone;
+  CGameText: CGameText;
+  CGenericConstraint: CGenericConstraint;
+  CHostageExpresserShim: CHostageExpresserShim;
+  CItemDefuser: CItemDefuser;
+  CItemDogtags: CItemDogtags;
+  CItemGeneric: CItemGeneric;
+  CLogicActiveAutosave: CLogicActiveAutosave;
+  CMarkupVolumeTagged_Nav: CMarkupVolumeTagged_Nav;
+  CMarkupVolumeWithRef: CMarkupVolumeWithRef;
+  CPhysBallSocket: CPhysBallSocket;
+  CPhysFixed: CPhysFixed;
+  CPhysHinge: CPhysHinge;
+  CPhysLength: CPhysLength;
+  CPhysPulley: CPhysPulley;
+  CPhysSlideConstraint: CPhysSlideConstraint;
+  CPhysWheelConstraint: CPhysWheelConstraint;
+  CPointClientUIWorldTextPanel: CPointClientUIWorldTextPanel;
+  CPostProcessingVolume: CPostProcessingVolume;
+  CRagdollConstraint: CRagdollConstraint;
+  CRagdollPropAttached: CRagdollPropAttached;
+  CRotButton: CRotButton;
+  CRotDoor: CRotDoor;
+  CScriptItem: CScriptItem;
+  CSplineConstraint: CSplineConstraint;
+  CTonemapTrigger: CTonemapTrigger;
+  CTriggerActiveWeaponDetect: CTriggerActiveWeaponDetect;
+  CTriggerBuoyancy: CTriggerBuoyancy;
+  CTriggerDetectBulletFire: CTriggerDetectBulletFire;
+  CTriggerDetectExplosion: CTriggerDetectExplosion;
+  CTriggerFan: CTriggerFan;
+  CTriggerGameEvent: CTriggerGameEvent;
+  CTriggerHurt: CTriggerHurt;
+  CTriggerLerpObject: CTriggerLerpObject;
+  CTriggerMultiple: CTriggerMultiple;
+  CTriggerPhysics: CTriggerPhysics;
+  CTriggerProximity: CTriggerProximity;
+  CTriggerPush: CTriggerPush;
+  CTriggerRemove: CTriggerRemove;
+  CTriggerSave: CTriggerSave;
+  CTriggerSndSosOpvar: CTriggerSndSosOpvar;
+  CTriggerSoundscape: CTriggerSoundscape;
+  CTriggerTeleport: CTriggerTeleport;
+  FilterDamageType: FilterDamageType;
+  FilterHealth: FilterHealth;
   CCSPlayerPawnBase: CCSPlayerPawnBase;
   CCSWeaponBase: CCSWeaponBase;
+  CDecoyProjectile: CDecoyProjectile;
+  CDynamicNavConnectionsVolume: CDynamicNavConnectionsVolume;
   CDynamicProp: CDynamicProp;
+  CFlashbangProjectile: CFlashbangProjectile;
+  CFuncPlatRot: CFuncPlatRot;
+  CHostage: CHostage;
+  CMarkupVolumeTagged_NavGame: CMarkupVolumeTagged_NavGame;
+  CMolotovProjectile: CMolotovProjectile;
+  CMomentaryRotButton: CMomentaryRotButton;
   CPhysicsProp: CPhysicsProp;
+  CScriptTriggerHurt: CScriptTriggerHurt;
+  CScriptTriggerMultiple: CScriptTriggerMultiple;
+  CScriptTriggerPush: CScriptTriggerPush;
+  CSmokeGrenadeProjectile: CSmokeGrenadeProjectile;
+  CTriggerImpact: CTriggerImpact;
+  CTriggerOnce: CTriggerOnce;
+  CBaseCSGrenade: CBaseCSGrenade;
+  CBasePropDoor: CBasePropDoor;
+  CC4: CC4;
   CCSPlayerPawn: CCSPlayerPawn;
+  CCSWeaponBaseGun: CCSWeaponBaseGun;
+  CChicken: CChicken;
+  CFuncTrackChange: CFuncTrackChange;
+  CKnife: CKnife;
+  COrnamentProp: COrnamentProp;
+  CPhysicsPropRespawnable: CPhysicsPropRespawnable;
+  CScriptTriggerOnce: CScriptTriggerOnce;
+  CTriggerLook: CTriggerLook;
+  CWeaponBaseItem: CWeaponBaseItem;
+  CPropDoorRotating: CPropDoorRotating;
+  CWeaponCZ75a: CWeaponCZ75a;
+  CWeaponTaser: CWeaponTaser;
+  CPropDoorRotatingBreakable: CPropDoorRotatingBreakable;
 }
 
 /**
