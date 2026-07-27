@@ -19,6 +19,7 @@ import { assertPublishesTypes, hasPublishes } from "./publish-gate.ts";
 import { derivePublishes, hashContract, expandPublishes } from "./publishes.ts";
 import { STAMPED_API_VERSION } from "./api-version.ts";
 import { localContractPath } from "./contracts.ts";
+import { resolveSiblingContracts, shadowedCopyWarning } from "./workspace/siblings.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
 import { validatePluginGamedata } from "./gamedata/validate.ts";
@@ -122,6 +123,18 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     // when the gamedata key is removed.
     rmSync(join(absDir, ".s2script", "gamedata.d.ts"), { force: true });
   }
+
+  // --- Workspace siblings (design spec 2026-07-27 §5.3): which declared dependencies resolve to a
+  //     producer sitting right here on disk. Resolved BEFORE the gate so the two named sibling
+  //     errors (§11 — a sibling with no `publishes`, or with `publishes` but no usable `types`)
+  //     surface as themselves rather than as a downstream TS2307. Empty outside a workspace, which
+  //     is the compatibility hinge: every existing plugin builds exactly as it did. ---
+  const declaredDepNames = [
+    ...Object.keys(s2.pluginDependencies ?? {}),
+    ...Object.keys(s2.optionalPluginDependencies ?? {}),
+  ];
+  const siblingContracts = resolveSiblingContracts(absDir, declaredDepNames);
+  for (const dep of siblingContracts.shadowedCopies) console.warn(shadowedCopyWarning(absDir, dep));
 
   // --- Typecheck gate (Slice 5E.1): full strict against the shipped engine .d.ts. No .s2sp on
   //     error. Runs FIRST now: the program it builds feeds the publishes/use derivation (B1)
@@ -264,14 +277,24 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   // can gate the gamedata calls against the operator allow-list (default-deny).
   if (permissions.length > 0) manifest.permissions = permissions;
 
-  // --- compiledAgainst (B1): hash every verified contract copy this consumer typechecked
-  // against. The loader compares these to the producer's published typesSha256 at load
-  // (fail-fast) and per-call (late-producer backstop).
+  // --- compiledAgainst (B1): hash every contract this consumer typechecked against. The loader
+  // compares these to the producer's published typesSha256 at load (fail-fast) and per-call
+  // (late-producer backstop).
+  //
+  // A workspace sibling (§5.3) hashes the PRODUCER'S OWN `types` file, not a copy of it — no copy
+  // is made anywhere. That is what makes the loader's drift check pass for structural reasons
+  // rather than by luck: the producer hashes that same path for its own `publishes` block, so the
+  // two sha256s are equal by construction. Everything else keeps the verified-copy path exactly.
   const compiledAgainst: Record<string, string> = {};
   for (const dep of [
     ...Object.keys(pluginDependencies),
     ...Object.keys(optionalPluginDependencies),
   ]) {
+    const sibling = siblingContracts.siblings.get(dep);
+    if (sibling !== undefined) {
+      compiledAgainst[dep] = hashContract(sibling.typesPath);
+      continue;
+    }
     const contractPath = localContractPath(absDir, dep);
     if (contractPath !== null) compiledAgainst[dep] = hashContract(contractPath);
   }

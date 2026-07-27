@@ -1,0 +1,9 @@
+{
+  "name": "@fixture/consumer",
+  "version": "1.0.0",
+  "main": "src/plugin.ts",
+  "s2script": {
+    "pluginDependencies": { "@fixture/producer": "^2.0.0" },
+    "optionalPluginDependencies": { "@fixture/producer": "^2.0.0" }
+  }
+}

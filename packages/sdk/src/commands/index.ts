@@ -1,5 +1,6 @@
 import * as build from "./build.ts";
 import * as deploy from "./deploy.ts";
+import * as version from "./version.ts";
 import * as add from "./add.ts";
 import * as install from "./install.ts";
 import * as create from "./create.ts";
@@ -15,9 +16,10 @@ export interface Command {
 
 /** The command registry — the dispatcher (cli.ts) and the no-arg menu both read this. */
 export const COMMANDS: Command[] = [
-  { name: "create", summary: "Scaffold a new plugin", run: create.run },
-  { name: "build", summary: "Build a plugin to a .s2sp", run: build.run },
-  { name: "deploy", summary: "Publish a plugin to the registry", run: deploy.run },
+  { name: "create", summary: "Scaffold a new plugin or workspace", run: create.run },
+  { name: "build", summary: "Build a plugin (or a whole workspace) to .s2sp", run: build.run },
+  { name: "deploy", summary: "Publish a plugin (or a whole workspace) to the registry", run: deploy.run },
+  { name: "version", summary: "Apply pending changesets across a workspace", run: version.run },
   { name: "add", summary: "Add a registry package's types", run: add.run },
   { name: "install", summary: "Download plugins + their deps into a server", run: install.run },
   { name: "login", summary: "Save a registry deploy token", run: login.run },

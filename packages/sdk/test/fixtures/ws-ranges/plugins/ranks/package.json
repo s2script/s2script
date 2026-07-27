@@ -1,0 +1,7 @@
+{
+  "name": "@me/ranks",
+  "version": "0.4.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": { "pluginDependencies": { "@me/shop": "^2.0.0" } }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@fixture/ws-buildall",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": ["plugins/*"],
+  "s2script": { "workspace": { "plugins": ["plugins/*"] } }
+}

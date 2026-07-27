@@ -10,9 +10,13 @@ function usage(): void {
     "Usage:\n" +
       "  s2s create [path] [--game cs2|none] [--name <pkg>] [--template minimal]\n" +
       "             [--install npm|pnpm|yarn|bun|none] [--no-install] [-y]\n" +
-      "  s2s build <dir> [--packages-dir <path>]\n" +
+      "  s2s create --workspace <dir>\n" +
+      "  s2s build [dir|workspace root] [--filter <pattern>]... [--stamp-version <v>]\n" +
+      "            [--packages-dir <path>]\n" +
       "  s2s login [--token s2s_…] [--registry <url>]\n" +
-      "  s2s deploy [dir] [--ci] [--registry <url>] [--packages-dir <path>]\n" +
+      "  s2s deploy [dir|workspace root] [--filter <pattern>]... [--dry-run] [--yes|--ci]\n" +
+      "             [--registry <url>] [--packages-dir <path>]\n" +
+      "  s2s version [dir] [--since <ref>]\n" +
       "  s2s add <pkg>[@range] [--dir <plugin>] [--registry <url>]\n" +
       "  s2s install [name[@range]...] [--file <path>] [--dir <plugins dir>] [--registry <url>]\n" +
       "  s2s config gen <plugin.s2sp...> --out <dir>\n" +

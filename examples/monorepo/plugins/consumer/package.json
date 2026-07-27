@@ -1,0 +1,13 @@
+{
+  "name": "@monorepo-example/consumer",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0"
+  },
+  "s2script": {
+    "pluginDependencies": {
+      "@monorepo-example/producer": "^1.0.0"
+    }
+  }
+}

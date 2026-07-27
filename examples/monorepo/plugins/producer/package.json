@@ -1,0 +1,12 @@
+{
+  "name": "@monorepo-example/producer",
+  "version": "1.0.0",
+  "main": "src/plugin.ts",
+  "types": "api.d.ts",
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0"
+  },
+  "s2script": {
+    "publishes": "self"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "@example/monorepo",
+  "private": true,
+  "workspaces": ["plugins/*", "packages/*"],
+  "s2script": { "workspace": { "plugins": ["plugins/*"] } }
+}

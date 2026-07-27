@@ -36,6 +36,9 @@ bash scripts/check-changeset.sh
 echo "== check-plugins-typecheck.sh (the 5E.1 gate) =="
 bash scripts/check-plugins-typecheck.sh
 
+echo "== check-workspace-build.sh (sibling contracts resolve in place, not to an any-stub) =="
+bash scripts/check-workspace-build.sh
+
 echo "== check-examples-coverage.sh (every shipped SDK module has a consumer) =="
 bash scripts/check-examples-coverage.sh
 

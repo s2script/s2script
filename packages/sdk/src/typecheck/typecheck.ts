@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolvePackagesDir } from "../packages-resolve.ts";
 import { sharedProgramOptions } from "../tsconfig-shared.ts";
 import { localContractPath } from "../contracts.ts";
+import { resolveSiblingContracts } from "../workspace/siblings.ts";
 
 export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
 export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; program?: ts.Program; }
@@ -89,8 +90,19 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     ...Object.keys(s2.pluginDependencies ?? {}),
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
   ];
+  // Workspace siblings (design spec 2026-07-27 §3.2/§5.3) get NEITHER a stub NOR a `paths` entry:
+  // npm already symlinked the producer into node_modules, so `moduleResolution: "bundler"` finds
+  // its `types` on its own — one copy of the bytes, drift impossible by construction. The ambient
+  // stub is what shadows that resolution (§3.3), which is why suppressing it is the whole feature.
+  // Empty for a non-workspace plugin, so every existing build is bit-identical (§11).
+  const { siblings } = resolveSiblingContracts(absDir, allDeclaredDeps);
+
   const contractPaths: Record<string, string[]> = {};
   for (const d of allDeclaredDeps) {
+    // Decision #9: the SIBLING beats a stale `.s2script/types/<dep>/index.d.ts` left over from
+    // before the migration. The copy is the drift vector this design removes; leaving it
+    // authoritative here would defeat the point. `build.ts` warns that it is now ignored.
+    if (siblings.has(d)) continue;
     const p = localContractPath(absDir, d);
     if (p !== null) contractPaths[d] = [p];
   }
@@ -100,7 +112,13 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
     // Never stub a module the plugin declares itself — a shorthand `declare module "X";` and a
     // full `declare module "X" { … }` for the same X collide.
-  ].filter((d) => !isAlwaysResolved(d) && !locallyDeclared.has(d) && contractPaths[d] === undefined);
+  ].filter(
+    (d) =>
+      !isAlwaysResolved(d) &&
+      !locallyDeclared.has(d) &&
+      contractPaths[d] === undefined &&
+      !siblings.has(d),
+  );
 
   const options: ts.CompilerOptions = {
     // Accept explicit `.ts` import extensions (node type-stripping requires them for source-to-source

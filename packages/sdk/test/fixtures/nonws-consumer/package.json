@@ -1,0 +1,12 @@
+{
+  "name": "@demo/nonws-consumer",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "pluginDependencies": {
+      "@demo/copied": "^1.0.0",
+      "@demo/stubbed": "^1.0.0"
+    }
+  }
+}

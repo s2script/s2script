@@ -194,6 +194,43 @@ For every plugin B declaring a sibling `pluginDependencies["@me/a"] = R`, assert
 This is what makes a monorepo honest: you cannot ship B declaring `^2.0.0` against an A you are
 shipping alongside it at `3.0.0`.
 
+### 5.3.0 What "resolves to a sibling" means — the matching key
+
+**Amended 2026-07-27 after implementation review; the original text left this unstated and the
+implementation split on it.**
+
+A declared dependency name `D` resolves to a workspace sibling **iff `D` is one of the interfaces
+that sibling `publishes`** — *not* iff some sibling's package name equals `D`. The two coincide only
+for `publishes: "self"`, which is why the ambiguity survived review; the map form deliberately
+decouples them (`@edge/mce@3.1.0` publishing `@community/mapchooser@1.2.0`).
+
+The engine settles it. `core/src/loader.rs:175`:
+
+```rust
+fn deps_satisfied(manifest: &Manifest) -> bool {
+    manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n))
+}
+```
+
+A dependency key is an **interface** name at load time, so it must be an interface name at build
+time. Keying on the package name produces two silent failures the gates cannot see:
+
+- A sibling publishing the map form and named by its *package* name is accepted by the build, which
+  hashes that sibling's contract into `compiledAgainst` — but `iface_published(D)` is never true, so
+  the consumer parks in `waiting` forever and every `ctx.use` throws `InterfaceUnavailable`.
+- A sibling whose package name matches a dependency it does **not** publish shadows the consumer's
+  legitimate `.s2script/types/<dep>/index.d.ts`, so the consumer typechecks against the wrong
+  contract and `loader.rs:192` rejects it at load on a `compiledAgainst` mismatch.
+
+Consequently: **one resolver, keyed on published interface names, shared by `siblings.ts` and
+`graph.ts::checkSiblingRanges`.** They must not each compute membership. Two siblings publishing the
+same interface name is a named hard error — the workspace cannot say which producer a consumer gets.
+
+For the same reason the §5.2 range gate compares against the **published interface version**, not
+the producer's package version: `interfaces.rs::call_target_inner` range-checks the interface
+version at runtime, so gating on the package version would flag builds the engine loads happily and
+pass builds it refuses.
+
 ### 5.3 Three changes inside the existing build path
 
 1. **`typecheck.ts`** — for a declared dependency resolving to a workspace sibling plugin, suppress
@@ -434,6 +471,8 @@ deploy to the Docker CS2 server, confirm they load.
 | 7 | Ship as one slice / one PR | Chosen deliberately after a two-slice split was proposed and declined |
 | 8 | Port `loader.rs::topo_order` rather than reimplement ordering | Build order and load order must agree; a cycle warns in both, so the SDK is never stricter than the engine |
 | 9 | Sibling contract beats a stale local copy | The copy is the drift vector this design removes; leaving it authoritative would defeat the point |
+| 10 | Sibling matching is keyed on **published interface name**, never package name (§5.3.0) | `loader.rs:175` resolves dependency keys via `iface_published`; keying on package name builds plugins the engine can never satisfy |
+| 11 | The SDK's range check must not be stricter than `interfaces.rs::version_satisfies` | The engine is major-only; a full-semver gate can reject a pair the engine accepts, and — worse — pass a comparator range the engine rejects at every call |
 
 ## 14. Out of scope
 
