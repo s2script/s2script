@@ -160,19 +160,32 @@ test("§4.3 rule 2: a plugin package.json with no entry point is a HARD ERROR", 
   );
 });
 
-test("§4.3 rule 3: a plugin dir not covered by npm workspaces is a HARD ERROR, all at once", () => {
-  assert.throws(
-    () => loadWorkspace(join(fixtures, "ws-uncovered")),
-    (e) => {
-      // Aggregation: BOTH orphans are named, not just the first (spec §11).
-      assert.match(e.message, /has 2 problems:/);
-      assert.match(e.message, /plugins\/orphan-a: is a plugin but is not covered by npm "workspaces"/);
-      assert.match(e.message, /plugins\/orphan-b: is a plugin but is not covered by npm "workspaces"/);
-      // The WHY is in the message: the failure mode is a silent degradation, not a diagnostic.
-      assert.match(e.message, /silently degrades to `any`/);
-      return true;
-    },
-  );
+test("§4.3 rule 3: an uncovered plugin dir WARNS and still builds", () => {
+  // This was a hard error, because sibling resolution rode npm's `node_modules` symlink and an
+  // uncovered plugin therefore degraded silently to an `any` stub. `typecheck.ts` no longer uses
+  // the symlink at all — it maps each interface straight at the producer's contract — so the
+  // failure mode that justified failing the build no longer exists, and keeping the error would
+  // reject workspaces that now work. The diagnostic stays, because an uncovered directory gets no
+  // install or editor resolution for its OTHER dependencies, which is nearly always an oversight.
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  let ws;
+  try {
+    ws = loadWorkspace(join(fixtures, "ws-uncovered")); // must NOT throw now
+  } finally {
+    console.warn = realWarn;
+  }
+
+  // Stronger than the old assertion: the plugins are not merely tolerated, they are BUILT.
+  assert.deepEqual(ws.plugins.map((p) => p.relDir).sort(), ["plugins/orphan-a", "plugins/orphan-b"]);
+  // Both orphans are still named — aggregation survives the demotion (§11).
+  const warned = warnings.join("\n");
+  assert.match(warned, /plugins\/orphan-a: is a plugin but is not listed/);
+  assert.match(warned, /plugins\/orphan-b: is a plugin but is not listed/);
+  // And the message now names BOTH manifests, so a pnpm user is not told to edit a field they
+  // deliberately do not have.
+  assert.match(warned, /pnpm-workspace\.yaml/);
 });
 
 /** A throwaway workspace root with `plugins/<dir>/package.json` written from `members`. */

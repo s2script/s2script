@@ -71,6 +71,27 @@ plugins/b/src/plugin.ts(4,14): error TS2322: Type 'string' is not assignable to 
 
 **Resolve-in-place is therefore real, not hopeful.** No copy, no generated file, no `paths` entry.
 
+> **Amended 2026-07-27 after implementation review — §3.1 does not generalise beyond npm, and this
+> section's mechanism has been replaced.**
+>
+> npm links every workspace package unconditionally. **pnpm and bun link only what is declared as an
+> *npm* dependency**, and an s2script plugin dep is declared under `s2script.pluginDependencies` —
+> so neither creates a link, and a sibling import failed with `TS2307: Cannot find module`. Measured
+> on pnpm 10.33 and bun 1.3; both failed. yarn PnP has no `node_modules` at all. pnpm additionally
+> declares membership in `pnpm-workspace.yaml`, not the `workspaces` field, so every pnpm workspace
+> also tripped rule 3 with advice naming a field pnpm users deliberately do not have.
+>
+> The symlink was never sufficient anyway: it carries the **package** name, so it could not reach a
+> producer publishing under a decoupled interface name (§5.3.0) — which is why the F1 fix already
+> emitted an explicit `paths` entry for that case.
+>
+> **One mechanism now covers both:** `typecheck.ts` always maps a sibling interface at the
+> producer's own contract, and resolves through no package manager at all. There is still exactly
+> one copy of the bytes — the same file `build.ts` hashes — so drift remains impossible by
+> construction. Verified passing on npm, pnpm, bun, and a fixture with **no `node_modules`
+> whatsoever**. Consequently rule 3 (§4.3) is a **warning**, not a hard error: it asserted a
+> requirement that no longer exists.
+
 ### 3.3 The `any`-stub in the typecheck gate is what blocks it
 
 `typecheck.ts` writes `declare module "<dep>";` for any declared plugin dependency lacking a
@@ -143,7 +164,7 @@ keep working. `--filter` is the workspace-mode way to narrow.
 |---|---|---|
 | Glob match, **no `package.json`** | Skip silently | It is just a directory — `plugins/disabled/` matches `plugins/*`. Mirrors the existing bash guard `[ -f "$d/package.json" ] \|\| continue`. |
 | Glob match, `package.json`, **no entry point** | **Hard error** | Silent-skip is how you ship 14 of 15 plugins and never notice. |
-| Plugin dir **not covered by npm `workspaces`** | **Hard error** | Without the symlink there is no sibling resolution, and the failure mode is a *silent degradation to `any`* rather than a diagnostic. |
+| Plugin dir **not a workspace member** (package.json `workspaces` **or** `pnpm-workspace.yaml`) | **Warning** | Amended: this was a hard error because resolution rode npm's symlink. It no longer does (§3.2), so the requirement is gone. Still worth saying — an uncovered dir gets no install or editor resolution for its *other* dependencies. |
 
 ### 4.4 New module layout
 
@@ -492,8 +513,10 @@ deploy to the Docker CS2 server, confirm they load.
 - **Base plugins on the registry** (§9.1) — a separate, deliberate decision.
 - **Nested workspaces** — one level only. `examples/monorepo/` is standalone, not a member of the
   root workspace (§3.7).
-- **Non-npm workspace managers** (pnpm/yarn/bun workspace protocols) — `workspace:*` specifiers are
-  not interpreted. npm workspaces only, matching what the repo uses.
+- **`workspace:*` dependency specifiers** (pnpm/yarn protocol) are not interpreted. Workspace
+  *membership* is read from both `workspaces` and `pnpm-workspace.yaml`, and sibling resolution is
+  package-manager independent (§3.2) — but a `"workspace:^"` version range in a dependency field is
+  passed through untouched.
 - **Publishing shared libs to npm** — workspace libraries are bundled into each `.s2sp`; they are
   build-time factoring, never runtime dependencies.
 - **Workspace modes for the remaining commands.** `add`, `install`, `login`, `config`, and the

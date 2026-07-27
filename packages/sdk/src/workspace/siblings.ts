@@ -1,33 +1,35 @@
 /**
  * Sibling contract resolution (design spec 2026-07-27 §3.2, §5.3, §11).
  *
- * In a workspace the producer's published `.d.ts` is right there on disk, and npm has already
- * symlinked it into `node_modules/<name>` whether or not anyone declared a dependency (§3.1).
- * `moduleResolution: "bundler"` therefore resolves a sibling's `types` field with no `paths`
- * entry and no copy (§3.2) — the ONE thing standing in the way is `typecheck.ts`'s ambient
- * `declare module "<dep>";`, which shadows that resolution (§3.3). This module decides, for one
- * plugin, which of its declared dependencies are workspace siblings, so the gate can leave those
- * alone and `build.ts` can hash the producer's own bytes instead of a copy of them.
+ * In a workspace the producer's published `.d.ts` is right there on disk, so a consumer needs no
+ * copy of it. This module decides, for one plugin, which of its declared dependencies are workspace
+ * siblings — so `typecheck.ts` can point tsc straight at each producer's own contract and
+ * `build.ts` can hash those same bytes into `compiledAgainst` instead of a copy of them.
  *
  * **The matching key is the PUBLISHED INTERFACE name (§5.3.0, decision #10), never the package
  * name**, and it comes from the one shared index in `interfaces.ts` that `graph.ts` also uses —
- * see that module for why the engine settles it. Its consequence lands in `typecheck.ts`: npm's
- * symlink carries the PACKAGE name, so a decoupled interface name
- * (`@edge/mce@3.1.0` publishing `@community/mapchooser@1.2.0`) has nothing to resolve through and
- * needs to be pointed at the producer's own contract explicitly. It is still one copy of the bytes.
+ * see that module for why the engine settles it.
+ *
+ * §3.1/§3.2 originally resolved siblings through npm's `node_modules` symlink, which npm creates
+ * for every workspace package whether or not anything depends on it. That is an npm-specific
+ * behaviour: pnpm and bun link only what is declared as an NPM dependency, and an s2script plugin
+ * dep is declared under `s2script.pluginDependencies`, so neither links anything; yarn PnP has no
+ * `node_modules` at all. The symlink also carries the PACKAGE name, so it could never reach a
+ * producer publishing under a decoupled interface name. `typecheck.ts` therefore maps every sibling
+ * interface explicitly and depends on no package manager. There is still exactly one copy of the
+ * bytes, which is what makes drift impossible.
  *
  * One deliberate narrowing, protecting today's behaviour (§11's compatibility hinge — a dependency
  * that is NOT a workspace sibling keeps its verified copy or its `any` stub, no error): **the
- * consumer itself must be covered by npm `workspaces`.** A directory npm does not cover gets no
- * symlink and is not part of the workspace's plugin set — and it keeps the blast radius off
- * standalone trees that merely happen to sit under a workspace root (`examples/*`, the SDK's own
- * test fixtures).
+ * consumer itself must be a workspace member** (package.json `workspaces`, or `pnpm-workspace.yaml`).
+ * That keeps the blast radius off standalone trees which merely happen to sit under a workspace
+ * root (`examples/*`, the SDK's own test fixtures).
  */
 
 import { readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { matchGlob, toPosix } from "./glob.ts";
-import { findWorkspaceRoot, scanWorkspace, workspaceGlobs } from "./workspace.ts";
+import { findWorkspaceRoot, scanWorkspace, workspaceGlobs, pnpmWorkspaceGlobs } from "./workspace.ts";
 import type { WorkspacePackageJson } from "./workspace.ts";
 import { ambiguityProblem, indexInterfaces } from "./interfaces.ts";
 import { assertPublishesTypes } from "../publish-gate.ts";
@@ -52,11 +54,20 @@ export interface SiblingResolution {
   shadowedCopies: string[];
 }
 
-/** True when `dir` is one of the directories npm `workspaces` covers — i.e. npm symlinked it. */
+/**
+ * True when `dir` is a package manager workspace member — package.json `workspaces`
+ * (npm/yarn/bun) or `pnpm-workspace.yaml` (pnpm).
+ *
+ * This is no longer a proxy for "was it symlinked" — `typecheck.ts` maps interfaces directly at the
+ * producer's contract and needs no link. It survives as the BLAST-RADIUS guard: it is what keeps a
+ * plugin that merely happens to sit beneath a workspace root — `examples/*` and the SDK's own test
+ * fixtures, once this repo dogfoods §9 — on the untouched single-plugin path.
+ */
 function isWorkspaceMemberDir(root: string, rootPkg: WorkspacePackageJson, dir: string): boolean {
   const rel = toPosix(relative(root, dir));
   if (rel === "" || rel.startsWith("..")) return false;
-  return workspaceGlobs(rootPkg.workspaces).some((g) => matchGlob(g, rel));
+  const globs = [...workspaceGlobs(rootPkg.workspaces), ...pnpmWorkspaceGlobs(root)];
+  return globs.some((g) => matchGlob(g, rel));
 }
 
 /** The warning text for a stale verified copy the sibling now overrides (§5.3, decision #9). */

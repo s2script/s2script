@@ -195,6 +195,44 @@ export function expandDirGlob(root: string, pattern: string): string[] {
 }
 
 /** npm accepts both the array form and `{ packages: [...] }`. */
+/**
+ * The `packages:` globs from `pnpm-workspace.yaml`, or `[]` when there is no such file.
+ *
+ * Deliberately a line scanner rather than a YAML dependency: the file's schema for this key is a
+ * flat list of scalars, which is the one YAML shape that needs no parser. Anything more exotic
+ * (anchors, flow sequences, multi-document) simply yields no globs, and the caller then reports the
+ * plugin as uncovered — the same named error a genuinely-unlisted directory gets, never a silent
+ * miss. Quotes are optional in YAML, so both `- "plugins/*"` and `- plugins/*` are accepted.
+ */
+export function pnpmWorkspaceGlobs(root: string): string[] {
+  const path = join(root, "pnpm-workspace.yaml");
+  if (!existsSync(path)) return [];
+  let body: string;
+  try {
+    body = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const globs: string[] = [];
+  let inPackages = false;
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, "").trimEnd();
+    if (/^packages\s*:/.test(line)) {
+      inPackages = true;
+      continue;
+    }
+    if (!inPackages) continue;
+    const item = /^\s+-\s*(.+)$/.exec(line);
+    if (item === null) {
+      // A non-indented, non-item line ends the block; a blank line does not.
+      if (line.trim() !== "") break;
+      continue;
+    }
+    globs.push(item[1].trim().replace(/^['"]|['"]$/g, ""));
+  }
+  return globs;
+}
+
 export function workspaceGlobs(field: WorkspacePackageJson["workspaces"]): string[] {
   if (Array.isArray(field)) return field.filter((g) => typeof g === "string");
   if (field && Array.isArray(field.packages)) return field.packages.filter((g) => typeof g === "string");
@@ -271,9 +309,13 @@ function readWorkspace(root: string): WorkspaceScan {
     );
   }
 
-  // npm's members first: rule 3 is a membership test against exactly this set.
+  // Workspace members, from EITHER manifest. npm/yarn/bun declare them in package.json
+  // `workspaces`; pnpm uses `pnpm-workspace.yaml` and leaves that field absent entirely. Reading
+  // only the npm field made every pnpm workspace fail rule 3 with advice naming a field pnpm users
+  // deliberately do not have. Union rather than either/or: a repo may carry both (pnpm ignores the
+  // npm field, so people often keep it for tooling that reads it).
   const memberDirs = new Set<string>();
-  for (const glob of workspaceGlobs(pkg.workspaces)) {
+  for (const glob of [...workspaceGlobs(pkg.workspaces), ...pnpmWorkspaceGlobs(absRoot)]) {
     for (const rel of expandDirGlob(absRoot, glob)) memberDirs.add(rel);
   }
 
@@ -313,12 +355,22 @@ function readWorkspace(root: string): WorkspaceScan {
       continue;
     }
     if (!memberDirs.has(rel)) {
-      // Rule 3.
-      problems.push(
-        `${rel}: is a plugin but is not covered by npm "workspaces" — without the workspace symlink ` +
-          `a sibling's contract silently degrades to \`any\` instead of failing`,
+      // Rule 3, now a WARNING rather than a hard error.
+      //
+      // It was an error because sibling resolution rode npm's `node_modules` symlink, so an
+      // uncovered plugin degraded silently to an `any` stub. `typecheck.ts` no longer uses the
+      // symlink at all — it maps each interface straight to the producer's contract — so the
+      // failure mode that justified failing the build no longer exists, and keeping the error
+      // would reject workspaces that now work perfectly well.
+      //
+      // Still worth saying: an uncovered directory gets no install, no hoisting and no editor
+      // resolution for its OTHER (npm) dependencies, which is nearly always an oversight in the
+      // manifest rather than a deliberate choice.
+      console.warn(
+        `WARN: ${rel}: is a plugin but is not listed in package.json "workspaces" or ` +
+          `pnpm-workspace.yaml — s2script builds it either way, but your package manager will not ` +
+          `install or link its dependencies`,
       );
-      continue;
     }
 
     plugins.push({

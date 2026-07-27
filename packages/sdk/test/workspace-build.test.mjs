@@ -346,6 +346,52 @@ test("sibling resolution survives an UNRELATED malformed sibling (§4.2 single-p
   assert.throws(() => loadWorkspace(root), /plugins\/broken: .* has no entry point/);
 });
 
+test("sibling resolution is package-manager independent (no node_modules at all)", () => {
+  // §3.1 observed that npm symlinks EVERY workspace package whether or not anything depends on it,
+  // and §3.2 resolved siblings through that link. It does not generalise: pnpm and bun link only
+  // what is declared as an NPM dependency, and an s2script plugin dep lives under
+  // `s2script.pluginDependencies` — measured on pnpm 10 and bun 1.3, neither created a link and the
+  // consumer failed with TS2307. yarn PnP has no node_modules at all. `typecheck.ts` now maps every
+  // sibling interface explicitly, so NO link is required. This fixture has no node_modules
+  // whatsoever — the strictest case, standing in for all three.
+  const root = tempWorkspace({
+    producer: {
+      name: "@t/producer", version: "1.0.0", main: "src/plugin.ts", types: "api.d.ts",
+      s2script: { publishes: "self" },
+      api: "export declare const x: number;\n",
+    },
+    consumer: {
+      name: "@t/consumer", version: "1.0.0", main: "src/plugin.ts",
+      s2script: { pluginDependencies: { "@t/producer": "^1.0.0" } },
+    },
+  });
+  assert.equal(existsSync(join(root, "node_modules")), false, "fixture must have no node_modules");
+
+  const { siblings } = resolveSiblingContracts(join(root, "plugins", "consumer"), ["@t/producer"]);
+  assert.equal(
+    siblings.get("@t/producer")?.typesPath,
+    join(root, "plugins", "producer", "api.d.ts"),
+    "resolution must not depend on a package manager having created a symlink",
+  );
+});
+
+test("pnpm-workspace.yaml counts as workspace membership", () => {
+  // pnpm does not use package.json "workspaces" at all. Reading only that field made every pnpm
+  // workspace fail rule 3 with advice naming a field pnpm users deliberately do not have.
+  const root = tempWorkspace({
+    shop: { name: "@t/shop", version: "1.0.0", main: "src/plugin.ts" },
+  });
+  // Strip the npm field, leaving ONLY the pnpm manifest.
+  const pkgPath = join(root, "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  delete pkg.workspaces;
+  writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+  writeFileSync(join(root, "pnpm-workspace.yaml"), 'packages:\n  - "plugins/*"\n');
+
+  const ws = loadWorkspace(root); // must not throw
+  assert.deepEqual(ws.plugins.map((p) => p.name), ["@t/shop"]);
+});
+
 test("a dropped sibling that MIGHT be the producer is named, never silently stubbed", () => {
   // Regression: making the scan lenient (so an unrelated malformed sibling cannot break a targeted
   // build) also dropped the malformed member from `indexInterfaces`. A dep that member PUBLISHES
