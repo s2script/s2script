@@ -151,8 +151,14 @@ keep working. `--filter` is the workspace-mode way to narrow.
 packages/sdk/src/workspace/
   workspace.ts   findWorkspaceRoot() · loadWorkspace() -> { root, plugins[], libs[] }
   glob.ts        segment matcher for * and ** (no new dependency, ~20 lines)
-  graph.ts       plugin dep graph · topological order · cycle detection
+  graph.ts       plugin dep graph · order · cycle warn  (mirrors loader.rs::topo_order)
 ```
+
+`graph.ts` is a deliberate **port of `core/src/loader.rs::topo_order`**, not an independent
+implementation: edges from **hard** dependencies only (optional deps impose none), Kahn's algorithm
+with a stable lexicographic tie-break, and a cycle warns rather than fails (§11). Build order and
+load order must agree, so the algorithm is the same algorithm. Its unit tests mirror
+`loader.rs`'s `topo_cycle_falls_back_to_name_order`.
 
 One new bundled dev-dependency: `semver`, for the range gate (§5.2), bundled by `build.mjs` exactly
 as `fflate` is, preserving the SDK's zero-runtime-dependency posture.
@@ -197,6 +203,21 @@ shipping alongside it at `3.0.0`.
    via `assertPublishesTypes` against the sibling. One copy of the bytes; drift is impossible by
    construction. esbuild `external` is unchanged — siblings are already external by virtue of being
    declared plugin dependencies.
+
+   **Why this is correct at runtime, not merely at build time.** `loader.rs:192` fails a load when a
+   consumer's `compiledAgainst[dep]` differs from the producer's published `typesSha256`. In a
+   workspace both values are sha256 of *the same file on disk* — the producer hashes its `types` for
+   its own `publishes` block, and the consumer hashes that identical path. They are equal by
+   construction, so the drift check passes for structural reasons rather than by luck. Note that
+   `loader.rs:192`'s remediation text ("refresh `.s2script/types/<dep>/index.d.ts`") names a file a
+   workspace-built plugin does not have; the message is unreachable for this case, but it is worth a
+   follow-up wording pass once workspaces exist in the wild.
+
+   **Precedence when both exist.** A consumer may be a workspace sibling of its producer *and* still
+   carry a stale `.s2script/types/<dep>/index.d.ts` from before the migration. `typecheck.ts` today
+   prefers that copy (its `contractPaths` entry beats the `any` stub). **The sibling wins**, and the
+   build warns that the copy is now ignored and can be deleted. Leaving the copy authoritative would
+   reintroduce exactly the silent drift this design exists to remove.
 3. **`lint.ts`** — `hasOwnConfig` checks only the plugin directory, so a workspace-root
    `eslint.config.mjs` is invisible to it and the gate silently falls to the canonical in-memory
    config. Search **upward to the workspace root**, matching how ESLint flat config resolves, which
@@ -217,7 +238,10 @@ would otherwise trip the §5.2 gate on every consumer.
 ### 6.1 Flow
 
 1. **Build everything first and require all green.** Any build failure ⇒ publish nothing. A partial
-   publish is unrecoverable state; a failed build must not leave 6 of 18 plugins live.
+   publish is unrecoverable state; a failed build must not leave 6 of 18 plugins live. With
+   `--filter`, both the build set and the publish set are the filtered set — an unrelated broken
+   plugin does not block a targeted release, and the all-green requirement applies to what is
+   actually being shipped.
 2. Compute a per-plugin plan:
 
 | Condition | Plan entry |
@@ -368,7 +392,11 @@ Governed by the standing rule — *degrade per-descriptor, never crash globally*
   named error at the consumer's build: you cannot depend on an interface nobody publishes. Without
   this, resolution would fall through to the sibling's `main` (its *implementation* source) and
   typecheck against internals that never cross the context boundary.
-- A cycle in the interface graph → error naming the cycle path.
+- **A cycle in the interface graph → WARN and fall back to lexicographic order, never an error.**
+  This mirrors `core/src/loader.rs::topo_order` exactly, which warns and falls back for precisely
+  this case: *"degrade-never-crash — the hard-dep proxy is lazy, so a mis-ordered pair still runs,
+  throwing `InterfaceUnavailable` only at call time."* A build that hard-errored here would refuse
+  to produce a plugin set the engine is deliberately designed to run.
 
 ## 12. Testing and gates
 
@@ -404,6 +432,8 @@ deploy to the Docker CS2 server, confirm they load.
 | 5 | `s2s version` owns the full plan via an in-memory mirror | Correct dependent cascade without reimplementing changesets or polluting the authoring format |
 | 6 | Collect-all rather than fail-fast on build | One broken plugin must not hide seventeen others |
 | 7 | Ship as one slice / one PR | Chosen deliberately after a two-slice split was proposed and declined |
+| 8 | Port `loader.rs::topo_order` rather than reimplement ordering | Build order and load order must agree; a cycle warns in both, so the SDK is never stricter than the engine |
+| 9 | Sibling contract beats a stale local copy | The copy is the drift vector this design removes; leaving it authoritative would defeat the point |
 
 ## 14. Out of scope
 
@@ -414,3 +444,8 @@ deploy to the Docker CS2 server, confirm they load.
   not interpreted. npm workspaces only, matching what the repo uses.
 - **Publishing shared libs to npm** — workspace libraries are bundled into each `.s2sp`; they are
   build-time factoring, never runtime dependencies.
+- **Workspace modes for the remaining commands.** `add`, `install`, `login`, `config`, and the
+  `gen-*` codegen commands keep their exact single-plugin semantics. Run at a workspace root where a
+  plugin directory is required, they error naming the workspace and asking for a plugin (or
+  `--filter`) — a named refusal, never a silent no-op or an accidental fan-out. Fanning `s2s config`
+  out across a workspace is plausible future work; it is not designed here.
