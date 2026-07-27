@@ -9,32 +9,33 @@
  * plugin, which of its declared dependencies are workspace siblings, so the gate can leave those
  * alone and `build.ts` can hash the producer's own bytes instead of a copy of them.
  *
- * Two deliberate narrowings, each protecting today's behaviour (§11's compatibility hinge — a
- * dependency that is NOT a workspace sibling keeps its verified copy or its `any` stub, no error):
+ * **The matching key is the PUBLISHED INTERFACE name (§5.3.0, decision #10), never the package
+ * name**, and it comes from the one shared index in `interfaces.ts` that `graph.ts` also uses —
+ * see that module for why the engine settles it. Its consequence lands in `typecheck.ts`: npm's
+ * symlink carries the PACKAGE name, so a decoupled interface name
+ * (`@edge/mce@3.1.0` publishing `@community/mapchooser@1.2.0`) has nothing to resolve through and
+ * needs to be pointed at the producer's own contract explicitly. It is still one copy of the bytes.
  *
- *   - **Matched by PACKAGE name, not interface name.** The `publishes` grammar decouples the two
- *     (@edge/mce@3.1.0 may publish @community/mapchooser@1.2.0), but node resolution only knows
- *     the symlink npm made, which carries the PACKAGE name. A dependency naming an interface whose
- *     producer is a differently-named sibling has no symlink to resolve through, so suppressing its
- *     stub would turn a working build into TS2307. The §5.2 range gate is where the interface-name
- *     mapping is honoured; resolution is package-name only.
- *   - **The consumer itself must be covered by npm `workspaces`.** A directory npm does not cover
- *     gets no symlink, so there is nothing to resolve — and it keeps the blast radius off
- *     standalone trees that merely happen to sit under a workspace root (`examples/*`, the SDK's
- *     own test fixtures).
+ * One deliberate narrowing, protecting today's behaviour (§11's compatibility hinge — a dependency
+ * that is NOT a workspace sibling keeps its verified copy or its `any` stub, no error): **the
+ * consumer itself must be covered by npm `workspaces`.** A directory npm does not cover gets no
+ * symlink and is not part of the workspace's plugin set — and it keeps the blast radius off
+ * standalone trees that merely happen to sit under a workspace root (`examples/*`, the SDK's own
+ * test fixtures).
  */
 
 import { readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { matchGlob, toPosix } from "./glob.ts";
-import { findWorkspaceRoot, loadWorkspace, workspaceGlobs } from "./workspace.ts";
-import type { WorkspacePackageJson, WorkspacePlugin } from "./workspace.ts";
+import { findWorkspaceRoot, scanWorkspace, workspaceGlobs } from "./workspace.ts";
+import type { WorkspacePackageJson } from "./workspace.ts";
+import { ambiguityProblem, indexInterfaces } from "./interfaces.ts";
 import { assertPublishesTypes } from "../publish-gate.ts";
 import { localContractPath } from "../contracts.ts";
 
 /** A declared dependency that resolves in place to a workspace sibling's published contract. */
 export interface SiblingContract {
-  /** The sibling plugin's package name — equal to the dependency specifier by construction. */
+  /** The PRODUCER'S package name. Equal to the dependency specifier only for `publishes: "self"`. */
   name: string;
   /** Absolute directory of the sibling plugin. */
   dir: string;
@@ -72,13 +73,19 @@ export function shadowedCopyWarning(pluginDir: string, dep: string): string {
  * Which of `deps` resolve in place to workspace siblings of the plugin at `pluginDir`.
  *
  * Returns empty (never throws) when there is no workspace, when the plugin is not a workspace
- * member, or when no declared dependency names a sibling — the single-plugin path, unchanged.
+ * member, or when no declared dependency names an interface a sibling publishes — the
+ * single-plugin path, unchanged.
  *
- * Throws, naming EVERY offender at once (§11), for the two cases that cannot compile:
- *   - a sibling declaring `publishes` but no usable `types`
- *   - a sibling declaring no `publishes` at all, named as a dependency: resolution would fall
- *     through to its `main`, typechecking the consumer against implementation internals that
- *     never cross the context boundary.
+ * Throws, naming EVERY offender at once (§11), for the three cases that cannot compile:
+ *   - a sibling publishing the named interface but with no usable `types`
+ *   - a sibling whose PACKAGE name is the dependency while it publishes nothing at all: you cannot
+ *     depend on an interface nobody publishes, and `loader.rs:175`'s `iface_published` can never
+ *     be true for it, so the consumer would park in `waiting` forever
+ *   - two siblings publishing the named interface: the workspace cannot say which one you get.
+ *
+ * A dependency naming an interface that a DIFFERENTLY-published sibling happens to be named after
+ * is none of those: it is an ordinary registry dependency, keeping its verified copy or its `any`
+ * stub (§11's compatibility hinge, §5.3.0's second silent failure).
  */
 export function resolveSiblingContracts(pluginDir: string, deps: string[]): SiblingResolution {
   const siblings = new Map<string, SiblingContract>();
@@ -94,32 +101,82 @@ export function resolveSiblingContracts(pluginDir: string, deps: string[]): Sibl
   const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as WorkspacePackageJson;
   if (!isWorkspaceMemberDir(root, rootPkg, absDir)) return { siblings, shadowedCopies };
 
-  const ws = loadWorkspace(root);
-  const byName = new Map<string, WorkspacePlugin>(ws.plugins.map((p) => [p.name, p]));
+  // SCANNED, not loaded (§4.2, §11): resolving one consumer's declared dependencies needs only the
+  // members those dependencies name. `loadWorkspace` aggregates and throws on ANY workspace-wide
+  // shape problem, which would make `s2s build plugins/healthy-plugin` fail because an unrelated
+  // sibling is malformed. That validation belongs to `preflightWorkspace`, which every
+  // workspace-mode path runs before it builds anything.
+  const scan = scanWorkspace(root);
+  const ws = scan.workspace;
+  const { producers, ambiguous, byPlugin } = indexInterfaces(ws.plugins);
   const self = ws.plugins.find((p) => resolve(p.dir) === absDir);
   const label = self?.name ?? toPosix(relative(root, absDir));
 
+  // A member the scan could not read is ABSENT from `ws.plugins`, so it is also absent from
+  // `indexInterfaces` — and a dependency it would have published then misses `producers` and looks
+  // exactly like an ordinary registry dependency. That silently restores the `any` stub whose
+  // removal is the whole point of §5.3, and rule 3's own error text calls that degradation out as
+  // worth a hard error. We cannot know whether a dropped member was the producer, so a dep that
+  // resolves to NOTHING while members went unread is reported rather than assumed benign.
+  //
+  // A WARNING, not an error, and only on that conjunction: an unresolved dep is legitimately a
+  // registry dependency (§11's compatibility hinge), so failing here would break real builds, and
+  // failing whenever ANY member is malformed would undo the leniency this scan exists to provide.
+  // Workspace mode is unaffected — `preflightWorkspace`/`loadWorkspace` still hard-fail on the same
+  // tree before anything is built. This only softens the single-plugin path, where the author
+  // explicitly targeted one plugin.
+  const unread = scan.problems ?? [];
+
   const problems: string[] = [];
   for (const dep of deps) {
-    const sib = byName.get(dep);
-    if (sib === undefined) continue; // a registry dependency: today's behaviour, no error (§11)
-    if (resolve(sib.dir) === absDir) continue; // a plugin naming itself imposes nothing
-
-    const gate = assertPublishesTypes(sib.pkg, sib.dir);
-    if (!gate.ok) {
-      problems.push(
-        `${dep} (workspace sibling at ${sib.relDir}) declares s2script.publishes but its contract ` +
-          `cannot be resolved: ${gate.error}`,
-      );
+    const ambiguousPublishers = ambiguous.get(dep);
+    if (ambiguousPublishers !== undefined) {
+      problems.push(ambiguityProblem(dep, ambiguousPublishers));
       continue;
     }
-    if (gate.typesPath === null) {
+
+    const producer = producers.get(dep);
+    if (producer === undefined) {
+      // Not published by any sibling. One shape of that is still an authoring error worth naming:
+      // a sibling whose PACKAGE name is exactly this dependency while publishing NOTHING can never
+      // satisfy it — `iface_published(dep)` is never true, so the consumer parks in `waiting`
+      // forever and every `ctx.use` throws `InterfaceUnavailable`. A sibling that publishes some
+      // OTHER interface is deliberately not implicated: the name may legitimately be a registry
+      // interface, which is §11's compatibility hinge.
+      const namesake = ws.plugins.find((p) => p.name === dep && resolve(p.dir) !== absDir);
+      if (namesake !== undefined && (byPlugin.get(namesake)?.length ?? 0) === 0) {
+        problems.push(
+          `${dep} (workspace sibling at ${namesake.relDir}) declares no s2script.publishes — you ` +
+            `cannot depend on an interface nobody publishes. The engine resolves a dependency name ` +
+            `through iface_published (loader.rs:175), which is never true for a plugin that ` +
+            `publishes nothing, so this consumer would park in "waiting" forever and every ctx.use ` +
+            `would throw InterfaceUnavailable. Add s2script.publishes and "types" to ` +
+            `${namesake.relDir}/package.json.`,
+        );
+      }
+      if (unread.length > 0) {
+        console.warn(
+          `WARN: ${label}: "${dep}" resolves to no workspace producer, but ${unread.length} ` +
+            `workspace member${unread.length === 1 ? "" : "s"} could not be read — one of them may ` +
+            `be its producer, in which case this build silently typechecks against \`any\` instead ` +
+            `of the real contract. Treating it as a registry dependency for now. Fix:\n  ` +
+            unread.join("\n  "),
+        );
+      }
+      continue; // otherwise a registry dependency: today's behaviour, no error (§11)
+    }
+
+    const sib = producer.plugin;
+    if (resolve(sib.dir) === absDir) continue; // a plugin naming its OWN interface imposes nothing
+
+    const gate = assertPublishesTypes(sib.pkg, sib.dir);
+    // `ok` with a null typesPath means "publishes nothing", which the index has already ruled out
+    // (a producer is in it BECAUSE it publishes) — the branch is here to keep the type honest.
+    if (!gate.ok || gate.typesPath === null) {
+      const why = gate.ok ? "it declares no s2script.publishes" : gate.error;
       problems.push(
-        `${dep} (workspace sibling at ${sib.relDir}) declares no s2script.publishes — you cannot ` +
-          `depend on an interface nobody publishes. Resolution would fall through to its "main" ` +
-          `(${sib.entry}), typechecking this plugin against the sibling's IMPLEMENTATION internals, ` +
-          `which never cross the context boundary. Add s2script.publishes and "types" to ` +
-          `${sib.relDir}/package.json.`,
+        `${dep} (published by workspace sibling ${sib.name} at ${sib.relDir}) declares ` +
+          `s2script.publishes but its contract cannot be resolved: ${why}`,
       );
       continue;
     }

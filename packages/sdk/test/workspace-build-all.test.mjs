@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -163,6 +163,26 @@ test("--stamp-version rewrites an OPTIONAL sibling range too", () => {
   const consumer = readPkg(join(root, "plugins", "consumer")).s2script;
   assert.equal(consumer.pluginDependencies["@fixture/producer"], "^1.5.0");
   assert.equal(consumer.optionalPluginDependencies["@fixture/producer"], "^1.5.0");
+});
+
+test("--stamp-version rewrites a comparator range the ENGINE rejects (decision #11)", () => {
+  // ">=1.0.0" reads as satisfied under full semver for any later version, so the rewrite was
+  // skipped and `--stamp-version 3.0.0` left the range in place — while
+  // `interfaces.rs::version_satisfies` computes leading_major 1 != 3 and throws on every call.
+  // The stamp's whole invariant is "the §5.2 gate passes afterwards", and it did not.
+  const root = copyFixture("ws-ranges");
+  const ranksPkg = join(root, "plugins", "ranks", "package.json");
+  const ranks = JSON.parse(readFileSync(ranksPkg, "utf8"));
+  ranks.s2script.pluginDependencies["@me/shop"] = ">=1.0.0";
+  writeFileSync(ranksPkg, `${JSON.stringify(ranks, null, 2)}\n`);
+
+  const stamp = stampWorkspaceVersion(loadWorkspace(root), "3.0.0");
+  assert.equal(readPkg(join(root, "plugins", "ranks")).s2script.pluginDependencies["@me/shop"], ">=3.0.0");
+  assert.ok(
+    stamp.rewrites.some((r) => r.consumer === "@me/ranks" && r.from === ">=1.0.0" && r.to === ">=3.0.0"),
+    `the rewrite must be reported, got ${JSON.stringify(stamp.rewrites)}`,
+  );
+  assert.deepEqual(preflightProblems(loadWorkspace(root)), [], "a stamped workspace preflights clean");
 });
 
 test("--stamp-version refuses a range: a manifest carries a version, never a range", () => {

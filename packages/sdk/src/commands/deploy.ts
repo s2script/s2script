@@ -39,10 +39,25 @@ export async function run(argv: string[]): Promise<void> {
   const dryRun = hasFlag(argv, "--dry-run");
   const interactive = ui.isInteractive({ yes, ci });
   const filters = collectFilters(argv);
-  const pos = positionals(argv, ["--packages-dir", "--registry", "--filter"]);
+  // --stamp-version must be LISTED here even though `s2s deploy` refuses it outright below —
+  // otherwise `positionals` (cli/args.ts) has no idea the flag takes a value, so its argument (e.g.
+  // "1.5.0") is left in argv and mistaken for the positional `dir`, and `s2s deploy --stamp-version
+  // 1.5.0` dies on an unrelated ENOENT for a directory literally named "1.5.0" (compare
+  // commands/build.ts's own VALUE_FLAGS, which lists it for the same reason).
+  const pos = positionals(argv, ["--packages-dir", "--registry", "--filter", "--stamp-version"]);
   const dir = pos[0] ?? ".";
 
   try {
+    // §5.4 — "--stamp-version … s2s build only … s2s deploy never rewrites versions." Unlike
+    // --filter/--dry-run below this is refused UNCONDITIONALLY (single-plugin or workspace), so it
+    // is checked before the workspace-vs-single branch decides anything else.
+    if (parseFlag(argv, "--stamp-version") !== undefined) {
+      throw new Error(
+        "--stamp-version is a build-only flag (design spec 2026-07-27 §5.4) — s2s deploy never " +
+          "rewrites versions; run `s2s build --stamp-version <v>` first, then `s2s deploy`",
+      );
+    }
+
     const absDir = resolve(dir);
     const root = findWorkspaceRoot(absDir);
     if (root !== null && resolve(root) === absDir) {
@@ -50,12 +65,15 @@ export async function run(argv: string[]): Promise<void> {
       return;
     }
 
-    if (filters.length > 0) {
-      // §5.4/§6.1: --filter narrows a WORKSPACE build/publish set. `dir` resolved to
-      // single-plugin mode, so silently ignoring --filter here would be a silent no-op — the
-      // one thing this design refuses to do (§14).
+    if (filters.length > 0 || dryRun) {
+      // §5.4/§6.1: --filter and --dry-run are both WORKSPACE-mode flags — `dir` resolved to
+      // single-plugin mode here, so silently ignoring either would be a silent no-op (§14). For
+      // --dry-run this is not merely cosmetic: falling through below calls `deployPlugin`, which
+      // BUILDS AND REALLY UPLOADS to the registry — an unrecoverable action the documented safety
+      // flag exists specifically to prevent. Refuse by name, exactly as --filter already does.
+      const flag = filters.length > 0 ? "--filter" : "--dry-run";
       throw new Error(
-        `--filter only applies at a workspace root — ${dir} resolves to single-plugin mode`,
+        `${flag} only applies at a workspace root — ${dir} resolves to single-plugin mode`,
       );
     }
 

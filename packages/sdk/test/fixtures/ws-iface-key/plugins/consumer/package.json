@@ -1,0 +1,12 @@
+{
+  "name": "@fixture/ik-consumer",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "pluginDependencies": {
+      "@fixture/ik-mce": "^3.0.0",
+      "@fixture/ik-mapchooser": "^1.0.0"
+    }
+  }
+}

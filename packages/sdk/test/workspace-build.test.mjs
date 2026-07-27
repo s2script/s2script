@@ -163,8 +163,10 @@ test("a sibling with no publishes, and one with publishes but no types, both err
       // Aggregated: BOTH offenders, not just the first (§11).
       assert.match(e.message, /@fixture\/bad-consumer cannot resolve 2 workspace sibling contracts:/);
       assert.match(e.message, /@fixture\/bad-no-publishes .* declares no s2script\.publishes/);
-      // The WHY: resolution would otherwise fall through to the implementation source.
-      assert.match(e.message, /IMPLEMENTATION internals/);
+      // The WHY, straight off the engine (§5.3.0): a dependency name is resolved through
+      // `iface_published` (loader.rs:175), which a plugin publishing nothing can never make true.
+      assert.match(e.message, /iface_published \(loader\.rs:175\)/);
+      assert.match(e.message, /InterfaceUnavailable/);
       assert.match(e.message, /@fixture\/bad-no-types .* declares s2script\.publishes but its contract/);
       assert.match(e.message, /"types" is missing/);
       return true;
@@ -216,9 +218,9 @@ test("a non-workspace plugin with no copy still gets the ambient any stub (no TS
 // ---------------------------------------------------------------------------
 
 /** A throwaway workspace with a root flat config and one plugin containing a `debugger`. */
-function tempLintWorkspace({ marker }) {
+function tempLintWorkspace({ marker, pluginName = "p" }) {
   const root = mkdtempSync(join(tmpdir(), "s2lint-"));
-  const pluginDir = join(root, "plugins", "p");
+  const pluginDir = join(root, "plugins", pluginName);
   mkdirSync(join(pluginDir, "src"), { recursive: true });
   writeFileSync(
     join(root, "package.json"),
@@ -265,6 +267,19 @@ test("lintPlugin actually ENFORCES the workspace-root config (not a silent canon
   assert.match(r.output, /no-debugger/);
 });
 
+test("lintPlugin still enforces the own config when the plugin dir name is a glob metacharacter", async () => {
+  // A plugin scaffolded at e.g. `plugins/pl[ug]in` is an ordinary directory on disk but a bracket
+  // EXPRESSION to a glob matcher. Building the own-config target by embedding the absolute path
+  // into a pattern (`join(absDir, "**", "*.ts")`) turns `[ug]` into a character class instead of
+  // a literal name, the pattern matches zero files on this exact tree, and
+  // errorOnUnmatchedPattern:false means zero files is not an error — the gate would report green
+  // while linting nothing.
+  const { pluginDir } = tempLintWorkspace({ marker: true, pluginName: "pl[ug]in" });
+  const r = await lintPlugin(pluginDir, null);
+  assert.equal(r.ok, false, "the root config's no-debugger must still fire for a bracket-named dir");
+  assert.match(r.output, /no-debugger/);
+});
+
 // ---------------------------------------------------------------------------
 // §5.2 preflight
 // ---------------------------------------------------------------------------
@@ -272,6 +287,153 @@ test("lintPlugin actually ENFORCES the workspace-root config (not a silent canon
 test("preflight passes a coherent workspace", () => {
   assert.deepEqual(preflightProblems(loadWorkspace(wsContract)), []);
   preflightWorkspace(loadWorkspace(wsContract)); // must not throw
+});
+
+/**
+ * A throwaway workspace: `members` maps `plugins/<dir>` to a package.json, and any `api.d.ts`
+ * value is written beside it. Used by the tests below that need a SHAPE no fixture should carry
+ * permanently (a malformed sibling, two producers of one interface).
+ */
+function tempWorkspace(members) {
+  const root = mkdtempSync(join(tmpdir(), "s2ws-"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "@fixture/tmp-ws",
+      private: true,
+      version: "0.0.0",
+      workspaces: ["plugins/*"],
+      s2script: { workspace: { plugins: ["plugins/*"] } },
+    }),
+  );
+  for (const [dir, { api, ...pkg }] of Object.entries(members)) {
+    mkdirSync(join(root, "plugins", dir, "src"), { recursive: true });
+    writeFileSync(join(root, "plugins", dir, "package.json"), JSON.stringify(pkg, null, 2));
+    if (api !== undefined) writeFileSync(join(root, "plugins", dir, "api.d.ts"), api);
+  }
+  return root;
+}
+
+test("sibling resolution survives an UNRELATED malformed sibling (§4.2 single-plugin mode)", () => {
+  // Routing resolution through `loadWorkspace` — which aggregates and THROWS on any workspace-wide
+  // problem — made `s2s build plugins/healthy-plugin` fail because some other plugin has no entry
+  // point. Degrade per-descriptor: whole-workspace shape is preflight's job, and it still runs.
+  const root = tempWorkspace({
+    broken: { name: "@t/broken", version: "1.0.0" }, // no entry point: §4.3 rule 2
+    producer: {
+      name: "@t/producer",
+      version: "1.0.0",
+      main: "src/plugin.ts",
+      types: "api.d.ts",
+      s2script: { publishes: "self" },
+      api: "export interface Api { ping(): string }\n",
+    },
+    consumer: {
+      name: "@t/consumer",
+      version: "1.0.0",
+      main: "src/plugin.ts",
+      s2script: { pluginDependencies: { "@t/producer": "^1.0.0" } },
+    },
+  });
+
+  const { siblings } = resolveSiblingContracts(join(root, "plugins", "consumer"), ["@t/producer"]);
+  assert.equal(
+    siblings.get("@t/producer")?.typesPath,
+    join(root, "plugins", "producer", "api.d.ts"),
+    "one malformed sibling must not take the healthy pair down with it",
+  );
+  // And nothing is swept under the rug: the workspace-mode path still refuses the same tree.
+  assert.throws(() => loadWorkspace(root), /plugins\/broken: .* has no entry point/);
+});
+
+test("a dropped sibling that MIGHT be the producer is named, never silently stubbed", () => {
+  // Regression: making the scan lenient (so an unrelated malformed sibling cannot break a targeted
+  // build) also dropped the malformed member from `indexInterfaces`. A dep that member PUBLISHES
+  // then missed `producers`, looked like an ordinary registry dependency, and silently fell back to
+  // the `any` stub — restoring the exact degradation §5.3 exists to remove, on the documented
+  // per-plugin path. The leniency stays; the silence does not.
+  const root = tempWorkspace({
+    // Publishes @t/iface and has `types`, but NO entry point — dropped by §4.3 rule 2.
+    producer: {
+      name: "@t/dropped", version: "1.0.0", types: "api.d.ts",
+      s2script: { publishes: { "@t/iface": "1.0.0" } },
+      api: "export interface Api { ping(): string }\n",
+    },
+    consumer: {
+      name: "@t/consumer", version: "1.0.0", main: "src/plugin.ts",
+      s2script: { pluginDependencies: { "@t/iface": "^1.0.0" } },
+    },
+  });
+
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  let siblings;
+  try {
+    ({ siblings } = resolveSiblingContracts(join(root, "plugins", "consumer"), ["@t/iface"]));
+  } finally {
+    console.warn = realWarn;
+  }
+
+  // Still treated as a registry dependency — failing would break §11's compatibility hinge, since
+  // an unresolved dep is legitimately a registry interface.
+  assert.equal(siblings.size, 0);
+  // But the author is told which member went unread and what it costs them.
+  const warned = warnings.join("\n");
+  assert.match(warned, /@t\/iface" resolves to no workspace producer/);
+  assert.match(warned, /plugins\/producer: .* has no entry point/);
+  assert.match(warned, /silently typechecks against `any`/);
+});
+
+test("two siblings publishing ONE interface name is a named hard error, at both halves", () => {
+  // §5.3.0: the workspace cannot say which producer a consumer gets, and the engine refuses the
+  // second publish anyway ("implementations are alternatives; load only one").
+  const api = "export interface Api { ping(): string }\n";
+  const root = tempWorkspace({
+    one: {
+      name: "@t/one", version: "1.0.0", main: "src/plugin.ts", types: "api.d.ts",
+      s2script: { publishes: { "@t/iface": "1.0.0" } }, api,
+    },
+    two: {
+      name: "@t/two", version: "1.0.0", main: "src/plugin.ts", types: "api.d.ts",
+      s2script: { publishes: { "@t/iface": "1.0.0" } }, api,
+    },
+    consumer: {
+      name: "@t/consumer", version: "1.0.0", main: "src/plugin.ts",
+      s2script: { pluginDependencies: { "@t/iface": "^1.0.0" } },
+    },
+  });
+
+  // At the consumer's own build: it cannot compile against an ambiguous contract.
+  assert.throws(
+    () => resolveSiblingContracts(join(root, "plugins", "consumer"), ["@t/iface"]),
+    (e) => {
+      assert.match(e.message, /interface "@t\/iface" is published by 2 plugins/);
+      assert.match(e.message, /@t\/one \(plugins\/one\)/);
+      assert.match(e.message, /@t\/two \(plugins\/two\)/);
+      return true;
+    },
+  );
+  // And at preflight, so a workspace build never gets as far as picking a coin-flip producer.
+  const problems = preflightProblems(loadWorkspace(root));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /is published by 2 plugins/);
+});
+
+test("a malformed s2script.publishes is ATTRIBUTED and aggregated, never an anonymous throw", () => {
+  // Verified: with one plugin carrying `"publishes": "sef"`, the expandPublishes error named no
+  // plugin, no directory, no package — and aborted the whole 18-plugin build from inside the
+  // range gate. §11 says report it against its author, alongside every other problem.
+  const root = tempWorkspace({
+    typo: { name: "@t/typo", version: "1.0.0", main: "src/plugin.ts", s2script: { publishes: "sef" } },
+    ok: { name: "@t/ok", version: "1.0.0", main: "src/plugin.ts" },
+  });
+  const problems = preflightProblems(loadWorkspace(root));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /@t\/typo \(plugins\/typo\): invalid s2script\.publishes/);
+  assert.match(problems[0], /the only valid string form is "self"/);
+  // The gate that used to explode still runs, and still reports its own violations.
+  assert.doesNotThrow(() => preflightProblems(loadWorkspace(root)));
 });
 
 test("preflight refuses a workspace whose sibling ranges lie, naming every one at once", () => {

@@ -1,6 +1,8 @@
+import { resolve } from "node:path";
 import { addPackage } from "../registry/add.ts";
 import { parseFlag, positionals } from "../cli/args.ts";
 import * as ui from "../ui/ui.ts";
+import { findWorkspaceRoot } from "../workspace/workspace.ts";
 
 export async function run(argv: string[]): Promise<void> {
   const interactive = ui.isInteractive();
@@ -10,15 +12,32 @@ export async function run(argv: string[]): Promise<void> {
     spec = await ui.text({ message: "Package to add (name[@range])" });
   }
   if (!spec) {
-    console.error("Usage: s2s add <pkg>[@range]");
+    console.error("Usage: s2s add <pkg>[@range] [--dir <plugin>] [--registry <url>]");
     process.exit(1);
   }
   try {
+    // Design spec §14: `add` keeps its exact single-plugin semantics everywhere — including at a
+    // specific plugin INSIDE a workspace (--dir plugins/x, unaffected below) — but it is one of
+    // the five commands that must refuse by name when run AT a workspace root, where there is no
+    // plugin directory to act on. Without this, `s2s add @foo/bar` at a workspace root wrote
+    // .s2script/types/@foo/bar/ and injected s2script.pluginDependencies into the ROOT's
+    // package.json — the workspace MARKER FILE itself — silently declaring a dependency the root
+    // can never build.
+    const pluginDir = parseFlag(argv, "--dir") || ".";
+    const absDir = resolve(pluginDir);
+    const root = findWorkspaceRoot(absDir);
+    if (root !== null && resolve(root) === absDir) {
+      throw new Error(
+        `${absDir} is a workspace root (design spec 2026-07-27 §4.1), not a plugin — ` +
+          `\`s2s add\` needs a plugin directory: pass --dir <plugin> (e.g. --dir plugins/shop)`,
+      );
+    }
+
     const result = await ui.task(
       `Adding ${spec}`,
       () =>
         addPackage({
-          pluginDir: parseFlag(argv, "--dir") || ".",
+          pluginDir,
           spec: spec!,
           registryUrl: parseFlag(argv, "--registry"),
         }),

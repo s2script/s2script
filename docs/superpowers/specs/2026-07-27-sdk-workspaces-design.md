@@ -325,13 +325,26 @@ plugin. Rather than reimplementing its dependents algorithm:
 
 1. Read the real workspace packages.
 2. Build an **in-memory mirror** injecting each plugin's sibling `s2script.pluginDependencies` as
-   `devDependencies`. Changesets now sees the s2script graph through a field it already
+   `dependencies`. Changesets now sees the s2script graph through a field it already
    understands. **Nothing fake is ever written to disk.**
 3. Hand the mirror to `assembleReleasePlan` → dependents cascade correctly.
 4. Apply that plan against the **real** packages via `applyReleasePlan` (versions + CHANGELOGs; it
    finds no sibling edges in real dependency fields, so it correctly no-ops there).
 5. One additional pass rewrites `s2script.pluginDependencies` ranges — `@me/a` 2.0.1 → 3.0.0 means
    B's `^2.0.0` → `^3.0.0` — governed by the existing `updateInternalDependencies` config.
+
+**Amended 2026-07-27 after implementation review; step 2 above originally said `devDependencies`
+and the implementation split on it.** The mirror injects `dependencies`, not `devDependencies`:
+measured against the installed `@changesets/assemble-release-plan`,
+`determineDependents` switches on the dependency type and assigns `type = "none"` to a
+`devDependencies`-only dependent ("we don't need a version bump if the package is only in the
+devDependencies of the dependent package" — `src/determine-dependents.ts`) — so a
+`devDependencies` mirror can never cascade a bump to a consumer, which defeats the entire point of
+this section. A `pluginDependency` is also a hard runtime dependency in its own right — the loader
+refuses a consumer whose declared range no longer matches the producer's published interface — so
+`dependencies` is the semantically honest field as well as the only one that produces the cascade.
+The injection is still invisible on disk either way (`mirror.ts`); the field choice only decides
+what changesets infers.
 
 **Coupling and its mitigation.** `@changesets/*` internals are not a stable public API; this was
 raised during design and accepted deliberately. Coupling is confined to two entry points, both real

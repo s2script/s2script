@@ -79,6 +79,43 @@ function readPackageJson(path: string): WorkspacePackageJson {
 }
 
 /**
+ * The textual shape of the root marker, for the one case that cannot be parsed: a package.json
+ * that carries `s2script.workspace` but does not parse. Deliberately loose — it decides only
+ * whether an unparseable file is worth failing on, and a false positive is a named error on a file
+ * that is broken either way.
+ */
+const MARKER_TEXT = /"s2script"[\s\S]*"workspace"\s*:/;
+
+/**
+ * Does the package.json at `pkgPath` carry the `s2script.workspace` marker?
+ *
+ * An unreadable or unparseable package.json is WALKED PAST, not fatal. §4.2 makes
+ * "`findWorkspaceRoot` returns null" the backward-compatibility hinge, and the walk-up passes over
+ * files the plugin author does not own — an ancestor three directories up with a stray comma must
+ * never break `s2s build ./standalone-plugin`, which today it does, for a plugin in no workspace
+ * at all.
+ *
+ * The ONE file whose parse failure is still fatal is a file that actually carries the marker:
+ * degrading the real workspace root to single-plugin mode over a stray comma is exactly the silent
+ * failure this design exists to remove. A file that will not parse cannot be asked, so its raw
+ * text is matched for the marker instead.
+ */
+function carriesWorkspaceMarker(pkgPath: string): boolean {
+  let text: string;
+  try {
+    text = readFileSync(pkgPath, "utf8");
+  } catch {
+    return false; // absent, a directory, unreadable — not this walk's problem
+  }
+  try {
+    return (JSON.parse(text) as WorkspacePackageJson | null)?.s2script?.workspace !== undefined;
+  } catch (e) {
+    if (MARKER_TEXT.test(text)) throw new Error(`cannot read ${pkgPath}: ${(e as Error).message}`);
+    return false;
+  }
+}
+
+/**
  * Walk UP from `from` looking for a package.json carrying `s2script.workspace`; null when there
  * is none (single-plugin mode, unchanged). The FIRST marker wins, so a nested workspace — the
  * `examples/monorepo/` case — resolves to itself rather than to the repo above it.
@@ -86,10 +123,7 @@ function readPackageJson(path: string): WorkspacePackageJson {
 export function findWorkspaceRoot(from: string): string | null {
   let dir = resolve(from);
   for (;;) {
-    const pkgPath = join(dir, "package.json");
-    // A malformed package.json is reported, not walked past: silently degrading to single-plugin
-    // mode because the root's JSON has a stray comma is exactly the failure this design avoids.
-    if (existsSync(pkgPath) && readPackageJson(pkgPath).s2script?.workspace !== undefined) return dir;
+    if (carriesWorkspaceMarker(join(dir, "package.json"))) return dir;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -167,6 +201,32 @@ export function workspaceGlobs(field: WorkspacePackageJson["workspaces"]): strin
   return [];
 }
 
+/** A workspace as read off disk, with every SHAPE problem collected rather than thrown. */
+export interface WorkspaceScan {
+  /** The coherent part: every member that had no problem of its own. */
+  workspace: Workspace;
+  /** The §4.3 rule violations, attributed and report-ready. Empty for a coherent workspace. */
+  problems: string[];
+}
+
+/**
+ * Read the workspace at `root`, COLLECTING the §4.3 rule violations instead of throwing.
+ *
+ * `loadWorkspace` is the aggregate-and-throw wrapper and is what every workspace-mode command
+ * calls. This lenient form exists for one caller: sibling contract resolution, which runs on the
+ * single-plugin path too (`s2s build plugins/one-plugin`). §4.2 promises that path keeps working
+ * inside a workspace, and the standing rule is degrade per-descriptor, never crash globally — so
+ * one malformed sibling elsewhere in the tree must not fail a targeted build of a healthy plugin.
+ * Whole-workspace shape validation belongs to `preflightWorkspace`, which the workspace-mode paths
+ * already run before they build anything.
+ *
+ * Problems that are properties of the ROOT itself still throw: without the marker or the plugin
+ * globs there is no workspace to be lenient about.
+ */
+export function scanWorkspace(root: string): WorkspaceScan {
+  return readWorkspace(root);
+}
+
 /**
  * Load the workspace rooted at `root`.
  *
@@ -183,6 +243,18 @@ export function workspaceGlobs(field: WorkspacePackageJson["workspaces"]): strin
  * Every violation is collected and reported at once (spec §11), never the first one only.
  */
 export function loadWorkspace(root: string): Workspace {
+  const { workspace, problems } = readWorkspace(root);
+  if (problems.length > 0) {
+    throw new Error(
+      `workspace at ${workspace.root} has ${problems.length} problem${problems.length === 1 ? "" : "s"}:\n  ` +
+        problems.join("\n  "),
+    );
+  }
+  return workspace;
+}
+
+/** The shared reader behind `loadWorkspace` (throws) and `scanWorkspace` (collects). */
+function readWorkspace(root: string): WorkspaceScan {
   const absRoot = resolve(root);
   const pkg = readPackageJson(join(absRoot, "package.json"));
   const marker = pkg.s2script?.workspace;
@@ -260,10 +332,23 @@ export function loadWorkspace(root: string): Workspace {
     });
   }
 
-  if (problems.length > 0) {
-    throw new Error(
-      `workspace at ${absRoot} has ${problems.length} problem${problems.length === 1 ? "" : "s"}:\n  ` +
-        problems.join("\n  "),
+  // §4.3's fourth failure mode, and the one that hid the longest: a plugin's `name` is its ID —
+  // on the wire, in `--filter`, in the dependency graph, and in the loader. Two plugins sharing a
+  // name do not merely make a message ambiguous, they COLLAPSE: `topoOrder` keys indegree by name,
+  // so a two-plugin workspace orders one, `buildWorkspace` builds one, the command exits 0, and
+  // the only trace is a nonsense "plugin dependency cycle ()" pointing at the wrong problem. Rule
+  // 2 chose a hard error over exactly this class of silence, so this is one too.
+  const firstByName = new Map<string, string>();
+  for (const p of plugins) {
+    const first = firstByName.get(p.name);
+    if (first === undefined) {
+      firstByName.set(p.name, p.relDir);
+      continue;
+    }
+    problems.push(
+      `${p.relDir}: duplicate plugin name ${JSON.stringify(p.name)} — already declared by ${first}. ` +
+        `A plugin's name is its id on the wire, so the two cannot coexist: the build order keys on ` +
+        `it and would silently ship one of the two.`,
     );
   }
 
@@ -275,7 +360,15 @@ export function loadWorkspace(root: string): Workspace {
     const dir = join(absRoot, rel);
     const pkgPath = join(dir, "package.json");
     if (!existsSync(pkgPath)) continue;
-    const libPkg = readPackageJson(pkgPath);
+    let libPkg: WorkspacePackageJson;
+    try {
+      libPkg = readPackageJson(pkgPath);
+    } catch (e) {
+      // Collected like every other member problem, so one unparseable library is a named entry in
+      // the preflight report rather than a stack trace out of the middle of a scan.
+      problems.push(`${rel}: ${(e as Error).message}`);
+      continue;
+    }
     if (typeof libPkg.name !== "string" || libPkg.name === "") continue;
     libs.push({
       name: libPkg.name,
@@ -286,7 +379,7 @@ export function loadWorkspace(root: string): Workspace {
     });
   }
 
-  return { root: absRoot, pkg, plugins, libs };
+  return { workspace: { root: absRoot, pkg, plugins, libs }, problems };
 }
 
 /** The workspace containing `from`, already loaded — or null when there is none. */

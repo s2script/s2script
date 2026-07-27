@@ -17,8 +17,8 @@
  * publish order, and cycle detection — nothing more (§5.1).
  */
 
-import { satisfies } from "semver";
 import { expandPublishes, isConcreteVersion } from "../publishes.ts";
+import { indexInterfaces } from "./interfaces.ts";
 import type { WorkspacePlugin } from "./workspace.ts";
 
 /** One plugin as the ordering sees it: an id, the interfaces it hard-depends on, the ones it publishes. */
@@ -99,14 +99,22 @@ export function topoOrder(batch: GraphNode[], warn: (msg: string) => void = cons
  * null is designed to keep running.
  */
 export function graphNodes(plugins: WorkspacePlugin[]): GraphNode[] {
+  // Through the shared index (§5.3.0): the names this ordering treats as "published" must be the
+  // exact names `siblings.ts` resolves against, and a malformed `publishes` grammar must not throw
+  // an unattributed error out of the middle of an ordering pass — preflight names its author.
+  const { byPlugin } = indexInterfaces(plugins);
   return plugins.map((p) => ({
     id: p.name,
     dependsOn: Object.keys(p.pkg.s2script?.pluginDependencies ?? {}),
-    publishes: Object.keys(publishedInterfaces(p)),
+    publishes: byPlugin.get(p) ?? [],
   }));
 }
 
-/** `{interface: version}` this plugin publishes, expanded from the authored `publishes` grammar. */
+/**
+ * `{interface: version}` ONE plugin publishes, expanded from the authored `publishes` grammar.
+ * THROWS on a malformed grammar, so anything walking a whole workspace wants `indexInterfaces`
+ * instead — it attributes that error to its author rather than aborting the batch (§11).
+ */
 export function publishedInterfaces(plugin: WorkspacePlugin): Record<string, string> {
   return expandPublishes(plugin.pkg.s2script?.publishes, plugin.name, plugin.version);
 }
@@ -127,15 +135,51 @@ export function orderPlugins(
 // ---------------------------------------------------------------------------
 
 /**
- * `version` satisfies `range` under real semver. A malformed range is NOT an exception here —
- * `semver.satisfies` returns false — which is the fail-closed answer we want: an unparseable
- * range is reported as a violation naming both sides, not as a stack trace.
+ * Parse the leading semver major out of a version or a range operator (`^1.2.3`, `1.x`, `~1.0`,
+ * `>=1.0.0` → 1). A deliberate PORT of `interfaces.rs::leading_major`, character for character:
+ * skip everything before the first digit, then take the digit run.
+ */
+function leadingMajor(s: string): number | null {
+  const digits = /^\d+/.exec(s.replace(/^[^0-9]*/, ""));
+  if (digits === null) return null;
+  const n = Number.parseInt(digits[0], 10);
+  // The Rust parses into a `u32` and returns `None` on overflow, so a major at or above 2^32 is
+  // "unparseable" to the engine and satisfies nothing. `parseInt` would happily return it (and
+  // beyond 2^53 would silently round two distinct majors together), making the SDK accept a pair
+  // the engine rejects — the dangerous direction for decision #11's both-ways agreement.
+  return n > 0xffffffff ? null : n;
+}
+
+/**
+ * `version` satisfies `range` **as the engine decides it** — a PORT of
+ * `core/src/interfaces.rs::version_satisfies`, which is what actually range-checks every
+ * inter-plugin call at runtime:
  *
- * Note this is STRICTER than the engine's `interfaces.rs::version_satisfies`, which is
- * major-only. Being stricter at build time is safe: anything this accepts, the loader accepts.
+ * ```rust
+ * pub fn version_satisfies(range: &str, version: &str) -> bool {
+ *     if range.trim() == "*" { return true; }
+ *     match (leading_major(range), leading_major(version)) {
+ *         (Some(ra), Some(va)) => ra == va,
+ *         _ => false,
+ *     }
+ * }
+ * ```
+ *
+ * Decision #11: the SDK's range check must AGREE with the engine, in both directions. Full semver
+ * is the wrong tool here and the disagreement runs both ways — `satisfies("3.0.0", ">=1.0.0")` is
+ * true, but the engine computes `1 != 3` and throws on every call, so a full-semver gate would
+ * wave through a workspace the engine refuses; and `satisfies("1.1.0", "^1.2.0")` is false while
+ * the engine loads it happily, so it would also fail builds that work. A gate that disagrees with
+ * the runtime it gates is worse than no gate.
+ *
+ * A malformed range has no leading major, so it is `false` — the fail-closed answer we want: an
+ * unparseable range is reported as a violation naming both sides, not as a stack trace.
  */
 export function satisfiesRange(version: string, range: string): boolean {
-  return satisfies(version, range, { includePrerelease: true });
+  if (range.trim() === "*") return true;
+  const ra = leadingMajor(range);
+  const va = leadingMajor(version);
+  return ra !== null && va !== null && ra === va;
 }
 
 /** One `pluginDependencies` range that the workspace's own producer does not satisfy. */
@@ -168,26 +212,29 @@ export interface RangeViolation {
  * dependency, and today's behaviour for those is unchanged (§11).
  */
 export function checkSiblingRanges(plugins: WorkspacePlugin[]): RangeViolation[] {
-  // interface name -> (producer package, published version).
-  const published = new Map<string, { producer: string; version: string }>();
-  for (const p of plugins) {
-    for (const [iface, version] of Object.entries(publishedInterfaces(p))) {
-      published.set(iface, { producer: p.name, version });
-    }
-  }
+  // The SHARED index (§5.3.0): this gate and `siblings.ts` must agree on which dependency names
+  // the workspace owns. They used to compute membership separately — one on the interface name,
+  // one on the package name — so the two halves of the feature disagreed about the same edge.
+  const { producers } = indexInterfaces(plugins);
 
   const out: RangeViolation[] = [];
   for (const p of plugins) {
     for (const [iface, range] of Object.entries(p.pkg.s2script?.pluginDependencies ?? {})) {
-      const producer = published.get(iface);
+      const producer = producers.get(iface);
       if (producer === undefined) continue; // resolved from the registry, not from here
-      if (producer.producer === p.name) continue; // its own interface
+      if (producer.plugin === p) continue; // its own interface
       // A non-concrete published version cannot be range-checked. `derivePublishes` already fails
       // the producer's own build for that, so reporting it again here would be a second, worse
       // diagnostic pointing at the wrong plugin.
       if (!isConcreteVersion(producer.version)) continue;
       if (satisfiesRange(producer.version, range)) continue;
-      out.push({ consumer: p.name, iface, range, producer: producer.producer, version: producer.version });
+      out.push({
+        consumer: p.name,
+        iface,
+        range,
+        producer: producer.plugin.name,
+        version: producer.version,
+      });
     }
   }
   return out;

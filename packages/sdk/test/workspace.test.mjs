@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +95,32 @@ test("findWorkspaceRoot: null outside any workspace — the backward-compatibili
   assert.equal(findWorkspaceRoot(join(dir, "nested", "deep")), null);
 });
 
+test("findWorkspaceRoot: an unparseable package.json the author does not own is walked PAST", () => {
+  // §4.2 makes "returns null" THE backward-compatibility hinge, and the walk-up crosses
+  // directories the plugin author does not control. A stray comma in an ancestor's package.json
+  // used to hard-fail `s2s build ./standalone-plugin` — for a plugin in no workspace at all.
+  const dir = mkdtempSync(join(tmpdir(), "s2ws-"));
+  writeFileSync(join(dir, "package.json"), '{ "name": "junk", }\n');
+  const pluginDir = join(dir, "standalone-plugin");
+  mkdirSync(pluginDir);
+  writeFileSync(
+    join(pluginDir, "package.json"),
+    JSON.stringify({ name: "@me/standalone", version: "1.0.0", main: "src/plugin.ts" }),
+  );
+  assert.equal(findWorkspaceRoot(pluginDir), null, "no workspace anywhere ⇒ single-plugin mode");
+});
+
+test("findWorkspaceRoot: an unparseable package.json that CARRIES the marker is still fatal", () => {
+  // The one file whose parse failure must not be swallowed: degrading the real workspace root to
+  // single-plugin mode over a stray comma is the silent failure this design exists to remove.
+  const dir = mkdtempSync(join(tmpdir(), "s2ws-"));
+  writeFileSync(
+    join(dir, "package.json"),
+    '{ "workspaces": ["plugins/*"], "s2script": { "workspace": { "plugins": ["plugins/*"] } },, }\n',
+  );
+  assert.throws(() => findWorkspaceRoot(join(dir, "plugins", "p")), /cannot read .*package\.json/);
+});
+
 // ---------------------------------------------------------------------------
 // workspace.ts — the three §4.3 rules
 // ---------------------------------------------------------------------------
@@ -144,6 +170,46 @@ test("§4.3 rule 3: a plugin dir not covered by npm workspaces is a HARD ERROR, 
       assert.match(e.message, /plugins\/orphan-b: is a plugin but is not covered by npm "workspaces"/);
       // The WHY is in the message: the failure mode is a silent degradation, not a diagnostic.
       assert.match(e.message, /silently degrades to `any`/);
+      return true;
+    },
+  );
+});
+
+/** A throwaway workspace root with `plugins/<dir>/package.json` written from `members`. */
+function tempWorkspace(members) {
+  const root = mkdtempSync(join(tmpdir(), "s2ws-"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "@fixture/tmp-ws",
+      private: true,
+      version: "0.0.0",
+      workspaces: ["plugins/*"],
+      s2script: { workspace: { plugins: ["plugins/*"] } },
+    }),
+  );
+  for (const [dir, pkg] of Object.entries(members)) {
+    mkdirSync(join(root, "plugins", dir, "src"), { recursive: true });
+    writeFileSync(join(root, "plugins", dir, "package.json"), JSON.stringify(pkg, null, 2));
+  }
+  return root;
+}
+
+test("§4.3: two plugins sharing a `name` are a HARD ERROR, never a silent collapse", () => {
+  // The verified failure mode: `topoOrder` keys indegree by name, so a two-plugin workspace loaded
+  // as ONE plugin, `buildWorkspace` built one, the command exited 0, and the only trace was a
+  // nonsense "plugin dependency cycle ()" pointing at the wrong problem. Rule 2 chose a hard error
+  // over exactly this class of silence.
+  const root = tempWorkspace({
+    a: { name: "@me/dup", version: "1.0.0", main: "src/plugin.ts" },
+    b: { name: "@me/dup", version: "2.0.0", main: "src/plugin.ts" },
+  });
+  assert.throws(
+    () => loadWorkspace(root),
+    (e) => {
+      assert.match(e.message, /has 1 problem:/);
+      assert.match(e.message, /plugins\/b: duplicate plugin name "@me\/dup" — already declared by plugins\/a/);
+      assert.match(e.message, /id on the wire/);
       return true;
     },
   );
@@ -272,10 +338,24 @@ test("orderPlugins: the fixture workspace orders the producer before its consume
 // graph.ts — the §5.2 sibling range gate
 // ---------------------------------------------------------------------------
 
-test("satisfiesRange: real semver, and a malformed range is false rather than a throw", () => {
+test("satisfiesRange: the common cases, and a malformed range is false rather than a throw", () => {
   assert.ok(satisfiesRange("2.0.1", "^2.0.0"));
   assert.ok(!satisfiesRange("3.0.0", "^2.0.0"));
   assert.ok(!satisfiesRange("1.0.0", "garbage"), "fail closed, and report it as a violation");
+});
+
+test("satisfiesRange AGREES with interfaces.rs::version_satisfies (decision #11)", () => {
+  // The engine is MAJOR-ONLY, and a full-semver gate disagreed with it in both directions. The
+  // dangerous direction is a range the SDK waves through and the engine then rejects at every
+  // single call — `>=1.0.0` against 3.0.0 is `satisfies() === true` but `1 != 3` in the engine.
+  assert.ok(!satisfiesRange("3.0.0", ">=1.0.0"), "leading_major(range) is 1, so the engine refuses");
+  assert.ok(!satisfiesRange("2.0.0", "1.x || 2.x"), "the engine reads the LEADING major only");
+  // And the other direction: a gate stricter than the runtime fails builds the engine loads
+  // happily, which is just as wrong (spec §5.3.0's closing paragraph).
+  assert.ok(satisfiesRange("1.1.0", "^1.2.0"), "the engine loads this, so preflight must not fail it");
+  assert.ok(satisfiesRange("2.0.1", "~2.9.9"), "any comparator, same major");
+  assert.ok(satisfiesRange("7.2.1", "*"), "`*` is the engine's one wildcard");
+  assert.ok(!satisfiesRange("1.0.0", "^x"), "no leading major on either side ⇒ false");
 });
 
 test("§5.2: a matching sibling range is clean", () => {

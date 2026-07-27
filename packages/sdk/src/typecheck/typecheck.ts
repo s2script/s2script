@@ -90,19 +90,29 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     ...Object.keys(s2.pluginDependencies ?? {}),
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
   ];
-  // Workspace siblings (design spec 2026-07-27 §3.2/§5.3) get NEITHER a stub NOR a `paths` entry:
-  // npm already symlinked the producer into node_modules, so `moduleResolution: "bundler"` finds
-  // its `types` on its own — one copy of the bytes, drift impossible by construction. The ambient
-  // stub is what shadows that resolution (§3.3), which is why suppressing it is the whole feature.
+  // Workspace siblings (design spec 2026-07-27 §3.2/§5.3) get no ambient stub: npm already
+  // symlinked the producer into node_modules, so `moduleResolution: "bundler"` finds its `types`
+  // on its own — one copy of the bytes, drift impossible by construction. The ambient stub is what
+  // shadows that resolution (§3.3), which is why suppressing it is the whole feature.
   // Empty for a non-workspace plugin, so every existing build is bit-identical (§11).
   const { siblings } = resolveSiblingContracts(absDir, allDeclaredDeps);
 
   const contractPaths: Record<string, string[]> = {};
   for (const d of allDeclaredDeps) {
-    // Decision #9: the SIBLING beats a stale `.s2script/types/<dep>/index.d.ts` left over from
-    // before the migration. The copy is the drift vector this design removes; leaving it
-    // authoritative here would defeat the point. `build.ts` warns that it is now ignored.
-    if (siblings.has(d)) continue;
+    const sibling = siblings.get(d);
+    if (sibling !== undefined) {
+      // Decision #9: the SIBLING beats a stale `.s2script/types/<dep>/index.d.ts` left over from
+      // before the migration. The copy is the drift vector this design removes; leaving it
+      // authoritative here would defeat the point. `build.ts` warns that it is now ignored.
+      //
+      // A dependency name is an INTERFACE name (§5.3.0), and npm's symlink carries the PACKAGE
+      // name — so §3.2's resolve-in-place only reaches a producer that publishes "self". When the
+      // two are decoupled (@edge/mce publishing @community/mapchooser) there is no symlink named
+      // after the interface, and without this entry the suppressed stub would become a TS2307.
+      // It still points at the producer's OWN contract, which is the file `build.ts` hashes.
+      if (sibling.name !== d) contractPaths[d] = [sibling.typesPath];
+      continue;
+    }
     const p = localContractPath(absDir, d);
     if (p !== null) contractPaths[d] = [p];
   }

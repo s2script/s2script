@@ -24,7 +24,8 @@ import { join } from "node:path";
 import { buildPlugin } from "../build.ts";
 import { isConcreteVersion } from "../publishes.ts";
 import { matchGlob } from "./glob.ts";
-import { orderPlugins, publishedInterfaces, satisfiesRange } from "./graph.ts";
+import { orderPlugins, satisfiesRange } from "./graph.ts";
+import { indexInterfaces } from "./interfaces.ts";
 import { preflightWorkspace } from "./preflight.ts";
 import { loadWorkspace } from "./workspace.ts";
 import type { Workspace, WorkspacePlugin } from "./workspace.ts";
@@ -161,10 +162,13 @@ function restampRange(range: string, version: string): string {
  *   - **A range is rewritten only when the stamped version no longer satisfies it.** The invariant
  *     that matters is "the §5.2 gate passes after stamping"; a consumer declaring `^1.0.0` against
  *     a producer stamped to 1.5.0 is still true, and narrowing it to `^1.5.0` would churn a
- *     checked-in file for nothing. The comparison is against the PUBLISHED INTERFACE version (the
- *     thing `interfaces.rs` range-checks at runtime), so a `publishes` map form pinning an explicit
- *     contract version is correctly left alone — its interface did not move just because its
- *     package did.
+ *     checked-in file for nothing. "Satisfies" is `satisfiesRange`, which is the ENGINE's rule
+ *     (decision #11) — so a comparator range the engine rejects, like `>=1.0.0` against a stamp of
+ *     3.0.0, IS rewritten. Under the old full-semver check that range read as satisfied, and the
+ *     stamp left behind a range every call would then have thrown on. The comparison is against
+ *     the PUBLISHED INTERFACE version (the thing `interfaces.rs` range-checks at runtime), so a
+ *     `publishes` map form pinning an explicit contract version is correctly left alone — its
+ *     interface did not move just because its package did.
  *
  * The in-memory `Workspace` is NOT mutated: package.json is the authority and callers reload from
  * disk (see `buildWorkspace`), so there is never a half-updated model to reason about.
@@ -179,14 +183,11 @@ export function stampWorkspaceVersion(ws: Workspace, version: string): StampResu
     );
   }
 
-  // What each interface WOULD be published at once the stamp lands. `publishedInterfaces` reads
-  // the plugin's version, so ask it about the stamped copy rather than the on-disk one.
-  const after = new Map<string, { producer: string; version: string }>();
-  for (const p of ws.plugins) {
-    for (const [iface, v] of Object.entries(publishedInterfaces({ ...p, version: target }))) {
-      after.set(iface, { producer: p.name, version: v });
-    }
-  }
+  // What each interface WOULD be published at once the stamp lands. The index reads each plugin's
+  // version, so ask it about the stamped copies rather than the on-disk ones. Its `problems` are
+  // deliberately ignored here: a malformed `publishes` block is preflight's to name (§11), and
+  // failing the stamp on it would report it against the wrong command.
+  const after = indexInterfaces(ws.plugins.map((p) => ({ ...p, version: target }))).producers;
 
   const result: StampResult = { version: target, stamped: [], rewrites: [] };
   for (const p of ws.plugins) {
@@ -205,7 +206,9 @@ export function stampWorkspaceVersion(ws: Workspace, version: string): StampResu
       for (const [iface, range] of Object.entries(ranges)) {
         const producer = after.get(iface);
         if (producer === undefined) continue; // resolved from the registry, not from here
-        if (producer.producer === p.name) continue; // its own interface
+        // By name, not by identity: `after` was built from stamped CLONES. `loadWorkspace` has
+        // already refused a workspace with two plugins sharing a name, so a name is an identity.
+        if (producer.plugin.name === p.name) continue; // its own interface
         if (!isConcreteVersion(producer.version)) continue; // not range-checkable; §5.2 says the same
         if (satisfiesRange(producer.version, range)) continue;
         const to = restampRange(range, producer.version);

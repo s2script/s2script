@@ -33,6 +33,9 @@ echo "== packages/sdk unit suite =="
 echo "== check-changeset.sh (published package changes carry a changeset) =="
 bash scripts/check-changeset.sh
 
+echo "== check-changeset-ignore.sh (.changeset/config.json ignore matches the on-disk plugin set) =="
+bash scripts/check-changeset-ignore.sh
+
 echo "== check-plugins-typecheck.sh (the 5E.1 gate) =="
 bash scripts/check-plugins-typecheck.sh
 
