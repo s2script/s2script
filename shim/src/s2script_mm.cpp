@@ -399,6 +399,35 @@ static long long s2_ent_identity_flags(int index, int serial) {
     return (long long)(unsigned int)id->m_flags;
 }
 
+// Clear identity flag bits on a live entity. Returns the flags AFTER the write, or -1 if the entity
+// is not live / the serial does not match.
+//
+// The one bit this exists for is EF_IN_STAGING_LIST (1 << 2). `SetModel` routes through `SetupModel`,
+// which ASSERTS the entity is not staged, and a created-but-unspawned entity is — so a plugin that
+// wants the C#'s create -> SetModel -> DispatchSpawn ordering has to clear that bit first, exactly as
+// CounterStrikeSharp's own body spawner does (`...Entity.Flags & ~(1 << 2)`). Without it the only
+// legal route is the spawn keyvalue, and any plugin that needs the model set through some other path
+// is stuck producing half-initialised entities that clients then fail to copy.
+//
+// CLEAR-ONLY, deliberately: `mask` names bits to drop and nothing can be set. Handing a plugin the
+// ability to raise arbitrary identity bits (EF_IS_INVALID_EHANDLE, say) is a far larger foot-gun than
+// the one this closes, and no use case needs it.
+static long long s2_ent_identity_flags_clear(int index, int serial, unsigned int mask) {
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return -1;
+    if (index < 0 || index >= MAX_TOTAL_ENTITIES) return -1;
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[index / MAX_ENTITIES_IN_LIST];
+    if (!chunk_base) return -1;
+    CEntityIdentity* id = &chunk_base[index % MAX_ENTITIES_IN_LIST];
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return -1;
+    if (id->GetRefEHandle().GetSerialNumber() != serial) return -1;
+    // EF_IS_INVALID_EHANDLE is never clearable: dropping it would present a dead slot as live and
+    // every liveness gate downstream would believe it.
+    const unsigned int keep = ~(mask & ~static_cast<unsigned int>(EF_IS_INVALID_EHANDLE));
+    id->m_flags = static_cast<EntityFlags_t>(static_cast<unsigned int>(id->m_flags) & keep);
+    return (long long)(unsigned int)id->m_flags;
+}
+
 // E1 engine-op: books repair sweep — every live identity slot's (index, serial); the
 // s2_entity_find_by_class walk minus the class filter. Returns the TOTAL found (the
 // caller detects truncation when total > cap). System-owned chunk memory only.
@@ -4589,6 +4618,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // E1 entity-liveness slice (APPENDED after crash_test_native; order is the ABI).
     ops.ent_resolve        = &s2_ent_resolve;
     ops.ent_identity_flags = &s2_ent_identity_flags;
+    ops.ent_identity_flags_clear = &s2_ent_identity_flags_clear;
     ops.ent_snapshot       = &s2_ent_snapshot;
     // Plugin-declared engine calls — APPENDED after ent_snapshot; order MUST match S2EngineOps
     // (s2script_core.h + Rust v8host.rs). Both live in engine_calls.cpp: descriptor resolution
