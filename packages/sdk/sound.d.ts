@@ -18,8 +18,23 @@ export interface SoundEmitOptions {
  *  only: a stashed context used after the handler returns (or past an await) is a no-op `false`
  *  (the engine manifest is gone). */
 export interface PrecacheContext {
-  /** Add a resource path (e.g. "soundevents/mypack.vsndevts") to the session resource manifest.
-   *  True iff the engine accepted the add. */
+  /**
+   * Add a resource path to the game session manifest — a soundevents file, a model, a particle.
+   *
+   * @example
+   * pc.add("soundevents/mypack.vsndevts");
+   * pc.add("models/props/cs_office/microwave.vmdl");
+   *
+   * Returns true iff the engine ACCEPTED the string, which is not the same as the resource existing
+   * or being loadable: it returns true for a path with no file behind it too. A model that was never
+   * really there still spawns as the pink-and-black ERROR box, and the engine only says so later, at
+   * spawn time, with "requested but is not in the system (Missing from a manifest?)". Treat a `false`
+   * as fatal and a `true` as "not rejected".
+   *
+   * TIMING: the manifest is built once per map, before plugins that load later exist. A plugin loaded
+   * AFTER that point — including on the boot map of a fresh server start — misses that map's
+   * precache, and its resources stay unusable until the next map change.
+   */
   add(path: string): boolean;
 }
 
