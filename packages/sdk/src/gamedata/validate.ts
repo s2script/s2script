@@ -94,8 +94,14 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
 
     // receiver
     const recv = decl.receiver as Record<string, unknown> | undefined;
-    if (!recv || recv.kind !== "entity") {
-      errs.push(`${where}: receiver.kind must be "entity" in v1`);
+    if (!recv || (recv.kind !== "entity" && recv.kind !== "none")) {
+      errs.push(`${where}: receiver.kind must be "entity" or "none"`);
+    } else if (recv.kind === "none") {
+      // A static/free function has no `this` to hop from, so `via` is contradictory rather than
+      // merely redundant — reject it instead of ignoring it.
+      if (recv.via !== undefined) {
+        errs.push(`${where}: receiver.kind "none" cannot carry a 'via' sub-object hop`);
+      }
     } else if (recv.via !== undefined) {
       const via = recv.via as Record<string, unknown>;
       if (typeof via?.class !== "string" || typeof via?.field !== "string") {
@@ -142,7 +148,7 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
         if (INT_CLASS_ARGS.has(a as ArgKind)) ints++; else floats++;
       }
       if (ints > MAX_INT_ARGS) {
-        errs.push(`${where}: ${ints} integer-class args exceeds the max of ${MAX_INT_ARGS} (\`this\` occupies rdi)`);
+        errs.push(`${where}: ${ints} integer-class args exceeds the max of ${MAX_INT_ARGS}`);
       }
       if (floats > MAX_FLOAT_ARGS) {
         errs.push(`${where}: ${floats} float args exceeds the max of ${MAX_FLOAT_ARGS}`);

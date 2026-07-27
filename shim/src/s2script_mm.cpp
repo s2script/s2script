@@ -53,6 +53,8 @@
 #include <libgen.h>   // dirname
 #include <link.h>       // dl_iterate_phdr, ElfW
 #include <sys/mman.h>   // mprotect — Sound slice: patch the CGameRulesGameSystem vtable slot (precache)
+#include <igamesystem.h>          // model precache: CBaseGameSystem + EventBuildGameSessionManifest_t
+#include <igamesystemfactory.h>   // model precache: CGameSystemStaticFactory / CBaseGameSystemFactory
 #include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
 #include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
 #include <unistd.h>     // sysconf(_SC_PAGESIZE) — the mprotect page span
@@ -394,6 +396,35 @@ static long long s2_ent_identity_flags(int index, int serial) {
     CEntityIdentity* id = &chunk_base[index % MAX_ENTITIES_IN_LIST];
     if (id->m_flags & EF_IS_INVALID_EHANDLE) return -1;
     if (id->GetRefEHandle().GetSerialNumber() != serial) return -1;
+    return (long long)(unsigned int)id->m_flags;
+}
+
+// Clear identity flag bits on a live entity. Returns the flags AFTER the write, or -1 if the entity
+// is not live / the serial does not match.
+//
+// The one bit this exists for is EF_IN_STAGING_LIST (1 << 2). `SetModel` routes through `SetupModel`,
+// which ASSERTS the entity is not staged, and a created-but-unspawned entity is — so a plugin that
+// wants the C#'s create -> SetModel -> DispatchSpawn ordering has to clear that bit first, exactly as
+// CounterStrikeSharp's own body spawner does (`...Entity.Flags & ~(1 << 2)`). Without it the only
+// legal route is the spawn keyvalue, and any plugin that needs the model set through some other path
+// is stuck producing half-initialised entities that clients then fail to copy.
+//
+// CLEAR-ONLY, deliberately: `mask` names bits to drop and nothing can be set. Handing a plugin the
+// ability to raise arbitrary identity bits (EF_IS_INVALID_EHANDLE, say) is a far larger foot-gun than
+// the one this closes, and no use case needs it.
+static long long s2_ent_identity_flags_clear(int index, int serial, unsigned int mask) {
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return -1;
+    if (index < 0 || index >= MAX_TOTAL_ENTITIES) return -1;
+    CEntityIdentity* chunk_base = es->m_EntityList.m_pIdentityChunks[index / MAX_ENTITIES_IN_LIST];
+    if (!chunk_base) return -1;
+    CEntityIdentity* id = &chunk_base[index % MAX_ENTITIES_IN_LIST];
+    if (id->m_flags & EF_IS_INVALID_EHANDLE) return -1;
+    if (id->GetRefEHandle().GetSerialNumber() != serial) return -1;
+    // EF_IS_INVALID_EHANDLE is never clearable: dropping it would present a dead slot as live and
+    // every liveness gate downstream would believe it.
+    const unsigned int keep = ~(mask & ~static_cast<unsigned int>(EF_IS_INVALID_EHANDLE));
+    id->m_flags = static_cast<EntityFlags_t>(static_cast<unsigned int>(id->m_flags) & keep);
     return (long long)(unsigned int)id->m_flags;
 }
 
@@ -1112,9 +1143,20 @@ static int s2_user_message_set_string(const char* field, const char* value) {
     const google::protobuf::Reflection*  r = s_umMsg->GetReflection();
     if (!d || !r) return 0;
     const google::protobuf::FieldDescriptor* f = d->FindFieldByName(field);
-    if (!f || f->is_repeated()) return 0;   // repeated -> a scalar Set*() would abort the process (protobuf FATAL)
+    if (!f) return 0;
     if (f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) return 0;
-    r->SetString(s_umMsg, f, value ? value : "");
+    // A REPEATED string field APPENDS rather than no-ops.
+    //
+    // The scalar SetString() would abort the process on a repeated field (protobuf FATAL), which is
+    // why this used to bail — but bailing is not harmless. CUserMessageTextMsg::param, the field that
+    // carries every centre-screen hint, IS repeated: `setString("param", text)` returned 0, the
+    // message went out with no text at all, and `send()` still reported success because delivery had
+    // in fact happened. On screen that is silence, and it is what made HintText (and everything built
+    // on it — both compasses, the spectator target readout) look like it was never wired up.
+    //
+    // AddString is the repeated-field equivalent and is what protobuf expects here.
+    if (f->is_repeated()) r->AddString(s_umMsg, f, value ? value : "");
+    else                  r->SetString(s_umMsg, f, value ? value : "");
     return 1;
 }
 static int s2_user_message_set_bool(const char* field, int value) {
@@ -2970,17 +3012,154 @@ static bool   s_precacheHookInstalled = false;                      // the vtabl
 typedef void (*PrecacheAddResourceFn_t)(const char* path);
 static PrecacheAddResourceFn_t s_pPrecacheAddResource = nullptr;
 
-// The sound_precache_add op. Returns the TRUE outcome: 1 ONLY if the engine helper was actually
-// invoked against a validated (.text) target inside the live precache window; 0 otherwise. We NEVER
-// touch the passed pManifest's vtable (see the block comment — the engine adds via a global helper,
-// and slot 0 of the manifest is its destructor).
-static int s2_sound_precache_add(const char* path) {
-    if (!s_currentPrecacheManifest) return 0;                                    // outside the precache window
-    if (!path || !path[0]) return 0;
-    if (!s_pPrecacheAddResource) return 0;                                       // sig unresolved -> safe no-op
-    if (!IsAddressInServerText(reinterpret_cast<void*>(s_pPrecacheAddResource))) return 0;
-    s_pPrecacheAddResource(path);
+// Add via the PASSED manifest's own AddResource — CounterStrikeSharp's mechanism.
+//
+// The block comment above concluded that slot 0 of the manifest is its destructor and that the only
+// safe route is the global helper. That is right about the helper and WRONG about slot 0 being
+// unusable: CSSharp declares `IEntityResourceManifest` with three `AddResource` overloads occupying
+// slots 0..2 and calls slot 0 with just the path, and its plugins precache MODELS that way in
+// production (edgegamers/TTT precaches `models/props/cs_office/microwave.vmdl` through exactly this
+// call and the model renders).
+//
+// The distinction matters because the global helper hardcodes a resource TYPE:
+// `g->vtable[8](g, /*type*/1, path, 0)`. That type is what the engine uses for its own
+// particle/sound strings, so sounds precache correctly through it and models are accepted and then
+// silently never made resident — `add` returns true and the model still spawns as the ERROR box.
+//
+// Guarded rather than trusted: the manifest must be inside the live precache window, its vtable
+// pointer must be readable, and the resolved slot-0 target must land in libserver's .text. Any of
+// those failing degrades to a no-op, never a call through a bogus pointer.
+// Is `fn` inside the executable segment of ANY loaded module?
+//
+// `IsAddressInServerText` only accepts libserver.so, which is the right guard for a sig-resolved
+// libserver function and the WRONG one here: the resource manifest handed to OnPrecacheResource is a
+// stack object whose vtable's AddResource lives in a different module, so the libserver-only check
+// rejected every add (observed live: slot0=0x7fd0c059ec40, inText=0) and the call never ran.
+static bool IsAddressInAnyModuleText(void* fn) {
+    if (!fn) return false;
+    struct Ctx { const uint8_t* p; bool hit; } ctx{ reinterpret_cast<const uint8_t*>(fn), false };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X)) continue;
+            const uint8_t* lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
+            if (c->p >= lo && c->p < lo + ph.p_memsz) { c->hit = true; return 1; }  // stop scanning
+        }
+        return 0;
+    }, &ctx);
+    return ctx.hit;
+}
+
+// ---------------------------------------------------------------------------
+// Model precache — the SESSION resource manifest (BuildGameSessionManifest).
+//
+// The vtable hook on CGameRulesGameSystem::OnPrecacheResource above receives A manifest, but not the
+// one that decides what is RESIDENT. Adding a model through it is accepted and then silently dropped:
+// `pc.add()` returns true, no warning is logged at add time, and the model spawns as the pink-and-black
+// ERROR box with "requested but is not in the system (Missing from a manifest?)" much later. Sounds
+// were unaffected because they go through the separate global PrecacheAddResource helper, which is
+// why this went unnoticed -- the precache slice was specified and tested for soundevents only.
+//
+// The manifest that governs residency is the GAME SESSION manifest, delivered to game systems as
+// EventBuildGameSessionManifest_t::m_pResourceManifest. CounterStrikeSharp receives it by registering
+// its own game system, which is what makes the same model paths work there; this does the same.
+//
+// Registration requires CBaseGameSystemFactory::sm_pFirst -- the head of the engine's factory list --
+// which is not exported. It is sig-resolved ("IGameSystem_InitAllSystems_pFirst", a rip-relative mov
+// inside IGameSystem::InitAllSystems) and, until that resolves, NOTHING is registered: a null
+// sm_pFirst would have CBaseGameSystemFactory's constructor dereference null on the very first insert.
+// ---------------------------------------------------------------------------
+// The SDK only FORWARD-DECLARES IEntityResourceManifest, so the vtable has to be spelled out here to
+// call through it. Layout taken from CounterStrikeSharp's `core/game_system.h`, which is the
+// implementation that demonstrably precaches models on this game build: AddResource occupies the
+// first three slots as overloads, so the single-argument form is slot 0.
+class IEntityResourceManifest {
+public:
+    virtual void AddResource(const char*) = 0;
+    virtual void AddResource(const char*, void*) = 0;
+    virtual void AddResource(const char*, void*, void*, void*) = 0;
+    virtual void unk_04() = 0;
+    virtual void unk_05() = 0;
+    virtual void unk_06() = 0;
+    virtual void unk_07() = 0;
+    virtual void unk_08() = 0;
+    virtual void unk_09() = 0;
+    virtual void unk_10() = 0;
+};
+
+CBaseGameSystemFactory** CBaseGameSystemFactory::sm_pFirst = nullptr;
+
+// The session manifest, live ONLY for the duration of the BuildGameSessionManifest dispatch. Same
+// window-gate discipline as s_currentPrecacheManifest: it is never retained past the event and never
+// crosses into JS.
+static IEntityResourceManifest* s_sessionManifest = nullptr;
+
+class S2ScriptGameSystem : public CBaseGameSystem {
+public:
+    DECLARE_GAME_SYSTEM();
+
+    GS_EVENT(BuildGameSessionManifest) {
+        s_sessionManifest = msg->m_pResourceManifest;
+        s2script_core_dispatch_precache();
+        s_sessionManifest = nullptr;
+    }
+};
+
+static S2ScriptGameSystem  s_gameSystem;
+static IGameSystemFactory* s_pGameSystemFactory = nullptr;
+
+// Add to the session manifest. Returns 1 only if the add actually ran.
+static int s2_session_manifest_add(const char* path) {
+    if (!s_sessionManifest || !path || !path[0]) return 0;
+    s_sessionManifest->AddResource(path);
     return 1;
+}
+
+// Resolve sm_pFirst and insert our factory. Safe to call once, from Load(); a failed resolve leaves
+// the game system unregistered and model precaching inert rather than crashing.
+static bool InstallGameSystem(int64_t smpFirstOffset) {
+    if (s_pGameSystemFactory) return true;
+    if (smpFirstOffset == s2sig::kFail) return false;
+    ModText mt = FindModuleText("libserver.so");
+    if (!mt.text) return false;
+    CBaseGameSystemFactory::sm_pFirst =
+        reinterpret_cast<CBaseGameSystemFactory**>(const_cast<uint8_t*>(mt.text) + smpFirstOffset);
+    s_pGameSystemFactory =
+        new CGameSystemStaticFactory<S2ScriptGameSystem>("S2ScriptGameSystem", &s_gameSystem);
+    META_CONPRINTF("[s2script] game system registered (sm_pFirst @%p) — session manifest precache live\n",
+                   (void*)CBaseGameSystemFactory::sm_pFirst);
+    return true;
+}
+
+static int s2_precache_manifest_add(const char* path) {
+    if (!s_currentPrecacheManifest || !path || !path[0]) return 0;
+    void** vtbl = *reinterpret_cast<void***>(s_currentPrecacheManifest);
+    if (!vtbl) return 0;
+    void* fn = vtbl[0];
+    if (!fn || !IsAddressInAnyModuleText(fn)) return 0;
+    reinterpret_cast<void (*)(void*, const char*)>(fn)(s_currentPrecacheManifest, path);
+    return 1;
+}
+
+// The precache_add op. Returns 1 if EITHER route actually ran against a validated target inside the
+// live precache window; 0 otherwise.
+//
+// Both are attempted: the manifest's own AddResource is the general mechanism (and the only one that
+// works for models), while the global helper is the path this shim has always used for soundevents
+// and is kept so sound precaching cannot regress. Adding the same resource twice is idempotent.
+static int s2_sound_precache_add(const char* path) {
+    if (!s_currentPrecacheManifest && !s_sessionManifest) return 0;              // outside every precache window
+    if (!path || !path[0]) return 0;
+
+    int added = s2_session_manifest_add(path);
+    added |= s2_precache_manifest_add(path);
+
+    if (s_pPrecacheAddResource && IsAddressInServerText(reinterpret_cast<void*>(s_pPrecacheAddResource))) {
+        s_pPrecacheAddResource(path);
+        added = 1;
+    }
+    return added;
 }
 
 // The OnPrecacheResource replacement (virtual dispatch delivers the SysV register args here:
@@ -3939,6 +4118,18 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pCreateEntityByName));
                 }   // ucbnOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Model precache: register our game system so BuildGameSessionManifest reaches us with
+            // the SESSION manifest. Unresolved -> nothing registered and model precaching stays inert
+            // (sounds are unaffected; they use the global helper).
+            auto gsit = sigs.find("IGameSystem_InitAllSystems_pFirst");
+            if (gsit == sigs.end()) {
+                GamedataResult("IGameSystem_InitAllSystems_pFirst", false, "signature absent from gamedata");
+            } else {
+                int64_t gsOff = ResolveSigValidated("IGameSystem_InitAllSystems_pFirst", gsit->second);
+                if (!InstallGameSystem(gsOff)) {
+                    META_CONPRINTF("[s2script] game system NOT registered — model precache unavailable\n");
+                }
+            }
             auto dsit = sigs.find("DispatchSpawn");
             if (dsit == sigs.end()) {
                 GamedataResult("DispatchSpawn", false, "signature absent from gamedata");
@@ -4427,6 +4618,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // E1 entity-liveness slice (APPENDED after crash_test_native; order is the ABI).
     ops.ent_resolve        = &s2_ent_resolve;
     ops.ent_identity_flags = &s2_ent_identity_flags;
+    ops.ent_identity_flags_clear = &s2_ent_identity_flags_clear;
     ops.ent_snapshot       = &s2_ent_snapshot;
     // Plugin-declared engine calls — APPENDED after ent_snapshot; order MUST match S2EngineOps
     // (s2script_core.h + Rust v8host.rs). Both live in engine_calls.cpp: descriptor resolution

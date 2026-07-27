@@ -284,6 +284,8 @@ pub type CrashTestNativeFn = extern "C" fn(kind: c_int);
 // system-owned chunk memory, never through the instance).
 pub type EntResolveFn       = extern "C" fn(c_int, c_int) -> *mut c_void;
 pub type EntIdentityFlagsFn = extern "C" fn(c_int, c_int) -> i64;
+/// Clear identity flag bits -> flags AFTER the write, or -1 if not live. CLEAR-ONLY.
+pub type EntIdentityFlagsClearFn = extern "C" fn(c_int, c_int, u32) -> i64;
 pub type EntSnapshotFn      = extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_int;
 
 // --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI). ENGINE-GENERIC:
@@ -488,6 +490,8 @@ pub struct S2EngineOps {
     // --- client-command slice (APPENDED after voice_audible_stats; do not reorder above) ---
     pub client_command:      Option<ClientCommandFn>,
     pub client_fake_command: Option<ClientFakeCommandFn>,
+    // --- identity-flag clear (APPENDED after client_fake_command; order is the ABI) ---
+    pub ent_identity_flags_clear: Option<EntIdentityFlagsClearFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -1277,6 +1281,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // instance memory). null = stale/unavailable. Flag bit meanings are game facts —
     // interpret them in the game package, not here.
     identityFlags: function () { return __s2_ent_identity_flags(this.index, this.id); },
+    clearIdentityFlags: function (mask) { return __s2_ent_identity_flags_clear(this.index, this.id, mask >>> 0); },
   };
   // --- Entity-creation lifecycle slice: spawn/teleport/remove over the entity_* engine ops. Kept as
   //     separate prototype assignments (not folded into the object literal above) to minimize the diff. ---
@@ -2004,6 +2009,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       call: function (name) {
         var pid = __s2_current_plugin();
         if (!__s2_engine_call_ready(pid, name)) return null;
+        // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading
+        // `self`: shifting one off would silently eat the first real argument.
+        if (__s2_engine_call_receiverless(pid, name)) {
+          return function () {
+            return __s2_engine_call_invoke(pid, name, 0, 0, Array.prototype.slice.call(arguments));
+          };
+        }
         return function () {
           var args = Array.prototype.slice.call(arguments);
           var self = args.shift();
@@ -7409,6 +7421,18 @@ fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
     }));
 }
 
+/// Native `__s2_engine_call_receiverless(pluginId, callName) -> boolean`. True for a descriptor
+/// declaring `receiver.kind: "none"` — the generated callable then takes no leading `self`.
+fn s2_engine_call_receiverless(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let pid = args.get(0).to_rust_string_lossy(scope);
+        let name = args.get(1).to_rust_string_lossy(scope);
+        rv.set_bool(crate::gamedata_calls::is_receiverless(&pid, &name));
+    }));
+}
+
 /// Native `__s2_engine_call_status(pluginId, callName) -> string`. `"available"`, or the named reason
 /// the descriptor is not (spec §12) — for diagnostics and operator reports.
 fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -7443,7 +7467,18 @@ fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         // synchronously fire an output/event that dispatches into JS and calls Engine.call again.
         let Some(plan) = crate::gamedata_calls::plan(&pid, &name) else { return };
         // Receiver: books-gated (index, id) → (index, engine serial). Not-live → no-op, never a deref.
-        let Some((index, serial)) = ent_op_serial(scope, args.get(2), args.get(3)) else { return };
+        //
+        // A receiverless descriptor (`receiver.kind: "none"`) has no entity to gate: it passes the
+        // shim's receiverless sentinel (index < 0) so no resolve is attempted and the first declared
+        // arg takes the slot `this` would have occupied.
+        let (index, serial) = if plan.receiverless {
+            (-1, 0)
+        } else {
+            match ent_op_serial(scope, args.get(2), args.get(3)) {
+                Some(pair) => pair,
+                None => return,
+            }
+        };
 
         // `receiver.via`: resolved LAZILY through the same cached resolver JS's `__s2_schema_offset`
         // uses — schema resolves at map-live, not at Load (spec §11). A miss no-ops THIS invocation
@@ -7795,6 +7830,22 @@ fn s2_ent_identity_flags(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(func) = ops.ent_identity_flags else { return };
         let flags = func(index, serial);
+        if flags >= 0 { rv.set_double(flags as f64); }
+    }));
+}
+
+/// Native `__s2_ent_identity_flags_clear(index, id, mask) -> number | null`. Drops `mask`'s bits from
+/// CEntityIdentity::m_flags and returns the result. CLEAR-ONLY, and EF_IS_INVALID_EHANDLE is refused
+/// shim-side — a plugin must never be able to present a dead slot as live.
+fn s2_ent_identity_flags_clear(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let mask = args.get(2).uint32_value(scope).unwrap_or(0);
+        if mask == 0 { return; }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(func) = ops.ent_identity_flags_clear else { return };
+        let flags = func(index, serial, mask);
         if flags >= 0 { rv.set_double(flags as f64); }
     }));
 }
@@ -8806,6 +8857,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_entity_name", s2_entity_name);
     // E1 entity-liveness slice: identity-slot flags (books-gated) for pawn.isValid's staging check.
     set_native(scope, global_obj, "__s2_ent_identity_flags", s2_ent_identity_flags);
+    set_native(scope, global_obj, "__s2_ent_identity_flags_clear", s2_ent_identity_flags_clear);
     // checktransmit slice: declarative per-client entity visibility rules (@s2script/transmit).
     set_native(scope, global_obj, "__s2_transmit_set", s2_transmit_set);
     set_native(scope, global_obj, "__s2_transmit_reset", s2_transmit_reset);
@@ -8831,6 +8883,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Plugin-declared engine calls (`@s2script/sdk/unsafe`): ask-by-name only — there is deliberately
     // NO registration native (core registers descriptors itself from the packed gamedata.json).
     set_native(scope, global_obj, "__s2_engine_call_ready", s2_engine_call_ready);
+    set_native(scope, global_obj, "__s2_engine_call_receiverless", s2_engine_call_receiverless);
     set_native(scope, global_obj, "__s2_engine_call_status", s2_engine_call_status);
     set_native(scope, global_obj, "__s2_engine_call_invoke", s2_engine_call_invoke);
 }
@@ -14354,6 +14407,7 @@ mod frame_tests {
             voice_audible_stats: None,
             client_command: None,
             client_fake_command: None,
+            ent_identity_flags_clear: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -15869,6 +15923,7 @@ mod frame_tests {
             voice_audible_stats: None,
             client_command: None,
             client_fake_command: None,
+            ent_identity_flags_clear: None,
         }
     }
 

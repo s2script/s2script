@@ -327,6 +327,23 @@
     // forceEdictIndex) -> CBaseEntity*. A DIRECT prologue pattern (match offset == function
     // start; the rip-relative `lea` disp is masked). Validated UNIQUE @ 2026-07-09 in the pinned
     // libserver.so (@0x16a9140). Per-update the prologue/offset move each patch (the treadmill).
+    // Game-system registration (model precache). The head of the engine's game-system factory
+    // list, CBaseGameSystemFactory::sm_pFirst. Inserting a factory there is the ONLY way to receive
+    // BuildGameSessionManifest, which carries the session resource manifest -- the manifest that
+    // decides which MODELS are resident. The pre-existing CGameRulesGameSystem::OnPrecacheResource
+    // vtable hook receives a DIFFERENT manifest: adding a model there is accepted and silently never
+    // made resident, which is why every custom model spawned as the pink ERROR box.
+    //
+    // The pattern matches `mov r14, [rip+disp32]` (4C 8B 35 ...) inside IGameSystem::InitAllSystems,
+    // so it is a "lea-disp" resolve: skip the 3-byte opcode, read the 4-byte displacement, add it to
+    // the address of the next instruction. Same signature CounterStrikeSharp uses for this.
+    "IGameSystem_InitAllSystems_pFirst": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "4C 8B 35 ? ? ? ? 4D 85 F6 75",
+        "resolve": "lea-disp"
+      }
+    },
     "UtilCreateEntityByName": {
       "linuxsteamrt64": {
         "module": "libserver.so",

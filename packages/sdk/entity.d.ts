@@ -116,6 +116,20 @@ export declare class EntityRef {
   notifyStateChanged(offset: number): void;
   /** Raw identity-slot flags (engine m_flags), or null when stale/unavailable. Bit meanings are game-specific. */
   identityFlags(): number | null;
+  /**
+   * CLEAR identity-slot flag bits; returns the flags after the write, or null when stale.
+   *
+   * Clear-only by design: `mask` names bits to DROP and nothing can be raised, because handing a
+   * plugin the ability to set arbitrary identity bits is a far larger foot-gun than the one this
+   * closes. The invalid-ehandle bit is refused outright — a dead slot must never be presentable as
+   * live.
+   *
+   * The case this exists for is the staging bit. `setModel` asserts that an entity is NOT in the
+   * staging list, and a created-but-unspawned entity is, so the create -> setModel -> spawn ordering
+   * (what CS2's own body spawner does) is otherwise unavailable and the alternatives produce
+   * half-initialised entities that clients fail to copy.
+   */
+  clearIdentityFlags(mask: number): number | null;
   /** DispatchSpawn this created entity. With keyvalues, the entity's own Spawn() parses them (the
    *  SourceMod DispatchKeyValue / CSSharp DispatchSpawn(kv) mechanism). Returns false if stale,
    *  unresolved, or the keyvalue map is rejected (non-finite number, unsupported value type, empty

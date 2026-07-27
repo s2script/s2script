@@ -336,6 +336,10 @@ typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial,
                                         const char* const* strs, const float* vecs,
                                         int retKind, uint64_t* retOut);
 /* --- client-command slice: make a client run a console command --- */
+/* Clear identity flag bits on a live entity -> flags AFTER the write, or -1 if not live. CLEAR-ONLY
+ * (a mask of bits to drop); EF_IS_INVALID_EHANDLE is never clearable. Exists for EF_IN_STAGING_LIST,
+ * which SetModel asserts on. */
+typedef long long (*s2_ent_identity_flags_clear_fn)(int index, int serial, unsigned int mask);
 typedef int (*s2_client_command_fn)(int slot, const char* cmd);
 typedef int (*s2_client_fake_command_fn)(int slot, const char* cmd);
 
@@ -527,6 +531,8 @@ typedef struct {
     /* --- client-command slice (APPENDED after voice_audible_stats; order is the ABI) --- */
     s2_client_command_fn      client_command;
     s2_client_fake_command_fn client_fake_command;
+    /* identity-flag clear — APPENDED after client_fake_command; order is the ABI; do not reorder. */
+    s2_ent_identity_flags_clear_fn ent_identity_flags_clear;
 } S2EngineOps;
 
 /* ops may be null -> all engine natives degrade.  The core copies the struct by

@@ -10,12 +10,27 @@ export const RET_KINDS: readonly RetKind[] = ["void", "bool", "int", "float", "e
 /** Everything except `float` occupies an integer register under SysV. */
 export const INT_CLASS_ARGS: ReadonlySet<ArgKind> = new Set<ArgKind>(["bool", "int", "string", "vector", "entity"]);
 /** `this` consumes rdi, leaving 5 GP argument registers. */
-export const MAX_INT_ARGS = 5;
+/**
+ * Declared integer-class args. Mirrors `kMaxGpArgs` (shim) and `MAX_GP_ARGS` (core) — an ABI.
+ *
+ * Six is the SysV *register* count, not a limit on the call: further integer args spill to the
+ * stack, which the shim's prototypes cover. The budget is 9 declared args, plus the receiver when
+ * the descriptor has one.
+ */
+export const MAX_INT_ARGS = 9;
 export const MAX_FLOAT_ARGS = 8;
 
 export interface SigSpec { module: string; pattern: string; resolve: string }
 export interface ViaSpec { class: string; field: string }
-export interface Receiver { kind: "entity"; via?: ViaSpec }
+/**
+ * How the call obtains its `this`.
+ *
+ * `"entity"` — a books-gated entity ref supplies the receiver, optionally hopping through ONE
+ * schema-named sub-object pointer (`via`).
+ * `"none"`   — a STATIC/free engine function with no receiver at all. The generated callable takes
+ * no leading `self`, and `via` is rejected: there is no receiver to hop from.
+ */
+export type Receiver = { kind: "entity"; via?: ViaSpec } | { kind: "none" };
 
 export interface SignatureTarget { kind: "signature"; name: string }
 export interface VtablePlatform { index: number; validate: { prologue: string } }
