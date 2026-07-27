@@ -1,5 +1,65 @@
 # @s2script/cli
 
+## 0.11.0
+
+### Minor Changes
+
+- 6c3ddfd: `EntityRef.clearIdentityFlags(mask)` — drop identity-slot flag bits
+
+  Clear-only: `mask` names bits to DROP and nothing can be raised, and the invalid-ehandle bit is refused
+  outright, because a plugin must never be able to present a dead slot as live.
+
+  The case it exists for is the STAGING bit. `setModel` routes through `SetupModel`, which asserts the
+  entity is not in the staging list, and a created-but-unspawned entity is — so the
+  create -> setModel -> spawn ordering that CS2's own body spawner uses was simply unavailable, and the
+  two remaining orderings each fail in their own way: setting the model first trips the assertion and
+  leaves a half-initialised skeletal entity for clients to choke on (`CopyExistingEntity: missing client
+entity N`), while setting it after spawn leaves a model entity that spawned with no model at all.
+
+  Spawn keyvalues remain the simplest route when they fit. This is for the cases they do not.
+
+- 922b677: Precache models (and any resource) through the game session manifest
+
+  `PrecacheContext.add` accepted model paths and never made them resident. A plugin precached a model,
+  `add` returned true, no warning was logged, and the model then spawned as the pink-and-black ERROR box
+  with the engine complaining "requested but is not in the system (Missing from a manifest?)". Sounds were
+  unaffected, which is why it went unnoticed: they go through a separate global helper, and the precache
+  slice was specified and tested for soundevents only.
+
+  The adds were reaching the manifest handed out by `CGameRulesGameSystem::OnPrecacheResource`, which does
+  not govern residency. The one that does is the GAME SESSION manifest, delivered to game systems as
+  `EventBuildGameSessionManifest_t::m_pResourceManifest`, so the shim now registers a game system to
+  receive it — the same way CounterStrikeSharp does, which is why the same model paths work there.
+  Registration needs `CBaseGameSystemFactory::sm_pFirst`, which is not exported and is sig-resolved; if
+  that resolve fails, nothing is registered and model precaching stays inert rather than crashing.
+
+  `add` still reports only that the engine accepted the string — it returned true for a path with no file
+  behind it — so its result is not evidence a model will load.
+
+  Also fixes `UserMessage.setString` silently dropping the value on a REPEATED field. It returned 0 and
+  the message went out without the text while `send()` reported success, because delivery had happened.
+  `CUserMessageTextMsg.param` is repeated, which is why centre-screen hint text arrived blank. Repeated
+  string fields now append via `AddString`.
+
+  Known limitation: a plugin loaded AFTER the session manifest was built (the boot map) misses that map's
+  precache, so its models are unusable until the next map change.
+
+- 4b6f610: Plugin-declared engine calls: support static functions and stack-passed args
+
+  Two additive extensions to the declared-call format, both engine-generic.
+
+  `receiver.kind: "none"` declares a STATIC/free engine function — no `this`. The generated callable
+  takes no leading `self`, and the first declared arg occupies the register the receiver would have
+  used. `via` is rejected on such a descriptor, since a sub-object hop is a hop from a receiver.
+
+  The integer-class arg budget rises from 5 (+ `this`) to 9 (+ optional receiver). Six was the SysV
+  register count rather than a limit on the call; args past the sixth spill to the stack, which the
+  shim's max-arity prototypes now cover.
+
+  Together these make engine FACTORIES declarable from a plugin's own gamedata. They are static by
+  nature and commonly take more than six arguments, so previously the only route was a game-specific op
+  in the core — which the core-boundary gates exist to prevent.
+
 ## 0.10.2
 
 ### Patch Changes
