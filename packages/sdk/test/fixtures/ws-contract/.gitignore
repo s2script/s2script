@@ -1,0 +1,5 @@
+# The workspace symlinks npm would create are COMMITTED (git mode 120000), because this fixture
+# never receives an `npm install` — sibling contract resolution IS the thing under test, and it
+# resolves through exactly these links. Re-included over the repo-wide `node_modules/` ignore.
+!node_modules/
+!node_modules/**

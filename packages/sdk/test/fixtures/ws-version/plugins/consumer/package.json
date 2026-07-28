@@ -1,0 +1,9 @@
+{
+  "name": "@fixture/vconsumer",
+  "version": "1.3.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "pluginDependencies": { "@fixture/vproducer": "^2.0.0" }
+  }
+}

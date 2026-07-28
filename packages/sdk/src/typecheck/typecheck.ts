@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolvePackagesDir } from "../packages-resolve.ts";
 import { sharedProgramOptions } from "../tsconfig-shared.ts";
 import { localContractPath } from "../contracts.ts";
+import { resolveSiblingContracts } from "../workspace/siblings.ts";
 
 export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
 export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; program?: ts.Program; }
@@ -89,8 +90,39 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     ...Object.keys(s2.pluginDependencies ?? {}),
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
   ];
+  // Workspace siblings (design spec 2026-07-27 §3.2/§5.3) get no ambient stub: npm already
+  // symlinked the producer into node_modules, so `moduleResolution: "bundler"` finds its `types`
+  // on its own — one copy of the bytes, drift impossible by construction. The ambient stub is what
+  // shadows that resolution (§3.3), which is why suppressing it is the whole feature.
+  // Empty for a non-workspace plugin, so every existing build is bit-identical (§11).
+  const { siblings } = resolveSiblingContracts(absDir, allDeclaredDeps);
+
   const contractPaths: Record<string, string[]> = {};
   for (const d of allDeclaredDeps) {
+    const sibling = siblings.get(d);
+    if (sibling !== undefined) {
+      // Decision #9: the SIBLING beats a stale `.s2script/types/<dep>/index.d.ts` left over from
+      // before the migration. The copy is the drift vector this design removes; leaving it
+      // authoritative here would defeat the point. `build.ts` warns that it is now ignored.
+      //
+      // ALWAYS map the interface to the producer's own contract — never lean on the symlink.
+      //
+      // §3.2 originally resolved siblings through npm's `node_modules` link, on the strength of
+      // §3.1: npm links EVERY workspace package, declared as a dependency or not. That is true of
+      // npm and does not generalise. pnpm and bun link only packages something declares as an NPM
+      // dependency, and an s2script plugin dep lives under `s2script.pluginDependencies` — so they
+      // create no link and the suppressed stub became `TS2307: Cannot find module`. yarn PnP has no
+      // `node_modules` at all. Measured on pnpm 10 and bun 1.3; both failed, and both pass with
+      // this entry.
+      //
+      // A dependency name is also an INTERFACE name (§5.3.0) while a symlink carries the PACKAGE
+      // name, so the link could never reach a producer publishing under a decoupled name anyway
+      // (@edge/mce publishing @community/mapchooser). One mechanism now covers both: point tsc at
+      // the producer's OWN contract — the very file `build.ts` hashes into `compiledAgainst`, so
+      // there is still exactly one copy of the bytes and drift stays impossible by construction.
+      contractPaths[d] = [sibling.typesPath];
+      continue;
+    }
     const p = localContractPath(absDir, d);
     if (p !== null) contractPaths[d] = [p];
   }
@@ -100,7 +132,13 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
     // Never stub a module the plugin declares itself — a shorthand `declare module "X";` and a
     // full `declare module "X" { … }` for the same X collide.
-  ].filter((d) => !isAlwaysResolved(d) && !locallyDeclared.has(d) && contractPaths[d] === undefined);
+  ].filter(
+    (d) =>
+      !isAlwaysResolved(d) &&
+      !locallyDeclared.has(d) &&
+      contractPaths[d] === undefined &&
+      !siblings.has(d),
+  );
 
   const options: ts.CompilerOptions = {
     // Accept explicit `.ts` import extensions (node type-stripping requires them for source-to-source

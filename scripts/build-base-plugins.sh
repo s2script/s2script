@@ -12,6 +12,17 @@
 # to that version BEFORE build so the .s2sp manifest matches the runtime zip.
 # npm @s2script/* packages are independent (Changesets); plugins track the tag.
 #
+# THIS IS NOW A THIN SHIM over `s2s build --stamp-version` (design spec
+# 2026-07-27 §9.3). The repo root carries `s2script.workspace`, so the CLI owns
+# discovery, dependency ordering, the preflight gates, version stamping and the
+# collect-all summary; the loop that used to live here was the workaround that
+# justified building the capability into the CLI in the first place.
+#
+# The file is KEPT rather than deleted deliberately: .github/workflows/release.yml
+# and scripts/package-release.sh both shell to it, and the auto-publishing release
+# path is the part least worth churning. Its contract is unchanged — same env var,
+# same exit codes, same "PASS: built N base plugin(s)" line, same .s2sp listing.
+#
 # Requires Node. Builds the local CLI first, then typechecks+bundles each plugin.
 # Emits: plugins/<name>/dist/*.s2sp
 set -euo pipefail
@@ -22,61 +33,46 @@ if [ ! -d plugins ]; then
     exit 1
 fi
 
-# Optional: stamp plugin versions to match a release tag (plugins track the zip).
-TAG_VERSION="${VERSION:-${1:-}}"
-TAG_VERSION="${TAG_VERSION#v}"
-if [ -n "$TAG_VERSION" ]; then
-    echo "=== stamp plugin versions → $TAG_VERSION ==="
-    # plugins/*/ also globs the bare plugins/disabled/ dir; the package.json guard skips it.
-    for d in plugins/*/ plugins/disabled/*/; do
-        [ -f "$d/package.json" ] || continue
-        node -e '
-          const fs = require("fs");
-          const p = process.argv[1];
-          const ver = process.argv[2];
-          const j = JSON.parse(fs.readFileSync(p, "utf8"));
-          if (j.version === ver) process.exit(0);
-          j.version = ver;
-          fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
-          console.log("  " + j.name + " → " + ver);
-        ' "$d/package.json" "$TAG_VERSION"
-    done
-fi
-
 echo "=== build @s2script/sdk ==="
-# Workspaces hoist deps to the repo root (package.json workspaces: packages/*).
+# node_modules is load-bearing now, not just a build convenience: npm's workspace
+# symlinks are how a plugin resolves a SIBLING's published contract in place
+# (spec §3.1–3.2), so a missing node_modules is a broken build, not a slow one.
 if [ ! -d node_modules ]; then
     npm install --no-fund --no-audit
 fi
 ( cd packages/sdk && npm run build )
 
 CLI="node packages/sdk/dist/cli.js"
-fail=0
-built=0
 
-# plugins/*/ also globs the bare plugins/disabled/ dir; the package.json guard skips it.
-for d in plugins/*/ plugins/disabled/*/; do
-    [ -f "$d/package.json" ] || continue
-    name=$(basename "$d")
-    # Safety: never ship *-demo from plugins/ (demos belong in examples/)
-    case "$name" in
-        *-demo)
-            echo "SKIP demo left in plugins/: $name (move to examples/)" >&2
-            continue
-            ;;
-    esac
-    echo "=== build $d ==="
-    if $CLI build "$d"; then
-        built=$((built + 1))
-    else
-        fail=1
-    fi
-done
+# Optional: stamp plugin versions to match a release tag (plugins track the zip).
+# `--stamp-version` rewrites sibling ranges alongside the versions, which the old
+# in-script `node -e` stamp never did — stamping every plugin to one version would
+# otherwise trip the §5.2 range gate on any consumer declaring an older producer.
+TAG_VERSION="${VERSION:-${1:-}}"
+TAG_VERSION="${TAG_VERSION#v}"
+STAMP=()
+if [ -n "$TAG_VERSION" ]; then
+    echo "=== stamp plugin versions → $TAG_VERSION ==="
+    STAMP=(--stamp-version "$TAG_VERSION")
+fi
 
-if [ "$fail" != 0 ]; then
+# Workspace mode prints one artifact path per built plugin on stdout (progress,
+# the stamp report and every failure go to stderr), so counting stdout lines
+# reproduces the old per-plugin `built=$((built + 1))` exactly.
+#
+# There is deliberately no *-demo skip any more: the workspace model has no
+# exclusion glob, demos belong in examples/ (this script has said so since it was
+# written), and package-release.sh still refuses to COPY a */-demo/* artifact
+# into the zip — the guard that actually protects a release is still in place.
+BUILT_LIST=$(mktemp)
+trap 'rm -f "$BUILT_LIST"' EXIT
+
+if ! $CLI build "${STAMP[@]+"${STAMP[@]}"}" >"$BUILT_LIST"; then
     echo "FAIL: one or more base plugins failed to build" >&2
     exit 1
 fi
+
+built=$(grep -c . "$BUILT_LIST" || true)
 if [ "$built" -eq 0 ]; then
     echo "FAIL: no base plugins found under plugins/" >&2
     exit 1

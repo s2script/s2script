@@ -7,5 +7,24 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": []
+  "ignore": [
+    "@s2script/adminhelp",
+    "@s2script/adminmenu",
+    "@s2script/antiflood",
+    "@s2script/basebans",
+    "@s2script/basechat",
+    "@s2script/basecomm",
+    "@s2script/basecommands",
+    "@s2script/basetriggers",
+    "@s2script/basevotes",
+    "@s2script/clientprefs",
+    "@s2script/funcommands",
+    "@s2script/funvotes",
+    "@s2script/nextmap",
+    "@s2script/nominations",
+    "@s2script/playercommands",
+    "@s2script/reservedslots",
+    "@s2script/rockthevote",
+    "@s2script/zones"
+  ]
 }

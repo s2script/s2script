@@ -285,6 +285,48 @@ addons/s2script/gamedata/*.gamedata.jsonc   # operator-droppable, version-tied, 
 
 **Gamedata is never bundled per-plugin** — it's version-tied, game-specific, shared infrastructure (ships with `@s2script/cs2`, droppable into `/gamedata` to override). Files merge into one **validated namespace**; **operator-dropped files override core** (the hotfix path — a signature breaks, drop a corrected `.gamedata.jsonc`, every dependent plugin fixed immediately). Bad files rejected with a named error, never silently merged. Plugins **declare** `requiresGamedata` and fail-fast-and-legibly at load.
 
+### 2.7.1 Workspaces — many plugins, one repo, one build
+
+A directory's `package.json` carrying an `s2script.workspace.plugins` glob list — alongside npm's
+own `workspaces` field — is a **workspace root**, and its presence is the *only* thing that makes
+it one; a plugin's own `package.json` gains no new marker at all (§2.7's file-ownership split
+holds: standard npm fields for what npm models, the `s2script` block for the engine fact naming
+which of those npm-modeled packages are plugins). Every command (`s2s build`/`deploy`/`version`)
+walks **up** from wherever it's invoked looking for that marker; finding none, it behaves exactly
+as it does for a lone plugin directory — workspace mode is opt-in by construction, never a
+behavioral change to the single-plugin path that predates it.
+
+**Sibling contracts resolve in place — no copy, ever.** npm already symlinks every workspace member
+into the workspace root's `node_modules`, declared as a dependency or not; under
+`moduleResolution: "bundler"` that symlink alone is enough for a consumer's `import type` of a
+sibling's published interface to resolve straight to the sibling's own `types` file, with zero
+config and zero generated files. This is a stronger, cheaper claim than §2.9's registry path
+(`s2s add`), which pulls a producer's `.d.ts` down into a consumer's own
+`.s2script/types/<dep>/index.d.ts` **because there is nothing else on disk to resolve to** — a
+registry producer isn't co-located with its consumer, so a byte-copy (hashed into
+`manifest.compiledAgainst`, re-verified against the producer's published hash at load, per §2.9) is
+the only way the consumer's build can see its shape at all, and that copy is exactly the thing that
+can silently drift once the producer's interface moves on. A workspace sibling needs none of that
+ceremony: the file the consumer's build resolves to *is* the producer's real, current contract, on
+the same disk, in the same commit — copying it would be pure ceremony, and a worse one than doing
+nothing, since a copy can go stale and a resolved-in-place symlink cannot. `compiledAgainst` is
+computed identically either way (a sha256 of a `types` file), so the loader's drift check is one
+mechanism regardless of path; in a workspace it passes for structural reasons — both sides hash the
+identical file — rather than by luck. A pre-migration `.s2script/types/<dep>/` copy left over after
+a plugin joins a workspace loses to the live sibling, with a build-time warning naming it as safe to
+delete now.
+
+**`private: true` = built, never published.** Ordinary npm and Changesets semantics, not a new
+invention: a workspace's `s2s build` builds every member regardless of `private`, but `s2s deploy`
+computes a per-plugin publish plan that skips a `private: true` package by name rather than
+uploading it. This is what lets a repository hold a large first-party or in-house plugin suite that
+must never leak onto the public registry — s2script's own `plugins/` tree (§2.11) is exactly such a
+workspace: every base plugin already carries `private: true`, so `s2s build` at the repo root
+builds all of them (retiring the old `scripts/build-base-plugins.sh` bash loop) while `s2s deploy`
+there is a named no-op. Distributing the base suite through the registry instead remains the
+deliberate future decision §2.11 already describes — this mechanism doesn't make it, it only keeps
+today's posture from being an accident of the tooling rather than a choice.
+
 ### 2.8 Config & convars (two-layer model)
 
 - **Settings (~90%):** framework-managed. `config.define("max_rounds", { default: 15, min: 1, max: 30 })`. Materialized to `<name>.cfg`, parsed/applied by the framework. **Zero dependency on Source 2 convar internals.**

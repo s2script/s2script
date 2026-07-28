@@ -1,0 +1,8 @@
+{
+  "name": "@me/shop",
+  "version": "3.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "types": "api.d.ts",
+  "s2script": { "publishes": "self" }
+}

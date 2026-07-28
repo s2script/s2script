@@ -93,7 +93,7 @@ games/cs2/   CS2 game-package prelude (pawn.js + generated schema/nav accessors)
 packages/    npm-published: @s2script/sdk (builtin capability .d.ts as @s2script/sdk/<cap> subpaths + the `s2s` CLI) and @s2script/cs2 (game types).
 plugins/     The base-plugin suite (SourceMod parity) — ships in the runtime zip.
 examples/    Worked examples (not shipped): hello-plugin, cookbook, entity-playground,
-             greeter-plugin/-consumer, monorepo-plugin.
+             greeter-plugin/-consumer, monorepo.
 tools/       Dev/treadmill tooling (not shipped): schema-dump, s2bench, crash-test.
 plugins/disabled/  Opt-in plugins; the loader's non-recursive scan skips the `plugins/disabled/` subdir. Operators move a .s2sp up one level (into `plugins/`) to enable.
 gamedata/    Regenerable engine facts: byte-signatures, offsets, schema/event/item catalogs (data, not code).

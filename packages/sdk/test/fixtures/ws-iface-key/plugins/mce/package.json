@@ -1,0 +1,8 @@
+{
+  "name": "@fixture/ik-mce",
+  "version": "3.1.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "types": "api.d.ts",
+  "s2script": { "publishes": { "@fixture/ik-mapchooser": "1.2.0" } }
+}

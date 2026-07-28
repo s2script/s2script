@@ -1,0 +1,7 @@
+{
+  "name": "@fixture/ws-basic",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": ["plugins/*", "packages/*"],
+  "s2script": { "workspace": { "plugins": ["plugins/*"] } }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@me/warmup",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "pluginDependencies": { "@me/shop": "^1.0.0" },
+    "optionalPluginDependencies": { "@me/ranks": "^9.0.0" }
+  }
+}

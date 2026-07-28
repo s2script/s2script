@@ -1,0 +1,9 @@
+{
+  "name": "@fixture/broken",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "config": { "rounds": { "type": "int", "default": "not-an-int" } }
+  }
+}

@@ -6,7 +6,7 @@ import {
   readFileSync,
   symlinkSync,
 } from "node:fs";
-import { dirname, join, resolve, basename } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isPackagesDir } from "../packages-resolve.ts";
@@ -26,6 +26,15 @@ export interface CreateOptions {
   noInstall?: boolean;
   /** Skip interactive prompts; use defaults / provided flags. */
   yes?: boolean;
+  /**
+   * Set by the CLI (spec §8) when `s2s create <name>` runs inside a detected workspace: `path`,
+   * if given, is then a bare plugin SLUG under `plugins/` — never a path relative to cwd — and the
+   * scaffold is minimal (no devDependencies, no per-plugin eslint config, a tsconfig extending the
+   * root's). `createPlugin` never derives this from `process.cwd()` itself: the CLI is the only
+   * caller with a real ambient cwd, so every other caller (tests, library use) stays fully
+   * deterministic over its explicit options.
+   */
+  workspaceRoot?: string;
 }
 
 export interface CreateResult {
@@ -35,9 +44,13 @@ export interface CreateResult {
   installed: boolean;
   skippedInstall: boolean;
   packageManager?: InstallChoice;
+  /** Set when this plugin was scaffolded as a workspace member — echoes opts.workspaceRoot. */
+  workspaceRoot?: string;
 }
 
-function readCliVersion(): string {
+/** Exported so `create/workspace.ts` can stamp the SDK's own running version into a fresh
+ *  workspace root's devDependencies without re-deriving it. */
+export function readCliVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     join(here, "..", "package.json"), // dist/cli.js → packages/sdk/package.json
@@ -55,8 +68,9 @@ function readCliVersion(): string {
   return "0.1.0";
 }
 
-/** Locate monorepo packages/ when create runs from an in-tree CLI build. */
-function findLocalPackagesDir(): string | undefined {
+/** Locate monorepo packages/ when create runs from an in-tree CLI build. Exported for
+ *  `create/workspace.ts`, which needs the same in-tree `file:` vs registry decision at the root. */
+export function findLocalPackagesDir(): string | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     join(here, "..", ".."), // dist/cli.js → packages
@@ -68,14 +82,48 @@ function findLocalPackagesDir(): string | undefined {
   return undefined;
 }
 
-function defaultNameFromPath(dir: string): string {
+/** Sanitize a directory's basename into a filesystem/package-name-safe slug, falling back to
+ *  `fallback` when that leaves nothing (root path, or a name that is all-punctuation). Shared by
+ *  `defaultNameFromPath` (prefixes `@plugin/`) and `create/workspace.ts`'s root name default
+ *  (a different fallback — a workspace root package is never itself an npm dependency). */
+export function slugifyBasename(dir: string, fallback = "plugin"): string {
   const base = basename(resolve(dir));
-  const slug =
+  return (
     base
       .replace(/[^a-zA-Z0-9._-]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .toLowerCase() || "plugin";
-  return `@plugin/${slug}`;
+      .toLowerCase() || fallback
+  );
+}
+
+function defaultNameFromPath(dir: string): string {
+  return `@plugin/${slugifyBasename(dir)}`;
+}
+
+/** The "target directory is not empty" guard (spec §8): applies to the root dir in
+ *  `create --workspace <dir>` and to the new `plugins/<name>` subdirectory when adding a plugin
+ *  to a workspace — a `.git` already there (e.g. `git init` ran first) does not count as "not
+ *  empty". Exported so `create/workspace.ts` runs the identical check on the workspace root. */
+export function assertEmptyTarget(targetPath: string): void {
+  if (!existsSync(targetPath)) return;
+  const kids = readdirSync(targetPath);
+  const meaningful = kids.filter((k) => k !== ".git");
+  if (meaningful.length) {
+    throw new Error(`target directory is not empty: ${targetPath}`);
+  }
+}
+
+/** Inside a workspace, `s2s create <name>` names a NEW SIBLING under `plugins/` (spec §8) — `raw`
+ *  must be a single path segment, never a path relative to cwd. A workspace member's location is
+ *  always `plugins/<name>`, so there is nothing else a path could mean here. */
+function assertBareSlug(raw: string): string {
+  if (raw === "" || raw === "." || raw === ".." || isAbsolute(raw) || raw.includes("/") || raw.includes("\\")) {
+    throw new Error(
+      `inside a workspace, "s2s create" takes a plugin NAME, not a path (got ${JSON.stringify(raw)}) ` +
+        `— it always writes plugins/<name>/`,
+    );
+  }
+  return raw;
 }
 
 function assertGame(v: string | undefined): GameChoice | undefined {
@@ -92,8 +140,9 @@ function assertInstall(v: string | undefined): InstallChoice | undefined {
 
 /** Direct create deps needed for a clean typecheck. Post-consolidation the builtins all ship in
  *  the single `@s2script/sdk` package (subpaths `@s2script/sdk/<cap>`), which also carries the
- *  build CLI (bin `s2s`); the game types are the separate `@s2script/cs2`. */
-function createPackageNames(game: GameChoice): string[] {
+ *  build CLI (bin `s2s`); the game types are the separate `@s2script/cs2`. Exported so
+ *  `create/workspace.ts` can compute the same set for a workspace root's devDependencies. */
+export function createPackageNames(game: GameChoice): string[] {
   if (game === "cs2") {
     return ["sdk", "cs2", "eslint-plugin"];
   }
@@ -130,7 +179,8 @@ export function registryDevDeps(
   return deps;
 }
 
-function fileDevDeps(packagesDir: string, game: GameChoice): Record<string, string> | undefined {
+/** Exported so `create/workspace.ts` makes the identical in-tree-vs-registry decision at the root. */
+export function fileDevDeps(packagesDir: string, game: GameChoice): Record<string, string> | undefined {
   const deps: Record<string, string> = {};
   for (const n of createPackageNames(game)) {
     const abs = join(packagesDir, n);
@@ -169,9 +219,12 @@ export default plugin((ctx) => {
 }
 
 /** Aligned with packages/sdk's own eslint dependency — bump the two together. */
-const ESLINT_RANGE = "^10.7.0";
+export const ESLINT_RANGE = "^10.7.0";
 
-function eslintConfig(): string {
+/** A standalone plugin's own eslint.config.mjs. A workspace member writes NONE of this — one root
+ *  config covers every plugin (lint.ts searches upward to the workspace root, spec §5.3 item 3) —
+ *  so `create/workspace.ts` reuses this same content for the ROOT's config instead of duplicating it. */
+export function eslintConfig(): string {
   return `import s2script from "@s2script/eslint-plugin";
 
 // The SAME pinned rules \`s2s build\` enforces — the editor's ESLint extension picks this up,
@@ -191,6 +244,46 @@ function tsconfigJson(): string {
         // adds the file to its own program (typecheck.ts) but tsconfig never did. Harmless when the
         // plugin ships no gamedata: the path simply matches nothing.
         include: ["src", ".s2script/gamedata.d.ts", "node_modules/@s2script/sdk/globals.d.ts"],
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
+/** A workspace member's tsconfig.json (spec §8): extends the root's `tsconfig.base.json` instead
+ *  of repeating `sharedCompilerOptionsJson` — the root's own file is already that single literal
+ *  (`create/workspace.ts`'s `tsconfigBaseJson`), so a per-plugin copy would be exactly the
+ *  duplication the design avoids. `include` still needs stating per-plugin: tsconfig `extends`
+ *  does not merge `include`, only `compilerOptions`. */
+function workspaceTsconfigJson(targetPath: string, workspaceRoot: string): string {
+  const rel = relative(targetPath, join(workspaceRoot, "tsconfig.base.json")).replace(/\\/g, "/");
+  return (
+    JSON.stringify(
+      {
+        extends: rel.startsWith(".") ? rel : `./${rel}`,
+        include: ["src", ".s2script/gamedata.d.ts", "node_modules/@s2script/sdk/globals.d.ts"],
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
+/** A workspace member's MINIMAL package.json (spec §8): no devDependencies at all — they live at
+ *  the root and are hoisted to a single `node_modules` npm workspaces already share — and no
+ *  eslint field, since the root's `eslint.config.mjs` covers every member (§5.3 item 3). */
+function minimalPackageJsonContent(name: string): string {
+  return (
+    JSON.stringify(
+      {
+        name,
+        version: "0.1.0",
+        private: true,
+        main: "src/plugin.ts",
+        scripts: {
+          build: "s2s build .",
+        },
       },
       null,
       2,
@@ -227,7 +320,10 @@ function packageJsonContent(
   );
 }
 
-function gitignore(): string {
+/** None of these patterns has a slash in the middle, so git does NOT anchor them to this
+ *  directory — they match at any depth, which is exactly what a workspace root's nested
+ *  `plugins/<name>/dist/` needs too. Exported for `create/workspace.ts` to reuse verbatim. */
+export function gitignore(): string {
   return `node_modules/
 dist/
 *.s2sp
@@ -263,9 +359,15 @@ function runInstall(dir: string, pm: InstallChoice): void {
  *
  * When run from an in-tree CLI (monorepo packages/ present), devDependencies use
  * `file:` links so install works before the first npm publish.
+ *
+ * Workspace mode (`opts.workspaceRoot` set, spec §8): `opts.path`, if given, is a bare plugin
+ * SLUG under `plugins/` rather than a directory relative to cwd, and the scaffold written is
+ * minimal — no devDependencies (they live at the root), no per-plugin eslint config, a
+ * tsconfig.json extending the root's `tsconfig.base.json`. This function never inspects
+ * `process.cwd()` to decide it is "inside" a workspace; the CLI does that (the only caller with a
+ * real ambient cwd) and passes the root down, so every other caller stays fully deterministic.
  */
 export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResult> {
-  const targetPath = resolve(opts.path ?? ".");
   const interactive = ui.isInteractive({ yes: opts.yes });
   let game = assertGame(opts.game);
   let name = opts.name;
@@ -275,16 +377,33 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
     throw new Error(`unknown template ${JSON.stringify(template)} (v1 supports: minimal)`);
   }
 
-  if (existsSync(targetPath)) {
-    const kids = readdirSync(targetPath);
-    const meaningful = kids.filter((k) => k !== ".git");
-    if (meaningful.length) {
-      throw new Error(`target directory is not empty: ${targetPath}`);
-    }
-  }
+  const workspaceRoot = opts.workspaceRoot;
+  let slug = workspaceRoot !== undefined && opts.path !== undefined ? assertBareSlug(opts.path) : opts.path;
+  // Outside a workspace, targetPath is always resolvable up front (as it always was). Inside one,
+  // it depends on the slug — which interactively may not exist yet (no positional arg given).
+  let targetPath: string | undefined =
+    workspaceRoot === undefined
+      ? resolve(opts.path ?? ".")
+      : slug === undefined
+        ? undefined
+        : join(workspaceRoot, "plugins", slug);
+
+  if (targetPath !== undefined) assertEmptyTarget(targetPath);
 
   if (interactive) {
     ui.intro("Create an s2script plugin");
+    if (workspaceRoot !== undefined) {
+      // "the wizard announces the detected workspace and offers to add a plugin to it" (spec §8)
+      // — the announcement here, the offer is the confirm prompt below naming the workspace.
+      ui.log.info(`Detected workspace at ${workspaceRoot} — adding a plugin under plugins/`);
+      if (targetPath === undefined) {
+        slug = assertBareSlug(
+          await ui.text({ message: "Plugin name (directory under plugins/)", placeholder: "myplugin" }),
+        );
+        targetPath = join(workspaceRoot, "plugins", slug);
+        assertEmptyTarget(targetPath);
+      }
+    }
     if (!game) {
       game = await ui.select<GameChoice>({
         message: "Which game?",
@@ -296,13 +415,18 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
       });
     }
     if (!name) {
+      // targetPath is always resolved by here: standalone it was set up front; in workspace mode
+      // the block above either had it already or just prompted for the slug that produces it.
+      const known = targetPath as string;
       name = await ui.text({
         message: "Plugin package name",
-        defaultValue: defaultNameFromPath(targetPath),
-        placeholder: defaultNameFromPath(targetPath),
+        defaultValue: defaultNameFromPath(known),
+        placeholder: defaultNameFromPath(known),
       });
     }
-    if (!install) {
+    if (workspaceRoot === undefined && !install) {
+      // A workspace member has nothing per-plugin to install — see the forced "none" below —
+      // so this prompt only makes sense standalone.
       install = await ui.select<InstallChoice>({
         message: "Install dependencies?",
         options: [
@@ -316,50 +440,74 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
       });
     }
     const proceed = await ui.confirm({
-      message: `Create ${name} (${game}) in ${targetPath}?`,
+      message:
+        workspaceRoot !== undefined
+          ? `Add ${name} to the workspace at ${workspaceRoot}?`
+          : `Create ${name} (${game}) in ${targetPath}?`,
       initialValue: true,
     });
     if (!proceed) {
       ui.outro("Cancelled.");
       process.exit(130);
     }
+  } else if (workspaceRoot !== undefined && targetPath === undefined) {
+    throw new Error(
+      `s2s create: a plugin name is required inside a workspace (e.g. "s2s create shop") — pass it ` +
+        `as the argument or --name, or run interactively`,
+    );
   }
 
   game = game ?? "cs2";
-  name = name ?? defaultNameFromPath(targetPath);
-  install = install ?? (opts.noInstall ? "none" : "npm");
+  name = name ?? defaultNameFromPath(targetPath as string);
+  // A workspace member's package.json carries no devDependencies at all (they are hoisted at the
+  // root, already shared by npm workspaces) — there is nothing per-plugin to install. `npm
+  // install` belongs at the workspace root, once, after this adds the new member.
+  install = workspaceRoot !== undefined ? "none" : (install ?? (opts.noInstall ? "none" : "npm"));
 
-  const version = readCliVersion();
-  const localPackagesDir = findLocalPackagesDir();
+  const finalTargetPath = targetPath as string;
+  const localPackagesDir = workspaceRoot === undefined ? findLocalPackagesDir() : undefined;
 
-  mkdirSync(join(targetPath, "src"), { recursive: true });
-  writeFileSync(
-    join(targetPath, "package.json"),
-    packageJsonContent(name, game, version, localPackagesDir),
-  );
-  writeFileSync(join(targetPath, "tsconfig.json"), tsconfigJson());
-  writeFileSync(join(targetPath, "eslint.config.mjs"), eslintConfig());
-  writeFileSync(join(targetPath, "src", "plugin.ts"), pluginSource(game));
-  writeFileSync(join(targetPath, ".gitignore"), gitignore());
+  mkdirSync(join(finalTargetPath, "src"), { recursive: true });
+  if (workspaceRoot !== undefined) {
+    writeFileSync(join(finalTargetPath, "package.json"), minimalPackageJsonContent(name));
+    writeFileSync(
+      join(finalTargetPath, "tsconfig.json"),
+      workspaceTsconfigJson(finalTargetPath, workspaceRoot),
+    );
+    // No eslint.config.mjs here: the root's own covers every member (spec §5.3 item 3).
+  } else {
+    const version = readCliVersion();
+    writeFileSync(
+      join(finalTargetPath, "package.json"),
+      packageJsonContent(name, game, version, localPackagesDir),
+    );
+    writeFileSync(join(finalTargetPath, "tsconfig.json"), tsconfigJson());
+    writeFileSync(join(finalTargetPath, "eslint.config.mjs"), eslintConfig());
+  }
+  writeFileSync(join(finalTargetPath, "src", "plugin.ts"), pluginSource(game));
+  writeFileSync(join(finalTargetPath, ".gitignore"), gitignore());
 
   let installed = false;
-  if (install !== "none") {
-    const pm = install;
-    await ui.task(`Installing dependencies (${pm})`, async () => runInstall(targetPath, pm), {
-      interactive,
-      done: () => `Installed dependencies (${pm})`,
-    });
-    installed = true;
-  } else if (localPackagesDir) {
-    linkLocalPackagesForNoInstall(targetPath, localPackagesDir);
+  if (workspaceRoot === undefined) {
+    if (install !== "none") {
+      const pm = install;
+      await ui.task(`Installing dependencies (${pm})`, async () => runInstall(finalTargetPath, pm), {
+        interactive,
+        done: () => `Installed dependencies (${pm})`,
+      });
+      installed = true;
+    } else if (localPackagesDir) {
+      linkLocalPackagesForNoInstall(finalTargetPath, localPackagesDir);
+    }
   }
 
   return {
-    dir: targetPath,
+    dir: finalTargetPath,
     name,
     game,
     installed,
     skippedInstall: install === "none",
     packageManager: install,
+    workspaceRoot,
   };
 }

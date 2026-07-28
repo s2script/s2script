@@ -1,0 +1,4 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src", "api.d.ts", "../../../../packages/sdk/globals.d.ts"]
+}

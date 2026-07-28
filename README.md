@@ -61,13 +61,25 @@ Six worked examples under [`examples/`](examples/), smallest first:
 | [`cookbook`](examples/cookbook) | One file per API under `src/recipes/` — HTTP, websockets, sockets, DB, cookies, menus, sounds, traces, usermessages, and more. Copy a recipe into your own plugin. |
 | [`entity-playground`](examples/entity-playground) | Creating, configuring, and watching entities: keyvalue-configured spawns, entity I/O, lifecycle listeners, beams. |
 | [`greeter-plugin`](examples/greeter-plugin) + [`greeter-consumer`](examples/greeter-consumer) | Two plugins talking over a typed, versioned interface — including an `EntityRef` that stays live across the boundary. |
-| [`monorepo-plugin`](examples/monorepo-plugin) | Splitting one plugin across npm workspace packages when it outgrows a single `src/`. |
+| [`monorepo`](examples/monorepo) | A workspace of several plugins that build and publish together — a producer, a consumer depending on it with **no hand-copied `.d.ts`**, and a shared library package bundled into both. |
 
 Build any of them with `npx @s2script/sdk build examples/<name>`, then drop the resulting
 `dist/*.s2sp` into `addons/s2script/plugins/` on a running server.
 
 Dev tooling lives in [`tools/`](tools/) — `schema-dump` (regenerates gamedata
 after a CS2 update), `s2bench` (op timing), and `crash-test`.
+
+## Workspaces
+
+A directory can hold **several plugins that build, publish, and version together** — a workspace,
+marked by an `s2script.workspace.plugins` glob list in its root `package.json` next to npm's own
+`workspaces` field. `s2s build`/`s2s deploy`/`s2s version` then operate on every plugin at once, in
+dependency order, and a plugin can depend on a sibling's published interface with **no hand-copied
+`.d.ts`** — npm already symlinks every workspace member, so the sibling's real contract resolves in
+place. This repo's own [`plugins/`](plugins/) tree is one (`s2s build` at the repo root builds all
+18 base plugins; `scripts/build-base-plugins.sh` is now a thin shim over it instead of its own bash
+loop); see [`examples/monorepo`](examples/monorepo) for a from-scratch one, and
+[`packages/sdk/README.md`](packages/sdk/README.md#workspaces) for the full CLI reference.
 
 ## License
 
