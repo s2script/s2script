@@ -1,5 +1,13 @@
 # @s2script/cs2
 
+## 0.11.2
+
+### Patch Changes
+
+- Updated dependencies [bdd653b]
+- Updated dependencies [9199631]
+  - @s2script/sdk@0.12.0
+
 ## 0.11.1
 
 ### Patch Changes
