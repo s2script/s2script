@@ -1,5 +1,7 @@
 /** @s2script/commands — register server commands. NO runtime code (injected at load). */
 
+import type { HookResultValue } from "./events";
+
 /**
  * Where a command was invoked from — SourceMod's *reply source*. Set by the dispatch path and
  * exposed as {@link CommandInvocation.replySource}; it is what {@link CommandInvocation.reply}
@@ -112,6 +114,23 @@ export declare const Commands: {
   handleChatTrigger(slot: number, message: string): { silent: boolean; ran: boolean } | null;
   /** The trigger characters — SM PublicChatTrigger (`"!"`) / SilentChatTrigger (`"/"`). Mutate to reconfigure. */
   readonly triggers: { public: string; silent: string };
+  /**
+   * Observe a CLIENT command by name — SourceMod's `AddCommandListener`.
+   *
+   * Unlike {@link register}, which CREATES a command, this hooks one that already exists — including
+   * commands the engine itself owns (`player_ping`, `jointeam`, `drop`, `buy`). Registering a
+   * ConCommand of an engine-owned name fails outright ("unable to link multiple ConCommands named
+   * X"), so this is the only way to see those.
+   *
+   * OBSERVE-BY-DEFAULT: the engine still handles the command as normal. Return
+   * `>= HookResult.Handled` to suppress its engine-side handling — but note that for a command with
+   * a visible effect (a ping marker, a team change) suppressing is usually NOT what you want.
+   *
+   * @example
+   * // Middle-mouse ping opens the shop, and still places the ping.
+   * ctx.commands.onClientCommand("player_ping", (slot) => { openShop(slot); });
+   */
+  onClientCommand(name: string, handler: (slot: number, argString: string) => HookResultValue | void): void;
   /** Every globally-registered command with its required admin `flags`: `0` = anyone, `-1` = console/server-only,
    * else the `ADMFLAG` bit mask (map bits→names in your plugin). The `sm_help` backend. */
   list(): { name: string; flags: number }[];

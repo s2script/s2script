@@ -91,6 +91,17 @@ export interface CtxCommands {
   registerServer(name: string, handler: (cmd: CommandInvocation) => void): void;
   /** Register an admin command gated by `flags` (an `ADMFLAG` bitmask; fail-safe default-deny). */
   registerAdmin(name: string, flags: number, handler: (cmd: CommandInvocation) => void): void;
+  /**
+   * Observe an existing CLIENT command by name — SourceMod's `AddCommandListener`.
+   *
+   * For engine-owned commands (`player_ping`, `jointeam`, `drop`), which {@link register} cannot
+   * claim. Observe-by-default: the engine still handles it unless the handler returns
+   * `>= HookResult.Handled`. Unsubscribed automatically when the plugin unloads.
+   */
+  onClientCommand(
+    name: string,
+    handler: (slot: number, argString: string) => HookResultValue | void,
+  ): void;
 }
 /** Config live-reload subscription on this plugin's load-scope ({@link PluginContext.config}). */
 export interface CtxConfig {
