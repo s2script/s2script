@@ -1,10 +1,25 @@
 import { plugin } from "@s2script/sdk/plugin";
 import { config } from "@s2script/sdk/config";
 import { Database } from "@s2script/sdk/db";
-import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { Menu, MenuCancelReason, MenuStyle } from "@s2script/sdk/menu";
 import { Server } from "@s2script/sdk/server";
-import { Player } from "@s2script/cs2";
+import { ChatColors, Player } from "@s2script/cs2";
 import { Chat } from "@s2script/sdk/chat";
+import { HookResult } from "@s2script/sdk/events";
+
+// One palette for every line this plugin prints, matching @s2script/rockthevote so nominating and
+// voting read as the same feature. CS2 holds a colour byte until the next one, so each highlighted
+// span resets back to the body colour explicitly.
+const TAG = ChatColors.Green + "[Nominate] " + ChatColors.Grey;
+/** A map name, anywhere it is mentioned. */
+const MAP = ChatColors.Lime;
+/** Whoever nominated. */
+const WHO = ChatColors.Olive;
+/** A word the player is meant to type back. */
+const NUM = ChatColors.Yellow;
+/** A refusal. */
+const BAD = ChatColors.LightRed;
+const BODY = ChatColors.Grey;
 
 interface MapEntry { name: string; workshopId: string | null; }
 
@@ -65,30 +80,65 @@ export default plugin(async (ctx) => {
   }
 
   async function nominate(slot: number, name: string): Promise<void> {
-    if (isCurrentMap(name)) { Chat.toSlot(slot, "[nominations] " + name + " is the current map."); return; }
-    if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " was played too recently."); return; }
-    if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, "[nominations] " + name + " is already nominated."); return; }
+    if (isCurrentMap(name)) { Chat.toSlot(slot, TAG + MAP + name + BODY + " is " + BAD + "the current map" + BODY + "."); return; }
+    if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, TAG + MAP + name + BODY + " was " + BAD + "played too recently" + BODY + "."); return; }
+    if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, TAG + MAP + name + BODY + " is " + BAD + "already nominated" + BODY + "."); return; }
     await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
     await db.execute("INSERT INTO nominations(map, nominator) VALUES(?, ?)", [name, slot]);
     const p = Player.fromSlot(slot);
-    Chat.toAll("[nominations] " + ((p && p.playerName) ? p.playerName : "A player") + " nominated " + name + ".");
+    Chat.toAll(TAG + WHO + ((p && p.playerName) ? p.playerName : "A player") + BODY + " nominated " + MAP + name + BODY + ".");
   }
 
-  function mapMenu(slot: number, entries: MapEntry[], title: string): void {
+  /**
+   * Build the nominate menu.
+   *
+   * `recent` is listed FIRST and disabled. Cooldown maps used to be filtered out of the menu
+   * entirely, which is indistinguishable from the map not being in the pool at all: a player looked
+   * for the map they wanted, could not find it, and had no way to tell whether it was on cooldown,
+   * missing from maplist.txt or misspelled in their head. Showing them — unselectable, and labelled
+   * with the reason — answers that without a second command.
+   *
+   * They lead the list so they land on the first page, where the player is already looking. The
+   * `disabled` flag is what keeps them off the number keys, so the selectable maps below still
+   * number contiguously and nothing can be nominated by accident.
+   */
+  function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], title: string): void {
     const m = new Menu(title);
     m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
-    for (const e of entries) m.addItem(e.name, e.name);
+    // The chat menu renderer prints each line through Chat.toSlot, so colour bytes in the DISPLAY
+    // string render exactly as they do in any other chat line.
+    for (const e of recent) {
+      m.addItem(e.name, ChatColors.Grey + e.name + " " + BAD + "- (too recently played)", { disabled: true });
+    }
+    for (const e of available) m.addItem(e.name, MAP + e.name);
     m.onSelect(e => { nominate(e.slot, e.info).catch(logErr); });   // nominate re-validates
+    // Closing without picking said nothing at all, which is indistinguishable from the menu having
+    // broken. Only the closes the PLAYER caused are worth a line: `NewMenu` means they opened
+    // something else and are looking at it, and `Disconnect` has nobody left to tell.
+    m.onCancel(e => {
+      if (e.reason === MenuCancelReason.Exit) {
+        Chat.toSlot(e.slot, TAG + "Closed — type " + NUM + "nominate" + BODY + " to open it again.");
+      } else if (e.reason === MenuCancelReason.Timeout) {
+        Chat.toSlot(e.slot, TAG + "Timed out — type " + NUM + "nominate" + BODY + " to open it again.");
+      }
+    });
     m.display(slot, 30);
   }
 
   async function nominateMenu(slot: number): Promise<void> {
     const pool = loadPool();
     const cd = await cooldownSet(), nom = await nominatedSet();
-    // Menu exclusion set = cooldown ∪ already-nominated ∪ the current map (the last is explicit — see isCurrentMap).
-    const options = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
-    if (options.length === 0) { Chat.toSlot(slot, "[nominations] No maps available to nominate right now."); return; }
-    mapMenu(slot, options, "Nominate a map");
+    // Nominatable = pool − cooldown − already-nominated − the current map (the last is explicit,
+    // see isCurrentMap). The current map and existing nominations stay hidden: "you cannot nominate
+    // what is already running or already nominated" is self-evident from the map name and the
+    // nomination announcement, whereas a cooldown is invisible state only the server knows.
+    const available = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
+    const recent = pool.filter(m => cd.has(m.name) && !isCurrentMap(m.name));
+    if (available.length === 0 && recent.length === 0) {
+      Chat.toSlot(slot, TAG + BAD + "No maps available to nominate right now.");
+      return;
+    }
+    mapMenu(slot, available, recent, "Nominate a map");
   }
 
   async function recordMapStart(map: string): Promise<void> {
@@ -129,8 +179,29 @@ export default plugin(async (ctx) => {
     const matches = resolveMap(arg, loadPool());
     if (matches.length === 0) cmd.reply("No map matching '" + arg + "'.");
     else if (matches.length === 1) nominate(slot, matches[0].name).catch(logErr);
-    else mapMenu(slot, matches, "Did you mean...");   // disambiguate
+    // Disambiguation lists exactly what the player's text matched, so every entry stays selectable
+    // and there is no cooldown section — `nominate` re-validates and explains a refusal itself.
+    else mapMenu(slot, matches, [], "Did you mean...");
   });
 
-  console.log("[nominations] onLoad — sm_nominate registered");
+  /**
+   * Bare-word chat trigger, mirroring @s2script/rockthevote's `rtv`.
+   *
+   * `sm_nominate` already answers `!nominate` and `/nominate` through the command system, but nobody
+   * types the prefix — players type the word. RTV has accepted a bare `rtv` from the start, so a
+   * server running both taught two different conventions for the same pair of features.
+   *
+   * Prefix parity with RTV: a `!`-prefixed form is SWALLOWED (it was plainly a command), while the
+   * bare word passes through to chat, because "nominate" is also an ordinary English word someone
+   * may be saying to the server rather than at it.
+   */
+  ctx.clients.onSay((slot, text) => {
+    const t = text.trim().toLowerCase();
+    const bang = t === "!nominate" || t === "!nom";
+    if (!bang && t !== "nominate" && t !== "nom") return HookResult.Continue;
+    if (slot >= 0) nominateMenu(slot).catch(logErr);
+    return bang ? HookResult.Handled : HookResult.Continue;
+  });
+
+  console.log("[nominations] onLoad — sm_nominate + bare 'nominate' registered");
 });

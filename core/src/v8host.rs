@@ -720,6 +720,23 @@ thread_local! {
     /// `remove_by_owner` called on unload; reset on shutdown so a re-init starts empty.
     static CONFIG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Client-command listener mux: `Commands.onClientCommand(name, h)` subscribers, keyed by the
+    /// COMMAND NAME (like `EVENT_MUX`, unlike `CHAT_MSG_SUBS`'s single un-keyed list).
+    ///
+    /// This is the SourceMod `AddCommandListener` seam, and it exists because `CONCOMMANDS` cannot
+    /// serve it: registering a ConCommand the ENGINE already owns fails outright ("unable to link
+    /// multiple ConCommands named X"), so an engine command like `player_ping`, `jointeam` or `drop`
+    /// was unreachable from a plugin. The shim's ClientCommand hook already passes EVERY command
+    /// name to `dispatch_client_command`, so no shim change is needed — only somewhere to put the
+    /// listeners.
+    ///
+    /// Semantics deliberately INVERT `CONCOMMANDS`: a matching ConCommand supersedes (the engine
+    /// never sees it), whereas a listener OBSERVES and passes through unless it returns
+    /// `>= HookResult.Handled`. Superseding by default would break the very commands this exists to
+    /// observe — hooking `player_ping` would stop the ping marker from ever being placed.
+    /// `remove_by_owner` on unload; reset on shutdown.
+    static CLIENT_CMD_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
     /// Raw-chat subscriber mux (Slice 6.13b): `Chat.onMessage(h)` subscribers, keyed by the constant
     /// "" (chat has no name dimension — a single un-keyed list). Same EventMux shape/discipline;
     /// handlers receive `(slot, text, teamonly)` and may return a HookResult (>= Handled suppresses the
@@ -2167,6 +2184,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // List every globally-registered ConCommand + its required admin flags (0 = anyone, -1 = console-only,
     // else the ADMFLAG bit mask) — the sm_help backend. Degrades to [] on any error.
     list: function () { try { return JSON.parse(__s2_commands_list()); } catch (e) { return []; } },
+    // SourceMod AddCommandListener: observe a client command by name — including one the ENGINE
+    // owns, which `register` cannot claim. Handler gets (slot, argString); return >= HookResult
+    // .Handled to stop the engine handling it, anything else to pass through.
+    onClientCommand: function (name, handler) { return __s2_client_command_listen(name, handler); },
   };
   globalThis.__s2pkg_commands = { Commands: __s2_commands };   // named export `Commands`
   // --- admin module (engine-generic; ADMFLAG + Admin API + group/immunity/override resolution) ---
@@ -2895,6 +2916,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       register:       function (n, h)    { ctxReg(function () { __s2pkg_commands.Commands.register(n, h); }); },
       registerServer: function (n, h)    { ctxReg(function () { __s2pkg_commands.Commands.registerServer(n, h); }); },
       registerAdmin:  function (n, f, h) { ctxReg(function () { __s2pkg_commands.Commands.registerAdmin(n, f, h); }); },
+      onClientCommand: function (n, h)   { ctxReg(function () { __s2pkg_commands.Commands.onClientCommand(n, h); }); },
     };
     ctx.config  = { onChange: function (h) { ctxReg(function () { __s2pkg_config.config.onChange(h); }); } };
     ctx.topmenu = {
@@ -4970,13 +4992,73 @@ pub(crate) fn dispatch_pending_cookie_cached() {
 /// `sm_` fallback (that would hijack a real engine command like `say`). Returns true iff a registered
 /// command matched + was dispatched (the caller then SUPERCEDEs so the engine won't also handle it).
 pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool {
+    // Listeners run FIRST and are observe-by-default: they see the command whether or not anything
+    // else claims it, and only a `>= HookResult.Handled` return suppresses the engine's own
+    // handling. That ordering matters — a listener on an engine command (`player_ping`) must be able
+    // to act while still letting the engine do its normal work.
+    let suppressed = dispatch_client_command_listeners(slot, name, args);
+
     let matched = CONCOMMANDS.with(|m| m.borrow().contains_key(name));
     if matched {
         dispatch_concommand(name, slot, args, ReplySource::Console);
-        true
-    } else {
-        false
     }
+    // Supersede when a plugin OWNS the command, or when a listener explicitly asked to block it.
+    matched || suppressed
+}
+
+/// Deliver a client command to the `Commands.onClientCommand(name, …)` listeners.
+///
+/// Mirrors `dispatch_chat_message` exactly: snapshot (releasing the mux borrow before any JS),
+/// `try_borrow_mut` re-entrancy guard, per-subscriber `is_live` + context clone +
+/// HandleScope/ContextScope/TryCatch, WARN on throw. Handlers receive `(slot, args)`; a numeric
+/// return `>= HookResult.Handled` (2) requests suppression. `undefined`/non-number/throw ⇒ Continue,
+/// so a broken listener can never silently eat a command.
+fn dispatch_client_command_listeners(slot: i32, name: &str, args: &str) -> bool {
+    let snap = CLIENT_CMD_SUBS.with(|m| m.borrow().snapshot(name));
+    if snap.is_empty() { return false; }
+
+    let mut suppress = false;
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, generation, handler_g) in &snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
+            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
+            let args_val: v8::Local<v8::Value> = match v8::String::new(tc, args) {
+                Some(s) => s.into(),
+                None => v8::undefined(tc).into(),
+            };
+
+            let func = v8::Local::new(tc, handler_g);
+            match func.call(tc, recv, &[slot_val, args_val]) {
+                None => {
+                    let msg = tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: dispatch_client_command: listener '{}' on '{}': {}", owner, name, msg));
+                }
+                Some(ret) if ret.is_number() => {
+                    if ret.uint32_value(tc).unwrap_or(0) >= 2 { suppress = true; }
+                }
+                Some(_) => {}
+            }
+        }
+    });
+    suppress
 }
 
 /// Shared logging helper for named WARNs in the engine-op natives and the loader.
@@ -5915,6 +5997,29 @@ fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let sub_id = next_sub_id();
         CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// `__s2_client_command_listen(name, handler)` — subscribe a JS fn to a CLIENT COMMAND by name (the
+/// SourceMod `AddCommandListener` seam). Owner-tracked; the shim's ClientCommand hook is installed
+/// unconditionally at Load and already forwards every command name, so there is no per-name
+/// engine-op and no "first subscriber" signal to act on — which is precisely why this works for
+/// commands the ENGINE owns and `__s2_concommand` does not.
+///
+/// The handler receives `(slot, argString)` at dispatch and may return a HookResult; `>= Handled`
+/// suppresses the engine's own handling of that command.
+fn s2_client_command_listen(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        if name.is_empty() { return; }
+        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let handler_g = v8::Global::new(scope.as_ref(), func_local);
+        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let sub_id = next_sub_id();
+        CLIENT_CMD_SUBS.with(|m| { m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g); });
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -8702,6 +8807,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_client_print", s2_client_print);
     // Raw-chat subscriber (Slice 6.13b): register a Chat.onMessage handler.
     set_native(scope, global_obj, "__s2_chat_on_message", s2_chat_on_message);
+    set_native(scope, global_obj, "__s2_client_command_listen", s2_client_command_listen);
     // Client-lifecycle subscriber (Clients sub-project): register a Clients.on* handler.
     set_native(scope, global_obj, "__s2_client_subscribe", s2_client_subscribe);
     // Map-start subscriber (clientlist-fakeconvar-onmapstart slice): register a Server.onMapStart handler.
@@ -10905,6 +11011,7 @@ pub fn shutdown() {
     DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the raw-chat subscriber mux (Slice 6.13b) so a re-init starts clean.
     CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    CLIENT_CMD_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the client-lifecycle mux (Clients sub-project) so a re-init starts clean.
     CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     // Reset the map-start mux (clientlist-fakeconvar-onmapstart slice) so a re-init starts clean.
@@ -11342,6 +11449,13 @@ pub(crate) fn register_builtin_stores() {
         "CHAT_MSG_SUBS",
         Box::new(|owner| { CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CHAT_MSG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+    );
+
+    // CLIENT_CMD_SUBS: the ClientCommand hook stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "CLIENT_CMD_SUBS",
+        Box::new(|owner| { CLIENT_CMD_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { CLIENT_CMD_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
     );
 
     // CLIENT_MUX: the six lifecycle hooks stay installed for the process lifetime — no follow-up.
@@ -17371,6 +17485,52 @@ mod frame_tests {
     /// Command reply source, PR 2: each dispatch entry point stamps its own `ctx.replySource` —
     /// the shared ConCommand trampoline (server console / rcon) → "server", the ClientCommand hook
     /// (a player's own developer console) → "console", the Host_Say chat trigger → "chat".
+    /// `Commands.onClientCommand` — the AddCommandListener seam. The listener must see a command
+    /// NOBODY registered (the whole point: engine-owned names like `player_ping` cannot be
+    /// registered), and must NOT supersede it, so the engine still does its own work.
+    #[test]
+    fn client_command_listener_observes_without_superseding() {
+        init(dummy_logger()).unwrap();
+        load_body("ccl", r#"
+            globalThis.__seen = [];
+            __s2pkg_commands.Commands.onClientCommand("player_ping", function (slot, args) {
+                globalThis.__seen.push(slot + "|" + args);
+            });
+        "#, "{}");
+        // No ConCommand named "player_ping" exists — without the listener mux this returns false
+        // and the handler never runs.
+        let superseded = dispatch_client_command(7, "player_ping", "a b");
+        assert_eq!(eval_in_context_string("ccl", "globalThis.__seen.join(',')"), "7|a b",
+                   "listener saw an unregistered (engine-owned) client command");
+        assert!(!superseded, "an observing listener must let the engine handle the command");
+    }
+
+    /// A listener returning `>= HookResult.Handled` suppresses the engine's handling.
+    #[test]
+    fn client_command_listener_can_suppress() {
+        init(dummy_logger()).unwrap();
+        load_body("ccs", r#"
+            __s2pkg_commands.Commands.onClientCommand("drop", function () { return 2; });
+        "#, "{}");
+        assert!(dispatch_client_command(3, "drop", ""), "Handled from a listener supersedes");
+        assert!(!dispatch_client_command(3, "buy", ""), "an unlistened command is untouched");
+    }
+
+    /// A listener and a registered ConCommand of the same name both run, and the command still
+    /// supersedes on its own account.
+    #[test]
+    fn client_command_listener_coexists_with_a_registered_command() {
+        init(dummy_logger()).unwrap();
+        load_body("ccc", r#"
+            globalThis.__order = [];
+            __s2pkg_commands.Commands.onClientCommand("sm_both", function () { globalThis.__order.push("listener"); });
+            __s2pkg_commands.Commands.register("sm_both", function () { globalThis.__order.push("command"); });
+        "#, "{}");
+        assert!(dispatch_client_command(1, "sm_both", ""), "a registered command still supersedes");
+        assert_eq!(eval_in_context_string("ccc", "globalThis.__order.join(',')"), "listener,command",
+                   "listeners run before the owning command");
+    }
+
     #[test]
     fn reply_source_derives_from_entry_point() {
         init(dummy_logger()).unwrap();
