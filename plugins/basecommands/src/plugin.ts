@@ -9,6 +9,49 @@ import { Menu, MenuStyle } from "@s2script/sdk/menu";
 // by Server.isMapValid so an uninstalled map never shows.
 const MAP_CHOICES = ["de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_ancient", "de_anubis"];
 
+/** SM flag letters by bit index: a..n are 1<<0..1<<13, z is ROOT (1<<14). */
+const FLAG_LETTERS = "abcdefghijklmn";
+
+/** printf `%-<width>.<maxLen>s`: truncate to maxLen, then left-align to width. */
+function pad(text: string, width: number, maxLen: number): string {
+  return text.slice(0, maxLen).padEnd(width);
+}
+
+/**
+ * SM's flag rendering ladder (basecommands/who.sp): no flags -> "none", ROOT -> "root" (ROOT
+ * implies everything, so listing letters would be noise), otherwise the letter string.
+ */
+function flagString(admin: { flags: number } | null): string {
+  const flags = admin?.flags ?? 0;
+  if (flags === 0) return "none";
+  if ((flags & ADMFLAG.ROOT) !== 0) return "root";
+
+  let out = "";
+  for (let i = 0; i < FLAG_LETTERS.length; i++) {
+    if ((flags & (1 << i)) !== 0) out += FLAG_LETTERS[i];
+  }
+  return out.length > 0 ? out : "none";
+}
+
+/** `sm_who <target>` — SM's PerformWho: one line per resolved player, in the caller's own channel. */
+function whoOne(cmd: { arg(n: number): string; reply(m: string): void; callerSlot: number }, pattern: string): void {
+  const matches = Player.target(pattern, cmd.callerSlot);
+  if (matches.length === 0) { cmd.reply("[SM] No matching client was found."); return; }
+
+  for (const p of matches) {
+    const admin = Admin.forSlot(p.slot);
+    const name = p.playerName ?? "";
+    if (admin === null) { cmd.reply(`[SM] "${name}" is not an admin.`); continue; }
+
+    const groups = admin.groups.length > 0 ? admin.groups.join(",") : "";
+    cmd.reply(
+      groups.length > 0
+        ? `[SM] "${name}" is logged in as "${groups}" with access: ${flagString(admin)}`
+        : `[SM] "${name}" has access: ${flagString(admin)}`,
+    );
+  }
+}
+
 // Slice 6.2 live gate — admin-gated commands. Admin cache = host-global (file admins.json ⊕ runtime),
 // from @s2script/admin. sm_say has moved to @s2script/basechat.
 export default plugin((ctx) => {
@@ -46,15 +89,43 @@ export default plugin((ctx) => {
     Server.command("changelevel " + map);
   });
 
-  // 6.5 — sm_who (ADMFLAG.GENERIC): list connected players + their admin status (Player.allConnected + Admin.forSlot).
+  // 6.5 — sm_who [#userid|name] (ADMFLAG.GENERIC): SourceMod-parity admin listing.
+  //
+  // Mirrors basecommands/who.sp: the table goes to the CONSOLE with SM's exact column widths
+  // ("%2d. %-24.23s %-18.17s %s"), a chat caller gets "See console for output.", and a target
+  // argument prints the single-player form instead. Flag rendering follows SM's rule ladder:
+  // no flags -> "none", ROOT -> "root", else the letter string.
+  //
+  // ONE deviation, unavoidable: SM's middle column is the admin's *username* from admins.cfg.
+  // s2script has no username on AdminInfo (steamId/flags/immunity/groups), so that column carries
+  // the group list, which is the nearest analog and what an admin actually wants to see.
   ctx.commands.registerAdmin("sm_who", ADMFLAG.GENERIC, (cmd) => {
-    const players = Player.allConnected();
-    cmd.reply("[SM] Players (" + players.length + "):");
-    for (const p of players) {
-      const a = Admin.forSlot(p.slot);
-      const adminStr = a ? "yes(flags=0x" + a.flags.toString(16) + ")" : "no";
-      cmd.reply("  #" + p.userId + " " + p.playerName + " slot=" + p.slot + " steamid=" + p.steamId + " admin=" + adminStr);
+    const target = cmd.arg(0);
+    if (target) { whoOne(cmd, target); return; }
+
+    cmd.replyToConsole("    " + pad("Name", 24, 23) + " " + pad("Groups", 18, 17) + " Admin access");
+
+    for (const p of Player.allConnected()) {
+      const admin = Admin.forSlot(p.slot);
+      const groups = admin && admin.groups.length > 0 ? admin.groups.join(",") : "-";
+      cmd.replyToConsole(
+        String(p.slot + 1).padStart(2) + ". " +
+        pad(p.playerName ?? "", 24, 23) + " " + pad(groups, 18, 17) + " " + flagString(admin),
+      );
     }
+
+    // SM only nudges when the answer went somewhere the caller isn't looking.
+    if (cmd.replySource === "chat") cmd.reply("[SM] See console for output.");
+  });
+
+  // sm_reloadadmins (ADMFLAG.BAN) — SM parity (basecommands.sp:75). Re-reads admins.json into the
+  // FILE tier, clearing the old file entries first. The runtime tier (Admin.add, e.g. permissions a
+  // plugin derives from an external source) is untouched, so this reloads the static admin list
+  // without revoking anything granted programmatically.
+  ctx.commands.registerAdmin("sm_reloadadmins", ADMFLAG.BAN, (cmd) => {
+    Admin.reload();
+    console.log("[basecommands] sm_reloadadmins by slot=" + cmd.callerSlot);
+    cmd.reply("[SM] Admin cache reloaded.");
   });
 
   // 6.5 — sm_rcon <command> (ADMFLAG.RCON): a deliberate full server-command passthrough (highest-trust flag).
