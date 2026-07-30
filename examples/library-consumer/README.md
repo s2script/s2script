@@ -20,18 +20,17 @@ This example commits the **vendored** copy, at `.s2script/libs/@example/base64/`
   library-package` and `examples/library-consumer` are siblings under `examples/`, but neither is
   a *workspace* — each is a standalone package, the same relationship `examples/greeter-plugin`
   has to `examples/greeter-consumer` (see that pair's READMEs for the parallel).
-- It is what lets this example build in CI with no registry reachable. The vendored tree was
-  produced once, by building the library and extracting its `.s2lib` (`lib-extract.ts`) — not
-  hand-written — and committed so `s2s build examples/library-consumer` needs nothing but this
-  checkout.
+- It is what lets `s2s build examples/library-consumer` run with no registry reachable — offline,
+  reproducible, nothing but this checkout. The vendored tree was produced once, by building the
+  library and extracting its `.s2lib` (`lib-extract.ts`) — not hand-written — and committed so the
+  build needs nothing else. (No CI gate currently builds this example — `check-plugins-typecheck.sh`
+  only *typechecks* it; that gap is tracked, not fixed here.)
 
 The workspace-sibling path is exercised elsewhere: `packages/sdk/test/libraries.test.mjs` and
 `packages/sdk/test/workspace-build-all.test.mjs` cover `resolveLibrarySibling` directly, and
-`examples/monorepo` already demonstrates the general "workspace members resolve from source, not
-a copy" shape for a plugin's sibling *interface* (`plugins/producer`/`plugins/consumer`). Adding a
-second, `s2script.libraries`-flavored demonstration of that same shape there was judged not to
-teach anything this pair plus that test coverage doesn't already show, so it was left out of this
-task.
+[`examples/workspace-library`](../workspace-library) is the worked example for it — a library
+declared *inside* a workspace, resolved straight from its sibling source, no vendored copy
+anywhere. See that example's README for the walkthrough this pair doesn't need to repeat.
 
 ## Regenerating the vendored copy
 

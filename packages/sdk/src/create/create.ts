@@ -27,7 +27,7 @@ export interface CreateOptions {
   install?: InstallChoice;
   noInstall?: boolean;
   /**
-   * What to scaffold. Absent means `"plugin"` — the same default `packageKind` (build-library.ts)
+   * What to scaffold. Absent means `"plugin"` — the same default `packageKind` (libraries.ts)
    * applies to a package.json with no `s2script.kind` at all, so a plugin scaffold needs no new
    * field to keep meaning what it always meant.
    */
@@ -344,10 +344,18 @@ function packageJsonContent(
 
 /** A standalone LIBRARY's package.json: `main`/`types` point at `src/index.ts`/`src/index.d.ts`
  *  (build-time code, no `plugin.ts` load entry) and `s2script.kind: "library"` is what
- *  `packageKind` (build-library.ts) dispatches `s2s build` on. Deliberately no
+ *  `packageKind` (libraries.ts) dispatches `s2s build` on. Deliberately no
  *  `pluginDependencies`/`optionalPluginDependencies`/`publishes` field: `buildLibrary` refuses all
  *  three outright (build-time code has no ledgered runtime lifecycle to hang them on), so the
- *  scaffold never writes a field the build would immediately reject. */
+ *  scaffold never writes a field the build would immediately reject.
+ *
+ *  Deliberately no `private: true` either — unlike the plugin scaffold below, whose own next-step
+ *  hint is `npm run build` and never touches deploy. `s2s create --library`'s own hint (see
+ *  commands/create.ts's `libraryHint`) tells the author to run `s2s deploy` next, and
+ *  `assertDeployable` (registry/deploy.ts) refuses `private: true` before login or build even
+ *  happens — the two would flatly contradict each other. A freshly scaffolded library is also
+ *  more likely to be published than a base plugin is: publishing IS the point of a library that
+ *  isn't a workspace sibling (a plugin far more often stays local, `private` or not). */
 function libraryPackageJsonContent(
   name: string,
   game: GameChoice,
@@ -364,7 +372,6 @@ function libraryPackageJsonContent(
       {
         name,
         version: "0.1.0",
-        private: true,
         main: "src/index.ts",
         types: "src/index.d.ts",
         scripts: {

@@ -24,6 +24,24 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { findWorkspaceRoot, scanWorkspace, memberForDir } from "./workspace/workspace.ts";
+import type { WorkspaceMember } from "./workspace/workspace.ts";
+
+export type PackageKind = "plugin" | "library";
+
+/**
+ * Absent means "plugin", so no existing package.json anywhere needs editing.
+ *
+ * Lives here (not build-library.ts, which re-exports it for its existing callers) because
+ * `resolveLibrarySibling` below needs it too, and build-library.ts already imports FROM
+ * libraries.ts — putting it there would make the two modules import each other.
+ */
+export function packageKind(pkg: { s2script?: { kind?: string } }): PackageKind {
+  const k = pkg.s2script?.kind ?? "plugin";
+  if (k !== "plugin" && k !== "library") {
+    throw new Error(`unknown s2script.kind ${JSON.stringify(k)} — expected "plugin" or "library"`);
+  }
+  return k;
+}
 
 export interface LibraryManifest {
   version: string;
@@ -82,9 +100,14 @@ export function localLibraryDir(pluginDir: string, name: string): string | null 
  *     sibling-hunting for a name that happens to collide with some unrelated member elsewhere in
  *     that tree.
  *   - a workspace member's own `name` matches AND it opted in with `s2script.kind === "library"`
- *     — `ws.libs` already excludes every plugin (a plugin sibling sharing the name is therefore
- *     never a candidate), and a plain shared-code member with no `kind` at all is not a library
- *     either: a name collision alone must not silently start bundling the wrong thing in.
+ *     — searched across BOTH `ws.libs` (the common `libs/*` case) and `ws.plugins` (a `kind:
+ *     "library"` member the workspace's OWN `s2script.workspace.plugins` glob also matches —
+ *     `loadWorkspace` does not filter by kind, so this topology is real and already
+ *     build-and-publish-able, see `workspace/build-all.ts`'s `declaredLibraries` doc comment and
+ *     the `ws-library-in-plugins-glob` fixture; searching `ws.libs` alone reported such a library
+ *     "missing", with advice pointing at the registry for something sitting two directories away).
+ *     A plain shared-code member with no `kind` at all, in either bucket, is not a library either:
+ *     a name collision alone must not silently start bundling the wrong thing in.
  *
  * SCANNED, not loaded (`scanWorkspace`, not `loadWorkspace`): this is reached from
  * `assertLibrariesResolved` inside `buildPlugin`, the SINGLE-TARGET build path — `s2s build
@@ -107,7 +130,24 @@ function resolveLibrarySibling(
   const ws = scan.workspace;
   if (memberForDir(ws, absDir) === null) return null;
 
-  const lib = ws.libs.find((m) => m.name === name && m.pkg.s2script?.kind === "library");
+  // Filter by NAME first, THEN check kind — packageKind THROWS on an unknown kind (design D6:
+  // kind is explicit, never inferred), and doing it the other way around (checking every member's
+  // kind while searching) would abort this whole resolution over an unrelated member's typo
+  // anywhere in the workspace. Scoping the throw to name-matching candidates keeps the blast
+  // radius to "a sibling actually named the thing being declared", which is the one case where
+  // silently falling through to "missing" would report the WRONG problem (a kind typo, not an
+  // absent library).
+  const named = [...ws.libs, ...ws.plugins].filter((m) => m.name === name);
+  let lib: WorkspaceMember | undefined;
+  for (const m of named) {
+    let kind: PackageKind;
+    try {
+      kind = packageKind(m.pkg);
+    } catch (e) {
+      throw new Error(`library ${name} (workspace member at ${m.relDir}): ${(e as Error).message}`);
+    }
+    if (kind === "library") { lib = m; break; }
+  }
   if (lib === undefined) {
     // A member the scan could not read is ABSENT from `ws.libs`, so it is also absent from this
     // search — a dropped member may have been the very library being declared, and that would
@@ -179,8 +219,24 @@ export function resolveLibraries(
   return { paths, missing, manifests, siblingDirs };
 }
 
+/**
+ * The major component of an `apiVersion` string like `"2.x"`. `Number.parseInt` returns `NaN` for
+ * an unparseable/empty leading segment (the `""` sentinel `LibraryManifest` uses for a workspace
+ * source, see its own doc) — that case defaults to 1 (treat as compatible), which is a real
+ * decision, not an accident: `resolveLibraries` already defaults an unreadable vendored
+ * manifest's apiVersion to `"1.x"` for the identical reason.
+ *
+ * The fallback is applied ONLY to that NaN case, deliberately — an earlier version wrote
+ * `parseInt(...) || 1`, which ALSO rewrites a genuinely-parsed `0` into `1` (`0` is falsy in JS),
+ * silently collapsing a real major-0 apiVersion into major-1. That is a live bug, not a
+ * hypothetical one: a real 0 never fires the gate's "newer than this SDK" comparison it should,
+ * and (found while fixing the vacuous test at libraries.test.mjs — see the "workspace sibling"
+ * test below) a real 0 can never be produced from a `major()` call either, so nothing could ever
+ * prove the workspace-sibling skip is load-bearing rather than coincidentally never triggered.
+ */
 function major(apiVersion: string): number {
-  return Number.parseInt(apiVersion.split(".")[0] ?? "1", 10) || 1;
+  const n = Number.parseInt(apiVersion.split(".")[0] ?? "1", 10);
+  return Number.isNaN(n) ? 1 : n;
 }
 
 /**
@@ -193,6 +249,24 @@ export function assertLibrariesResolved(
   declared: Record<string, string>,
   sdkApiVersion: string,
 ): ResolvedLibraries {
+  // @s2script/* is reserved for first-party publishing (CLAUDE.md) — that is not a restriction on
+  // who may PUBLISH a library (design spec 2026-07-29), but it IS the one place the scope is
+  // special: `typecheck.ts`'s `isAlwaysResolved` treats every `@s2script/*` name as a runtime
+  // builtin, unconditionally, and `build.ts`/`build-library.ts` leave `@s2script/*` external in
+  // their esbuild call for the identical reason. A `paths` entry for a declared library under this
+  // scope would beat that prefix pattern (tsc picks the longest/most specific match) and typecheck
+  // clean against the library's real .d.ts — but esbuild still externalizes it, so the bundle ships
+  // a bare `require("@s2script/…")` with none of the library's code inlined, and it dies at load.
+  // Refuse it outright rather than let tsc and esbuild silently disagree about what the name means.
+  const reserved = Object.keys(declared).filter((n) => n === "@s2script" || n.startsWith("@s2script/"));
+  if (reserved.length > 0) {
+    throw new Error(
+      `s2script.libraries declares ${reserved.map((n) => JSON.stringify(n)).join(", ")} — the ` +
+        `@s2script/* scope is reserved and always resolved as a runtime builtin, so it can never ` +
+        `be a bundled library`,
+    );
+  }
+
   const resolved = resolveLibraries(pluginDir, declared);
   if (resolved.missing.length) {
     throw new Error(

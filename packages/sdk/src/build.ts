@@ -39,6 +39,10 @@ interface PluginPackageJson {
   s2script?: {
     apiVersion?: string;
     main?: string;
+    /** Absent means "plugin" — see `packageKind` (libraries.ts). Read here only so `packageKind(pkg)`
+     *  below satisfies its own parameter type; DeployablePkgJson (registry/deploy.ts) declares the
+     *  identical field for the identical reason. */
+    kind?: string;
     pluginDependencies?: Record<string, string>;
     optionalPluginDependencies?: Record<string, string>;
     publishes?: string | Record<string, string>;
@@ -92,6 +96,32 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   // Vendored libraries: fail fast and actionably BEFORE the typecheck gate, so a missing
   // one reads as "run s2s add" rather than a pile of TS2307s.
   const libraries = s2.libraries ?? {};
+
+  // A name declared in BOTH s2script.libraries and s2script.pluginDependencies/
+  // optionalPluginDependencies is ambiguous in a way nothing downstream catches cleanly: tsc's
+  // `paths` merge (typecheck.ts's `{ ...contractPaths, ...libraryPaths }`) silently lets whichever
+  // one is spread SECOND win the name, and the program typechecks clean either way — there is no
+  // TS error to notice. esbuild then bundles or externalizes the name independently of which one
+  // tsc happened to pick, so the manifest's `compiledAgainst` hash can end up bound to a contract
+  // tsc never actually compiled against, with the loader's drift check none the wiser. A library
+  // (build-time code bundled INTO this .s2sp) and an inter-plugin dependency (a runtime proxy the
+  // host resolves) are two different systems; they must never share a name. Refuse it here, before
+  // either one runs.
+  const pluginDepNames = new Set([
+    ...Object.keys(s2.pluginDependencies ?? {}),
+    ...Object.keys(s2.optionalPluginDependencies ?? {}),
+  ]);
+  for (const name of Object.keys(libraries)) {
+    if (pluginDepNames.has(name)) {
+      throw new Error(
+        `${JSON.stringify(name)} is declared in BOTH s2script.libraries and s2script.` +
+          `pluginDependencies/optionalPluginDependencies — pick one: a library is build-time code ` +
+          `bundled into this .s2sp, an inter-plugin dependency is a runtime proxy resolved by the ` +
+          `host at load; the two cannot share a name`,
+      );
+    }
+  }
+
   const librariesResolved = assertLibrariesResolved(absDir, libraries, STAMPED_API_VERSION);
 
   // --- Cheap fail-fast: the plugin's own gamedata (declared engine calls). Parsed and validated

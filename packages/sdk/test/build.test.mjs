@@ -13,7 +13,8 @@ import { openZip } from "./zip.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");   // test/ → cli/ → packages/ → repo
@@ -142,4 +143,113 @@ test("bundles a workspace sibling that declares `main` (platform:neutral mainFie
     !js.includes('require("@fixture/util")'),
     "the sibling must be bundled, not left as an external require"
   );
+});
+
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #9's third bullet: `buildPlugin` refuses a `kind: "library"`
+// package (build.ts:73-75) — but nothing exercised the refusal itself. Without it, a library would
+// flow straight through `buildPlugin` and come out as a `.s2sp` full of build-time code with an
+// empty runtime manifest (no `pluginDependencies`/`publishes` a library can even declare).
+// ---------------------------------------------------------------------------
+
+function libraryPackageFixture() {
+  const dir = mkdtempSync(join(tmpdir(), "s2build-lib-refusal-"));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/not-a-plugin",
+      version: "0.1.0",
+      main: "src/index.ts",
+      types: "src/index.d.ts",
+      s2script: { kind: "library" },
+    }),
+  );
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(join(dir, "src", "index.ts"), "export function x(): void {}\n");
+  writeFileSync(join(dir, "src", "index.d.ts"), "export declare function x(): void;\n");
+  return dir;
+}
+
+test("buildPlugin refuses a package declaring s2script.kind: \"library\"", async () => {
+  const dir = libraryPackageFixture();
+  await assert.rejects(
+    () => buildPlugin(dir, packagesDir),
+    /s2script\.kind="library".*buildLibrary\/buildPackage/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #2: a name declared in BOTH s2script.libraries AND
+// s2script.pluginDependencies/optionalPluginDependencies used to reach tsc's `paths` merge
+// (typecheck.ts's `{ ...contractPaths, ...libraryPaths }`), which silently let whichever one
+// spreads SECOND win the name — no TS error either way, and the manifest's `compiledAgainst` hash
+// could end up bound to a contract tsc never actually compiled against.
+// ---------------------------------------------------------------------------
+
+function collidingNameFixture(depField) {
+  const dir = mkdtempSync(join(tmpdir(), "s2build-libdep-collide-"));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/collide-consumer",
+      version: "0.1.0",
+      main: "src/plugin.ts",
+      private: true,
+      s2script: {
+        [depField]: { "@demo/greeter": "^1.0.0" },
+        libraries: { "@demo/greeter": "^1.0.0" },
+      },
+    }),
+  );
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(
+    join(dir, "src", "plugin.ts"),
+    'import { plugin } from "@s2script/sdk/plugin";\n\nexport default plugin(() => {});\n',
+  );
+  return dir;
+}
+
+test("a name in BOTH s2script.pluginDependencies and s2script.libraries is refused", async () => {
+  const dir = collidingNameFixture("pluginDependencies");
+  await assert.rejects(
+    () => buildPlugin(dir, packagesDir),
+    /"@demo\/greeter".*BOTH.*s2script\.libraries.*pluginDependencies/s,
+  );
+});
+
+test("a name in BOTH s2script.optionalPluginDependencies and s2script.libraries is refused", async () => {
+  const dir = collidingNameFixture("optionalPluginDependencies");
+  await assert.rejects(
+    () => buildPlugin(dir, packagesDir),
+    /"@demo\/greeter".*BOTH.*s2script\.libraries.*pluginDependencies/s,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #1: `@s2script/*` is always resolved as a runtime builtin
+// (typecheck.ts's `isAlwaysResolved`; esbuild's own `external`), so a declared `s2script.libraries`
+// entry under that scope used to typecheck clean and then survive into the bundle as a bare
+// `require("@s2script/…")` with none of its code inlined — the feature's own headline failure mode,
+// reproduced inside the feature. Integration-level (not just the `assertLibrariesResolved` unit
+// test in libraries.test.mjs): proves the refusal is actually wired into `buildPlugin` end to end.
+// ---------------------------------------------------------------------------
+
+test("buildPlugin refuses an @s2script/*-scoped s2script.libraries entry", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "s2build-lib-reserved-"));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/reserved-scope-consumer",
+      version: "0.1.0",
+      main: "src/plugin.ts",
+      private: true,
+      s2script: { libraries: { "@s2script/base64": "^1.0.0" } },
+    }),
+  );
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(
+    join(dir, "src", "plugin.ts"),
+    'import { plugin } from "@s2script/sdk/plugin";\n\nexport default plugin(() => {});\n',
+  );
+  await assert.rejects(() => buildPlugin(dir, packagesDir), /reserved/);
 });

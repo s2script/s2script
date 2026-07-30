@@ -59,6 +59,15 @@ export function ownConfigDir(pluginDir: string): string | null {
  * `*.ts` glob already did by default (dotfiles are invisible to a glob without an explicit
  * `dot: true`), so this is not a new exclusion — it is the same file set matched before
  * workspaces existed.
+ *
+ * `.d.ts` files are excluded too, mirroring the CANONICAL path's own `!sf.isDeclarationFile`
+ * filter below — a declaration file has no function bodies for any of the four pinned rules to
+ * ever fire on. Found wiring `lintPlugin` into `buildLibrary`: a library's own `types` file (e.g.
+ * `src/index.d.ts`, right next to `src/index.ts`) is a `.ts`-suffixed file this walk would
+ * otherwise pick up, but a same-named `.ts`/`.d.ts` pair in one tsconfig `include` is a file TS
+ * itself drops from the project (the `.d.ts` is treated as the `.ts` file's OWN declaration, not a
+ * separate root) — so typescript-eslint's project service reports it "not found by the project
+ * service" for a file this walk handed ESLint directly.
  */
 function collectTsFiles(dir: string): string[] {
   let entries;
@@ -72,7 +81,7 @@ function collectTsFiles(dir: string): string[] {
     if (e.name === "node_modules" || e.name.startsWith(".")) continue;
     const full = join(dir, e.name);
     if (e.isDirectory()) out.push(...collectTsFiles(full));
-    else if (e.isFile() && e.name.endsWith(".ts")) out.push(full);
+    else if (e.isFile() && e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) out.push(full);
   }
   return out;
 }

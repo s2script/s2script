@@ -70,6 +70,67 @@ test("a library may not declare pluginDependencies", async () => {
   await assert.rejects(() => buildLibrary(dir), /pluginDependencies/);
 });
 
+// Fix round (final review), finding #9: the OTHER half of the same guard (build-library.ts:41)
+// had no coverage of its own — deleting `s2.optionalPluginDependencies` from that `if` condition
+// left the whole suite green, since the sibling `pluginDependencies` test above never exercises it.
+test("a library may not declare optionalPluginDependencies", async () => {
+  const dir = libDir();
+  const pkgPath = join(dir, "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  pkg.s2script.optionalPluginDependencies = { "@edge/other": "^1.0.0" };
+  writeFileSync(pkgPath, JSON.stringify(pkg));
+  await assert.rejects(() => buildLibrary(dir), /optionalPluginDependencies/);
+});
+
+// Fix round (final review), finding #9: build-library.ts:47 ("a library may not declare
+// publishes") had zero regression coverage — deleting the check left the suite green.
+test("a library may not declare publishes", async () => {
+  const dir = libDir();
+  const pkgPath = join(dir, "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  pkg.s2script.publishes = "self";
+  writeFileSync(pkgPath, JSON.stringify(pkg));
+  await assert.rejects(() => buildLibrary(dir), /publishes/);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #1: mirrors the `buildPlugin` integration test in
+// build.test.mjs — proves the `@s2script/*` reserved-scope refusal is wired into `buildLibrary`
+// too, not just present in the shared `assertLibrariesResolved` helper.
+// ---------------------------------------------------------------------------
+
+test("buildLibrary refuses an @s2script/*-scoped s2script.libraries entry", async () => {
+  const dir = libDir();
+  const pkgPath = join(dir, "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  pkg.s2script.libraries = { "@s2script/base64": "^1.0.0" };
+  writeFileSync(pkgPath, JSON.stringify(pkg));
+  await assert.rejects(() => buildLibrary(dir), /reserved/);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #4: `buildLibrary` never ran the B2 residual-rule lint gate —
+// nothing linted library source ANYWHERE (lint.ts's own directory walk skips dot-directories and
+// scopes to a CONSUMER's plugin dir, so a vendored or sibling library is out of its range either
+// way). `no-ctx-escape` is used here (not `no-bigint-in-interface-payloads`/`no-await-in-raw-view`,
+// which need a real inter-plugin proxy/raw-view type in scope) purely as the simplest pinned-rule
+// violation to trigger; the point is that ANY of the four now fails a library build.
+// ---------------------------------------------------------------------------
+
+test("buildLibrary lints library source — a ctx escape fails the build", async () => {
+  const dir = libDir();
+  writeFileSync(
+    join(dir, "src", "index.ts"),
+    'import { plugin } from "@s2script/sdk/plugin";\n\n' +
+      'export default plugin((ctx) => {\n' +
+      '  ctx.commands.register("late", (cmd) => {\n' +
+      '    ctx.events.on("player_death", () => { cmd.reply("someone died"); });\n' +
+      '  });\n' +
+      '});\n',
+  );
+  await assert.rejects(() => buildLibrary(dir), /lint failed[\s\S]*no-ctx-escape/);
+});
+
 test("@s2script/* imports stay external — the consumer's context resolves them", async () => {
   const dir = libDir();
   writeFileSync(

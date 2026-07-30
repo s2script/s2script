@@ -18,17 +18,15 @@ import { STAMPED_API_VERSION } from "./api-version.ts";
 import { assertLibrariesResolved, librariesRoot } from "./libraries.ts";
 import { assertNoNpmRuntimeDeps } from "./npm-deps-gate.ts";
 import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
+import { lintPlugin } from "./lint/lint.ts";
 
-export type PackageKind = "plugin" | "library";
-
-/** Absent means "plugin", so no existing package.json anywhere needs editing. */
-export function packageKind(pkg: { s2script?: { kind?: string } }): PackageKind {
-  const k = pkg.s2script?.kind ?? "plugin";
-  if (k !== "plugin" && k !== "library") {
-    throw new Error(`unknown s2script.kind ${JSON.stringify(k)} — expected "plugin" or "library"`);
-  }
-  return k;
-}
+// Re-exported (not defined here): `resolveLibrarySibling` in libraries.ts needs `packageKind` too,
+// and libraries.ts already imports FROM this file's `assertLibrariesResolved`/`librariesRoot`
+// above — defining it there and re-exporting it here is what keeps every EXISTING import of
+// `packageKind`/`PackageKind` from `./build-library.ts` (build.ts, registry/deploy.ts, tests)
+// working with no edits, while avoiding the two modules importing each other.
+export type { PackageKind } from "./libraries.ts";
+export { packageKind } from "./libraries.ts";
 
 export async function buildLibrary(dir: string, packagesDir?: string): Promise<string> {
   const absDir = resolve(dir);
@@ -70,6 +68,20 @@ export async function buildLibrary(dir: string, packagesDir?: string): Promise<s
   if (!tc.ok) {
     throw new Error(`typecheck failed (${tc.diagnostics.length} error(s)):\n${formatDiagnostics(tc.diagnostics)}`);
   }
+
+  // Residual-rule lint gate (B2), the same one `buildPlugin` runs, AFTER tsc — before this a
+  // library's own source was linted by NOTHING: `lint/lint.ts`'s own directory walk skips
+  // dot-directories (so a vendored `.s2script/libs/` copy is invisible to it, and it's `.js` by
+  // then anyway) and scopes its targets to the CONSUMER's plugin dir, so a workspace-sibling
+  // library sitting two directories away is out of range either way. Two of the four pinned rules
+  // — `no-await-in-raw-view` and `no-bigint-in-interface-payloads` — describe hazards that fail
+  // SILENTLY at runtime and apply verbatim to library code, which executes inside the consumer's
+  // plugin context once bundled in.
+  const lint = await lintPlugin(absDir, tc.program!);
+  if (!lint.ok) {
+    throw new Error(`lint failed (${lint.errorCount} error(s)):\n${lint.output}`);
+  }
+  if (lint.output.trim().length > 0) console.warn(lint.output);
 
   const entryRelative = s2.main ?? pkg.main;
   if (!entryRelative) throw new Error(`buildLibrary: no entry point in ${pkgPath} (set s2script.main or main)`);

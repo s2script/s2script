@@ -39,6 +39,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildPackage } from "../build.ts";
+import { packageKind } from "../libraries.ts";
 import { isConcreteVersion } from "../publishes.ts";
 import { matchGlob } from "./glob.ts";
 import { orderPlugins, satisfiesRange } from "./graph.ts";
@@ -49,9 +50,14 @@ import type { Workspace, WorkspaceMember, WorkspacePlugin } from "./workspace.ts
 
 /** `ws.libs` members that opted in with `s2script.kind === "library"` — the buildable subset of
  *  a structural notion ("an npm workspace member that is not a declared plugin") that otherwise
- *  says nothing about whether a member is a library at all (a plain shared-code package is not). */
+ *  says nothing about whether a member is a library at all (a plain shared-code package is not).
+ *
+ *  Routed through `packageKind` (not a bare `=== "library"` comparison) so it THROWS on a
+ *  malformed kind rather than silently treating it as "not a library": a `libs/*` member with
+ *  `kind: "libary"` (a typo) used to be built by nothing and named by nothing — this makes that
+ *  member a named build failure instead. */
 function declaredLibraries(ws: Workspace): WorkspaceMember[] {
-  return ws.libs.filter((m) => m.pkg.s2script?.kind === "library");
+  return ws.libs.filter((m) => packageKind(m.pkg) === "library");
 }
 
 /** Hits of `pattern` against `members` — by PACKAGE NAME first, falling back (when the pattern

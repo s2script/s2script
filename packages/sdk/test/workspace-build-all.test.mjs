@@ -362,3 +362,20 @@ test("unfiltered, ws-library-filter really DOES fail on the broken library — p
   assert.deepEqual(result.failed.map((o) => o.name), ["@fixture/brokenlib"]);
   assert.match(result.failed[0].error, /types/);
 });
+
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #10: `declaredLibraries` (build-all.ts) now routes its kind
+// check through `packageKind`, which THROWS on an unknown kind (design D6: kind is explicit, never
+// inferred) instead of a bare `=== "library"` comparison that silently read a typo as "not a
+// library" — built by nothing, named by nothing, forever.
+// ---------------------------------------------------------------------------
+
+test("a libs/* member with a typo'd kind is a NAMED failure, not silently skipped", () => {
+  const dir = copyFixture("ws-library-filter");
+  const goodlibPkgPath = join(dir, "libs", "goodlib", "package.json");
+  const pkg = JSON.parse(readFileSync(goodlibPkgPath, "utf8"));
+  pkg.s2script.kind = "libary"; // typo
+  writeFileSync(goodlibPkgPath, JSON.stringify(pkg));
+  const ws = loadWorkspace(dir);
+  assert.throws(() => selectLibraries(ws, []), /unknown s2script\.kind "libary"/);
+});

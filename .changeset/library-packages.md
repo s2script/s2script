@@ -67,4 +67,30 @@ interactive wizard's now two-way choice) scaffolds a library's `package.json`
 (`s2script.kind: "library"`, `main`/`types` pointing at `src/index.ts`/`src/index.d.ts`, deliberately
 no `pluginDependencies`) plus a real exported function and its matching `.d.ts` — refused inside a
 workspace for now, since a workspace library needs to sit outside the `plugins/` glob a workspace
-member's scaffold writes into, a case `s2s create` doesn't yet have a slot for.
+member's scaffold writes into, a case `s2s create` doesn't yet have a slot for. The scaffold no
+longer sets `"private": true` — unlike the plugin scaffold, `s2s create --library`'s own next-step
+hint points at `s2s deploy`, and `assertDeployable` refuses a private package before login or build
+even runs, so the two used to flatly contradict each other.
+
+Final review fix wave, closing the gaps the above left:
+
+- `s2script.libraries` refuses an `@s2script/*`-scoped name outright, in both `buildPlugin` and
+  `buildLibrary`. That scope is always resolved as a runtime builtin (never a bundled library) —
+  tsc's exact `paths` entry for a declared library used to beat the `@s2script/*` prefix pattern
+  and typecheck clean, while esbuild still externalized the name, so the bundle shipped a bare
+  `require("@s2script/…")` with none of the library's code inlined and died at load.
+- `s2s build` refuses a name declared in BOTH `s2script.libraries` and
+  `s2script.pluginDependencies`/`optionalPluginDependencies`. The two used to typecheck clean no
+  matter which one tsc's internal `paths` merge happened to pick, so the manifest's
+  `compiledAgainst` hash could end up bound to a contract tsc never actually compiled against.
+  Now it's a named build error instead.
+- `buildLibrary` now runs the same B2 residual-rule lint gate `buildPlugin` does. A library's own
+  source used to be linted by nothing at all — `lint/lint.ts`'s directory walk skips
+  dot-directories and scopes to the consumer's plugin dir, so neither a vendored copy nor a
+  workspace-sibling library was ever in range. Two of the four pinned rules describe hazards that
+  fail silently at runtime and apply verbatim to library code once it's bundled into a consumer.
+- A `kind: "library"` workspace member matched by the workspace's OWN
+  `s2script.workspace.plugins` glob (rather than sitting under a `libs/*` member) is now
+  sibling-resolvable by a separate consumer's `s2script.libraries`, not just buildable and
+  publishable. `resolveLibrarySibling` used to search `ws.libs` only, reporting such a library
+  "missing" with advice pointing at the registry for something sitting two directories away.

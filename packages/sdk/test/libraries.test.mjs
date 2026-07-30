@@ -71,6 +71,31 @@ test("a library built against a newer api major is refused", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix round (final review), finding #1: `@s2script/*` is always resolved as a runtime builtin
+// (typecheck.ts's `isAlwaysResolved`, build.ts's/build-library.ts's esbuild `external`), so a
+// declared library under that scope used to typecheck clean against the library's real .d.ts (an
+// exact `paths` entry beats the `@s2script/*` prefix pattern) and then survive into the bundle as
+// a bare `require("@s2script/…")` with none of its code inlined — dying at load. Refused here, in
+// the ONE place both `buildPlugin` and `buildLibrary` funnel through.
+// ---------------------------------------------------------------------------
+
+test("an @s2script/*-scoped library name is refused, not silently left external", () => {
+  const dir = vendored("@edge/base64"); // an unrelated healthy vendored library alongside it
+  assert.throws(
+    () => assertLibrariesResolved(dir, { "@s2script/base64": "^1.0.0" }, "1.x"),
+    /@s2script\/base64.*reserved|reserved.*@s2script\/base64/s,
+  );
+});
+
+test("the bare @s2script scope (no subpath) is refused too", () => {
+  const dir = vendored("@edge/base64");
+  assert.throws(
+    () => assertLibrariesResolved(dir, { "@s2script": "^1.0.0" }, "1.x"),
+    /reserved/,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // The second resolution source: a workspace sibling. `.s2script/libs/` is right for a library
 // pulled from the registry; re-vendoring a sibling's copy after every edit is untenable in a
 // monorepo, so a sibling resolves straight to its own `main`/`types` on disk instead.
@@ -82,7 +107,10 @@ test("a library built against a newer api major is refused", () => {
  * name deliberately does NOT match its package name — proving resolution is name-matched against
  * the sibling's own package.json, not directory-matched the way the vendored tree is.
  */
-function workspaceWithLibrary(libName, { hasKind = true, asPlugin = false, withBrokenSibling = false } = {}) {
+function workspaceWithLibrary(
+  libName,
+  { hasKind = true, kind = "library", asPlugin = false, withBrokenSibling = false } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "s2ws-"));
   const consumerDir = join(root, "plugins", "consumer");
   mkdirSync(consumerDir, { recursive: true });
@@ -119,7 +147,7 @@ function workspaceWithLibrary(libName, { hasKind = true, asPlugin = false, withB
     version: "1.0.0",
     main: "main.js",
     types: "main.d.ts",
-    ...(hasKind ? { s2script: { kind: "library" } } : {}),
+    ...(hasKind ? { s2script: { kind } } : {}),
   };
   writeFileSync(join(memberDir, "package.json"), JSON.stringify(memberPkg));
 
@@ -158,17 +186,68 @@ test("a workspace member without s2script.kind === 'library' does not resolve as
   assert.deepEqual(r.missing, ["@acme/shared-utils"], "a plain shared-code member is not a library");
 });
 
-test("a plugin sibling with a matching name does not resolve as a library", () => {
-  const { consumerDir } = workspaceWithLibrary("@acme/decoy", { asPlugin: true });
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #5: `resolveLibrarySibling` used to search `ws.libs` alone,
+// so a `kind: "library"` member matched by the workspace's OWN `s2script.workspace.plugins` glob
+// (a real, already build-and-publish-able topology — see `ws-library-in-plugins-glob` in
+// workspace-build-all.test.mjs and `declaredLibraries`'s own doc comment in build-all.ts) was
+// reported "missing", with advice ("run s2s add") pointing at the registry for a library sitting
+// two directories away. It must be searched in BOTH buckets.
+// ---------------------------------------------------------------------------
+
+test("a kind:\"library\" member matched by the PLUGINS glob still resolves as a sibling library", () => {
+  const { consumerDir, memberDir } = workspaceWithLibrary("@acme/libinplugins", { asPlugin: true });
+  const r = resolveLibraries(consumerDir, { "@acme/libinplugins": "^1.0.0" });
+  assert.deepEqual(r.missing, []);
+  assert.deepEqual(r.paths["@acme/libinplugins"], [join(memberDir, "main.d.ts")]);
+  assert.equal(r.manifests["@acme/libinplugins"].source, "workspace");
+  assert.equal(r.siblingDirs["@acme/libinplugins"], memberDir);
+});
+
+test("a genuine plugin (no s2script.kind) sharing a declared library's name does not resolve as one", () => {
+  // The ORIGINAL point of this scenario, preserved: a name collision alone must not silently start
+  // bundling the wrong thing in. Only the BUCKET (`ws.plugins` vs `ws.libs`) stopped being the
+  // discriminator above — `kind` still is.
+  const { consumerDir } = workspaceWithLibrary("@acme/decoy", { asPlugin: true, hasKind: false });
   const r = resolveLibraries(consumerDir, { "@acme/decoy": "^1.0.0" });
   assert.deepEqual(r.missing, ["@acme/decoy"]);
 });
 
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #10: `resolveLibrarySibling` now routes the kind check through
+// `packageKind`, which THROWS on an unknown kind (design D6: kind is explicit, never inferred) —
+// a `libary` typo on a sibling that IS named for the declared library used to silently read as
+// "not a library" and fall through to the generic "missing, run s2s add" error, naming the wrong
+// problem for a sibling sitting right here with the right name.
+// ---------------------------------------------------------------------------
+
+test("a sibling named for the library but with a typo'd kind names the real problem, not \"missing\"", () => {
+  const { consumerDir } = workspaceWithLibrary("@acme/typo", { kind: "libary" });
+  assert.throws(
+    () => resolveLibraries(consumerDir, { "@acme/typo": "^1.0.0" }),
+    /unknown s2script\.kind "libary"/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Fix round (final review), finding #7/#8: this test asserted the right THING (the "workspace"
+// source skips the apiVersion gate) but could never actually prove it — deleting
+// `libraries.ts`'s `if (m.source === "workspace") continue;` left the suite green. The comment's
+// claim ("0.x" gives major 0) was also wrong: `major()` used to write `parseInt(...) || 1`, which
+// maps ANY falsy parse — including a REAL 0 — to 1, so `major("0.x")` was 1, not 0, and
+// `major("")` (the workspace sentinel) was ALSO 1 either way. `1 > 1` never fires regardless of
+// the skip. `major()` now only defaults on an unparseable (NaN) segment, so "0.x" really is major
+// 0 — which is what makes this test able to fail when the skip is removed (verified by hand:
+// deleting the `continue` throws `apiVersion` here once major() is fixed, and stays silent with it
+// in place).
+// ---------------------------------------------------------------------------
+
 test("assertLibrariesResolved never gates a workspace sibling's apiVersion", () => {
   const { consumerDir } = workspaceWithLibrary("@acme/base64");
-  // sdkApiVersion "0.x" (major 0) would refuse ANY vendored entry outright (major(...) defaults to
-  // 1 for a missing/blank apiVersion, and 1 > 0) — proving the "workspace" source really does skip
-  // the gate rather than merely happening to pass it.
+  // The workspace sibling's manifest carries the "" apiVersion SENTINEL (LibraryManifest's own
+  // doc: never compared), which major() parses as NaN -> defaults to 1. sdkApiVersion "0.x" has a
+  // REAL major of 0 — so WITHOUT the `m.source === "workspace"` skip this comparison would be
+  // `1 > 0`, which throws. With the skip, it never runs at all.
   assert.doesNotThrow(() => assertLibrariesResolved(consumerDir, { "@acme/base64": "^1.0.0" }, "0.x"));
 });
 
@@ -309,4 +388,74 @@ test("build inlines a WORKSPACE-SIBLING library's real code into plugin.js, not 
     `the sibling library's source must be inlined — got:\n${js.slice(0, 500)}`,
   );
   assert.ok(!js.includes('require("@fixture/sibling-lib")'), "must not be left as an external require");
+});
+
+/**
+ * Finding #5, full pipeline: the library itself is matched by the workspace's OWN
+ * `s2script.workspace.plugins` glob (`ws.plugins`, not `ws.libs`) — the same topology
+ * `ws-library-in-plugins-glob` exercises for the BUILD side (workspace-build-all.test.mjs). This
+ * proves the CONSUMER side end to end: a separate plugin's `s2s build` really does resolve and
+ * inline it, not just that `resolveLibraries` reports it resolvable in isolation.
+ */
+function siblingLibraryInPluginsGlobWorkspace() {
+  const root = mkdtempSync(join(tmpdir(), "s2libsibplugglob-"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "root-ws",
+      private: true,
+      workspaces: ["plugins/*"],
+      s2script: { workspace: { plugins: ["plugins/*"] } },
+    }),
+  );
+  const consumerDir = join(root, "plugins", "consumer");
+  mkdirSync(join(consumerDir, "src"), { recursive: true });
+  writeFileSync(
+    join(consumerDir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/lib-in-plugins-consumer",
+      version: "0.1.0",
+      main: "src/plugin.ts",
+      private: true,
+      s2script: { libraries: { "@fixture/lib-in-plugins": "^1.0.0" } },
+    }),
+  );
+  writeFileSync(
+    join(consumerDir, "src", "plugin.ts"),
+    'import { plugin } from "@s2script/sdk/plugin";\n' +
+      'import { hello } from "@fixture/lib-in-plugins";\n\n' +
+      "export default plugin((ctx) => {\n" +
+      '  ctx.commands.register("fixture_libinplugins", (cmd) => { cmd.reply(hello()); });\n' +
+      "});\n",
+  );
+  const libraryDir = join(root, "plugins", "lib-in-plugins");
+  mkdirSync(join(libraryDir, "src"), { recursive: true });
+  writeFileSync(
+    join(libraryDir, "src", "index.ts"),
+    'export function hello(): string {\n  return "library-in-plugins-glob-resolved";\n}\n',
+  );
+  writeFileSync(join(libraryDir, "src", "index.d.ts"), "export declare function hello(): string;\n");
+  writeFileSync(
+    join(libraryDir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/lib-in-plugins",
+      version: "1.0.0",
+      main: "src/index.ts",
+      types: "src/index.d.ts",
+      s2script: { kind: "library" },
+    }),
+  );
+  return consumerDir;
+}
+
+test("build inlines a library matched by the workspace's OWN plugins glob (not ws.libs)", async () => {
+  const consumerDir = siblingLibraryInPluginsGlobWorkspace();
+  const out = await buildPlugin(consumerDir, packagesDir);
+  const zip = openZip(out);
+  const js = zip.readAsText("plugin.js");
+  assert.ok(
+    js.includes("library-in-plugins-glob-resolved"),
+    `the library's source must be inlined — got:\n${js.slice(0, 500)}`,
+  );
+  assert.ok(!js.includes('require("@fixture/lib-in-plugins")'), "must not be left as an external require");
 });
