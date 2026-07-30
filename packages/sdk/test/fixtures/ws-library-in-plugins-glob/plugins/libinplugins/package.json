@@ -1,0 +1,7 @@
+{
+  "name": "@fixture/libinplugins",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "s2script": { "kind": "library" }
+}

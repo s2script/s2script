@@ -58,7 +58,13 @@ export async function buildLibrary(dir: string, packagesDir?: string): Promise<s
   }
 
   assertNoNpmRuntimeDeps(pkg, absDir);
-  assertLibrariesResolved(absDir, s2.libraries ?? {}, STAMPED_API_VERSION);
+  // The return value matters, not just the fail-fast: `siblingDirs` is the esbuild alias map for
+  // a WORKSPACE-sibling library (Task 6) — it has no vendored copy under `.s2script/libs/`, so
+  // `nodePaths` below cannot find it unaided. Discarding this (as an earlier version of this file
+  // did) typechecks a sibling-of-a-sibling fine and then fails esbuild with "Could not resolve" —
+  // caught only by actually building one, which is why build.ts's own `alias:` wiring is mirrored
+  // here rather than assumed to be unnecessary for a library.
+  const librariesResolved = assertLibrariesResolved(absDir, s2.libraries ?? {}, STAMPED_API_VERSION);
 
   const tc = typecheckPlugin(absDir, packagesDir !== undefined ? { packagesDir } : undefined);
   if (!tc.ok) {
@@ -79,7 +85,11 @@ export async function buildLibrary(dir: string, packagesDir?: string): Promise<s
     external: ["@s2script/*"],
     target: "es2020",
     mainFields: ["module", "main"],
+    // A vendored library's directory is already named for its package, so `nodePaths` alone
+    // resolves it. A WORKSPACE-sibling library (librariesResolved.siblingDirs) is not, hence the
+    // alias — same reasoning `build.ts` applies to a plugin's own library imports.
     nodePaths: [librariesRoot(absDir)],
+    alias: librariesResolved.siblingDirs,
     write: false,
   });
 

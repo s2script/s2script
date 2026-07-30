@@ -10,13 +10,19 @@
  *
  * A workspace member declaring `s2script.kind === "library"` lands in `ws.libs`, not `ws.plugins`
  * — it is a STRUCTURAL notion ("an npm workspace member that is not a declared plugin"), and only
- * some of those members are libraries at all. `selectPlugins`/`orderPlugins`/`graphNodes` only
- * ever see `ws.plugins`, so a declared library would otherwise never be built — it need not be
- * listed under a glob named "plugins" to get one. It is built to its own `.s2lib` BEFORE the
- * plugin loop below, for a sensible log only: a workspace sibling is resolved from SOURCE by a
- * consumer's own build (Task 6, `libraries.ts`), never from this artifact, so there is no
- * dependency edge between a library's build and its consumers' — hence no graph participation
- * and no filtering by `--filter` (which narrows *plugin* selection).
+ * some of those members are libraries at all. `orderPlugins`/`graphNodes` only ever see
+ * `ws.plugins`, so a declared library would otherwise never be built — it need not be listed
+ * under a glob named "plugins" to get one. It is built to its own `.s2lib` BEFORE the plugin loop
+ * below, for a sensible log only: a workspace sibling is resolved from SOURCE by a consumer's own
+ * build (Task 6, `libraries.ts`), never from this artifact, so there is no dependency edge between
+ * a library's build and its consumers' — hence no graph participation.
+ *
+ * `--filter` DOES select across libraries too (fix round 1, finding #3), via `selectLibraries`
+ * alongside `selectPlugins`: naming a library builds just it, an unfiltered run builds every
+ * declared library. The reasoning is a correctness/CI split, not a symmetry argument — a filtered
+ * PLUGIN build never needs its sibling library built (a consumer resolves it from source, Task 6),
+ * so forcing an unrelated library's build into `s2s build --filter <one-plugin>` has no correctness
+ * upside and a real one: an unrelated broken library would fail a run meant to isolate one target.
  *
  * The behaviour worth stating twice: this is COLLECT-ALL, not fail-fast (§5.1 step 4). Every
  * selected plugin (and every declared library) is attempted even after one fails, the summary
@@ -40,6 +46,26 @@ import { indexInterfaces } from "./interfaces.ts";
 import { preflightWorkspace } from "./preflight.ts";
 import { loadWorkspace } from "./workspace.ts";
 import type { Workspace, WorkspaceMember, WorkspacePlugin } from "./workspace.ts";
+
+/** `ws.libs` members that opted in with `s2script.kind === "library"` — the buildable subset of
+ *  a structural notion ("an npm workspace member that is not a declared plugin") that otherwise
+ *  says nothing about whether a member is a library at all (a plain shared-code package is not). */
+function declaredLibraries(ws: Workspace): WorkspaceMember[] {
+  return ws.libs.filter((m) => m.pkg.s2script?.kind === "library");
+}
+
+/** Hits of `pattern` against `members` — by PACKAGE NAME first, falling back (when the pattern
+ *  contains `/` and no name matched) to a path glob relative to the workspace root. Shared by
+ *  `selectPlugins` and `selectLibraries` so a filter pattern means the same thing in both
+ *  namespaces — a plugin named `@me/shop` and a library named `@me/shop` would otherwise be
+ *  reachable by the same pattern under two different matching rules. */
+function matchHits<T extends { name: string; relDir: string }>(pattern: string, members: readonly T[]): T[] {
+  let hits = members.filter((m) => matchGlob(pattern, m.name));
+  if (hits.length === 0 && pattern.includes("/")) {
+    hits = members.filter((m) => matchGlob(pattern, m.relDir));
+  }
+  return hits;
+}
 
 // ---------------------------------------------------------------------------
 // §5.4 — `--filter`
@@ -81,21 +107,23 @@ export function collectFilters(argv: readonly string[]): string[] {
  * path glob relative to the workspace root (`plugins/sh*`) — the `/` is the discriminator, so a
  * bare `sh*` is never silently reinterpreted as a path.
  *
- * A pattern matching nothing at either form is an ERROR, not an empty build (§5.4): a typo in a
- * release script must fail loudly rather than quietly ship zero plugins. Every unmatched pattern
- * is named at once, per the standing report-all rule.
+ * A pattern matching nothing IN EITHER NAMESPACE (a plugin or a declared library — fix round 1,
+ * finding #3) is an ERROR, not an empty build (§5.4): a typo in a release script must fail loudly
+ * rather than quietly ship zero plugins. Every unmatched pattern is named at once, per the
+ * standing report-all rule. A pattern matching ONLY a library is not reported here at all — it is
+ * not an unmatched *plugin* filter, it is a library filter, and `selectLibraries` (below) builds
+ * it; this function only needs to know a hit exists somewhere so as not to false-positive it into
+ * `unmatched`.
  */
 export function selectPlugins(ws: Workspace, filters: readonly string[]): WorkspacePlugin[] {
   if (filters.length === 0) return ws.plugins;
 
+  const libs = declaredLibraries(ws);
   const chosen = new Set<string>();
   const unmatched: string[] = [];
   for (const pattern of filters) {
-    let hits = ws.plugins.filter((p) => matchGlob(pattern, p.name));
-    if (hits.length === 0 && pattern.includes("/")) {
-      hits = ws.plugins.filter((p) => matchGlob(pattern, p.relDir));
-    }
-    if (hits.length === 0) {
+    const hits = matchHits(pattern, ws.plugins);
+    if (hits.length === 0 && matchHits(pattern, libs).length === 0) {
       unmatched.push(pattern);
       continue;
     }
@@ -112,6 +140,29 @@ export function selectPlugins(ws: Workspace, filters: readonly string[]): Worksp
     );
   }
   return ws.plugins.filter((p) => chosen.has(p.name));
+}
+
+/**
+ * The declared libraries `filters` selects (fix round 1, finding #3) — mirrors `selectPlugins`'s
+ * matching rules exactly, but over `declaredLibraries(ws)` rather than `ws.plugins`: no filters
+ * selects every declared library (the pre-fix, unconditional behaviour, still exactly what an
+ * unfiltered `s2s build` does); naming a library selects just it; naming only a plugin selects no
+ * libraries at all.
+ *
+ * The "matched nothing anywhere" hard error is `selectPlugins`'s alone (single owner, so it is
+ * reported exactly once, not twice for the same pattern) — a pattern reaching this function has
+ * therefore already been proven to hit something (a plugin or a library) whenever `selectPlugins`
+ * is called first, which `buildWorkspace` always does.
+ */
+export function selectLibraries(ws: Workspace, filters: readonly string[]): WorkspaceMember[] {
+  const libs = declaredLibraries(ws);
+  if (filters.length === 0) return libs;
+
+  const chosen = new Set<string>();
+  for (const pattern of filters) {
+    for (const m of matchHits(pattern, libs)) chosen.add(m.name);
+  }
+  return libs.filter((m) => chosen.has(m.name));
 }
 
 // ---------------------------------------------------------------------------
@@ -292,13 +343,6 @@ export interface BuildWorkspaceResult {
   failed: PluginBuildOutcome[];
 }
 
-/** `ws.libs` members that opted in with `s2script.kind === "library"` — the buildable subset of
- *  a structural notion ("an npm workspace member that is not a declared plugin") that otherwise
- *  says nothing about whether a member is a library at all (a plain shared-code package is not). */
-function declaredLibraries(ws: Workspace): WorkspaceMember[] {
-  return ws.libs.filter((m) => m.pkg.s2script?.kind === "library");
-}
-
 export async function buildWorkspace(opts: BuildWorkspaceOptions): Promise<BuildWorkspaceResult> {
   const warn = opts.warn ?? console.warn;
   const step: StepRunner = opts.step ?? ((_label, fn) => fn());
@@ -321,7 +365,10 @@ export async function buildWorkspace(opts: BuildWorkspaceOptions): Promise<Build
     );
   }
 
+  // selectPlugins is the single owner of the "matched nothing anywhere" hard error (its own doc
+  // comment) — called first, so selectLibraries below never needs to repeat that validation.
   const selected = selectPlugins(ws, opts.filters ?? []);
+  const selectedLibraries = selectLibraries(ws, opts.filters ?? []);
 
   // §5.1 step 2: preflight the ENTIRE workspace before building anything, even under --filter.
   // A range violation is a statement about the plugin set as a whole; narrowing the build set
@@ -335,10 +382,10 @@ export async function buildWorkspace(opts: BuildWorkspaceOptions): Promise<Build
 
   // Libraries first, plugins after — log ordering only (see the module doc comment): a workspace
   // sibling is resolved from SOURCE by the consumer's own build, never from this .s2lib, so there
-  // is no dependency edge to respect either way. Every declared library is attempted regardless of
-  // `--filter`, which narrows *plugin* selection (`selectPlugins` reads `ws.plugins` only) — a
-  // library is workspace-wide supporting output, not one of the things being filtered.
-  for (const lib of declaredLibraries(ws)) {
+  // is no dependency edge to respect either way. `--filter` DOES narrow this set (fix round 1,
+  // finding #3; `selectLibraries` mirrors `selectPlugins`'s own matching rules) — an unfiltered run
+  // still builds every declared library, exactly as before.
+  for (const lib of selectedLibraries) {
     const base = { name: lib.name, version: lib.version, relDir: lib.relDir };
     try {
       const outPath = await step(

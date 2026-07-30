@@ -81,3 +81,111 @@ test("@s2script/* imports stay external — the consumer's context resolves them
   const js = Buffer.from(entries["index.js"]).toString("utf8");
   assert.match(js, /@s2script\/sdk\/chat/);
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 1, finding #1: a library declaring its own `s2script.libraries` must inline the
+// dependency's real code in BOTH resolution modes (libraries.ts) — a vendored copy under
+// `.s2script/libs/`, and a workspace-sibling library resolved straight from source. The sibling
+// mode needs `alias: siblingDirs` wired into `buildLibrary`'s own esbuild call (mirroring
+// build.ts's identical wiring for a PLUGIN's library imports): a sibling has no vendored copy for
+// `nodePaths` to find unaided, so without the alias this typechecks fine and then fails esbuild
+// with "Could not resolve".
+// ---------------------------------------------------------------------------
+
+function vendoredLibraryOfLibrary() {
+  const dir = mkdtempSync(join(tmpdir(), "s2lib-of-lib-v-"));
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({
+      name: "@edge/shout",
+      version: "1.0.0",
+      main: "src/index.ts",
+      types: "src/index.d.ts",
+      s2script: { kind: "library", libraries: { "@edge/vendored-inner": "^1.0.0" } },
+    }),
+  );
+  writeFileSync(
+    join(dir, "src", "index.ts"),
+    'import { inner } from "@edge/vendored-inner";\n\nexport function shout(): string {\n  return inner();\n}\n',
+  );
+  writeFileSync(join(dir, "src", "index.d.ts"), "export declare function shout(): string;\n");
+  const libDirPath = join(dir, ".s2script", "libs", "@edge", "vendored-inner");
+  mkdirSync(libDirPath, { recursive: true });
+  writeFileSync(join(libDirPath, "index.js"), 'module.exports = { inner: () => "vendored-inner-resolved" };\n');
+  writeFileSync(join(libDirPath, "index.d.ts"), "export declare function inner(): string;\n");
+  writeFileSync(
+    join(libDirPath, "package.json"),
+    JSON.stringify({ name: "@edge/vendored-inner", version: "1.0.0", main: "index.js", types: "index.d.ts" }),
+  );
+  return dir;
+}
+
+function siblingLibraryOfLibrary() {
+  const root = mkdtempSync(join(tmpdir(), "s2lib-of-lib-s-"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "root-ws",
+      private: true,
+      workspaces: ["libs/*"],
+      s2script: { workspace: { plugins: ["plugins/*"] } },
+    }),
+  );
+  const consumerDir = join(root, "libs", "consumer-lib");
+  mkdirSync(join(consumerDir, "src"), { recursive: true });
+  writeFileSync(
+    join(consumerDir, "package.json"),
+    JSON.stringify({
+      name: "@edge/shout-sibling",
+      version: "1.0.0",
+      main: "src/index.ts",
+      types: "src/index.d.ts",
+      s2script: { kind: "library", libraries: { "@edge/sibling-inner": "^1.0.0" } },
+    }),
+  );
+  writeFileSync(
+    join(consumerDir, "src", "index.ts"),
+    'import { inner } from "@edge/sibling-inner";\n\nexport function shout(): string {\n  return inner();\n}\n',
+  );
+  writeFileSync(join(consumerDir, "src", "index.d.ts"), "export declare function shout(): string;\n");
+
+  // Directory name deliberately does NOT match the package name — resolution must be
+  // name-matched against the sibling's own package.json, never directory-matched.
+  const innerDir = join(root, "libs", "unrelated-dirname");
+  mkdirSync(join(innerDir, "src"), { recursive: true });
+  writeFileSync(
+    join(innerDir, "src", "index.ts"),
+    'export function inner(): string {\n  return "sibling-inner-resolved";\n}\n',
+  );
+  writeFileSync(join(innerDir, "src", "index.d.ts"), "export declare function inner(): string;\n");
+  writeFileSync(
+    join(innerDir, "package.json"),
+    JSON.stringify({
+      name: "@edge/sibling-inner",
+      version: "1.0.0",
+      main: "src/index.ts",
+      types: "src/index.d.ts",
+      s2script: { kind: "library" },
+    }),
+  );
+  return consumerDir;
+}
+
+test("buildLibrary inlines a VENDORED library-of-a-library's real code, not an external require", async () => {
+  const dir = vendoredLibraryOfLibrary();
+  const out = await buildLibrary(dir);
+  const entries = unzipSync(new Uint8Array(readFileSync(out)));
+  const js = Buffer.from(entries["index.js"]).toString("utf8");
+  assert.match(js, /vendored-inner-resolved/);
+  assert.doesNotMatch(js, /require\("@edge\/vendored-inner"\)/);
+});
+
+test("buildLibrary inlines a WORKSPACE-SIBLING library-of-a-library's real code, not an external require", async () => {
+  const consumerDir = siblingLibraryOfLibrary();
+  const out = await buildLibrary(consumerDir);
+  const entries = unzipSync(new Uint8Array(readFileSync(out)));
+  const js = Buffer.from(entries["index.js"]).toString("utf8");
+  assert.match(js, /sibling-inner-resolved/);
+  assert.doesNotMatch(js, /require\("@edge\/sibling-inner"\)/);
+});

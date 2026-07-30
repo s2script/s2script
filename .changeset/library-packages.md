@@ -38,3 +38,7 @@ declaring `s2script.kind === "library"` (previously invisible to it — such a m
 workspace's structural "everything that isn't a declared plugin" bucket, not its plugin globs) to
 its own `.s2lib`, ahead of the plugins for a sensible log; a workspace sibling library is still
 resolved from source by its consumer's own build, so this build order is not a dependency.
+`--filter` selects across declared libraries too: naming one builds just it, and an unfiltered run
+still builds every declared library — a filtered plugin build never needs its sibling library
+built (it resolves from source either way), so an unrelated library is never built, and never
+allowed to fail, a run meant to isolate one target.

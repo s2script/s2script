@@ -26,6 +26,7 @@ import {
   buildWorkspace,
   collectFilters,
   formatBuildFailures,
+  selectLibraries,
   selectPlugins,
   stampWorkspaceVersion,
 } from "../src/workspace/build-all.ts";
@@ -289,4 +290,75 @@ test("a workspace-declared library builds to its own .s2lib alongside its plugin
   // The plugin's own build really did inline the sibling's source (Task 6), proving the pair is
   // the intended consumer relationship and not two builds that merely happened not to fail.
   assert.match(openZip(pluginOut).readAsText("plugin.js"), /hello, /);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1, finding #2: the brief's OWN stated reason for swapping the `ordered` loop's
+// `buildPlugin` call to `buildPackage` is a `kind: "library"` member matched by the
+// `s2script.workspace.plugins` globs — it lands in `ws.plugins` (loadWorkspace does not filter by
+// kind), so `orderPlugins`/`selectPlugins` treat it as an ordinary plugin. Without the swap,
+// `buildPlugin` throws its own "is s2script.kind=library" refusal for it. The `ws-library` fixture
+// above puts its library under `libs/*` instead, which exercises the SEPARATE
+// `declaredLibraries()` path and proves nothing about this swap — hence a dedicated fixture.
+// ---------------------------------------------------------------------------
+
+test("a kind:\"library\" member matched by the PLUGINS glob builds to .s2lib, not .s2sp", async () => {
+  const ws = loadWorkspace(fx("ws-library-in-plugins-glob"));
+  // The library really did land in ws.plugins (not ws.libs) — the precondition the swap fixes.
+  assert.deepEqual(ws.plugins.map((p) => p.name), ["@fixture/libinplugins"]);
+  assert.deepEqual(ws.libs, []);
+
+  const result = await buildWorkspace({ workspace: ws, packagesDir });
+  assert.deepEqual(result.failed, []);
+  const out = result.built.find((o) => o.name === "@fixture/libinplugins").outPath;
+  assert.match(out, /\.s2lib$/);
+  const zip = openZip(out);
+  assert.equal(JSON.parse(zip.readAsText("manifest.json")).kind, "library");
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1, finding #3 (coordinator's ruling): `--filter` selects across libraries too. A
+// filtered PLUGIN build never needs its sibling library built (a consumer resolves it from
+// SOURCE, Task 6) — building a library is only for publishing it — so there is no correctness
+// argument for forcing an unrelated library's build into a filtered run, and a real CI argument
+// against it: an unrelated broken library must not fail a run meant to isolate one target.
+//
+// `ws-library-filter` holds one plugin (`@fixture/keep`), one healthy library
+// (`@fixture/goodlib`), and one library that is DELIBERATELY BROKEN (`@fixture/brokenlib`, no
+// `types` — buildLibrary's own fail-fast) so "does not build" and "does not fail on" are two
+// different things to prove.
+// ---------------------------------------------------------------------------
+
+test("--filter naming only a PLUGIN does not build, and does not fail on, an unrelated library", async () => {
+  const ws = loadWorkspace(fx("ws-library-filter"));
+  const result = await buildWorkspace({ workspace: ws, packagesDir, filters: ["@fixture/keep"] });
+  assert.deepEqual(result.outcomes.map((o) => o.name), ["@fixture/keep"]);
+  assert.deepEqual(result.failed, [], "the broken library was never attempted, so it cannot fail the run");
+});
+
+test("--filter naming a LIBRARY builds just it, no plugins", async () => {
+  const ws = loadWorkspace(fx("ws-library-filter"));
+  const result = await buildWorkspace({ workspace: ws, packagesDir, filters: ["@fixture/goodlib"] });
+  assert.deepEqual(result.outcomes.map((o) => o.name), ["@fixture/goodlib"]);
+  assert.deepEqual(result.failed, []);
+  assert.match(result.built[0].outPath, /\.s2lib$/);
+});
+
+test("--filter matching NEITHER a plugin NOR a library is still an ERROR", () => {
+  const ws = loadWorkspace(fx("ws-library-filter"));
+  assert.throws(() => selectPlugins(ws, ["@fixture/nonexistent"]), /--filter matched no plugin/);
+});
+
+test("selectLibraries mirrors selectPlugins's own matching rules", () => {
+  const ws = loadWorkspace(fx("ws-library-filter"));
+  assert.deepEqual(selectLibraries(ws, []).map((m) => m.name).sort(), ["@fixture/brokenlib", "@fixture/goodlib"]);
+  assert.deepEqual(selectLibraries(ws, ["@fixture/goodlib"]).map((m) => m.name), ["@fixture/goodlib"]);
+  assert.deepEqual(selectLibraries(ws, ["@fixture/keep"]).map((m) => m.name), [], "a plugin-only filter selects no libraries");
+});
+
+test("unfiltered, ws-library-filter really DOES fail on the broken library — proving the two filtered tests above are not vacuously passing", async () => {
+  const ws = loadWorkspace(fx("ws-library-filter"));
+  const result = await buildWorkspace({ workspace: ws, packagesDir });
+  assert.deepEqual(result.failed.map((o) => o.name), ["@fixture/brokenlib"]);
+  assert.match(result.failed[0].error, /types/);
 });
