@@ -41,14 +41,27 @@ export async function run(argv: string[]): Promise<void> {
           spec: spec!,
           registryUrl: parseFlag(argv, "--registry"),
         }),
-      { interactive, done: (r) => `Added ${r.name}@${r.version} → ${r.typesDir}` },
+      {
+        interactive,
+        done: (r) =>
+          r.kind === "library"
+            ? `Added library ${r.name}@${r.version} → ${r.libDir} (commit this directory)`
+            : `Added ${r.name}@${r.version} → ${r.typesDir}`,
+      },
     );
     if (interactive) {
+      // A library never gets an .npmrc line (npmrcLine is always null for one), so this
+      // branch only ever fires on the plugin path — nothing extra to gate on result.kind.
       if (result.npmrcLine) {
         ui.log.info(`npmrc: ${result.npmrcLine}  (types-only; npm install ${result.name} also works)`);
       }
       if (result.reviewState === "unreviewed") {
         ui.log.warn("Not reviewed by s2script — types pulled; use at your own risk.");
+      }
+    } else if (result.kind === "library") {
+      console.log(`added library ${result.name}@${result.version} → ${result.libDir}`);
+      if (result.reviewState === "unreviewed") {
+        console.log("note: Not reviewed by s2script — library pulled; use at your own risk.");
       }
     } else {
       console.log(`added ${result.name}@${result.version} → ${result.typesDir}`);

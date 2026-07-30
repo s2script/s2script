@@ -32,6 +32,7 @@ const TIMEOUTS_MS = {
   plan: 30_000,
   "types download": 120_000,
   "s2sp download": 120_000,
+  "library download": 120_000,
 } as const;
 
 type Op = keyof typeof TIMEOUTS_MS;
@@ -193,6 +194,7 @@ export class RegistryClient {
     version: string;
     reviewState: string;
     hasTypes: boolean;
+    kind: "plugin" | "library";
     publishes?: unknown;
   }> {
     const u = new URL(`${this.baseUrl}/api/v1/resolve`);
@@ -207,6 +209,15 @@ export class RegistryClient {
     u.searchParams.set("name", name);
     u.searchParams.set("version", version);
     const res = await this.request("types download", u);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** A library's own artifact — a .s2lib, never the plugin .s2sp shape. */
+  async downloadLib(name: string, version: string): Promise<Buffer> {
+    const u = new URL(`${this.baseUrl}/api/v1/download/lib`);
+    u.searchParams.set("name", name);
+    u.searchParams.set("version", version);
+    const res = await this.request("library download", u);
     return Buffer.from(await res.arrayBuffer());
   }
 
