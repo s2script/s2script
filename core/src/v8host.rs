@@ -720,6 +720,18 @@ thread_local! {
     /// `remove_by_owner` called on unload; reset on shutdown so a re-init starts empty.
     static CONFIG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    /// Recipient allow-mask for the game event currently being pre-dispatched.
+    ///
+    /// A bit per slot; `Some(mask)` means "deliver this event ONLY to these slots", `None` means the
+    /// plugin expressed no opinion. Set from `Events.setRecipients` inside a pre-hook and taken by the
+    /// shim immediately afterwards, so it never outlives the event it was set for.
+    ///
+    /// This exists because CS2 fans a game event out to clients as ONE POST PER CLIENT (verified by
+    /// disassembly: the per-client legacy adapter calls `PostEventAbstract` with a single-bit mask).
+    /// Suppressing the whole broadcast is therefore all-or-nothing, while filtering those posts against
+    /// a mask gives per-viewer delivery — which is what a mode that hides deaths from some players and
+    /// not others actually needs.
+    static EVENT_RECIPIENTS: std::cell::Cell<Option<u64>> = std::cell::Cell::new(None);
     /// Client-command listener mux: `Commands.onClientCommand(name, h)` subscribers, keyed by the
     /// COMMAND NAME (like `EVENT_MUX`, unlike `CHAT_MSG_SUBS`'s single un-keyed list).
     ///
@@ -1475,6 +1487,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     // Fire a game event to ONE client (SourceMod FireToClient parity). Same field type-inference as
     // `fire`. Returns false on any miss (no manager / no pending event / no client / bot).
+    // Restrict the event currently being pre-dispatched to these slots. Only meaningful from inside an
+    // `onPre` handler, and only when that handler also returns HookResult.Handled — the pair means
+    // "suppress the normal broadcast, deliver to exactly these viewers instead". An empty array hides
+    // the event from everyone.
+    setRecipients: function (slots) { __s2_event_set_recipients(slots || []); },
     fireToClient: function (slot, name, fields) {
       if (!__s2_event_create(name)) return false;
       this._applyFields(fields);
@@ -2844,7 +2861,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
                  showLiveTally: !!config.showLiveTally, secondsLeft: dur,
                  onEnd: (typeof config.onEnd === "function") ? config.onEnd : function () {} };
       __s2_vote_state = st;
-      globalThis.__s2pkg_chat.Chat.toAll("[Vote] " + st.question + " — " + st.options.map(function (o, i) { return (i + 1) + "=" + o; }).join(", "));
+      // ONE LINE PER OPTION. This used to join every option into a single line
+      // ("[Vote] q — 1=a, 2=b, 3=c, ..."), which wrapped across most of the chat box the moment a
+      // ballot carried five map names and was genuinely hard to read — the opposite of what a thing
+      // you must answer by number needs to be. Plugins worked around it by suppressing this send and
+      // reprinting their own, which then double-printed whenever the suppression missed.
+      //
+      // Deliberately UNCOLOURED: colour is a game concern and this is engine-generic. An option's
+      // label is caller-owned, so a plugin that wants colour puts control bytes in the label itself.
+      globalThis.__s2pkg_chat.Chat.toAll("[Vote] " + st.question);
+      for (var vi = 0; vi < st.options.length; vi++) {
+        globalThis.__s2pkg_chat.Chat.toAll("  " + (vi + 1) + ". " + st.options[vi]);
+      }
       __s2_vote_showTally(st);
       __s2_vote_tick(st);                                         // starts the countdown + end
       return true;
@@ -4654,6 +4682,19 @@ fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
                 }
                 Some(_) => {}
             }
+            // STOP on the first subscriber that claims the line — a chat message is consumed ONCE.
+            //
+            // This used to run every subscriber and merely OR their results together, which is wrong
+            // for an input that MEANS something: the menu model's "one active menu per slot" is
+            // per-ISOLATE, so a shop menu in one plugin and a nominate menu in another each believed
+            // they were the only one, and a live vote subscribes separately again. Typing "2" was
+            // therefore delivered to all three, and picked a shop item AND a map AND cast a ballot in
+            // one keystroke.
+            //
+            // Claiming a line is a statement that it has been dealt with, so nothing after should see
+            // it — normal hook semantics, and what makes the three features mutually exclusive without
+            // any of them needing to know the others exist.
+            if suppress { break; }
         }
     });
     suppress
@@ -4992,18 +5033,15 @@ pub(crate) fn dispatch_pending_cookie_cached() {
 /// `sm_` fallback (that would hijack a real engine command like `say`). Returns true iff a registered
 /// command matched + was dispatched (the caller then SUPERCEDEs so the engine won't also handle it).
 pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool {
-    // Listeners run FIRST and are observe-by-default: they see the command whether or not anything
-    // else claims it, and only a `>= HookResult.Handled` return suppresses the engine's own
-    // handling. That ordering matters — a listener on an engine command (`player_ping`) must be able
-    // to act while still letting the engine do its normal work.
-    let suppressed = dispatch_client_command_listeners(slot, name, args);
-
+    // Listeners are NOT run here. They are driven from the shim's `DispatchConCommand` hook, which
+    // sees every ConCommand dispatch including the engine's own; running them here as well would
+    // fire each listener twice for any command that reaches both paths.
     let matched = CONCOMMANDS.with(|m| m.borrow().contains_key(name));
     if matched {
         dispatch_concommand(name, slot, args, ReplySource::Console);
+        return true;
     }
-    // Supersede when a plugin OWNS the command, or when a listener explicitly asked to block it.
-    matched || suppressed
+    false
 }
 
 /// Deliver a client command to the `Commands.onClientCommand(name, …)` listeners.
@@ -5013,7 +5051,7 @@ pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool
 /// HandleScope/ContextScope/TryCatch, WARN on throw. Handlers receive `(slot, args)`; a numeric
 /// return `>= HookResult.Handled` (2) requests suppression. `undefined`/non-number/throw ⇒ Continue,
 /// so a broken listener can never silently eat a command.
-fn dispatch_client_command_listeners(slot: i32, name: &str, args: &str) -> bool {
+pub(crate) fn dispatch_command_listeners(slot: i32, name: &str, args: &str) -> bool {
     let snap = CLIENT_CMD_SUBS.with(|m| m.borrow().snapshot(name));
     if snap.is_empty() { return false; }
 
@@ -5059,6 +5097,12 @@ fn dispatch_client_command_listeners(slot: i32, name: &str, args: &str) -> bool 
         }
     });
     suppress
+}
+
+/// Take (and clear) the recipient allow-mask set by `Events.setRecipients` during the current
+/// game-event pre-dispatch. `None` when the plugin set nothing.
+pub(crate) fn take_event_recipients() -> Option<u64> {
+    EVENT_RECIPIENTS.with(|c| c.replace(None))
 }
 
 /// Shared logging helper for named WARNs in the engine-op natives and the loader.
@@ -5998,6 +6042,25 @@ fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         let sub_id = next_sub_id();
         CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
         rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// `__s2_event_set_recipients(slots)` — restrict the event currently being pre-dispatched to `slots`.
+///
+/// An empty array means "no client sees it". Slots outside [0, 64) are ignored rather than throwing:
+/// this runs inside an event pre-hook, where a throw would lose the whole dispatch.
+fn s2_event_set_recipients(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(0)) else { return };
+        let mut mask: u64 = 0;
+        for i in 0..arr.length() {
+            if let Some(v) = arr.get_index(scope, i) {
+                let n = v.integer_value(scope).unwrap_or(-1);
+                if (0..64).contains(&n) { mask |= 1u64 << (n as u32); }
+            }
+        }
+        EVENT_RECIPIENTS.with(|c| c.set(Some(mask)));
     }));
 }
 
@@ -8821,6 +8884,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Raw-chat subscriber (Slice 6.13b): register a Chat.onMessage handler.
     set_native(scope, global_obj, "__s2_chat_on_message", s2_chat_on_message);
     set_native(scope, global_obj, "__s2_client_command_listen", s2_client_command_listen);
+    set_native(scope, global_obj, "__s2_event_set_recipients", s2_event_set_recipients);
     // Client-lifecycle subscriber (Clients sub-project): register a Clients.on* handler.
     set_native(scope, global_obj, "__s2_client_subscribe", s2_client_subscribe);
     // Map-start subscriber (clientlist-fakeconvar-onmapstart slice): register a Server.onMapStart handler.
@@ -17512,7 +17576,7 @@ mod frame_tests {
         "#, "{}");
         // No ConCommand named "player_ping" exists — without the listener mux this returns false
         // and the handler never runs.
-        let superseded = dispatch_client_command(7, "player_ping", "a b");
+        let superseded = dispatch_command_listeners(7, "player_ping", "a b");
         assert_eq!(eval_in_context_string("ccl", "globalThis.__seen.join(',')"), "7|a b",
                    "listener saw an unregistered (engine-owned) client command");
         assert!(!superseded, "an observing listener must let the engine handle the command");
@@ -17525,8 +17589,8 @@ mod frame_tests {
         load_body("ccs", r#"
             __s2pkg_commands.Commands.onClientCommand("drop", function () { return 2; });
         "#, "{}");
-        assert!(dispatch_client_command(3, "drop", ""), "Handled from a listener supersedes");
-        assert!(!dispatch_client_command(3, "buy", ""), "an unlistened command is untouched");
+        assert!(dispatch_command_listeners(3, "drop", ""), "Handled from a listener supersedes");
+        assert!(!dispatch_command_listeners(3, "buy", ""), "an unlistened command is untouched");
     }
 
     /// A listener and a registered ConCommand of the same name both run, and the command still
@@ -17539,9 +17603,12 @@ mod frame_tests {
             __s2pkg_commands.Commands.onClientCommand("sm_both", function () { globalThis.__order.push("listener"); });
             __s2pkg_commands.Commands.register("sm_both", function () { globalThis.__order.push("command"); });
         "#, "{}");
+        // The two seams are independent: DispatchConCommand drives listeners, the ConCommand
+        // trampoline drives the owning command. Each fires exactly once.
+        assert!(!dispatch_command_listeners(1, "sm_both", ""), "an observing listener does not supersede");
         assert!(dispatch_client_command(1, "sm_both", ""), "a registered command still supersedes");
         assert_eq!(eval_in_context_string("ccc", "globalThis.__order.join(',')"), "listener,command",
-                   "listeners run before the owning command");
+                   "each seam fired its own handler exactly once");
     }
 
     #[test]

@@ -93,6 +93,17 @@ SH_DECL_HOOK2(IGameEventManager2, FireEvent, SH_NOATTRIB, 0, bool, IGameEvent*, 
 // for player CONSOLE commands — a clean (slot, CCommand), no low-level detour.
 SH_DECL_HOOK2_void(ISource2GameClients, ClientCommand, SH_NOATTRIB, 0, CPlayerSlot, const CCommand&);
 
+// ICvar::DispatchConCommand(ConCommandRef, const CCommandContext&, const CCommand&) -> void.
+// Pre hook: the ConCommand-listener seam (SourceMod AddCommandListener / CounterStrikeSharp
+// ConCommandManager parity).
+//
+// NOT the same seam as ClientCommand above, and the difference is the whole point: the game DLL's
+// ClientCommand is the FALLBACK for names the engine does not recognise, so it sees `sm_forcertv`
+// but never `player_ping`, `jointeam`, `drop` or `buy` — those are real ConCommands and dispatch
+// through the cvar system straight to their own callback. Every ConCommand dispatch passes through
+// here, which is why one hook covers all of them.
+SH_DECL_HOOK3_void(ICvar, DispatchConCommand, SH_NOATTRIB, 0, ConCommandRef, const CCommandContext&, const CCommand&);
+
 // (The Slice-6.18 ClientConnect reject SourceHook was removed in sub-project 3: ban enforcement moved to
 // the JS onConnect event [basebans], which admits the client then shows the reason + kicks. The core
 // s2script_core_ban_check export is retained as an available synchronous primitive but is no longer called.)
@@ -738,6 +749,8 @@ static GetLegacyListener_t s_pGetLegacyListener = nullptr;
 static void s2_cvar_change_cb(ConVarRefAbstract* ref, CSplitScreenSlot slot,
                               const char* newValue, const char* oldValue, void* unk);
 static ICvar* s_pCvar = nullptr;
+/** Whether the DispatchConCommand listener hook is installed (removed in Unload). */
+static bool s_conCmdDispatchHookInstalled = false;
 static bool s_cvarChangeCbInstalled = false;   // so Unload only removes what Load installed
 static std::map<std::string, ConCommandRef> s_concommandRefs;
 
@@ -3727,6 +3740,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 s_pCvar->InstallGlobalChangeCallback(&s2_cvar_change_cb);
                 s_cvarChangeCbInstalled = true;
                 META_CONPRINTF("[s2script] cvar change callback installed\n");
+                // The ConCommand-listener seam (see Hook_DispatchConCommand). Unconditional, like
+                // the change callback above: the core decides per-name whether anyone is listening,
+                // so there is no per-subscribe engine work.
+                SH_ADD_HOOK(ICvar, DispatchConCommand, s_pCvar,
+                            SH_MEMBER(this, &S2ScriptPlugin::Hook_DispatchConCommand), false);
+                s_conCmdDispatchHookInstalled = true;
+                META_CONPRINTF("[s2script] DispatchConCommand hook installed (command listeners)\n");
             } else {
                 s_pCvar = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: EngineCvar (%s) — ConCommand registration degrades\n", verStr);
@@ -4745,6 +4765,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         s_pCvar->RemoveGlobalChangeCallback(&s2_cvar_change_cb);
         s_cvarChangeCbInstalled = false;
     }
+    // Same reasoning for the listener hook: an installed SourceHook trampoline into an unloaded .so
+    // is a use-after-free on the next ConCommand dispatch, which is EVERY console command.
+    if (s_pCvar && s_conCmdDispatchHookInstalled) {
+        SH_REMOVE_HOOK(ICvar, DispatchConCommand, s_pCvar,
+                       SH_MEMBER(this, &S2ScriptPlugin::Hook_DispatchConCommand), false);
+        s_conCmdDispatchHookInstalled = false;
+    }
     META_CONPRINTF("[s2script] Unload(): shutting down V8 core\n");
 
     // Remove hooks before shutdown so no in-flight dispatch can reach a
@@ -4911,6 +4938,24 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
 // ---------------------------------------------------------------------------
 // SourceHook hook handlers
 // ---------------------------------------------------------------------------
+// Per-event RECIPIENT FILTER for client-bound game events.
+//
+// CS2 does not broadcast a game event as one message: the per-client legacy adapter fans it out as ONE
+// PostEventAbstract PER SUBSCRIBED CLIENT, each carrying a single-bit recipient mask (verified by
+// disassembly of libserver.so — the adapter passes `clients = &(1ULL << slot)`). And the
+// `bDontBroadcast=true` path skips that fan-out entirely, so suppression is strictly all-or-nothing.
+//
+// That is the wrong shape for a gamemode that must hide a death from SOME viewers and not others. So
+// when a pre-hook both suppresses an event AND names its recipients, the event is fanned out normally
+// and each per-client post is checked against the mask. Dropping the posts nobody should get IS
+// recipient rewriting, and it keeps every field the engine populated (assister, hit modifiers) instead
+// of rebuilding a lesser copy per viewer.
+//
+// The window is exactly one event's fan-out: the posts happen synchronously inside FireEvent, so it is
+// opened and closed around that single call with no timers and no frame-scoped state.
+static bool   s_legacyFilterActive = false;
+static uint64_t s_legacyAllowMask  = 0;
+
 void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
     // Slice 6.6 Stage-2 self-test: fire a synthetic damage dispatch over a fake CTakeDamageInfo
     // (m_flDamage@68 = 42) to prove detour->core mux->JS handler->schema read end-to-end (combat is
@@ -5029,7 +5074,37 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
     int suppress = s2script_core_dispatch_game_event_pre(ev->GetName());
     s_currentEvent = prev;                                     // restore (re-entrancy)
     if (suppress) {
-        bool ret = SH_CALL(s_pGameEventManager, &IGameEventManager2::FireEvent)(ev, true);
+        // `bDontBroadcast=true` is NOT sufficient on CS2. It governs the SERVER-side dispatch; the
+        // event still reaches clients, because CS2 delivers game events as a
+        // `CMsgSource1LegacyGameEvent` user message posted separately (id 207 on 2000875 — confirmed by
+        // tracing every outbound message). A plugin returning HookResult.Handled therefore hid the
+        // event from other PLUGINS while every client still rendered it: TTT suppressed player_death on
+        // every single death and the kill feed showed up regardless, telling Innocents exactly who the
+        // Traitors were.
+        //
+        // A plugin cannot close this itself: `UserMessages.onPre` accepts a subscription for that
+        // message and never delivers it (all four name spellings bind, zero invocations), so legacy
+        // game events do not reach the plugin-facing interception at all.
+        //
+        // So the suppression decision is carried the one hop it was missing. Armed here, consumed by
+        // the very next legacy-game-event post in Hook_PostEvent — which is the post for THIS event,
+        // since FireEvent posts it synchronously.
+        uint64_t allow = 0;
+        const bool haveMask = s2script_core_take_event_recipients(&allow) != 0;
+        // With a mask: fan out with broadcast ON and filter the per-client posts. Without one: the old
+        // all-or-nothing behaviour, which is what `Handled` has always meant for events nobody scoped.
+        s_legacyFilterActive = haveMask;
+        s_legacyAllowMask = allow;
+        bool ret = SH_CALL(s_pGameEventManager, &IGameEventManager2::FireEvent)(ev, haveMask ? false : true);
+        s_legacyFilterActive = false;
+        s_legacyAllowMask = 0;
+        // The flag is deliberately LEFT ARMED here and cleared at end of frame instead.
+        //
+        // Clearing it immediately after FireEvent returned was the previous attempt and it never fired
+        // once: CS2 does not post the client-bound message synchronously inside FireEvent — network
+        // messages are batched and flushed later in the frame — so by the time the post arrived the flag
+        // had already been cleared. Hook_GameFramePost clears it, which bounds the window to the frame
+        // that suppressed the event without depending on when the engine chooses to flush.
         RETURN_META_VALUE(MRES_SUPERCEDE, ret);                // we fired it ourselves with broadcast off
     }
     RETURN_META_VALUE(MRES_IGNORED, true);                     // original runs; any set* mods already applied
@@ -5055,6 +5130,50 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
     // offset therefore degrades to at-worst a wasted dispatch the name-mux drops, or a fail-closed subscribe —
     // never a false suppression.
     NetMessageInfo_t* mi = pEvent ? pEvent->GetNetMessageInfo() : nullptr;
+    // OPT-IN TRACE, ahead of the subscription gate.
+    //
+    // The gate below is a bitmap of message ids a plugin actually subscribed to, which makes every
+    // other outbound message invisible — including whichever one carries a game event to clients. That
+    // matters: a plugin can suppress `player_death` at FireEvent (verified: handler returns Handled, the
+    // core collapses with a MAX, the shim re-fires with bDontBroadcast=true) and clients STILL render a
+    // kill-feed entry, because the notice travels as a message the plugin cannot name and therefore
+    // cannot subscribe to. Without seeing the traffic there is no way to learn its name.
+    //
+    // Off unless S2_USERMSG_TRACE is set, and BOUNDED — a few hundred lines, then silent forever, so a
+    // forgotten env var cannot flood an operator's log.
+    static bool s_msgTraceOn = (getenv("S2_USERMSG_TRACE") != nullptr);
+    static int  s_msgTraceLeft = 400;
+    if (s_msgTraceOn && s_msgTraceLeft > 0 && mi && pEvent) {
+        const char* tn = pEvent->GetUnscopedName();
+        --s_msgTraceLeft;
+        META_CONPRINTF("[s2script] MSGTRACE id=%d name=%s clients=%d\n",
+                       (int)mi->m_MessageId, (tn && *tn) ? tn : "(none)", nClientCount);
+        if (s_msgTraceLeft == 0) META_CONPRINTF("[s2script] MSGTRACE budget spent — tracing off\n");
+    }
+    // Consume a pending suppression BEFORE the subscription gate: this message is almost never one a
+    // plugin subscribed to, so the gate below would drop us out before we could act on it. Matched by
+    // NAME (a reliable virtual) rather than a hardcoded id, so a build that renumbers messages still
+    // works.
+    if (s_legacyFilterActive && pEvent) {
+        const char* ln = pEvent->GetUnscopedName();
+        // EXACT match. `strstr("Source1LegacyGameEvent")` also matches CMsgSource1LegacyGameEventList —
+        // the event-descriptor table a connecting client needs — and eating that breaks the join.
+        if (ln && strncmp(ln, "CMsgSource1LegacyGameEvent", 26) == 0 && ln[26] != 'L') {
+            // Per-client post: a single-bit mask in clients[0] (igameeventsystem.h:34 — "(client index
+            // - 1) is mapped to each bit"). A post we cannot read the recipient of is delivered rather
+            // than dropped: failing open loses the hiding, failing closed could silence the server.
+            const uint64_t who = (clients && nClientCount > 0) ? clients[0] : 0;
+            if (who != 0 && (who & s_legacyAllowMask) == 0) {
+                static int s_dropLogLeft = 6;
+                if (s_dropLogLeft > 0) {
+                    --s_dropLogLeft;
+                    META_CONPRINTF("[s2script] event hidden from mask %llx (allow %llx)\n",
+                                   (unsigned long long)who, (unsigned long long)s_legacyAllowMask);
+                }
+                RETURN_META(MRES_SUPERCEDE);
+            }
+        }
+    }
     if (!mi || !s2_usermsg_bit((int)mi->m_MessageId)) RETURN_META(MRES_IGNORED);
     google::protobuf::Message* pb = pData
         ? reinterpret_cast<google::protobuf::Message*>(const_cast<CNetMessage*>(pData)->AsProto()) : nullptr;
@@ -5088,6 +5207,27 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
 // Slice 6.11c: a player typed a command at the console. Dispatch the matching registered s2script command
 // (console runs the SAME command as chat/rcon). If handled, SUPERCEDE so the engine doesn't also process
 // it. Not one of ours -> IGNORE (the engine handles it normally). Clean (slot, CCommand) — no detour.
+// The ConCommand-listener seam. Every ConCommand dispatch — engine-owned ones included — passes
+// through ICvar::DispatchConCommand, so this one hook covers `player_ping`, `jointeam`, `drop` and
+// the rest that ClientCommand (a fallback for UNRECOGNISED names) never sees.
+//
+// Listeners only: this deliberately does NOT run s2script's own registered commands, which already
+// dispatch through their ConCommand trampoline — routing them here too would fire every handler
+// twice. Observe-by-default, matching SourceMod: SUPERCEDE only when a listener asks, because
+// superseding a command like `player_ping` by default would stop the ping marker being placed.
+void S2ScriptPlugin::Hook_DispatchConCommand(ConCommandRef cmd, const CCommandContext& ctx,
+                                             const CCommand& args) {
+    (void)cmd;
+    const char* name = args.Arg(0);
+    if (!name || !name[0]) RETURN_META(MRES_IGNORED);
+    const char* argStr = args.ArgS();
+    if (s2script_core_dispatch_command_listeners(ctx.GetPlayerSlot().Get(), name,
+                                                 argStr ? argStr : "")) {
+        RETURN_META(MRES_SUPERCEDE);
+    }
+    RETURN_META(MRES_IGNORED);
+}
+
 void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) {
     const char* name = args.Arg(0);
     if (!name || !name[0]) RETURN_META(MRES_IGNORED);

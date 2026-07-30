@@ -332,6 +332,17 @@ pub extern "C" fn s2script_core_dispatch_client_command(slot: c_int, name: *cons
     .unwrap_or(0)
 }
 
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_command_listeners(slot: c_int, name: *const c_char, args: *const c_char) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() || args.is_null() { return 0; }
+        let name_str = match unsafe { CStr::from_ptr(name) }.to_str() { Ok(s) => s, Err(_) => return 0 };
+        let args_str = match unsafe { CStr::from_ptr(args) }.to_str() { Ok(s) => s, Err(_) => return 0 };
+        if v8host::dispatch_command_listeners(slot as i32, name_str, args_str) { 1 } else { 0 }
+    })
+    .unwrap_or(0)
+}
+
 /// C-ABI entry point: is `xuid` currently banned? (Slice 6.18). The shim's `ClientConnect` hook calls
 /// this with the connecting player's SteamID64 (`xuid`) and the current unix time (`now`). Returns 1 iff
 /// banned (perm or unexpired); on a hit, the ban reason is bounded-copied into `out_reason` (NUL-terminated,
@@ -744,4 +755,19 @@ mod tests {
         assert!(crate::entity_live::take_repair_armed(), "map start arms the repair sweep");
         s2script_core_shutdown();
     }
+}
+
+/// Shim -> core: take (and clear) the recipient allow-mask a plugin set during the current game-event
+/// pre-dispatch. Returns `has_mask` via the out-param and the mask itself; `has_mask == 0` means the
+/// plugin expressed no opinion and the shim must not filter.
+#[no_mangle]
+pub extern "C" fn s2script_core_take_event_recipients(out_mask: *mut u64) -> c_int {
+    catch_unwind(|| {
+        if out_mask.is_null() { return 0; }
+        match v8host::take_event_recipients() {
+            Some(m) => { unsafe { *out_mask = m }; 1 }
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
 }
