@@ -20,6 +20,7 @@ import { derivePublishes, hashContract, expandPublishes } from "./publishes.ts";
 import { STAMPED_API_VERSION } from "./api-version.ts";
 import { localContractPath } from "./contracts.ts";
 import { resolveSiblingContracts, shadowedCopyWarning } from "./workspace/siblings.ts";
+import { assertLibrariesResolved, librariesRoot } from "./libraries.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
 import { validatePluginGamedata } from "./gamedata/validate.ts";
@@ -44,6 +45,8 @@ interface PluginPackageJson {
     gamedata?: string;
     /** Declared capabilities, e.g. ["engine:calls"]. Auditable; the operator allow-list decides. */
     permissions?: string[];
+    /** Build-time packages bundled INTO this plugin's .s2sp — see libraries.ts. */
+    libraries?: Record<string, string>;
   };
 }
 
@@ -68,6 +71,11 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     const cfgErrs = validateConfigBlock(config);
     if (cfgErrs.length) throw new Error(`invalid s2script.config:\n  ${cfgErrs.join("\n  ")}`);
   }
+
+  // Vendored libraries: fail fast and actionably BEFORE the typecheck gate, so a missing
+  // one reads as "run s2s add" rather than a pile of TS2307s.
+  const libraries = s2.libraries ?? {};
+  const librariesResolved = assertLibrariesResolved(absDir, libraries, STAMPED_API_VERSION);
 
   // --- Cheap fail-fast: the plugin's own gamedata (declared engine calls). Parsed and validated
   //     BEFORE the typecheck gate so a bad descriptor is reported as a gamedata error rather than
@@ -255,6 +263,14 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     // Set it explicitly so a monorepo plugin bundles whichever field the author wrote.
     mainFields: ["module", "main"],
     write: false,
+    // NODE_PATH semantics: `@edge/base64` resolves to .s2script/libs/@edge/base64 with no
+    // per-package alias and no change to `external`. Libraries are BUNDLED IN by design.
+    nodePaths: [librariesRoot(absDir)],
+    // A WORKSPACE-sibling library (librariesResolved.siblingDirs) is not vendored under a
+    // directory named for its package, so nodePaths alone cannot find it — alias each declared
+    // name straight at the sibling's own directory instead, same "bundle the real source, no
+    // copy" reasoning `resolveSiblingContracts` applies to contracts. Empty outside a workspace.
+    alias: librariesResolved.siblingDirs,
   });
 
   const pluginJs = result.outputFiles[0].text;

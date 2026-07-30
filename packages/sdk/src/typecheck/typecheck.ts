@@ -6,6 +6,7 @@ import { resolvePackagesDir } from "../packages-resolve.ts";
 import { sharedProgramOptions } from "../tsconfig-shared.ts";
 import { localContractPath } from "../contracts.ts";
 import { resolveSiblingContracts } from "../workspace/siblings.ts";
+import { resolveLibraries } from "../libraries.ts";
 
 export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
 export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; program?: ts.Program; }
@@ -127,6 +128,12 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     if (p !== null) contractPaths[d] = [p];
   }
 
+  // Vendored libraries resolve to REAL types by exact `paths` entry, same as contracts.
+  // A declared-but-missing one is caught earlier by assertLibrariesResolved (build.ts) —
+  // it is deliberately NOT stubbed to `any` here.
+  const libraryPaths = resolveLibraries(absDir, s2.libraries ?? {}).paths;
+  const libraryNames = new Set(Object.keys(s2.libraries ?? {}));
+
   const deps = [
     ...Object.keys(s2.pluginDependencies ?? {}),
     ...Object.keys(s2.optionalPluginDependencies ?? {}),
@@ -137,7 +144,8 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       !isAlwaysResolved(d) &&
       !locallyDeclared.has(d) &&
       contractPaths[d] === undefined &&
-      !siblings.has(d),
+      !siblings.has(d) &&
+      !libraryNames.has(d),
   );
 
   const options: ts.CompilerOptions = {
@@ -157,6 +165,7 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       "@s2script/cs2/*": ["cs2/*.d.ts"],
       "@s2script/*": ["*/index.d.ts"],
       ...contractPaths,
+      ...libraryPaths,
     },
   };
 
