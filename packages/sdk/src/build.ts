@@ -22,6 +22,7 @@ import { localContractPath } from "./contracts.ts";
 import { resolveSiblingContracts, shadowedCopyWarning } from "./workspace/siblings.ts";
 import { assertLibrariesResolved, librariesRoot } from "./libraries.ts";
 import { assertNoNpmRuntimeDeps } from "./npm-deps-gate.ts";
+import { packageKind, buildLibrary } from "./build-library.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
 import { validatePluginGamedata } from "./gamedata/validate.ts";
@@ -65,6 +66,13 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   // --- Read package.json ONCE; every step below reuses this parse. ---
   const pkgPath = join(absDir, "package.json");
   const pkg: PluginPackageJson = JSON.parse(readFileSync(pkgPath, "utf8"));
+
+  // A library is build-time code with no manifest fields loader.rs's Manifest requires
+  // (pluginDependencies/publishes are a LOADED plugin's runtime contract) and no ledgered
+  // lifecycle — buildLibrary/buildPackage is the only correct path for one.
+  if (packageKind(pkg) === "library") {
+    throw new Error(`${pkgPath} is s2script.kind="library" — build it with buildLibrary/buildPackage`);
+  }
 
   const s2 = pkg.s2script ?? {};
 
@@ -355,4 +363,10 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   writeFileSync(outPath, zipSync(zipFiles));
 
   return outPath;
+}
+
+/** Build whichever kind of package `dir` holds. The CLI's single entry point. */
+export async function buildPackage(dir: string, packagesDir?: string): Promise<string> {
+  const pkg = JSON.parse(readFileSync(join(resolve(dir), "package.json"), "utf8"));
+  return packageKind(pkg) === "library" ? buildLibrary(dir, packagesDir) : buildPlugin(dir, packagesDir);
 }

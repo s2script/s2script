@@ -1,0 +1,108 @@
+/**
+ * buildLibrary: a library package -> dist/<sanitized-name>.s2lib.
+ *
+ * A .s2lib mirrors .s2sp deliberately (one archive concept in the system), but core
+ * never loads one: a library is BUILD-TIME code that the consumer's esbuild bundles
+ * into its own plugin.js. `apiVersion` is still stamped because a library may import
+ * @s2script/sdk/*, and the CONSUMER's build refuses a library from a newer major.
+ *
+ * The library's own s2script.libraries are INLINED here (design D3), so a published
+ * library is one self-contained file and there is no transitive graph anywhere.
+ */
+
+import * as esbuild from "esbuild";
+import { zipSync } from "fflate";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { STAMPED_API_VERSION } from "./api-version.ts";
+import { assertLibrariesResolved, librariesRoot } from "./libraries.ts";
+import { assertNoNpmRuntimeDeps } from "./npm-deps-gate.ts";
+import { typecheckPlugin, formatDiagnostics } from "./typecheck/typecheck.ts";
+
+export type PackageKind = "plugin" | "library";
+
+/** Absent means "plugin", so no existing package.json anywhere needs editing. */
+export function packageKind(pkg: { s2script?: { kind?: string } }): PackageKind {
+  const k = pkg.s2script?.kind ?? "plugin";
+  if (k !== "plugin" && k !== "library") {
+    throw new Error(`unknown s2script.kind ${JSON.stringify(k)} — expected "plugin" or "library"`);
+  }
+  return k;
+}
+
+export async function buildLibrary(dir: string, packagesDir?: string): Promise<string> {
+  const absDir = resolve(dir);
+  const pkgPath = join(absDir, "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const s2 = pkg.s2script ?? {};
+
+  // A cross-plugin proxy is a ledgered runtime relationship owned by a LOADED plugin.
+  // Build-time code cannot hold one, so declaring it would be a lie the loader never sees.
+  if (s2.pluginDependencies || s2.optionalPluginDependencies) {
+    throw new Error(
+      "a library may not declare pluginDependencies/optionalPluginDependencies — an inter-plugin " +
+        "proxy belongs to a loaded plugin's ledger, not to build-time code",
+    );
+  }
+  if (s2.publishes) {
+    throw new Error("a library may not declare publishes — publishes is a plugin's runtime contract");
+  }
+
+  const typesRel = pkg.types ?? pkg.typings;
+  if (typeof typesRel !== "string" || !typesRel.endsWith(".d.ts")) {
+    throw new Error('a library must set "types" to a .d.ts — consumers vendor it to typecheck against');
+  }
+  const typesPath = resolve(absDir, typesRel);
+  if (!existsSync(typesPath) || !statSync(typesPath).isFile() || statSync(typesPath).size === 0) {
+    throw new Error(`types file is missing or empty: ${typesRel}`);
+  }
+
+  assertNoNpmRuntimeDeps(pkg, absDir);
+  assertLibrariesResolved(absDir, s2.libraries ?? {}, STAMPED_API_VERSION);
+
+  const tc = typecheckPlugin(absDir, packagesDir !== undefined ? { packagesDir } : undefined);
+  if (!tc.ok) {
+    throw new Error(`typecheck failed (${tc.diagnostics.length} error(s)):\n${formatDiagnostics(tc.diagnostics)}`);
+  }
+
+  const entryRelative = s2.main ?? pkg.main;
+  if (!entryRelative) throw new Error(`buildLibrary: no entry point in ${pkgPath} (set s2script.main or main)`);
+
+  const result = await esbuild.build({
+    entryPoints: [join(absDir, entryRelative)],
+    bundle: true,
+    platform: "neutral",
+    format: "cjs",
+    // Builtins resolve in the CONSUMER's context at runtime, so they stay external
+    // through both bundles. Everything else — including this library's own libraries
+    // — is inlined, which is what makes a .s2lib self-contained.
+    external: ["@s2script/*"],
+    target: "es2020",
+    mainFields: ["module", "main"],
+    nodePaths: [librariesRoot(absDir)],
+    write: false,
+  });
+
+  const manifest = {
+    kind: "library" as const,
+    id: pkg.name,
+    version: pkg.version,
+    apiVersion: STAMPED_API_VERSION,
+    main: "index.js",
+    types: "index.d.ts",
+  };
+
+  const sanitized = String(pkg.name).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const outDir = join(absDir, "dist");
+  mkdirSync(outDir, { recursive: true });
+  const outPath = join(outDir, `${sanitized}.s2lib`);
+  writeFileSync(
+    outPath,
+    zipSync({
+      "manifest.json": Buffer.from(JSON.stringify(manifest, null, 2)),
+      "index.js": Buffer.from(result.outputFiles[0].text),
+      "index.d.ts": readFileSync(typesPath),
+    }),
+  );
+  return outPath;
+}

@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { buildPlugin } from "../build.ts";
+import { buildPackage } from "../build.ts";
 import { resolvePackagesDir } from "../packages-resolve.ts";
 import { parseFlag, positionals } from "../cli/args.ts";
 import {
@@ -63,7 +63,7 @@ export async function run(argv: string[]): Promise<void> {
       pluginDir: resolve(dir),
       fromCliUrl: import.meta.url,
     });
-    const out = await ui.task(`Building ${dir}`, () => buildPlugin(dir, packagesDir), {
+    const out = await ui.task(`Building ${dir}`, () => buildPackage(dir, packagesDir), {
       interactive,
       done: (p) => `Built ${p}`,
     });

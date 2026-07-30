@@ -2,16 +2,27 @@
  * `s2s build` in workspace mode (design spec 2026-07-27 §5.1, §5.4).
  *
  * The flow is the spec's, in its order: stamp versions if asked, preflight the WHOLE workspace
- * before building anything, order the plugins producers-first, then build each one through the
- * existing `buildPlugin()`. Same code path, same output location
- * (`<plugin>/dist/<sanitized-id>.s2sp`) — a workspace build and a per-plugin build produce the
- * same artifact in the same place, which is what lets `package-release.sh` keep globbing
- * `plugins/<name>/dist/<id>.s2sp` unchanged.
+ * before building anything, order the plugins producers-first, then build each one through
+ * `buildPackage()` (dispatches plugin vs. library by `s2script.kind`). Same code path, same
+ * output location (`<plugin>/dist/<sanitized-id>.s2sp`) — a workspace build and a per-plugin
+ * build produce the same artifact in the same place, which is what lets `package-release.sh`
+ * keep globbing `plugins/<name>/dist/<id>.s2sp` unchanged.
+ *
+ * A workspace member declaring `s2script.kind === "library"` lands in `ws.libs`, not `ws.plugins`
+ * — it is a STRUCTURAL notion ("an npm workspace member that is not a declared plugin"), and only
+ * some of those members are libraries at all. `selectPlugins`/`orderPlugins`/`graphNodes` only
+ * ever see `ws.plugins`, so a declared library would otherwise never be built — it need not be
+ * listed under a glob named "plugins" to get one. It is built to its own `.s2lib` BEFORE the
+ * plugin loop below, for a sensible log only: a workspace sibling is resolved from SOURCE by a
+ * consumer's own build (Task 6, `libraries.ts`), never from this artifact, so there is no
+ * dependency edge between a library's build and its consumers' — hence no graph participation
+ * and no filtering by `--filter` (which narrows *plugin* selection).
  *
  * The behaviour worth stating twice: this is COLLECT-ALL, not fail-fast (§5.1 step 4). Every
- * selected plugin is attempted even after one fails, the summary names each failure, and the
- * caller exits non-zero if any failed. That is the standing *degrade per-descriptor, never crash
- * globally* rule applied to a build — one broken plugin must not hide the other seventeen.
+ * selected plugin (and every declared library) is attempted even after one fails, the summary
+ * names each failure, and the caller exits non-zero if any failed. That is the standing *degrade
+ * per-descriptor, never crash globally* rule applied to a build — one broken plugin must not hide
+ * the other seventeen.
  *
  * Ordering is NOT a build dependency (§5.1): a producer's `api.d.ts` is authored, not generated,
  * so a consumer does not need its producer built first. Topological order buys deterministic
@@ -21,14 +32,14 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildPlugin } from "../build.ts";
+import { buildPackage } from "../build.ts";
 import { isConcreteVersion } from "../publishes.ts";
 import { matchGlob } from "./glob.ts";
 import { orderPlugins, satisfiesRange } from "./graph.ts";
 import { indexInterfaces } from "./interfaces.ts";
 import { preflightWorkspace } from "./preflight.ts";
 import { loadWorkspace } from "./workspace.ts";
-import type { Workspace, WorkspacePlugin } from "./workspace.ts";
+import type { Workspace, WorkspaceMember, WorkspacePlugin } from "./workspace.ts";
 
 // ---------------------------------------------------------------------------
 // §5.4 — `--filter`
@@ -251,7 +262,7 @@ export type StepRunner = (
   done: (outPath: string) => string,
 ) => Promise<string>;
 
-/** One plugin's result. Exactly one of `outPath` / `error` is set. */
+/** One plugin's (or declared library's) build result. Exactly one of `outPath` / `error` is set. */
 export interface PluginBuildOutcome {
   name: string;
   version: string;
@@ -275,10 +286,17 @@ export interface BuildWorkspaceOptions {
 export interface BuildWorkspaceResult {
   root: string;
   stamp?: StampResult;
-  /** Every attempted plugin, in build (dependency) order. */
+  /** Every attempted plugin AND declared library, libraries first, each in build order. */
   outcomes: PluginBuildOutcome[];
   built: PluginBuildOutcome[];
   failed: PluginBuildOutcome[];
+}
+
+/** `ws.libs` members that opted in with `s2script.kind === "library"` — the buildable subset of
+ *  a structural notion ("an npm workspace member that is not a declared plugin") that otherwise
+ *  says nothing about whether a member is a library at all (a plain shared-code package is not). */
+function declaredLibraries(ws: Workspace): WorkspaceMember[] {
+  return ws.libs.filter((m) => m.pkg.s2script?.kind === "library");
 }
 
 export async function buildWorkspace(opts: BuildWorkspaceOptions): Promise<BuildWorkspaceResult> {
@@ -290,7 +308,7 @@ export async function buildWorkspace(opts: BuildWorkspaceOptions): Promise<Build
   if (opts.stampVersion !== undefined) {
     stamp = stampWorkspaceVersion(ws, opts.stampVersion);
     // Re-read rather than patch the model: the range gate and the graph below must see exactly
-    // the bytes `buildPlugin()` is about to read.
+    // the bytes `buildPackage()` is about to read.
     ws = loadWorkspace(ws.root);
   }
 
@@ -314,12 +332,32 @@ export async function buildWorkspace(opts: BuildWorkspaceOptions): Promise<Build
   opts.onPlan?.(ordered, stamp);
 
   const outcomes: PluginBuildOutcome[] = [];
+
+  // Libraries first, plugins after — log ordering only (see the module doc comment): a workspace
+  // sibling is resolved from SOURCE by the consumer's own build, never from this .s2lib, so there
+  // is no dependency edge to respect either way. Every declared library is attempted regardless of
+  // `--filter`, which narrows *plugin* selection (`selectPlugins` reads `ws.plugins` only) — a
+  // library is workspace-wide supporting output, not one of the things being filtered.
+  for (const lib of declaredLibraries(ws)) {
+    const base = { name: lib.name, version: lib.version, relDir: lib.relDir };
+    try {
+      const outPath = await step(
+        `Building ${lib.name}`,
+        () => buildPackage(lib.dir, opts.packagesDir),
+        (out) => `Built ${out}`,
+      );
+      outcomes.push({ ...base, outPath });
+    } catch (e) {
+      outcomes.push({ ...base, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   for (const p of ordered) {
     const base = { name: p.name, version: p.version, relDir: p.relDir };
     try {
       const outPath = await step(
         `Building ${p.name}`,
-        () => buildPlugin(p.dir, opts.packagesDir),
+        () => buildPackage(p.dir, opts.packagesDir),
         (out) => `Built ${out}`,
       );
       outcomes.push({ ...base, outPath });

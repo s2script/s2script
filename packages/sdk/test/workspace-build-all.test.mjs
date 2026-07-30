@@ -31,6 +31,7 @@ import {
 } from "../src/workspace/build-all.ts";
 import { loadWorkspace } from "../src/workspace/workspace.ts";
 import { preflightProblems } from "../src/workspace/preflight.ts";
+import { openZip } from "./zip.mjs";
 
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -252,4 +253,40 @@ test("`s2s build` at a workspace root exits NON-ZERO when any plugin failed", as
   // …and the failure is named on stderr, not swallowed.
   assert.match(err.stderr, /1 of 3 plugins failed to build:/);
   assert.match(err.stderr, /@fixture\/broken/);
+});
+
+// ---------------------------------------------------------------------------
+// Task 8 revision: a workspace-declared library (`s2script.kind === "library"`) is a plain
+// `ws.libs` member, not a `ws.plugins` one — `selectPlugins`/`orderPlugins` never see it, so
+// without this it would never be built at all, even though `s2s add`/`s2s deploy` need a real
+// `.s2lib` to vendor/publish.
+// ---------------------------------------------------------------------------
+
+test("a workspace-declared library builds to its own .s2lib alongside its plugin consumer", async () => {
+  const ws = loadWorkspace(fx("ws-library"));
+  assert.deepEqual(ws.plugins.map((p) => p.name), ["@fixture/uses-lib"]);
+  assert.deepEqual(ws.libs.map((m) => m.name), ["@fixture/greetlib"]);
+
+  const result = await buildWorkspace({ workspace: ws, packagesDir });
+  assert.deepEqual(result.failed, []);
+
+  // The library is attempted FIRST — log ordering only (see build-all.ts's doc comment): a
+  // workspace sibling resolves from SOURCE, not from this artifact, so there is no dependency
+  // edge between the two builds either way.
+  assert.deepEqual(result.outcomes.map((o) => o.name), ["@fixture/greetlib", "@fixture/uses-lib"]);
+
+  const libOut = result.built.find((o) => o.name === "@fixture/greetlib").outPath;
+  assert.match(libOut, /\.s2lib$/);
+  const libZip = openZip(libOut);
+  assert.deepEqual(
+    libZip.getEntries().map((e) => e.entryName).sort(),
+    ["index.d.ts", "index.js", "manifest.json"],
+  );
+  assert.equal(JSON.parse(libZip.readAsText("manifest.json")).kind, "library");
+
+  const pluginOut = result.built.find((o) => o.name === "@fixture/uses-lib").outPath;
+  assert.match(pluginOut, /\.s2sp$/);
+  // The plugin's own build really did inline the sibling's source (Task 6), proving the pair is
+  // the intended consumer relationship and not two builds that merely happened not to fail.
+  assert.match(openZip(pluginOut).readAsText("plugin.js"), /hello, /);
 });
