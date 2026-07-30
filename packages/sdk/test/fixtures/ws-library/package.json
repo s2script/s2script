@@ -1,0 +1,7 @@
+{
+  "name": "@fixture/ws-library",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": ["plugins/*", "libs/*"],
+  "s2script": { "workspace": { "plugins": ["plugins/*"] } }
+}

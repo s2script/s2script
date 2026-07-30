@@ -33,6 +33,12 @@ export interface WorkspacePackageJson {
     pluginDependencies?: Record<string, string>;
     optionalPluginDependencies?: Record<string, string>;
     publishes?: string | Record<string, string>;
+    /** Absent means "plugin" — see `packageKind` (libraries.ts), which `resolveLibrarySibling` and
+     *  `workspace/build-all.ts`'s `declaredLibraries` call on a `WorkspaceMember.pkg`. Declared here
+     *  (not left to the index signature below) so that call satisfies `packageKind`'s parameter
+     *  type — a `[key: string]: unknown` index signature does not, by itself, give TS a property
+     *  "in common" with `{ kind?: string }` for its weak-type assignability check. */
+    kind?: string;
     [key: string]: unknown;
   };
   [key: string]: unknown;

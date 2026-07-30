@@ -1,0 +1,6 @@
+{
+  "name": "@fixture/brokenlib",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "s2script": { "kind": "library" }
+}

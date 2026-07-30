@@ -1,0 +1,7 @@
+{
+  "name": "@ws-example/greeter",
+  "version": "0.1.0",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "s2script": { "kind": "library" }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@fixture/uses-lib",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "libraries": { "@fixture/greetlib": "^1.0.0" }
+  }
+}

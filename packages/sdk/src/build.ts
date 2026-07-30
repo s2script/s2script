@@ -20,6 +20,9 @@ import { derivePublishes, hashContract, expandPublishes } from "./publishes.ts";
 import { STAMPED_API_VERSION } from "./api-version.ts";
 import { localContractPath } from "./contracts.ts";
 import { resolveSiblingContracts, shadowedCopyWarning } from "./workspace/siblings.ts";
+import { assertLibrariesResolved, librariesRoot } from "./libraries.ts";
+import { assertNoNpmRuntimeDeps } from "./npm-deps-gate.ts";
+import { packageKind, buildLibrary } from "./build-library.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
 import { validatePluginGamedata } from "./gamedata/validate.ts";
@@ -36,6 +39,10 @@ interface PluginPackageJson {
   s2script?: {
     apiVersion?: string;
     main?: string;
+    /** Absent means "plugin" — see `packageKind` (libraries.ts). Read here only so `packageKind(pkg)`
+     *  below satisfies its own parameter type; DeployablePkgJson (registry/deploy.ts) declares the
+     *  identical field for the identical reason. */
+    kind?: string;
     pluginDependencies?: Record<string, string>;
     optionalPluginDependencies?: Record<string, string>;
     publishes?: string | Record<string, string>;
@@ -44,7 +51,11 @@ interface PluginPackageJson {
     gamedata?: string;
     /** Declared capabilities, e.g. ["engine:calls"]. Auditable; the operator allow-list decides. */
     permissions?: string[];
+    /** Build-time packages bundled INTO this plugin's .s2sp — see libraries.ts. */
+    libraries?: Record<string, string>;
   };
+  /** npm build-deps only (per CLAUDE.md); gated by npm-deps-gate.ts before the libraries check. */
+  dependencies?: Record<string, string>;
 }
 
 /**
@@ -60,6 +71,13 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   const pkgPath = join(absDir, "package.json");
   const pkg: PluginPackageJson = JSON.parse(readFileSync(pkgPath, "utf8"));
 
+  // A library is build-time code with no manifest fields loader.rs's Manifest requires
+  // (pluginDependencies/publishes are a LOADED plugin's runtime contract) and no ledgered
+  // lifecycle — buildLibrary/buildPackage is the only correct path for one.
+  if (packageKind(pkg) === "library") {
+    throw new Error(`${pkgPath} is s2script.kind="library" — build it with buildLibrary/buildPackage`);
+  }
+
   const s2 = pkg.s2script ?? {};
 
   // --- Cheap fail-fast: config block shape (no program needed). ---
@@ -68,6 +86,43 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     const cfgErrs = validateConfigBlock(config);
     if (cfgErrs.length) throw new Error(`invalid s2script.config:\n  ${cfgErrs.join("\n  ")}`);
   }
+
+  // Runtime `dependencies` gate: plugins run in bare V8, so a registry-installed npm package
+  // builds green and dies on a live server, far from its cause. Catch it before we ever reach
+  // esbuild. Must run before assertLibrariesResolved so the error names THIS problem, not a
+  // downstream missing-library one.
+  assertNoNpmRuntimeDeps(pkg, absDir);
+
+  // Vendored libraries: fail fast and actionably BEFORE the typecheck gate, so a missing
+  // one reads as "run s2s add" rather than a pile of TS2307s.
+  const libraries = s2.libraries ?? {};
+
+  // A name declared in BOTH s2script.libraries and s2script.pluginDependencies/
+  // optionalPluginDependencies is ambiguous in a way nothing downstream catches cleanly: tsc's
+  // `paths` merge (typecheck.ts's `{ ...contractPaths, ...libraryPaths }`) silently lets whichever
+  // one is spread SECOND win the name, and the program typechecks clean either way — there is no
+  // TS error to notice. esbuild then bundles or externalizes the name independently of which one
+  // tsc happened to pick, so the manifest's `compiledAgainst` hash can end up bound to a contract
+  // tsc never actually compiled against, with the loader's drift check none the wiser. A library
+  // (build-time code bundled INTO this .s2sp) and an inter-plugin dependency (a runtime proxy the
+  // host resolves) are two different systems; they must never share a name. Refuse it here, before
+  // either one runs.
+  const pluginDepNames = new Set([
+    ...Object.keys(s2.pluginDependencies ?? {}),
+    ...Object.keys(s2.optionalPluginDependencies ?? {}),
+  ]);
+  for (const name of Object.keys(libraries)) {
+    if (pluginDepNames.has(name)) {
+      throw new Error(
+        `${JSON.stringify(name)} is declared in BOTH s2script.libraries and s2script.` +
+          `pluginDependencies/optionalPluginDependencies — pick one: a library is build-time code ` +
+          `bundled into this .s2sp, an inter-plugin dependency is a runtime proxy resolved by the ` +
+          `host at load; the two cannot share a name`,
+      );
+    }
+  }
+
+  const librariesResolved = assertLibrariesResolved(absDir, libraries, STAMPED_API_VERSION);
 
   // --- Cheap fail-fast: the plugin's own gamedata (declared engine calls). Parsed and validated
   //     BEFORE the typecheck gate so a bad descriptor is reported as a gamedata error rather than
@@ -255,6 +310,14 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     // Set it explicitly so a monorepo plugin bundles whichever field the author wrote.
     mainFields: ["module", "main"],
     write: false,
+    // NODE_PATH semantics: `@edge/base64` resolves to .s2script/libs/@edge/base64 with no
+    // per-package alias and no change to `external`. Libraries are BUNDLED IN by design.
+    nodePaths: [librariesRoot(absDir)],
+    // A WORKSPACE-sibling library (librariesResolved.siblingDirs) is not vendored under a
+    // directory named for its package, so nodePaths alone cannot find it — alias each declared
+    // name straight at the sibling's own directory instead, same "bundle the real source, no
+    // copy" reasoning `resolveSiblingContracts` applies to contracts. Empty outside a workspace.
+    alias: librariesResolved.siblingDirs,
   });
 
   const pluginJs = result.outputFiles[0].text;
@@ -330,4 +393,10 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   writeFileSync(outPath, zipSync(zipFiles));
 
   return outPath;
+}
+
+/** Build whichever kind of package `dir` holds. The CLI's single entry point. */
+export async function buildPackage(dir: string, packagesDir?: string): Promise<string> {
+  const pkg = JSON.parse(readFileSync(join(resolve(dir), "package.json"), "utf8"));
+  return packageKind(pkg) === "library" ? buildLibrary(dir, packagesDir) : buildPlugin(dir, packagesDir);
 }

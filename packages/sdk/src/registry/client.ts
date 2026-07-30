@@ -32,6 +32,7 @@ const TIMEOUTS_MS = {
   plan: 30_000,
   "types download": 120_000,
   "s2sp download": 120_000,
+  "library download": 120_000,
 } as const;
 
 type Op = keyof typeof TIMEOUTS_MS;
@@ -165,17 +166,21 @@ export class RegistryClient {
 
   async deploy(opts: {
     manifest: Record<string, unknown>;
-    s2sp: Buffer;
+    s2sp?: Buffer | null;
+    lib?: Buffer | null;
     types?: Buffer | null;
   }): Promise<{ name: string; version: string; reviewState: string; disclaimer?: string }> {
     const entries: Record<string, Uint8Array> = {
       "manifest.json": new TextEncoder().encode(JSON.stringify(opts.manifest)),
-      "plugin.s2sp": new Uint8Array(opts.s2sp),
     };
+    // Exactly one of the two — never both, never neither. The server enforces the same rule
+    // (`missing_artifact`); this just avoids a round trip to learn that.
+    if (opts.s2sp && opts.s2sp.length) entries["plugin.s2sp"] = new Uint8Array(opts.s2sp);
+    if (opts.lib && opts.lib.length) entries["library.s2lib"] = new Uint8Array(opts.lib);
     if (opts.types && opts.types.length) {
       entries["types.tgz"] = new Uint8Array(opts.types);
     }
-    // level 0: plugin.s2sp is already deflated; recompressing wastes CPU for ~0 gain.
+    // level 0: the artifact is already deflated; recompressing wastes CPU for ~0 gain.
     const body = zipSync(entries, { level: 0 });
     const res = await this.request("deploy", `${this.baseUrl}/api/v1/deploy`, {
       method: "POST",
@@ -193,6 +198,7 @@ export class RegistryClient {
     version: string;
     reviewState: string;
     hasTypes: boolean;
+    kind: "plugin" | "library";
     publishes?: unknown;
   }> {
     const u = new URL(`${this.baseUrl}/api/v1/resolve`);
@@ -207,6 +213,15 @@ export class RegistryClient {
     u.searchParams.set("name", name);
     u.searchParams.set("version", version);
     const res = await this.request("types download", u);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** A library's own artifact — a .s2lib, never the plugin .s2sp shape. */
+  async downloadLib(name: string, version: string): Promise<Buffer> {
+    const u = new URL(`${this.baseUrl}/api/v1/download/lib`);
+    u.searchParams.set("name", name);
+    u.searchParams.set("version", version);
+    const res = await this.request("library download", u);
     return Buffer.from(await res.arrayBuffer());
   }
 

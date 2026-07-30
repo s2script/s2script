@@ -34,6 +34,13 @@ per-capability subpaths (`@s2script/sdk/entity`, `@s2script/sdk/timers`, `@s2scr
 game-specific schema types ship separately in
 [`@s2script/cs2`](https://www.npmjs.com/package/@s2script/cs2).
 
+Not every package is a plugin: `npx @s2script/sdk create --library` scaffolds a **library** —
+build-time TypeScript a plugin bundles *into* its own `.s2sp` rather than something the host
+loads on its own. Add a published one to a plugin with `npx @s2script/sdk add <name>`, which
+vendors its code and types rather than adding an npm dependency (see
+[`examples/library-package`](../../examples/library-package) +
+[`library-consumer`](../../examples/library-consumer)).
+
 ## Workspaces
 
 A directory whose root `package.json` carries an `s2script.workspace.plugins` glob list — next to

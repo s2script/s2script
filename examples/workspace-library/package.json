@@ -1,0 +1,6 @@
+{
+  "name": "@ws-example/workspace-library",
+  "private": true,
+  "workspaces": ["plugins/*", "libs/*"],
+  "s2script": { "workspace": { "plugins": ["plugins/*"] } }
+}
