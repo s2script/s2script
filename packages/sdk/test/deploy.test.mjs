@@ -7,12 +7,18 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { unzipSync } from "fflate";
 
 import { buildPlugin } from "../src/build.ts";
+import { buildLibrary } from "../src/build-library.ts";
 import { RegistryClient, RegistryError } from "../src/registry/client.ts";
 import { assertDeployable, assembleDeployArchive, deployPlugin } from "../src/registry/deploy.ts";
+import { buildWorkspace } from "../src/workspace/build-all.ts";
+import { loadWorkspace } from "../src/workspace/workspace.ts";
 import {
   builtPluginsFromOutcomes,
   computePlan,
@@ -82,6 +88,110 @@ test("assembleDeployArchive packs a types tarball when the plugin publishes", as
   const { types, manifest } = assembleDeployArchive(fx("publisher"), pkg, outPath);
   assert.ok(types, "publisher declares s2script.publishes + types, so a tarball must be packed");
   assert.ok(manifest.publishes && manifest.publishes["@demo/publisher"], "manifest carries the derived publishes block");
+});
+
+// ---------------------------------------------------------------------------
+// assembleDeployArchive / deployPlugin — the kind-aware library branch
+//
+// Mirrors build-library.test.mjs's own `libDir()` fixture builder rather than a checked-in
+// fixture directory: a library needs no gamedata/typecheck scaffolding beyond a package.json +
+// one source file, and every other library test in this repo (build-library.test.mjs,
+// add-dispatch.test.mjs) builds its fixture the same way, in a temp dir.
+// ---------------------------------------------------------------------------
+
+function libDir({ name = "@edge/base64", isPrivate = false } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "s2s-deploy-lib-"));
+  mkdirSync(join(dir, "src"), { recursive: true });
+  const pkg = {
+    name,
+    version: "1.0.0",
+    main: "src/index.ts",
+    types: "src/index.d.ts",
+    s2script: { kind: "library" },
+  };
+  if (isPrivate) pkg.private = true;
+  writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
+  writeFileSync(join(dir, "src", "index.ts"), `export function encode(s: string): string { return s; }\n`);
+  writeFileSync(join(dir, "src", "index.d.ts"), `export declare function encode(s: string): string;\n`);
+  return dir;
+}
+
+test("assembleDeployArchive: a library reads its .s2lib and returns lib set, s2sp/types null — the plugin-only types gate never runs", async () => {
+  const dir = libDir();
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  const outPath = await buildLibrary(dir);
+  const { manifest, s2sp, lib, types } = assembleDeployArchive(dir, pkg, outPath);
+  assert.equal(manifest.kind, "library");
+  assert.equal(manifest.id, "@edge/base64");
+  assert.equal(s2sp, null);
+  assert.equal(types, null);
+  assert.deepEqual([...lib], [...readFileSync(outPath)], "lib is the .s2lib's own raw bytes");
+});
+
+test("deployPlugin refuses a private LIBRARY before requiring login or building — same §6.3 gate as a private plugin", async () => {
+  const dir = libDir({ isPrivate: true });
+  await assert.rejects(
+    () => deployPlugin({ dir }),
+    (e) => {
+      assert.match(e.message, /@edge\/base64 is private/);
+      return true;
+    },
+  );
+});
+
+test("deployPlugin: a kind:library package builds via buildLibrary and posts library.s2lib, never plugin.s2sp", async () => {
+  const dir = libDir();
+  const prevToken = process.env.S2SCRIPT_TOKEN;
+  process.env.S2SCRIPT_TOKEN = "s2s_test_token";
+  try {
+    let posted;
+    const result = await deployPlugin({
+      dir,
+      registryUrl: "https://example.invalid",
+      fetch: async (_url, init) => {
+        posted = unzipSync(new Uint8Array(init.body));
+        return new Response(
+          JSON.stringify({ name: "@edge/base64", version: "1.0.0", reviewState: "unreviewed" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+    assert.equal(result.name, "@edge/base64");
+    assert.deepEqual(Object.keys(posted).sort(), ["library.s2lib", "manifest.json"]);
+  } finally {
+    if (prevToken === undefined) delete process.env.S2SCRIPT_TOKEN;
+    else process.env.S2SCRIPT_TOKEN = prevToken;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Verifying the brief's claim: workspace/deploy-all.ts needs NO code change for a library that
+// is a `ws.plugins` member (declares `s2script.kind: "library"` but still matches the plugin
+// globs) — it flows through the exact same computePlan/uploadPlan path as an ordinary plugin,
+// now that assembleDeployArchive is kind-aware. Proven against the REAL build/plan/upload chain
+// and the same `ws-library-in-plugins-glob` fixture workspace-build-all.test.mjs already uses to
+// prove the member lands in `ws.plugins` (not `ws.libs`) and builds to `.s2lib`.
+// ---------------------------------------------------------------------------
+
+test("workspace deploy: a ws.plugins member declaring kind:library uploads library.s2lib through the unmodified plan/upload path", async () => {
+  const ws = loadWorkspace(fx("ws-library-in-plugins-glob"));
+  assert.deepEqual(ws.plugins.map((p) => p.name), ["@fixture/libinplugins"]);
+
+  const build = await buildWorkspace({ workspace: ws, packagesDir });
+  assert.deepEqual(build.failed, []);
+
+  const { ordered, built } = builtPluginsFromOutcomes(ws, build.outcomes);
+  const plan = await computePlan(ordered, async () => false); // nothing published yet
+  assert.deepEqual(plan.map((e) => e.reason), ["PUBLISH"]);
+
+  let posted;
+  const client = clientWith(async (_url, init) => {
+    posted = unzipSync(new Uint8Array(init.body));
+    return jsonResponse(200, { name: "@fixture/libinplugins", version: "1.0.0", reviewState: "unreviewed" });
+  });
+  const results = await uploadPlan(plan, built, client);
+  assert.equal(results[0].status, "published");
+  assert.deepEqual(Object.keys(posted).sort(), ["library.s2lib", "manifest.json"]);
 });
 
 // ---------------------------------------------------------------------------

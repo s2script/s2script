@@ -50,6 +50,30 @@ test("deploy omits types.tgz when types is null", async () => {
   assert.equal(entries["types.tgz"], undefined);
 });
 
+test("deploy posts library.s2lib and no plugin.s2sp for a library", async () => {
+  let posted = null;
+  const client = clientWith(async (_url, init) => {
+    posted = unzipSync(new Uint8Array(init.body));
+    return jsonResponse(200, { name: "@edge/base64", version: "1.0.0", reviewState: "unreviewed" });
+  });
+  await client.deploy({
+    manifest: { id: "@edge/base64", version: "1.0.0", kind: "library" },
+    lib: Buffer.from("LIBBYTES"),
+  });
+  assert.deepEqual(Object.keys(posted).sort(), ["library.s2lib", "manifest.json"]);
+  assert.equal(Buffer.from(posted["library.s2lib"]).toString("utf8"), "LIBBYTES");
+});
+
+test("deploy posts plugin.s2sp and no library.s2lib for a plugin — the two artifact kinds never mix", async () => {
+  let posted = null;
+  const client = clientWith(async (_url, init) => {
+    posted = unzipSync(new Uint8Array(init.body));
+    return jsonResponse(200, { name: "rtv", version: "1.0.0", reviewState: "unreviewed" });
+  });
+  await client.deploy({ manifest: { id: "rtv" }, s2sp: Buffer.from([1, 2, 3]) });
+  assert.deepEqual(Object.keys(posted).sort(), ["manifest.json", "plugin.s2sp"]);
+});
+
 test("error extraction: {error} envelope", async () => {
   const client = clientWith(async () =>
     jsonResponse(403, { error: "package is owned by another user", code: "forbidden", status: 403 })

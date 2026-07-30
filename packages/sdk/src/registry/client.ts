@@ -166,17 +166,21 @@ export class RegistryClient {
 
   async deploy(opts: {
     manifest: Record<string, unknown>;
-    s2sp: Buffer;
+    s2sp?: Buffer | null;
+    lib?: Buffer | null;
     types?: Buffer | null;
   }): Promise<{ name: string; version: string; reviewState: string; disclaimer?: string }> {
     const entries: Record<string, Uint8Array> = {
       "manifest.json": new TextEncoder().encode(JSON.stringify(opts.manifest)),
-      "plugin.s2sp": new Uint8Array(opts.s2sp),
     };
+    // Exactly one of the two — never both, never neither. The server enforces the same rule
+    // (`missing_artifact`); this just avoids a round trip to learn that.
+    if (opts.s2sp && opts.s2sp.length) entries["plugin.s2sp"] = new Uint8Array(opts.s2sp);
+    if (opts.lib && opts.lib.length) entries["library.s2lib"] = new Uint8Array(opts.lib);
     if (opts.types && opts.types.length) {
       entries["types.tgz"] = new Uint8Array(opts.types);
     }
-    // level 0: plugin.s2sp is already deflated; recompressing wastes CPU for ~0 gain.
+    // level 0: the artifact is already deflated; recompressing wastes CPU for ~0 gain.
     const body = zipSync(entries, { level: 0 });
     const res = await this.request("deploy", `${this.baseUrl}/api/v1/deploy`, {
       method: "POST",

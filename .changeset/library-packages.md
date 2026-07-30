@@ -42,3 +42,14 @@ resolved from source by its consumer's own build, so this build order is not a d
 still builds every declared library — a filtered plugin build never needs its sibling library
 built (it resolves from source either way), so an unrelated library is never built, and never
 allowed to fail, a run meant to isolate one target.
+
+`s2s deploy` now publishes a library too: a package declaring `s2script.kind: "library"` builds
+via `buildLibrary` instead of `buildPlugin`, and its `.s2lib` is posted as `library.s2lib` instead
+of `plugin.s2sp` — the registry's wire format accepts exactly one of the two per upload, never
+both, never neither. A library's types ride inside the `.s2lib` itself, so the plugin-only
+`publishes`/types-tarball gate never runs for one. The `private: true` refusal applies identically
+to both kinds, checked before anything is built or a token is even required. Workspace-mode
+`s2s deploy` needed no changes at all: a workspace member declaring `s2script.kind: "library"`
+that still matches the `s2script.workspace.plugins` globs flows through the exact same
+plan/build/upload path as an ordinary plugin, now that the shared archive-assembly step is
+kind-aware.
