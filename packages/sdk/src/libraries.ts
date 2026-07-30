@@ -23,7 +23,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { findWorkspaceRoot, loadWorkspace, memberForDir } from "./workspace/workspace.ts";
+import { findWorkspaceRoot, scanWorkspace, memberForDir } from "./workspace/workspace.ts";
 
 export interface LibraryManifest {
   version: string;
@@ -85,6 +85,15 @@ export function localLibraryDir(pluginDir: string, name: string): string | null 
  *     — `ws.libs` already excludes every plugin (a plugin sibling sharing the name is therefore
  *     never a candidate), and a plain shared-code member with no `kind` at all is not a library
  *     either: a name collision alone must not silently start bundling the wrong thing in.
+ *
+ * SCANNED, not loaded (`scanWorkspace`, not `loadWorkspace`): this is reached from
+ * `assertLibrariesResolved` inside `buildPlugin`, the SINGLE-TARGET build path — `s2s build
+ * plugins/healthy-plugin`. `loadWorkspace` aggregates and throws on ANY workspace-wide shape
+ * problem, so a typo in some unrelated plugin's package.json would break a healthy plugin's build
+ * merely for declaring a library. `workspace/siblings.ts` applies the identical reasoning (and the
+ * identical fix) to sibling CONTRACT resolution on this same path; whole-workspace shape
+ * validation stays `preflightWorkspace`'s job, which every workspace-mode command already runs
+ * before it builds anything. Degrade per-descriptor, never crash globally.
  */
 function resolveLibrarySibling(
   pluginDir: string,
@@ -94,11 +103,26 @@ function resolveLibrarySibling(
   const root = findWorkspaceRoot(absDir);
   if (root === null) return null;
 
-  const ws = loadWorkspace(root);
+  const scan = scanWorkspace(root);
+  const ws = scan.workspace;
   if (memberForDir(ws, absDir) === null) return null;
 
   const lib = ws.libs.find((m) => m.name === name && m.pkg.s2script?.kind === "library");
-  if (lib === undefined) return null;
+  if (lib === undefined) {
+    // A member the scan could not read is ABSENT from `ws.libs`, so it is also absent from this
+    // search — a dropped member may have been the very library being declared, and that would
+    // silently fall through to "missing" (and from there to the hard `s2s add` error) instead of
+    // naming the real problem. Mirrors `workspace/siblings.ts`'s identical "unread" warning.
+    if (scan.problems.length > 0) {
+      console.warn(
+        `WARN: ${name}: no workspace sibling found, but ${scan.problems.length} workspace ` +
+          `member${scan.problems.length === 1 ? "" : "s"} could not be read — one of them may be ` +
+          `this library, in which case it will be reported as missing instead. Fix:\n  ` +
+          scan.problems.join("\n  "),
+      );
+    }
+    return null;
+  }
 
   const typesRel = lib.pkg.types;
   if (typeof typesRel !== "string" || typesRel === "") {
