@@ -12,10 +12,12 @@ import { fileURLToPath } from "node:url";
 import { isPackagesDir } from "../packages-resolve.ts";
 import { sharedCompilerOptionsJson } from "../tsconfig-shared.ts";
 import * as ui from "../ui/ui.ts";
+import type { PackageKind } from "../build-library.ts";
 
 export type GameChoice = "cs2" | "none";
 export type TemplateChoice = "minimal";
 export type InstallChoice = "npm" | "pnpm" | "yarn" | "bun" | "none";
+export type { PackageKind };
 
 export interface CreateOptions {
   path?: string;
@@ -24,6 +26,12 @@ export interface CreateOptions {
   template?: TemplateChoice;
   install?: InstallChoice;
   noInstall?: boolean;
+  /**
+   * What to scaffold. Absent means `"plugin"` — the same default `packageKind` (build-library.ts)
+   * applies to a package.json with no `s2script.kind` at all, so a plugin scaffold needs no new
+   * field to keep meaning what it always meant.
+   */
+  kind?: PackageKind;
   /** Skip interactive prompts; use defaults / provided flags. */
   yes?: boolean;
   /**
@@ -41,6 +49,9 @@ export interface CreateResult {
   dir: string;
   name: string;
   game: GameChoice;
+  /** Echoes opts.kind (defaulted). "library" is only reachable outside workspace mode — see
+   *  createPlugin's workspace guard. */
+  kind: PackageKind;
   installed: boolean;
   skippedInstall: boolean;
   packageManager?: InstallChoice;
@@ -84,7 +95,7 @@ export function findLocalPackagesDir(): string | undefined {
 
 /** Sanitize a directory's basename into a filesystem/package-name-safe slug, falling back to
  *  `fallback` when that leaves nothing (root path, or a name that is all-punctuation). Shared by
- *  `defaultNameFromPath` (prefixes `@plugin/`) and `create/workspace.ts`'s root name default
+ *  `defaultNameFromPath` (prefixes `@plugin/` or `@library/`) and `create/workspace.ts`'s root name default
  *  (a different fallback — a workspace root package is never itself an npm dependency). */
 export function slugifyBasename(dir: string, fallback = "plugin"): string {
   const base = basename(resolve(dir));
@@ -96,8 +107,8 @@ export function slugifyBasename(dir: string, fallback = "plugin"): string {
   );
 }
 
-function defaultNameFromPath(dir: string): string {
-  return `@plugin/${slugifyBasename(dir)}`;
+function defaultNameFromPath(dir: string, kind: PackageKind = "plugin"): string {
+  return `@${kind}/${slugifyBasename(dir)}`;
 }
 
 /** The "target directory is not empty" guard (spec §8): applies to the root dir in
@@ -218,6 +229,17 @@ export default plugin((ctx) => {
 `;
 }
 
+/** A library's entry point is a plain module, not a `plugin(...)`-wrapped one — build-time code
+ *  has no load-scoped context to receive. Replace the body; keep exporting real, typed functions. */
+const LIBRARY_ENTRY = `/** Encode a string. Replace this with the library's real surface. */
+export function encode(input: string): string {
+  return input;
+}
+`;
+
+const LIBRARY_TYPES = `export declare function encode(input: string): string;
+`;
+
 /** Aligned with packages/sdk's own eslint dependency — bump the two together. */
 export const ESLINT_RANGE = "^10.7.0";
 
@@ -320,6 +342,43 @@ function packageJsonContent(
   );
 }
 
+/** A standalone LIBRARY's package.json: `main`/`types` point at `src/index.ts`/`src/index.d.ts`
+ *  (build-time code, no `plugin.ts` load entry) and `s2script.kind: "library"` is what
+ *  `packageKind` (build-library.ts) dispatches `s2s build` on. Deliberately no
+ *  `pluginDependencies`/`optionalPluginDependencies`/`publishes` field: `buildLibrary` refuses all
+ *  three outright (build-time code has no ledgered runtime lifecycle to hang them on), so the
+ *  scaffold never writes a field the build would immediately reject. */
+function libraryPackageJsonContent(
+  name: string,
+  game: GameChoice,
+  version: string,
+  localPackagesDir: string | undefined,
+): string {
+  const fileDeps = localPackagesDir ? fileDevDeps(localPackagesDir, game) : undefined;
+  const devDependencies: Record<string, string> = {
+    ...(fileDeps ?? registryDevDeps(game, version)),
+    eslint: ESLINT_RANGE,
+  };
+  return (
+    JSON.stringify(
+      {
+        name,
+        version: "0.1.0",
+        private: true,
+        main: "src/index.ts",
+        types: "src/index.d.ts",
+        scripts: {
+          build: "s2s build .",
+        },
+        s2script: { kind: "library" },
+        devDependencies,
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
 /** None of these patterns has a slash in the middle, so git does NOT anchor them to this
  *  directory — they match at any depth, which is exactly what a workspace root's nested
  *  `plugins/<name>/dist/` needs too. Exported for `create/workspace.ts` to reuse verbatim. */
@@ -355,7 +414,8 @@ function runInstall(dir: string, pm: InstallChoice): void {
 }
 
 /**
- * Scaffold a new plugin project. Interactive when stdin is a TTY and `--yes` is not set.
+ * Scaffold a new plugin OR library project (`opts.kind`, default `"plugin"`). Interactive when
+ * stdin is a TTY and `--yes` is not set.
  *
  * When run from an in-tree CLI (monorepo packages/ present), devDependencies use
  * `file:` links so install works before the first npm publish.
@@ -366,11 +426,14 @@ function runInstall(dir: string, pm: InstallChoice): void {
  * tsconfig.json extending the root's `tsconfig.base.json`. This function never inspects
  * `process.cwd()` to decide it is "inside" a workspace; the CLI does that (the only caller with a
  * real ambient cwd) and passes the root down, so every other caller stays fully deterministic.
+ * `kind: "library"` is refused in workspace mode (see the guard just inside this function) — a
+ * workspace library needs to sit outside the `plugins/` glob, which this codepath cannot express.
  */
 export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResult> {
   const interactive = ui.isInteractive({ yes: opts.yes });
   let game = assertGame(opts.game);
   let name = opts.name;
+  let kind: PackageKind = opts.kind ?? "plugin";
   let install = opts.noInstall ? ("none" as InstallChoice) : assertInstall(opts.install);
   const template: TemplateChoice = opts.template ?? "minimal";
   if (template !== "minimal") {
@@ -378,6 +441,20 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
   }
 
   const workspaceRoot = opts.workspaceRoot;
+  if (kind === "library" && workspaceRoot !== undefined) {
+    // A workspace member is classified plugin-vs-library STRUCTURALLY (workspace.ts: whatever
+    // matches s2script.workspace.plugins is a plugin, everything else npm covers is a library) —
+    // never by its own s2script.kind. createPlugin's workspace mode always writes plugins/<slug>,
+    // which the default glob matches, so scaffolding a "library" there would silently misclassify
+    // it as ws.plugins (see examples/monorepo/packages/shared for where a real workspace library
+    // belongs). Refuse rather than produce a package the workspace tooling would never treat as
+    // a library.
+    throw new Error(
+      `s2s create --library does not support workspace mode yet (workspace detected at ` +
+        `${workspaceRoot}) — a workspace library must sit outside the plugins/ glob (see ` +
+        `examples/monorepo/packages/shared for the pattern) and needs to be added by hand for now`,
+    );
+  }
   let slug = workspaceRoot !== undefined && opts.path !== undefined ? assertBareSlug(opts.path) : opts.path;
   // Outside a workspace, targetPath is always resolvable up front (as it always was). Inside one,
   // it depends on the slug — which interactively may not exist yet (no positional arg given).
@@ -404,6 +481,18 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
         assertEmptyTarget(targetPath);
       }
     }
+    if (opts.kind === undefined && workspaceRoot === undefined) {
+      // Workspace mode never offers this choice: the guard above already refuses "library" there,
+      // so asking would just be a dead end.
+      kind = await ui.select<PackageKind>({
+        message: "What are you creating?",
+        options: [
+          { value: "plugin", label: "Plugin — loads on a server" },
+          { value: "library", label: "Library — build-time code other plugins bundle" },
+        ],
+        initialValue: "plugin",
+      });
+    }
     if (!game) {
       game = await ui.select<GameChoice>({
         message: "Which game?",
@@ -419,9 +508,9 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
       // the block above either had it already or just prompted for the slug that produces it.
       const known = targetPath as string;
       name = await ui.text({
-        message: "Plugin package name",
-        defaultValue: defaultNameFromPath(known),
-        placeholder: defaultNameFromPath(known),
+        message: kind === "library" ? "Library package name" : "Plugin package name",
+        defaultValue: defaultNameFromPath(known, kind),
+        placeholder: defaultNameFromPath(known, kind),
       });
     }
     if (workspaceRoot === undefined && !install) {
@@ -443,7 +532,9 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
       message:
         workspaceRoot !== undefined
           ? `Add ${name} to the workspace at ${workspaceRoot}?`
-          : `Create ${name} (${game}) in ${targetPath}?`,
+          : kind === "library"
+            ? `Create library ${name} in ${targetPath}?`
+            : `Create ${name} (${game}) in ${targetPath}?`,
       initialValue: true,
     });
     if (!proceed) {
@@ -458,7 +549,7 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
   }
 
   game = game ?? "cs2";
-  name = name ?? defaultNameFromPath(targetPath as string);
+  name = name ?? defaultNameFromPath(targetPath as string, kind);
   // A workspace member's package.json carries no devDependencies at all (they are hoisted at the
   // root, already shared by npm workspaces) — there is nothing per-plugin to install. `npm
   // install` belongs at the workspace root, once, after this adds the new member.
@@ -475,6 +566,14 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
       workspaceTsconfigJson(finalTargetPath, workspaceRoot),
     );
     // No eslint.config.mjs here: the root's own covers every member (spec §5.3 item 3).
+  } else if (kind === "library") {
+    const version = readCliVersion();
+    writeFileSync(
+      join(finalTargetPath, "package.json"),
+      libraryPackageJsonContent(name, game, version, localPackagesDir),
+    );
+    writeFileSync(join(finalTargetPath, "tsconfig.json"), tsconfigJson());
+    writeFileSync(join(finalTargetPath, "eslint.config.mjs"), eslintConfig());
   } else {
     const version = readCliVersion();
     writeFileSync(
@@ -484,7 +583,12 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
     writeFileSync(join(finalTargetPath, "tsconfig.json"), tsconfigJson());
     writeFileSync(join(finalTargetPath, "eslint.config.mjs"), eslintConfig());
   }
-  writeFileSync(join(finalTargetPath, "src", "plugin.ts"), pluginSource(game));
+  if (kind === "library") {
+    writeFileSync(join(finalTargetPath, "src", "index.ts"), LIBRARY_ENTRY);
+    writeFileSync(join(finalTargetPath, "src", "index.d.ts"), LIBRARY_TYPES);
+  } else {
+    writeFileSync(join(finalTargetPath, "src", "plugin.ts"), pluginSource(game));
+  }
   writeFileSync(join(finalTargetPath, ".gitignore"), gitignore());
 
   let installed = false;
@@ -505,6 +609,7 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
     dir: finalTargetPath,
     name,
     game,
+    kind,
     installed,
     skippedInstall: install === "none",
     packageManager: install,

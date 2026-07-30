@@ -53,3 +53,18 @@ to both kinds, checked before anything is built or a token is even required. Wor
 that still matches the `s2script.workspace.plugins` globs flows through the exact same
 plan/build/upload path as an ordinary plugin, now that the shared archive-assembly step is
 kind-aware.
+
+`s2s add <name>` now vendors a library the same way it already vendored an interface contract:
+resolving a package whose `kind` is `"library"`, it downloads the `.s2lib` (not the types tarball
+— a library's types live inside it) and extracts `index.js`/`index.d.ts` straight to
+`.s2script/libs/<name>/` (plus a small generated `package.json` recording the vendored version and
+`apiVersion`, so `s2script.libraries` resolution and the apiVersion gate have something to read),
+then records the range under `s2script.libraries` instead of `pluginDependencies` — and writes no
+`.npmrc` line, since a library was never an npm-installable artifact to begin with.
+
+Authoring is now symmetric with the plugin path: `s2s create --library` (`kind: "library"` in the
+interactive wizard's now two-way choice) scaffolds a library's `package.json`
+(`s2script.kind: "library"`, `main`/`types` pointing at `src/index.ts`/`src/index.d.ts`, deliberately
+no `pluginDependencies`) plus a real exported function and its matching `.d.ts` — refused inside a
+workspace for now, since a workspace library needs to sit outside the `plugins/` glob a workspace
+member's scaffold writes into, a case `s2s create` doesn't yet have a slot for.

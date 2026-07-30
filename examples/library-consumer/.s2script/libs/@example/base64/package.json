@@ -1,0 +1,10 @@
+{
+  "name": "@example/base64",
+  "version": "0.1.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "s2script": {
+    "kind": "library",
+    "apiVersion": "2.x"
+  }
+}

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   isPackagesDir,
@@ -10,7 +10,7 @@ import {
   findPackagesDirNearCli,
 } from "../src/packages-resolve.ts";
 import { typecheckPlugin } from "../src/typecheck/typecheck.ts";
-import { buildPlugin } from "../src/build.ts";
+import { buildPlugin, buildPackage } from "../src/build.ts";
 import { createPlugin, versionSpecFrom, registryDevDeps } from "../src/create/create.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,6 +143,54 @@ test("create --game none scaffolds an engine-generic plugin", async () => {
   assert.match(src, /delay/);
   const tc = typecheckPlugin(tmp, { packagesDir });
   assert.equal(tc.ok, true, JSON.stringify(tc.diagnostics));
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("createPlugin --library scaffolds a library package.json", async () => {
+  const tmp = join(tmpdir(), `s2create-lib-${process.pid}-${Date.now()}`);
+  const result = await createPlugin({
+    path: tmp,
+    name: "@example/base64",
+    kind: "library",
+    noInstall: true,
+    yes: true,
+    game: "none",
+  });
+  assert.equal(result.kind, "library");
+  const pkg = JSON.parse(readFileSync(join(tmp, "package.json"), "utf8"));
+  assert.equal(pkg.s2script.kind, "library");
+  assert.equal(typeof pkg.types, "string");
+  assert.ok(!pkg.s2script.pluginDependencies, "a library must not scaffold pluginDependencies");
+  assert.ok(existsSync(join(tmp, pkg.types)), "scaffolded types file must exist");
+
+  // The scaffold is real, typed, buildable code — not just a plausible-looking package.json.
+  const tc = typecheckPlugin(tmp, { packagesDir });
+  assert.equal(tc.ok, true, JSON.stringify(tc.diagnostics));
+  const out = await buildPackage(tmp, packagesDir);
+  assert.match(out, /\.s2lib$/);
+  assert.ok(existsSync(out));
+
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("createPlugin --library refuses inside a workspace", async () => {
+  const tmp = join(tmpdir(), `s2create-lib-ws-${process.pid}-${Date.now()}`);
+  mkdirSync(tmp, { recursive: true });
+  writeFileSync(
+    join(tmp, "package.json"),
+    JSON.stringify({ name: "@fixture/ws", workspaces: ["plugins/*"], s2script: { workspace: { plugins: ["plugins/*"] } } }),
+  );
+  await assert.rejects(
+    () =>
+      createPlugin({
+        path: "shop",
+        kind: "library",
+        workspaceRoot: tmp,
+        noInstall: true,
+        yes: true,
+      }),
+    /workspace mode/,
+  );
   rmSync(tmp, { recursive: true, force: true });
 });
 

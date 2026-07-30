@@ -327,6 +327,48 @@ there is a named no-op. Distributing the base suite through the registry instead
 deliberate future decision §2.11 already describes — this mechanism doesn't make it, it only keeps
 today's posture from being an accident of the tooling rather than a choice.
 
+### 2.7.2 Library packages — build-time code, not a runtime artifact
+
+A package's `s2script.kind` is the one new authoring fact this needs: absent (equivalently
+`"plugin"`) means what it always meant — `s2s build` typechecks and bundles `plugin.js`, wraps it
+in a `.s2sp`, and the runtime loads it into a ledgered context. `"library"` means something
+categorically different: ordinary TypeScript with no load-scoped `PluginContext`, never handed to
+the host loader, that exists to be **inlined into some other package's bundle**. A library may not
+declare `pluginDependencies`/`optionalPluginDependencies`/`publishes` — those are a *loaded*
+plugin's runtime contracts, and build-time code has no ledgered lifecycle to hang a cross-plugin
+proxy or an unload-time export on. `s2s build` refuses a library that tries, naming the field.
+
+Building a library produces a `.s2lib` — deliberately the same archive shape as a `.s2sp` (one
+packaging concept, two payloads: `manifest.json` + `index.js` + `index.d.ts`), but the core never
+opens one; nothing on the loader path even knows `.s2lib` exists. Types are mandatory, not
+optional, because a library with no published types is unusable to a consumer's typecheck gate —
+the entire reason to reach for a library instead of copy-pasting a helper file is to get a real,
+checked contract for it. `@s2script/*` imports stay external through the bundle (they resolve in
+the *consuming* plugin's own context at load, same as any other builtin); everything else —
+including a library's own declared `s2script.libraries` — is inlined, so a published `.s2lib` is
+one self-contained file with no transitive graph a consumer's build has to walk.
+
+**A declared library resolves by vendoring, never by `npm install`.** `s2script.libraries: {
+"@example/base64": "^0.1.0" }` resolves from a vendored copy committed at
+`.s2script/libs/<name>/` first, then — inside an npm workspace only — a sibling package that
+opts in with `s2script.kind: "library"`, straight from its own source on disk (§2.7.1's "no copy,
+ever" sibling mechanism, extended from interface contracts to library code). Both the typecheck
+pass and the esbuild bundle step resolve a declared library to real types and real code from one of
+those two places; a name that resolves to neither is a hard build error naming the fix (`s2s add
+<name>`), never a silent `any` stub — the doctrine the gate already applies to a missing builtin.
+This mirrors the verified-copy convention `.s2script/types/<dep>/index.d.ts` already uses for a
+*registry* plugin dependency's contract (§2.9), for the identical reason: a registry producer isn't
+co-located with its consumer, so committing the exact bytes a build resolved against is what makes
+that build reproducible and offline, with no lockfile and no live registry call at build time.
+
+Vendoring instead of `npm install` also keeps the npm dependency graph honest rather than merely
+convenient: `s2s build` separately refuses a plain npm runtime `dependency` outright — plugins run
+in bare V8, so a registry package that happens to touch `fs`/`process`/`Buffer` used to bundle
+green and fail only on a live server, far from its cause. `s2script.libraries` is the one
+sanctioned path for pulling in someone else's build-time code; a real npm dependency remains
+reserved for actual npm build tooling (`@s2script/*` packages and anything workspace-linked are
+unaffected by the gate, since neither is a live registry download).
+
 ### 2.8 Config & convars (two-layer model)
 
 - **Settings (~90%):** framework-managed. `config.define("max_rounds", { default: 15, min: 1, max: 30 })`. Materialized to `<name>.cfg`, parsed/applied by the framework. **Zero dependency on Source 2 convar internals.**

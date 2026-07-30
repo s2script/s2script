@@ -53,7 +53,7 @@ its own.
 
 ## Examples
 
-Six worked examples under [`examples/`](examples/), smallest first:
+Eight worked examples under [`examples/`](examples/), smallest first:
 
 | Example | What it teaches |
 |---|---|
@@ -61,10 +61,14 @@ Six worked examples under [`examples/`](examples/), smallest first:
 | [`cookbook`](examples/cookbook) | One file per API under `src/recipes/` — HTTP, websockets, sockets, DB, cookies, menus, sounds, traces, usermessages, and more. Copy a recipe into your own plugin. |
 | [`entity-playground`](examples/entity-playground) | Creating, configuring, and watching entities: keyvalue-configured spawns, entity I/O, lifecycle listeners, beams. |
 | [`greeter-plugin`](examples/greeter-plugin) + [`greeter-consumer`](examples/greeter-consumer) | Two plugins talking over a typed, versioned interface — including an `EntityRef` that stays live across the boundary. |
+| [`library-package`](examples/library-package) + [`library-consumer`](examples/library-consumer) | A **library** — build-time code bundled *into* a plugin's `.s2sp`, not loaded by the host itself — and a consumer that calls it, with the vendored copy `s2s add` would produce committed for an offline build. |
 | [`monorepo`](examples/monorepo) | A workspace of several plugins that build and publish together — a producer, a consumer depending on it with **no hand-copied `.d.ts`**, and a shared library package bundled into both. |
 
 Build any of them with `npx @s2script/sdk build examples/<name>`, then drop the resulting
-`dist/*.s2sp` into `addons/s2script/plugins/` on a running server.
+`dist/*.s2sp` into `addons/s2script/plugins/` on a running server. `npx @s2script/sdk create
+--library` scaffolds a new library package; a published one is added to a plugin with `npx
+@s2script/sdk add <name>`, which vendors it — see `examples/library-consumer`'s README for why
+libraries are vendored rather than npm-installed.
 
 Dev tooling lives in [`tools/`](tools/) — `schema-dump` (regenerates gamedata
 after a CS2 update), `s2bench` (op timing), and `crash-test`.
