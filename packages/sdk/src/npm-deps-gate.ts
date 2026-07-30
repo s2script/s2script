@@ -12,25 +12,64 @@
  *                        (what an npm workspaces install creates)
  */
 
-import { lstatSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 
 export interface PkgForNpmGate {
   dependencies?: Record<string, string>;
 }
 
+/**
+ * Find where `dep` actually landed in node_modules, walking ancestor directories the same way
+ * Node's own resolution algorithm does. Required because npm workspaces hoists a sibling's
+ * symlink to the INSTALL ROOT's node_modules, not necessarily the plugin's own directory — verified
+ * against a real `npm install` (see npm-deps-gate.test.mjs): a plugin nested under a workspace
+ * root (the shape every plugin/example in this repo actually uses) gets no node_modules of its
+ * own at all, so checking only `pluginDir/node_modules` missed every real case.
+ */
+function findInNodeModules(startDir: string, dep: string): string | null {
+  const segs = dep.split("/");
+  let dir = resolve(startDir);
+  for (;;) {
+    const candidate = join(dir, "node_modules", ...segs);
+    try {
+      lstatSync(candidate);
+      return candidate;
+    } catch {
+      // Not at this level — keep climbing.
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null; // reached the filesystem root
+    dir = parent;
+  }
+}
+
+/**
+ * A dependency is workspace-linked — local source the author wrote, not a registry download —
+ * when its REALPATH escapes node_modules entirely. A symlink (what npm/pnpm workspaces leave
+ * behind for a sibling) resolves to wherever the package actually lives on disk (`packages/`,
+ * `plugins/`, …), which itself is never inside a node_modules directory. A genuine registry
+ * install's realpath is always still inside one — npm: the package's own directory under
+ * node_modules; pnpm: the content-addressed store under node_modules/.pnpm — so this is robust to
+ * hoisting depth and package-manager symlink strategy, unlike checking `isSymbolicLink()` at one
+ * fixed directory (which only caught the case where the PLUGIN ITSELF is the workspace root).
+ */
 function isWorkspaceLinked(pluginDir: string, dep: string): boolean {
+  const found = findInNodeModules(pluginDir, dep);
+  if (found === null) return false;
+  let real: string;
   try {
-    return lstatSync(join(pluginDir, "node_modules", ...dep.split("/"))).isSymbolicLink();
+    real = realpathSync(found);
   } catch {
     return false;
   }
+  return !real.split(sep).includes("node_modules");
 }
 
 export function assertNoNpmRuntimeDeps(pkg: PkgForNpmGate, pluginDir: string): void {
   const offenders: string[] = [];
   for (const [dep, range] of Object.entries(pkg.dependencies ?? {})) {
-    if (dep === "@s2script/sdk" || dep.startsWith("@s2script/")) continue;
+    if (dep.startsWith("@s2script/")) continue;
     if (typeof range === "string" && (range.startsWith("file:") || range.startsWith("workspace:"))) continue;
     if (isWorkspaceLinked(pluginDir, dep)) continue;
     offenders.push(dep);
