@@ -51,12 +51,19 @@ export async function run(argv: string[]): Promise<void> {
     );
     if (interactive) {
       // A library never gets an .npmrc line (npmrcLine is always null for one), so this
-      // branch only ever fires on the plugin path — nothing extra to gate on result.kind.
+      // check alone stays kind-agnostic — only the plugin path ever has a line to print.
       if (result.npmrcLine) {
         ui.log.info(`npmrc: ${result.npmrcLine}  (types-only; npm install ${result.name} also works)`);
       }
+      // Unlike npmrcLine, the "unreviewed" wording DOES depend on kind — "types pulled"
+      // would mislabel a library, reintroducing the exact types/npm framing this feature
+      // exists to remove.
       if (result.reviewState === "unreviewed") {
-        ui.log.warn("Not reviewed by s2script — types pulled; use at your own risk.");
+        ui.log.warn(
+          result.kind === "library"
+            ? "Not reviewed by s2script — library pulled; use at your own risk."
+            : "Not reviewed by s2script — types pulled; use at your own risk.",
+        );
       }
     } else if (result.kind === "library") {
       console.log(`added library ${result.name}@${result.version} → ${result.libDir}`);

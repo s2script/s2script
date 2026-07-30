@@ -90,7 +90,11 @@ export type AddedPackage =
       name: string;
       version: string;
       reviewState: string;
-      typesDir: string;
+      // null, not the vendored libDir: the two variants must differ in TYPE (as libDir and
+      // npmrcLine already do) so a caller reading typesDir unconditionally is forced to
+      // narrow on `kind` first, rather than silently mislabeling a library's vendored
+      // directory as a types-only artifact.
+      typesDir: null;
       libDir: string;
       npmrcLine: null;
     };
@@ -99,6 +103,8 @@ export async function addPackage(opts: {
   pluginDir: string;
   spec: string;
   registryUrl?: string;
+  /** Injectable for tests — mirrors RegistryClientOpts.fetch, defaults to global fetch. */
+  fetch?: typeof fetch;
 }): Promise<AddedPackage> {
   const absDir = resolve(opts.pluginDir);
   const { name, range } = parseSpec(opts.spec);
@@ -106,6 +112,7 @@ export async function addPackage(opts: {
   const client = new RegistryClient({
     baseUrl: opts.registryUrl || creds?.registryUrl || defaultRegistryUrl(),
     token: creds?.token,
+    fetch: opts.fetch,
   });
 
   const resolved = await client.resolve(name, range);
@@ -130,7 +137,7 @@ export async function addPackage(opts: {
       name: resolved.name,
       version: resolved.version,
       reviewState: resolved.reviewState,
-      typesDir: libDir,
+      typesDir: null,
       libDir,
       // Deliberately NO .npmrc line: nothing about a library may look like an npm
       // package — that is the exact confusion this feature exists to prevent.
