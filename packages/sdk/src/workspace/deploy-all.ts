@@ -22,6 +22,24 @@ export interface BuiltPlugin {
   outPath: string;
 }
 
+export interface BuiltPluginsRecovery {
+  ordered: WorkspacePlugin[];
+  built: Map<string, BuiltPlugin>;
+  /**
+   * Outcomes that built successfully but matched no `ws.plugins` entry: a `ws.libs`-only library
+   * (`s2script.kind: "library"`, covered by npm `workspaces` but NOT by
+   * `s2script.workspace.plugins`). `buildWorkspace` (build-all.ts) builds every `declaredLibraries()`
+   * member ahead of the plugin loop and folds both into one `outcomes` array — so hitting this is
+   * completely ordinary, not a caller bug, and it happens on EVERY workspace deploy that has such a
+   * library at all. `computePlan`/`uploadPlan` only ever accept `WorkspacePlugin[]`, so these can
+   * never enter the plan (widening that is a deliberate, separately-logged follow-up, the same
+   * scope call Task 8 made for `onPlan`) — the caller is responsible for telling the author that
+   * what they just watched build will NOT be published by this command, rather than letting it
+   * vanish after "Building @foo/mylib" with no further trace.
+   */
+  unpublishableLibraries: PluginBuildOutcome[];
+}
+
 /**
  * `buildWorkspace`'s outcomes are already in dependency (build) order and already name-keyed to
  * `ws.plugins` — this recovers the full `WorkspacePlugin` (dir, pkg, private) that `outcomes`'
@@ -32,17 +50,39 @@ export interface BuiltPlugin {
 export function builtPluginsFromOutcomes(
   ws: Workspace,
   outcomes: readonly PluginBuildOutcome[],
-): { ordered: WorkspacePlugin[]; built: Map<string, BuiltPlugin> } {
+): BuiltPluginsRecovery {
   const byName = new Map(ws.plugins.map((p) => [p.name, p]));
   const ordered: WorkspacePlugin[] = [];
   const built = new Map<string, BuiltPlugin>();
+  const unpublishableLibraries: PluginBuildOutcome[] = [];
   for (const o of outcomes) {
     const plugin = byName.get(o.name);
-    if (!plugin) continue; // defensive only — every outcome comes from this exact ws.plugins
+    if (!plugin) {
+      // See BuiltPluginsRecovery.unpublishableLibraries's doc — a ws.libs-only library, a LIVE
+      // path (not "defensive only"): every outcome from the library-build loop above (build-all.ts)
+      // lands here on every run that has one.
+      unpublishableLibraries.push(o);
+      continue;
+    }
     ordered.push(plugin);
     if (o.outPath !== undefined) built.set(o.name, { plugin, outPath: o.outPath });
   }
-  return { ordered, built };
+  return { ordered, built, unpublishableLibraries };
+}
+
+/**
+ * One line per built-but-unpublishable `ws.libs`-only library, in the SAME visual register as
+ * `formatPlan`'s own block (4-space indent) — meant to be printed immediately after
+ * `formatPlan(plan)`, in the SAME "plan:" section, so an author sees where their library actually
+ * went instead of it silently not appearing anywhere.
+ */
+export function formatUnpublishableLibraries(outcomes: readonly PluginBuildOutcome[]): string {
+  return outcomes
+    .map(
+      (o) =>
+        `    skip ${o.name} (library outside s2script.workspace.plugins — publish with \`s2s deploy ${o.relDir}\`)`,
+    )
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------

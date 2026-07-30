@@ -23,6 +23,7 @@ import {
   builtPluginsFromOutcomes,
   computePlan,
   formatPlan,
+  formatUnpublishableLibraries,
   isAlreadyPublished,
   publishCount,
   uploadPlan,
@@ -195,6 +196,108 @@ test("workspace deploy: a ws.plugins member declaring kind:library uploads libra
 });
 
 // ---------------------------------------------------------------------------
+// Fix round 1: a ws.libs-only library (NOT matched by s2script.workspace.plugins, only by npm
+// workspaces) builds successfully — "Building @foo/mylib" scrolls past — and then previously
+// vanished with no trace: not an entry, not a skip, not a warning. `builtPluginsFromOutcomes` now
+// surfaces it as `unpublishableLibraries`, and commands/deploy.ts prints it right under the plan.
+// This proves both halves: the skip line is emitted, AND the library is genuinely never uploaded
+// (not merely "the test didn't check") — against a REAL buildWorkspace + uploadPlan run, with a
+// sibling plugin that DOES publish, so the upload path is actually exercised for real.
+// ---------------------------------------------------------------------------
+
+function tempLibraryWorkspace() {
+  const root = mkdtempSync(join(tmpdir(), "s2s-wslib-"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify(
+      {
+        name: "root-ws",
+        private: true,
+        workspaces: ["plugins/*", "libs/*"],
+        s2script: { workspace: { plugins: ["plugins/*"] } },
+      },
+      null,
+      2,
+    ),
+  );
+
+  // ws.libs-only: covered by npm `workspaces` (libs/*) but NOT by s2script.workspace.plugins.
+  const libDirPath = join(root, "libs", "greetlib");
+  mkdirSync(join(libDirPath, "src"), { recursive: true });
+  writeFileSync(
+    join(libDirPath, "package.json"),
+    JSON.stringify(
+      {
+        name: "@fixture/greetlib",
+        version: "1.0.0",
+        main: "src/index.ts",
+        types: "src/index.d.ts",
+        s2script: { kind: "library" },
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(join(libDirPath, "src", "index.ts"), 'export function greet(): string {\n  return "hi";\n}\n');
+  writeFileSync(join(libDirPath, "src", "index.d.ts"), "export declare function greet(): string;\n");
+
+  // A NOT-private plugin, so the plan really does contain a PUBLISH entry — proving uploadPlan
+  // genuinely talks to the registry here, and never for the library sitting right next to it.
+  const pluginDir = join(root, "plugins", "pub");
+  mkdirSync(join(pluginDir, "src"), { recursive: true });
+  writeFileSync(
+    join(pluginDir, "package.json"),
+    JSON.stringify({ name: "@fixture/pub", version: "1.0.0", main: "src/plugin.ts" }, null, 2),
+  );
+  writeFileSync(
+    join(pluginDir, "src", "plugin.ts"),
+    'import { plugin } from "@s2script/sdk/plugin";\n\nexport default plugin(() => {});\n',
+  );
+
+  return root;
+}
+
+test("workspace deploy: a ws.libs-only library that builds gets an explicit, honest skip line — not silence, not an upload", async () => {
+  const root = tempLibraryWorkspace();
+  const ws = loadWorkspace(root);
+  assert.deepEqual(ws.libs.map((m) => m.name), ["@fixture/greetlib"]);
+  assert.deepEqual(ws.plugins.map((p) => p.name), ["@fixture/pub"]);
+
+  const build = await buildWorkspace({ workspace: ws, packagesDir });
+  assert.deepEqual(build.failed, []);
+  // The library really did build — this is the exact outcome that used to vanish silently.
+  assert.ok(build.outcomes.find((o) => o.name === "@fixture/greetlib" && o.outPath));
+
+  const { ordered, built, unpublishableLibraries } = builtPluginsFromOutcomes(ws, build.outcomes);
+  assert.deepEqual(unpublishableLibraries.map((o) => o.name), ["@fixture/greetlib"]);
+  assert.equal(
+    formatUnpublishableLibraries(unpublishableLibraries),
+    "    skip @fixture/greetlib (library outside s2script.workspace.plugins — publish with `s2s deploy libs/greetlib`)",
+  );
+
+  // Genuinely not uploadable: `built` (the only source uploadPlan may draw from) has no entry for
+  // it, and `ordered`/the plan derived from it never mention it either.
+  assert.equal(built.has("@fixture/greetlib"), false);
+  assert.deepEqual(ordered.map((p) => p.name), ["@fixture/pub"]);
+
+  const plan = await computePlan(ordered, async () => false);
+  assert.deepEqual(plan.map((e) => [e.plugin.name, e.reason]), [["@fixture/pub", "PUBLISH"]]);
+
+  const calls = [];
+  const client = clientWith(async (_url, init) => {
+    calls.push(unzipSync(new Uint8Array(init.body)));
+    return jsonResponse(200, { name: "@fixture/pub", version: "1.0.0", reviewState: "unreviewed" });
+  });
+  const results = await uploadPlan(plan, built, client);
+  assert.equal(results[0].status, "published");
+  // Exactly one upload happened — the plugin's — and the library was never a candidate to begin
+  // with, so there is no code path by which it could have been uploaded here.
+  assert.equal(calls.length, 1);
+  const manifest = JSON.parse(new TextDecoder().decode(calls[0]["manifest.json"]));
+  assert.equal(manifest.id, "@fixture/pub");
+});
+
+// ---------------------------------------------------------------------------
 // §6.1 step 2 — plan computation across all three outcomes
 // ---------------------------------------------------------------------------
 
@@ -295,6 +398,26 @@ test("builtPluginsFromOutcomes: preserves outcome order, maps only successes int
   assert.equal(built.size, 1);
   assert.equal(built.get("@me/a").outPath, "/ws/plugins/a/dist/x.s2sp");
   assert.equal(built.has("@me/b"), false);
+});
+
+test("builtPluginsFromOutcomes: an outcome matching no ws.plugins entry is a ws.libs-only library, not a dropped defensive case", () => {
+  const ws = {
+    root: "/ws",
+    plugins: [{ name: "@me/a", version: "1.0.0", dir: "/ws/plugins/a", relDir: "plugins/a", private: false, pkg: {} }],
+  };
+  const outcomes = [
+    { name: "@me/mylib", version: "1.0.0", relDir: "libs/mylib", outPath: "/ws/libs/mylib/dist/x.s2lib" },
+    { name: "@me/a", version: "1.0.0", relDir: "plugins/a", outPath: "/ws/plugins/a/dist/x.s2sp" },
+  ];
+  const { ordered, built, unpublishableLibraries } = builtPluginsFromOutcomes(ws, outcomes);
+  assert.deepEqual(ordered.map((p) => p.name), ["@me/a"]);
+  assert.deepEqual(unpublishableLibraries.map((o) => o.name), ["@me/mylib"]);
+  // Never silently merged into `built` — uploadPlan can only reach what's in `built`.
+  assert.equal(built.has("@me/mylib"), false);
+  assert.equal(
+    formatUnpublishableLibraries(unpublishableLibraries),
+    "    skip @me/mylib (library outside s2script.workspace.plugins — publish with `s2s deploy libs/mylib`)",
+  );
 });
 
 // ---------------------------------------------------------------------------

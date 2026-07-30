@@ -30,6 +30,7 @@ import {
   isAlreadyPublished,
   publishCount,
   formatPlan,
+  formatUnpublishableLibraries,
   uploadPlan,
 } from "../workspace/deploy-all.ts";
 
@@ -178,11 +179,18 @@ async function runWorkspaceDeploy(opts: {
 
   // Recover the full WorkspacePlugin objects (dir, pkg, private) the plan/upload need, in the
   // exact dependency order buildWorkspace already established — no second ordering pass.
-  const { ordered, built } = builtPluginsFromOutcomes(ws, build.outcomes);
+  const { ordered, built, unpublishableLibraries } = builtPluginsFromOutcomes(ws, build.outcomes);
 
   const plan = await computePlan(ordered, (name, version) => isAlreadyPublished(client, name, version));
   label("plan:");
   console.log(formatPlan(plan));
+  if (unpublishableLibraries.length > 0) {
+    // A ws.libs-only library built above (its own "Building @foo/mylib" step already printed)
+    // but has no place in `plan` — computePlan/uploadPlan only ever see ws.plugins. Naming it here,
+    // right under the plan it is NOT part of, is what stands between "silently never published"
+    // and "the author knows exactly why and what to run instead."
+    console.log(formatUnpublishableLibraries(unpublishableLibraries));
+  }
 
   const toPublish = publishCount(plan);
   if (toPublish === 0) {
