@@ -77,7 +77,18 @@ export interface CtxEntities {
 /** Per-frame + map/precache hooks on this plugin's load-scope ({@link PluginContext.server}). */
 export interface CtxServer {
   /** Run `fn` every game frame. @param opts - `priority` orders it within the frame (`monitor` runs last, read-only). */
-  onGameFrame(fn: () => void, opts?: { priority?: "high" | "normal" | "low" | "monitor" }): void;
+  /**
+   * Run `fn` every game frame.
+   *
+   * `phase` picks WHERE in the frame it runs and defaults to `"pre"` (before simulation). Use
+   * `"post"` when the work must land after the engine's own per-frame writes — re-asserting a netvar
+   * the engine re-derives during simulation is overwritten if written in `"pre"`, because the
+   * derivation happens after and the outgoing snapshot carries the engine's value.
+   */
+  onGameFrame(
+    fn: () => void,
+    opts?: { priority?: "high" | "normal" | "low" | "monitor"; phase?: "pre" | "post" },
+  ): void;
   /** A new map became live; `mapName` is the BSP name. */
   onMapStart(handler: (mapName: string) => void): void;
   /** Precache window — register models/sounds to precache for the current map. */

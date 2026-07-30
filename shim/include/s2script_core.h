@@ -557,6 +557,17 @@ int s2script_core_dispatch_chat(int slot, const char* text, int teamonly);
  * (Slice 6.11c). slot = the player's slot, name = CCommand::Arg(0), args = ArgS(). Dispatches the
  * matching registered command. Returns 1 if handled (the caller SUPERCEDEs the engine's handling). */
 int s2script_core_dispatch_client_command(int slot, const char* name, const char* args);
+/* Shim -> core: called by the ICvar::DispatchConCommand hook for EVERY ConCommand dispatch — the
+ * AddCommandListener seam. slot = CCommandContext::GetPlayerSlot(), name = CCommand::Arg(0),
+ * args = ArgS(). Runs the `Commands.onClientCommand(name, ...)` listeners ONLY; s2script's own
+ * registered commands are driven by their ConCommand trampoline and must not be dispatched twice.
+ * Returns 1 iff a listener returned >= Handled (the caller SUPERCEDEs), else 0 — observe-by-default,
+ * because superseding an engine command like `player_ping` would stop it doing its own work. */
+int s2script_core_dispatch_command_listeners(int slot, const char* name, const char* args);
+/* Shim -> core: take (and clear) the recipient allow-mask a plugin set with Events.setRecipients during
+ * the current game-event pre-dispatch. Returns 1 and writes *out_mask when a mask was set; 0 means the
+ * plugin expressed no opinion and the caller must NOT filter. */
+int s2script_core_take_event_recipients(uint64_t* out_mask);
 
 /**
  * A cvar's value changed (ICvar global change callback). NOTIFY-only — the engine has already

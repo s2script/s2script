@@ -55,5 +55,24 @@ export declare const Events: {
   /** Fire a game event. Returns the engine FireEvent result. */
   fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
   /** Fire a game event to ONE client (SourceMod FireToClient). Same field type-inference as `fire`. Returns false on miss. */
+  /**
+   * Restrict the event currently being pre-dispatched to `slots`, instead of hiding it from everyone.
+   *
+   * Only meaningful from inside an `onPre` handler that ALSO returns `HookResult.Handled`. The pair
+   * means "do not broadcast this normally — deliver it to exactly these viewers". An empty array hides
+   * it from every client.
+   *
+   * This exists because CS2 fans a game event out to clients as one message PER CLIENT, so plain
+   * suppression is all-or-nothing. Naming recipients keeps every field the engine populated, which
+   * re-firing a rebuilt copy per viewer does not.
+   *
+   * @example
+   * ctx.events.onPre("player_death", () => {
+   *   Events.setRecipients(traitorSlots);   // only Traitors see the kill
+   *   return HookResult.Handled;
+   * });
+   */
+  setRecipients(slots: readonly number[]): void;
+
   fireToClient(slot: number, name: string, fields?: Record<string, string | number | boolean | bigint>): boolean;
 };

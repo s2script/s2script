@@ -12,6 +12,11 @@ class IGameEvent;
 class ISource2GameClients;
 class CCommand;
 class CPlayerSlot;
+// Forward-declared for the DispatchConCommand listener hook (the AddCommandListener seam); full
+// definitions (convar.h) live in s2script_mm.cpp. `ConCommandRef` is passed BY VALUE, so the
+// declaration below is enough here only because the definition is in scope at the point of use.
+class ConCommandRef;
+class CCommandContext;
 // Forward-declared for the ClientDisconnect lifecycle hook (@s2script/clients). This header is parsed
 // before eiface.h pulls the full definition, so an opaque enum decl with the SDK's fixed underlying type
 // (`: int`, per network_connection.pb.h) is required; it is compatible with the later full definition.
@@ -69,6 +74,7 @@ public:
     // This is how CS2 frameworks (CSSharp/ModSharp) implement player CONSOLE commands: a clean
     // (slot, CCommand) — no low-level detour. Installed in Load() once ISource2GameClients is acquired.
     void Hook_ClientCommand(CPlayerSlot slot, const CCommand& args);
+    void Hook_DispatchConCommand(ConCommandRef cmd, const CCommandContext& ctx, const CCommand& args);
 
     // Client lifecycle notify-hooks (@s2script/clients sub-project) — six post-hooks on the same
     // m_gameClients interface. Each forwards to s2script_core_dispatch_client_event and never alters flow.
