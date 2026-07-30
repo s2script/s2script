@@ -21,6 +21,7 @@ import { STAMPED_API_VERSION } from "./api-version.ts";
 import { localContractPath } from "./contracts.ts";
 import { resolveSiblingContracts, shadowedCopyWarning } from "./workspace/siblings.ts";
 import { assertLibrariesResolved, librariesRoot } from "./libraries.ts";
+import { assertNoNpmRuntimeDeps } from "./npm-deps-gate.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
 import { validatePluginGamedata } from "./gamedata/validate.ts";
@@ -48,6 +49,8 @@ interface PluginPackageJson {
     /** Build-time packages bundled INTO this plugin's .s2sp — see libraries.ts. */
     libraries?: Record<string, string>;
   };
+  /** npm build-deps only (per CLAUDE.md); gated by npm-deps-gate.ts before the libraries check. */
+  dependencies?: Record<string, string>;
 }
 
 /**
@@ -71,6 +74,12 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     const cfgErrs = validateConfigBlock(config);
     if (cfgErrs.length) throw new Error(`invalid s2script.config:\n  ${cfgErrs.join("\n  ")}`);
   }
+
+  // Runtime `dependencies` gate: plugins run in bare V8, so a registry-installed npm package
+  // builds green and dies on a live server, far from its cause. Catch it before we ever reach
+  // esbuild. Must run before assertLibrariesResolved so the error names THIS problem, not a
+  // downstream missing-library one.
+  assertNoNpmRuntimeDeps(pkg, absDir);
 
   // Vendored libraries: fail fast and actionably BEFORE the typecheck gate, so a missing
   // one reads as "run s2s add" rather than a pile of TS2307s.
