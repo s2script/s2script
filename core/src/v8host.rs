@@ -8442,7 +8442,20 @@ pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
             let func = v8::Local::new(tc, handler_g);
             let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
             match func.call(tc, recv, &[event_val]) {
-                None => Err(()),                                   // threw → drop this sub
+                None => {
+                    // LOUD, unlike before. A throwing pre-hook used to vanish in total silence: its
+                    // HookResult was discarded, the collapse saw one fewer vote, and the engine went on
+                    // to broadcast an event the plugin believed it had suppressed. Hours went into
+                    // chasing exactly that. `dispatch_usercmd` has always logged this case; events now
+                    // match it, so the next occurrence names itself instead of presenting as a silently
+                    // ineffective hook.
+                    let why = tc
+                        .exception()
+                        .map(|e| e.to_rust_string_lossy(tc))
+                        .unwrap_or_else(|| "handler threw".to_string());
+                    log_warn(&format!("dispatch_game_event_pre('{name}'): handler threw: {why}"));
+                    Err(())
+                }
                 Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
                 Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
                     0 => HookResult::Continue, 1 => HookResult::Changed,
