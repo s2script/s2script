@@ -13390,6 +13390,73 @@ mod frame_tests {
         shutdown();
     }
 
+    thread_local! {
+        /// (call_id, first FP arg) recorded by `fake_call_invoke`.
+        static LAST_ENGINE_CALL: std::cell::Cell<(c_int, f64)> =
+            const { std::cell::Cell::new((-1, 0.0)) };
+    }
+
+    extern "C" fn fake_call_resolve(
+        _kind: *const c_char, _module: *const c_char, _pattern: *const c_char,
+        _resolve: *const c_char, _class_name: *const c_char, _vtable_index: c_int,
+        _prologue: *const c_char, _reason_out: *mut c_char, _reason_cap: c_int,
+    ) -> c_int { 7 }
+
+    extern "C" fn fake_call_invoke(
+        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        fp: *const f64, fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        _ret_kind: c_int, _ret_out: *mut u64,
+    ) -> c_int {
+        let f0 = if fp_count > 0 && !fp.is_null() { unsafe { *fp } } else { 0.0 };
+        LAST_ENGINE_CALL.with(|c| c.set((call_id, f0)));
+        1
+    }
+
+    /// The legitimate path, which dropping the leading `pluginId` argument could have broken
+    /// silently: an AUTHORIZED plugin asking for its OWN descriptor still gets a working callable,
+    /// and the receiver/arg slots still land where the shim expects after every following argument
+    /// shifted down one. A RECEIVERLESS descriptor is used so no live entity is needed — the arg
+    /// array is the slot that moved (`args.get(4)` -> `args.get(3)`).
+    ///
+    /// Without an `engine_call_resolve` op no descriptor ever reaches `Ready`, so nothing else in
+    /// the suite covers a successful `Engine.call` at all.
+    #[test]
+    fn engine_call_still_invokes_for_the_owning_plugin() {
+        let _ = init(dummy_logger());
+        crate::loader::load_permissions_from_str(r#"{"engine:calls":["gd_owner"]}"#).unwrap();
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(fake_call_invoke),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("gd_owner");
+        crate::gamedata_calls::register_plugin(
+            "gd_owner",
+            r#"{"calls":{"Boom":{"receiver":{"kind":"none"},
+                "target":{"kind":"signature","name":"Bo","module":"libserver.so",
+                          "pattern":"55 48","resolve":"direct"},
+                "args":["float"],"returns":"void"}}}"#,
+        );
+        assert_eq!(
+            crate::gamedata_calls::status("gd_owner", "Boom"), "available",
+            "precondition: the descriptor must resolve through the fake op"
+        );
+        // The owning plugin gets a callable — and never names itself to get one.
+        assert!(eval_in_context_bool("gd_owner",
+            r#"typeof __s2require("@s2script/sdk/unsafe").Engine.call("Boom") === "function""#),
+            "an authorized plugin's own declared call must still be callable");
+        LAST_ENGINE_CALL.with(|c| c.set((-1, 0.0)));
+        assert!(eval_in_context_bool("gd_owner",
+            r#"(__s2require("@s2script/sdk/unsafe").Engine.call("Boom")(2.5), true)"#));
+        let (call_id, fp0) = LAST_ENGINE_CALL.with(|c| c.get());
+        assert_eq!(call_id, 7, "the resolved call id must reach the engine op");
+        assert_eq!(fp0, 2.5, "the declared float arg must survive the dropped pluginId slot");
+        set_engine_ops(None);
+        shutdown();
+    }
+
     #[test]
     fn iface_publish_records_methods_and_dep_kind() {
         let _ = init(dummy_logger());
