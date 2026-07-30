@@ -36,6 +36,9 @@ bash scripts/check-changeset.sh
 echo "== check-changeset-ignore.sh (.changeset/config.json ignore matches the on-disk plugin set) =="
 bash scripts/check-changeset-ignore.sh
 
+echo "== check-core-js-lint.sh (core/js prelude references only natives core registers) =="
+bash scripts/check-core-js-lint.sh
+
 echo "== check-plugins-typecheck.sh (the 5E.1 gate) =="
 bash scripts/check-plugins-typecheck.sh
 
