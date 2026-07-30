@@ -8,7 +8,7 @@ const command = argv[0];
 function usage(): void {
   console.error(
     "Usage:\n" +
-      "  s2s create [path] [--game cs2|none] [--name <pkg>] [--template minimal]\n" +
+      "  s2s create [path] [--game cs2|none] [--name <pkg>] [--template minimal] [--library]\n" +
       "             [--install npm|pnpm|yarn|bun|none] [--no-install] [-y]\n" +
       "  s2s create --workspace <dir>\n" +
       "  s2s build [dir|workspace root] [--filter <pattern>]... [--stamp-version <v>]\n" +

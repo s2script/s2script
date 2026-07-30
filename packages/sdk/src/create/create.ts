@@ -446,13 +446,15 @@ export async function createPlugin(opts: CreateOptions = {}): Promise<CreateResu
     // matches s2script.workspace.plugins is a plugin, everything else npm covers is a library) —
     // never by its own s2script.kind. createPlugin's workspace mode always writes plugins/<slug>,
     // which the default glob matches, so scaffolding a "library" there would silently misclassify
-    // it as ws.plugins (see examples/monorepo/packages/shared for where a real workspace library
-    // belongs). Refuse rather than produce a package the workspace tooling would never treat as
-    // a library.
+    // it as ws.plugins (see examples/workspace-library/libs/greeter for a real
+    // s2script.kind:"library" + s2script.libraries workspace member and its consuming plugin).
+    // Refuse rather than produce a package the workspace tooling would never treat as a library.
     throw new Error(
       `s2s create --library does not support workspace mode yet (workspace detected at ` +
-        `${workspaceRoot}) — a workspace library must sit outside the plugins/ glob (see ` +
-        `examples/monorepo/packages/shared for the pattern) and needs to be added by hand for now`,
+        `${workspaceRoot}) — a workspace library needs to sit outside the plugins/ glob (e.g. a ` +
+        `sibling directory like libs/<name>, matched by npm's own "workspaces" field but not by ` +
+        `s2script.workspace.plugins — see examples/workspace-library for a worked one); add it ` +
+        `by hand for now`,
     );
   }
   let slug = workspaceRoot !== undefined && opts.path !== undefined ? assertBareSlug(opts.path) : opts.path;

@@ -1,0 +1,14 @@
+{
+  "//": "Authoring config for this workspace's plugin/library — mirrors packages/sdk/src/tsconfig-shared.ts's sharedCompilerOptionsJson exactly, so editor IntelliSense matches the `s2s build` typecheck gate. The CLI does NOT read this file — it builds its own in-memory program from that same literal; this exists only for tsserver/tsc (editor IntelliSense + optional manual `tsc -p`).",
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "types": [],
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
+  }
+}

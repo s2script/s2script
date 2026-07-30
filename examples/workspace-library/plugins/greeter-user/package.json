@@ -1,0 +1,11 @@
+{
+  "name": "@ws-example/greeter-user",
+  "version": "0.1.0",
+  "main": "src/plugin.ts",
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0"
+  },
+  "s2script": {
+    "libraries": { "@ws-example/greeter": "^0.1.0" }
+  }
+}

@@ -53,15 +53,17 @@ its own.
 
 ## Examples
 
-Eight worked examples under [`examples/`](examples/), smallest first:
+Ten worked examples under [`examples/`](examples/), smallest first:
 
 | Example | What it teaches |
 |---|---|
 | [`hello-plugin`](examples/hello-plugin) | The smallest complete plugin — a command, an event, and surviving a hot reload. **Start here.** |
 | [`cookbook`](examples/cookbook) | One file per API under `src/recipes/` — HTTP, websockets, sockets, DB, cookies, menus, sounds, traces, usermessages, and more. Copy a recipe into your own plugin. |
 | [`entity-playground`](examples/entity-playground) | Creating, configuring, and watching entities: keyvalue-configured spawns, entity I/O, lifecycle listeners, beams. |
+| [`engine-call-demo`](examples/engine-call-demo) | Declaring and calling an engine function the framework doesn't already wrap — plugin-owned gamedata, `permissions`, and a descriptor that's *supposed* to fail, caught by name instead of misbehaving silently. |
 | [`greeter-plugin`](examples/greeter-plugin) + [`greeter-consumer`](examples/greeter-consumer) | Two plugins talking over a typed, versioned interface — including an `EntityRef` that stays live across the boundary. |
 | [`library-package`](examples/library-package) + [`library-consumer`](examples/library-consumer) | A **library** — build-time code bundled *into* a plugin's `.s2sp`, not loaded by the host itself — and a consumer that calls it, with the vendored copy `s2s add` would produce committed for an offline build. |
+| [`workspace-library`](examples/workspace-library) | The other half of the library story: a library declared *inside* a workspace, resolved straight from its sibling source — no vendored copy, no `s2s add`, edits picked up on the next build. |
 | [`monorepo`](examples/monorepo) | A workspace of several plugins that build and publish together — a producer, a consumer depending on it with **no hand-copied `.d.ts`**, and a shared library package bundled into both. |
 
 Build any of them with `npx @s2script/sdk build examples/<name>`, then drop the resulting
