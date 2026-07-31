@@ -12037,7 +12037,6 @@ mod frame_tests {
     /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
     /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
     /// `unload_plugin` (remove_by_owner teardown) further dispatches are a safe no-op.
-    #[test]
     /// `fan_out`'s throw-isolation guarantee, asserted on a converted path.
     ///
     /// The per-handler `TryCatch` is the part of the preamble a deduplication most easily loses —
@@ -12048,6 +12047,65 @@ mod frame_tests {
     ///
     /// Two plugins subscribe to the same event; the first throws. The second must still run, and a
     /// later dispatch must still reach both.
+    /// A re-entrant dispatch is DROPPED, and this pins that so the limitation is visible in the
+    /// suite rather than discovered on a live server.
+    ///
+    /// Simulates the real engine path exactly: JS calls `__s2_event_fire`, the engine op fires the
+    /// event, and the engine synchronously dispatches it back into core — re-entering
+    /// `dispatch_game_event` while the OUTER dispatch still holds `HOST.borrow_mut()`. The inner
+    /// `try_borrow_mut` fails, `fan_out` returns, and the second plugin never sees the event. No
+    /// error, no log — the failure presents only as "my plugin stopped getting events".
+    ///
+    /// INVESTIGATED AND REJECTED: `v8::CallbackScope`, which is the sanctioned way to obtain a scope
+    /// when V8 is already on the stack (and is what the promise-reject callback above legitimately
+    /// uses). It cannot help here. Every `NewCallbackScope` impl in rusty_v8 149.4.0 requires either
+    /// `&mut Isolate` — the borrow we do not have — or a live V8 handle (`FunctionCallbackInfo`,
+    /// `Local<Context>`, `PromiseRejectMessage`). The re-entrant dispatch arrives through the C ABI
+    /// (engine -> shim -> `s2script_core_dispatch_*`) with none of those in hand. Reconstructing one
+    /// from a stashed `*mut Isolate` would alias a live `&mut`, which is UB regardless of V8 being
+    /// happy with nested HandleScopes.
+    ///
+    /// The tractable fix is a deferred-dispatch queue: on a failed borrow, push the dispatch and
+    /// drain it at the next frame boundary, double-buffered the way SourceMod's `RunFrameHooks`
+    /// swaps `frame_queue`/`frame_actions`. That converts "silently dropped" into "delivered one
+    /// frame later". It cannot serve PRE-hooks, which must answer synchronously — those stay
+    /// skipped, and that should be documented in the .d.ts rather than papered over.
+    ///
+    /// When that queue lands, this test flips to asserting the listener DID run.
+    extern "C" fn reentrant_event_fire(_dont: c_int) -> c_int {
+        dispatch_game_event("inner");
+        1
+    }
+
+    #[test]
+    fn reentrant_dispatch_is_currently_dropped() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_event_fire),
+            ..mock_event_ops()
+        }));
+        load_body("firer", r#"
+            __s2pkg_events.Events.on("outer", function () {
+                globalThis.__ran = 1;
+                __s2_event_fire(false);       // engine fires -> re-enters dispatch_game_event("inner")
+            });
+        "#, "{}");
+        load_body("listener", r#"
+            __s2pkg_events.Events.on("inner", function () { globalThis.__ran = 1; });
+        "#, "{}");
+
+        dispatch_game_event("outer");
+        assert_eq!(read_i32_global_in("firer", "__ran"), 1, "outer handler must run");
+        assert_eq!(
+            read_i32_global_in("listener", "__ran"), 0,
+            "CURRENT behaviour: the re-entrant dispatch is dropped. Flip to 1 when the \
+             deferred-dispatch queue lands (see this test's doc comment)."
+        );
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    #[test]
     #[test]
     fn fan_out_isolates_a_throwing_handler_from_the_rest() {
         let _ = init(dummy_logger());
