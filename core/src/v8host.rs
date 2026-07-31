@@ -10815,6 +10815,7 @@ pub fn init(logger: LogFn) -> Result<(), String> {
     // (including the in-isolate test harness) gets the registry; `register_builtin_stores` resets the
     // list first, so a Metamod re-init is idempotent.
     register_builtin_stores();
+    register_process_singletons();
     Ok(())
 }
 
@@ -11029,94 +11030,24 @@ pub fn shutdown() {
     // so each plugin's onUnload fires while the isolate + other plugins are still alive.
     // The bulk clears below are the final backstop for anything not already cleaned up by unload_all.
     unload_all();
-    // Clear async state BEFORE dropping the isolate: RESOLVERS holds `Global`s into it, so their
-    // handles must be reset while the isolate is still alive (HOST still owns it here).
-    TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new());
-    RESOLVERS.with(|m| m.borrow_mut().clear());
-    TIMER_CBS.with(|m| m.borrow_mut().clear());
-    TIMER_KILLED.with(|k| k.borrow_mut().clear());
-    // PENDING_REJECTS holds only Strings (no Globals), so drop order vs the isolate is not
-    // load-bearing — this clear is hygiene for a clean re-init.
-    PENDING_REJECTS.with(|m| m.borrow_mut().clear());
-    // Sweep EVERY registered owner-scoped store (owner_stores §6). This replaces the hand-written
-    // one-clear-per-store cascade that had to be extended for each new capability slice — and was
-    // silently forgotten on some (98cf483, e40492d, 7e62119 are three shipped fixes of that shape).
-    // A store is torn down here because it is REGISTERED, not because someone remembered.
+
+    // Everything below used to be a ~90-line hand-written cascade: one clear per thing, extended by
+    // hand for every capability slice, and silently keeping stale state on the ones where that was
+    // forgotten (98cf483, e40492d, 7e62119 are three shipped fixes of exactly that shape). It is now
+    // two registries swept in three calls. Adding a capability slice should never add a line here:
+    // register the store (owner-scoped) or the singleton (process-scoped) next to its definition.
     //
-    // Placed BEFORE the isolate drops, and that placement is load-bearing: these stores hold
-    // Global<Function>s (the muxes are EventMux<v8::Global<v8::Function>>, plus CONCOMMANDS and
-    // TOPMENU_ITEMS), so the discipline stated above for RESOLVERS applies to every one of them —
-    // release the handles while the isolate is still alive. The old cascade cleared CONCOMMANDS and
-    // TOPMENU_ITEMS here but the ~20 mux stores AFTER the drop, which only held because `unload_all`
-    // above has normally already emptied them per plugin; a subscriber owned by no live plugin was
-    // residue. Nothing now runs later than it used to — only earlier, the safe direction.
+    // The ordering around `HOST.take()` is load-bearing and is what `ResetPhase` encodes: anything
+    // holding a `v8::Global` must release it while the isolate is still alive.
+    crate::process_singletons::reset_all(crate::process_singletons::ResetPhase::BeforeIsolateDrop);
     crate::owner_stores::sweep_reset();
-    // TopMenu categories/seq/pending are NOT part of the TOPMENU_ITEMS store (categories outlive the
-    // registering plugin — SM parity), so they stay hand-cleared until the process-singletons
-    // registry lands.
-    TOPMENU_CATEGORIES.with(|c| c.borrow_mut().clear());
-    TOPMENU_SEQ.with(|c| c.set(0));
-    TOPMENU_PENDING.with(|q| q.borrow_mut().clear());
-    // Clear inter-plugin method + subscriber Globals BEFORE the isolate drops (same discipline as
-    // RESOLVERS/CONCOMMANDS: they hold Global<Function>s into the isolate).
-    IFACE_METHODS.with(|m| m.borrow_mut().clear());
-    IFACE_SUBS.with(|m| m.borrow_mut().clear());
-    // Clear the interface registry (pure Rust, no V8 handles; cleared for re-init hygiene).
-    IFACES.with(|r| r.borrow_mut().clear());
-    // Clear the publishes registries (pure Rust, no V8 handles): the per-plugin unload path clears
-    // these per id, but a plugin that was `set` and never loaded (or a partial init) leaves an entry
-    // no unload ever walks. This bulk clear is the teardown backstop, symmetric with IFACES above.
-    PLUGIN_PUBLISHES.with(|p| p.borrow_mut().clear());
-    UNDECLARED_PUBLISHES.with(|p| p.borrow_mut().clear());
-    // Reset the subscription-id allocator for a clean slate (symmetric with TimerQueue::new()).
-    NEXT_SUB_ID.with(|c| c.set(1));
-    // Drop all per-plugin contexts BEFORE the isolate: each `Global<Context>` points into the
-    // isolate, so (like RESOLVERS/CONCOMMANDS) the handles must be released while the isolate is
-    // still alive.  Task 6's ledger will additionally drop each plugin's inner Globals first.
-    PLUGINS.with(|p| p.borrow_mut().clear());
-    // Clear the plugin registry so a re-init starts with an empty generation space + no ledgers.
-    REGISTRY.with(|r| *r.borrow_mut() = plugin::Registry::new());
-    PENDING_JOBS.with(|c| c.set(0));
-    DETOUR_INSTALLED.with(|c| c.set(false));
+
     // Drop the isolate and context.  The platform is never torn down.
     HOST.with(|h| {
         let _ = h.borrow_mut().take();
     });
-    // NOTE: every mux/rules store that used to be cleared here is now swept by
-    // `owner_stores::sweep_reset()` above, BEFORE the isolate drops. What remains below is the
-    // not-owner-scoped state — pure-Rust sidecars and host-global caches — which is hand-maintained
-    // until the process-singletons registry lands (A3b). Adding a new capability slice should no
-    // longer add a line here: register the store instead.
-    //
-    // Reset the frame counter so a re-init starts from zero.
-    FRAME_COUNTER.with(|c| c.set(0));
-    // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
-    COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear());
-    WS_EVENT_PENDING.with(|q| q.borrow_mut().clear());
-    NET_EVENT_PENDING.with(|q| q.borrow_mut().clear());
-    // The usermsg name→id resolution caches (the MUX itself is a registered store).
-    USERMSG_IDS.with(|m| m.borrow_mut().clear());
-    USERMSG_RESOLVE.with(|m| m.borrow_mut().clear());
-    // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
-    PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
-    // Reset the L1 lifecycle-v2 load state (in-flight loads, failed reasons, manifest versions).
-    LOADING.with(|l| l.borrow_mut().clear());
-    FAILED_PLUGINS.with(|f| f.borrow_mut().clear());
-    MANIFEST_VERSIONS.with(|m| m.borrow_mut().clear());
-    // Reset the schema-offset cache so a re-init re-resolves (a `-1` cached before the schema was
-    // loaded must not persist across an init cycle).
-    SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new());
-    // Reset the admin cache tiers (Slice 6.2) so a re-init starts with no admins.
-    ADMIN_FILE.with(|m| m.borrow_mut().clear());
-    ADMIN_RUNTIME.with(|m| m.borrow_mut().clear());
-    ADMIN_FILE_LOADED.with(|c| c.set(false));
-    // Reset the ban cache (Slice 6.18) so a re-init starts with no bans.
-    BAN_CACHE.with(|m| m.borrow_mut().clear());
-    BAN_LOADED.with(|c| c.set(false));
-    // Reset the cookie cache (clientprefs) so a re-init starts with no stale entries / cached flags.
-    crate::cookies::reset();
-    // Reset the crash-breadcrumb plugin table + idle stamp so a re-init starts clean.
-    crate::crash::breadcrumb::clear_plugins();
+
+    crate::process_singletons::reset_all(crate::process_singletons::ResetPhase::AfterIsolateDrop);
 }
 
 /// Resolve one pending async `entry` in its OWNING plugin's context, or DROP it (the async-liveness
@@ -11726,6 +11657,82 @@ fn unsubscribe_emptied_events(emptied: &[String]) {
             }
         }
     }
+}
+
+/// Register every PROCESS-scoped singleton into the `process_singletons` registry, so `shutdown()`
+/// sweeps it instead of a hand-maintained cascade. Called from `init()` alongside
+/// `register_builtin_stores` (and, like it, re-runs its own `reset()` so a Metamod re-init is
+/// idempotent). Registration order == the historical cascade order, which `reset_all` preserves.
+///
+/// The phase argument is the ordering rule that used to live only in repeated prose. Anything
+/// holding a `v8::Global` is `BeforeIsolateDrop`; pure-Rust state is `AfterIsolateDrop`.
+///
+/// This registry is deliberately DISJOINT from `owner_stores`: the host-global caches here
+/// (`ADMIN_*`, `BAN_*`, `SCHEMA_OFFSETS`, cookies) are designed to survive any single plugin's
+/// unload, so registering them owner-scoped would wipe shared admin/ban state on an unrelated
+/// plugin's reload.
+pub(crate) fn register_process_singletons() {
+    use crate::process_singletons::ResetPhase::{AfterIsolateDrop, BeforeIsolateDrop};
+    crate::process_singletons::reset();
+    fn reg(name: &'static str, phase: crate::process_singletons::ResetPhase, f: impl Fn() + 'static) {
+        crate::process_singletons::register(name, phase, Box::new(f));
+    }
+
+    // ---- BeforeIsolateDrop: holds V8 handles, or must be torn down while the isolate lives. ----
+
+    // Async state: RESOLVERS holds Globals into the isolate, so the handles must be released here.
+    reg("TIMERS", BeforeIsolateDrop, || TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new()));
+    reg("RESOLVERS", BeforeIsolateDrop, || RESOLVERS.with(|m| m.borrow_mut().clear()));
+    reg("TIMER_CBS", BeforeIsolateDrop, || TIMER_CBS.with(|m| m.borrow_mut().clear()));
+    reg("TIMER_KILLED", BeforeIsolateDrop, || TIMER_KILLED.with(|k| k.borrow_mut().clear()));
+    // PENDING_REJECTS holds only Strings, so drop order vs the isolate is not load-bearing; kept in
+    // this phase to preserve the historical position.
+    reg("PENDING_REJECTS", BeforeIsolateDrop, || PENDING_REJECTS.with(|m| m.borrow_mut().clear()));
+    // TopMenu categories/seq/pending — the ITEMS map is an owner-scoped store, these are not
+    // (categories outlive the registering plugin, SM parity).
+    reg("TOPMENU_CATEGORIES", BeforeIsolateDrop, || TOPMENU_CATEGORIES.with(|c| c.borrow_mut().clear()));
+    reg("TOPMENU_SEQ", BeforeIsolateDrop, || TOPMENU_SEQ.with(|c| c.set(0)));
+    reg("TOPMENU_PENDING", BeforeIsolateDrop, || TOPMENU_PENDING.with(|q| q.borrow_mut().clear()));
+    // Inter-plugin method + subscriber Globals.
+    reg("IFACE_METHODS", BeforeIsolateDrop, || IFACE_METHODS.with(|m| m.borrow_mut().clear()));
+    reg("IFACE_SUBS", BeforeIsolateDrop, || IFACE_SUBS.with(|m| m.borrow_mut().clear()));
+    reg("IFACES", BeforeIsolateDrop, || IFACES.with(|r| r.borrow_mut().clear()));
+    // The publishes registries: per-plugin unload clears these per id, but a plugin that was `set`
+    // and never loaded leaves an entry no unload ever walks. This is the teardown backstop.
+    reg("PLUGIN_PUBLISHES", BeforeIsolateDrop, || PLUGIN_PUBLISHES.with(|p| p.borrow_mut().clear()));
+    reg("UNDECLARED_PUBLISHES", BeforeIsolateDrop, || UNDECLARED_PUBLISHES.with(|p| p.borrow_mut().clear()));
+    reg("NEXT_SUB_ID", BeforeIsolateDrop, || NEXT_SUB_ID.with(|c| c.set(1)));
+    // Per-plugin contexts: each Global<Context> points into the isolate.
+    reg("PLUGINS", BeforeIsolateDrop, || PLUGINS.with(|p| p.borrow_mut().clear()));
+    reg("REGISTRY", BeforeIsolateDrop, || REGISTRY.with(|r| *r.borrow_mut() = plugin::Registry::new()));
+    reg("PENDING_JOBS", BeforeIsolateDrop, || PENDING_JOBS.with(|c| c.set(0)));
+    reg("DETOUR_INSTALLED", BeforeIsolateDrop, || DETOUR_INSTALLED.with(|c| c.set(false)));
+
+    // ---- AfterIsolateDrop: pure Rust, no V8 handles. ----
+
+    reg("FRAME_COUNTER", AfterIsolateDrop, || FRAME_COUNTER.with(|c| c.set(0)));
+    // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
+    reg("COOKIE_CACHED_PENDING", AfterIsolateDrop, || COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear()));
+    reg("WS_EVENT_PENDING", AfterIsolateDrop, || WS_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
+    reg("NET_EVENT_PENDING", AfterIsolateDrop, || NET_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
+    // usermsg name→id resolution caches (the MUX itself is an owner-scoped store).
+    reg("USERMSG_IDS", AfterIsolateDrop, || USERMSG_IDS.with(|m| m.borrow_mut().clear()));
+    reg("USERMSG_RESOLVE", AfterIsolateDrop, || USERMSG_RESOLVE.with(|m| m.borrow_mut().clear()));
+    reg("PENDING_HANDOFF", AfterIsolateDrop, || PENDING_HANDOFF.with(|h| h.borrow_mut().clear()));
+    // L1 lifecycle-v2 load state.
+    reg("LOADING", AfterIsolateDrop, || LOADING.with(|l| l.borrow_mut().clear()));
+    reg("FAILED_PLUGINS", AfterIsolateDrop, || FAILED_PLUGINS.with(|f| f.borrow_mut().clear()));
+    reg("MANIFEST_VERSIONS", AfterIsolateDrop, || MANIFEST_VERSIONS.with(|m| m.borrow_mut().clear()));
+    // A `-1` cached before the schema was live must not persist across an init cycle.
+    reg("SCHEMA_OFFSETS", AfterIsolateDrop, || SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new()));
+    // Host-global caches — deliberately NOT owner-scoped (see this fn's doc comment).
+    reg("ADMIN_FILE", AfterIsolateDrop, || ADMIN_FILE.with(|m| m.borrow_mut().clear()));
+    reg("ADMIN_RUNTIME", AfterIsolateDrop, || ADMIN_RUNTIME.with(|m| m.borrow_mut().clear()));
+    reg("ADMIN_FILE_LOADED", AfterIsolateDrop, || ADMIN_FILE_LOADED.with(|c| c.set(false)));
+    reg("BAN_CACHE", AfterIsolateDrop, || BAN_CACHE.with(|m| m.borrow_mut().clear()));
+    reg("BAN_LOADED", AfterIsolateDrop, || BAN_LOADED.with(|c| c.set(false)));
+    reg("COOKIES", AfterIsolateDrop, || crate::cookies::reset());
+    reg("CRASH_BREADCRUMB", AfterIsolateDrop, || crate::crash::breadcrumb::clear_plugins());
 }
 
 /// If the PRE game-event mux is now entirely empty (no more pre-hooks), request removal of the global
@@ -13407,6 +13414,77 @@ mod frame_tests {
             PROBE_RESET.with(|c| c.get()),
             "shutdown() must run every registered store's reset closure"
         );
+    }
+
+    /// The phase contract, asserted directly: `BeforeIsolateDrop` resets run while the isolate is
+    /// still alive (which is the entire reason the phase exists — a `v8::Global` must be released
+    /// before its isolate goes away), and `AfterIsolateDrop` resets run once it is gone.
+    ///
+    /// Each probe records `HOST.is_some()` at the moment it runs, so this fails if either the
+    /// `reset_all` calls move to the wrong side of `HOST.take()` or a phase is dropped entirely.
+    #[test]
+    fn shutdown_resets_process_singletons_on_both_sides_of_the_isolate_drop() {
+        thread_local! {
+            static SEEN: std::cell::RefCell<Vec<(&'static str, bool)>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let _ = init(dummy_logger());
+        SEEN.with(|s| s.borrow_mut().clear());
+        // Registered after init() (which calls register_process_singletons, itself starting with
+        // process_singletons::reset()), so these probes survive to shutdown.
+        crate::process_singletons::register(
+            "TEST_BEFORE",
+            crate::process_singletons::ResetPhase::BeforeIsolateDrop,
+            Box::new(|| {
+                let isolate_alive = HOST.with(|h| h.borrow().is_some());
+                SEEN.with(|s| s.borrow_mut().push(("before", isolate_alive)));
+            }),
+        );
+        crate::process_singletons::register(
+            "TEST_AFTER",
+            crate::process_singletons::ResetPhase::AfterIsolateDrop,
+            Box::new(|| {
+                let isolate_alive = HOST.with(|h| h.borrow().is_some());
+                SEEN.with(|s| s.borrow_mut().push(("after", isolate_alive)));
+            }),
+        );
+        shutdown();
+        SEEN.with(|s| {
+            assert_eq!(
+                *s.borrow(),
+                vec![("before", true), ("after", false)],
+                "Before must run with the isolate alive; After must run once it is gone"
+            )
+        });
+    }
+
+    /// `register_process_singletons` is 36 near-identical hand-written lines, and the mistake that
+    /// shape invites is a copy-paste that registers one static twice and its sibling not at all
+    /// (`ADMIN_FILE` twice, `ADMIN_RUNTIME` never) — which reads fine and silently drops a clear,
+    /// the exact bug class this registry exists to end. A duplicate NAME is that mistake's
+    /// fingerprint. Also asserts both phases are populated, so deleting a whole phase's worth of
+    /// registrations cannot pass quietly.
+    #[test]
+    fn process_singleton_registrations_are_unique_and_cover_both_phases() {
+        use crate::process_singletons::ResetPhase;
+        let _ = init(dummy_logger());
+        let names = crate::process_singletons::registered_names();
+
+        let mut seen = std::collections::HashSet::new();
+        let dupes: Vec<&str> = names
+            .iter()
+            .filter(|(n, _)| !seen.insert(*n))
+            .map(|(n, _)| *n)
+            .collect();
+        assert!(dupes.is_empty(), "duplicate singleton registrations: {dupes:?}");
+
+        for phase in [ResetPhase::BeforeIsolateDrop, ResetPhase::AfterIsolateDrop] {
+            assert!(
+                names.iter().any(|(_, p)| *p == phase),
+                "no singletons registered for {phase:?}"
+            );
+        }
+        shutdown();
     }
 
     #[test]
