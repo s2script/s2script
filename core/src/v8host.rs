@@ -701,25 +701,25 @@ thread_local! {
     /// Each subscriber is tagged with (owner, generation) for liveness-gated dispatch.
     /// `remove_by_owner` is called from `unload_plugin` (the teardown authority).
     /// Reset on shutdown so a re-init starts empty.
-    static EVENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// Pre-hook game-event multiplexer: name → per-plugin PRE subscribers (Slice 5D.3).
     /// Same shape as EVENT_MUX; handlers return a HookResult that is collapsed via run_chain.
     /// Reset on shutdown so a re-init starts empty.
-    static EVENT_MUX_PRE: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static EVENT_MUX_PRE: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// Damage pre-hook multiplexer (Slice 6.6): `Damage.onPre(h)` subscribers, keyed by the constant
     /// "onPre" (damage has no name dimension). Same EventMux shape/discipline; handlers read/modify the
     /// current CTakeDamageInfo in place. remove_by_owner on unload; reset on shutdown.
-    static DAMAGE_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static DAMAGE_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// Config-change subscriber mux (Slice 5E.2): handlers subscribed via `config.onChange(h)`.
     /// Each handler is tagged `(owner, generation)` for liveness-gated dispatch.
     /// The loader polls opted-in plugins' config files each frame cycle and calls
     /// `re_materialize_config(id)` on change, which snapshots this mux and fires handlers.
     /// `remove_by_owner` called on unload; reset on shutdown so a re-init starts empty.
-    static CONFIG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static CONFIG_SUBS: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// Recipient allow-mask for the game event currently being pre-dispatched.
     ///
     /// A bit per slot; `Some(mask)` means "deliver this event ONLY to these slots", `None` means the
@@ -747,42 +747,42 @@ thread_local! {
     /// `>= HookResult.Handled`. Superseding by default would break the very commands this exists to
     /// observe — hooking `player_ping` would stop the ping marker from ever being placed.
     /// `remove_by_owner` on unload; reset on shutdown.
-    static CLIENT_CMD_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static CLIENT_CMD_SUBS: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// Raw-chat subscriber mux (Slice 6.13b): `Chat.onMessage(h)` subscribers, keyed by the constant
     /// "" (chat has no name dimension — a single un-keyed list). Same EventMux shape/discipline;
     /// handlers receive `(slot, text, teamonly)` and may return a HookResult (>= Handled suppresses the
     /// broadcast). The Host_Say detour is always installed, so there is no per-subscribe engine-op and
     /// no engine-op on empty teardown. `remove_by_owner` on unload; reset on shutdown.
-    static CHAT_MSG_SUBS: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static CHAT_MSG_SUBS: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// Client-lifecycle subscriber mux (Clients sub-project): name → per-plugin subscribers, keyed by
     /// the lifecycle event name ("connect"/"putinserver"/"active"/"fullyconnect"/"disconnect"/
     /// "settingschanged"). Same EventMux shape/discipline as EVENT_MUX; notify-only (a handler's return
     /// is ignored — no HookResult collapse). The shim's six lifecycle hooks are installed unconditionally
     /// at Load, so there is no per-subscribe engine-op and no engine-op on empty teardown.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
-    static CLIENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static CLIENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// Map-start subscribers (clientlist-fakeconvar-onmapstart slice). Fixed key "" (map-start has
     /// no name dimension, like CHAT_MSG_SUBS); notify-only.
-    static MAP_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static MAP_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// Precache subscribers (Sound slice). Fixed key "" (a precache-manifest build has no name
     /// dimension, like MAP_MUX); notify-only. The stored handler is the PRELUDE's wrapper closure —
     /// it constructs the block-scoped PrecacheContext and calls the plugin's handler.
-    static PRECACHE_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static PRECACHE_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// clientprefs Task 4: `Cookies.onCached` subscriber mux, keyed by the constant "" (no name
     /// dimension — a single un-keyed list, like `CHAT_MSG_SUBS`). Fanned out post-frame by
     /// `dispatch_pending_cookie_cached` (called from `ffi.rs` AFTER `frame_async_drain()` returns, so
     /// HOST is free — no re-entrancy risk from the plugin's own async cookie-load work).
     /// `remove_by_owner` on unload; reset on shutdown.
-    static COOKIE_CACHED_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static COOKIE_CACHED_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// clientprefs Task 4: slots queued by `__s2_cookie_dispatch_cached` (called from inside the
     /// plugin's `loadCookies` async continuation, i.e. possibly mid-async-drain) for the NEXT
     /// `dispatch_pending_cookie_cached()` post-drain fan-out. Draining + clearing happens with HOST free.
@@ -792,8 +792,8 @@ thread_local! {
     /// "message"/"close"/"error"). Same EventMux shape/discipline as COOKIE_CACHED_MUX; fanned out
     /// post-frame by `dispatch_pending_ws_events` (called from `ffi.rs` AFTER `frame_async_drain()`
     /// returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
-    static WS_EVENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// WebSocket Task 2: `(conn_id, event, payload1, payload2)` queued during `frame_async_drain`'s
     /// signal-routing step, fanned out post-drain (HOST free) by `dispatch_pending_ws_events`. For
     /// "message"/"error" the 3rd tuple field is the text and the 4th is unused (0); for "close" the
@@ -804,8 +804,8 @@ thread_local! {
     /// (event = "data"/"message"/"close"/"error"). Same EventMux shape/discipline as `WS_EVENT_MUX`;
     /// fanned out post-frame by `dispatch_pending_net_events` (called from `ffi.rs` AFTER
     /// `frame_async_drain()` returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
-    static NET_EVENT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static NET_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
     /// Net Task 2: `(conn_id, PendingNetEvent)` queued during `frame_async_drain`'s signal-routing step,
     /// fanned out post-drain (HOST free) by `dispatch_pending_net_events`. Unlike `WS_EVENT_PENDING`'s
     /// (String, i32) payload, net carries raw binary bytes → a dedicated `PendingNetEvent` enum.
@@ -820,8 +820,8 @@ thread_local! {
     /// SYNCHRONOUS (the detour blocks on it, mirrors `DAMAGE_MUX`/`EVENT_MUX_PRE`, NOT the post-drain
     /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
-    static OUTPUT_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static OUTPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// `Server.onCvarChange(name, handler)` subscribers, keyed by cvar name (`"*"` = every cvar).
     /// Fed by the shim's ONE `ICvar::InstallGlobalChangeCallback`, installed unconditionally at Load —
@@ -829,8 +829,8 @@ thread_local! {
     /// AFTER the value has already changed, so there is nothing to veto and handlers return nothing
     /// (`ICvar::CallFilterCallback` would be the vetoing path — out of scope, see the design spec).
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
-    static CVAR_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static CVAR_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// Usercmd primitive Task 2: `UserCmd.onRun(handler)` subscriber mux, keyed by the constant "onRun"
     /// (usercmd has no name dimension, like `DAMAGE_MUX`'s "onPre"). Dispatch is SYNCHRONOUS (the
@@ -839,8 +839,8 @@ thread_local! {
     /// the first-ever subscribe (via the `usercmd_hook_install` engine op — see `s2_usercmd_subscribe`),
     /// mirroring `ENTITY_MUX`'s `entity_listener_install` trigger. `remove_by_owner` on unload; reset on
     /// shutdown so a re-init starts empty.
-    static USERCMD_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static USERCMD_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// UserMessage-interception slice: `UserMessages.onPre(name, handler)` pre-hook subscribers keyed by
     /// the CANONICAL unscoped message name (the shim's `usermsg_hook_sub` canonicalizes the caller's
@@ -850,8 +850,8 @@ thread_local! {
     /// the id's bitmap bit); on a canonical name's last-empty transition (off, or unload's
     /// `remove_by_owner`) the shim's bitmap bit is cleared via `usermsg_hook_unsub`. `remove_by_owner`
     /// on unload; reset on shutdown so a re-init starts empty.
-    static USERMSG_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static USERMSG_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// UserMessage-interception slice: canonical name -> engine id (from `usermsg_hook_sub`) so teardown
     /// (a name that became empty on unload) can clear the shim's bitmap bit via `usermsg_hook_unsub`.
@@ -871,8 +871,8 @@ thread_local! {
     /// dispatched SYNCHRONOUSLY from the shim's IEntityListener callback (it fires from the engine's entity
     /// path, not under our own borrow; the try_borrow_mut guard covers a handler that synchronously
     /// creates/removes an entity). `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
-    static ENTITY_MUX: std::cell::RefCell<crate::event_mux::EventMux<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::event_mux::EventMux::new());
+    static ENTITY_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
     /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
@@ -9341,7 +9341,7 @@ pub(crate) fn register_builtin_stores() {
             unsubscribe_emptied_events(&emptied);
         }),
         Box::new(|| {
-            EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9357,7 +9357,7 @@ pub(crate) fn register_builtin_stores() {
             reconcile_pre_hook();
         }),
         Box::new(|| {
-            EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9367,7 +9367,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { DAMAGE_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { DAMAGE_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9377,7 +9377,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CHAT_MSG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9387,7 +9387,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { CLIENT_CMD_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CLIENT_CMD_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            CLIENT_CMD_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            CLIENT_CMD_SUBS.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9397,7 +9397,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { CLIENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            CLIENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9407,7 +9407,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { MAP_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { MAP_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            MAP_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            MAP_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9417,7 +9417,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { PRECACHE_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { PRECACHE_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            PRECACHE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            PRECACHE_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9427,7 +9427,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9437,7 +9437,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9447,7 +9447,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { NET_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { NET_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            NET_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            NET_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9457,7 +9457,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9467,7 +9467,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { CVAR_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CVAR_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            CVAR_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            CVAR_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9477,7 +9477,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { ENTITY_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            ENTITY_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9487,7 +9487,7 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|owner| { USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { USERCMD_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            USERCMD_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            USERCMD_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9503,7 +9503,7 @@ pub(crate) fn register_builtin_stores() {
             unhook_emptied_usermsgs(&emptied);
         }),
         Box::new(|| {
-            USERMSG_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            USERMSG_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
@@ -9539,7 +9539,7 @@ pub(crate) fn register_builtin_stores() {
         }),
         Box::new(|ids| { CONFIG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
-            CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+            CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 
