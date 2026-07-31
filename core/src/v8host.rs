@@ -4846,11 +4846,15 @@ where
                     }
                 }
                 Some(ret) if stop_at != StopAt::Never && ret.is_number() => {
+                    // Out-of-range => Continue, NOT Stop. A handler returning a garbage number
+                    // must not be able to truncate every other plugin's dispatch — that is the same
+                    // composition failure as the damage `Handled` short-circuit. This mapping is
+                    // what the run_chain paths already documented.
                     let r = match ret.uint32_value(tc).unwrap_or(0) {
-                        0 => HookResult::Continue,
                         1 => HookResult::Changed,
                         2 => HookResult::Handled,
-                        _ => HookResult::Stop,
+                        3 => HookResult::Stop,
+                        _ => HookResult::Continue,
                     };
                     if r > result {
                         result = r;
@@ -8299,159 +8303,53 @@ pub(crate) fn dispatch_damage() {
 /// Degrades to `undefined` if `@s2script/usercmd` never registered its prelude (Cmd absent) so a
 /// handler still runs rather than being skipped.
 pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
-    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
-    // Phase 1: snapshot — release the USERCMD_MUX borrow before entering any context.
-    let snap0 = USERCMD_MUX.with(|m| m.borrow().snapshot("onRun"));
-    if snap0.is_empty() { return 0; }
-    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
-        .into_iter().enumerate()
-        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
-        .collect();
+    let snap = USERCMD_MUX.with(|m| m.borrow().snapshot("onRun"));
+    let result = fan_out_collapsing(&snap, "dispatch_usercmd", Instrument::none(), StopAt::Stop, |tc| {
+        // Fetch the prelude's SINGLETON Cmd: globalThis.__s2pkg_usercmd.Cmd (Task 4 registers
+        // it; degrade to `undefined` if the module never loaded in this context).
+        let cmd_arg: Option<v8::Local<v8::Value>> = (|| {
+            let global = tc.get_current_context().global(tc);
+            let pkg_key = v8::String::new(tc, "__s2pkg_usercmd")?;
+            let pkg = global.get(tc, pkg_key.into())?;
+            let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+            let cmd_key = v8::String::new(tc, "Cmd")?;
+            pkg.get(tc, cmd_key.into())
+        })();
+        let cmd_val: v8::Local<v8::Value> = cmd_arg.unwrap_or_else(|| v8::undefined(tc).into());
 
-    let outcome = HOST.with(|h| {
-        // Re-entrancy guard: mirrors dispatch_damage/dispatch_output — a nested dispatch (e.g. a
-        // handler that somehow re-enters this path) skips gracefully (Continue) rather than
-        // double-borrow (would panic). The engine-side tick still proceeds unmodified.
-        let Ok(mut borrow) = h.try_borrow_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
-        };
-        let Some(host) = borrow.as_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
-        };
-        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
-                else { return Ok(HookResult::Continue); };
-
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            // Fetch the prelude's SINGLETON Cmd: globalThis.__s2pkg_usercmd.Cmd (Task 4 registers
-            // it; degrade to `undefined` if the module never loaded in this context).
-            let cmd_arg: Option<v8::Local<v8::Value>> = (|| {
-                let global = ctx_local.global(tc);
-                let pkg_key = v8::String::new(tc, "__s2pkg_usercmd")?;
-                let pkg = global.get(tc, pkg_key.into())?;
-                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-                let cmd_key = v8::String::new(tc, "Cmd")?;
-                pkg.get(tc, cmd_key.into())
-            })();
-            let cmd_val: v8::Local<v8::Value> = cmd_arg.unwrap_or_else(|| v8::undefined(tc).into());
-
-            // Build the block-scoped ctx = { slot }.
-            let ctx_obj = v8::Object::new(tc);
-            if let Some(k) = v8::String::new(tc, "slot") {
-                let v = v8::Integer::new(tc, slot);
-                ctx_obj.set(tc, k.into(), v.into());
-            }
-            let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
-
-            let func = v8::Local::new(tc, handler_g);
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            match func.call(tc, recv, &[cmd_val, ctx_val]) {
-                None => {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_usercmd: handler '{}': {}", owner, msg));
-                    Err(())
-                }
-                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
-                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
-                    0 => HookResult::Continue, 1 => HookResult::Changed,
-                    2 => HookResult::Handled, 3 => HookResult::Stop,
-                    _ => HookResult::Continue,                     // out-of-range → Continue
-                }),
-            }
-        })
+        // Build the block-scoped ctx = { slot }.
+        let ctx_obj = v8::Object::new(tc);
+        if let Some(k) = v8::String::new(tc, "slot") {
+            let v = v8::Integer::new(tc, slot);
+            ctx_obj.set(tc, k.into(), v.into());
+        }
+        let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
+        Some(vec![cmd_val, ctx_val])
     });
-    outcome.result as i32
+    result as i32
 }
 
 /// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
 /// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
 pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
-    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
-    // Phase 1: snapshot — release EVENT_MUX_PRE borrow before entering any context.
-    let snap0 = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));   // Vec<(owner, gen, Global<Function>)>
-    if snap0.is_empty() { return 0; }
-    // run_chain wants (SubId, Priority, H); all pre-hooks are Priority::Normal this slice (order =
-    // subscription order; a priority param is deferred). SubId = enumerate index (only used for the
-    // errored list). Carry (owner, gen, handler) so the invoke closure can route + liveness-check.
-    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
-        .into_iter().enumerate()
-        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
-        .collect();
-
-    let outcome = HOST.with(|h| {
-        // Re-entrancy guard (Slice 5D.3): Events.fire() from inside a handler re-enters the pre-dispatch
-        // while the isolate is already borrowed. Can't run JS pre-hooks on the fired event this pass;
-        // ALLOW it (Continue) rather than double-borrow (would panic). The engine-side fire proceeds.
-        let Ok(mut borrow) = h.try_borrow_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
-        };
-        let Some(host) = borrow.as_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
-        };
-        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
-                else { return Ok(HookResult::Continue); };
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-            // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent (as in dispatch_game_event).
-            let event_arg: Option<v8::Local<v8::Value>> = (|| {
-                let global = ctx_local.global(tc);
-                let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
-                let pkg = global.get(tc, pkg_key.into())?;
-                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-                let ctor_key = v8::String::new(tc, "GameEvent")?;
-                let ctor = v8::Local::<v8::Function>::try_from(pkg.get(tc, ctor_key.into())?).ok()?;
-                let name_str = v8::String::new(tc, name)?;
-                ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
-            })();
-            let event_val: v8::Local<v8::Value> = event_arg.unwrap_or_else(|| v8::undefined(tc).into());
-            let func = v8::Local::new(tc, handler_g);
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            match func.call(tc, recv, &[event_val]) {
-                None => {
-                    // LOUD, unlike before. A throwing pre-hook used to vanish in total silence: its
-                    // HookResult was discarded, the collapse saw one fewer vote, and the engine went on
-                    // to broadcast an event the plugin believed it had suppressed. Hours went into
-                    // chasing exactly that. `dispatch_usercmd` has always logged this case; events now
-                    // match it, so the next occurrence names itself instead of presenting as a silently
-                    // ineffective hook.
-                    let why = tc
-                        .exception()
-                        .map(|e| e.to_rust_string_lossy(tc))
-                        .unwrap_or_else(|| "handler threw".to_string());
-                    log_warn(&format!("dispatch_game_event_pre('{name}'): handler threw: {why}"));
-                    Err(())
-                }
-                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
-                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
-                    0 => HookResult::Continue, 1 => HookResult::Changed,
-                    2 => HookResult::Handled, 3 => HookResult::Stop,
-                    _ => HookResult::Continue,                     // out-of-range → Continue
-                }),
-            }
-        })
+    let snap = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));
+    let result = fan_out_collapsing(&snap, &format!("dispatch_game_event_pre('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
+        // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent (as in dispatch_game_event).
+        let event_arg: Option<v8::Local<v8::Value>> = (|| {
+            let global = tc.get_current_context().global(tc);
+            let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
+            let pkg = global.get(tc, pkg_key.into())?;
+            let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+            let ctor_key = v8::String::new(tc, "GameEvent")?;
+            let ctor = v8::Local::<v8::Function>::try_from(pkg.get(tc, ctor_key.into())?).ok()?;
+            let name_str = v8::String::new(tc, name)?;
+            ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+        })();
+        let event_val: v8::Local<v8::Value> = event_arg.unwrap_or_else(|| v8::undefined(tc).into());
+        Some(vec![event_val])
     });
-    if outcome.result >= HookResult::Handled { 1 } else { 0 }
+    if result >= HookResult::Handled { 1 } else { 0 }
 }
 
 /// Synchronous output dispatch (entity-I/O slice). Called from `ffi.rs`'s
@@ -8466,10 +8364,9 @@ pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
 /// `dispatch_pending_*` path. A `try_borrow_mut` graceful-skip guards re-entrancy (a handler firing
 /// another output mid-dispatch skips the nested dispatch — the documented `Events.fire` limitation).
 pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, caller_handle: i32, value: &str, delay: f32) -> i32 {
-    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
-    // Phase 1: snapshot every matching key, release the OUTPUT_MUX borrow before entering any context.
-    // Dedup keys that collapse onto the same string (a literal "*" classname/output would be unusual
-    // but harmless) so a subscriber is never invoked twice for the same fire.
+    // Snapshot every matching key, releasing the OUTPUT_MUX borrow before any JS runs. Dedup keys
+    // that collapse onto the same string (a literal "*" classname/output would be unusual but
+    // harmless) so a subscriber is never invoked twice for the same fire.
     let keys = [
         format!("{}\0{}", classname, output),
         format!("{}\0*", classname),
@@ -8477,96 +8374,55 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
         "*\0*".to_string(),
     ];
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut snap0: Vec<(String, u64, v8::Global<v8::Function>)> = Vec::new();
+    let mut snap: Vec<(String, u64, v8::Global<v8::Function>)> = Vec::new();
     for k in &keys {
         if !seen.insert(k.as_str()) { continue; }
-        snap0.extend(OUTPUT_MUX.with(|m| m.borrow().snapshot(k)));
+        snap.extend(OUTPUT_MUX.with(|m| m.borrow().snapshot(k)));
     }
-    if snap0.is_empty() { return 0; }
-    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
-        .into_iter().enumerate()
-        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
-        .collect();
-
-    let outcome = HOST.with(|h| {
-        // Re-entrancy guard: a handler that fires another output (acceptInput) re-enters this dispatch
-        // while the isolate is already borrowed. ALLOW (Continue) rather than double-borrow (would
-        // panic) — the engine-side output still fires; only the nested JS re-dispatch is skipped.
-        let Ok(mut borrow) = h.try_borrow_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+    let result = fan_out_collapsing(&snap, "dispatch_output", Instrument::none(), StopAt::Stop, |tc| {
+        // Build the ev object directly (no JS constructor needed — the data is already in hand,
+        // unlike GameEvent/DamageInfo which read live shim state via further op calls).
+        // NOTE: -1 is the EXACT sentinel the shim emits for "no entity" (a null pActivator/
+        // pCaller), never a broad sign test — a live CEntityHandle::ToInt() packs a 17-bit
+        // serial into the packed int's upper bits (HANDLE_ENTRY_BITS=15 in entity.rs), so a
+        // real handle whose serial has climbed to >= 65536 is a genuinely negative i32 and
+        // must still decode, not be misread as "none" (mirrors the exact-sentinel convention
+        // `s2_give_named_item` already uses for its packed-handle return: `if handle != 0`).
+        let activator_val: v8::Local<v8::Value> = if act_handle == -1 {
+            v8::null(tc).into()
+        } else {
+            let (ai, aser) = crate::entity::decode_handle(act_handle as u32);
+            match crate::entity_live::adopt(ai, aser) {
+                Some(id) => build_entity_ref(tc, ai, id),
+                None => v8::null(tc).into(),
+            }
         };
-        let Some(host) = borrow.as_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+        let caller_val: v8::Local<v8::Value> = if caller_handle == -1 {
+            v8::null(tc).into()
+        } else {
+            let (ci, cser) = crate::entity::decode_handle(caller_handle as u32);
+            match crate::entity_live::adopt(ci, cser) {
+                Some(id) => build_entity_ref(tc, ci, id),
+                None => v8::null(tc).into(),
+            }
         };
-        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
-                else { return Ok(HookResult::Continue); };
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
 
-            // Build the ev object directly (no JS constructor needed — the data is already in hand,
-            // unlike GameEvent/DamageInfo which read live shim state via further op calls).
-            // NOTE: -1 is the EXACT sentinel the shim emits for "no entity" (a null pActivator/
-            // pCaller), never a broad sign test — a live CEntityHandle::ToInt() packs a 17-bit
-            // serial into the packed int's upper bits (HANDLE_ENTRY_BITS=15 in entity.rs), so a
-            // real handle whose serial has climbed to >= 65536 is a genuinely negative i32 and
-            // must still decode, not be misread as "none" (mirrors the exact-sentinel convention
-            // `s2_give_named_item` already uses for its packed-handle return: `if handle != 0`).
-            let activator_val: v8::Local<v8::Value> = if act_handle == -1 {
-                v8::null(tc).into()
-            } else {
-                let (ai, aser) = crate::entity::decode_handle(act_handle as u32);
-                match crate::entity_live::adopt(ai, aser) {
-                    Some(id) => build_entity_ref(tc, ai, id),
-                    None => v8::null(tc).into(),
-                }
-            };
-            let caller_val: v8::Local<v8::Value> = if caller_handle == -1 {
-                v8::null(tc).into()
-            } else {
-                let (ci, cser) = crate::entity::decode_handle(caller_handle as u32);
-                match crate::entity_live::adopt(ci, cser) {
-                    Some(id) => build_entity_ref(tc, ci, id),
-                    None => v8::null(tc).into(),
-                }
-            };
-
-            let ev_obj = v8::Object::new(tc);
-            if let Some(k) = v8::String::new(tc, "output") {
-                if let Some(v) = v8::String::new(tc, output) { ev_obj.set(tc, k.into(), v.into()); }
-            }
-            if let Some(k) = v8::String::new(tc, "activator") { ev_obj.set(tc, k.into(), activator_val); }
-            if let Some(k) = v8::String::new(tc, "caller") { ev_obj.set(tc, k.into(), caller_val); }
-            if let Some(k) = v8::String::new(tc, "value") {
-                if let Some(v) = v8::String::new(tc, value) { ev_obj.set(tc, k.into(), v.into()); }
-            }
-            if let Some(k) = v8::String::new(tc, "delay") {
-                let v = v8::Number::new(tc, delay as f64);
-                ev_obj.set(tc, k.into(), v.into());
-            }
-
-            let func = v8::Local::new(tc, handler_g);
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let ev_val: v8::Local<v8::Value> = ev_obj.into();
-            match func.call(tc, recv, &[ev_val]) {
-                None => Err(()),                                   // threw → drop this sub
-                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
-                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
-                    0 => HookResult::Continue, 1 => HookResult::Changed,
-                    2 => HookResult::Handled, 3 => HookResult::Stop,
-                    _ => HookResult::Continue,                     // out-of-range → Continue
-                }),
-            }
-        })
+        let ev_obj = v8::Object::new(tc);
+        if let Some(k) = v8::String::new(tc, "output") {
+            if let Some(v) = v8::String::new(tc, output) { ev_obj.set(tc, k.into(), v.into()); }
+        }
+        if let Some(k) = v8::String::new(tc, "activator") { ev_obj.set(tc, k.into(), activator_val); }
+        if let Some(k) = v8::String::new(tc, "caller") { ev_obj.set(tc, k.into(), caller_val); }
+        if let Some(k) = v8::String::new(tc, "value") {
+            if let Some(v) = v8::String::new(tc, value) { ev_obj.set(tc, k.into(), v.into()); }
+        }
+        if let Some(k) = v8::String::new(tc, "delay") {
+            let v = v8::Number::new(tc, delay as f64);
+            ev_obj.set(tc, k.into(), v.into());
+        }
+        Some(vec![ev_obj.into()])
     });
-    outcome.result as i32
+    result as i32
 }
 
 /// UserMessage-interception slice: run the `UserMessages.onPre` subscribers for `name` over the shim's
@@ -8579,59 +8435,17 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
 /// re-enters PostEventAbstract while the isolate is borrowed — the documented v1 limitation, mirrored by
 /// the shim's own `s_inUserMsgDispatch` flag).
 pub(crate) fn dispatch_usermsg(name: &str, id: i32) -> i32 {
-    use crate::multiplexer::{run_chain, HookResult, Priority, SubId};
-    // Phase 1: snapshot the subscribers for the canonical name, releasing the mux borrow before any context.
-    let snap0: Vec<(String, u64, v8::Global<v8::Function>)> = USERMSG_MUX.with(|m| m.borrow().snapshot(name));
-    if snap0.is_empty() { return 0; }
-    let snap: Vec<(SubId, Priority, (String, u64, v8::Global<v8::Function>))> = snap0
-        .into_iter().enumerate()
-        .map(|(i, (owner, gen, h))| (i as SubId, Priority::Normal, (owner, gen, h)))
-        .collect();
-
-    let outcome = HOST.with(|h| {
-        // Re-entrancy guard: a handler that sends a user message re-enters PostEventAbstract while the
-        // isolate is already borrowed. ALLOW (Continue) rather than double-borrow (would panic) — the
-        // shim's s_inUserMsgDispatch flag also short-circuits before ever reaching this FFI.
-        let Ok(mut borrow) = h.try_borrow_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
+    let snap = USERMSG_MUX.with(|m| m.borrow().snapshot(name));
+    let result = fan_out_collapsing(&snap, &format!("dispatch_usermsg('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
+        // The handler is the prelude wrapper `function (n, id) { return handler(__s2_umView(n, id)); }`
+        // — pass the canonical name + id; the view's field reads route through the usermsg_hook_* ops.
+        let name_val: v8::Local<v8::Value> = match v8::String::new(tc, name) {
+            Some(s) => s.into(), None => v8::null(tc).into(),
         };
-        let Some(host) = borrow.as_mut() else {
-            return crate::multiplexer::ChainOutcome { result: HookResult::Continue, errored: Vec::new() };
-        };
-        run_chain(&snap, |(owner, gen, handler_g): &(String, u64, v8::Global<v8::Function>)| {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { return Ok(HookResult::Continue); }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
-                else { return Ok(HookResult::Continue); };
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            // The handler is the prelude wrapper `function (n, id) { return handler(__s2_umView(n, id)); }`
-            // — pass the canonical name + id; the view's field reads route through the usermsg_hook_* ops.
-            let name_val: v8::Local<v8::Value> = match v8::String::new(tc, name) {
-                Some(s) => s.into(), None => v8::null(tc).into(),
-            };
-            let id_val: v8::Local<v8::Value> = v8::Number::new(tc, id as f64).into();
-
-            let func = v8::Local::new(tc, handler_g);
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            match func.call(tc, recv, &[name_val, id_val]) {
-                None => Err(()),                                   // threw → drop this sub
-                Some(ret) if ret.is_undefined() => Ok(HookResult::Continue),
-                Some(ret) => Ok(match ret.uint32_value(tc).unwrap_or(0) {
-                    0 => HookResult::Continue, 1 => HookResult::Changed,
-                    2 => HookResult::Handled, 3 => HookResult::Stop,
-                    _ => HookResult::Continue,                     // out-of-range → Continue
-                }),
-            }
-        })
+        let id_val: v8::Local<v8::Value> = v8::Number::new(tc, id as f64).into();
+        Some(vec![name_val, id_val])
     });
-    outcome.result as i32
+    result as i32
 }
 
 /// Native `__s2_crash_set_game(name, build)` — the engine-generic setter the GAME PACKAGE calls to
