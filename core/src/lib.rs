@@ -10,7 +10,7 @@ pub mod plugin;
 pub(crate) mod entity;
 pub(crate) mod liveness;
 pub(crate) mod entity_live;
-mod event_mux;
+mod channels;
 mod ffi;
 mod gamedata_calls;
 mod http;
