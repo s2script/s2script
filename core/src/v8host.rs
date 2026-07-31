@@ -1802,13 +1802,12 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
         if args.length() < 3 { return; }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let event = args.get(1).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
+        // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
+        // owns. Resolved here rather than inside the helper because refusal must store no row.
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         if !crate::ws::is_owner(id, &owner) { return; }
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{id}:{event}");
-        WS_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
+        let _ = subscribe_into(scope, &args, &WS_EVENT_MUX, &key, 2);
     }));
 }
 
@@ -2091,13 +2090,12 @@ fn s2_net_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv:
         if args.length() < 3 { return; }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let event = args.get(1).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
+        // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
+        // owns. Resolved here rather than inside the helper because refusal must store no row.
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         if !crate::net::is_owner(id, &owner) { return; }
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{id}:{event}");
-        NET_EVENT_MUX.with(|m| { m.borrow_mut().subscribe(&key, next_sub_id(), owner, generation, handler_g); });
+        let _ = subscribe_into(scope, &args, &NET_EVENT_MUX, &key, 2);
     }));
 }
 
@@ -4144,13 +4142,10 @@ fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        // WHOLE-STORE emptiness, not the helper's per-channel `was_first`: the input detour is
+        // installed once for the process, not once per channel. Sampled BEFORE subscribing.
         let first_ever = USERCMD_MUX.with(|m| m.borrow().is_empty());
-        let sub_id = next_sub_id();
-        USERCMD_MUX.with(|m| { m.borrow_mut().subscribe("onRun", sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &USERCMD_MUX, "onRun", 0) else { return };
         if first_ever {
             if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usercmd_hook_install) {
                 let _ = func();
@@ -5195,22 +5190,20 @@ fn s2_usermsg_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         rv.set_null();
         if args.length() < 2 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        // Validate the handler BEFORE the engine op, so a bad argument costs no usermsg_hook_sub
+        // call. `subscribe_into` re-checks it; this guard exists purely to preserve that ordering.
+        if v8::Local::<v8::Function>::try_from(args.get(1)).is_err() { return; }
         let nc = match std::ffi::CString::new(name.clone()) { Ok(c) => c, Err(_) => return };
         let Some(sub) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usermsg_hook_sub) else { return };
         let mut buf = [0i8; 256];
         let id = sub(nc.as_ptr(), buf.as_mut_ptr(), buf.len() as c_int);
         if id < 0 { return; }   // unresolvable name / null NetMessageInfo — prelude throws
         let canonical = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned();
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         USERMSG_IDS.with(|m| { m.borrow_mut().insert(canonical.clone(), id); });
-        // Cache raw-name -> canonical (and canonical -> itself) so off() can resolve the mux key without the
-        // installing sub op (see USERMSG_RESOLVE).
         USERMSG_RESOLVE.with(|m| { let mut b = m.borrow_mut();
             b.insert(name, canonical.clone()); b.insert(canonical.clone(), canonical.clone()); });
-        USERMSG_MUX.with(|m| { m.borrow_mut().subscribe(&canonical, next_sub_id(), owner, generation, handler_g); });
+        // Subscribes under the CANONICAL name — the alias the caller used is only a lookup key.
+        if subscribe_into(scope, &args, &USERMSG_MUX, &canonical, 1).is_none() { return; }
         if let Some(js) = v8::String::new(scope, &canonical) { rv.set(js.into()); }
     }));
 }
@@ -5572,13 +5565,9 @@ fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         if args.length() < 3 { return; }
         let classname = args.get(0).to_rust_string_lossy(scope);
         let output = args.get(1).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{}\0{}", classname, output);
-        let sub_id = next_sub_id();
-        OUTPUT_MUX.with(|m| { m.borrow_mut().subscribe(&key, sub_id, owner, generation, handler_g); });
+        // The FireOutputInternal detour stays installed for the process lifetime — no follow-up.
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &OUTPUT_MUX, &key, 2) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -5631,14 +5620,11 @@ fn s2_entity_listener_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         if args.length() < 3 { return; }
         let kind = args.get(0).to_rust_string_lossy(scope);
         let class_name = args.get(1).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
         let key = format!("{}\0{}", kind, class_name);
+        // WHOLE-STORE emptiness, not per-channel: the IEntityListener is registered once for the
+        // process. Sampled BEFORE subscribing.
         let first_ever = ENTITY_MUX.with(|m| m.borrow().is_empty());
-        let sub_id = next_sub_id();
-        ENTITY_MUX.with(|m| { m.borrow_mut().subscribe(&key, sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &ENTITY_MUX, &key, 2) else { return };
         if first_ever {
             if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.entity_listener_install) {
                 let _ = func();
@@ -6239,14 +6225,11 @@ fn s2_event_subscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        // WHOLE-STORE emptiness, not per-channel: the global FireEvent hook covers every event name,
+        // so it installs on the first pre-sub across ALL names. Sampled BEFORE subscribing.
         let was_empty = EVENT_MUX_PRE.with(|m| m.borrow().is_empty());
-        let sub_id = next_sub_id();
-        EVENT_MUX_PRE.with(|m| { m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g); });
-        if was_empty {   // first pre-sub across ALL names → install the global FireEvent hook
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &EVENT_MUX_PRE, &name, 1) else { return };
+        if was_empty {
             if let Some(req) = HOOK_REQUEST.with(|r| r.get()) {
                 if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 1); }
             }
@@ -7441,11 +7424,10 @@ pub(crate) fn re_materialize_config(id: &str) {
 fn s2_config_on_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        let Ok(func) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func);
+        // `owner` is needed AFTER subscribing, to seed the file watch, so it is resolved here and the
+        // helper resolves it again. Only reached once a row was actually stored.
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        CONFIG_SUBS.with(|m| { m.borrow_mut().subscribe("config", next_sub_id(), owner.clone(), generation, handler_g); });
+        if subscribe_into(scope, &args, &CONFIG_SUBS, "config", 0).is_none() { return; }
         crate::loader::watch_config_for(&owner);  // idempotent; seeds baseline if not yet watched
     }));
 }
