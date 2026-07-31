@@ -9,6 +9,8 @@
 // GetRefEHandle() need the full definition — mirrors s2script_mm.cpp, which includes both headers
 // explicitly for the same reason.
 #include <entity2/entityinstance.h>     // CEntityInstance::GetClassname/GetRefEHandle
+#include <cstdio>                     // printf — opt-in lifecycle trace
+#include <cstdlib>                    // getenv
 #include "s2script_core.h"              // s2script_core_dispatch_entity_event (Task 1 core export)
 
 // deferred-dispatch-queue slice: the queue itself lives in s2script_mm.cpp (it owns the payload and
@@ -28,6 +30,28 @@ private:
         if (!pEntity) return;
         const char* cls = pEntity->GetClassname();          // designer name; valid at create/spawn/delete
         int handle = pEntity->GetRefEHandle().ToInt();       // packed CEntityHandle — the shim's handle idiom
+        // OPT-IN LIFECYCLE TRACE (S2_ENTITY_TRACE), for attributing a client fatal to a real entity.
+        //
+        // `CopyExistingEntity: missing client entity N` names an entity INDEX, and a plugin-side trace
+        // can only ever log the entities that plugin creates — every crash index captured so far fell
+        // in the gaps between those, so none of them could be attributed to anything. This logs EVERY
+        // create/spawn/delete with index and classname, which is what turns an index into an occupant.
+        //
+        // ABOVE the dispatch, deliberately. Since the deferred-dispatch queue, a re-entrant event is
+        // delivered to JS a frame LATE, so dispatch order no longer tracks engine order. Forensics
+        // needs the moment the engine actually created or destroyed the entity — the index/serial
+        // recycle we are chasing happens on the engine's clock, not on the drain's. Tracing here also
+        // keeps the trace honest about events that defer, which are exactly the ones a plugin-side
+        // trace could never see.
+        //
+        // Off unless the env var is set, and bounded, so a forgotten variable cannot flood a log.
+        static const bool on = (getenv("S2_ENTITY_TRACE") != nullptr);
+        static int left = 20000;
+        if (on && left > 0) {
+            --left;
+            printf("[s2script] ENTLIFE %s index=%d class=%s\n", kind, handle & 0x7fff, cls ? cls : "?");
+            if (left == 0) printf("[s2script] ENTLIFE budget spent — tracing off\n");
+        }
         // A re-entrant dispatch (this entity was created/deleted BY a JS handler, e.g. a plugin's own
         // synchronous createEntity) delivers nothing — queue the scalars for the next GameFrame
         // instead of dropping it silently. GetClassname() points into engine memory that may be gone
