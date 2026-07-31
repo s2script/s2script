@@ -4706,6 +4706,125 @@ fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
 /// `try_borrow_mut` re-entrancy guard, per-subscriber `is_live` + context clone + HandleScope/
 /// ContextScope/TryCatch + WARN-on-throw. Notify-only — each handler is called with the single Integer
 /// `slot` and its return is ignored (no suppress/HookResult collapse).
+/// THE dispatch preamble, owned once.
+///
+/// Every engine→JS notification used to hand-roll this same six-part sequence, and the copies had
+/// drifted: only some reported through `report_js_error`, only some left a crash breadcrumb, and
+/// `apply_errors` (auto-disable for a handler that keeps throwing) reached exactly one of them.
+/// Each part is load-bearing and none may be dropped when a call site is converted:
+///
+/// 1. **Snapshot before invoke** — the caller passes an already-taken snapshot, so the mux borrow is
+///    released before any JS runs. A handler that subscribes or unsubscribes mid-dispatch therefore
+///    cannot invalidate the list being walked.
+/// 2. **`try_borrow_mut` re-entrancy guard** — core holds `HOST.borrow_mut()` across ALL JS, so a
+///    handler that re-enters dispatch (`Events.fire` from an event handler) would double-borrow.
+///    Graceful skip, never a panic.
+/// 3. **Per-subscriber liveness** — an owner unloaded earlier in THIS fan-out must not be called;
+///    the `REGISTRY` borrow is released before entering the context.
+/// 4. **Context clone out of `PLUGINS`** — the borrow is released before the call so the handler may
+///    re-enter `PLUGINS`.
+/// 5. **Per-subscriber `HandleScope`/`ContextScope`** — handles are freed per subscriber rather than
+///    accumulating across the whole fan-out.
+/// 6. **Per-handler `TryCatch`** — one throwing handler must not deny the others their dispatch.
+///
+/// `build_args` runs inside the per-subscriber `TryCatch`, which is why it takes the scope: the
+/// argument `Local`s must be created in the scope they are passed to, and they cannot outlive it.
+/// Per-dispatch crash instrumentation, opt-in per call site.
+///
+/// Both of these were ad-hoc in the hand-rolled copies, and the coverage gaps are invisible once the
+/// preamble is shared: `enter_dispatch` (the signal-safe breadcrumb naming the culprit plugin if the
+/// process faults inside a handler) reached 4 of ~20 paths, and `report_js_error` (filing the throw
+/// with the crash reporter) reached 2. Making them explicit arguments preserves each path's current
+/// behaviour exactly while turning "which paths are instrumented?" into something you can read off
+/// the call sites — and turning "instrument this one too" into a one-word change.
+#[derive(Clone, Copy)]
+pub(crate) struct Instrument<'a> {
+    /// Breadcrumb dispatch tag held across the handler call, e.g. `"event:player_death"`.
+    pub breadcrumb: Option<&'a str>,
+    /// Crash-reporter context tag for a throwing handler. `None` = WARN only.
+    pub report_as: Option<&'a str>,
+}
+
+impl<'a> Instrument<'a> {
+    /// WARN on throw, no breadcrumb, no crash report — what most notify paths do today.
+    pub(crate) fn none() -> Self {
+        Self { breadcrumb: None, report_as: None }
+    }
+    /// Breadcrumb only (today: the damage and frame paths).
+    pub(crate) fn breadcrumb(tag: &'a str) -> Self {
+        Self { breadcrumb: Some(tag), report_as: None }
+    }
+    /// Breadcrumb + crash report under the same tag (today: the game-event and concommand paths).
+    pub(crate) fn full(tag: &'a str) -> Self {
+        Self { breadcrumb: Some(tag), report_as: Some(tag) }
+    }
+}
+
+pub(crate) fn fan_out<F>(
+    snap: &[(String, u64, v8::Global<v8::Function>)],
+    label: &str,
+    instrument: Instrument<'_>,
+    build_args: F,
+) where
+    F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
+{
+    if snap.is_empty() {
+        return;
+    }
+    HOST.with(|h| {
+        let Ok(mut borrow) = h.try_borrow_mut() else { return };
+        let Some(host) = borrow.as_mut() else { return };
+
+        for (owner, generation, handler_g) in snap {
+            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) {
+                continue;
+            }
+            let Some(g_ctx) =
+                PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+            else {
+                continue;
+            };
+
+            // Held across the handler call: if the process faults inside JS, the breadcrumb names
+            // the culprit plugin and this dispatch.
+            let _crash_guard = instrument
+                .breadcrumb
+                .map(|tag| crate::crash::breadcrumb::enter_dispatch(owner, tag));
+
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            // `None` = skip THIS subscriber, preserving the per-call-site `continue` used when a
+            // `v8::String::new` allocation fails. Returning an empty Vec instead would call the
+            // handler with its arguments silently missing.
+            let Some(args) = build_args(tc) else { continue };
+            let func = v8::Local::new(tc, handler_g);
+            if func.call(tc, recv, &args).is_none() {
+                let msg = tc
+                    .exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: {}: handler '{}': {}", label, owner, msg));
+                if let Some(context) = instrument.report_as {
+                    let stack = tc
+                        .stack_trace()
+                        .map(|s| s.to_rust_string_lossy(&*tc))
+                        .unwrap_or_default();
+                    crate::crash::report_js_error(owner, context, &msg, &stack);
+                }
+            }
+        }
+    });
+}
+
 pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
     {
         let s = crate::crash::breadcrumb::snapshot();
@@ -4723,45 +4842,10 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
     if event == "disconnect" {
         voice_clear_slot(slot);
     }
-    // Phase 1: snapshot — release CLIENT_MUX borrow before entering any context.
+    // Snapshot — releases the CLIENT_MUX borrow before any JS runs (see `fan_out` §1).
     let snap = CLIENT_MUX.with(|m| m.borrow().snapshot(event));
-    if snap.is_empty() { return; }
-
-    // Phase 2: enter each subscriber's context and invoke handler(slot).
-    HOST.with(|h| {
-        // Re-entrancy guard (mirrors dispatch_chat_message / dispatch_game_event): a client handler
-        // that re-enters dispatch while HOST is already borrowed is skipped, not double-borrowed.
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        for (owner, generation, handler_g) in &snap {
-            // Liveness check (release REGISTRY borrow before entering context).
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-            // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            // Per-subscriber HandleScope+ContextScope — mirrors dispatch_chat_message.
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            // Per-handler TryCatch isolates a throwing handler from the rest.
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
-            let func = v8::Local::new(tc, handler_g);
-            if func.call(tc, recv, &[slot_val]).is_none() {
-                let msg = tc.exception()
-                    .map(|e| e.to_rust_string_lossy(&*tc))
-                    .unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: dispatch_client('{}'): handler '{}': {}", event, owner, msg));
-            }
-        }
+    fan_out(&snap, &format!("dispatch_client('{}')", event), Instrument::none(), |tc| {
+        Some(vec![v8::Integer::new(tc, slot).into()])
     });
 }
 
@@ -4774,39 +4858,8 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
 pub(crate) fn dispatch_map_start(map: &str) {
     crate::crash::breadcrumb::set_map(map);
     let snap = MAP_MUX.with(|m| m.borrow().snapshot(""));
-    if snap.is_empty() { return; }
-
-    HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        for (owner, generation, handler_g) in &snap {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let map_val: v8::Local<v8::Value> = match v8::String::new(tc, map) {
-                Some(s) => s.into(),
-                None => continue,
-            };
-            let func = v8::Local::new(tc, handler_g);
-            if func.call(tc, recv, &[map_val]).is_none() {
-                let msg = tc.exception()
-                    .map(|e| e.to_rust_string_lossy(&*tc))
-                    .unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: dispatch_map_start: handler '{}': {}", owner, msg));
-            }
-        }
+    fan_out(&snap, "dispatch_map_start", Instrument::none(), |tc| {
+        Some(vec![v8::String::new(tc, map)?.into()])
     });
 }
 
@@ -4816,40 +4869,16 @@ pub(crate) fn dispatch_map_start(map: &str) {
 /// rest, and a `try_borrow_mut` graceful-skip so a handler that itself sets a cvar (re-entering this
 /// dispatch) is skipped rather than double-borrowing the isolate.
 pub(crate) fn dispatch_cvar_change(name: &str, new_value: &str, old_value: &str) {
+    // A "*" subscriber hears every cvar; a named one hears only its own. Both snapshots are taken
+    // before any JS runs, and a "*" fire must not deliver twice to the wildcard subscribers.
     let mut snap = CVAR_MUX.with(|m| m.borrow().snapshot(name));
     if name != "*" { snap.extend(CVAR_MUX.with(|m| m.borrow().snapshot("*"))); }
-    if snap.is_empty() { return; }
-
-    HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        for (owner, generation, handler_g) in &snap {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let (Some(n), Some(nv), Some(ov)) = (
-                v8::String::new(tc, name), v8::String::new(tc, new_value), v8::String::new(tc, old_value)
-            ) else { continue };
-            let args: [v8::Local<v8::Value>; 3] = [n.into(), nv.into(), ov.into()];
-            let func = v8::Local::new(tc, handler_g);
-            if func.call(tc, recv, &args).is_none() {
-                let msg = tc.exception().map(|e| e.to_rust_string_lossy(&*tc))
-                    .unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: dispatch_cvar_change('{}'): handler '{}': {}", name, owner, msg));
-            }
-        }
+    fan_out(&snap, &format!("dispatch_cvar_change('{}')", name), Instrument::none(), |tc| {
+        Some(vec![
+            v8::String::new(tc, name)?.into(),
+            v8::String::new(tc, new_value)?.into(),
+            v8::String::new(tc, old_value)?.into(),
+        ])
     });
 }
 
@@ -4886,34 +4915,7 @@ pub(crate) fn entity_repair_sweep_if_armed(simulating: bool) {
 /// the PrecacheContext) and its return is ignored.
 pub(crate) fn dispatch_precache() {
     let snap = PRECACHE_MUX.with(|m| m.borrow().snapshot(""));
-    if snap.is_empty() { return; }
-
-    HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-        for (owner, generation, handler_g) in &snap {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let func = v8::Local::new(tc, handler_g);
-            if func.call(tc, recv, &[]).is_none() {
-                let msg = tc.exception()
-                    .map(|e| e.to_rust_string_lossy(&*tc))
-                    .unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: dispatch_precache: handler '{}': {}", owner, msg));
-            }
-        }
-    });
+    fan_out(&snap, "dispatch_precache", Instrument::none(), |_tc| Some(vec![]));
 }
 
 /// Deliver an entity lifecycle event to the `Entity.on{Create,Spawn,Delete}` subscribers. Called from
@@ -4924,53 +4926,31 @@ pub(crate) fn dispatch_precache() {
 /// The entity crosses as a packed handle → a serial-gated EntityRef (null if stale/free — the exact-(-1)
 /// + resolve-null discipline of `dispatch_output`); className is passed as a 2nd arg (always valid).
 pub(crate) fn dispatch_entity_event(kind: &str, class_name: &str, handle: i32) {
-    // Phase 1: snapshot the exact-class key + the "<kind>\0*" wildcard (skip the wild when class == "*",
-    // else the same key would be snapshotted twice).
+    // Snapshot the exact-class key + the "<kind>\0*" wildcard (skip the wild when class == "*", else
+    // the same key would be snapshotted twice). Both taken before any JS runs.
     let exact = format!("{}\0{}", kind, class_name);
     let mut snap = ENTITY_MUX.with(|m| m.borrow().snapshot(&exact));
     if class_name != "*" {
         let wild = format!("{}\0*", kind);
         snap.extend(ENTITY_MUX.with(|m| m.borrow().snapshot(&wild)));
     }
-    if snap.is_empty() { return; }
-
-    HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-        for (owner, generation, handler_g) in &snap {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            let entity_val: v8::Local<v8::Value> = if handle == -1 {
-                v8::null(tc).into()
-            } else {
-                let (idx, ser) = crate::entity::decode_handle(handle as u32);
-                // Books-adopt (delete dispatches still adopt — the ffi entry removes AFTER dispatch, Task 4).
-                match crate::entity_live::adopt(idx, ser) {
-                    Some(id) => build_entity_ref(tc, idx, id),
-                    None => v8::null(tc).into(),
-                }
-            };
-            let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
-                Some(s) => s.into(),
-                None => v8::undefined(tc).into(),
-            };
-            let func = v8::Local::new(tc, handler_g);
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            if func.call(tc, recv, &[entity_val, class_val]).is_none() {
-                let msg = tc.exception().map(|e| e.to_rust_string_lossy(&*tc)).unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: dispatch_entity_event('{}','{}'): handler '{}': {}", kind, class_name, owner, msg));
+    let label = format!("dispatch_entity_event('{}','{}')", kind, class_name);
+    fan_out(&snap, &label, Instrument::none(), |tc| {
+        let entity_val: v8::Local<v8::Value> = if handle == -1 {
+            v8::null(tc).into()
+        } else {
+            let (idx, ser) = crate::entity::decode_handle(handle as u32);
+            // Books-adopt (delete dispatches still adopt — the ffi entry removes AFTER dispatch).
+            match crate::entity_live::adopt(idx, ser) {
+                Some(id) => build_entity_ref(tc, idx, id),
+                None => v8::null(tc).into(),
             }
-        }
+        };
+        let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
+            Some(s) => s.into(),
+            None => v8::undefined(tc).into(),
+        };
+        Some(vec![entity_val, class_val])
     });
 }
 
@@ -8209,70 +8189,26 @@ fn s2_event_fire_to_client(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
 /// each subscriber's PLUGIN context in its own HandleScope+ContextScope+TryCatch.  `EVENT_MUX` and
 /// `PLUGINS`/`REGISTRY` are NOT held across any JS call.
 pub(crate) fn dispatch_game_event(name: &str) {
-    // Phase 1: snapshot — release EVENT_MUX borrow before entering any context.
+    // Snapshot — releases the EVENT_MUX borrow before any JS runs, so `Events.fire()` from inside a
+    // handler cannot mutate the list being walked (the re-entrant dispatch itself is skipped by
+    // fan_out's borrow guard; the engine-side fire has already happened).
     let snap = EVENT_MUX.with(|m| m.borrow().snapshot(name));
-    if snap.is_empty() { return; }
-
-    // Phase 2: enter each subscriber's context and invoke the handler with new GameEvent(name).
-    HOST.with(|h| {
-        // Re-entrancy guard (Slice 5D.3): Events.fire() from inside a handler re-enters the dispatch
-        // while the isolate is already borrowed by the outer dispatch. The engine-side fire has
-        // already happened; skip the nested JS re-dispatch rather than double-borrow (would panic).
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        for (owner, gen, handler_g) in &snap {
-            // Liveness check (release REGISTRY borrow before entering context).
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { continue; }
-            // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, &format!("event:{}", name));
-
-            // Per-subscriber HandleScope+ContextScope — mirrors dispatch_onframe.
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            // Per-handler TryCatch isolates a throwing handler from the rest.
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            // Construct new GameEvent(name): read GameEvent from globalThis.__s2pkg_events.GameEvent.
-            let event_arg: Option<v8::Local<v8::Value>> = (|| {
-                let global = ctx_local.global(tc);
-                let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
-                let pkg = global.get(tc, pkg_key.into())?;
-                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-                let ctor_key = v8::String::new(tc, "GameEvent")?;
-                let ctor_val = pkg.get(tc, ctor_key.into())?;
-                let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
-                let name_str = v8::String::new(tc, name)?;
-                ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
-            })();
-
-            let func = v8::Local::new(tc, handler_g);
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let event_val: v8::Local<v8::Value> = match event_arg {
-                Some(v) => v,
-                None => v8::undefined(tc).into(),
-            };
-
-            if func.call(tc, recv, &[event_val]).is_none() {
-                let msg = tc.exception()
-                    .map(|e| e.to_rust_string_lossy(&*tc))
-                    .unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: dispatch_game_event('{}'): handler '{}': {}", name, owner, msg));
-                let stack = tc.stack_trace()
-                    .map(|s| s.to_rust_string_lossy(&*tc))
-                    .unwrap_or_default();
-                crate::crash::report_js_error(owner, &format!("event:{}", name), &msg, &stack);
-            }
-            // tc, tc_storage, scope drop here — TryCatch absorbs any pending exception.
-        }
+    let tag = format!("event:{}", name);
+    fan_out(&snap, &format!("dispatch_game_event('{}')", name), Instrument::full(&tag), |tc| {
+        // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent. A failure here
+        // yields `undefined` rather than skipping the subscriber, matching the pre-fan_out behaviour.
+        let event_val: Option<v8::Local<v8::Value>> = (|| {
+            let global = tc.get_current_context().global(tc);
+            let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
+            let pkg = global.get(tc, pkg_key.into())?;
+            let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+            let ctor_key = v8::String::new(tc, "GameEvent")?;
+            let ctor_val = pkg.get(tc, ctor_key.into())?;
+            let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+            let name_str = v8::String::new(tc, name)?;
+            ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+        })();
+        Some(vec![event_val.unwrap_or_else(|| v8::undefined(tc).into())])
     });
 }
 
@@ -13875,6 +13811,50 @@ mod frame_tests {
     /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
     /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
     /// `unload_plugin` (remove_by_owner teardown) further dispatches are a safe no-op.
+    #[test]
+    /// `fan_out`'s throw-isolation guarantee, asserted on a converted path.
+    ///
+    /// The per-handler `TryCatch` is the part of the preamble a deduplication most easily loses —
+    /// hoisting it out of the loop, or dropping it because "the caller has one", would make ONE
+    /// plugin's throwing handler silently deny every later subscriber its dispatch. That failure is
+    /// invisible in a diff and invisible at runtime except as "my plugin stopped getting events",
+    /// so it gets its own test rather than riding on the existing per-capability ones.
+    ///
+    /// Two plugins subscribe to the same event; the first throws. The second must still run, and a
+    /// later dispatch must still reach both.
+    #[test]
+    fn fan_out_isolates_a_throwing_handler_from_the_rest() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        load_body("thrower", r#"
+            __s2pkg_clients.Clients.onConnect(function () {
+                globalThis.__ran = (globalThis.__ran || 0) + 1;
+                throw new Error("boom");
+            });
+        "#, "{}");
+        load_body("survivor", r#"
+            __s2pkg_clients.Clients.onConnect(function (c) {
+                globalThis.__ran  = (globalThis.__ran || 0) + 1;
+                globalThis.__slot = c.slot;
+            });
+        "#, "{}");
+
+        dispatch_client_event("connect", 3);
+        assert_eq!(read_i32_global_in("thrower", "__ran"), 1, "the throwing handler must run");
+        assert_eq!(
+            read_i32_global_in("survivor", "__ran"), 1,
+            "a handler that throws must not deny later subscribers their dispatch"
+        );
+        assert_eq!(read_i32_global_in("survivor", "__slot"), 3, "and its arguments must be intact");
+
+        // The throw must not have poisoned the subscription either — both run again next dispatch.
+        dispatch_client_event("connect", 4);
+        assert_eq!(read_i32_global_in("thrower", "__ran"), 2, "throwing must not disable the sub");
+        assert_eq!(read_i32_global_in("survivor", "__ran"), 2);
+        assert_eq!(read_i32_global_in("survivor", "__slot"), 4);
+        shutdown();
+    }
+
     #[test]
     fn client_dispatch_delivers_client_with_slot() {
         let _ = init(dummy_logger());
