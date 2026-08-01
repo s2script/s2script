@@ -2,11 +2,11 @@
  * Minimal JSONC comment stripper.
  *
  * WHY THIS EXISTS. The first implementation stripped only FULL-LINE `//` comments via a line-anchored
- * regex. That is narrower than every other JSONC reader in this repo — the shim parses
- * `core.gamedata.jsonc` with nlohmann's `ignore_comments=true` (both comment forms, anywhere), and
+ * regex. That is narrower than every other JSONC reader in this repo — the shim parses the
+ * `gamedata/` tree with nlohmann's `ignore_comments=true` (both comment forms, anywhere), and
  * `core/src/config.rs::strip_line_comments` is string-aware and handles trailing `//`. The gap mattered
- * because gamedata authors are explicitly told to document byte patterns the way
- * `gamedata/core.gamedata.jsonc` does, and that file uses trailing line comments and block comments
+ * because gamedata authors are explicitly told to document byte patterns the way the framework's own
+ * `gamedata/core/*.jsonc` files do, and those files use trailing line comments and block comments
  * freely — so following the house style produced a raw `JSON.parse` syntax error.
  *
  * String-aware by construction: a `//` or `/*` inside a JSON string literal is content, not a comment

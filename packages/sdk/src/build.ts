@@ -141,18 +141,18 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
       );
     }
     // Naming convention: `<plugin-name-without-scope>.gamedata.jsonc`, mirroring the framework's own
-    // `gamedata/core.gamedata.jsonc` — a gamedata file is named for whoever owns it. Enforced rather
-    // than documented so the convention actually holds: `@me/burn` -> `burn.gamedata.jsonc`.
+    // `gamedata/core/*.jsonc` / `gamedata/cs2/*.jsonc` — a gamedata file is named for whoever owns it.
+    // Enforced rather than documented so the convention actually holds: `@me/burn` -> `burn.gamedata.jsonc`.
     const unscoped = pkg.name.includes("/") ? pkg.name.slice(pkg.name.lastIndexOf("/") + 1) : pkg.name;
     const actualBase = basename(gdPath);
     const allowedBases = [`${unscoped}.gamedata.jsonc`, `${unscoped}.gamedata.json`];
     if (!allowedBases.includes(actualBase)) {
       throw new Error(
         `s2script.gamedata must be named '${unscoped}.gamedata.jsonc' (after the plugin name without ` +
-          `its scope, like the framework's own core.gamedata.jsonc), but is '${actualBase}'`
+          `its scope — the same rule that names the framework's own gamedata/core/*.jsonc files), but is '${actualBase}'`
       );
     }
-    // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core.gamedata.jsonc —
+    // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core/*.jsonc —
     // which authors are told to imitate — uses both freely, so a line-only stripper rejected the
     // house style. See gamedata/jsonc.ts.
     const raw = stripJsonComments(readFileSync(gdPath, "utf8"));

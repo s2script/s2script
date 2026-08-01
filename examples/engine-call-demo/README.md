@@ -26,15 +26,15 @@ src/plugin.ts                         Engine.call("ignite") -> a typed, plain ca
 ```
 
 The gamedata filename is not arbitrary: it must be **`<plugin-name-without-scope>.gamedata.jsonc`**,
-matching the framework's own `core.gamedata.jsonc` — a gamedata file is named for whoever owns it.
-This plugin is `@demo/engine-call`, so its gamedata is `engine-call.gamedata.jsonc`. `s2s build`
-enforces it.
+matching the framework's own convention — a gamedata file is named for whoever owns it (`gamedata/core/`
+holds core's own facts, `gamedata/cs2/` the CS2 game package's). This plugin is `@demo/engine-call`,
+so its gamedata is `engine-call.gamedata.jsonc`. `s2s build` enforces it.
 
 ### 1. Declare it in gamedata
 
 Engine addresses move every CS2 update, so they belong in regenerable data, never in code — the same
-rule the framework follows for its own `gamedata/core.gamedata.jsonc`. A plugin's gamedata uses that
-identical shape: a named entry keyed by **platform id**, details nested inside.
+rule the framework follows for its own `gamedata/core/` and `gamedata/cs2/` trees. A plugin's
+gamedata uses that identical shape: a named entry keyed by **platform id**, details nested inside.
 
 ```jsonc
 "signatures": {

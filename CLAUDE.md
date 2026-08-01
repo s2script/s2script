@@ -96,7 +96,7 @@ examples/    Worked examples (not shipped): hello-plugin, cookbook, entity-playg
              greeter-plugin/-consumer, monorepo.
 tools/       Dev/treadmill tooling (not shipped): schema-dump, s2bench, crash-test.
 plugins/disabled/  Opt-in plugins; the loader's non-recursive scan skips the `plugins/disabled/` subdir. Operators move a .s2sp up one level (into `plugins/`) to enable.
-gamedata/    Regenerable engine facts: byte-signatures, offsets, schema/event/item catalogs (data, not code).
+gamedata/    Regenerable engine facts, split by OWNER (core/ = what shim+core name in source; cs2/ = the game package's) and by TARGET (common / engine.<engine> / game.<mod>, selected by each owner's master.gamedata.jsonc). custom/ = operator overrides, applied last.
 docs/        ARCHITECTURE.md · INSTALL.md · re-strategy.md · PROGRESS.md · superpowers/{specs,plans}/.
 scripts/     Build, gate (check-*.sh), sniper build, rcon.py, package/release.
 docker/      CS2 dev server (container s2script-cs2) + mysql/postgres sidecars.

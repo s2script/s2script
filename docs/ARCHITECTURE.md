@@ -53,6 +53,27 @@ The most important structural rule, baked in from the start. Three layers:
 
 **Enforcement (mechanical, not aspirational):** the build graph enforces the one-way dependency. Core (Rust crate + `@s2script/std`) has **zero** dependency on any game package; a CI check fails the build if `core` imports `cs2`. That single rule is what prevents CS2 assumptions leaking into core.
 
+### Gamedata ownership
+
+Gamedata is partitioned on two **orthogonal** axes, ported from SourceMod:
+
+- **Owner** — the directory (`gamedata/core/`, `gamedata/cs2/`), plus each plugin's own file inside
+  its `.s2sp`. Answers *who consumes this fact*. Namespaced: two owners may define the same key
+  with different values and neither sees the other.
+- **Target** — the file within it (`common` / `engine.<engine>` / `game.<mod>`), selected by that
+  owner's `master.gamedata.jsonc`. Answers *what this fact is resolved against*.
+
+`gamedata/core/game.cs2.jsonc` is therefore core's *own* facts resolved against *CS2's*
+`libserver.so`. Both are true at once. Porting to a second Source 2 game adds a sibling
+`game.<mod>.jsonc` with the same key set and different bytes; it moves nothing between owners.
+
+The ownership rule is mechanical — **a key belongs to whoever names it in source** — and
+`scripts/check-gamedata-owners.sh` enforces it in both directions.
+
+`<owner>/custom/*.jsonc` is applied last and is the operator's channel for hot-fixing a signature
+after a CS2 update without waiting for a release. Overridden entries are named in the boot banner
+and marked in the crash-report fingerprint.
+
 ### 2.1 Runtime model
 
 - **Execution:** one embedded **V8 isolate** on the game's main thread, shared with the engine. Native calls into the engine are synchronous and cheap (no marshaling boundary). Chosen over QuickJS for mature Promise/microtask integration.

@@ -5,7 +5,7 @@ name: ci-native
 # jobs are gone. See docs/superpowers/specs/2026-07-22-ci-consolidation-design.md.
 #
 # NOTE: gamedata/** is deliberately NOT here — it belongs to ci-js. Nothing compiles it in;
-# the shim reads gamedata/core.gamedata.jsonc from disk at runtime. That is the CLAUDE.md
+# the shim reads the owner-scoped gamedata/ tree from disk at runtime. That is the CLAUDE.md
 # invariant "layout is data, semantics are code" expressed as a path filter.
 on:
   pull_request:

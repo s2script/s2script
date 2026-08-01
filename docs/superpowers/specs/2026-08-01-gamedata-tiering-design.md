@@ -120,7 +120,7 @@ For the 46 entries in today's flat file:
 | Destination | Entries |
 |---|---|
 | `core/engine.source2.jsonc` | the 5 engine-module interface strings: `SchemaSystem`, `EngineCvar`, `EngineToServer`, `NetworkServerService`, `NetworkMessages` |
-| `core/game.cs2.jsonc` | the 5 server-module interface strings (`Source2Server`, `Source2GameClients`, `Source2GameEntities`, `GameResourceService`, `GameEventSystem`), 5 of the 7 offsets, and 21 of the 29 signatures |
+| `core/game.cs2.jsonc` | 5 interface strings (`Source2Server`, `Source2GameClients`, `Source2GameEntities` — acquired via `GetServerFactory`; `GameResourceService`, `GameEventSystem` — acquired via `GetEngineFactory` like the engine tier's five, placed here conservatively per below), 5 of the 7 offsets, and 21 of the 29 signatures |
 | `cs2/game.cs2.jsonc` | the 2 parked `CCSPlayer_ItemServices_*` offsets (A5a) + the 8 CS2-API signatures (A5b) |
 
 Verified empirically: of the 46 entries, exactly 44 are named in `shim/src` or `core/src`, and the
