@@ -1014,11 +1014,22 @@ Expected: builds clean. (`GamedataPath()` is still referenced by the crash-ident
 
 The unit tests cannot see this; a wrong `game` silently selects no files.
 
+**The binaries must come from the sniper container.** A host `make all` links against this box's
+glibc (GLIBC_2.38) and cannot load on the Steam Runtime 3 server (glibc 2.31) — Metamod reports
+`meta list` → `<ERROR>` and nothing else, with no explanation. See CLAUDE.md's build section.
+
+This worktree is a *linked* worktree, so `docker/cs2-data` and `docker/metamod` do not exist here
+(they are gitignored and live only in the primary). `scripts/gate.sh` is the mechanism: it
+reflink-clones the primary's install into `.gate/` and runs this worktree's own instance on port
+27016+. Run `gate.sh up` with **no flags** — `--addons dist/addons` would point Metamod at
+`dist/addons/metamod`, which holds only the VDF and no `bin/`.
+
 ```bash
-make all
-docker compose -f docker/docker-compose.yml restart cs2
-sleep 45
-docker logs s2script-cs2 2>&1 | grep "gamedata root="
+docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash /repo/scripts/build-sniper.sh     # the ONLY deployable binaries
+bash scripts/gate.sh up                                 # this worktree's instance, port 27016
+docker logs s2script-cs2-<worktree-name> 2>&1 | grep "gamedata root="
+python3 scripts/rcon.py --port 27016 "meta list"        # must NOT say <ERROR>
 ```
 
 Expected: a line ending `engine=source2 game=csgo`. If it reads `game=<undetected>` or any other name, the dirname chain does not match this deployment's layout — fix `DetectModDir` before continuing, because Task 6 makes the whole tree depend on it.
@@ -1190,11 +1201,14 @@ Expected: every gate passes, ending `ci-native: all native gates passed`.
 
 Run:
 
+Same build constraint as Task 5 Step 4 — sniper container only, `gate.sh` for the server:
+
 ```bash
-make all
-docker compose -f docker/docker-compose.yml restart cs2
-sleep 45
-docker logs s2script-cs2 2>&1 | grep -E "gamedata (root=|core:|OK|FAIL)|GAMEDATA VALIDATION"
+docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash /repo/scripts/build-sniper.sh
+bash scripts/gate.sh down && bash scripts/gate.sh up
+docker logs s2script-cs2-<worktree-name> 2>&1 \
+  | grep -E "gamedata (root=|core:|OK|FAIL)|GAMEDATA VALIDATION"
 ```
 
 Expected:
@@ -1203,12 +1217,18 @@ Expected:
 - a `gamedata OK` line for each of the same names as before the change
 - `=== GAMEDATA VALIDATION: N ok, 0 FAILED ===` with the **same N** as `main`
 
-Capture `main`'s baseline for comparison before starting if it was not captured earlier:
+Capture the pre-change baseline for comparison. Do it from a **separate checkout of `main`** rather
+than stashing in place — a sniper build takes minutes and stashing leaves the tree in a state where
+an interrupted run loses work:
 
 ```bash
-git stash && make all && docker compose -f docker/docker-compose.yml restart cs2 && sleep 45 \
-  && docker logs --since 2m s2script-cs2 2>&1 | grep -E "gamedata (OK|FAIL)|GAMEDATA VALIDATION" \
-  > /tmp/gd-baseline.txt && git stash pop
+git worktree add /tmp/gd-baseline main
+cd /tmp/gd-baseline && docker run --rm -v "$PWD:/repo" -w /repo \
+  -v s2script-cargo:/usr/local/cargo/registry rust:bullseye bash /repo/scripts/build-sniper.sh
+bash scripts/gate.sh up
+docker logs s2script-cs2-gd-baseline 2>&1 \
+  | grep -E "gamedata (OK|FAIL)|GAMEDATA VALIDATION" > /tmp/gd-baseline.txt
+bash scripts/gate.sh destroy && cd - && git worktree remove /tmp/gd-baseline
 ```
 
 Any difference in the OK/FAIL set is a loader bug, not a data bug — Task 3 Step 4 already proved the data is equal.
