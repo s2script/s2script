@@ -16,13 +16,64 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 - <<'PY'
-import json, re, pathlib, sys
+import json, pathlib, sys
+
+def strip_jsonc_comments(src):
+    # Ports packages/sdk/src/gamedata/jsonc.ts stripJsonComments() verbatim (same semantics,
+    # same file format — two strippers that disagree on this format is its own bug). String-aware:
+    # a `//` or `/*` inside a JSON string literal is content, not a comment, and a backslash-escaped
+    # quote does not end the string. Comments are blanked (not deleted) so a JSONDecodeError's
+    # reported line/column still lands on the author's actual line.
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+
+        if c == '"':
+            out.append(c)
+            i += 1
+            while i < n:
+                s = src[i]
+                if s == '\\':
+                    out.append(src[i:i + 2])  # copy the escape pair whole
+                    i += 2
+                    continue
+                out.append(s)
+                i += 1
+                if s == '"':
+                    break
+            continue
+
+        if c == '/' and i + 1 < n and src[i + 1] == '/':
+            while i < n and src[i] != '\n':
+                out.append(' ')
+                i += 1
+            continue
+
+        if c == '/' and i + 1 < n and src[i + 1] == '*':
+            out.append('  ')
+            i += 2
+            while i < n and not (src[i] == '*' and i + 1 < n and src[i + 1] == '/'):
+                out.append('\n' if src[i] == '\n' else ' ')
+                i += 1
+            if i < n:
+                out.append('  ')  # the closing */
+                i += 2
+            continue
+
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+class GamedataLoadError(Exception):
+    pass
 
 def load(p):
     s = pathlib.Path(p).read_text()
-    s = re.sub(r'//[^\n]*', '', s)
-    s = re.sub(r'/\*.*?\*/', '', s, flags=re.S)
-    return json.loads(s)
+    try:
+        return json.loads(strip_jsonc_comments(s))
+    except json.JSONDecodeError as e:
+        raise GamedataLoadError(f'{p} is not valid JSON — {e}') from None
 
 # Every C++/Rust source byte, concatenated once.
 blob = []
@@ -45,8 +96,18 @@ for owner in ('core', 'cs2'):
     if not master_path.exists():
         bad.append(f'{owner}: master.gamedata.jsonc missing')
         continue
-    master = load(master_path)
-    listed = [e['file'] for e in master.get('files', [])]
+    try:
+        master = load(master_path)
+    except GamedataLoadError as e:
+        bad.append(f'{owner}: {e}')
+        continue
+
+    listed = []
+    for idx, entry in enumerate(master.get('files', [])):
+        if 'file' not in entry:
+            bad.append(f'{owner}: master.gamedata.jsonc files[{idx}] is missing a "file" key')
+            continue
+        listed.append(entry['file'])
 
     on_disk = sorted(p.name for p in owner_dir.glob('*.jsonc')
                      if p.name != 'master.gamedata.jsonc')
@@ -61,7 +122,11 @@ for owner in ('core', 'cs2'):
         p = owner_dir / f
         if not p.exists():
             continue
-        j = load(p)
+        try:
+            j = load(p)
+        except GamedataLoadError as e:
+            bad.append(f'{owner}: {e}')
+            continue
         if owner == 'core' and 'keys' in j:
             bad.append(f'core/{f}: `keys` (behavioural strings) is not permitted in core gamedata')
         for section in FACT_SECTIONS:
