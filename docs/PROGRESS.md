@@ -65,8 +65,19 @@ pre-switchover baseline that is empty.
 Master is an **array**, not an object, because plain `nlohmann::json` is `std::map` and sorts
 object keys — an object master's apply order would be decided by filename spelling.
 
-New gates: `scripts/test-gamedata.sh` (43 checks) and `scripts/check-gamedata-owners.sh`
-(ownership rule, both directions, plus master/disk agreement).
+Both owners are loaded at boot — `cs2`'s two entries are consumed by nothing yet, so loading it is
+the point: a mistyped master fails here rather than in A5b. The loader names every way a fact can
+go missing: a selected file that could not be applied at all is a distinct signal from a malformed
+entry (only the former skips interface acquisition), a non-platform-keyed `offsets`/`signatures`
+entry and an unmatchable master condition are named errors rather than silent skips, and a file
+that applies zero entries is reported — which is the shape an operator's `custom/` override takes
+when it is wrong.
+
+New gates: `scripts/test-gamedata.sh` (62 checks) and `scripts/check-gamedata-owners.sh`
+(ownership rule, both directions, plus master/disk agreement, and the owner set read from the
+shim's `kGamedataOwners[]` so a tree nothing loads fails). `ci-native.yml` triggers on
+`gamedata/**` — all three gamedata gates run from `ci-native.sh`, and a gamedata-only change is
+the most common PR on the update treadmill.
 
 Next: **A5b** retires the 8 CS2-API ops into `gamedata/cs2/` as `calls` descriptors — which needs a
 `vtable-member` validator (`Respawn`'s RTTI gate has no equivalent in the `calls` format) and moves
