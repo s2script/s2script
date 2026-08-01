@@ -2377,17 +2377,23 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
 }
 
 // ---------------------------------------------------------------------------
-// GamedataPath: resolve the gamedata file relative to the plugin .so via
-// dladdr so the path works regardless of the server's working directory.
-// Expected layout: addons/s2script/bin/linuxsteamrt64/s2script.so
-//   dirname ×1 → .../bin/linuxsteamrt64  → bin
-//   dirname ×2 → .../bin                 → s2script addon dir
-//   dirname ×3 → .../s2script            → addons/s2script
-//   + /gamedata/core.gamedata.jsonc
+// GamedataRoot / DetectModDir: resolve the gamedata tree and the mod directory relative to the
+// plugin .so via dladdr, so both work regardless of the server's working directory.
+//
+// Expected layout: <game>/csgo/addons/s2script/bin/linuxsteamrt64/s2script.so
+//   dirname x1 -> .../bin/linuxsteamrt64
+//   dirname x2 -> .../bin
+//   dirname x3 -> .../addons/s2script      <- addon root, + /gamedata
+//   dirname x4 -> .../addons
+//   dirname x5 -> .../csgo                 <- basename = the mod directory ("game" condition)
+//
+// The mod directory is the `game` axis of the gamedata master index (spec §6). Deriving it from
+// the .so path costs no new engine dependency and is correct before any interface is acquired,
+// which matters because the gamedata load happens first in Load().
 // ---------------------------------------------------------------------------
-static std::string GamedataPath() {
+static std::string AddonRoot() {
     Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&GamedataPath), &info) && info.dli_fname) {
+    if (dladdr(reinterpret_cast<void*>(&AddonRoot), &info) && info.dli_fname) {
         char buf[4096];
         // dirname mutates the buffer in-place; copy each time.
         snprintf(buf, sizeof buf, "%s", info.dli_fname);
@@ -2396,11 +2402,34 @@ static std::string GamedataPath() {
         dir = dirname(buf);                         // bin
         snprintf(buf, sizeof buf, "%s", dir.c_str());
         dir = dirname(buf);                         // s2script addon root
-        return dir + "/gamedata/core.gamedata.jsonc";
+        return dir;
     }
-    // Fallback: relative to the server's cwd (mirrors the Slice-0 behaviour).
-    return "addons/s2script/gamedata/core.gamedata.jsonc";
+    return std::string();
 }
+
+static std::string GamedataRoot() {
+    std::string root = AddonRoot();
+    if (!root.empty()) return root + "/gamedata";
+    // Fallback: relative to the server's cwd (mirrors the Slice-0 behaviour).
+    return "addons/s2script/gamedata";
+}
+
+static std::string DetectModDir() {
+    std::string root = AddonRoot();
+    if (root.empty()) return std::string();
+    char buf[4096];
+    snprintf(buf, sizeof buf, "%s", root.c_str());
+    std::string dir = dirname(buf);                 // addons
+    snprintf(buf, sizeof buf, "%s", dir.c_str());
+    dir = dirname(buf);                             // the mod directory
+    snprintf(buf, sizeof buf, "%s", dir.c_str());
+    return std::string(basename(buf));              // "csgo"
+}
+
+// Compatibility shim: several call sites still ask for the flat gamedata file path directly.
+// Task 6 rewrites them to consume GamedataRoot() (and the tiering loader) instead; until then
+// this preserves the exact Slice-0 behaviour on top of the new root helper.
+static std::string GamedataPath() { return GamedataRoot() + "/core.gamedata.jsonc"; }
 
 // ---------------------------------------------------------------------------
 // Cs2JsPath: resolve pawn.js relative to the plugin .so via dladdr (mirrors
@@ -3609,6 +3638,11 @@ static void Hook_FireOutputInternal(CEntityIOOutput* pThis, CEntityInstance* act
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
     PLUGIN_SAVEVARS();  // sets g_SHPtr = ismm->GetSHPtr() — required by SH_ADD_HOOK
     s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
+
+    const std::string gdRoot = GamedataRoot();
+    const std::string modDir = DetectModDir();
+    META_CONPRINTF("[s2script] gamedata root=%s engine=source2 game=%s\n",
+                   gdRoot.c_str(), modDir.empty() ? "<undetected>" : modDir.c_str());
 
     // --- Interface acquisition (data-driven, degrade-never-crash) ---
     std::string gdError;
