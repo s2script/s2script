@@ -257,6 +257,61 @@ static void test_bad_entry_does_not_abort_later_files() {
     CHECK(!err.empty(), "the earlier bad entry is still reported");
 }
 
+static void test_custom_overrides_a_shipped_entry() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "core" / "game.cs2.jsonc", R"({
+      "signatures": {
+        "Broken": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA BB", "resolve": "direct" } }
+      }
+    })");
+    put(root.path / "core" / "custom" / "fix.jsonc", R"({
+      "signatures": {
+        "Broken": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "CC DD", "resolve": "direct" } }
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(err.empty(), "a custom/ override parses without error");
+    CHECK(gc.signatures["Broken"].pattern == "CC DD", "custom/ is applied after shipped files");
+    CHECK(gc.overridden.count("Broken") == 1, "an overridden entry is recorded as such");
+}
+
+static void test_custom_files_apply_in_sorted_order() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "core" / "game.cs2.jsonc",
+        R"({ "offsets": { "Val": { "linuxsteamrt64": 0 } } })");
+    put(root.path / "core" / "custom" / "10-first.jsonc",
+        R"({ "offsets": { "Val": { "linuxsteamrt64": 1 } } })");
+    put(root.path / "core" / "custom" / "20-second.jsonc",
+        R"({ "offsets": { "Val": { "linuxsteamrt64": 2 } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.offsets["Val"] == 2, "later custom/ filename wins");
+    CHECK(gc.filesLoaded.size() == 3, "every applied file is recorded");
+}
+
+static void test_absent_custom_dir_is_not_an_error() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "core" / "game.cs2.jsonc",
+        R"({ "offsets": { "Val": { "linuxsteamrt64": 5 } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(err.empty(), "no custom/ directory is the normal case, not an error");
+    CHECK(gc.overridden.empty(), "nothing is marked overridden without a custom/ file");
+}
+
 int main() {
     test_master_selects_by_condition();
     test_array_order_is_apply_order();
@@ -270,6 +325,9 @@ int main() {
     test_bad_offset_type_degrades_only_that_entry();
     test_bad_signature_type_degrades_only_that_entry();
     test_bad_entry_does_not_abort_later_files();
+    test_custom_overrides_a_shipped_entry();
+    test_custom_files_apply_in_sorted_order();
+    test_absent_custom_dir_is_not_an_error();
     if (g_fail) { std::cerr << g_fail << " check(s) FAILED\n"; return 1; }
     std::cout << "gamedata_test: all checks passed\n";
     return 0;
