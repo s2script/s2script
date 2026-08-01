@@ -1,0 +1,8 @@
+// Gamedata master index for the "cs2" owner — the @s2script/cs2 game package's own facts.
+// Nothing in shim/src or core/src may name a key in this namespace; that is enforced by
+// scripts/check-gamedata-owners.sh.
+{
+  "files": [
+    { "file": "game.cs2.jsonc", "game": "csgo" }
+  ]
+}

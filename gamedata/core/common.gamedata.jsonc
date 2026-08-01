@@ -1,0 +1,10 @@
+// Facts that apply to every Source 2 game on every platform, regardless of which game binary is
+// loaded. Empty today: every entry we have is either an engine-module interface string
+// (engine.source2.jsonc) or resolved against CS2's libserver.so (game.cs2.jsonc).
+//
+// Before adding anything here, ask: would this identical value be correct on a Source 2 game that
+// is not CS2? If you cannot answer yes with evidence, it belongs in game.cs2.jsonc. Promotion
+// later is a free, behaviour-neutral data move; asserting engine-wideness we have not verified is
+// not.
+{
+}

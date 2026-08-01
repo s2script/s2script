@@ -1,0 +1,576 @@
+// Owner: core (shim C++ / core Rust name every key here).
+// Target: CS2 — "game": "csgo". Every signature below scans CS2's libserver.so.
+//
+// Owner and target are ORTHOGONAL: these are core's OWN facts, resolved against the CS2 game
+// binary. Porting to another Source 2 game means a sibling game.<mod>.jsonc with this same key
+// set and different bytes — it does not mean moving anything out of the core owner.
+{
+  // Source 2 engine interface version strings. Confirmed against the live CS2
+  // binaries at build time — never hardcoded in C++/Rust (ARCHITECTURE §2.7).
+  "interfaces": {
+    "Source2Server": "Source2Server001",
+    // IGameResourceService acquired via the engine factory; backs the entity-system pointer
+    // (recon Q3). Interface string [HC]; confirmed community name for CS2 server-side service.
+    "GameResourceService": "GameResourceServiceServerV001",
+    // IGameEventSystem — used by client_print to PostEventAbstract chat messages (Slice 6.1).
+    // Interface string from igameeventsystem.h GAMEEVENTSYSTEM_INTERFACE_VERSION macro.
+    "GameEventSystem": "GameEventSystemServerV001",
+    // ISource2GameClients — backs the ClientCommand hook for player console commands (Slice 6.11c).
+    // Interface string from eiface.h INTERFACEVERSION_SERVERGAMECLIENTS.
+    "Source2GameClients": "Source2GameClients001",
+    // ISource2GameEntities — backs the CheckTransmit POST hook (checktransmit slice: per-client
+    // entity visibility). Interface string from eiface.h INTERFACEVERSION_SERVERGAMEENTS.
+    "Source2GameEntities": "Source2GameEntities001"
+  },
+  // Byte offsets into engine interface objects — keyed by platform string.
+  // Layout-is-data: these are DATA (regenerable from a live CS2 process), never baked
+  // into C++ logic.  A wrong offset degrades (null entity system → helpers return null),
+  // never crashes.
+  "offsets": {
+    // Offset within IGameResourceService* to the CGameEntitySystem* field (recon Q3).
+    // 0x50 (Linux) = 80; CONFIRMED live against CS2 build 2000854 in the T7 gate (yields a valid
+    // entity-system pointer). This is the one entity value that isn't resolved dynamically — a wrong
+    // offset reads garbage, so it must be re-confirmed on the update treadmill if entity access breaks.
+    "GameEntitySystem": { "linuxsteamrt64": 80 },
+    // CCheckTransmitInfo: byte offset of the which-client int32. hl2sdk's CCheckTransmitInfo is
+    // explicitly incomplete ("TODO" at iservernetworkable.h:44), so this is a borrowed constant —
+    // CSSharp calls it m_nPlayerSlot, Swiftly m_nClientEntityIndex (they DISAGREE on semantics:
+    // slot vs entindex=slot+1). Both the offset AND the semantics are validated at FIRST
+    // CheckTransmit fire (fail-closed: no transmit bits are touched until validation passes; a
+    // persistent mismatch prints a named gamedata FAIL and disables the descriptor). Re-derive on
+    // the update treadmill if transmit filtering reports FAILED; see docs/re-strategy.md.
+    "CheckTransmitInfo_clientEntityIndex": { "linuxsteamrt64": 576 },
+    // NOTE: the six 5D.2 engine-identity offsets (NetworkServerService.gameServer /
+    // NetworkGameServer.clientCount+clientElems / ServerSideClient.name+signon+userId) were RETIRED in
+    // the clientlist-fakeconvar-onmapstart slice — the client ops now use typed SDK virtuals
+    // (GetIGameServer / GetPlayerUserId / GetClientConVarValue) + a lifecycle-tracked signon array, so
+    // they self-heal on the routine hl2sdk bump. Offsets, unlike signatures/schema, were never
+    // re-scanned or validated, which is exactly how they went stale on 2000870.
+    // Ray-trace slice: the vtable INDEX (not a byte offset) of CNavPhysicsInterface::TraceShape,
+    // once the vtable's base address is RTTI-resolved (s2vtable::GetVTableByName — no symbol/dlsym
+    // needed for the base address itself). Borrowed from the reference project (FUNPLAY-pro-CS2/
+    // Ray-Trace configs/addons/RayTrace/gamedata.json) — per the RE doctrine a borrowed index is a
+    // HINT, not a number: it is VALIDATED at load (the resolved fn ptr must land inside
+    // libserver.so's own .text range) before ever being called; a stale/wrong index degrades the
+    // trace op to unavailable, never crashes.
+    "CNavPhysicsInterface_TraceShape": { "linuxsteamrt64": 5 },
+    // Entity-creation lifecycle slice: CBaseEntity::Teleport's vtable INDEX (not a byte offset),
+    // on the entity's own (linear, single-inheritance) vtable — CSSharp's CBaseEntity_Teleport
+    // offset. Per the RE doctrine a borrowed index is a HINT: it is VALIDATED at load (the
+    // resolved fn ptr must land inside libserver.so's own .text range, mirroring
+    // CNavPhysicsInterface_TraceShape above) before ever being called; a stale/wrong index
+    // degrades the teleport op to unavailable, never crashes.
+    "CBaseEntity_Teleport": { "linuxsteamrt64": 162 },
+    // Sound slice: CGameRulesGameSystem::OnPrecacheResource's vtable INDEX (not a byte offset) —
+    // the precache manual-hook position. Borrowed from the ModSharp gamedata (linux AND windows
+    // both 7 — a strong cross-platform signal) — per the RE doctrine a borrowed index is a HINT.
+    // CONFIRMED offline (Task-5 RE) against the pinned build-2000873 libserver.so: the
+    // CGameRulesGameSystem::OnPrecacheResource vtable INDEX (not a byte offset) — the precache hook
+    // position. The shim resolves the CGameRulesGameSystem CLASS vtable by RTTI at runtime
+    // (s2vtable::GetVTableByName "CGameRulesGameSystem" -> @0x24c9d68, the primary vtable [offset-to-top
+    // 0] behind the RTTI name "20CGameRulesGameSystem" @0x83cef0) and SWAPS slot[7] (@0x18d48e0) to our
+    // handler (InstallPrecacheHook / WriteVtableSlot), saving the original to chain. slot[7] takes the
+    // manifest as its 2nd arg (rsi) and registers a batch of hardcoded resource strings (ParticleEffect
+    // / GlassImpact / Impact / gunshotsplash / TracerSound / BloodImpact / …) — i.e. it IS the
+    // precache-resource handler (not GameInit/GameShutdown). Per the RE doctrine a borrowed index is a
+    // HINT: InstallPrecacheHook validates the resolved vtbl[idx] lands inside libserver.so's own .text
+    // range BEFORE the swap; a stale/wrong index leaves the slot untouched (onPrecache never fires),
+    // never a crash. (Class-vtable swap, NOT the plan's factory-walk-to-instance + manual SourceHook:
+    // the reallocating factory can't yield the instance [see the removed GameSystemFactoryList note in
+    // `signatures`], AND the slot's own prologue @0x18d48e0 starts with a rip-relative
+    // `mov [rip+disp],rdi` that the inline-detour engine refuses — so a shared-class-vtable slot swap
+    // is the only grounded mechanism, and it also survives the factory's per-map instance realloc.)
+    "CGameRulesGameSystem_OnPrecacheResource": { "linuxsteamrt64": 7 }
+  },
+  // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
+  // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
+  // docs/superpowers/specs/2026-07-03-slice-5d1b-sigscan-spike-findings.md). A missing/stale
+  // signature degrades (s_pGameEventManager stays null -> event ops no-op), never crashes.
+  "signatures": {
+    // IGameEventManager2 global in libserver.so. GAMEEVENTSMANAGER002 is NOT a registered
+    // interface in CS2 (in zero modules), so the manager is reached via this ctor-body signature:
+    // find the ctor, its sole E8 caller, the preceding lea r14 -> the global instance (offset-to-top 0).
+    "GameEventManager": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 8D 05 ? ? ? ? BA 40 00 00 00 31 F6 48 89 E5 41 56 41 55",
+        "resolve": "ctor-body-xref"
+      }
+    },
+    // CBaseEntity::DispatchTraceAttack (Slice 6.6): the CS2 damage entry point (its body holds the
+    // "CBaseEntity::TakeDamageOld: damagetype %d..." debug strings). A DIRECT prologue pattern — the
+    // match offset IS the function start. Validated UNIQUE in the pinned libserver.so (1 match @0x15ce2e0).
+    // Per-update: the prologue/offset move each patch (the treadmill). Sourced from the ModSharp gamedata.
+    "DispatchTraceAttack": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 49 89 FD 41 54 49 89 F4 53 48 89 D3 48 83 EC ? 48 85 D2",
+        "resolve": "direct"
+      }
+    },
+    // Host_Say (Slice 6.11b): the CS2 chat entry point — formats "[%s][%s (%u)]: %s\n" and broadcasts.
+    // CS2 fires NO usable player_chat game event (the 6.11 assumption was wrong; chat reaches the server
+    // only through this function), so player chat triggers (!cmd / /cmd) MUST detour it — the approach
+    // CSSharp + ModSharp both take. A DIRECT prologue pattern (match offset == function start). Sourced
+    // (identical) from the ModSharp + CSSharp gamedata; re-resolved + validated UNIQUE against our
+    // libserver.so by the gate. Per-update the prologue/offset move each patch (the treadmill).
+    "HostSay": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 49 89 F7 41 56 41 55 41 89 D5 41 54 49 89 FC 53 4C 89 C3",
+        "resolve": "direct"
+      }
+    },
+    // UTIL_ClientPrintAll (Slice 6.1d): the GAME's broadcast chat-print — SourceMod's PrintToChatAll maps
+    // to this. void UTIL_ClientPrintAll(HudDestination dest, const char* msg, const char* p1..p4). Takes NO
+    // controller (builds its own all-clients recipient filter), so it renders TRUE custom color (a leading
+    // \x04 shows green, NOT team-colored) with none of the per-controller crash surface. Signature confirmed
+    // via disassembly (edi=dest, rsi=msg, rdx/rcx/r8/r9=params). Sourced from the CSSharp gamedata;
+    // re-resolved + validated UNIQUE against our libserver.so.
+    "ClientPrintAll": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 4D 89 CF 41 56 4D 89 C6 41 55 49 89 CD 41 54 49 89 D4 53 48 8D",
+        "resolve": "direct"
+      }
+    },
+    // CBasePlayerPawn::CommitSuicide(bool bExplode, bool bForce) — the lethal-kill entry the failed
+    // Slice-6.8 sm_slay branch (a085d5a) reached by the ModSharp vtable INDEX 400. That index is DEAD
+    // WRONG on our pinned build (index 400 is a m_flDeathTime float getter) — CommitSuicide is vtable
+    // index 819 here — which is why the borrowed-index call broke live. Per the RE doctrine we ship a
+    // by-ADDRESS prologue signature instead, self-resolved on OUR libserver.so, NOT a borrowed index.
+    // Identity (self-resolved, triple-confirmed at vaddr 0x1694d70 / file 0x1693d70):
+    //   (1) BODY: the canonical suicide rate-limiter — reads m_fNextSuicideTime (GameTime_t @0xE50,
+    //       from schema-catalog), `comiss` vs curtime, `test bForce; je ret`, then writes it back;
+    //       preceded by a virtual IsAlive() call, followed by a stack CTakeDamageInfo build + TakeDamage
+    //       + dtor, with bExplode driving the DMG_ damagetype bits (`movzbl r13b; shl $6`, `sbb/and $0x20`).
+    //   (2) VTABLE: the sole implementation inherited (never overridden) across the CBasePlayerPawn /
+    //       CCSPlayerPawnBase / CCSPlayerPawn pawn-family vtables (RTTI-walked).
+    //   (3) CALLER: a devirtualized `xor edx,edx; xor esi,esi; mov rbx,rdi; call 0x1694d70` proves the
+    //       ABI is (this /*rdi*/, bool bExplode /*esi*/, bool bForce /*edx*/) — two bools after `this`.
+    // A DIRECT prologue pattern (match offset == function start). Masks the rip-relative `lea` disp and
+    // the volatile stack-frame immediate. Validated UNIQUE (exactly 1 match) in the pinned libserver.so
+    // PF_X range by two independent scans. Per-update the prologue/offset move each patch (the treadmill).
+    "CommitSuicide": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 89 F5 41 54 41 89 D4 53 48 8D 15 ? ? ? ? 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
+    // Usercmd primitive: CCSPlayer_MovementServices::ProcessUsercmds(this, CUserCmd* cmds, int numcmds,
+    // bool paused, float margin) — the per-tick input-processing entry (SM OnPlayerRunCmd parity). Hint
+    // pattern sourced from Swiftly's gamedata (CCSPlayer_MovementServices_ProcessUserCmd); an offline
+    // disassembly spike (2026-07-14, Task 1) statically DISAMBIGUATED the identity/ABI before any live
+    // array-walk (Fable review MF-1: Swiftly's hint names the single-cmd variant, but the resolved
+    // function on OUR libserver.so is confirmed a BATCH fn — it saves numcmds, loops an array, and its
+    // epilogue leaves a 32-bit int in eax) — so the batch-ABI premise HOLDS on this build. Confirmed ABI:
+    // (this /*rdi*/, CUserCmd* cmds /*rsi*/, int numcmds /*edx*/, bool paused /*ecx*/, float margin
+    // /*xmm0*/) -> int. The CUserCmd array stride (sizeof(CUserCmd)=0x90, the CSGOUserCmdPB protobuf at
+    // +0x10) was derived offline from the loop's `add $0x90,%r12` and confirmed live (numcmds 1-3,
+    // cmd[1] parses as a valid CSGOUserCmdPB). A DIRECT prologue pattern (match offset == function
+    // start). Validated UNIQUE (2026-07-14) in the pinned libserver.so @ vaddr 0x1622030. Per-update the
+    // prologue/offset move each patch (the treadmill); see docs/superpowers/plans/2026-07-14-usercmd-primitive.md.
+    "ProcessUsercmds": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 83 EC ? 89 4D",
+        "resolve": "direct"
+      }
+    },
+    // CCSPlayerController::ChangeTeam(int team) — the standard team-change (incl. Spectator=1); moves the
+    // player immediately (the poor-sharptimer/CSSharp `!spec` path). Backs Player.changeTeam / .spectate.
+    // SELF-RESOLVED against OUR libserver.so, NOT a borrowed constant: the live gate proved CSSharp's
+    // SwitchTeam SIGNATURE is the WRONG function (it queues a deferred m_bSwitchTeamsOnNextRoundReset,
+    // no immediate move) AND CSSharp's ChangeTeam vtable OFFSET (linux 101) is version-WRONG here (slot 101
+    // is a `ret` stub; ChangeTeam is slot 102 on this build — the CommitSuicide-index drift again). The
+    // real function was located by xref'ing the unique log format string `"...ChangeTeam() CTMDBG , team
+    // %d, req team %d willSwitch %d..."` (@0x986f28) to its sole referencing function (@vaddr 0x1524770 =
+    // CCSPlayerController vtable slot 102, RTTI-walk-confirmed). A DIRECT prologue pattern that MASKS the
+    // volatile frame size + the m_iTeamNum field offset (`movzx r14d,[rdi+?]`) and keeps the stable
+    // `cmp esi, r14d` (req-team vs current-team) — which also confirms the ABI `(this /*rdi*/, int team
+    // /*esi*/)`. Validated UNIQUE (exactly 1 match) in the pinned libserver.so PF_X range; the boot gate
+    // re-validates it and SCREAMS if the prologue moves on the update treadmill.
+    "ChangeTeam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 83 EC ? 44 0F B6 B7 ? ? ? ? 44 39 F6",
+        "resolve": "direct"
+      }
+    },
+    // CCSPlayerController::SwitchTeam(unsigned int team) — the NON-LETHAL team move (player stays alive,
+    // keeps weapons; the pawn MAY be respawned by the engine). Backs Player.switchTeam (T/CT native;
+    // team 0/1 dispatches to ChangeTeam shim-side, CSSharp/SwiftlyS2 parity). HISTORY: the FIRST
+    // "SwitchTeam" sig we tried (borrowed from CSSharp during the changeteam slice) resolved to the
+    // WRONG function on our build — the deferred m_bSwitchTeamsOnNextRoundReset (halftime-swap) setter,
+    // live-gate-proven no-move (see the ChangeTeam comment above). THIS pattern is the real per-player
+    // function: corroborated by SwiftlyS2 + current CSSharp shipping the identical bytes, RE-VALIDATED
+    // against OUR binary — resolves UNIQUE @va 0x1525f40 on 2000875, adjacent to ChangeTeam (@0x1524770;
+    // vtable siblings). Prologue saves `this` into r12 (49 89 FC) and moves team esi->edi (89 F7),
+    // confirming the (this /*rdi*/, unsigned int team /*esi*/) ABI. DIRECT: the unique match IS the
+    // function entry. The boot gate re-validates uniqueness every load and SCREAMS if the prologue
+    // moves on the update treadmill.
+    "SwitchTeam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 FC 89 F7",
+        "resolve": "direct"
+      }
+    },
+    // CCSGameRules::TerminateRound(float delay /*xmm0*/, uint32 reason /*esi*/, void* unk3=0 /*rdx*/,
+    // uint32 unk4=0 /*ecx*/) — force the current round to end with a RoundEndReason. Backs
+    // GameRules.terminateRound. SELF-DERIVED against OUR libserver.so (build 2000875) — do NOT ship the
+    // borrowed CSSharp/Swiftly sig ("55 48 89 E5 41 57 41 56 49 89 FE 41 55 41 54 53 48 81 EC ? ? ? ?
+    // 48 8D 05 ? ? ? ? F3 0F 11 85"): on this build it matches UNIQUELY yet at the WRONG function
+    // (va 0xc75ec0 — treats esi as a POINTER; a uniqueness gate alone would green-light a corrupting
+    // call). The real function (va 0x1384e80 on 2000875) is anchored by: (a) a unique
+    // `lea rsi,[rip+disp]` to the literal "TerminateRound" telemetry-scope string at fn+0xb (exactly 1
+    // xref binary-wide), (b) the sole xref to "TerminateRound: unknown round end ID %i" inside its own
+    // cold branch after `cmp $0x16,%r15d` (the reason-enum bound = 22 = SurvivalDraw), (c) the
+    // CS:GO-inherited reason -> "#SFUI_Notice_*" switch in the body (16 direct callers in the gamerules
+    // TU). This pattern masks the volatile string disp + frame size and keeps the stable `41 89 F7`
+    // reason capture. The boot gate re-validates UNIQUE, and a SECOND semantic descriptor
+    // (TerminateRound.scope-string) verifies the fn+0xb lea really targets "TerminateRound" — the exact
+    // check that separates the real function from the borrowed-sig false positive. Treadmill
+    // re-resolution recipe: xref the two unique strings above. NOT virtual on this build (zero
+    // data-segment refs) — direct call only. TTT/CSSharp's reason-first Linux arg order is a managed-
+    // marshaller artifact; the direct C call is DELAY-FIRST. args 3/4 semantics unknown in every
+    // framework (all pass 0,0) — hardcoded 0, never exposed; revisit if a future build uses them.
+    "TerminateRound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 89 F7 41 56 48 8D 35 ? ? ? ? 41 55 41 54 53 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
+    // CCSPlayerController::Respawn(this /*rdi*/) — re-activate a (dead) player's pawn; backs
+    // Player.respawn. SELF-RESOLVED against OUR libserver.so (build 2000875), NOT a borrowed constant:
+    // CSSharp ships this as a BARE vtable offset ({windows:272, linux:274}, no signature) — the exact
+    // borrowed-index class that bit sm_slay (400 = a getter) and ChangeTeam (101 = a ret stub; real 102).
+    // The index was used ONLY OFFLINE as a finding aid: RTTI-walk the primary CCSPlayerController vtable
+    // (typeinfo name "19CCSPlayerController" -> typeinfo -> offset-to-top-0 vtable, slot pointers from
+    // .rela.dyn RELATIVE addends), read slot 274 (= va 0x14f0ce0 on 2000875 — the LAST fn slot of the
+    // primary vtable), disassemble, mask the volatile bytes. The body is a clean nullary controller
+    // method: fetch an object off the controller, early-branch on a bool virtual (+0xC98, alive-check
+    // shape), re-fetch, dispatch — no unique log string exists, so the semantic boot gate is RTTI
+    // VTABLE MEMBERSHIP (Respawn.vtable-member): the sig-resolved address must appear among the
+    // RTTI-derived primary-vtable fn slots, else the descriptor is disabled (the unique-but-WRONG trap
+    // the round-control slice proved real). Masks: call rel32, jz disp, virtual-call vtable disp.
+    // Validated UNIQUE (exactly 1 match) in the pinned libserver.so PF_X range; the boot gate
+    // re-validates both and SCREAMS if either moves on the update treadmill. Treadmill recipe: re-run
+    // the offline RTTI walk (docs/superpowers/specs/2026-07-16-player-respawn-design.md §2.1) and
+    // re-derive the mask from the new slot's prologue; CSSharp's slot number is a hint, never a number.
+    // NOTE: CSSharp additionally calls CBasePlayerController::SetPawn first — its sig has 0 hits on
+    // 2000875 (stale); Respawn-alone is Plan A, measured at the live gate (spec §2.3).
+    "Respawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 53 48 89 FB E8 ? ? ? ? 48 85 C0 74 ? 48 89 C7 48 8B 00 FF 90 ? ? ? ? 84 C0",
+        "resolve": "direct"
+      }
+    },
+    // CBasePlayerController::SetPawn(pawn, b1, b2) — re-activate a dead player's pawn BEFORE Respawn (a dead
+    // controller's active m_hPawn points at the observer pawn; SetPawn re-points it + tears down observer mode
+    // + sets dirty flags — the setup Respawn-alone can't do, live-gate proven on 2000875: Respawn alone / a raw
+    // m_hPawn write both clear the death screen but never spawn). A 4-ARG function (void*,void*,bool,bool)
+    // called SetPawn(controller, playerPawn, true, false) — verbatim what SwiftlyS2 (player.cpp:345) and CSSharp
+    // both declare; SwiftlyS2's shipped gamedata sig is BYTE-IDENTICAL to ours below. NON-VIRTUAL on 2000875
+    // (direct call, resolved by signature — NOT a vtable member; validated by unique-match + .text guard, no
+    // vtable-member gate). Self-derived masked prologue, validated UNIQUE at va 0x15ef580 (SysV: rdi=this
+    // rsi=pawn edx=b1 ecx=b2; the mask covers the lea rdi+0x7c0 m_hPawn disp). CSSharp's borrowed sig
+    // (…41 57 41 89 CF) has 0 hits — 2000875 inserted a push r14, moved ecx-save to r14d.
+    // Treadmill: re-derive the prologue if it moves (register-alloc-sensitive; the .text + unique gates fail LOUD).
+    "SetPawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 8D 87 ? ? ? ? 48 89 E5 41 57 41 56 41 89 CE 41 55 45 89 CD",
+        "resolve": "direct"
+      }
+    },
+    // GetLegacyGameEventListener(int slot) -> IGameEventListener2* : the CS2 engine helper that returns a
+    // client's per-client legacy game-event listener (a frameless leaf that loads a global array base,
+    // bounds-checks the slot, and indexes it). event_fire_to_client (SourceMod FireToClient parity) calls
+    // it, then IGameEventListener2::FireGameEvent serializes the event to that ONE client's netchannel (NOT
+    // the broadcast IGameEventManager2::FireEvent). CS2 exposes no interface for this; CSSharp reaches the
+    // listener through THIS function, NOT a CServerSideClient offset cast (the earlier offset guess was
+    // wrong). DIRECT signature — the match IS the function entry (cast + call). Pattern sourced from the
+    // CSSharp gamedata (LegacyGameEventListener), re-resolved + validated UNIQUE against our libserver.so.
+    "LegacyGameEventListener": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8B 05 ? ? ? ? 48 85 C0 74 ? 83 FF ? 77 ? 48 63 FF 48 C1 E7 ? 48 8D 44 38",
+        "resolve": "direct"
+      }
+    },
+    // Entity-creation lifecycle slice: UTIL_CreateEntityByName(const char* className, int
+    // forceEdictIndex) -> CBaseEntity*. A DIRECT prologue pattern (match offset == function
+    // start; the rip-relative `lea` disp is masked). Validated UNIQUE @ 2026-07-09 in the pinned
+    // libserver.so (@0x16a9140). Per-update the prologue/offset move each patch (the treadmill).
+    // Game-system registration (model precache). The head of the engine's game-system factory
+    // list, CBaseGameSystemFactory::sm_pFirst. Inserting a factory there is the ONLY way to receive
+    // BuildGameSessionManifest, which carries the session resource manifest -- the manifest that
+    // decides which MODELS are resident. The pre-existing CGameRulesGameSystem::OnPrecacheResource
+    // vtable hook receives a DIFFERENT manifest: adding a model there is accepted and silently never
+    // made resident, which is why every custom model spawned as the pink ERROR box.
+    //
+    // The pattern matches `mov r14, [rip+disp32]` (4C 8B 35 ...) inside IGameSystem::InitAllSystems,
+    // so it is a "lea-disp" resolve: skip the 3-byte opcode, read the 4-byte displacement, add it to
+    // the address of the next instruction. Same signature CounterStrikeSharp uses for this.
+    "IGameSystem_InitAllSystems_pFirst": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "4C 8B 35 ? ? ? ? 4D 85 F6 75",
+        "resolve": "lea-disp"
+      }
+    },
+    "UtilCreateEntityByName": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8D 05 ? ? ? ? 55 48 89 FA",
+        "resolve": "direct"
+      }
+    },
+    // Entity-creation lifecycle slice: CBaseEntity::DispatchSpawn(CEntityKeyValues* pKeyValues) —
+    // registers/activates a newly created entity (must be called before the entity is usable in
+    // the world). A DIRECT prologue pattern. Validated UNIQUE @ 2026-07-09 in the pinned
+    // libserver.so (@0x1785b00).
+    "DispatchSpawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 85 FF 74 ? 55 48 89 E5 41 55 41 54 49 89 FC",
+        "resolve": "direct"
+      }
+    },
+    // Entity-creation lifecycle slice: UTIL_Remove(CBaseEntity* entity) — schedules an entity for
+    // removal. A DIRECT prologue pattern. Validated UNIQUE @ 2026-07-09 in the pinned libserver.so
+    // (@0x16a9460).
+    "UtilRemove": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 89 FE 48 85 FF 74 ? 48 8D 05 ? ? ? ? 48",
+        "resolve": "direct"
+      }
+    },
+    // Item slice (Task 2): CCSPlayer_ItemServices::GiveNamedItem(void* iSubType, const char* name,
+    // int, void*, int, void*) -> CBaseEntity*. A DIRECT prologue pattern. Validated UNIQUE @
+    // 2026-07-09 in the pinned libserver.so (@0x152c560); ABI independently re-confirmed by disasm
+    // (spike, Task 2): saves rdi/edx/rcx/r8d/r9 to the frame, then a null/empty-string early-out
+    // on rsi (the name), then a strcmp-style scan against a static known-item-name table —
+    // consistent with (itemServices, name, iSubType, pScriptItem, a5, a6).
+    "GiveNamedItem": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 81 EC ? ? ? ? 48 89 BD ? ? ? ? 89 95 ? ? ? ? 48 89 8D ? ? ? ? 44 89 85",
+        "resolve": "direct"
+      }
+    },
+    // Item slice (Task 2): CBasePlayerPawn::RemovePlayerItem(CBasePlayerWeapon* weapon) -> bool —
+    // a proper unequip (used by pawn.removeWeapon). A DIRECT prologue pattern. Validated UNIQUE @
+    // 2026-07-09 in the pinned libserver.so (@0x1580110); ABI re-confirmed by disasm (spike, Task
+    // 2): `this`(rdi)->r12, weapon(rsi)->rbx, then a call whose result is compared against rbx
+    // (the weapon) — consistent with (pawn, weapon) -> bool.
+    "RemovePlayerItem": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 FC 53 48 89 F3 E8 ? ? ? ? 48 39 C3",
+        "resolve": "direct"
+      }
+    },
+    // Entity-I/O slice: CEntitySystem::AddEntityIOEvent(CEntitySystem*, CEntityInstance* target,
+    // const char* input, CEntityInstance* activator, CEntityInstance* caller, variant_t* value,
+    // float delay, int outputID, void*, void*) — the game's OWN input-firing path (used by
+    // EntityRef.acceptInput, map I/O, and FireOutputInternal itself). A DIRECT prologue pattern.
+    // Validated UNIQUE @ 2026-07-09 in the pinned libserver.so (@0x2128170); ABI cross-confirmed
+    // against CounterStrikeSharp's entity_manager.h (CEntitySystem_AddEntityIOEvent, identical arg
+    // order) — chosen over CEntityInstance::AcceptInput, whose sig is stale on our build.
+    "AddEntityIOEvent": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 CD 41 54 49 89 FC 53 BB",
+        "resolve": "direct"
+      }
+    },
+    // Entity-I/O slice: CEntityIOOutput::FireOutputInternal(CEntityIOOutput* this,
+    // CEntityInstance* activator, CEntityInstance* caller, const CVariant* value, float delay,
+    // void* unk1, char* unk2) — every entity output (func_button OnPressed, logic_relay
+    // OnTrigger, …) routes through this call; detoured (not a vtable hook) to hook Entity.onOutput.
+    // A DIRECT prologue pattern. Validated UNIQUE @ 2026-07-09 in the pinned libserver.so
+    // (@0x2132a60); disasm-confirmed (spike, Task 2) against CounterStrikeSharp's
+    // entity_manager.h CEntityIOOutput layout (vtable@+0, m_pConnections@+0x8, m_pDesc@+0x10 —
+    // matches `mov r13,[this+0x8]` [connections-list walk] and `mov r8,[this+0x10]` [m_pDesc,
+    // passed to a debug-listener vcall] seen at the resolved address).
+    "FireOutputInternal": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 49 89 FF 41 56 41 55 41 54 49 89 D4 53 48 89 F3 48 83 EC ? 48 8D 05",
+        "resolve": "direct"
+      }
+    },
+    // Zones real-trigger slice: CBaseEntity::SetModel(const char* modelName) — gives an entity a model
+    // (resolves the name via modelinfo [vtbl+0x68], then tail-calls the real SetModel with the model).
+    // A runtime trigger_multiple needs a model to build the physics volume that fires touch; TTT needs
+    // it for corpse props.
+    //
+    // REGENERATED 2026-07-25 — the previous pattern baked in the `lea rax,[rip+0x0128ED3D]`
+    // displacement to break a tie between two candidates. A rip-relative displacement shifts on ANY
+    // recompile, so that signature could not survive a single CS2 update; it reported
+    // "SetModel — signature NOT FOUND (moved — regenerate)" and EntityRef.setModel silently became a
+    // no-op. Every build-relative byte is now a wildcard: the lea disp32 AND the tail `jmp` rel32.
+    //
+    // The tie is real: libserver contains TWO byte-identical wrappers (0x15d8a00 and 0x15d8a30 on this
+    // build) that ICF did not fold. Verified interchangeable, not merely similar — both load the SAME
+    // modelinfo global (0x2867790) and tail-call the SAME target (0x15d8630), so either would work.
+    // The tie is broken structurally instead of numerically: wrapper 1 is followed by int3 padding and
+    // its twin's prologue, wrapper 2 is followed by unrelated code, so anchoring on
+    // `CC CC CC CC 55 48 89 E5 53 48 89 FB` selects the first with no build-specific bytes.
+    // If a future build folds the twins this fails LOUDLY (NOT FOUND) rather than silently
+    // mis-resolving — the correct failure mode. Validated UNIQUE against the pinned libserver.so.
+    "SetModel": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 08 48 8D 05 ? ? ? ? 48 8B 38 48 8B 07 FF 50 68 48 89 DF 48 8B 5D F8 C9 48 89 C6 E9 ? ? ? ? CC CC CC CC 55 48 89 E5 53 48 89 FB",
+        "resolve": "direct"
+      }
+    },
+    // Zones real-trigger slice: CCollisionProperty::MarkPartitionHandleDirty(this) — enqueues a CBaseEntity
+    // into the dirty spatial-partition list so the engine creates the collision partition handle for a
+    // RUNTIME-created trigger_multiple (a raw schema-write bbox never registers otherwise — the parked
+    // sub-slice-1 finding). rdi = CCollisionProperty* (= entity + live schemaOffset(CBaseModelEntity,m_Collision),
+    // observed 0x8c8). Identity (self-resolved @0x17e91e0, 2026-07-11): mov rdi,[rdi+8] (m_pOuter); mov
+    // eax,[rdi+0x6f4] (m_iEFlags); SOLE caller of AddEntity@0x17e6280 which packs CEntityHandles into the .bss
+    // dirty-list singleton @0x284f780 (drained per-frame by ParallelUpdateSurroundingBoundsForDirtyEntities).
+    // NOTE: CS2 schema entity classes carry NO C++ RTTI (the name lives in the SchemaSystem type table, not an
+    // Itanium type_info), so this was anchored via ModSharp's SetSolid/SetCollisionBounds sigs, NOT a vtable
+    // index. A DIRECT prologue pattern (match offset == fn start); the trailing jcc rel32 disp is wildcarded.
+    // Validated UNIQUE (1 match) in the pinned libserver.so. Per-update the prologue/offsets move (treadmill).
+    "CollisionMarkPartitionDirty": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 83 EC 18 48 8B 7F 08 8B 87 F4 06 00 00 F6 C4 80 0F 85 ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
+    // Zones real-trigger slice: CCollisionProperty::UpdatePartition(this) @0x17e6710 — the IMMEDIATE
+    // partition-handle create/destroy (manages the handle at this+0xb0 via the spatial-partition interface;
+    // gated on m_nSolidType at this+0x5b). rdi = CCollisionProperty*. collision_activate calls this right after
+    // MarkPartitionHandleDirty so the trigger is touch-testable THIS frame instead of waiting for the deferred
+    // per-frame drain (recipe A+B; safe alongside A — the drain's re-process is idempotent). A DIRECT prologue
+    // pattern. Validated UNIQUE (1 match) in the pinned libserver.so.
+    "CollisionUpdatePartition": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 28 48 8B B7 B0 00 00 00 48 85 F6 74 1E",
+        "resolve": "direct"
+      }
+    },
+    // ModSharp recipe (zones real-trigger, non-solid fix): the REAL engine setters. CCollisionProperty::
+    // SetSolid(SolidType) rebuilds the Rubikon collision SHAPE honoring the solid flags (early-returns on
+    // an unchanged type — the shim forces a SOLID_NONE transition). CBaseModelEntity::SetCollisionBounds
+    // (a this-adjusting thunk) sets bounds + surround. Sigs cross-validated UNIQUE vs the pinned
+    // libserver.so; hinted by ModSharp git118 gamedata, self-validated per the RE doctrine.
+    // RE-ENABLED (2026-07-13): the box-from-bounds path. CCollisionProperty::SetSolid rebuilds the Rubikon
+    // collision SHAPE from the current bounds honoring the solid flags (ModSharp sig, validated UNIQUE @
+    // 0x17f3bd0 on build 2000873 — was NOT stale, just deliberately disabled earlier). The jmp displacement
+    // is wildcarded (treadmill-robust). Paired with SetCollisionBounds, this builds an ARBITRARY box trigger
+    // from m_vecMins/Maxs — no model needed (Shim_CollisionActivate: SetCollisionBounds -> SetSolid(BBOX) ->
+    // SetSolid(NONE) for pass-through-but-trigger).
+    "CollisionSetSolid": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "40 38 77 5B 74 ? 40 0F B6 F6 E9 ? ? ? ? 90",
+        "resolve": "direct"
+      }
+    },
+    // CBaseModelEntity::SetCollisionBounds(&mins,&maxs) — a thunk (add rdi,imm; jmp real). ModSharp sig,
+    // validated UNIQUE @ 0xf7d600 on build 2000873.
+    "SetCollisionBounds": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 81 C7 ? ? ? ? E9 ? ? ? ? CC CC CC CC 55 48 8D 15",
+        "resolve": "direct"
+      }
+    },
+    // CBaseEntity::EmitSound (Sound slice): the engine's soundevent-emit entry (Sound.emit /
+    // pawn.emitSound). RE FINDING (offline disasm of the pinned build-2000873 libserver.so):
+    // the two reference frameworks' emit patterns BOTH converge on ONE core function @ 0x1a476c0
+    // (which xrefs the string "EmitSoundByHandle" @ 0x9160ba, and reads m_nForceGuid at struct
+    // offset 32 + tests m_nFlags bit 0x10 at offset 42 — the EmitSound_t layout). CSSharp's pattern
+    // (below) resolves UNIQUE to a thin thunk @ 0x1a48e30 that forwards (rsi/rdx/rcx) straight to
+    // that core fn — this IS CSSharp's live-proven CBaseEntity_EmitSoundFilter target. ModSharp's
+    // member-overload pattern resolves UNIQUE to a DIFFERENT wrapper @ 0x1a48ee0 that takes volume
+    // as a float-BY-VALUE in xmm0 (NOT the plan's `const float*`), reorders args, and internally
+    // BUILDS the same EmitSound_t (storing the xmm0 float at struct offset 20 = m_flVolume — proving
+    // that arg IS volume, not classic-Source duration) before calling 0x1a476c0. DECISION: Variant B
+    // (the CSSharp static prototype SndOpEventGuid_t EmitSound(CRecipientFilter&, CEntityIndex,
+    // const EmitSound_t&); rdi=sret, rsi=filter, edx=ent-index, rcx=&params) — the member overload's
+    // `const float*` prototype was DISPROVEN (volume is by-value), so Variant B's EmitSound_t path is
+    // authoritative for volume. A DIRECT prologue pattern (match offset == function start), validated
+    // UNIQUE offline (1 match) + by the boot gate. If it drifts on an update, re-locate via the string
+    // refs: "EmitSoundByHandle", "public.distance_volume_mapping_curve",
+    // "Playing sound on non-networked entity %s".
+    "EmitSound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 48 89 D8 48 8B 5D ? C9 C3 CC CC CC CC CC CC 48 B8",
+        "resolve": "direct"
+      }
+    },
+    // CBaseEntity precache — "add one resource string to the current precache manifest" helper
+    // (Sound slice, review C1). RE FINDING (offline disasm of the pinned build-2000873 libserver.so,
+    // VALIDATED against OUR binary — the borrowed ModSharp "manifest->vtable[0](manifest, path)" fact
+    // was CONTRADICTED here and was UNSAFE): CGameRulesGameSystem::OnPrecacheResource (the hooked
+    // vtable slot[7] @0x18d48e0) and its byte-identical clone @0x18ce700 add each of the game's own
+    // default resources ("ParticleEffect"/"ParticleEffectStop"/"GlassImpact"/"Impact"/"player"/…) by
+    // calling THIS helper @0x19eca40 with the resource string in rdi. The helper adds NOT to the passed
+    // pManifest but to a GLOBAL manifest singleton g=*0x284f348, via
+    //     g->vtable[8](g, /*int*/1, /*const char* path*/, /*int*/0)
+    // — a 4-arg call at SLOT 8 (offset 0x40), NOT the 2-arg SLOT 0 the old code used (and slot 0 is the
+    // Itanium complete-object DESTRUCTOR, so the old call risked destructing the live manifest at map
+    // load -> crash). We therefore call the engine's helper verbatim; it self-resolves the global + the
+    // correct vtable[8] args, so we make no assumption about the global offset, the vtable index, or
+    // pManifest's identity. A DIRECT prologue pattern (the leading `lea rax,[rip+disp]`'s 4 disp bytes
+    // wildcarded), self-validated UNIQUE (1 match) on build 2000873. Distinctive body:
+    //   mov rdx,rdi; xor ecx,ecx; mov esi,1; mov rdi,[glob]; mov rax,[rdi]; mov rax,[rax+0x40]; jmp rax.
+    // Unresolved/moved -> s_pPrecacheAddResource null -> sound_precache_add no-ops (degrade-never-crash).
+    // If it drifts on an update, re-locate via OnPrecacheResource (slot[7]) which calls it ~11× with the
+    // literal resource-name strings above.
+    "PrecacheAddResource": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8D 05 ? ? ? ? 48 89 FA 31 C9 BE 01 00 00 00 48 8B 38 48 8B 07 48 8B 40 40 FF E0",
+        "resolve": "direct"
+      }
+    },
+    // Entity lifecycle listeners slice: CGameEntitySystem::AddListenerEntity / RemoveListenerEntity —
+    // register/unregister an IEntityListener (the CSSharp/ModSharp mechanism for OnEntityCreated/Spawned/
+    // Deleted). DIRECT prologue signatures borrowed as a HINT from the ModSharp git118 gamedata, per the
+    // RE doctrine re-resolved + validated UNIQUE against our pinned libserver.so (loud GAMEDATA VALIDATION
+    // on drift). Unresolved -> entity_listener_install no-ops (subscribe delivers nothing) / Unload skips
+    // RemoveListenerEntity — degrade-never-crash. If the borrowed RemoveListenerEntity pattern is AMBIGUOUS
+    // on our build (it is short), re-derive a tighter unique pattern from our libserver.so.
+    "AddListenerEntity": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 FD 41 54 53 48 89 F3 48 83 EC ? 8B 8F ? ? ? ? 4C 63 E1 85 C9 7E ? 48 8B 97 ? ? ? ? 4C 63 E1 31 C0 EB ? 66 90 48 83 C0 ? 4C 39 E0 74 ? 48 39 1C C2 75 ? 48 83 C4 ? 5B 41 5C 41 5D 5D C3 66 0F 1F 44 00 ? 41 3B 8D ? ? ? ? 74 ? 49 8B 85 ? ? ? ? 83 C1 ? 41 89 8D ? ? ? ? 4A 89 1C E0 48 83 C4",
+        "resolve": "direct"
+      }
+    },
+    "RemoveListenerEntity": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 08 8B BF D0 20 00 00",
+        "resolve": "direct"
+      }
+    }
+    // (Sound slice precache: there is NO factory-list signature. The abandoned "GameSystemFactoryList"
+    // sig-scan + walk-the-factory-node-for-the-instance premise was DISPROVEN offline on the pinned
+    // build-2000873 libserver.so: CGameRulesGameSystem's factory is a
+    // CGameSystemReallocatingFactory<CGameRulesGameSystem> (factory vtable 0x24c9f88; slot 8
+    // IsReallocating -> `mov $1;ret`, slot 9 GetStaticGameSystem -> `xor eax;ret` = nullptr), and its
+    // +0x18 is m_ppGlobalPointer — statically zeroed at the sole construction site
+    // (`movq $0x0, 0x2867798` @0x18edbb0) and never re-pointed, so it can NEVER yield the live
+    // instance. (The factory is also registered as "GameRulesGameSystem" — no leading 'C' — @0x90f33e.)
+    // Precache is instead a CLASS-vtable slot swap resolved by RTTI at runtime — see the
+    // CGameRulesGameSystem_OnPrecacheResource offsets comment above.)
+  }
+}
