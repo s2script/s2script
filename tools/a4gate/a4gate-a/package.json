@@ -1,0 +1,6 @@
+{
+  "name": "@a4gate/a",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/plugin.ts"
+}
