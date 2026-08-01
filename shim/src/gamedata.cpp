@@ -9,29 +9,56 @@ namespace {
 
 // Does a master entry's condition field match? Absent condition = matches. Value may be a string
 // or an array of strings (SourceMod's repeated-key idiom; JSON has no duplicate keys).
-bool ConditionMatches(const nlohmann::json& entry, const char* field, const std::string& actual) {
+//
+// A condition of any OTHER type (`"game": 123`) can never match, so the file it guards would be
+// deselected — silently, and identically to a deliberate non-match, which is the worst possible
+// way to lose a whole file of engine facts. Every non-matching shape therefore sets a NAMED
+// `error` before returning false. A genuine non-match (a well-formed condition for another game)
+// leaves `error` untouched.
+bool ConditionMatches(const nlohmann::json& entry, const char* field, const std::string& actual,
+                      const std::string& file, std::string& error) {
     if (!entry.contains(field)) return true;
     const auto& v = entry.at(field);
     if (v.is_string()) return v.get<std::string>() == actual;
     if (v.is_array()) {
-        for (const auto& e : v)
-            if (e.is_string() && e.get<std::string>() == actual) return true;
-        return false;
+        bool matched = false;
+        for (const auto& e : v) {
+            if (!e.is_string()) {
+                error = "gamedata master entry for " + file + " has a non-string member in its \"" +
+                        std::string(field) + "\" condition — it can never match";
+                continue;
+            }
+            if (e.get<std::string>() == actual) matched = true;
+        }
+        return matched;
     }
+    error = "gamedata master entry for " + file + " has a \"" + std::string(field) +
+            "\" condition that is neither a string nor an array of strings — the file is skipped";
     return false;
 }
 
 // Merge one file's sections into `gc`. `isOverride` marks touched entries as operator-supplied.
 // Replacement is at the named-entry level: assigning over the map key drops the old value whole.
+// Returns the number of entries actually applied — zero from a file that parsed is itself a
+// reportable condition (see GameConfig::filesEmpty).
 //
 // A single wrongly-typed entry (e.g. a quoted number where an offset wants an int, or a scalar
 // where a signature wants an object) must degrade THAT ENTRY ONLY, never the whole file or the
 // whole load — "degrade per-descriptor, never crash globally". Each entry's conversion is
 // therefore its own try/catch: on failure the entry is left out of `gc` and `error` is set to a
 // reason naming the section and key, but the loop moves on to the next entry.
-void MergeFile(const nlohmann::json& j, const std::string& platform, bool isOverride,
-               GameConfig& gc, std::string& error) {
-    auto mark = [&](const std::string& name) { if (isOverride) gc.overridden.insert(name); };
+//
+// The `offsets`/`signatures` sections are PLATFORM-KEYED. A value written in the flat shape an
+// operator reaches for first — `"offsets": { "Shipped": 99 }` instead of
+// `"offsets": { "Shipped": { "linuxsteamrt64": 99 } }` — has no `platform` member, so the
+// entry would simply be skipped: no error, no `overridden` mark, and the STALE shipped value
+// still in use behind a banner that says the override file loaded. That is the project's worst
+// failure mode (a stale value reading garbage while reporting success) on the one surface a
+// server admin hand-edits under time pressure. Reject a non-object by NAME instead.
+size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOverride,
+                 GameConfig& gc, std::string& error) {
+    size_t applied = 0;
+    auto mark = [&](const std::string& name) { applied++; if (isOverride) gc.overridden.insert(name); };
 
     if (j.contains("interfaces"))
         for (auto& [k, v] : j.at("interfaces").items()) {
@@ -40,39 +67,51 @@ void MergeFile(const nlohmann::json& j, const std::string& platform, bool isOver
         }
 
     if (j.contains("offsets"))
-        for (auto& [k, platforms] : j.at("offsets").items())
-            if (platforms.contains(platform)) {
-                try {
-                    gc.offsets[k] = platforms.at(platform).get<int>();
-                    mark(k);
-                } catch (const std::exception& e) {
-                    error = "gamedata offsets." + k + " has the wrong type for platform \"" +
-                            platform + "\": " + e.what();
-                }
+        for (auto& [k, platforms] : j.at("offsets").items()) {
+            if (!platforms.is_object()) {
+                error = "gamedata offsets." + k + " is not a platform-keyed object (expected "
+                        "{ \"" + platform + "\": <int> })";
+                continue;
             }
+            if (!platforms.contains(platform)) continue;
+            try {
+                gc.offsets[k] = platforms.at(platform).get<int>();
+                mark(k);
+            } catch (const std::exception& e) {
+                error = "gamedata offsets." + k + " has the wrong type for platform \"" +
+                        platform + "\": " + e.what();
+            }
+        }
 
     if (j.contains("signatures"))
-        for (auto& [k, platforms] : j.at("signatures").items())
-            if (platforms.contains(platform)) {
-                try {
-                    const auto& p = platforms.at(platform);
-                    SigSpec s;
-                    s.module  = p.value("module", "");
-                    s.pattern = p.value("pattern", "");
-                    s.resolve = p.value("resolve", "");
-                    gc.signatures[k] = s;
-                    mark(k);
-                } catch (const std::exception& e) {
-                    error = "gamedata signatures." + k + " has the wrong type for platform \"" +
-                            platform + "\": " + e.what();
-                }
+        for (auto& [k, platforms] : j.at("signatures").items()) {
+            if (!platforms.is_object()) {
+                error = "gamedata signatures." + k + " is not a platform-keyed object (expected "
+                        "{ \"" + platform + "\": { \"module\": …, \"pattern\": … } })";
+                continue;
             }
+            if (!platforms.contains(platform)) continue;
+            try {
+                const auto& p = platforms.at(platform);
+                SigSpec s;
+                s.module  = p.value("module", "");
+                s.pattern = p.value("pattern", "");
+                s.resolve = p.value("resolve", "");
+                gc.signatures[k] = s;
+                mark(k);
+            } catch (const std::exception& e) {
+                error = "gamedata signatures." + k + " has the wrong type for platform \"" +
+                        platform + "\": " + e.what();
+            }
+        }
 
     if (j.contains("keys"))
         for (auto& [k, v] : j.at("keys").items()) {
             if (v.is_string()) { gc.keys[k] = v.get<std::string>(); mark(k); }
             else error = "gamedata keys." + k + " has the wrong type (expected a string)";
         }
+
+    return applied;
 }
 
 // Parse one JSONC file. Returns false and sets `error` on read/parse failure.
@@ -103,14 +142,20 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
     const fs::path ownerDir = fs::path(gamedataRoot) / owner;
     const fs::path masterPath = ownerDir / "master.gamedata.jsonc";
 
+    // Every abort below records the master in filesFailed, so the invariant the shim gates on is
+    // uniform: filesFailed non-empty <=> something shipped was selected and could not be applied.
+    const std::string masterName = "master.gamedata.jsonc";
+
     nlohmann::json master;
     if (!ParseFile(masterPath, master, error)) {
         // A missing/broken master is a NAMED hard error for this owner — never a silent empty
         // namespace. ParseFile already set `error` naming the master path.
+        gc.filesFailed.push_back(masterName);
         return gc;
     }
     if (!master.contains("files") || !master.at("files").is_array()) {
         error = "gamedata master has no \"files\" array: " + masterPath.string();
+        gc.filesFailed.push_back(masterName);
         return gc;
     }
 
@@ -120,15 +165,23 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
     for (const auto& entry : master.at("files")) {
         if (!entry.contains("file") || !entry.at("file").is_string()) {
             error = "gamedata master entry without a \"file\": " + masterPath.string();
+            gc.filesFailed.push_back(masterName);
             return gc;
         }
         const std::string name = entry.at("file").get<std::string>();
-        if (!ConditionMatches(entry, "engine", engine)) continue;
-        if (!ConditionMatches(entry, "game", game)) continue;
+        if (!ConditionMatches(entry, "engine", engine, name, error)) continue;
+        if (!ConditionMatches(entry, "game", game, name, error)) continue;
 
         nlohmann::json j;
-        if (!ParseFile(ownerDir / name, j, error)) return gc;
-        MergeFile(j, platform, /*isOverride=*/false, gc, error);
+        if (!ParseFile(ownerDir / name, j, error)) {
+            // Selected but unapplicable: record it before returning, so the caller can tell this
+            // (our shipped tree is broken) from a merely malformed entry. Returning here keeps the
+            // pre-existing fail-fast behaviour for the shipped tier.
+            gc.filesFailed.push_back(name);
+            return gc;
+        }
+        if (MergeFile(j, platform, /*isOverride=*/false, gc, error) == 0)
+            gc.filesEmpty.push_back(name);
         gc.filesLoaded.push_back(name);
     }
 
@@ -160,10 +213,15 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
         }
         std::sort(customFiles.begin(), customFiles.end());
         for (const auto& p : customFiles) {
+            const std::string label = "custom/" + p.filename().string();
             nlohmann::json j;
+            // Deliberately NOT recorded in filesFailed: the shipped tree is intact, so a typo in
+            // an operator's hot-fix must not disable the engine surface. It is a named `error`,
+            // which the boot banner reports.
             if (!ParseFile(p, j, error)) return gc;
-            MergeFile(j, platform, /*isOverride=*/true, gc, error);
-            gc.filesLoaded.push_back("custom/" + p.filename().string());
+            if (MergeFile(j, platform, /*isOverride=*/true, gc, error) == 0)
+                gc.filesEmpty.push_back(label);
+            gc.filesLoaded.push_back(label);
         }
     }
 

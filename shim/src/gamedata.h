@@ -36,6 +36,26 @@ struct GameConfig {
     std::set<std::string> overridden;
     // Every file actually applied, in apply order (for the banner and the fingerprint hash).
     std::vector<std::string> filesLoaded;
+
+    // SHIPPED files that were SELECTED by the master (listed, and their engine/game condition
+    // matched) but could not be applied at all — unreadable, or unparseable JSON. This is the
+    // catastrophic class, distinct from a per-entry type error: our own shipped tree is broken or
+    // half-deployed, so the merged view is missing whole descriptor sets while every remaining
+    // value still reads as if it loaded fine. The shim gates interface acquisition on this
+    // (s2script_mm.cpp) — filesLoaded alone cannot see it, because an unconditional file that
+    // applied first leaves filesLoaded non-empty no matter what fails after it.
+    //
+    // A custom/ file that fails to parse is NOT recorded here: the shipped tree is intact in that
+    // case, so the right response is a loud named `error` (which it already gets, and which the
+    // boot banner reports), not disabling the whole engine surface over an operator typo.
+    std::vector<std::string> filesFailed;
+
+    // Files that applied without failing but contributed ZERO entries, in apply order. For a
+    // custom/ file this is the operator's most likely mistake — a wrong section name, a wrong
+    // platform key, or the flat (non-platform-keyed) shape — and it otherwise looks exactly like
+    // a successful override. Shipped placeholder files (common.gamedata.jsonc is `{}` today)
+    // legitimately land here too, so the shim reports the two at different volumes.
+    std::vector<std::string> filesEmpty;
 };
 
 // Build one owner's merged view.
@@ -50,9 +70,10 @@ struct GameConfig {
 // wins, replacing at the NAMED-ENTRY level — signatures.Respawn is swapped wholesale, never
 // deep-merged. That is what lets an operator override be a one-entry file.
 //
-// `error` is empty on success. A missing master, an unparseable file, or a listed-but-absent file
-// sets it with a NAMED reason and returns whatever was merged before the failure: the caller
-// degrades that owner, and the framework keeps running.
+// `error` is empty on success. A missing master, an unparseable file, a listed-but-absent file, or
+// a single malformed ENTRY sets it with a NAMED reason and returns whatever was merged before the
+// failure: the caller degrades that owner, and the framework keeps running. `error` alone cannot
+// tell those apart — see `filesFailed` for the whole-file (catastrophic) signal.
 GameConfig LoadGameConfig(const std::string& gamedataRoot,
                           const std::string& owner,
                           const std::string& engine,

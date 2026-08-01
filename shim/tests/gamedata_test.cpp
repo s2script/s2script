@@ -341,6 +341,164 @@ static void test_files_loaded_distinguishes_catastrophic_from_per_entry_error() 
     }
 }
 
+// The flat (non-platform-keyed) shape is the mistake a server admin hand-editing custom/ makes
+// first. Before the fix it was skipped with NO error, NO `overridden` mark and NO other signal —
+// the operator saw a clean banner and the stale shipped value still in use.
+static void test_non_object_offset_entry_is_a_named_error() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "core" / "game.cs2.jsonc",
+        R"({ "offsets": { "Shipped": { "linuxsteamrt64": 7 } } })");
+    // Flat shape: the platform level is missing entirely.
+    put(root.path / "core" / "custom" / "oops.jsonc",
+        R"({ "offsets": { "Shipped": 99 } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.offsets["Shipped"] == 7, "a non-platform-keyed offset does not apply");
+    CHECK(gc.overridden.empty(), "and is not falsely reported as an override");
+    CHECK(!err.empty() && err.find("Shipped") != std::string::npos,
+          "a non-platform-keyed offset is a NAMED error, not a silent skip");
+}
+
+static void test_non_object_signature_entry_is_a_named_error() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "mixed.gamedata.jsonc" } ] })");
+    put(root.path / "core" / "mixed.gamedata.jsonc", R"({
+      "signatures": {
+        "GoodSig": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct" } },
+        "FlatSig": "55 48 89 E5"
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.signatures.count("GoodSig") == 1, "a sibling well-formed signature still applies");
+    CHECK(gc.signatures.count("FlatSig") == 0, "a non-platform-keyed signature does not apply");
+    CHECK(!err.empty() && err.find("FlatSig") != std::string::npos,
+          "a non-platform-keyed signature is a NAMED error, not a silent skip");
+}
+
+// A condition of a type that can never match would deselect a whole file of engine facts,
+// indistinguishably from a deliberate non-match.
+static void test_bad_condition_type_is_a_named_error() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc", R"({
+      "files": [
+        { "file": "ok.gamedata.jsonc" },
+        { "file": "weird.gamedata.jsonc", "game": 123 }
+      ]
+    })");
+    put(root.path / "core" / "ok.gamedata.jsonc",
+        R"({ "offsets": { "Fine": { "linuxsteamrt64": 1 } } })");
+    put(root.path / "core" / "weird.gamedata.jsonc",
+        R"({ "offsets": { "Lost": { "linuxsteamrt64": 2 } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.offsets.count("Lost") == 0, "a file behind an unmatchable condition is not applied");
+    CHECK(gc.offsets.count("Fine") == 1, "sibling files still apply");
+    CHECK(!err.empty() && err.find("weird.gamedata.jsonc") != std::string::npos,
+          "an unmatchable condition names the file it silently deselected");
+}
+
+// A file that parses but contributes nothing is the other half of the same failure: an operator's
+// override file with a misspelled section or platform key looks exactly like a working one.
+static void test_zero_entry_file_is_recorded() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "core" / "game.cs2.jsonc",
+        R"({ "offsets": { "Val": { "linuxsteamrt64": 5 } } })");
+    // Right section, WRONG platform key — parses, matches nothing.
+    put(root.path / "core" / "custom" / "typo.jsonc",
+        R"({ "offsets": { "Val": { "linuxsteamr64": 6 } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.offsets["Val"] == 5, "the mistyped override does not apply");
+    CHECK(gc.filesEmpty.size() == 1 && gc.filesEmpty[0] == "custom/typo.jsonc",
+          "a file that applied zero entries is named in filesEmpty");
+    CHECK(gc.filesLoaded.size() == 2, "it is still counted as loaded");
+}
+
+// filesFailed is the catastrophic signal the shim gates interface acquisition on. filesLoaded
+// alone cannot see this: common.gamedata.jsonc is unconditional and applies first, so filesLoaded
+// is non-empty no matter what fails after it.
+static void test_files_failed_names_a_selected_file_that_could_not_apply() {
+    {
+        TempRoot root;
+        put(root.path / "core" / "master.gamedata.jsonc", R"({
+          "files": [
+            { "file": "common.gamedata.jsonc" },
+            { "file": "game.cs2.jsonc" }
+          ]
+        })");
+        put(root.path / "core" / "common.gamedata.jsonc", R"({})");
+        put(root.path / "core" / "game.cs2.jsonc", R"({ "offsets": { "Broken": )");   // truncated
+
+        std::string err;
+        GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                       "linuxsteamrt64", err);
+        CHECK(!gc.filesLoaded.empty(),
+              "filesLoaded is non-empty even though a selected file failed (why it is not enough)");
+        CHECK(gc.filesFailed.size() == 1 && gc.filesFailed[0] == "game.cs2.jsonc",
+              "filesFailed names the selected file that could not be applied");
+    }
+    {
+        // A merely malformed ENTRY must NOT trip it — one bad entry never disables the block.
+        TempRoot root;
+        put(root.path / "core" / "master.gamedata.jsonc",
+            R"({ "files": [ { "file": "mixed.gamedata.jsonc" } ] })");
+        put(root.path / "core" / "mixed.gamedata.jsonc", R"({
+          "offsets": {
+            "GoodOffset": { "linuxsteamrt64": 5 },
+            "BadOffset":  { "linuxsteamrt64": "7" }
+          }
+        })");
+
+        std::string err;
+        GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                       "linuxsteamrt64", err);
+        CHECK(!err.empty(), "the bad entry is still reported in error");
+        CHECK(gc.filesFailed.empty(), "a bad ENTRY does not put the file in filesFailed");
+    }
+    {
+        // A missing master is catastrophic too, and reports through the same signal.
+        TempRoot root;
+        fs::create_directories(root.path / "core");
+        std::string err;
+        GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                       "linuxsteamrt64", err);
+        CHECK(gc.filesFailed.size() == 1 && gc.filesFailed[0] == "master.gamedata.jsonc",
+              "a missing master reports through filesFailed as well");
+    }
+    {
+        // An operator's broken custom/ file is NOT catastrophic: the shipped tree is intact, so it
+        // is a named error only — it must never disable interface acquisition.
+        TempRoot root;
+        put(root.path / "core" / "master.gamedata.jsonc",
+            R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+        put(root.path / "core" / "game.cs2.jsonc",
+            R"({ "offsets": { "Val": { "linuxsteamrt64": 5 } } })");
+        put(root.path / "core" / "custom" / "broken.jsonc", R"({ "offsets": )");   // truncated
+
+        std::string err;
+        GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                       "linuxsteamrt64", err);
+        CHECK(!err.empty() && err.find("broken.jsonc") != std::string::npos,
+              "an unparseable custom/ file is a named error");
+        CHECK(gc.filesFailed.empty(),
+              "an unparseable custom/ file is not catastrophic — shipped data is intact");
+    }
+}
+
 static void test_custom_overrides_a_shipped_entry() {
     TempRoot root;
     put(root.path / "core" / "master.gamedata.jsonc",
@@ -370,10 +528,14 @@ static void test_custom_files_apply_in_sorted_order() {
         R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
     put(root.path / "core" / "game.cs2.jsonc",
         R"({ "offsets": { "Val": { "linuxsteamrt64": 0 } } })");
-    put(root.path / "core" / "custom" / "10-first.jsonc",
-        R"({ "offsets": { "Val": { "linuxsteamrt64": 1 } } })");
+    // Created in REVERSE of sorted order deliberately: if the loader ever stops sorting and takes
+    // directory order, the filesystem is free to hand back creation order and "20-second" would
+    // apply first, so the assertion below fails. Creating them in sorted order would make this
+    // test pass on an unsorted loader whenever the FS happens to iterate in creation order.
     put(root.path / "core" / "custom" / "20-second.jsonc",
         R"({ "offsets": { "Val": { "linuxsteamrt64": 2 } } })");
+    put(root.path / "core" / "custom" / "10-first.jsonc",
+        R"({ "offsets": { "Val": { "linuxsteamrt64": 1 } } })");
 
     std::string err;
     GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
@@ -412,6 +574,11 @@ int main() {
     test_bad_keys_type_degrades_only_that_entry();
     test_bad_entry_does_not_abort_later_files();
     test_files_loaded_distinguishes_catastrophic_from_per_entry_error();
+    test_non_object_offset_entry_is_a_named_error();
+    test_non_object_signature_entry_is_a_named_error();
+    test_bad_condition_type_is_a_named_error();
+    test_zero_entry_file_is_recorded();
+    test_files_failed_names_a_selected_file_that_could_not_apply();
     test_custom_overrides_a_shipped_entry();
     test_custom_files_apply_in_sorted_order();
     test_absent_custom_dir_is_not_an_error();

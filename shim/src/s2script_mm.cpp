@@ -2764,6 +2764,22 @@ static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, 
 // ---------------------------------------------------------------------------
 static int s_gdOk = 0, s_gdFail = 0;
 static GameConfig s_gdCore;   // the core owner's merged gamedata, rebuilt each Load
+static GameConfig s_gdGame;   // the cs2 game-package owner's, likewise (spec §8: loader-exercised
+                              // from the first commit, so a mistyped master fails HERE, not in the
+                              // slice that first consumes one of its entries)
+// Kept for GamedataBanner(): the summary an operator is pointed at must report the load errors
+// too, otherwise a broken custom/ override looks exactly like "my fix didn't work".
+static std::string s_gdErrorCore, s_gdErrorGame, s_gdModDir;
+
+// THE owner set this build loads, and where each owner's merged view and load error live. Single
+// source of truth: Load(), GamedataBanner() and the crash fingerprint all walk this array, and
+// scripts/check-gamedata-owners.sh PARSES it — a gamedata/<owner>/ directory missing from here
+// fails that gate, because a tree nothing loads is data that can never take effect.
+struct GamedataOwner { const char* name; GameConfig* cfg; std::string* error; };
+static const GamedataOwner kGamedataOwners[] = {
+    { "core", &s_gdCore, &s_gdErrorCore },
+    { "cs2",  &s_gdGame, &s_gdErrorGame },
+};
 static void GamedataResult(const char* name, bool ok, const char* reason) {
     if (ok) { s_gdOk++;  META_CONPRINTF("[s2script]   gamedata OK    %s\n", name); }
     else    { s_gdFail++; META_CONPRINTF("[s2script]   gamedata FAIL  %s — %s\n", name, reason ? reason : "?"); }
@@ -2809,10 +2825,24 @@ static bool ValidateRespawnVtableMember(const uint8_t* fn, const ModText& mt) {
 static void GamedataBanner() {
     META_CONPRINTF("[s2script] === GAMEDATA VALIDATION: %d ok, %d FAILED%s ===\n", s_gdOk, s_gdFail,
                    s_gdFail ? "  (STALE for this CS2 build — regenerate; see docs/re-strategy.md)" : "");
-    if (!s_gdCore.overridden.empty())
-        META_CONPRINTF("[s2script] === %zu ENTRY/ENTRIES FROM gamedata/core/custom/ — "
-                       "operator-supplied, NOT the shipped values ===\n",
-                       s_gdCore.overridden.size());
+    // The LOAD errors, not just the resolve results. A malformed custom/ override sets these and
+    // nothing else: without this line the summary an operator reads after dropping in a hot-fix is
+    // identical to a clean boot, and the stale shipped value is silently still in use.
+    for (const auto& o : kGamedataOwners)
+        if (!o.error->empty())
+            META_CONPRINTF("[s2script] === GAMEDATA LOAD ERROR (%s): %s ===\n",
+                           o.name, o.error->c_str());
+    // An undetected mod directory deselects every `game`-conditioned file — which today is where
+    // essentially all of the data lives. That is a FAILURE, not a value worth printing quietly.
+    if (s_gdModDir.empty())
+        META_CONPRINTF("[s2script] === GAMEDATA FAIL: mod directory UNDETECTED — every "
+                       "\"game\"-conditioned gamedata file was skipped (unexpected addon layout; "
+                       "expected <game>/csgo/addons/s2script/bin/linuxsteamrt64/) ===\n");
+    for (const auto& o : kGamedataOwners)
+        if (!o.cfg->overridden.empty())
+            META_CONPRINTF("[s2script] === %zu ENTRY/ENTRIES FROM gamedata/%s/custom/ — "
+                           "operator-supplied, NOT the shipped values ===\n",
+                           o.cfg->overridden.size(), o.name);
 }
 
 // ---------------------------------------------------------------------------
@@ -3641,35 +3671,72 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
     const std::string gdRoot = GamedataRoot();
     const std::string modDir = DetectModDir();
+    s_gdModDir = modDir;
     META_CONPRINTF("[s2script] gamedata root=%s engine=source2 game=%s\n",
-                   gdRoot.c_str(), modDir.empty() ? "<undetected>" : modDir.c_str());
+                   gdRoot.c_str(), modDir.empty() ? "<UNDETECTED>" : modDir.c_str());
+    if (modDir.empty()) {
+        // Not a value: with no mod directory, every `game`-conditioned master entry is deselected,
+        // which today means game.cs2.jsonc — nearly the whole tree — never loads. Say so where it
+        // happens as well as in the banner.
+        META_CONPRINTF("[s2script] WARN: mod directory UNDETECTED — every \"game\"-conditioned "
+                       "gamedata file will be SKIPPED\n");
+    }
+
+    // --- Gamedata (owner-scoped; built ONCE per Load, spec §6) ---
+    // One helper, run per owner: the owners differ only in name and in who consumes them.
+    auto loadOwner = [&](const char* owner, GameConfig& out, std::string& outError) {
+        out = LoadGameConfig(gdRoot, owner, "source2", modDir, "linuxsteamrt64", outError);
+        if (!outError.empty())
+            META_CONPRINTF("[s2script] WARN: %s — %s gamedata degraded\n", outError.c_str(), owner);
+        META_CONPRINTF("[s2script] gamedata %s: %zu interfaces, %zu offsets, %zu signatures, "
+                       "%zu keys from %zu file(s)\n", owner,
+                       out.interfaces.size(), out.offsets.size(), out.signatures.size(),
+                       out.keys.size(), out.filesLoaded.size());
+        for (const auto& name : out.filesFailed) {
+            META_CONPRINTF("[s2script] WARN: gamedata %s/%s was SELECTED but could not be "
+                           "applied — this owner's data is INCOMPLETE\n", owner, name.c_str());
+        }
+        // A file that parses but contributes nothing looks identical to a working one. For a
+        // custom/ file that is the operator's most likely mistake (wrong section name, wrong
+        // platform key, flat non-platform-keyed shape) and gets a WARN; a shipped placeholder
+        // (common.gamedata.jsonc is `{}` today) is merely reported.
+        for (const auto& name : out.filesEmpty) {
+            const bool isCustom = name.rfind("custom/", 0) == 0;
+            META_CONPRINTF(isCustom
+                    ? "[s2script] WARN: gamedata %s/%s applied NO entries — check the section "
+                      "names, the platform key, and that offsets/signatures are platform-keyed\n"
+                    : "[s2script]   gamedata %s/%s contributed no entries (placeholder)\n",
+                    owner, name.c_str());
+        }
+        for (const auto& name : out.overridden) {
+            META_CONPRINTF("[s2script]   gamedata OVERRIDE %s (from %s/custom/) — "
+                           "operator-supplied, not the shipped value\n", name.c_str(), owner);
+        }
+    };
+
+    // Every owner in kGamedataOwners, in order. "cs2" is loaded even though nothing consumes its
+    // entries yet (A5b wires them): loading it now is what makes a mistyped master or a missing
+    // file a boot-time error in THIS slice rather than a surprise in the next one (spec §8).
+    for (const auto& o : kGamedataOwners) loadOwner(o.name, *o.cfg, *o.error);
 
     // --- Interface acquisition (data-driven, degrade-never-crash) ---
-    // --- Gamedata (owner-scoped; built ONCE per Load, spec §6) ---
-    std::string gdError;
-    s_gdCore = LoadGameConfig(gdRoot, "core", "source2", modDir, "linuxsteamrt64", gdError);
-    if (!gdError.empty()) {
-        META_CONPRINTF("[s2script] WARN: %s — core gamedata degraded\n", gdError.c_str());
-    }
-    META_CONPRINTF("[s2script] gamedata core: %zu interfaces, %zu offsets, %zu signatures "
-                   "from %zu file(s)\n",
-                   s_gdCore.interfaces.size(), s_gdCore.offsets.size(),
-                   s_gdCore.signatures.size(), s_gdCore.filesLoaded.size());
-    for (const auto& name : s_gdCore.overridden) {
-        META_CONPRINTF("[s2script]   gamedata OVERRIDE %s (from custom/) — operator-supplied, "
-                       "not the shipped value\n", name.c_str());
-    }
     auto& versions = s_gdCore.interfaces;
-    // Gate on filesLoaded, not gdError: gdError is shared across every entry in every file
-    // (spec §6 / gamedata.cpp MergeFile) so a single malformed offset or signature entry sets it,
-    // and that must WARN-and-continue through the descriptor's own GamedataResult(...), never take
-    // down every interface/hook/detour with it ("degrade per-descriptor, never crash globally").
-    // filesLoaded.empty() is the genuinely catastrophic case — master missing/unparseable, or no
-    // listed file applied — the modern equivalent of the old flat-file "file not found or didn't
-    // parse at all" condition that this gate originally guarded.
-    if (s_gdCore.filesLoaded.empty()) {
-        META_CONPRINTF("[s2script] WARN: no core gamedata files loaded — skipping interface "
-                       "acquisition\n");
+    // Gate on whether a SELECTED FILE failed, not on gdError and not on filesLoaded alone:
+    //   * gdError is shared across every entry in every file (spec §6 / gamedata.cpp MergeFile),
+    //     so a single malformed offset or signature entry sets it — and that must WARN-and-continue
+    //     through the descriptor's own GamedataResult(...), never take down every interface/hook/
+    //     detour with it ("degrade per-descriptor, never crash globally").
+    //   * filesLoaded.empty() alone is INERT: common.gamedata.jsonc is unconditional and applies
+    //     first, so filesLoaded is non-empty whenever the master parses — including when every
+    //     later file failed and we hold zero interfaces. Acquisition would then fall through to the
+    //     compiled-in INTERFACEVERSION_* constants and print "interface OK:" having loaded nothing.
+    // filesFailed is the whole-file signal: a master-listed, condition-matching file (or the master
+    // itself) that could not be applied at all. That is the modern equivalent of the old flat-file
+    // "file not found or didn't parse at all" condition this gate originally guarded.
+    if (s_gdCore.filesLoaded.empty() || !s_gdCore.filesFailed.empty()) {
+        META_CONPRINTF("[s2script] WARN: core gamedata is incomplete (%zu file(s) loaded, %zu "
+                       "FAILED) — skipping interface acquisition\n",
+                       s_gdCore.filesLoaded.size(), s_gdCore.filesFailed.size());
     } else {
         CreateInterfaceFn serverFactory = ismm->GetServerFactory(false);
         CreateInterfaceFn engineFactory = ismm->GetEngineFactory(false);
@@ -4721,21 +4788,31 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         };
         // Fingerprint every gamedata file actually applied, in apply order, plus a marker for how
         // many entries an operator override supplied. An incident must never attribute a patched
-        // signature to the shipped value.
+        // signature to the shipped value. EVERY owner is covered — a cs2-tier fact is as capable
+        // of causing the incident as a core one, and hardcoding one owner's directory here would
+        // silently omit the rest.
         std::string gdBytes;
         char gdMtime[32] = "";
         long long newest = 0;
-        for (const auto& name : s_gdCore.filesLoaded) {
-            const std::string p = gdRoot + "/core/" + name;
-            gdBytes += slurp(p);
-            struct stat fst{};
-            if (stat(p.c_str(), &fst) == 0 && (long long)fst.st_mtime > newest)
-                newest = (long long)fst.st_mtime;
+        size_t gdOverrides = 0;
+        for (const auto& o : kGamedataOwners) {
+            for (const auto& name : o.cfg->filesLoaded) {
+                const std::string p = gdRoot + "/" + o.name + "/" + name;
+                gdBytes += slurp(p);
+                struct stat fst{};
+                if (stat(p.c_str(), &fst) == 0 && (long long)fst.st_mtime > newest)
+                    newest = (long long)fst.st_mtime;
+            }
+            gdOverrides += o.cfg->overridden.size();
         }
+        // NOTE (A5a): inside the FROZEN schema_version:1 crash envelope, `gdMtime` kept its NAME
+        // but changed its MEANING when the single flat gamedata file became an owner tree. It was
+        // that one file's mtime; it is now the NEWEST mtime across every applied file in every
+        // owner. Same field, same "how fresh is this deployment's gamedata" question, different
+        // basis — anything comparing values across the split has to know that.
         if (newest) snprintf(gdMtime, sizeof gdMtime, "%lld", newest);
         std::string gdFp = gdBytes.empty() ? "" : fnv64hex(gdBytes);
-        if (!s_gdCore.overridden.empty())
-            gdFp += "+custom" + std::to_string(s_gdCore.overridden.size());
+        if (gdOverrides) gdFp += "+custom" + std::to_string(gdOverrides);
         std::string schemaHash;
         {
             std::string js = slurp(Cs2JsPath());   // the deployed pawn.js concat carries the
