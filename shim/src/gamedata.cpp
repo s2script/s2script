@@ -96,8 +96,14 @@ bool ConditionMatches(const nlohmann::json& entry, const char* field, const std:
 
 // Merge one file's sections into `gc`. `isOverride` marks touched entries as operator-supplied.
 // Replacement is at the named-entry level: assigning over the map key drops the old value whole.
+//
+// A single wrongly-typed entry (e.g. a quoted number where an offset wants an int, or a scalar
+// where a signature wants an object) must degrade THAT ENTRY ONLY, never the whole file or the
+// whole load — "degrade per-descriptor, never crash globally". Each entry's conversion is
+// therefore its own try/catch: on failure the entry is left out of `gc` and `error` is set to a
+// reason naming the section and key, but the loop moves on to the next entry.
 void MergeFile(const nlohmann::json& j, const std::string& platform, bool isOverride,
-               GameConfig& gc) {
+               GameConfig& gc, std::string& error) {
     auto mark = [&](const std::string& name) { if (isOverride) gc.overridden.insert(name); };
 
     if (j.contains("interfaces"))
@@ -107,20 +113,30 @@ void MergeFile(const nlohmann::json& j, const std::string& platform, bool isOver
     if (j.contains("offsets"))
         for (auto& [k, platforms] : j.at("offsets").items())
             if (platforms.contains(platform)) {
-                gc.offsets[k] = platforms.at(platform).get<int>();
-                mark(k);
+                try {
+                    gc.offsets[k] = platforms.at(platform).get<int>();
+                    mark(k);
+                } catch (const std::exception& e) {
+                    error = "gamedata offsets." + k + " has the wrong type for platform \"" +
+                            platform + "\": " + e.what();
+                }
             }
 
     if (j.contains("signatures"))
         for (auto& [k, platforms] : j.at("signatures").items())
             if (platforms.contains(platform)) {
-                const auto& p = platforms.at(platform);
-                SigSpec s;
-                s.module  = p.value("module", "");
-                s.pattern = p.value("pattern", "");
-                s.resolve = p.value("resolve", "");
-                gc.signatures[k] = s;
-                mark(k);
+                try {
+                    const auto& p = platforms.at(platform);
+                    SigSpec s;
+                    s.module  = p.value("module", "");
+                    s.pattern = p.value("pattern", "");
+                    s.resolve = p.value("resolve", "");
+                    gc.signatures[k] = s;
+                    mark(k);
+                } catch (const std::exception& e) {
+                    error = "gamedata signatures." + k + " has the wrong type for platform \"" +
+                            platform + "\": " + e.what();
+                }
             }
 
     if (j.contains("keys"))
@@ -181,7 +197,7 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
 
         nlohmann::json j;
         if (!ParseFile(ownerDir / name, j, error)) return gc;
-        MergeFile(j, platform, /*isOverride=*/false, gc);
+        MergeFile(j, platform, /*isOverride=*/false, gc, error);
         gc.filesLoaded.push_back(name);
     }
 
@@ -193,16 +209,29 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
     if (fs::is_directory(customDir, ec)) {
         std::vector<fs::path> customFiles;
         for (const auto& de : fs::directory_iterator(customDir, ec)) {
-            if (!de.is_regular_file()) continue;
+            // custom/ is operator-writable: a dangling symlink or a file removed mid-iteration
+            // must not crash the process. The error_code overload reports the stat failure
+            // instead of throwing; treat "couldn't tell" the same as "not a regular file".
+            std::error_code fileEc;
+            bool isRegular = de.is_regular_file(fileEc);
+            if (fileEc || !isRegular) continue;
             const std::string ext = de.path().extension().string();
             if (ext != ".jsonc" && ext != ".json") continue;
             customFiles.push_back(de.path());
+        }
+        // The directory_iterator constructor above was also given `ec`; a failure opening/
+        // reading the directory (permission change after the is_directory check, etc.) leaves it
+        // silently short of entries unless we check here — surface it as a named, non-fatal
+        // reason rather than a quietly-incomplete override set.
+        if (ec) {
+            error = "gamedata custom overrides directory could not be fully read: " +
+                    customDir.string() + ": " + ec.message();
         }
         std::sort(customFiles.begin(), customFiles.end());
         for (const auto& p : customFiles) {
             nlohmann::json j;
             if (!ParseFile(p, j, error)) return gc;
-            MergeFile(j, platform, /*isOverride=*/true, gc);
+            MergeFile(j, platform, /*isOverride=*/true, gc, error);
             gc.filesLoaded.push_back("custom/" + p.filename().string());
         }
     }

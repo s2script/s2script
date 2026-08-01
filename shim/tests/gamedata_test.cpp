@@ -192,6 +192,71 @@ static void test_owners_do_not_share_a_namespace() {
     CHECK(a.offsets["Same"] == 1 && b.offsets["Same"] == 2, "same key in two owners does not collide");
 }
 
+static void test_bad_offset_type_degrades_only_that_entry() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "mixed.gamedata.jsonc" } ] })");
+    // "BadOffset" is a quoted number — wrong type for an offset, which wants an int.
+    put(root.path / "core" / "mixed.gamedata.jsonc", R"({
+      "offsets": {
+        "GoodOffset": { "linuxsteamrt64": 5 },
+        "BadOffset":  { "linuxsteamrt64": "7" }
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.offsets.count("GoodOffset") == 1 && gc.offsets["GoodOffset"] == 5,
+          "sibling well-formed offset survives a wrongly-typed one");
+    CHECK(gc.offsets.count("BadOffset") == 0, "wrongly-typed offset is left out, not crashed on");
+    CHECK(!err.empty() && err.find("BadOffset") != std::string::npos,
+          "error names the offending offset key");
+}
+
+static void test_bad_signature_type_degrades_only_that_entry() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "mixed.gamedata.jsonc" } ] })");
+    // "BadSig" is a bare scalar — wrong type for a signature, which wants an object.
+    put(root.path / "core" / "mixed.gamedata.jsonc", R"({
+      "signatures": {
+        "GoodSig": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct" } },
+        "BadSig":  { "linuxsteamrt64": 42 }
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.signatures.count("GoodSig") == 1 && gc.signatures["GoodSig"].pattern == "AA",
+          "sibling well-formed signature survives a wrongly-typed one");
+    CHECK(gc.signatures.count("BadSig") == 0, "wrongly-typed signature is left out, not crashed on");
+    CHECK(!err.empty() && err.find("BadSig") != std::string::npos,
+          "error names the offending signature key");
+}
+
+static void test_bad_entry_does_not_abort_later_files() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc", R"({
+      "files": [
+        { "file": "bad-first.gamedata.jsonc" },
+        { "file": "good-second.gamedata.jsonc" }
+      ]
+    })");
+    put(root.path / "core" / "bad-first.gamedata.jsonc",
+        R"({ "offsets": { "Broken": { "linuxsteamrt64": "not-an-int" } } })");
+    put(root.path / "core" / "good-second.gamedata.jsonc",
+        R"({ "offsets": { "FromSecondFile": { "linuxsteamrt64": 9 } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.offsets.count("FromSecondFile") == 1 && gc.offsets["FromSecondFile"] == 9,
+          "a later file still applies after an earlier file had one bad entry");
+    CHECK(!err.empty(), "the earlier bad entry is still reported");
+}
+
 int main() {
     test_master_selects_by_condition();
     test_array_order_is_apply_order();
@@ -202,6 +267,9 @@ int main() {
     test_missing_master_is_a_named_error();
     test_missing_listed_file_is_a_named_error();
     test_owners_do_not_share_a_namespace();
+    test_bad_offset_type_degrades_only_that_entry();
+    test_bad_signature_type_degrades_only_that_entry();
+    test_bad_entry_does_not_abort_later_files();
     if (g_fail) { std::cerr << g_fail << " check(s) FAILED\n"; return 1; }
     std::cout << "gamedata_test: all checks passed\n";
     return 0;
