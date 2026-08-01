@@ -1,5 +1,5 @@
 {
-  // This plugin's OWN gamedata. Same file shape as the framework's gamedata/core.gamedata.jsonc:
+  // This plugin's OWN gamedata. Same file shape as the framework's own gamedata/core/*.jsonc files:
   // a named entry whose keys are PLATFORM IDS, with the platform-specific details nested inside.
   //
   // Every value here was self-resolved against OUR pinned libserver.so. Nothing is borrowed.

@@ -53,7 +53,7 @@ The most important structural rule, baked in from the start. Three layers:
 
 **Enforcement (mechanical, not aspirational):** the build graph enforces the one-way dependency. Core (Rust crate + `@s2script/std`) has **zero** dependency on any game package; a CI check fails the build if `core` imports `cs2`. That single rule is what prevents CS2 assumptions leaking into core.
 
-### Gamedata ownership
+### 2.0.6 Gamedata ownership
 
 Gamedata is partitioned on two **orthogonal** axes, ported from SourceMod:
 

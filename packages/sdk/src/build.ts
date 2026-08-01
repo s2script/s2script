@@ -140,8 +140,11 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
         `s2script.gamedata escapes the plugin directory: ${JSON.stringify(s2.gamedata)} resolves to ${gdPath}`
       );
     }
-    // Naming convention: `<plugin-name-without-scope>.gamedata.jsonc`, mirroring the framework's own
-    // `gamedata/core/*.jsonc` / `gamedata/cs2/*.jsonc` — a gamedata file is named for whoever owns it.
+    // Naming convention: `<plugin-name-without-scope>.gamedata.jsonc` — a plugin's one gamedata file
+    // is named for its OWNER (the plugin), the same way `gamedata/core/` and `gamedata/cs2/` are
+    // owner-named DIRECTORIES in the framework's own tree. (The files inside those directories are
+    // named for their TARGET instead — common/engine.<engine>/game.<mod> — a distinction a plugin's
+    // single file has no need of, since a plugin has exactly one owner and no target axis.)
     // Enforced rather than documented so the convention actually holds: `@me/burn` -> `burn.gamedata.jsonc`.
     const unscoped = pkg.name.includes("/") ? pkg.name.slice(pkg.name.lastIndexOf("/") + 1) : pkg.name;
     const actualBase = basename(gdPath);
@@ -149,7 +152,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     if (!allowedBases.includes(actualBase)) {
       throw new Error(
         `s2script.gamedata must be named '${unscoped}.gamedata.jsonc' (after the plugin name without ` +
-          `its scope — the same rule that names the framework's own gamedata/core/*.jsonc files), but is '${actualBase}'`
+          `its scope — a plugin's gamedata is named for its owner, the plugin itself), but is '${actualBase}'`
       );
     }
     // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core/*.jsonc —

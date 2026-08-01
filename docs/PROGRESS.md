@@ -65,7 +65,7 @@ pre-switchover baseline that is empty.
 Master is an **array**, not an object, because plain `nlohmann::json` is `std::map` and sorts
 object keys — an object master's apply order would be decided by filename spelling.
 
-New gates: `scripts/test-gamedata.sh` (40 checks) and `scripts/check-gamedata-owners.sh`
+New gates: `scripts/test-gamedata.sh` (43 checks) and `scripts/check-gamedata-owners.sh`
 (ownership rule, both directions, plus master/disk agreement).
 
 Next: **A5b** retires the 8 CS2-API ops into `gamedata/cs2/` as `calls` descriptors — which needs a
