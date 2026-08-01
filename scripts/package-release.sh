@@ -81,6 +81,30 @@ mkdir -p \
     "$STAGE/addons/s2script/configs" \
     "$STAGE/addons/s2script/data"
 
+# Gamedata override channel. Two jobs, in order:
+#  1. Drop any <owner>/custom/ that a stale dist/ carried in — a maintainer's local hot-fix must
+#     never ship as if it were our data (package-addon.sh excludes it, this covers an older run).
+#  2. Create the directory EMPTY, with a README, for every shipped owner. docs/INSTALL.md tells
+#     operators to create a file in it, so it should exist in the zip rather than being a path
+#     they have to know to mkdir.
+find "$STAGE/addons/s2script/gamedata" -mindepth 2 -maxdepth 2 -type d -name custom \
+    -exec rm -rf {} +
+for owner_dir in "$STAGE/addons/s2script/gamedata"/*/; do
+    [ -d "$owner_dir" ] || continue
+    mkdir -p "$owner_dir/custom"
+    cat > "$owner_dir/custom/README.txt" <<EOF
+Operator gamedata overrides for the "$(basename "$owner_dir")" owner.
+
+Drop *.jsonc files here to override individual shipped entries after a CS2 update has moved a
+signature or offset — no rebuild, no waiting for a release. Files here are applied LAST, in sorted
+filename order, replacing whole named entries (an override file only needs the entries it changes).
+
+Never edit the shipped .jsonc files one directory up: an upgrade overwrites them. Overrides are
+announced at boot and recorded in any crash report, so a patched value is never mistaken for a
+shipped one. See docs/INSTALL.md, "Hot-fixing a broken signature".
+EOF
+done
+
 # Clear any leftover .s2sp from a local Docker deploy, then install base plugins.
 find "$STAGE/addons/s2script/plugins" -maxdepth 1 -type f -name '*.s2sp' -delete
 
