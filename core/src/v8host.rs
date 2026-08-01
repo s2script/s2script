@@ -2815,74 +2815,33 @@ pub(crate) fn dispatch_chat(slot: i32, text: &str, teamonly: bool) -> bool {
 /// `>= HookResult.Handled` (numeric `>= 2`) sets suppress. `undefined`/non-number/throw ⇒ Continue.
 /// Returns true iff any live subscriber requested suppression of the broadcast.
 fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
-    // Phase 1: snapshot — release CHAT_MSG_SUBS borrow before entering any context. Fixed key "".
     let snap = CHAT_MSG_SUBS.with(|m| m.borrow().snapshot(""));
-    if snap.is_empty() { return false; }
-
-    let mut suppress = false;
-    // Phase 2: enter each subscriber's context and invoke handler(slot, text, teamonly).
-    HOST.with(|h| {
-        // Re-entrancy guard (mirrors dispatch_game_event): a chat-triggered handler that re-enters
-        // dispatch while HOST is already borrowed is skipped, not double-borrowed (would panic).
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        for (owner, generation, handler_g) in &snap {
-            // Liveness check (release REGISTRY borrow before entering context).
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-            // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            // Per-subscriber HandleScope+ContextScope — mirrors dispatch_game_event.
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            // Per-handler TryCatch isolates a throwing handler from the rest.
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
-            let text_val: v8::Local<v8::Value> = match v8::String::new(tc, text) {
-                Some(s) => s.into(),
-                None => v8::undefined(tc).into(),
-            };
-            let team_val: v8::Local<v8::Value> = v8::Boolean::new(tc, teamonly).into();
-
-            let func = v8::Local::new(tc, handler_g);
-            match func.call(tc, recv, &[slot_val, text_val, team_val]) {
-                None => {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_chat: onMessage handler '{}': {}", owner, msg));
-                }
-                // A numeric return >= Handled (2) suppresses; undefined/non-number ⇒ Continue.
-                Some(ret) if ret.is_number() => {
-                    if ret.uint32_value(tc).unwrap_or(0) >= 2 { suppress = true; }
-                }
-                Some(_) => {}
-            }
-            // STOP on the first subscriber that claims the line — a chat message is consumed ONCE.
-            //
-            // This used to run every subscriber and merely OR their results together, which is wrong
-            // for an input that MEANS something: the menu model's "one active menu per slot" is
-            // per-ISOLATE, so a shop menu in one plugin and a nominate menu in another each believed
-            // they were the only one, and a live vote subscribes separately again. Typing "2" was
-            // therefore delivered to all three, and picked a shop item AND a map AND cast a ballot in
-            // one keystroke.
-            //
-            // Claiming a line is a statement that it has been dealt with, so nothing after should see
-            // it — normal hook semantics, and what makes the three features mutually exclusive without
-            // any of them needing to know the others exist.
-            if suppress { break; }
-        }
-    });
-    suppress
+    // StopAt::Handled — the DOCUMENTED exception to the ARCHITECTURE.md:78 collapse rule, preserved
+    // verbatim from the hand-rolled loop. A chat line is consumed ONCE: the menu model's "one active
+    // menu per slot" is per-ISOLATE, so a shop menu, a nominate menu and a live vote each believed
+    // they were the only one, and typing "2" picked a shop item AND a map AND cast a ballot in one
+    // keystroke. Claiming the line means nothing after sees it.
+    //
+    // NOTE this is the same shape as the damage bug fixed in this PR, and only the JUSTIFICATION
+    // differs — see the PR discussion. If chat should instead follow the standard rule, the fix is
+    // for menu/vote handlers to return `Stop` rather than `Handled`, not to change it here silently.
+    let result = fan_out_collapsing(
+        &snap,
+        "dispatch_chat: onMessage",
+        Instrument::none(),
+        StopAt::Handled,
+        |tc| {
+            Some(vec![
+                v8::Integer::new(tc, slot).into(),
+                match v8::String::new(tc, text) {
+                    Some(s) => s.into(),
+                    None => v8::undefined(tc).into(),
+                },
+                v8::Boolean::new(tc, teamonly).into(),
+            ])
+        },
+    );
+    result >= HookResult::Handled
 }
 
 /// Deliver a client-lifecycle notification to the `Clients.on*` subscribers for `event` (Clients
@@ -2945,6 +2904,31 @@ impl<'a> Instrument<'a> {
     }
 }
 
+/// How far a fan-out lets a handler's return value truncate the chain.
+///
+/// Three policies because the hand-rolled copies genuinely had three, and TWO of them are correct:
+///
+/// * `Never` — notify paths. The return value is not read at all, so a handler that happens to
+///   return a number cannot silently veto later subscribers.
+/// * `Stop` — the standard collapse, matching `multiplexer::run_chain`: `Handled` is a return value,
+///   NOT a veto over other plugins' observers; only `Stop` truncates. `multiplexer`'s own
+///   `handled_does_not_short_circuit` test is the authority.
+/// * `Handled` — the DOCUMENTED exception, used only by the chat path. A chat line is consumed
+///   ONCE: the menu model's "one active menu per slot" is per-ISOLATE, so a shop menu, a nominate
+///   menu and a live vote each believed they were the only one, and typing "2" picked a shop item
+///   AND a map AND cast a ballot in one keystroke. Claiming the line means nothing after sees it.
+///
+/// The distinction matters: `dispatch_damage` truncated at `Handled` too, but as a BUG (one
+/// plugin's `Handled` silently disabling every other plugin's damage observer), not as this
+/// deliberate consumed-once semantic. Converting both to one policy would have fixed damage and
+/// broken chat.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopAt {
+    Never,
+    Stop,
+    Handled,
+}
+
 pub(crate) fn fan_out<F>(
     snap: &[(String, u64, v8::Global<v8::Function>)],
     label: &str,
@@ -2953,14 +2937,53 @@ pub(crate) fn fan_out<F>(
 ) where
     F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
 {
+    let _ = fan_out_collapsing(snap, label, instrument, StopAt::Never, build_args);
+}
+
+/// `fan_out` with the handlers' return values collapsed into a single `HookResult`.
+///
+/// Collapse rule is `multiplexer::run_chain`'s, reproduced here because these paths snapshot from an
+/// `EventMux` (no per-subscription id or priority) rather than a `Descriptor`: take the MAX of the
+/// returned results, and truncate the remainder once one reaches `stop_at`. A non-number return (or
+/// `undefined`) is `Continue`; a handler that throws is `Continue` and does NOT truncate.
+///
+/// NOTE: no `Priority::Monitor` handling, because these paths have no priority — every subscriber is
+/// effectively Normal and runs in subscription order. That is today's behaviour (the callers
+/// synthesised `Priority::Normal` for every row before passing to `run_chain`), and it is why
+/// `events.d.ts` currently promises ordering semantics the runtime cannot deliver. Wiring real
+/// priority through is a separate, contract-affecting change.
+pub(crate) fn fan_out_collapsing<F>(
+    snap: &[(String, u64, v8::Global<v8::Function>)],
+    label: &str,
+    instrument: Instrument<'_>,
+    stop_at: StopAt,
+    build_args: F,
+) -> HookResult
+where
+    F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
+{
     if snap.is_empty() {
-        return;
+        return HookResult::Continue;
     }
     HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
+        // Re-entrancy: a handler that re-enters dispatch while HOST is already borrowed cannot run
+        // this pass. ALLOW (Continue) rather than double-borrow, which would panic — the engine-side
+        // action proceeds unhooked, which is the safe direction.
+        let Ok(mut borrow) = h.try_borrow_mut() else { return HookResult::Continue };
+        let Some(host) = borrow.as_mut() else { return HookResult::Continue };
 
+        let mut result = HookResult::Continue;
         for (owner, generation, handler_g) in snap {
+            if stop_at != StopAt::Never {
+                let truncated = match stop_at {
+                    StopAt::Stop => result == HookResult::Stop,
+                    StopAt::Handled => result >= HookResult::Handled,
+                    StopAt::Never => false,
+                };
+                if truncated {
+                    break;
+                }
+            }
             if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) {
                 continue;
             }
@@ -2992,22 +3015,37 @@ pub(crate) fn fan_out<F>(
             // handler with its arguments silently missing.
             let Some(args) = build_args(tc) else { continue };
             let func = v8::Local::new(tc, handler_g);
-            if func.call(tc, recv, &args).is_none() {
-                let msg = tc
-                    .exception()
-                    .map(|e| e.to_rust_string_lossy(&*tc))
-                    .unwrap_or_else(|| "handler threw".into());
-                log_warn(&format!("WARN: {}: handler '{}': {}", label, owner, msg));
-                if let Some(context) = instrument.report_as {
-                    let stack = tc
-                        .stack_trace()
-                        .map(|s| s.to_rust_string_lossy(&*tc))
-                        .unwrap_or_default();
-                    crate::crash::report_js_error(owner, context, &msg, &stack);
+            match func.call(tc, recv, &args) {
+                None => {
+                    let msg = tc
+                        .exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: {}: handler '{}': {}", label, owner, msg));
+                    if let Some(context) = instrument.report_as {
+                        let stack = tc
+                            .stack_trace()
+                            .map(|s| s.to_rust_string_lossy(&*tc))
+                            .unwrap_or_default();
+                        crate::crash::report_js_error(owner, context, &msg, &stack);
+                    }
                 }
+                Some(ret) if stop_at != StopAt::Never && ret.is_number() => {
+                    let r = match ret.uint32_value(tc).unwrap_or(0) {
+                        0 => HookResult::Continue,
+                        1 => HookResult::Changed,
+                        2 => HookResult::Handled,
+                        _ => HookResult::Stop,
+                    };
+                    if r > result {
+                        result = r;
+                    }
+                }
+                Some(_) => {}
             }
         }
-    });
+        result
+    })
 }
 
 pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
@@ -3218,50 +3256,24 @@ pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool
 /// so a broken listener can never silently eat a command.
 pub(crate) fn dispatch_command_listeners(slot: i32, name: &str, args: &str) -> bool {
     let snap = CLIENT_CMD_SUBS.with(|m| m.borrow().snapshot(name));
-    if snap.is_empty() { return false; }
-
-    let mut suppress = false;
-    HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        for (owner, generation, handler_g) in &snap {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
-            let args_val: v8::Local<v8::Value> = match v8::String::new(tc, args) {
-                Some(s) => s.into(),
-                None => v8::undefined(tc).into(),
-            };
-
-            let func = v8::Local::new(tc, handler_g);
-            match func.call(tc, recv, &[slot_val, args_val]) {
-                None => {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_client_command: listener '{}' on '{}': {}", owner, name, msg));
-                }
-                Some(ret) if ret.is_number() => {
-                    if ret.uint32_value(tc).unwrap_or(0) >= 2 { suppress = true; }
-                }
-                Some(_) => {}
-            }
-        }
-    });
-    suppress
+    // StopAt::Stop: listeners all run and their results OR together — the hand-rolled loop set
+    // `suppress` without ever breaking, which IS the standard collapse rule.
+    let result = fan_out_collapsing(
+        &snap,
+        &format!("dispatch_client_command on '{}'", name),
+        Instrument::none(),
+        StopAt::Stop,
+        |tc| {
+            Some(vec![
+                v8::Integer::new(tc, slot).into(),
+                match v8::String::new(tc, args) {
+                    Some(s) => s.into(),
+                    None => v8::undefined(tc).into(),
+                },
+            ])
+        },
+    );
+    result >= HookResult::Handled
 }
 
 /// Take (and clear) the recipient allow-mask set by `Events.setRecipients` during the current
@@ -6432,31 +6444,16 @@ fn zero_current_damage() {
 
 pub(crate) fn dispatch_damage() {
     let snap = DAMAGE_MUX.with(|m| m.borrow().snapshot("onPre"));
-    if snap.is_empty() { return; }
-
-    HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        for (owner, gen, handler_g) in &snap {
-            if !REGISTRY.with(|r| r.borrow().is_live(owner, *gen)) { continue; }
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, "damage:onPre");
-
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
-
-            // Construct new DamageInfo(): globalThis.__s2pkg_damage.DamageInfo.
-            let info_arg: Option<v8::Local<v8::Value>> = (|| {
-                let global = ctx_local.global(tc);
+    let result = fan_out_collapsing(
+        &snap,
+        "dispatch_damage",
+        Instrument::breadcrumb("damage:onPre"),
+        StopAt::Stop,
+        |tc| {
+            // Construct new DamageInfo(): globalThis.__s2pkg_damage.DamageInfo. A failure yields
+            // `undefined` rather than skipping the subscriber (pre-fan_out behaviour).
+            let info: Option<v8::Local<v8::Value>> = (|| {
+                let global = tc.get_current_context().global(tc);
                 let pkg_key = v8::String::new(tc, "__s2pkg_damage")?;
                 let pkg = global.get(tc, pkg_key.into())?;
                 let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
@@ -6465,31 +6462,21 @@ pub(crate) fn dispatch_damage() {
                 let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
                 ctor.new_instance(tc, &[]).map(|o| -> v8::Local<v8::Value> { o.into() })
             })();
-
-            let func = v8::Local::new(tc, handler_g);
-            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-            let info_val: v8::Local<v8::Value> = info_arg.unwrap_or_else(|| v8::undefined(tc).into());
-
-            match func.call(tc, recv, &[info_val]) {
-                None => {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_damage: handler '{}': {}", owner, msg));
-                }
-                Some(ret) => {
-                    // Return-type block power (locked decision #8): a handler returning
-                    // >= HookResult.Handled (2) zeroes the live damage and stops the chain.
-                    if let Some(n) = ret.int32_value(tc) {
-                        if n >= 2 {
-                            zero_current_damage();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    });
+            Some(vec![info.unwrap_or_else(|| v8::undefined(tc).into())])
+        },
+    );
+    // Block power: a handler returning >= Handled zeroes the live damage. Applied AFTER the collapse
+    // rather than mid-loop.
+    //
+    // This is the B2 fix. The old loop `break`ed at >= Handled, so ONE plugin's Handled silently
+    // denied every other plugin's onDamage handler its dispatch for that hit. That contradicts
+    // ARCHITECTURE.md:78 — "`Stop` short-circuits. `Handled` does NOT short-circuit (a later
+    // observer may still want the event)" — and multiplexer.rs's own `handled_does_not_short_circuit`
+    // test. The block is a decision about the DAMAGE, not a veto over other observers; a handler that
+    // genuinely wants to end the chain returns `Stop`, which `StopAt::Stop` honours.
+    if result >= HookResult::Handled {
+        zero_current_damage();
+    }
 }
 
 /// Usercmd primitive Task 2: run the `UserCmd.onRun` subscribers over the current tick's input (the
@@ -15410,10 +15397,18 @@ mod frame_tests {
     }
     extern "C" fn fake_dmg_schema_offset(_cls: *const c_char, _field: *const c_char) -> c_int { 68 }
 
-    /// L1 Task 4: an `onDamage` handler returning `>= HookResult.Handled` stops the chain — the second
-    /// subscriber never runs (mirrors the return-collapse semantic, observable without engine ops).
+    /// B2 fix — this test previously asserted the OPPOSITE, and the old assertion was the bug.
+    ///
+    /// `Handled` must NOT short-circuit an `onDamage` chain. `ARCHITECTURE.md:78` states the collapse
+    /// rule outright — "`Stop` short-circuits. `Handled` does **not** short-circuit (a later observer
+    /// may still want the event)" — and `multiplexer.rs`'s own `handled_does_not_short_circuit` test
+    /// says the same. `dispatch_damage` was the one path that `break`ed at `>= Handled`, so a single
+    /// plugin blocking a hit silently denied every OTHER plugin's damage observer its dispatch. That
+    /// is precisely the cross-plugin composition the collapse rule exists to protect.
+    ///
+    /// Blocking is a decision about the damage, not a veto over other observers.
     #[test]
-    fn damage_onpre_handled_return_stops_chain() {
+    fn damage_onpre_handled_does_not_stop_the_chain() {
         LOG.lock().unwrap().clear();
         init(logger).unwrap();
         create_plugin_context("p");
@@ -15422,7 +15417,30 @@ mod frame_tests {
             __s2pkg_damage.Damage.onPre(function(){ globalThis.__b++; return HookResult.Continue; });").unwrap();
         dispatch_damage();
         assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1", "first handler ran");
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "0", "chain stopped after Handled");
+        assert_eq!(
+            eval_in_context_string("p", "String(globalThis.__b)"), "1",
+            "a later observer must still run after another plugin returned Handled"
+        );
+        shutdown();
+    }
+
+    /// The other half of the rule: `Stop` DOES truncate. A handler that genuinely wants to end the
+    /// chain has a way to say so — which is what makes removing the `Handled` short-circuit safe
+    /// rather than a loss of expressiveness.
+    #[test]
+    fn damage_onpre_stop_return_truncates_the_chain() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0; \
+            __s2pkg_damage.Damage.onPre(function(){ globalThis.__a++; return HookResult.Stop; }); \
+            __s2pkg_damage.Damage.onPre(function(){ globalThis.__b++; return HookResult.Continue; });").unwrap();
+        dispatch_damage();
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1", "first handler ran");
+        assert_eq!(
+            eval_in_context_string("p", "String(globalThis.__b)"), "0",
+            "Stop must still truncate the remainder of the chain"
+        );
         shutdown();
     }
 
