@@ -37,6 +37,18 @@ export declare const ADMFLAG: {
   readonly CHEATS:      number;
   /** Full access — implicitly satisfies every flag (`1<<14` = 16384). See {@link AdminInfo.hasFlags}. */
   readonly ROOT:        number;
+  /** SM custom flag 1 — letter `o` (`1<<15` = 32768). Meaning is server-defined. */
+  readonly CUSTOM1:     number;
+  /** SM custom flag 2 — letter `p` (`1<<16` = 65536). Meaning is server-defined. */
+  readonly CUSTOM2:     number;
+  /** SM custom flag 3 — letter `q` (`1<<17` = 131072). Meaning is server-defined. */
+  readonly CUSTOM3:     number;
+  /** SM custom flag 4 — letter `r` (`1<<18` = 262144). Meaning is server-defined. */
+  readonly CUSTOM4:     number;
+  /** SM custom flag 5 — letter `s` (`1<<19` = 524288). Meaning is server-defined. */
+  readonly CUSTOM5:     number;
+  /** SM custom flag 6 — letter `t` (`1<<20` = 1048576). Meaning is server-defined. */
+  readonly CUSTOM6:     number;
 };
 
 /** An admin entry: their SteamID64, their combined flag mask, and a helper to check flags. */
