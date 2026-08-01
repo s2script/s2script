@@ -121,7 +121,13 @@ For the 46 entries in today's flat file:
 |---|---|
 | `core/engine.source2.jsonc` | the 5 engine-module interface strings: `SchemaSystem`, `EngineCvar`, `EngineToServer`, `NetworkServerService`, `NetworkMessages` |
 | `core/game.cs2.jsonc` | the 5 server-module interface strings (`Source2Server`, `Source2GameClients`, `Source2GameEntities`, `GameResourceService`, `GameEventSystem`), 5 of the 7 offsets, and 21 of the 29 signatures |
-| `cs2/game.cs2.jsonc` (A5b) | the 8 CS2-API signatures + the 2 parked `CCSPlayer_ItemServices_*` offsets |
+| `cs2/game.cs2.jsonc` | the 2 parked `CCSPlayer_ItemServices_*` offsets (A5a) + the 8 CS2-API signatures (A5b) |
+
+Verified empirically: of the 46 entries, exactly 44 are named in `shim/src` or `core/src`, and the
+two unnamed ones are the parked `CCSPlayer_ItemServices_*` offsets. The ownership rule therefore
+partitions today's file with **no allowlist and no judgement calls**, and A5a can move those two
+immediately — which also leaves `gamedata/cs2/` non-empty, so the new tier is exercised by the
+loader from its first commit rather than sitting unproven until A5b.
 
 Placement between `engine.source2` and `game.cs2` is **conservative by default**: when in doubt an
 entry goes to the game file. This costs nothing, because for CS2 the merged view is identical
@@ -219,7 +225,8 @@ Mechanical; no behaviour change.
   condition matching, `custom/` merge, moddir detection.
 - `gamedata/core.gamedata.jsonc` → `gamedata/core/{common,engine.source2,game.cs2}.gamedata.jsonc`
   per §4.1, comments carried verbatim (they are the treadmill re-resolution recipes).
-- `gamedata/cs2/` created, wired, and empty apart from its master.
+- `gamedata/cs2/` created and wired, carrying the 2 parked `CCSPlayer_ItemServices_*` offsets
+  (§4.1) so the tier is loader-exercised from the first commit.
 - `scripts/package-addon.sh`, `scripts/package-release.sh`, `scripts/check-gamedata-sigs.sh`
   updated for the tree; `scripts/check-gamedata-owners.sh` added to `ci-native.sh`.
 - Override channel: shipped files get the "do not edit" header; a parsed `custom/` file is logged
@@ -241,7 +248,7 @@ The 8 keys, each named in one uniform block of `shim/src/s2script_mm.cpp`: `Comm
 `games/cs2/js/pawn.js` gains the safe typed wrapper.
 
 The two `CCSPlayer_ItemServices_*` offsets are named nowhere in shim or core — parked entries from
-the deferred `dropActiveWeapon` work. They move to `gamedata/cs2/` with the rest.
+the deferred `dropActiveWeapon` work — and are already in `gamedata/cs2/` from A5a (§4.1).
 
 ### 9.1 Blocker — `Respawn` needs a validator the format doesn't have
 
