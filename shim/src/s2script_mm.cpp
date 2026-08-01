@@ -3660,8 +3660,16 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                        "not the shipped value\n", name.c_str());
     }
     auto& versions = s_gdCore.interfaces;
-    if (!gdError.empty()) {
-        META_CONPRINTF("[s2script] WARN: %s — skipping interface acquisition\n", gdError.c_str());
+    // Gate on filesLoaded, not gdError: gdError is shared across every entry in every file
+    // (spec §6 / gamedata.cpp MergeFile) so a single malformed offset or signature entry sets it,
+    // and that must WARN-and-continue through the descriptor's own GamedataResult(...), never take
+    // down every interface/hook/detour with it ("degrade per-descriptor, never crash globally").
+    // filesLoaded.empty() is the genuinely catastrophic case — master missing/unparseable, or no
+    // listed file applied — the modern equivalent of the old flat-file "file not found or didn't
+    // parse at all" condition that this gate originally guarded.
+    if (s_gdCore.filesLoaded.empty()) {
+        META_CONPRINTF("[s2script] WARN: no core gamedata files loaded — skipping interface "
+                       "acquisition\n");
     } else {
         CreateInterfaceFn serverFactory = ismm->GetServerFactory(false);
         CreateInterfaceFn engineFactory = ismm->GetEngineFactory(false);

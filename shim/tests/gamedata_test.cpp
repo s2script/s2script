@@ -257,6 +257,45 @@ static void test_bad_entry_does_not_abort_later_files() {
     CHECK(!err.empty(), "the earlier bad entry is still reported");
 }
 
+// The shim's interface-acquisition gate (s2script_mm.cpp) was rewritten to key off
+// filesLoaded.empty() rather than !error.empty(), specifically so a per-entry type error (which
+// sets `error` but keeps loading) does not take down every interface/hook/detour with it — only
+// a genuinely catastrophic load (missing/unparseable master, or no listed file applied at all)
+// should. Pin the distinction here so a future change to filesLoaded's population can't silently
+// re-break that gate.
+static void test_files_loaded_distinguishes_catastrophic_from_per_entry_error() {
+    {
+        TempRoot root;
+        put(root.path / "core" / "master.gamedata.jsonc",
+            R"({ "files": [ { "file": "mixed.gamedata.jsonc" } ] })");
+        // A malformed entry sets `error` but the file still loads and is recorded.
+        put(root.path / "core" / "mixed.gamedata.jsonc", R"({
+          "offsets": {
+            "GoodOffset": { "linuxsteamrt64": 5 },
+            "BadOffset":  { "linuxsteamrt64": "7" }
+          }
+        })");
+
+        std::string err;
+        GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                       "linuxsteamrt64", err);
+        CHECK(!err.empty(), "a per-entry type error is still reported");
+        CHECK(!gc.filesLoaded.empty(),
+              "filesLoaded is non-empty when a file loaded but had a malformed entry");
+    }
+    {
+        // No master at all -> genuinely catastrophic, nothing was applied.
+        TempRoot root;
+        fs::create_directories(root.path / "core");
+        std::string err;
+        GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                       "linuxsteamrt64", err);
+        CHECK(!err.empty(), "a missing master is still reported");
+        CHECK(gc.filesLoaded.empty(),
+              "filesLoaded is empty when the master itself is missing");
+    }
+}
+
 static void test_custom_overrides_a_shipped_entry() {
     TempRoot root;
     put(root.path / "core" / "master.gamedata.jsonc",
@@ -325,6 +364,7 @@ int main() {
     test_bad_offset_type_degrades_only_that_entry();
     test_bad_signature_type_degrades_only_that_entry();
     test_bad_entry_does_not_abort_later_files();
+    test_files_loaded_distinguishes_catastrophic_from_per_entry_error();
     test_custom_overrides_a_shipped_entry();
     test_custom_files_apply_in_sorted_order();
     test_absent_custom_dir_is_not_an_error();
