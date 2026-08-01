@@ -15474,6 +15474,16 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags(['kick','ban']))"), "12"); // KICK|BAN
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('kick'))"), "4");   // whole string = a name
         assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('z'))"), "16384");  // ROOT
+        // SM custom flags: letters o..t are Custom1..Custom6 at bits 15..20 (ROOT holds bit 14).
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('o'))"), "32768");   // CUSTOM1
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('t'))"), "1048576"); // CUSTOM6
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('op'))"), "98304");  // CUSTOM1|CUSTOM2
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('bo'))"), "32770");  // GENERIC|CUSTOM1
+        // ...and by name, through the same table lookup the other flags use.
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('custom1'))"), "32768");
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags(['custom1','custom6']))"), "1081344");
+        // 'u'..'y' remain unmapped — SM defines no flag there.
+        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('u'))"), "0");
         shutdown();
     }
 
@@ -15500,7 +15510,9 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "__s2pkg_admin.Admin.get('111').groups.join(',')"), "G");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('nobody'))"), "null");
         // an override with an unknown flag token is SKIPPED (not installed as a weakening mask-0)
-        eval_in_context("p", "__s2_admin_parseGroups('{\"H\":{\"flags\":\"c\",\"overrides\":{\"sm_x\":\"q\",\"sm_y\":\"d\"}}}');").unwrap();
+        // 'v' is deliberately a letter SM maps to no flag; 'q' used to serve here, but q..t became
+        // CUSTOM3..CUSTOM6 when custom flags landed.
+        eval_in_context("p", "__s2_admin_parseGroups('{\"H\":{\"flags\":\"c\",\"overrides\":{\"sm_x\":\"v\",\"sm_y\":\"d\"}}}');").unwrap();
         assert_eq!(eval_in_context_string("p",
             "Object.keys(__s2_admin_resolveEntry({groups:['H']}).overrides).sort().join(',')"), "sm_y");
         shutdown();
