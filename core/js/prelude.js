@@ -1022,6 +1022,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_ADMFLAG = {
     RESERVATION: 1<<0, GENERIC: 1<<1, KICK: 1<<2, BAN: 1<<3, UNBAN: 1<<4, SLAY: 1<<5, CHANGEMAP: 1<<6,
     CONVARS: 1<<7, CONFIG: 1<<8, CHAT: 1<<9, VOTE: 1<<10, PASSWORD: 1<<11, RCON: 1<<12, CHEATS: 1<<13, ROOT: 1<<14,
+    CUSTOM1: 1<<15, CUSTOM2: 1<<16, CUSTOM3: 1<<17, CUSTOM4: 1<<18, CUSTOM5: 1<<19, CUSTOM6: 1<<20,
   };
   function __s2_hasFlags(flags, req) { return ((flags & __s2_ADMFLAG.ROOT) !== 0) || ((flags & req) === req); }
 
@@ -1029,7 +1030,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function __s2_flag_letterBit(ch) {
     if (ch === "z" || ch === "Z") return __s2_ADMFLAG.ROOT;
     var i = String(ch).charCodeAt(0) - 97;                 // 'a'
-    return (i >= 0 && i <= 13) ? (1 << i) : 0;
+    if (i >= 0 && i <= 13) return 1 << i;                  // a..n -> RESERVATION..CHEATS
+    if (i >= 14 && i <= 19) return 1 << (i + 1);           // o..t -> CUSTOM1..CUSTOM6 (ROOT holds bit 14)
+    return 0;
   }
   function __s2_flag_token(tok) {                           // name OR single letter -> bit (0 = unknown)
     var up = String(tok).toUpperCase();
