@@ -9230,14 +9230,22 @@ pub fn shutdown() {
     // PENDING_REJECTS holds only Strings (no Globals), so drop order vs the isolate is not
     // load-bearing — this clear is hygiene for a clean re-init.
     PENDING_REJECTS.with(|m| m.borrow_mut().clear());
-    // Clear CONCOMMANDS BEFORE dropping the isolate — same discipline as RESOLVERS: the map holds
-    // Global<Function>s into the isolate; dropping them while the isolate is alive is required.
-    CONCOMMANDS.with(|m| m.borrow_mut().clear());
-    // Clear the flag-meta sidecar too (pure i64, no V8 handles, but reset for re-init hygiene).
-    COMMAND_META.with(|m| m.borrow_mut().clear());
-    // Clear the TopMenu registry BEFORE dropping the isolate — TOPMENU_ITEMS holds Global<Function>s
-    // into it (same discipline as CONCOMMANDS); categories/pending are pure Rust, cleared for hygiene.
-    TOPMENU_ITEMS.with(|m| m.borrow_mut().clear());
+    // Sweep EVERY registered owner-scoped store (owner_stores §6). This replaces the hand-written
+    // one-clear-per-store cascade that had to be extended for each new capability slice — and was
+    // silently forgotten on some (98cf483, e40492d, 7e62119 are three shipped fixes of that shape).
+    // A store is torn down here because it is REGISTERED, not because someone remembered.
+    //
+    // Placed BEFORE the isolate drops, and that placement is load-bearing: these stores hold
+    // Global<Function>s (the muxes are EventMux<v8::Global<v8::Function>>, plus CONCOMMANDS and
+    // TOPMENU_ITEMS), so the discipline stated above for RESOLVERS applies to every one of them —
+    // release the handles while the isolate is still alive. The old cascade cleared CONCOMMANDS and
+    // TOPMENU_ITEMS here but the ~20 mux stores AFTER the drop, which only held because `unload_all`
+    // above has normally already emptied them per plugin; a subscriber owned by no live plugin was
+    // residue. Nothing now runs later than it used to — only earlier, the safe direction.
+    crate::owner_stores::sweep_reset();
+    // TopMenu categories/seq/pending are NOT part of the TOPMENU_ITEMS store (categories outlive the
+    // registering plugin — SM parity), so they stay hand-cleared until the process-singletons
+    // registry lands.
     TOPMENU_CATEGORIES.with(|c| c.borrow_mut().clear());
     TOPMENU_SEQ.with(|c| c.set(0));
     TOPMENU_PENDING.with(|q| q.borrow_mut().clear());
@@ -9266,51 +9274,21 @@ pub fn shutdown() {
     HOST.with(|h| {
         let _ = h.borrow_mut().take();
     });
-    // Reset the descriptor so a re-init starts with a clean, empty registry.
-    FRAME.with(|f| *f.borrow_mut() = Descriptor::new("OnGameFrame"));
+    // NOTE: every mux/rules store that used to be cleared here is now swept by
+    // `owner_stores::sweep_reset()` above, BEFORE the isolate drops. What remains below is the
+    // not-owner-scoped state — pure-Rust sidecars and host-global caches — which is hand-maintained
+    // until the process-singletons registry lands (A3b). Adding a new capability slice should no
+    // longer add a line here: register the store instead.
+    //
     // Reset the frame counter so a re-init starts from zero.
     FRAME_COUNTER.with(|c| c.set(0));
-    // Reset the game-event mux so a re-init starts with a clean subscriber table.
-    EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the pre-hook event mux (Slice 5D.3) so a re-init starts clean.
-    EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the config-change subscriber mux (Slice 5E.2) so a re-init starts clean.
-    CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the damage pre-hook mux (Slice 6.6) so a re-init starts clean.
-    DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the raw-chat subscriber mux (Slice 6.13b) so a re-init starts clean.
-    CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    CLIENT_CMD_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the client-lifecycle mux (Clients sub-project) so a re-init starts clean.
-    CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the map-start mux (clientlist-fakeconvar-onmapstart slice) so a re-init starts clean.
-    MAP_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the precache mux (Sound slice) so a re-init starts clean.
-    PRECACHE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the Cookies.onCached mux + pending queue (clientprefs Task 4) so a re-init starts clean.
-    COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
     COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear());
-    // Reset the WebSocket on* mux + pending queue (WebSocket Task 2) so a re-init starts clean.
-    WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     WS_EVENT_PENDING.with(|q| q.borrow_mut().clear());
-    // Reset the net (raw TCP/UDP) on* mux + pending queue (Net Task 2) so a re-init starts clean.
-    NET_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
     NET_EVENT_PENDING.with(|q| q.borrow_mut().clear());
-    // Reset the Entity.onOutput mux (entity-I/O slice) so a re-init starts clean.
-    OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    CVAR_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the entity-lifecycle mux (entity-listeners slice) so a re-init starts clean.
-    ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the UserCmd.onRun mux (usercmd primitive) so a re-init starts clean.
-    USERCMD_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
-    // Reset the UserMessages.onPre mux + name→id map (usermsg-hook slice) so a re-init starts clean.
-    USERMSG_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+    // The usermsg name→id resolution caches (the MUX itself is a registered store).
     USERMSG_IDS.with(|m| m.borrow_mut().clear());
     USERMSG_RESOLVE.with(|m| m.borrow_mut().clear());
-    // Reset the per-plugin visibility rules (checktransmit slice) so a re-init starts clean.
-    TRANSMIT_RULES.with(|r| r.borrow_mut().clear());
-    // Reset the per-plugin voice-hearability rules (voice slice) so a re-init starts clean.
-    VOICE_RULES.with(|r| r.borrow_mut().clear());
     // Reset the reload-handoff map (Slice 5E.3) so a re-init starts clean.
     PENDING_HANDOFF.with(|h| h.borrow_mut().clear());
     // Reset the L1 lifecycle-v2 load state (in-flight loads, failed reasons, manifest versions).
@@ -9678,6 +9656,9 @@ pub(crate) fn register_builtin_stores() {
             refresh_detour();
         }),
         Box::new(|_ids| {}),
+        Box::new(|| {
+            FRAME.with(|f| *f.borrow_mut() = Descriptor::new("OnGameFrame"));
+        }),
     );
 
     // EVENT_MUX: emptied names → engine-op event_unsubscribe.
@@ -9690,6 +9671,9 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|ids| {
             let emptied = EVENT_MUX.with(|m| m.borrow_mut().remove_by_ids(ids));
             unsubscribe_emptied_events(&emptied);
+        }),
+        Box::new(|| {
+            EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
         }),
     );
 
@@ -9704,6 +9688,9 @@ pub(crate) fn register_builtin_stores() {
             EVENT_MUX_PRE.with(|m| m.borrow_mut().remove_by_ids(ids));
             reconcile_pre_hook();
         }),
+        Box::new(|| {
+            EVENT_MUX_PRE.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // DAMAGE_MUX: the DispatchTraceAttack detour stays installed for the process lifetime — no follow-up.
@@ -9711,6 +9698,9 @@ pub(crate) fn register_builtin_stores() {
         "DAMAGE_MUX",
         Box::new(|owner| { DAMAGE_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { DAMAGE_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // CHAT_MSG_SUBS: the Host_Say detour stays installed for the process lifetime — no follow-up.
@@ -9718,6 +9708,9 @@ pub(crate) fn register_builtin_stores() {
         "CHAT_MSG_SUBS",
         Box::new(|owner| { CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CHAT_MSG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // CLIENT_CMD_SUBS: the ClientCommand hook stays installed for the process lifetime — no follow-up.
@@ -9725,6 +9718,9 @@ pub(crate) fn register_builtin_stores() {
         "CLIENT_CMD_SUBS",
         Box::new(|owner| { CLIENT_CMD_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CLIENT_CMD_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            CLIENT_CMD_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // CLIENT_MUX: the six lifecycle hooks stay installed for the process lifetime — no follow-up.
@@ -9732,6 +9728,9 @@ pub(crate) fn register_builtin_stores() {
         "CLIENT_MUX",
         Box::new(|owner| { CLIENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            CLIENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // MAP_MUX: the StartupServer hook stays installed for the process lifetime — no follow-up.
@@ -9739,6 +9738,9 @@ pub(crate) fn register_builtin_stores() {
         "MAP_MUX",
         Box::new(|owner| { MAP_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { MAP_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            MAP_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // PRECACHE_MUX: the OnPrecacheResource hook stays installed for the process lifetime — no follow-up.
@@ -9746,6 +9748,9 @@ pub(crate) fn register_builtin_stores() {
         "PRECACHE_MUX",
         Box::new(|owner| { PRECACHE_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { PRECACHE_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            PRECACHE_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // COOKIE_CACHED_MUX: pure post-frame JS dispatch — no engine hook to remove.
@@ -9753,6 +9758,9 @@ pub(crate) fn register_builtin_stores() {
         "COOKIE_CACHED_MUX",
         Box::new(|owner| { COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // WS_EVENT_MUX: pure post-frame JS dispatch — the conns themselves close via the ledger.
@@ -9760,6 +9768,9 @@ pub(crate) fn register_builtin_stores() {
         "WS_EVENT_MUX",
         Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // NET_EVENT_MUX: pure post-frame JS dispatch — the sockets themselves drop via the ledger.
@@ -9767,6 +9778,9 @@ pub(crate) fn register_builtin_stores() {
         "NET_EVENT_MUX",
         Box::new(|owner| { NET_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { NET_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            NET_EVENT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // OUTPUT_MUX: the FireOutputInternal detour stays installed for the process lifetime — no follow-up.
@@ -9774,6 +9788,9 @@ pub(crate) fn register_builtin_stores() {
         "OUTPUT_MUX",
         Box::new(|owner| { OUTPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // CVAR_MUX: the global change callback stays installed for the process lifetime — no follow-up.
@@ -9781,6 +9798,9 @@ pub(crate) fn register_builtin_stores() {
         "CVAR_MUX",
         Box::new(|owner| { CVAR_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { CVAR_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            CVAR_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // ENTITY_MUX: the IEntityListener stays registered for the process lifetime — no follow-up.
@@ -9788,6 +9808,9 @@ pub(crate) fn register_builtin_stores() {
         "ENTITY_MUX",
         Box::new(|owner| { ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { ENTITY_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            ENTITY_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // USERCMD_MUX: the input-processing detour stays installed for the process lifetime — no follow-up.
@@ -9795,6 +9818,9 @@ pub(crate) fn register_builtin_stores() {
         "USERCMD_MUX",
         Box::new(|owner| { USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
         Box::new(|ids| { USERCMD_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            USERCMD_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // USERMSG_MUX: emptied canonical names → clear the shim bitmap bit via usermsg_hook_unsub.
@@ -9808,6 +9834,9 @@ pub(crate) fn register_builtin_stores() {
             let emptied = USERMSG_MUX.with(|m| m.borrow_mut().remove_by_ids(ids));
             unhook_emptied_usermsgs(&emptied);
         }),
+        Box::new(|| {
+            USERMSG_MUX.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // transmit (checktransmit): drop the plugin's visibility rules + re-push each affected index.
@@ -9816,6 +9845,9 @@ pub(crate) fn register_builtin_stores() {
         "TRANSMIT",
         Box::new(|owner| { transmit_remove_owner(owner); }),
         Box::new(|_ids| {}),
+        Box::new(|| {
+            TRANSMIT_RULES.with(|r| r.borrow_mut().clear());
+        }),
     );
 
     // voice hearability: drop the plugin's rules + re-push each affected sender, so a departed
@@ -9824,6 +9856,9 @@ pub(crate) fn register_builtin_stores() {
         "VOICE",
         Box::new(|owner| { voice_remove_owner(owner); }),
         Box::new(|_ids| {}),
+        Box::new(|| {
+            VOICE_RULES.with(|r| r.borrow_mut().clear());
+        }),
     );
 
     // CONFIG_SUBS: drop config-change subs + stop watching the file. The scope path drops the subs
@@ -9835,6 +9870,9 @@ pub(crate) fn register_builtin_stores() {
             crate::loader::unwatch_config_for(owner);
         }),
         Box::new(|ids| { CONFIG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            CONFIG_SUBS.with(|m| *m.borrow_mut() = crate::event_mux::EventMux::new());
+        }),
     );
 
     // CONCOMMANDS + COMMAND_META: drop the plugin's registered ConCommands (JS dispatch map only —
@@ -9852,6 +9890,10 @@ pub(crate) fn register_builtin_stores() {
             COMMAND_META.with(|m| { let mut b = m.borrow_mut(); for n in &dropped_cmds { b.remove(n); } });
         }),
         Box::new(|_ids| {}),
+        Box::new(|| {
+            CONCOMMANDS.with(|m| m.borrow_mut().clear());
+            COMMAND_META.with(|m| m.borrow_mut().clear());
+        }),
     );
 
     // TOPMENU_ITEMS: drop the plugin's registered items (categories persist once created — SM parity).
@@ -9860,6 +9902,9 @@ pub(crate) fn register_builtin_stores() {
         "TOPMENU_ITEMS",
         Box::new(|owner| { TOPMENU_ITEMS.with(|m| m.borrow_mut().retain(|_, it| it.owner != owner)); }),
         Box::new(|_ids| {}),
+        Box::new(|| {
+            TOPMENU_ITEMS.with(|m| m.borrow_mut().clear());
+        }),
     );
 }
 
@@ -11637,6 +11682,34 @@ mod frame_tests {
         assert_eq!(fp0, 2.5, "the declared float arg must survive the dropped pluginId slot");
         set_engine_ops(None);
         shutdown();
+    }
+
+    /// `shutdown()` must tear every registered owner-scoped store down by SWEEPING the registry, not
+    /// by a hand-written line per store. The cascade this replaces had to be extended by hand for
+    /// every new capability slice, and silently kept stale state on the ones where that was
+    /// forgotten — three shipped fixes of exactly that shape (98cf483, e40492d, 7e62119). A store is
+    /// now torn down because it is REGISTERED, not because someone remembered to add a line.
+    ///
+    /// The probe registers after `init()` (which calls `register_builtin_stores`, itself starting
+    /// with `owner_stores::reset()`), so it is still in the registry when `shutdown()` runs.
+    #[test]
+    fn shutdown_sweeps_every_registered_owner_store() {
+        thread_local! {
+            static PROBE_RESET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        let _ = init(dummy_logger());
+        PROBE_RESET.with(|c| c.set(false));
+        crate::owner_stores::register(
+            "TEST_PROBE",
+            Box::new(|_| {}),
+            Box::new(|_| {}),
+            Box::new(|| PROBE_RESET.with(|c| c.set(true))),
+        );
+        shutdown();
+        assert!(
+            PROBE_RESET.with(|c| c.get()),
+            "shutdown() must run every registered store's reset closure"
+        );
     }
 
     #[test]
