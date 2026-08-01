@@ -19,9 +19,11 @@ cd "$(dirname "$0")/.."
 python3 - "$@" <<'PY'
 import json, re, pathlib, sys
 
-path = pathlib.Path("gamedata/core.gamedata.jsonc")
-raw = re.sub(r'^\s*//.*$', '', path.read_text(), flags=re.M)
-sigs = json.loads(raw).get("signatures", {})
+paths = sorted(pathlib.Path("gamedata").rglob("*.jsonc"))
+sigs = {}
+for path in paths:
+    raw = re.sub(r'^\s*//.*$', '', path.read_text(), flags=re.M)
+    sigs.update(json.loads(raw).get("signatures", {}))
 
 REL = {"E8": "call rel32", "E9": "jmp rel32"}
 bad = []

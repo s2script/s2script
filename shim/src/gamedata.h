@@ -59,12 +59,3 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
                           const std::string& game,
                           const std::string& platform,
                           std::string& error);
-
-// --- Legacy flat-file loaders (deleted in Task 6, once s2script_mm.cpp is on GameConfig) ---
-std::map<std::string, std::string> LoadInterfaceVersions(const std::string& path, std::string& error);
-std::map<std::string, int> LoadOffsets(const std::string& path,
-                                        const std::string& platform,
-                                        std::string& error);
-std::map<std::string, SigSpec> LoadSignatures(const std::string& path,
-                                              const std::string& platform,
-                                              std::string& error);

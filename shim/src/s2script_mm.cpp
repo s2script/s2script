@@ -2426,14 +2426,9 @@ static std::string DetectModDir() {
     return std::string(basename(buf));              // "csgo"
 }
 
-// Compatibility shim: several call sites still ask for the flat gamedata file path directly.
-// Task 6 rewrites them to consume GamedataRoot() (and the tiering loader) instead; until then
-// this preserves the exact Slice-0 behaviour on top of the new root helper.
-static std::string GamedataPath() { return GamedataRoot() + "/core.gamedata.jsonc"; }
-
 // ---------------------------------------------------------------------------
 // Cs2JsPath: resolve pawn.js relative to the plugin .so via dladdr (mirrors
-// GamedataPath).  Expected layout (three dirname steps from the .so):
+// GamedataRoot).  Expected layout (three dirname steps from the .so):
 //   addons/s2script/bin/linuxsteamrt64/s2script.so
 //     dirname ×1 → bin/linuxsteamrt64
 //     dirname ×2 → bin
@@ -2452,13 +2447,13 @@ static std::string Cs2JsPath() {
         dir = dirname(buf);                         // s2script addon root
         return dir + "/js/pawn.js";
     }
-    // Fallback: relative to the server's cwd (mirrors the GamedataPath fallback).
+    // Fallback: relative to the server's cwd (mirrors the GamedataRoot fallback).
     return "addons/s2script/js/pawn.js";
 }
 
 // ---------------------------------------------------------------------------
 // PluginsDir: resolve the plugins directory relative to the plugin .so via dladdr
-// (mirrors Cs2JsPath / GamedataPath).  Expected layout:
+// (mirrors Cs2JsPath / GamedataRoot).  Expected layout:
 //   addons/s2script/bin/linuxsteamrt64/s2script.so
 //     dirname ×1 → bin/linuxsteamrt64
 //     dirname ×2 → bin
@@ -2768,6 +2763,7 @@ static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, 
 // class of bug). See docs/re-strategy.md. Reset at each Load; a banner is emitted after resolution.
 // ---------------------------------------------------------------------------
 static int s_gdOk = 0, s_gdFail = 0;
+static GameConfig s_gdCore;   // the core owner's merged gamedata, rebuilt each Load
 static void GamedataResult(const char* name, bool ok, const char* reason) {
     if (ok) { s_gdOk++;  META_CONPRINTF("[s2script]   gamedata OK    %s\n", name); }
     else    { s_gdFail++; META_CONPRINTF("[s2script]   gamedata FAIL  %s — %s\n", name, reason ? reason : "?"); }
@@ -2813,6 +2809,10 @@ static bool ValidateRespawnVtableMember(const uint8_t* fn, const ModText& mt) {
 static void GamedataBanner() {
     META_CONPRINTF("[s2script] === GAMEDATA VALIDATION: %d ok, %d FAILED%s ===\n", s_gdOk, s_gdFail,
                    s_gdFail ? "  (STALE for this CS2 build — regenerate; see docs/re-strategy.md)" : "");
+    if (!s_gdCore.overridden.empty())
+        META_CONPRINTF("[s2script] === %zu ENTRY/ENTRIES FROM gamedata/core/custom/ — "
+                       "operator-supplied, NOT the shipped values ===\n",
+                       s_gdCore.overridden.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -3645,8 +3645,21 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                    gdRoot.c_str(), modDir.empty() ? "<undetected>" : modDir.c_str());
 
     // --- Interface acquisition (data-driven, degrade-never-crash) ---
+    // --- Gamedata (owner-scoped; built ONCE per Load, spec §6) ---
     std::string gdError;
-    auto versions = LoadInterfaceVersions(GamedataPath(), gdError);
+    s_gdCore = LoadGameConfig(gdRoot, "core", "source2", modDir, "linuxsteamrt64", gdError);
+    if (!gdError.empty()) {
+        META_CONPRINTF("[s2script] WARN: %s — core gamedata degraded\n", gdError.c_str());
+    }
+    META_CONPRINTF("[s2script] gamedata core: %zu interfaces, %zu offsets, %zu signatures "
+                   "from %zu file(s)\n",
+                   s_gdCore.interfaces.size(), s_gdCore.offsets.size(),
+                   s_gdCore.signatures.size(), s_gdCore.filesLoaded.size());
+    for (const auto& name : s_gdCore.overridden) {
+        META_CONPRINTF("[s2script]   gamedata OVERRIDE %s (from custom/) — operator-supplied, "
+                       "not the shipped value\n", name.c_str());
+    }
+    auto& versions = s_gdCore.interfaces;
     if (!gdError.empty()) {
         META_CONPRINTF("[s2script] WARN: %s — skipping interface acquisition\n", gdError.c_str());
     } else {
@@ -3721,13 +3734,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             int ret = 0;
             m_gameEntities = serverFactory
                 ? reinterpret_cast<ISource2GameEntities*>(serverFactory(verStr, &ret)) : nullptr;
-            std::string ctiErr;
-            auto ctiOffsets = LoadOffsets(GamedataPath(), "linuxsteamrt64", ctiErr);
-            auto cit = ctiOffsets.find("CheckTransmitInfo_clientEntityIndex");
-            s_ctiClientOff = (ctiErr.empty() && cit != ctiOffsets.end() && cit->second >= 0)
-                                 ? cit->second : -1;
+            auto cit = s_gdCore.offsets.find("CheckTransmitInfo_clientEntityIndex");
+            s_ctiClientOff = (cit != s_gdCore.offsets.end() && cit->second >= 0) ? cit->second : -1;
             GamedataResult("CheckTransmitInfo_clientEntityIndex", s_ctiClientOff >= 0,
-                           !ctiErr.empty() ? ctiErr.c_str() : "offset key absent from gamedata");
+                           "offset key absent from gamedata");
             // Reset the per-Load hook state (a shim reload starts a fresh validation cycle).
             s_transmitTable.clear();
             s_transmitLayoutState = 0;
@@ -3896,14 +3906,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
             if (pGameResSvc && ret == 0) {
                 // Read entity-system offset from gamedata (layout-is-data, never hardcoded).
-                std::string offsetError;
-                auto offsets = LoadOffsets(GamedataPath(), "linuxsteamrt64", offsetError);
-                if (!offsetError.empty()) {
-                    META_CONPRINTF("[s2script] WARN: %s — entity-system offset unavailable\n",
-                                   offsetError.c_str());
-                }
-                auto oit = offsets.find("GameEntitySystem");
-                if (oit != offsets.end() && oit->second >= 0) {
+                auto oit = s_gdCore.offsets.find("GameEntitySystem");
+                if (oit != s_gdCore.offsets.end() && oit->second >= 0) {
                     int entSysOffset = oit->second;
                     // Cache the service pointer and offset; do NOT read CGameEntitySystem* here.
                     // The entity-system field is null at Load (the map doesn't exist yet); we read
@@ -3926,11 +3930,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // by pattern. Signature + module are gamedata (layout-is-data). Degrade-never-crash: any
         // failure leaves s_pGameEventManager null -> event ops no-op.
         {
-            std::string sigErr;
-            auto sigs = LoadSignatures(GamedataPath(), "linuxsteamrt64", sigErr);
-            if (!sigErr.empty()) {
-                META_CONPRINTF("[s2script] WARN: %s — GameEventManager sig unavailable\n", sigErr.c_str());
-            }
+            auto& sigs = s_gdCore.signatures;
             // Slice 6.9: resolve + VALIDATE (unique match) via the gamedata gate, so a stale/moved sig is loud.
             auto it = sigs.find("GameEventManager");
             if (it == sigs.end()) {
@@ -4446,8 +4446,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
-            std::string offErr;
-            auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
+            auto& offs = s_gdCore.offsets;
             auto pick = [&](const char* k) { auto i = offs.find(k); return i != offs.end() ? i->second : -1; };
             // Entity-creation lifecycle slice (Task 2): CBaseEntity::Teleport's vtable INDEX. A
             // borrowed index is a HINT, not trusted blind — Shim_EntityTeleport re-validates the
@@ -4481,10 +4480,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 GamedataResult("CNavPhysicsInterface (RTTI vtable)", false,
                                "RTTI typeinfo/vtable not found in libserver.so — regenerate");
             } else {
-                std::string offErr;
-                auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
-                auto oit = offs.find("CNavPhysicsInterface_TraceShape");
-                if (oit == offs.end() || oit->second < 0) {
+                auto oit = s_gdCore.offsets.find("CNavPhysicsInterface_TraceShape");
+                if (oit == s_gdCore.offsets.end() || oit->second < 0) {
                     GamedataResult("CNavPhysicsInterface_TraceShape", false,
                                    "offset (vtable index) key absent from gamedata");
                 } else {
@@ -4714,13 +4711,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             fclose(f);
             return s;
         };
-        std::string gdPath = GamedataPath();
-        std::string gdBytes = slurp(gdPath);
-        std::string gdFp = gdBytes.empty() ? "" : fnv64hex(gdBytes);
+        // Fingerprint every gamedata file actually applied, in apply order, plus a marker for how
+        // many entries an operator override supplied. An incident must never attribute a patched
+        // signature to the shipped value.
+        std::string gdBytes;
         char gdMtime[32] = "";
-        struct stat st{};
-        if (stat(gdPath.c_str(), &st) == 0)
-            snprintf(gdMtime, sizeof gdMtime, "%lld", (long long)st.st_mtime);
+        long long newest = 0;
+        for (const auto& name : s_gdCore.filesLoaded) {
+            const std::string p = gdRoot + "/core/" + name;
+            gdBytes += slurp(p);
+            struct stat fst{};
+            if (stat(p.c_str(), &fst) == 0 && (long long)fst.st_mtime > newest)
+                newest = (long long)fst.st_mtime;
+        }
+        if (newest) snprintf(gdMtime, sizeof gdMtime, "%lld", newest);
+        std::string gdFp = gdBytes.empty() ? "" : fnv64hex(gdBytes);
+        if (!s_gdCore.overridden.empty())
+            gdFp += "+custom" + std::to_string(s_gdCore.overridden.size());
         std::string schemaHash;
         {
             std::string js = slurp(Cs2JsPath());   // the deployed pawn.js concat carries the
