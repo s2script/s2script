@@ -2036,28 +2036,31 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_plugins = { Plugins: __s2_plugins };
   // --- @s2script/sdk/unsafe — plugin-declared engine calls. A THIN shim by design: core registered
   //     every descriptor at plugin load from the packed gamedata.json and owns all marshalling, so
-  //     this layer only asks by NAME. `call()` guards ONCE (at factory time, where `pid` is this
-  //     plugin's own id) and hands back a plain callable or null, keeping call sites clean. ---
+  //     this layer only asks by NAME. `call()` guards ONCE (at factory time) and hands back a plain
+  //     callable or null, keeping call sites clean.
+  //     The plugin id is NEVER passed from here: each native reads the CALLING CONTEXT's id itself,
+  //     so this layer cannot name another plugin even by mistake. The callable resolves that id at
+  //     invoke time rather than factory time, which is the same context either way — a function
+  //     cannot cross the plugin boundary (inter-plugin payloads are JSON structured copies). ---
   globalThis.__s2pkg_unsafe = {
     Engine: {
       call: function (name) {
-        var pid = __s2_current_plugin();
-        if (!__s2_engine_call_ready(pid, name)) return null;
+        if (!__s2_engine_call_ready(name)) return null;
         // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading
         // `self`: shifting one off would silently eat the first real argument.
-        if (__s2_engine_call_receiverless(pid, name)) {
+        if (__s2_engine_call_receiverless(name)) {
           return function () {
-            return __s2_engine_call_invoke(pid, name, 0, 0, Array.prototype.slice.call(arguments));
+            return __s2_engine_call_invoke(name, 0, 0, Array.prototype.slice.call(arguments));
           };
         }
         return function () {
           var args = Array.prototype.slice.call(arguments);
           var self = args.shift();
           if (!self) return null;          // no receiver -> no-op (never a call on a null `this`)
-          return __s2_engine_call_invoke(pid, name, self.index, self.id, args);
+          return __s2_engine_call_invoke(name, self.index, self.id, args);
         };
       },
-      status: function (name) { return __s2_engine_call_status(__s2_current_plugin(), name); },
+      status: function (name) { return __s2_engine_call_status(name); },
     },
   };
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
@@ -7576,47 +7579,54 @@ fn pack_entity_arg(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
     ((index as u32 as u64) << 32) | (serial as u32 as u64)
 }
 
-/// Native `__s2_engine_call_ready(pluginId, callName) -> boolean`. True iff the descriptor passed
+// The plugin id these four natives key on is ALWAYS the calling context's own
+// (`current_plugin`), never a caller-supplied string. `gamedata_calls::prepare` gates the
+// `engine:calls` permission once, at registration, so a descriptor's presence in the registry IS
+// its authorization — and these raw natives sit on every plugin's global object. Taking the id as
+// an argument would let any plugin drive the engine calls the operator allow-listed for a
+// DIFFERENT plugin. A context with no plugin identity (the shared HOST context) fails closed.
+
+/// Native `__s2_engine_call_ready(callName) -> boolean`. True iff the descriptor passed
 /// every LOAD-time gate (allow-list + op + resolve/validate). This is what `Engine.call()` keys
 /// callable-or-null on, so it deliberately ignores a pending `via` hop (spec §11).
 fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        if args.length() < 2 { return; }
-        let pid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
+        if args.length() < 1 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
         rv.set_bool(crate::gamedata_calls::is_ready(&pid, &name));
     }));
 }
 
-/// Native `__s2_engine_call_receiverless(pluginId, callName) -> boolean`. True for a descriptor
+/// Native `__s2_engine_call_receiverless(callName) -> boolean`. True for a descriptor
 /// declaring `receiver.kind: "none"` — the generated callable then takes no leading `self`.
 fn s2_engine_call_receiverless(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
-        if args.length() < 2 { return; }
-        let pid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
+        if args.length() < 1 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
         rv.set_bool(crate::gamedata_calls::is_receiverless(&pid, &name));
     }));
 }
 
-/// Native `__s2_engine_call_status(pluginId, callName) -> string`. `"available"`, or the named reason
+/// Native `__s2_engine_call_status(callName) -> string`. `"available"`, or the named reason
 /// the descriptor is not (spec §12) — for diagnostics and operator reports.
 fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // Default to a NAMED reason up front: a panic below then still yields a sentence an operator
         // can act on, never JS `undefined`.
         if let Some(s) = v8::String::new(scope, "unavailable") { rv.set(s.into()); }
-        if args.length() < 2 { return; }
-        let pid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
+        if args.length() < 1 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
         let status = crate::gamedata_calls::status(&pid, &name);
         if let Some(s) = v8::String::new(scope, &status) { rv.set(s.into()); }
     }));
 }
 
-/// Native `__s2_engine_call_invoke(pluginId, callName, selfIndex, selfId, argsArray) -> value`.
+/// Native `__s2_engine_call_invoke(callName, selfIndex, selfId, argsArray) -> value`.
 ///
 /// JS passes ONLY the receiver identity and the raw arg values; core looks the descriptor up to
 /// obtain the shim call id, the arg kinds, the return kind and (lazily) the `via` sub-object offset.
@@ -7628,9 +7638,9 @@ fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
-        if args.length() < 4 { return; }
-        let pid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
+        if args.length() < 3 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
         // The registry borrow is released HERE (the plan is cloned): the engine call below may
         // synchronously fire an output/event that dispatches into JS and calls Engine.call again.
         let Some(plan) = crate::gamedata_calls::plan(&pid, &name) else { return };
@@ -7642,7 +7652,7 @@ fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         let (index, serial) = if plan.receiverless {
             (-1, 0)
         } else {
-            match ent_op_serial(scope, args.get(2), args.get(3)) {
+            match ent_op_serial(scope, args.get(1), args.get(2)) {
                 Some(pair) => pair,
                 None => return,
             }
@@ -7672,7 +7682,7 @@ fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
         // Marshal the args into the two SysV register sequences, preserving order within each class.
         // `strs`/`vecs` carry the indirect payloads; a GP slot holds their INDEX (bounded by the slot
         // count, which is what the shim re-validates).
-        let js_args = v8::Local::<v8::Array>::try_from(args.get(4)).ok();
+        let js_args = v8::Local::<v8::Array>::try_from(args.get(3)).ok();
         let mut gp: Vec<u64> = Vec::new();
         let mut gp_kind: Vec<u8> = Vec::new();
         let mut fp: Vec<f64> = Vec::new();
@@ -13329,10 +13339,121 @@ mod frame_tests {
                 r#"__s2require("@s2script/sdk/unsafe").Engine.status("nope")"#),
             "not declared in this plugin's gamedata");
         // The natives themselves: ready is false and invoke no-ops to null for an unknown descriptor.
+        // They take the call name ONLY — the plugin id is the calling context's.
         assert!(eval_in_context_bool("unsafepfx",
-            r#"__s2_engine_call_ready("unsafepfx", "nope") === false"#));
+            r#"__s2_engine_call_ready("nope") === false"#));
         assert!(eval_in_context_bool("unsafepfx",
-            r#"__s2_engine_call_invoke("unsafepfx", "nope", 1, 1, []) === null"#));
+            r#"__s2_engine_call_invoke("nope", 1, 1, []) === null"#));
+        shutdown();
+    }
+
+    /// A plugin must never be able to act AS another plugin. `gamedata_calls` gates the
+    /// `engine:calls` permission once, at registration (`prepare`), so a descriptor's mere
+    /// existence in the registry IS its authorization — which means the plugin id these natives
+    /// key on decides who may drive an operator-allow-listed engine call. It must therefore come
+    /// from the CALLING CONTEXT (`current_plugin`), never from a string the caller chose: the raw
+    /// `__s2_engine_call_*` natives sit on every plugin's global object.
+    #[test]
+    fn engine_call_natives_ignore_a_caller_supplied_plugin_id() {
+        let _ = init(dummy_logger());
+        crate::loader::load_permissions_from_str(r#"{"engine:calls":["gd_victim"]}"#).unwrap();
+        create_plugin_context("gd_victim");
+        create_plugin_context("gd_attacker");
+        // The victim declares a call. With no engine ops under test it registers Degraded — still a
+        // REGISTERED descriptor, which is all this test needs to tell "someone else's" apart from
+        // "not declared".
+        crate::gamedata_calls::register_plugin(
+            "gd_victim",
+            r#"{"calls":{"SecretCall":{"receiver":{"kind":"entity"},
+                "target":{"kind":"signature","name":"Ig","module":"libserver.so",
+                          "pattern":"55 48","resolve":"direct"},
+                "args":["float"],"returns":"void"}}}"#,
+        );
+        // Precondition, asserted Rust-side so it does not depend on the natives' arity: the
+        // descriptor really is registered. Without this the attack assertion could pass vacuously.
+        assert_ne!(
+            crate::gamedata_calls::status("gd_victim", "SecretCall"),
+            "not declared in this plugin's gamedata",
+            "precondition: the victim's descriptor must be registered"
+        );
+        // The attack: the attacker names the victim as the plugin id. The natives take the call
+        // name ONLY, so this reads as a call named "gd_victim" in the ATTACKER's own registry —
+        // which does not exist.
+        assert_eq!(
+            eval_in_context_string(
+                "gd_attacker",
+                r#"__s2_engine_call_status("gd_victim", "SecretCall")"#
+            ),
+            "not declared in this plugin's gamedata",
+            "a caller-supplied plugin id must not select another plugin's descriptor"
+        );
+        shutdown();
+    }
+
+    thread_local! {
+        /// (call_id, first FP arg) recorded by `fake_call_invoke`.
+        static LAST_ENGINE_CALL: std::cell::Cell<(c_int, f64)> =
+            const { std::cell::Cell::new((-1, 0.0)) };
+    }
+
+    extern "C" fn fake_call_resolve(
+        _kind: *const c_char, _module: *const c_char, _pattern: *const c_char,
+        _resolve: *const c_char, _class_name: *const c_char, _vtable_index: c_int,
+        _prologue: *const c_char, _reason_out: *mut c_char, _reason_cap: c_int,
+    ) -> c_int { 7 }
+
+    extern "C" fn fake_call_invoke(
+        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        fp: *const f64, fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        _ret_kind: c_int, _ret_out: *mut u64,
+    ) -> c_int {
+        let f0 = if fp_count > 0 && !fp.is_null() { unsafe { *fp } } else { 0.0 };
+        LAST_ENGINE_CALL.with(|c| c.set((call_id, f0)));
+        1
+    }
+
+    /// The legitimate path, which dropping the leading `pluginId` argument could have broken
+    /// silently: an AUTHORIZED plugin asking for its OWN descriptor still gets a working callable,
+    /// and the receiver/arg slots still land where the shim expects after every following argument
+    /// shifted down one. A RECEIVERLESS descriptor is used so no live entity is needed — the arg
+    /// array is the slot that moved (`args.get(4)` -> `args.get(3)`).
+    ///
+    /// Without an `engine_call_resolve` op no descriptor ever reaches `Ready`, so nothing else in
+    /// the suite covers a successful `Engine.call` at all.
+    #[test]
+    fn engine_call_still_invokes_for_the_owning_plugin() {
+        let _ = init(dummy_logger());
+        crate::loader::load_permissions_from_str(r#"{"engine:calls":["gd_owner"]}"#).unwrap();
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(fake_call_invoke),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("gd_owner");
+        crate::gamedata_calls::register_plugin(
+            "gd_owner",
+            r#"{"calls":{"Boom":{"receiver":{"kind":"none"},
+                "target":{"kind":"signature","name":"Bo","module":"libserver.so",
+                          "pattern":"55 48","resolve":"direct"},
+                "args":["float"],"returns":"void"}}}"#,
+        );
+        assert_eq!(
+            crate::gamedata_calls::status("gd_owner", "Boom"), "available",
+            "precondition: the descriptor must resolve through the fake op"
+        );
+        // The owning plugin gets a callable — and never names itself to get one.
+        assert!(eval_in_context_bool("gd_owner",
+            r#"typeof __s2require("@s2script/sdk/unsafe").Engine.call("Boom") === "function""#),
+            "an authorized plugin's own declared call must still be callable");
+        LAST_ENGINE_CALL.with(|c| c.set((-1, 0.0)));
+        assert!(eval_in_context_bool("gd_owner",
+            r#"(__s2require("@s2script/sdk/unsafe").Engine.call("Boom")(2.5), true)"#));
+        let (call_id, fp0) = LAST_ENGINE_CALL.with(|c| c.get());
+        assert_eq!(call_id, 7, "the resolved call id must reach the engine op");
+        assert_eq!(fp0, 2.5, "the declared float arg must survive the dropped pluginId slot");
+        set_engine_ops(None);
         shutdown();
     }
 
