@@ -236,6 +236,51 @@ static void test_bad_signature_type_degrades_only_that_entry() {
           "error names the offending signature key");
 }
 
+static void test_bad_interface_type_degrades_only_that_entry() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "mixed.gamedata.jsonc" } ] })");
+    // "BadIface" is a number — wrong type for an interface, which wants a version string.
+    put(root.path / "core" / "mixed.gamedata.jsonc", R"({
+      "interfaces": {
+        "GoodIface": "V001",
+        "BadIface":  7
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.interfaces.count("GoodIface") == 1 && gc.interfaces["GoodIface"] == "V001",
+          "sibling well-formed interface survives a wrongly-typed one");
+    CHECK(gc.interfaces.count("BadIface") == 0,
+          "wrongly-typed interface is left out, not crashed on");
+    CHECK(!err.empty() && err.find("BadIface") != std::string::npos,
+          "error names the offending interface key");
+}
+
+static void test_bad_keys_type_degrades_only_that_entry() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "mixed.gamedata.jsonc" } ] })");
+    // "BadKey" is a number — wrong type for a `keys` entry, which wants a behavioural string.
+    put(root.path / "cs2" / "mixed.gamedata.jsonc", R"({
+      "keys": {
+        "GoodKey": "sprites/laserbeam.vmt",
+        "BadKey":  1
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.keys.count("GoodKey") == 1 && gc.keys["GoodKey"] == "sprites/laserbeam.vmt",
+          "sibling well-formed key survives a wrongly-typed one");
+    CHECK(gc.keys.count("BadKey") == 0, "wrongly-typed key is left out, not crashed on");
+    CHECK(!err.empty() && err.find("BadKey") != std::string::npos,
+          "error names the offending keys key");
+}
+
 static void test_bad_entry_does_not_abort_later_files() {
     TempRoot root;
     put(root.path / "core" / "master.gamedata.jsonc", R"({
@@ -363,6 +408,8 @@ int main() {
     test_owners_do_not_share_a_namespace();
     test_bad_offset_type_degrades_only_that_entry();
     test_bad_signature_type_degrades_only_that_entry();
+    test_bad_interface_type_degrades_only_that_entry();
+    test_bad_keys_type_degrades_only_that_entry();
     test_bad_entry_does_not_abort_later_files();
     test_files_loaded_distinguishes_catastrophic_from_per_entry_error();
     test_custom_overrides_a_shipped_entry();

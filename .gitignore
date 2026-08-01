@@ -6,6 +6,11 @@ docker/cs2-data/
 docker/metamod/
 .gate/
 
+# Operator gamedata overrides (hand-written hot-fixes an admin drops in at deploy time) — never
+# shipped data, never committed. package-addon.sh copies the whole gamedata/ tree verbatim, so an
+# accidentally-committed custom/ file would be indistinguishable from shipped data in the release.
+gamedata/*/custom/
+
 # Example/plugin build artifacts (regenerable via `npx s2script build`)
 examples/**/dist/
 plugins/**/dist/

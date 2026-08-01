@@ -34,8 +34,10 @@ void MergeFile(const nlohmann::json& j, const std::string& platform, bool isOver
     auto mark = [&](const std::string& name) { if (isOverride) gc.overridden.insert(name); };
 
     if (j.contains("interfaces"))
-        for (auto& [k, v] : j.at("interfaces").items())
+        for (auto& [k, v] : j.at("interfaces").items()) {
             if (v.is_string()) { gc.interfaces[k] = v.get<std::string>(); mark(k); }
+            else error = "gamedata interfaces." + k + " has the wrong type (expected a string)";
+        }
 
     if (j.contains("offsets"))
         for (auto& [k, platforms] : j.at("offsets").items())
@@ -67,8 +69,10 @@ void MergeFile(const nlohmann::json& j, const std::string& platform, bool isOver
             }
 
     if (j.contains("keys"))
-        for (auto& [k, v] : j.at("keys").items())
+        for (auto& [k, v] : j.at("keys").items()) {
             if (v.is_string()) { gc.keys[k] = v.get<std::string>(); mark(k); }
+            else error = "gamedata keys." + k + " has the wrong type (expected a string)";
+        }
 }
 
 // Parse one JSONC file. Returns false and sets `error` on read/parse failure.
