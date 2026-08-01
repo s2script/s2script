@@ -4,15 +4,20 @@ name: ci-native
 # zero jobs — the old `changes` (dorny/paths-filter) and `ci-ok` (fail-closed aggregator)
 # jobs are gone. See docs/superpowers/specs/2026-07-22-ci-consolidation-design.md.
 #
-# NOTE: gamedata/** is deliberately NOT here — it belongs to ci-js. Nothing compiles it in;
-# the shim reads the owner-scoped gamedata/ tree from disk at runtime. That is the CLAUDE.md
-# invariant "layout is data, semantics are code" expressed as a path filter.
+# NOTE: gamedata/** IS here, and must be. All three gamedata gates — test-gamedata.sh (the loader
+# unit test), check-gamedata-owners.sh (the ownership boundary) and check-gamedata-sigs.sh (no
+# build-specific operand in a signature) — run from scripts/ci-native.sh; ci-js.sh has no gamedata
+# gate at all. Nothing compiles the tree in, but a gamedata-only change is the single most common
+# PR on the CS2 update treadmill, and it is exactly the change those gates exist to catch: the
+# stale `SetModel` operand that turned EntityRef.setModel into a silent no-op was gamedata-only.
+# Each gate script's own path is listed too, so editing a gate runs it.
 on:
   pull_request:
     paths:
       - 'core/**'
       - 'shim/**'
       - 'games/**'
+      - 'gamedata/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.cargo/**'
@@ -27,6 +32,10 @@ on:
       - 'scripts/check-core-names.sh'
       - 'scripts/test-boundary-nameleak.sh'
       - 'scripts/test-sigscan.sh'
+      - 'scripts/test-gamedata.sh'
+      - 'scripts/check-gamedata-owners.sh'
+      - 'scripts/check-gamedata-sigs.sh'
+      - 'scripts/lib/**'
       - '.github/workflows/ci-native.yml'
   push:
     branches: [main]
@@ -34,6 +43,7 @@ on:
       - 'core/**'
       - 'shim/**'
       - 'games/**'
+      - 'gamedata/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.cargo/**'
@@ -48,6 +58,10 @@ on:
       - 'scripts/check-core-names.sh'
       - 'scripts/test-boundary-nameleak.sh'
       - 'scripts/test-sigscan.sh'
+      - 'scripts/test-gamedata.sh'
+      - 'scripts/check-gamedata-owners.sh'
+      - 'scripts/check-gamedata-sigs.sh'
+      - 'scripts/lib/**'
       - '.github/workflows/ci-native.yml'
 
 concurrency:

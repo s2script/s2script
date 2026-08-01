@@ -5,9 +5,12 @@
 #
 # gamedata/core/**  : every key MUST appear as a string literal in shim/src or core/src.
 #                     A key nobody names is not core's — it belongs to a game package or a plugin.
-# gamedata/cs2/**   : no key may appear in shim/src or core/src. A hit means the game package's
+# gamedata/<other>/ : no key may appear in shim/src or core/src. A hit means the game package's
 #                     namespace has leaked back into the engine-generic layer, which is exactly
 #                     the boundary this tier exists to hold.
+#
+# The OWNER SET is not hardcoded: it is read from the shim's kGamedataOwners[] table, so a
+# gamedata/<owner>/ directory nothing loads fails here rather than sitting inert on disk.
 #
 # Also checks that the master index and the files on disk agree in both directions: a file present
 # but unlisted would silently never load, and a file listed but absent is a boot-time hard error.
@@ -16,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 - <<'PY'
-import json, pathlib, sys
+import json, pathlib, re, sys
 
 sys.path.insert(0, 'scripts/lib')
 from jsonc import strip_jsonc_comments  # shared with check-gamedata-sigs.sh — one stripper, one file format
@@ -39,10 +42,29 @@ for root in ('shim/src', 'core/src'):
             blob.append(p.read_text(errors='ignore'))
 blob = ''.join(blob)
 
-FACT_SECTIONS = ('interfaces', 'offsets', 'signatures')
+# Every section whose members are OWNED keys. `calls` (spec §5) is here from day one even though
+# nothing emits one yet: A5b's whole job is moving 8 keys into gamedata/cs2/ AS `calls` descriptors,
+# and a gate that exists to prove "the shim no longer names these" would silently skip every one of
+# them if the section were absent. `keys` is deliberately NOT a fact section — it is checked
+# separately (forbidden under core, unowned by definition elsewhere).
+FACT_SECTIONS = ('interfaces', 'offsets', 'signatures', 'calls')
 bad = []
 
-for owner in ('core', 'cs2'):
+# The owners the LOADER knows about, read out of the shim rather than hardcoded: the owner list is
+# exactly the set of LoadGameConfig(...) call sites. An owner directory the loader never opens is
+# data that can never load, and an owner the loader opens with no directory is a boot-time error —
+# both must be loud here rather than discovered later.
+table = re.search(r'kGamedataOwners\[\]\s*=\s*\{(.*?)\};', blob, re.S)
+loader_owners = set(re.findall(r'"([^"]+)"', table.group(1))) if table else set()
+if not loader_owners:
+    bad.append('no kGamedataOwners[] table found in shim/src — this gate cannot tell which owners '
+               'the loader reads (see s2script_mm.cpp)')
+on_disk_owners = {p.name for p in pathlib.Path('gamedata').iterdir() if p.is_dir()}
+for owner in sorted(on_disk_owners - loader_owners):
+    bad.append(f'{owner}: gamedata/{owner}/ exists but "{owner}" is not in the shim\'s '
+               f'kGamedataOwners[] table — the loader would never read the tree')
+
+for owner in sorted(loader_owners | on_disk_owners):
     owner_dir = pathlib.Path('gamedata') / owner
     if not owner_dir.is_dir():
         bad.append(f'{owner}: owner directory missing')
@@ -88,12 +110,14 @@ for owner in ('core', 'cs2'):
         for section in FACT_SECTIONS:
             for key in j.get(section, {}):
                 named = f'"{key}"' in blob
+                # The rule generalises past ('core','cs2'): core must name every key it owns, and
+                # NO other owner's key may be named in the engine-generic layer.
                 if owner == 'core' and not named:
                     bad.append(f'core/{f}: {section}.{key} is named nowhere in shim/src or '
                                f'core/src — it does not belong to the core owner')
-                if owner == 'cs2' and named:
-                    bad.append(f'cs2/{f}: {section}.{key} IS named in shim/src or core/src — '
-                               f'the game-package namespace has leaked into core')
+                if owner != 'core' and named:
+                    bad.append(f'{owner}/{f}: {section}.{key} IS named in shim/src or core/src — '
+                               f'the {owner} namespace has leaked into core')
 
 if bad:
     print('GAMEDATA OWNERSHIP VIOLATIONS:', file=sys.stderr)
