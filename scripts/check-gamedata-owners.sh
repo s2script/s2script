@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Enforces the gamedata OWNERSHIP rule (spec 2026-08-01-gamedata-tiering-design.md §4):
+#
+#   A key belongs to whoever NAMES it in source.
+#
+# gamedata/core/**  : every key MUST appear as a string literal in shim/src or core/src.
+#                     A key nobody names is not core's — it belongs to a game package or a plugin.
+# gamedata/cs2/**   : no key may appear in shim/src or core/src. A hit means the game package's
+#                     namespace has leaked back into the engine-generic layer, which is exactly
+#                     the boundary this tier exists to hold.
+#
+# Also checks that the master index and the files on disk agree in both directions: a file present
+# but unlisted would silently never load, and a file listed but absent is a boot-time hard error.
+# And that no `keys` section (per-game behavioural strings, spec §7) appears under gamedata/core/.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+python3 - <<'PY'
+import json, re, pathlib, sys
+
+def load(p):
+    s = pathlib.Path(p).read_text()
+    s = re.sub(r'//[^\n]*', '', s)
+    s = re.sub(r'/\*.*?\*/', '', s, flags=re.S)
+    return json.loads(s)
+
+# Every C++/Rust source byte, concatenated once.
+blob = []
+for root in ('shim/src', 'core/src'):
+    for p in pathlib.Path(root).rglob('*'):
+        if p.is_file() and p.suffix in ('.cpp', '.h', '.rs'):
+            blob.append(p.read_text(errors='ignore'))
+blob = ''.join(blob)
+
+FACT_SECTIONS = ('interfaces', 'offsets', 'signatures')
+bad = []
+
+for owner in ('core', 'cs2'):
+    owner_dir = pathlib.Path('gamedata') / owner
+    if not owner_dir.is_dir():
+        bad.append(f'{owner}: owner directory missing')
+        continue
+
+    master_path = owner_dir / 'master.gamedata.jsonc'
+    if not master_path.exists():
+        bad.append(f'{owner}: master.gamedata.jsonc missing')
+        continue
+    master = load(master_path)
+    listed = [e['file'] for e in master.get('files', [])]
+
+    on_disk = sorted(p.name for p in owner_dir.glob('*.jsonc')
+                     if p.name != 'master.gamedata.jsonc')
+    for f in listed:
+        if not (owner_dir / f).exists():
+            bad.append(f'{owner}: master lists {f}, which does not exist')
+    for f in on_disk:
+        if f not in listed:
+            bad.append(f'{owner}: {f} exists but is not listed in master — it will never load')
+
+    for f in listed:
+        p = owner_dir / f
+        if not p.exists():
+            continue
+        j = load(p)
+        if owner == 'core' and 'keys' in j:
+            bad.append(f'core/{f}: `keys` (behavioural strings) is not permitted in core gamedata')
+        for section in FACT_SECTIONS:
+            for key in j.get(section, {}):
+                named = f'"{key}"' in blob
+                if owner == 'core' and not named:
+                    bad.append(f'core/{f}: {section}.{key} is named nowhere in shim/src or '
+                               f'core/src — it does not belong to the core owner')
+                if owner == 'cs2' and named:
+                    bad.append(f'cs2/{f}: {section}.{key} IS named in shim/src or core/src — '
+                               f'the game-package namespace has leaked into core')
+
+if bad:
+    print('GAMEDATA OWNERSHIP VIOLATIONS:', file=sys.stderr)
+    for b in bad:
+        print(f'  {b}', file=sys.stderr)
+    sys.exit(1)
+print('check-gamedata-owners: ownership rule holds for every entry')
+PY
