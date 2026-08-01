@@ -1068,6 +1068,43 @@ fn voice_merged_for_test(sender: i32) -> Option<u64> { voice_merged(sender) }
 /// Allocate the next monotonic subscription id (1-based; 0 = none). The single allocator behind
 /// every EventMux-family row id and the inter-plugin `iface_on` sub id, so a Scope's ids never
 /// collide with another store's. Reset to 1 on shutdown.
+/// A `thread_local!` subscription store, as taken by `subscribe_into`.
+pub(crate) type ChannelStore =
+    std::thread::LocalKey<std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>>;
+
+/// The subscribe-native core, owned once.
+///
+/// Nineteen `__s2_*` subscribe natives repeated this verbatim: pull the handler `Local` out of the
+/// args, root it as a `Global`, resolve the CALLING plugin from the context slot, look up that
+/// plugin's current generation (the reload-liveness token dispatch checks later), allocate a
+/// subscription id, and store the row. Only four things varied — which argument holds the handler,
+/// the channel key, the store, and whether an engine-op follow-up fires on the first subscriber.
+///
+/// The `owner` fallback of `"legacy"` is preserved from every copy: a subscription from a non-plugin
+/// context (the shared HOST context, or a raw eval in tests) is still stored and still dispatches; it
+/// simply never matches a plugin id for liveness or teardown.
+///
+/// Returns `(sub_id, was_first_on_this_channel)`, or `None` when the argument is not a function — in
+/// which case nothing was stored and the caller should leave its return value alone. `was_first` is
+/// what the callers key their engine-op follow-up on (`event_subscribe`, installing a detour, …).
+pub(crate) fn subscribe_into(
+    scope: &mut v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    store: &'static ChannelStore,
+    key: &str,
+    handler_arg: i32,
+) -> Option<(u64, bool)> {
+    let func_local = v8::Local::<v8::Function>::try_from(args.get(handler_arg)).ok()?;
+    let handler_g = v8::Global::new(scope.as_ref(), func_local);
+    let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+    let generation = PLUGINS
+        .with(|p| p.borrow().get(&owner).map(|pi| pi.generation))
+        .unwrap_or(0);
+    let sub_id = next_sub_id();
+    let first = store.with(|m| m.borrow_mut().subscribe(key, sub_id, owner, generation, handler_g));
+    Some((sub_id, first))
+}
+
 pub(crate) fn next_sub_id() -> u64 {
     NEXT_SUB_ID.with(|c| {
         let v = c.get();
@@ -4011,16 +4048,7 @@ fn s2_event_subscribe(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-
-        // Capture the calling plugin's (id, generation) for liveness-gated dispatch.
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-
-        // Subscribe: if this is the FIRST for the name, call the engine-op event_subscribe.
-        let sub_id = next_sub_id();
-        let first = EVENT_MUX.with(|m| m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g));
+        let Some((sub_id, first)) = subscribe_into(scope, &args, &EVENT_MUX, &name, 1) else { return };
         if first {
             if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
                 if let Some(func) = ops.event_subscribe {
@@ -4101,12 +4129,8 @@ fn s2_event_get_float(
 fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        DAMAGE_MUX.with(|m| { m.borrow_mut().subscribe("onPre", sub_id, owner, generation, handler_g); });
+        // The DispatchTraceAttack detour stays installed for the process lifetime — no follow-up.
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &DAMAGE_MUX, "onPre", 0) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -4216,12 +4240,7 @@ fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallba
 fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        CHAT_MSG_SUBS.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _first)) = subscribe_into(scope, &args, &CHAT_MSG_SUBS, "", 0) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -4258,12 +4277,7 @@ fn s2_client_command_listen(scope: &mut v8::PinScope, args: v8::FunctionCallback
         if args.length() < 2 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
         if name.is_empty() { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        CLIENT_CMD_SUBS.with(|m| { m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _first)) = subscribe_into(scope, &args, &CLIENT_CMD_SUBS, &name, 1) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -4277,13 +4291,8 @@ fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
         let event = args.get(0).to_rust_string_lossy(scope);
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        // Capture the calling plugin's (id, generation) for liveness-gated dispatch.
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        CLIENT_MUX.with(|m| { m.borrow_mut().subscribe(&event, sub_id, owner, generation, handler_g); });
+        // The six lifecycle hooks are installed for the process lifetime — no first-subscriber op.
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &CLIENT_MUX, &event, 1) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -4293,12 +4302,7 @@ fn s2_client_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        MAP_MUX.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _first)) = subscribe_into(scope, &args, &MAP_MUX, "", 0) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -4310,12 +4314,7 @@ fn s2_map_start_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        PRECACHE_MUX.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _first)) = subscribe_into(scope, &args, &PRECACHE_MUX, "", 0) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -4327,12 +4326,7 @@ fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(0)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().subscribe("", sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _first)) = subscribe_into(scope, &args, &COOKIE_CACHED_MUX, "", 0) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
@@ -5600,12 +5594,7 @@ fn s2_cvar_on_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         if args.length() < 2 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
         if name.is_empty() { return; }
-        let Ok(func_local) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
-        let handler_g = v8::Global::new(scope.as_ref(), func_local);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        let sub_id = next_sub_id();
-        CVAR_MUX.with(|m| { m.borrow_mut().subscribe(&name, sub_id, owner, generation, handler_g); });
+        let Some((sub_id, _first)) = subscribe_into(scope, &args, &CVAR_MUX, &name, 1) else { return };
         rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
