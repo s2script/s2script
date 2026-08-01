@@ -18,6 +18,7 @@ mod loader;
 mod multiplexer;
 mod net;
 pub mod owner_stores;
+pub mod process_singletons;
 pub(crate) mod crash;
 mod schema;
 mod schema_catalog;
