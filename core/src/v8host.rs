@@ -12221,14 +12221,44 @@ mod frame_tests {
     thread_local! {
         /// The mock shim's FIFO of deferred game-event replays (by name).
         static DEFERRED_Q: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        /// The mock shim's named-drop log — the lines `META_CONPRINTF`s in the real one.
+        static DEFERRED_DROPS: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
         /// What a re-entrant PRE hook answered (see `reentrant_pre_hook_is_skipped_not_deferred`).
         static PRE_REENTRANT_RESULT: std::cell::Cell<i32> = std::cell::Cell::new(-1);
         /// Did a re-entrant dispatch with NO subscribers report `Deferred`?
         static NOSUB_WAS_DEFERRED: std::cell::Cell<bool> = std::cell::Cell::new(false);
     }
 
+    /// The mock shim's queue bound, standing in for `kDeferredQueueMax` (`shim/src/s2script_mm.cpp`).
+    ///
+    /// Deliberately 3 rather than the shim's 256: what is under test is the BEHAVIOUR at the
+    /// boundary — drop the newest, name it, do not grow — not the number, which is a shim-side
+    /// tuning knob. Driving 257 real JS dispatches to reach the shipped cap would test the same
+    /// three assertions much more slowly.
+    const MOCK_DEFER_MAX: usize = 3;
+
     fn deferred_len() -> usize { DEFERRED_Q.with(|q| q.borrow().len()) }
-    fn deferred_clear() { DEFERRED_Q.with(|q| q.borrow_mut().clear()); }
+    fn deferred_names() -> Vec<String> { DEFERRED_Q.with(|q| q.borrow().clone()) }
+    fn deferred_drops() -> Vec<String> { DEFERRED_DROPS.with(|d| d.borrow().clone()) }
+    fn deferred_clear() {
+        DEFERRED_Q.with(|q| q.borrow_mut().clear());
+        DEFERRED_DROPS.with(|d| d.borrow_mut().clear());
+    }
+
+    /// The mock shim's bounded push, mirroring `S2_DeferGameEvent`: an unbounded queue would turn a
+    /// plugin bug (a handler that re-fires its own event forever) into an OOM, so past the cap the
+    /// NEWEST is dropped — and SAID, because a silent drop is the exact failure mode this slice
+    /// exists to end. The wording matches the shim's log line so both are greppable as one string.
+    fn defer_push(name: &str) {
+        if deferred_len() >= MOCK_DEFER_MAX {
+            DEFERRED_DROPS.with(|d| d.borrow_mut().push(format!(
+                "deferred-dispatch: queue full ({}) — dropped game_event '{}' (newest)",
+                MOCK_DEFER_MAX, name
+            )));
+            return;
+        }
+        DEFERRED_Q.with(|q| q.borrow_mut().push(name.to_string()));
+    }
 
     /// The mock shim's drain, standing in for the top of `Hook_GameFramePre`. Returns how many
     /// entries it replayed.
@@ -12255,7 +12285,18 @@ mod frame_tests {
     /// `Deferred`, and the shim (here, us) queues the replay.
     extern "C" fn reentrant_event_fire(_dont: c_int) -> c_int {
         if dispatch_game_event("inner") == Delivery::Deferred {
-            DEFERRED_Q.with(|q| q.borrow_mut().push("inner".to_string()));
+            defer_push("inner");
+        }
+        1
+    }
+
+    /// The engine op for the ORDERING case: one `Events.fire()` that re-enters TWO different
+    /// dispatches. Pushed B-then-A on purpose — see `deferred_dispatches_replay_in_push_order`.
+    extern "C" fn reentrant_fire_two_events(_dont: c_int) -> c_int {
+        for name in ["innerB", "innerA"] {
+            if dispatch_game_event(name) == Delivery::Deferred {
+                defer_push(name);
+            }
         }
         1
     }
@@ -12341,6 +12382,111 @@ mod frame_tests {
         assert_eq!(drain_deferred(), 1);
         assert_eq!(read_i32_global_in("listener", "__ran"), 2);
         assert_eq!(deferred_len(), 1, "and it re-fires again, one bounded step per frame");
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// Two dispatches deferred in ONE frame replay in PUSH order.
+    ///
+    /// The spec's reason for ONE FIFO rather than a queue per payload type: a deferred `player_death`
+    /// and a deferred client-disconnect must keep their relative order, which a split queue leaves
+    /// undefined. The op below pushes `innerB` BEFORE `innerA` precisely so the assertion can tell
+    /// push order apart from the orders a broken drain would produce — sorted or LIFO both read
+    /// `"AB"`, only a FIFO reads `"BA"`.
+    #[test]
+    fn deferred_dispatches_replay_in_push_order() {
+        let _ = init(dummy_logger());
+        deferred_clear();
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_fire_two_events),
+            ..mock_event_ops()
+        }));
+        load_body("firer", r#"
+            __s2pkg_events.Events.on("outer", function () { __s2_event_fire(false); });
+        "#, "{}");
+        load_body("listener", r#"
+            __s2pkg_events.Events.on("innerA", function () {
+                globalThis.__order = (globalThis.__order || "") + "A";
+            });
+            __s2pkg_events.Events.on("innerB", function () {
+                globalThis.__order = (globalThis.__order || "") + "B";
+            });
+        "#, "{}");
+
+        let _ = dispatch_game_event("outer");
+        assert_eq!(
+            deferred_names(), vec!["innerB".to_string(), "innerA".to_string()],
+            "both re-entrant dispatches must land in the ONE queue, in the order they were pushed"
+        );
+        assert_eq!(
+            read_string_global_in("listener", "__order"), "undefined",
+            "neither ran inside the outer borrow"
+        );
+
+        assert_eq!(drain_deferred(), 2, "one drain replays the whole batch");
+        assert_eq!(
+            read_string_global_in("listener", "__order"), "BA",
+            "replayed in PUSH order; sorted or LIFO order would read 'AB'"
+        );
+        assert_eq!(deferred_len(), 0);
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// The queue is BOUNDED: pushing past the cap drops the newest, SAYS SO BY NAME, and the queue
+    /// does not grow.
+    ///
+    /// An unbounded queue turns a plugin bug — a handler that re-fires its own event every time —
+    /// into an OOM, so the bound is not optional. What makes the bound safe rather than a
+    /// re-introduction of the silent drop is that overflow is NAMED: the log says which dispatch was
+    /// dropped and that it was the newest. This asserts all three (cap held, drop counted, drop
+    /// named) against the mock shim's `defer_push`; the shipped bound is the shim's
+    /// `kDeferredQueueMax` and its `META_CONPRINTF` (`shim/src/s2script_mm.cpp`), which this mirrors
+    /// line for line at a smaller cap.
+    #[test]
+    fn deferred_queue_is_bounded_and_names_what_it_drops() {
+        const BURST: usize = MOCK_DEFER_MAX + 2;
+        let _ = init(dummy_logger());
+        deferred_clear();
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_event_fire),
+            ..mock_event_ops()
+        }));
+        load_body("firer", &format!(r#"
+            __s2pkg_events.Events.on("outer", function () {{
+                // {BURST} re-entrant defers inside ONE outer borrow — the runaway-handler shape.
+                for (var i = 0; i < {BURST}; i++) __s2_event_fire(false);
+            }});
+        "#), "{}");
+        load_body("listener", r#"
+            __s2pkg_events.Events.on("inner", function () {
+                globalThis.__ran = (globalThis.__ran || 0) + 1;
+            });
+        "#, "{}");
+
+        let _ = dispatch_game_event("outer");
+
+        assert_eq!(deferred_len(), MOCK_DEFER_MAX, "the queue must not grow past its cap");
+        let drops = deferred_drops();
+        assert_eq!(
+            drops.len(), BURST - MOCK_DEFER_MAX,
+            "every push past the cap is dropped — and counted, not swallowed"
+        );
+        for d in &drops {
+            assert!(
+                d.contains("queue full") && d.contains("game_event 'inner'") && d.contains("(newest)"),
+                "an overflow drop must NAME the dispatch it dropped, not vanish: {}", d
+            );
+        }
+
+        // The entries that DID fit are still delivered — overflow degrades this dispatch, not the queue.
+        assert_eq!(drain_deferred(), MOCK_DEFER_MAX);
+        assert_eq!(read_i32_global_in("listener", "__ran"), MOCK_DEFER_MAX as i32);
+        assert_eq!(deferred_len(), 0);
 
         set_engine_ops(None);
         deferred_clear();
