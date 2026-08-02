@@ -62,14 +62,24 @@ struct GameConfig {
     // the merge; replacement is still at the named-entry level, like every other section.
     std::map<std::string, std::string> calls;
 
+    // `hooks` — declared INBOUND descriptors (a gamedata-declared engine detour), carried exactly
+    // like `calls` and for the same reason: the grammar is core's, and the shim's job is the merge.
+    //
+    // Its absence here is what made a whole feature ship inert: the section was authored, validated
+    // on disk by scripts/check-call-descriptors.sh, consumed by a correct registry in core — and
+    // silently dropped in between, because this struct had no member for it and MergeFile had no
+    // branch. Every hook then reported "not declared in this owner's gamedata" on a live server.
+    // The `sectionsIgnored` field below exists so the NEXT section cannot repeat that.
+    std::map<std::string, std::string> hooks;
+
     // The merged view re-serialised as JSON text, for core (spec §9.1b). The tree / master /
     // condition / custom merge stays HERE, in one place; core consumes the result through the
     // gamedata_calls path it already has for a plugin's packed gamedata.json.
     //
-    // Carries `signatures` and `calls` — exactly the two sections that path reads. `signatures` is
-    // re-nested under the platform key it was lifted from, because core's flatten step looks up
-    // `signatures[name][platform]`; an operator's custom/ override therefore reaches a descriptor
-    // the same way it reaches the shim's own resolves. Empty when neither section merged.
+    // Carries `signatures`, `calls` and `hooks` — exactly the sections that path reads.
+    // `signatures` is re-nested under the platform key it was lifted from, because core's flatten
+    // step looks up `signatures[name][platform]`; an operator's custom/ override therefore reaches a
+    // descriptor the same way it reaches the shim's own resolves. Empty when none of them merged.
     std::string mergedJson;
 
     // Entry names whose final value came from a custom/ override, for the boot banner and the
@@ -103,6 +113,19 @@ struct GameConfig {
     // case, so the right response is a loud named `error` (which it already gets, and which the
     // boot banner reports), not disabling the whole engine surface over an operator typo.
     std::vector<std::string> filesFailed;
+
+    // TOP-LEVEL SECTIONS THIS MERGE DOES NOT CONSUME, as "<file>: <section>", in apply order.
+    //
+    // An unknown key in a gamedata file used to be silently ignored, and that is precisely how the
+    // `hooks` section shipped inert: authored, gate-validated on disk, consumed by core — and
+    // dropped here, invisibly, because nothing looked at the keys it did not recognise. A section
+    // nobody reads is indistinguishable from a section that works, right up until a live server
+    // says "not declared".
+    //
+    // Reported as a WARN and never a failure. The legitimate case is a DOWNGRADE — an older shim
+    // reading a newer gamedata tree — and refusing to boot over a section a future build
+    // understands would turn a degraded feature into a dead server.
+    std::vector<std::string> sectionsIgnored;
 
     // Files that applied without failing but contributed ZERO entries, in apply order. For a
     // custom/ file this is the operator's most likely mistake — a wrong section name, a wrong

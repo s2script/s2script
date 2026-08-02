@@ -3929,6 +3929,15 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             META_CONPRINTF("[s2script] WARN: gamedata %s/%s was SELECTED but could not be "
                            "applied — this owner's data is INCOMPLETE\n", owner, name.c_str());
         }
+        // A top-level section this build's merge has no branch for. It contributed NOTHING and
+        // nothing downstream will ever see it — which is indistinguishable from working, and is
+        // exactly how a whole `hooks` section once shipped inert. A WARN and not a failure: an
+        // older shim reading a newer gamedata tree is a legitimate downgrade.
+        for (const auto& what : out.sectionsIgnored) {
+            META_CONPRINTF("[s2script] WARN: gamedata %s/%s is a section this build does NOT "
+                           "consume — every entry in it was DROPPED (a typo, or a gamedata tree "
+                           "newer than this shim)\n", owner, what.c_str());
+        }
         // A file that parses but contributes nothing looks identical to a working one. For a
         // custom/ file that is the operator's most likely mistake (wrong section name, wrong
         // platform key, flat non-platform-keyed shape) and gets a WARN; a shipped placeholder
@@ -5003,8 +5012,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     {
         const std::string& gdJson = s_gdGame.mergedJson;
         s2script_core_register_package_gamedata("@s2script/cs2", gdJson.c_str());
+        // The hook count is on this line for the same reason the call count is: it is the one place
+        // a boot log says how many descriptors actually crossed to core. It reading 0 while the
+        // gamedata file plainly declares two is the symptom that would have caught the dropped
+        // `hooks` section without a live server.
         META_CONPRINTF("[s2script] @s2script/cs2 gamedata registered (%zu declared call(s), "
-                       "%zu byte(s))\n", s_gdGame.calls.size(), gdJson.size());
+                       "%zu declared hook(s), %zu byte(s))\n",
+                       s_gdGame.calls.size(), s_gdGame.hooks.size(), gdJson.size());
     }
 
     // Set the plugins directory so the per-frame .s2sp watcher knows where to look.

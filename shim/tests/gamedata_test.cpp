@@ -397,6 +397,157 @@ static void test_calls_entry_of_the_wrong_type_degrades_only_that_entry() {
     CHECK(!err.empty() && err.find("bad") != std::string::npos, "the error names the entry");
 }
 
+// --- Declarative inbound hooks: the section must SURVIVE the merge ------------------------------
+// This is the test whose absence let a whole feature ship inert. `gamedata/cs2/game.cs2.jsonc`
+// declared two hooks, `scripts/check-call-descriptors.sh` validated them ON DISK, and core's
+// registry consumed them correctly — but this loader had no `hooks` member and no parse branch, so
+// the section evaporated between the file and core. On a live server every hook reported
+// "not declared in this owner's gamedata", and the merged JSON was byte-for-byte the size it had
+// been before the section was ever written.
+static void test_merged_json_carries_hooks() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc", "game": "csgo" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "signatures": {
+        "DoThing": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "55 48", "resolve": "direct",
+                     "validate": { "prologue": "55" } } }
+      },
+      "calls": {
+        "doThing": { "receiver": { "kind": "none" },
+                     "target": { "kind": "signature", "name": "DoThing" }, "returns": "void" }
+      },
+      "hooks": {
+        "onThing": { "target": { "kind": "signature", "name": "DoThing" },
+                     "shape": "this_f32_i32_i32_i32",
+                     "params": ["delay", "reason", "u3", "u4"], "mutable": ["delay", "reason"],
+                     "bypassWith": "doThing", "expose": { "ctx": "g" } }
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(err.empty(), "a hooks section parses without error");
+    CHECK(gc.hooks.count("onThing") == 1, "the hooks entry is merged");
+
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded(), "the merged view is valid JSON");
+    CHECK(doc.contains("hooks"), "the merged view core reads CARRIES the hooks section");
+    // Every field core's registry validates has to arrive intact — the shape name, the params and
+    // their `mutable` subset, the bypass pairing, and the ctx namespace. A section that crossed
+    // with any of these missing would degrade by name in core instead of working.
+    CHECK(doc["hooks"]["onThing"]["shape"] == "this_f32_i32_i32_i32", "the shape name crosses");
+    CHECK(doc["hooks"]["onThing"]["params"][1] == "reason", "params cross in author order");
+    CHECK(doc["hooks"]["onThing"]["mutable"][0] == "delay", "the mutable allow-list crosses");
+    CHECK(doc["hooks"]["onThing"]["bypassWith"] == "doThing", "the bypass pairing crosses");
+    CHECK(doc["hooks"]["onThing"]["expose"]["ctx"] == "g", "the ctx namespace crosses");
+    // The validator a hook target MUST carry (core rejects a hook without one) rides on the
+    // SIGNATURE the target names, so the two have to survive together.
+    CHECK(doc["signatures"]["DoThing"]["linuxsteamrt64"]["validate"]["prologue"] == "55",
+          "the mandatory validator reaches core with the pattern it guards");
+}
+
+// An owner that declares ONLY hooks still hands core something. Without widening the early return
+// in SerializeMerged, an inbound-only owner would serialise to "" — the same silent nothing.
+static void test_a_hooks_only_owner_still_serialises() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "hooks": { "onThing": { "shape": "this_void", "expose": { "ctx": "g" } } }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(!gc.mergedJson.empty(), "an owner with hooks and nothing else is not dropped");
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded() && doc.contains("hooks"), "and its hooks reach core");
+}
+
+static void test_hooks_entry_of_the_wrong_type_degrades_only_that_entry() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "hooks": { "good": { "shape": "this_void" }, "bad": 7 }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.hooks.count("good") == 1, "the well-formed descriptor still merges");
+    CHECK(gc.hooks.count("bad") == 0, "a scalar descriptor is left out, not crashed on");
+    CHECK(!err.empty() && err.find("hooks.bad") != std::string::npos, "the error names the entry");
+}
+
+// A custom/ override reaches a hook exactly as it reaches a call: named-entry replacement.
+static void test_custom_override_replaces_a_hook_entry() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc",
+        R"({ "hooks": { "onThing": { "shape": "this_void", "expose": { "ctx": "g" } } } })");
+    put(root.path / "cs2" / "custom" / "fix.jsonc",
+        R"({ "hooks": { "onThing": { "shape": "this_f32_i32_i32_i32", "expose": { "ctx": "g" } } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded() && doc["hooks"]["onThing"]["shape"] == "this_f32_i32_i32_i32",
+          "an operator override reaches the hook core resolves");
+    CHECK(gc.overridden.count("onThing") == 1, "and is reported as operator-supplied");
+}
+
+// --- An unconsumed section is LOUD ---------------------------------------------------------------
+// The second half of the `hooks` fix, and the more important half: a top-level key this build has
+// no branch for used to evaporate in silence, which is what made a dropped section indistinguishable
+// from a working one. Naming it turns the next such omission into a boot line.
+static void test_an_unconsumed_section_is_reported_by_name() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "keys": { "Real": "yes" },
+      "forwards": { "onSomething": { "shape": "this_void" } }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    bool named = false;
+    for (const auto& s : gc.sectionsIgnored)
+        if (s.find("forwards") != std::string::npos && s.find("game.cs2.jsonc") != std::string::npos)
+            named = true;
+    CHECK(named, "an unknown top-level section is reported, naming BOTH the file and the section");
+    CHECK(gc.sectionsIgnored.size() == 1, "and only the unknown one — no false positives");
+    CHECK(err.empty(), "it is a WARN, not an error: an older shim reading a newer tree must boot");
+    CHECK(gc.keys["Real"] == "yes", "the sections it DOES consume are unaffected");
+}
+
+// Every section this build consumes must be absent from the report — otherwise the WARN becomes
+// noise nobody reads, which is the same failure as no WARN at all.
+static void test_every_consumed_section_is_silent() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "interfaces": { "I": "I001" },
+      "offsets":    { "O": { "linuxsteamrt64": 4 } },
+      "signatures": { "S": { "linuxsteamrt64": { "module": "m.so", "pattern": "55" } } },
+      "keys":       { "K": "v" },
+      "calls":      { "c": { "returns": "void" } },
+      "hooks":      { "h": { "shape": "this_void" } }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.sectionsIgnored.empty(), "no consumed section is reported as ignored");
+}
+
 static void test_merged_json_is_empty_when_nothing_declares_one() {
     TempRoot root;
     put(root.path / "cs2" / "master.gamedata.jsonc",
@@ -849,6 +1000,12 @@ int main() {
     test_shipped_replacement_does_not_inherit_a_validator();
     test_merged_json_reflects_a_custom_override();
     test_calls_entry_of_the_wrong_type_degrades_only_that_entry();
+    test_merged_json_carries_hooks();
+    test_a_hooks_only_owner_still_serialises();
+    test_hooks_entry_of_the_wrong_type_degrades_only_that_entry();
+    test_custom_override_replaces_a_hook_entry();
+    test_an_unconsumed_section_is_reported_by_name();
+    test_every_consumed_section_is_silent();
     test_merged_json_is_empty_when_nothing_declares_one();
     test_missing_master_is_a_named_error();
     test_missing_listed_file_is_a_named_error();
