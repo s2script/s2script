@@ -187,6 +187,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Object.defineProperty(EntityRef.prototype, "target", {
     get: function () { var t = __s2_entity_target(this.index, this.id); return t == null ? null : t; }
   });
+  // World-space position (CGameSceneNode::m_vecAbsOrigin, via CBaseEntity::m_CBodyComponent ->
+  // CBodyComponent::m_pSceneNode) — the same chain Pawn.origin/sceneNode.absOrigin resolve for player
+  // pawns, here on any entity. All three offsets are live-resolved every call (never baked); no
+  // dedicated native — this composes the already-native __s2_schema_offset with readFloatsChain.
+  // null if any offset is unresolved, any hop in the chain is null, or the ref is stale/invalid — there
+  // is no meaningful "empty" position, so null always means "could not read".
+  Object.defineProperty(EntityRef.prototype, "origin", {
+    get: function () {
+      var bodyOff = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
+      var nodeOff = __s2_schema_offset("CBodyComponent", "m_pSceneNode");
+      var absOff  = __s2_schema_offset("CGameSceneNode", "m_vecAbsOrigin");
+      if (bodyOff < 0 || nodeOff < 0 || absOff < 0) return null;
+      var a = this.readFloatsChain([bodyOff, nodeOff], absOff, 3);
+      return a === null ? null : new Vector(a[0], a[1], a[2]);
+    }
+  });
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
   // With keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is a LIVE,
   // SPAWNED entity (on spawn failure the entity is removed and null returned).

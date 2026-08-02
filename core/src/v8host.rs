@@ -13119,6 +13119,25 @@ mod frame_tests {
         shutdown();
     }
 
+    /// entity_origin slice: `EntityRef.origin` (`CGameSceneNode::m_vecAbsOrigin`, reached via the
+    /// `CBaseEntity::m_CBodyComponent` -> `CBodyComponent::m_pSceneNode` chain) degrades to `null` with
+    /// no ops (e.g. every in-isolate test) — never a crash. Unlike `target`, there's no dedicated
+    /// native: the getter is a prelude.js composition of the already-native `__s2_schema_offset` (x3,
+    /// schema-resolved, never baked) and `EntityRef.readFloatsChain`, so this exercises that
+    /// composition end-to-end — every offset lookup misses (-1) AND the root ref fails to resolve.
+    #[test]
+    fn entity_origin_degrades_to_null_without_ops() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("eo1", r#"
+            var EntityRef = globalThis.__s2pkg_entity.EntityRef;
+            var offMiss = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
+            var viaRef = new EntityRef(5, 7).origin;
+            JSON.stringify({ offMiss: offMiss, viaRef: viaRef });
+        "#);
+        assert_eq!(out, r#"{"offMiss":-1,"viaRef":null}"#);
+        shutdown();
+    }
+
     /// changeteam slice: `__s2_player_change_team` (and `Player.changeTeam`/`.spectate`) no-op with no
     /// `player_change_team` op (unresolved signature / every in-isolate test) — never a crash.
     #[test]
