@@ -20,6 +20,15 @@ int  S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int re
 // descriptor, so our own outbound call does not fire our own hook (SourceMod parity).
 void S2_HookArmBypass(int hookId);
 
+// Disarm it again. The pair to S2_HookArmBypass, and NOT redundant with the thunk's take: the latch
+// is only consumed if the outbound call actually reaches the hooked function. An invoke that returns
+// early — a degraded descriptor, a stale receiver, an unresolved `via` — leaves it armed, and the
+// NEXT genuine engine-driven invocation is then silently swallowed. That is spec §10's "clear it on
+// both paths": core arms immediately before the invoke and disarms immediately after, so the armed
+// window is exactly the call and nothing else. Core cannot do this alone — the latch lives here and
+// only the thunk's take can clear it otherwise. Out-of-range ids are a silent no-op.
+void S2_HookDisarmBypass(int hookId);
+
 // Forget every installed hook. MUST be called from wherever s2detour::RemoveAll() is, and only
 // there: the two are one operation. RemoveAll() restores the prologues but knows nothing about this
 // table, so without this a later install would see used == true, take the idempotent

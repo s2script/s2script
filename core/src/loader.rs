@@ -222,6 +222,11 @@ fn begin_load(manifest: &Manifest, js: &str, gamedata: Option<&str>, path: &Path
     // a declaration. Absent member = a plugin with no declared calls (the overwhelming majority).
     if let Some(gd) = gamedata {
         crate::gamedata_calls::register_plugin(&manifest.id, gd);
+        // Declarative inbound hooks, from the SAME tree. Registering patches nothing — install is
+        // lazy, on the first subscribe, which cannot happen before the factory runs. (Order against
+        // the line above is cosmetic: `bypassWith` is validated against this tree's own `calls`
+        // section, not against the call registry, so neither registration depends on the other.)
+        crate::gamedata_hooks::register_plugin(&manifest.id, gd);
     }
     let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
     start_load(manifest, js, &cfg);

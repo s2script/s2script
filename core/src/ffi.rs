@@ -316,6 +316,36 @@ pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
     catch_unwind(|| v8host::dispatch_usercmd(slot)).unwrap_or(0)
 }
 
+/// Shim → core: a compiled inbound-hook thunk fired. `hook_id` is the shim hook slot (a compile-time
+/// constant inside that thunk, and an id core itself handed out at registration); `arg_view` is an
+/// OPAQUE pointer to the thunk's own stack-frame arg view, which core reads and writes ONLY through
+/// the `hook_read_*`/`hook_write_*` ops and never dereferences.
+///
+/// Returns the collapsed `HookResult` (0 Continue .. 3 Stop). The thunk suppresses the original
+/// engine call entirely at >= Handled (2).
+///
+/// **NEVER `S2_DISPATCH_DEFERRED`.** This entry is not deferrable and must never be queued for
+/// replay: `arg_view` is a STACK FRAME that dies when the thunk returns, so a dispatch replayed a
+/// frame later would hand JS a dead frame and every accessor would fail. `dispatch_hook` routes
+/// through `fan_out_collapsing`, which discards `Delivery` by construction — a re-entrant dispatch
+/// returns Continue (the engine proceeds unhooked) rather than asking anyone to replay it.
+///
+/// `catch_unwind`-wrapped and FAIL-OPEN (→ 0 Continue on a panic): a core bug must never suppress
+/// engine behaviour it did not mean to.
+///
+/// This symbol is declared `__attribute__((weak))` on the shim side, so a shim paired with an older
+/// core degrades to Continue with a boot WARN instead of failing `dlopen` and taking the whole addon
+/// down. The cost of weak is that a MISSPELLING here would degrade silently rather than failing the
+/// link — which is why `scripts/check-shim-symbols.sh` asserts every weak-undefined `s2script_core_*`
+/// the shim references is defined in `libs2script_core.so`.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_hook(
+    hook_id: c_int,
+    arg_view: *mut std::ffi::c_void,
+) -> c_int {
+    catch_unwind(|| v8host::dispatch_hook(hook_id, arg_view)).unwrap_or(0)
+}
+
 /// Shim → core: a cvar's value changed. Called from the shim's ONE `ICvar` global change callback.
 ///
 /// NOTIFY-ONLY — the engine has ALREADY applied the value, so there is nothing to veto: this entry
@@ -586,6 +616,10 @@ pub extern "C" fn s2script_core_register_package_gamedata(
         // anyway so the owner id exists and every ask reports "not declared" rather than the
         // game-scoped natives' "no game package registered".
         crate::gamedata_calls::register_game_package(name_str, json_str);
+        // The same tree's `hooks`, under the same reserved owner: a game package's declarative
+        // inbound hooks (`ctx.gameRules.onTerminateRound`, …). Registering resolves and reserves a
+        // shim hook slot; it patches nothing until a plugin subscribes.
+        crate::gamedata_hooks::register_game_package(name_str, json_str);
     });
 }
 

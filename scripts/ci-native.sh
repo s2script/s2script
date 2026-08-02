@@ -36,6 +36,9 @@ bash scripts/test-defer-queue.sh
 echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
 bash scripts/test-hook-dispatch.sh
 
+echo "== check-hook-shapes.sh (inbound hook shape name/id table: core == shim) =="
+bash scripts/check-hook-shapes.sh
+
 echo "== check-defer-selftest-gate.sh (S2_DEFER_SELFTEST: core == shim, registration-gated) =="
 bash scripts/check-defer-selftest-gate.sh
 
@@ -89,7 +92,7 @@ echo "== ccommand_selftest (our CCommand tokenizer) =="
 cmake --build build/shim --target ccommand_selftest -j >/dev/null
 ./build/shim/ccommand_selftest
 
-echo "== check-shim-symbols.sh (no unresolvable engine symbols) =="
+echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
 bash scripts/check-shim-symbols.sh
 
 echo "ci-native: all native gates passed"

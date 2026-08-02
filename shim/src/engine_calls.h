@@ -66,4 +66,19 @@ uint32_t S2_EntityHandleFromPtr(void* p);
 // legitimately live in any module the descriptor named. 1 = yes, 0 = no (or null).
 int S2_AddressIsExecutable(const void* addr);
 
+// The resolved absolute address behind a call id from S2_EngineCallResolve, or 0 for an unknown id.
+//
+// WHY IT EXISTS. An OUTBOUND descriptor only ever needs the id (S2_EngineCallInvoke takes it), but a
+// declarative INBOUND hook resolves through the very same descriptor path and then has to patch
+// BYTES: S2_HookInstall takes an absolute address. Without this, core could resolve a hook target
+// and still have no way to install it — the id is not convertible on core's side, and resolving a
+// second time through a second entry point would be a second resolver, which the design forbids.
+//
+// The address is an OPAQUE TOKEN to core: it never dereferences it, it only hands it back to
+// S2_HookInstall, which re-proves the whole 14-byte patch window is inside a loaded module's
+// executable range before s2detour reads a byte. So this is not "a raw pointer crossing into the
+// core" in the sense the architecture forbids — nothing on the far side may touch it, and the one
+// consumer re-validates it at the point of use.
+int64_t S2_EngineCallAddress(int callId);
+
 }

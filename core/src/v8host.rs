@@ -337,8 +337,29 @@ pub type DeferSelftestFn = extern "C" fn() -> c_int;
 // immediately BEFORE core invokes the hook's `bypassWith` descriptor, so our own outbound call does
 // not fire our own hook. ENGINE-GENERIC: the address arrives already resolved and the shape is an id
 // from a closed vocabulary, so no game identifier reaches core.
+//
+// `hook_disarm_bypass(hookId)` clears the latch again immediately AFTER that invoke. It is NOT
+// redundant with the thunk's one-shot take: the take only happens if the outbound call reached the
+// hooked function, and an invoke that returned early (a degraded descriptor, a stale receiver) would
+// leave the latch armed to swallow the next GENUINE engine-driven invocation — spec §10's "clear it
+// on both paths". `engine_call_address(callId)` is the resolved absolute address behind an
+// `engine_call_resolve` id (0 = unknown): a hook resolves through the same descriptor path as a call
+// but then has to patch BYTES, and `hook_install` takes an address. Core treats it as an opaque
+// token and never dereferences it.
+//
+// The five `hook_*_f32/_i32`/`hook_receiver_handle` ops are the BLOCK-SCOPED arg view: `idx` is the
+// descriptor's positional param index, and every one of them is liveness-, bounds- and class-checked
+// shim-side, returning -1 rather than reinterpreting bits. `argView` is a THUNK'S STACK FRAME and is
+// opaque here — core never dereferences it, it only hands it back.
 pub type HookInstallFn = extern "C" fn(c_int, c_int, i64, *mut c_char, c_int) -> c_int;
 pub type HookArmBypassFn = extern "C" fn(c_int);
+pub type HookDisarmBypassFn = extern "C" fn(c_int);
+pub type HookReadF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut f32) -> c_int;
+pub type HookReadI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut i32) -> c_int;
+pub type HookWriteF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, f32) -> c_int;
+pub type HookWriteI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, i32) -> c_int;
+pub type HookReceiverHandleFn = extern "C" fn(*mut std::ffi::c_void, *mut u32) -> c_int;
+pub type EngineCallAddressFn = extern "C" fn(c_int) -> i64;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI: the shim fills the matching
 /// `struct s2_engine_ops` in `shim/include/s2script_core.h`, so the two declarations must stay
@@ -508,6 +529,14 @@ pub struct S2EngineOps {
     // --- declarative inbound hooks (APPENDED after defer_selftest; order is the ABI) ---
     pub hook_install: Option<HookInstallFn>,
     pub hook_arm_bypass: Option<HookArmBypassFn>,
+    // --- declarative inbound hooks, core half (APPENDED after hook_arm_bypass; order is the ABI) ---
+    pub hook_disarm_bypass: Option<HookDisarmBypassFn>,
+    pub hook_read_f32: Option<HookReadF32Fn>,
+    pub hook_read_i32: Option<HookReadI32Fn>,
+    pub hook_write_f32: Option<HookWriteF32Fn>,
+    pub hook_write_i32: Option<HookWriteI32Fn>,
+    pub hook_receiver_handle: Option<HookReceiverHandleFn>,
+    pub engine_call_address: Option<EngineCallAddressFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -962,6 +991,35 @@ thread_local! {
     /// (a HashMap iterates in random per-instance order that would shuffle across restarts; the spec commits
     /// the MVP to insertion order). A re-added id reuses its existing seq so a plugin reload doesn't reorder.
     static TOPMENU_SEQ: std::cell::Cell<u64> = std::cell::Cell::new(0);
+}
+
+// Declarative inbound hooks. Their own `thread_local!` block only because the one above is already
+// at the `thread_local_inner!` macro recursion limit — the file has four such blocks for the same
+// reason.
+thread_local! {
+    /// Subscribers to a gamedata-DECLARED engine detour, keyed by `hook_key(owner, name)` — the
+    /// hook's identity, not the subscriber's. One channel per declared hook; any plugin may
+    /// subscribe to any declared hook through its generated `ctx` namespace, and `remove_by_owner`
+    /// tears a SUBSCRIBER's rows down (the DESCRIPTOR's teardown is `gamedata_hooks::drop_owner`,
+    /// keyed by the declaring owner — two different senses of "owner" over one id space).
+    ///
+    /// Dispatch is SYNCHRONOUS and COLLAPSING (the thunk blocks on it and suppresses the original
+    /// engine call at >= Handled), which is why it can never be deferred — see `dispatch_hook`.
+    /// The detour installs LAZILY on subscribe (`gamedata_hooks::subscribe`), mirroring
+    /// `USERCMD_MUX`'s `usercmd_hook_install` trigger.
+    static HOOK_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
+
+    /// The inbound hook dispatch currently running: the thunk's own stack-frame arg view, plus the
+    /// hook it belongs to (so an accessor failure can be reported as a NAMED degrade of that hook).
+    ///
+    /// SAVE/RESTORE, not set/clear — the same discipline `engine_hooks.cpp`'s `g_activeView` uses on
+    /// the other side of the boundary, and for the same reason: a dispatch can nest. `None` between
+    /// dispatches, which is what makes every accessor fail closed outside one: the pointer is a
+    /// STACK FRAME that dies with the thunk, so "is it still live?" cannot be answered from the
+    /// pointer's own contents.
+    static ACTIVE_HOOK: std::cell::RefCell<Option<ActiveHook>>
+        = const { std::cell::RefCell::new(None) };
 }
 
 /// A registered TopMenu item. `on_select` is invoked in `owner`'s context (liveness-gated by `generation`).
@@ -6020,6 +6078,29 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let strs: Vec<*const c_char> = strs_owned.iter().map(|c| c.as_ptr()).collect();
 
         let Some(func) = engine_ops().and_then(|o| o.engine_call_invoke) else { return };
+
+        // THE BYPASS LATCH (spec §3). Any hook in this SAME owner that names this call as its
+        // `bypassWith` must not fire for OUR OWN outbound invocation — SourceMod's
+        // g_pIgnoreTerminateDetour, and the thing that also keeps a hook from ever firing while core
+        // holds the isolate borrow (a hook dispatch is not deferrable, so one that fired here would
+        // be silently skipped).
+        //
+        // ARM IMMEDIATELY BEFORE, DISARM IMMEDIATELY AFTER — straight-line, with no `return` between
+        // them. The latch is one-shot and the thunk clears it by TAKING it, but the take only
+        // happens if the call reached the hooked function: `func` can return 0 without calling
+        // anything (a stale receiver, an unresolved sub-object), and the latch would then stay armed
+        // to swallow the next GENUINE engine-driven invocation. That is spec §10's "clear it on both
+        // paths", and it is why `hook_disarm_bypass` exists at all.
+        let bypass_ids = crate::gamedata_hooks::bypass_ids_for_call(&pid, &name);
+        let (arm_fn, disarm_fn) = if bypass_ids.is_empty() {
+            (None, None) // the overwhelmingly common case: no hook names this call
+        } else {
+            let o = engine_ops();
+            (o.and_then(|o| o.hook_arm_bypass), o.and_then(|o| o.hook_disarm_bypass))
+        };
+        for id in &bypass_ids {
+            if let Some(arm) = arm_fn { arm(*id); }
+        }
         let mut ret: u64 = 0;
         let ok = func(
             plan.call_id, index, serial, subobj_off,
@@ -6028,6 +6109,10 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
             strs.as_ptr(), vecs.as_ptr(),
             plan.ret_code, &mut ret,
         );
+        for id in &bypass_ids {
+            if let Some(disarm) = disarm_fn { disarm(*id); }
+        }
+
         if ok == 0 { return; } // shim-side degrade (stale receiver / absent sub-object) → null
 
         match plan.ret_code {
@@ -6654,6 +6739,276 @@ pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
     result as i32
 }
 
+// ---------------------------------------------------------------------------
+// Declarative inbound hooks — the dispatch half (spec §6).
+//
+// The engine calls a compiled thunk; the thunk calls `s2script_core_dispatch_hook(hookId, argView)`;
+// this is where that lands. Everything below is engine-generic: the hook is identified by a slot id
+// core itself handed out, and its params are named by the DESCRIPTOR, never by core.
+// ---------------------------------------------------------------------------
+
+/// The inbound hook dispatch currently running (see the `ACTIVE_HOOK` thread-local).
+pub(crate) struct ActiveHook {
+    /// The thunk's own stack-frame arg view. OPAQUE — core never dereferences it; it only hands it
+    /// back to the shim's accessors, which liveness-gate it against their own record of the live
+    /// view. It dies with the thunk's frame, which is why nothing may retain it.
+    view: *mut std::ffi::c_void,
+    /// The declaring owner + hook name, so an accessor failure can be reported as a NAMED degrade of
+    /// THIS hook rather than as a silent zero.
+    owner: String,
+    name: String,
+}
+
+/// The `HOOK_MUX` channel key for a declared hook.
+///
+/// Both halves are needed: two owners may each declare a hook called `onRespawn`, and they are
+/// different detours with different subscribers. The separator is NUL, which cannot occur in either
+/// half — both arrive as JSON object keys that crossed the C ABI as NUL-terminated strings — so no
+/// owner/name pair can be spelled to collide with another.
+fn hook_key(owner: &str, name: &str) -> String {
+    format!("{}\u{0}{}", owner, name)
+}
+
+/// Map the owner id JS passes to the id the registry keys on.
+///
+/// A game package's hooks are registered under the RESERVED owner id (`game-package:@s2script/cs2`),
+/// which JS can neither see nor spell; its generated binding passes the plain package name. Any
+/// other string is a plugin's own id and is used as given.
+///
+/// Subscribing is deliberately NOT the privileged operation: `engine:hooks` gates DECLARING a hook
+/// (which is what patches bytes and what an operator authorizes). A plugin subscribing to a hook
+/// another owner declared is the intended path — that is what the generated `ctx` namespaces are —
+/// and matches SourceMod, where any plugin subscribing to `CS_OnTerminateRound` installs the detour.
+fn hook_owner_id(arg: &str) -> String {
+    let reserved = crate::gamedata_calls::reserved_owner_id(arg);
+    if crate::gamedata_calls::game_package_owner().as_deref() == Some(reserved.as_str()) {
+        return reserved;
+    }
+    arg.to_string()
+}
+
+/// The live dispatch's `(view, owner, name)`, or `None` outside one. Copied out so the `ACTIVE_HOOK`
+/// borrow is released before anything else runs.
+fn active_hook() -> Option<(*mut std::ffi::c_void, String, String)> {
+    ACTIVE_HOOK.with(|a| a.borrow().as_ref().map(|h| (h.view, h.owner.clone(), h.name.clone())))
+}
+
+/// Read positional param `idx` out of the live arg view. Returns `(value, is_float)`, or `None` when
+/// the shim refused the read.
+///
+/// The float/int class is discovered by PROBING rather than mirrored from a core-side table: the
+/// shim owns each shape's param layout and class-checks every accessor, so asking it is the only
+/// answer that cannot drift. `f32` is tried first; a class mismatch is a clean -1 there, never a
+/// reinterpretation of the bits.
+fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<(f64, bool)> {
+    let ops = ENGINE_OPS.with(|o| o.get())?;
+    if let Some(f) = ops.hook_read_f32 {
+        let mut out: f32 = 0.0;
+        if f(view, idx, &mut out) == 0 {
+            return Some((out as f64, true));
+        }
+    }
+    if let Some(f) = ops.hook_read_i32 {
+        let mut out: i32 = 0;
+        if f(view, idx, &mut out) == 0 {
+            return Some((out as f64, false));
+        }
+    }
+    None
+}
+
+/// The getter behind every param of a hook view. The param index rides in the function's `data`, so
+/// one callback serves every param of every hook.
+///
+/// A failed read yields `undefined` AND a named degrade — never `0`. That distinction is the whole
+/// point: a handler that reads `view.delay` and gets a plausible-looking `0` cannot tell it apart
+/// from the engine genuinely passing zero, and would act on a value that was never there.
+fn s2_hook_param_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        let idx = args.data().int32_value(scope).unwrap_or(-1);
+        // Outside a dispatch there is no frame to read: the view a handler stashed died with the
+        // thunk. `undefined` with no degrade — the descriptor is fine, the caller's timing is not.
+        let Some((view, owner, name)) = active_hook() else { return };
+        match hook_param_read(view, idx) {
+            Some((v, _)) => rv.set_double(v),
+            None => crate::gamedata_hooks::note_miss(
+                &owner,
+                &name,
+                Some(format!(
+                    "param #{} could not be read from the arg view (a stale binding, or a shape with \
+                     no such param) — handlers see `undefined`, never a 0",
+                    idx
+                )),
+            ),
+        }
+    }));
+}
+
+/// The setter behind a `mutable` param. A read-only param has no setter at all, so assigning to one
+/// throws in strict mode — which every plugin is (pure ESM).
+///
+/// The write class comes from the same probe the getter uses, so a `mutable` param is written back
+/// through the accessor that matches the shape's actual class or not at all.
+fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let idx = args.data().int32_value(scope).unwrap_or(-1);
+        let value = args.get(0).number_value(scope).unwrap_or(0.0);
+        // Outside a dispatch there is no frame to write. Worth a line even though the hook cannot be
+        // named from here (the view is gone, and with it the hook it belonged to): a LOST WRITE is
+        // not self-evident to the caller the way a read of `undefined` is.
+        let Some((view, owner, name)) = active_hook() else {
+            log_warn(&format!(
+                "WARN: a hook view was written (param #{}) outside its dispatch — the view is \
+                 block-scoped and the write is IGNORED",
+                idx
+            ));
+            return;
+        };
+        // No `else { return }` on the ops lookup: an absent op is a LOST WRITE like any other and
+        // must reach the named degrade below rather than vanish.
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let ok = match hook_param_read(view, idx) {
+            Some((_, true)) => ops.and_then(|o| o.hook_write_f32).map(|f| f(view, idx, value as f32)),
+            Some((_, false)) => ops.and_then(|o| o.hook_write_i32).map(|f| f(view, idx, value as i32)),
+            None => None,
+        };
+        if ok != Some(0) {
+            crate::gamedata_hooks::note_miss(
+                &owner,
+                &name,
+                Some(format!(
+                    "param #{} could not be written back to the arg view — the engine will see the \
+                     ORIGINAL value",
+                    idx
+                )),
+            );
+        }
+    }));
+}
+
+/// Build the block-scoped view object one handler receives.
+///
+/// Params are ACCESSOR properties, not a snapshot: reads hit the live frame, so a second handler
+/// sees what the first one wrote, and a write reaches the engine because the thunk re-reads the view
+/// before calling the original. A snapshot object would have to be copied back after each handler,
+/// which is impossible here — each handler runs in its OWN plugin context, so each gets its own
+/// object.
+fn build_hook_view<'s>(
+    tc: &mut v8::PinScope<'s, '_>,
+    plan: &crate::gamedata_hooks::HookPlan,
+    view: *mut std::ffi::c_void,
+) -> Option<Vec<v8::Local<'s, v8::Value>>> {
+    let obj = v8::Object::new(tc);
+    for (i, pname) in plan.params.iter().enumerate() {
+        let key = v8::String::new(tc, pname)?;
+        let data: v8::Local<v8::Value> = v8::Integer::new(tc, i as i32).into();
+        let getter: v8::Local<v8::Value> =
+            v8::Function::builder(s2_hook_param_get).data(data).build(tc)?.into();
+        // No setter at all for a read-only param — `undefined` is how V8 spells "accessor with no
+        // setter", which makes an assignment throw under strict mode instead of silently vanishing.
+        let setter: v8::Local<v8::Value> = if plan.writable[i] {
+            v8::Function::builder(s2_hook_param_set).data(data).build(tc)?.into()
+        } else {
+            v8::undefined(tc).into()
+        };
+        let desc = v8::PropertyDescriptor::new_from_get_set(getter, setter);
+        obj.define_property(tc, key.into(), &desc);
+    }
+    // The receiver, when the descriptor surfaces one: a books-gated EntityRef, exactly like every
+    // other entity crossing into JS. NO RAW POINTER — the shim hands back a packed CEntityHandle its
+    // own books already vouched for, and `entity_live::adopt` re-decides liveness here.
+    if let Some(rname) = &plan.receiver {
+        let key = v8::String::new(tc, rname)?;
+        let mut handle: u32 = 0;
+        let ent: v8::Local<v8::Value> = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.hook_receiver_handle?;
+            // -1 is NORMAL, not a degrade: a detour `this` is frequently not an entity at all (a
+            // rules/services singleton is the motivating case), and `null` is the honest answer.
+            if f(view, &mut handle) != 0 {
+                return None;
+            }
+            let (index, serial) = crate::entity::decode_handle(handle);
+            let id = crate::entity_live::adopt(index, serial)?;
+            let arr = v8::Array::new(tc, 2);
+            let iv = v8::Integer::new(tc, index);
+            let dv = v8::Number::new(tc, id as f64);
+            arr.set_index(tc, 0, iv.into());
+            arr.set_index(tc, 1, dv.into());
+            Some(arr.into())
+        })()
+        .unwrap_or_else(|| v8::null(tc).into());
+        obj.set(tc, key.into(), ent);
+    }
+    Some(vec![obj.into()])
+}
+
+/// `__s2_hook_on(owner, hookName, handler)` — subscribe to a gamedata-declared engine detour.
+///
+/// Called from the generated `ctx` namespace, never by hand. Records the subscription in `HOOK_MUX`
+/// (owner-tracked, so the ledger tears it down at unload like any other) and then asks
+/// `gamedata_hooks::subscribe` to ensure the detour is installed — LAZILY, idempotently, and on
+/// every subscribe rather than only the first, so a hook whose first install failed recovers instead
+/// of staying dead for the process.
+///
+/// Degrade-never-crash: a hook that could not be installed still records its subscription (the
+/// ledger and teardown stay uniform) and WARNs by name; it simply never fires.
+fn s2_hook_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 3 {
+            return;
+        }
+        let owner = hook_owner_id(&args.get(0).to_rust_string_lossy(scope));
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let key = hook_key(&owner, &name);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 2) else { return };
+        if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
+            log_warn(&format!(
+                "WARN: hook_on('{}', '{}'): the detour is not installed, so this handler will not \
+                 fire: {}",
+                owner, name, reason
+            ));
+        }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// Run the subscribers of one declaratively-declared engine hook and return the collapsed
+/// `HookResult` the thunk applies (>= Handled suppresses the original engine call entirely).
+///
+/// THIS DISPATCH IS NEVER DEFERRED, and that is load-bearing rather than a default. `argView` points
+/// at the thunk's own STACK FRAME: it is valid for exactly the duration of this call and dies when
+/// the thunk returns. A replayed dispatch a frame later would hand JS a dead frame, every accessor
+/// would fail (the shim's liveness gate refuses a view that is not the one being dispatched), and
+/// every param would read as a degrade. `fan_out_collapsing` is what guarantees it — it discards
+/// `Delivery` by construction, so a re-entrant dispatch returns `Continue` and is never queued.
+/// `s2script_core_dispatch_hook` therefore never returns `S2_DISPATCH_DEFERRED`.
+pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i32 {
+    // An id core never handed out — a detour installed by a PREVIOUS core (Metamod reload) — has no
+    // descriptor. Continue, so the engine proceeds unhooked.
+    let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
+    let Some(plan) = crate::gamedata_hooks::plan(&owner, &name) else { return 0 };
+    let snap = HOOK_MUX.with(|m| m.borrow().snapshot(&hook_key(&owner, &name)));
+    if snap.is_empty() {
+        return 0;
+    }
+
+    // Publish the frame for exactly the duration of the fan-out. SAVE/RESTORE rather than
+    // set/clear: a handler can make the engine call another hooked function, and the inner dispatch
+    // must hand the outer one its view back.
+    let prev = ACTIVE_HOOK.with(|a| {
+        a.borrow_mut().replace(ActiveHook { view: arg_view, owner: owner.clone(), name: name.clone() })
+    });
+    let label = format!("dispatch_hook('{}.{}')", owner, name);
+    let result = fan_out_collapsing(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
+        build_hook_view(tc, &plan, arg_view)
+    });
+    ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
+    result as i32
+}
+
 /// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
 /// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
@@ -7195,6 +7550,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_game_call_receiverless", s2_game_call_receiverless);
     set_native(scope, global_obj, "__s2_game_call_status", s2_game_call_status);
     set_native(scope, global_obj, "__s2_game_call_invoke", s2_game_call_invoke);
+    // Declarative inbound hooks: the ONE native the generated `ctx` namespaces call. There is no
+    // registration native here either — core registers hook descriptors itself from the same packed
+    // gamedata, so JS can never declare a detour, only subscribe to a declared one.
+    set_native(scope, global_obj, "__s2_hook_on", s2_hook_on);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -9704,6 +10063,25 @@ pub(crate) fn register_builtin_stores() {
         }),
     );
 
+    // HOOK_MUX: a SUBSCRIBER's rows. There is no engine-op follow-up on the emptied channels — a
+    // declarative hook's detour is never uninstalled while the process runs (spec §6: removing a
+    // live detour races the engine calling through it), so an emptied channel simply dispatches to
+    // nobody. The DESCRIPTOR side of teardown is `gamedata_hooks::drop_owner`, called from
+    // `unload_plugin` beside `gamedata_calls::drop_plugin`.
+    crate::owner_stores::register(
+        "HOOK_MUX",
+        Box::new(|owner| { HOOK_MUX.with(|m| { m.borrow_mut().remove_by_owner(owner); }); }),
+        Box::new(|ids| { HOOK_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            HOOK_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+            ACTIVE_HOOK.with(|a| *a.borrow_mut() = None);
+            // The descriptor + SLOT tables go with it: the shim's `S2_HookResetAll()` forgets its
+            // half of the install bookkeeping at Unload, and a core that kept `installed` set would
+            // make the next core's first subscribe skip the patch — every hook silently dead.
+            crate::gamedata_hooks::reset_all();
+        }),
+    );
+
     // USERMSG_MUX: emptied canonical names → clear the shim bitmap bit via usermsg_hook_unsub.
     crate::owner_stores::register(
         "USERMSG_MUX",
@@ -10144,6 +10522,11 @@ fn teardown_ledger_and_dispose(id: &str) {
     // BOTH teardown paths (Active and never-Active), so a reload always re-resolves from scratch
     // rather than inheriting a stale call id.
     crate::gamedata_calls::drop_plugin(id);
+    // Declarative inbound hooks: drop the descriptors this plugin DECLARED. Its subscriptions to
+    // other owners' hooks are swept by the `HOOK_MUX` owner-store above. Nothing is uninstalled —
+    // an installed detour outlives its declaring plugin by design (spec §6), and its slot is kept so
+    // a reload re-uses it instead of burning a second one.
+    crate::gamedata_hooks::drop_owner(id);
     // Removing timers/jobs (or an onUnload-added hook) changed the detour predicate — reconcile.
     refresh_detour();
 
@@ -13523,6 +13906,13 @@ mod frame_tests {
             defer_selftest: None,
             hook_install: None,
             hook_arm_bypass: None,
+            hook_disarm_bypass: None,
+            hook_read_f32: None,
+            hook_read_i32: None,
+            hook_write_f32: None,
+            hook_write_i32: None,
+            hook_receiver_handle: None,
+            engine_call_address: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -13828,6 +14218,202 @@ mod frame_tests {
             usermsg_hook_recipients: Some(mock_usermsg_recipients),
             ..mock_event_ops()
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Declarative inbound hooks — the DISPATCH path, in-isolate.
+    //
+    // The registry's own rules are unit-tested in `gamedata_hooks`; what can only be proven with a
+    // live isolate is the part that faces a plugin: the block-scoped view object, the write-back of
+    // a `mutable` param, the read-only-ness of the others, the collapse, and the bypass latch
+    // bracketing an outbound invoke that DEGRADES.
+    //
+    // These mocks stand in for the shim's arg view and honour its liveness discipline: an accessor
+    // accepts ONLY the exact pointer the dispatch was handed, so a view retained past its dispatch
+    // fails here exactly as it would on a real frame.
+    // -----------------------------------------------------------------------
+
+    /// The stand-in for a thunk's stack frame. Any non-null token would do; the value is only ever
+    /// compared, never dereferenced — which is precisely core's contract with the real thing.
+    const HOOK_VIEW_TOKEN: usize = 0xF00D_BEEF;
+    static HOOK_F32: Mutex<[f32; 1]> = Mutex::new([0.0]);
+    static HOOK_I32: Mutex<[i32; 3]> = Mutex::new([0; 3]);
+    static HOOK_ARMED: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+    static HOOK_DISARMED: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+    /// `this_f32_i32_i32_i32`: param 0 is the float, params 1..=3 are the ints. Anything else is the
+    /// shim's -1 — a stale binding, or a shape with no such param.
+    extern "C" fn mock_hook_read_f32(view: *mut std::ffi::c_void, idx: c_int, out: *mut f32) -> c_int {
+        if view as usize != HOOK_VIEW_TOKEN || idx != 0 { return -1; }
+        unsafe { *out = HOOK_F32.lock().unwrap()[0] };
+        0
+    }
+    extern "C" fn mock_hook_read_i32(view: *mut std::ffi::c_void, idx: c_int, out: *mut i32) -> c_int {
+        if view as usize != HOOK_VIEW_TOKEN || !(1..=3).contains(&idx) { return -1; }
+        unsafe { *out = HOOK_I32.lock().unwrap()[(idx - 1) as usize] };
+        0
+    }
+    extern "C" fn mock_hook_write_f32(view: *mut std::ffi::c_void, idx: c_int, v: f32) -> c_int {
+        if view as usize != HOOK_VIEW_TOKEN || idx != 0 { return -1; }
+        HOOK_F32.lock().unwrap()[0] = v;
+        0
+    }
+    extern "C" fn mock_hook_write_i32(view: *mut std::ffi::c_void, idx: c_int, v: i32) -> c_int {
+        if view as usize != HOOK_VIEW_TOKEN || !(1..=3).contains(&idx) { return -1; }
+        HOOK_I32.lock().unwrap()[(idx - 1) as usize] = v;
+        0
+    }
+    /// No entity receiver — the common case for a detour `this` (a rules/services singleton).
+    extern "C" fn mock_hook_receiver(_v: *mut std::ffi::c_void, _out: *mut u32) -> c_int { -1 }
+    extern "C" fn mock_hook_install(_id: c_int, _shape: c_int, _addr: i64, _r: *mut c_char, _c: c_int) -> c_int { 0 }
+    extern "C" fn mock_hook_arm(id: c_int) { HOOK_ARMED.lock().unwrap().push(id); }
+    extern "C" fn mock_hook_disarm(id: c_int) { HOOK_DISARMED.lock().unwrap().push(id); }
+    #[allow(clippy::too_many_arguments)]
+    extern "C" fn mock_call_resolve(
+        _k: *const c_char, _m: *const c_char, _p: *const c_char, _r: *const c_char,
+        _c: *const c_char, _i: c_int, _v: *const c_char, _out: *mut c_char, _cap: c_int,
+    ) -> c_int { 7 }
+    extern "C" fn mock_call_address(_id: c_int) -> i64 { 0x0000_7f00_0040_0000 }
+    /// The invoke DEGRADES (0 = stale receiver / absent sub-object): the case where the hooked
+    /// function is never reached, and therefore the case the latch would leak on.
+    #[allow(clippy::too_many_arguments)]
+    extern "C" fn mock_call_invoke_degrades(
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _gp: *const u64, _gk: *const u8, _gc: c_int,
+        _fp: *const f64, _fc: c_int,
+        _s: *const *const c_char, _v: *const f32,
+        _rk: c_int, _ro: *mut u64,
+    ) -> c_int { 0 }
+
+    fn hook_test_ops() -> S2EngineOps {
+        S2EngineOps {
+            engine_call_resolve:  Some(mock_call_resolve),
+            engine_call_address:  Some(mock_call_address),
+            engine_call_invoke:   Some(mock_call_invoke_degrades),
+            hook_install:         Some(mock_hook_install),
+            hook_arm_bypass:      Some(mock_hook_arm),
+            hook_disarm_bypass:   Some(mock_hook_disarm),
+            hook_read_f32:        Some(mock_hook_read_f32),
+            hook_read_i32:        Some(mock_hook_read_i32),
+            hook_write_f32:       Some(mock_hook_write_f32),
+            hook_write_i32:       Some(mock_hook_write_i32),
+            hook_receiver_handle: Some(mock_hook_receiver),
+            ..mock_event_ops()
+        }
+    }
+
+    /// One `hooks` entry on the 4-param shape, plus a receiverless `calls` entry it bypasses with.
+    /// `u5` is declared past the shape's params ON PURPOSE — that is the stale-binding case whose
+    /// read must degrade BY NAME rather than hand a handler a plausible-looking 0.
+    fn hook_gamedata() -> &'static str {
+        r#"{"signatures":{"Sig":{"linuxsteamrt64":{"module":"m.so","pattern":"55 48","resolve":"direct",
+                          "validate":{"prologue":"55"}}}},
+            "calls":{"doThing":{"receiver":{"kind":"none"},
+                     "target":{"kind":"signature","name":"Sig"},"args":[],"returns":"void"}},
+            "hooks":{"onX":{"target":{"kind":"signature","name":"Sig"},
+                     "shape":"this_f32_i32_i32_i32",
+                     "params":["delay","reason","u3","u4","u5"],"mutable":["delay","reason"],
+                     "bypassWith":"doThing","expose":{"ctx":"g"}}}}"#
+    }
+
+    fn hook_test_setup(plugin: &str) -> i32 {
+        crate::loader::load_permissions_from_str(&format!(
+            r#"{{"engine:calls":["{p}"],"engine:hooks":["{p}"]}}"#, p = plugin
+        )).expect("parses");
+        HOOK_ARMED.lock().unwrap().clear();
+        HOOK_DISARMED.lock().unwrap().clear();
+        *HOOK_F32.lock().unwrap() = [1.5];
+        *HOOK_I32.lock().unwrap() = [7, 8, 9];
+        crate::gamedata_calls::register_plugin(plugin, hook_gamedata());
+        crate::gamedata_hooks::register_plugin(plugin, hook_gamedata());
+        assert_eq!(crate::gamedata_hooks::status(plugin, "onX"), "available",
+            "{}", crate::gamedata_hooks::status(plugin, "onX"));
+        crate::gamedata_hooks::plan(plugin, "onX").expect("ready").hook_id
+    }
+
+    /// The view is LIVE: reads hit the frame, a `mutable` write reaches the engine's copy, a
+    /// read-only param does not, and the handlers' results collapse the standard way.
+    #[test]
+    fn hook_dispatch_delivers_a_live_view_and_collapses() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk1");
+        create_plugin_context("hk1");
+
+        // No subscribers yet: the thunk must be told to proceed, and nothing may be dispatched.
+        assert_eq!(dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void), 0);
+
+        eval_in_context("hk1", r#"
+            globalThis.__seen = null;
+            __s2_hook_on("hk1", "onX", function (v) {
+                globalThis.__seen = [v.delay, v.reason, v.u3, v.u4];
+                v.reason = 42;          // mutable -> must reach the engine
+                v.delay = 0.25;         // mutable
+                try { v.u3 = 999; } catch (e) { globalThis.__threw = true; }  // read-only
+                return HookResult.Handled;
+            });
+        "#).unwrap();
+
+        let r = dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        assert_eq!(r, 2, "Handled collapses to 2 — the thunk suppresses the original call");
+        assert_eq!(eval_in_context_string("hk1", "JSON.stringify(globalThis.__seen)"),
+            "[1.5,7,8,9]", "every declared param reads through the arg view, by name and by class");
+        assert_eq!(HOOK_I32.lock().unwrap()[0], 42, "a mutable param is written back to the frame");
+        assert!((HOOK_F32.lock().unwrap()[0] - 0.25).abs() < 1e-6, "float class is written as f32");
+        assert_eq!(HOOK_I32.lock().unwrap()[1], 8, "a read-only param never reaches the engine");
+        shutdown();
+    }
+
+    /// (a) A param the shape does not have reads as `undefined` and a NAMED degrade — never 0.
+    /// (b) The view dies with the dispatch: a handler that stashes it reads `undefined` afterwards,
+    ///     which is what keeps a dead stack frame from being read as data.
+    #[test]
+    fn hook_view_failures_are_named_and_the_view_is_block_scoped() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk2");
+        create_plugin_context("hk2");
+        eval_in_context("hk2", r#"
+            globalThis.__stash = null;
+            __s2_hook_on("hk2", "onX", function (v) {
+                globalThis.__stash = v;
+                globalThis.__u5 = v.u5;      // index 4: past this shape's params
+                return HookResult.Continue;
+            });
+        "#).unwrap();
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+
+        assert_eq!(eval_in_context_string("hk2", "String(globalThis.__u5)"), "undefined",
+            "a failed read must be undefined — a 0 would be indistinguishable from a real zero");
+        assert!(crate::gamedata_hooks::status("hk2", "onX").contains("param #4"),
+            "and it must name the failure: {}", crate::gamedata_hooks::status("hk2", "onX"));
+
+        assert_eq!(eval_in_context_string("hk2", "String(globalThis.__stash.delay)"), "undefined",
+            "the view is block-scoped: outside its dispatch every accessor is dead");
+        shutdown();
+    }
+
+    /// The bypass latch brackets the outbound invoke and is DISARMED even when that invoke never
+    /// reaches the hooked function — the leak that would otherwise swallow the next genuine
+    /// engine-driven call (spec §10).
+    #[test]
+    fn the_bypass_latch_is_armed_and_disarmed_around_a_degrading_invoke() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk3");
+        create_plugin_context("hk3");
+
+        // Not installed yet -> nothing to arm: an uninstalled slot has no thunk to take the latch.
+        eval_in_context("hk3", r#"__s2_engine_call_invoke("doThing", -1, 0, []);"#).unwrap();
+        assert!(HOOK_ARMED.lock().unwrap().is_empty(), "no subscriber, no detour, no latch");
+
+        eval_in_context("hk3", r#"__s2_hook_on("hk3", "onX", function () {});"#).unwrap();
+        eval_in_context("hk3", r#"__s2_engine_call_invoke("doThing", -1, 0, []);"#).unwrap();
+
+        assert_eq!(*HOOK_ARMED.lock().unwrap(), vec![hook_id], "our own call arms its hook's latch");
+        assert_eq!(*HOOK_DISARMED.lock().unwrap(), vec![hook_id],
+            "and disarms it even though the invoke DEGRADED — the thunk never ran to take it");
+        shutdown();
     }
 
     /// onPre resolves the name through usermsg_hook_sub (canonicalized), and a dispatched message
@@ -15027,6 +15613,13 @@ mod frame_tests {
             defer_selftest: None,
             hook_install: None,
             hook_arm_bypass: None,
+            hook_disarm_bypass: None,
+            hook_read_f32: None,
+            hook_read_i32: None,
+            hook_write_f32: None,
+            hook_write_i32: None,
+            hook_receiver_handle: None,
+            engine_call_address: None,
         }
     }
 

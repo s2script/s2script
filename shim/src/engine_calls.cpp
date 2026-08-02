@@ -305,6 +305,15 @@ int S2_AddressIsExecutable(const void* addr) {
     return ctx.hit ? 1 : 0;
 }
 
+// The address behind a call id, for the ONE caller that needs bytes rather than a callable: the
+// declarative-inbound-hook install (see the header for why this exists at all). An unknown id
+// returns 0, which S2_HookInstall already refuses by name ("hook target address is null") — so a
+// stale id degrades that hook instead of patching address 0.
+int64_t S2_EngineCallAddress(int callId) {
+    if (callId < 0 || static_cast<size_t>(callId) >= g_calls.size()) return 0;
+    return static_cast<int64_t>(reinterpret_cast<uintptr_t>(g_calls[static_cast<size_t>(callId)].fn));
+}
+
 // ---------------------------------------------------------------------------
 // Resolve. Returns a call id >= 0, or -1 with a named reason (spec §12 "Load" row) — every failure
 // here degrades exactly ONE descriptor; the core logs the reason once and Engine.call() yields null.

@@ -364,9 +364,31 @@ typedef int (*s2_usermsg_hook_debug_fn)(char* buf, int buflen);
  * hook_arm_bypass: arm the hook's one-shot bypass latch immediately BEFORE core invokes the
  *   `bypassWith` call descriptor, so our own outbound call does not fire our own hook (SourceMod's
  *   g_pIgnoreTerminateDetour semantic, and what keeps a hook from firing while core holds the
- *   isolate borrow). Out-of-range ids are a silent no-op. */
+ *   isolate borrow). Out-of-range ids are a silent no-op.
+ * hook_disarm_bypass: clear it again, immediately AFTER that invoke. Not redundant with the thunk's
+ *   take: an invoke that never reaches the hooked function (degraded descriptor, stale receiver)
+ *   would otherwise leave the latch armed and swallow the next GENUINE engine-driven call. Core
+ *   cannot clear it any other way — the latch lives in the shim.
+ * the hook_read/hook_write pairs and hook_receiver_handle: the BLOCK-SCOPED arg view (engine_hooks.h).
+ *   (Spelled out rather than globbed: a `hook_read_<star>` in a C comment would close it here.) `idx`
+ *   is the descriptor's positional param index; every accessor is liveness-, bounds- and
+ *   class-checked shim-side and returns -1 rather than reinterpreting bits, which core surfaces as a
+ *   NAMED degrade of that hook — a handler reading a param must never get a plausible-looking 0 when
+ *   the read actually failed. `argView` is opaque to core: it is a THUNK'S STACK FRAME and core only
+ *   ever hands it back here.
+ * engine_call_address: the resolved absolute address behind an engine_call_resolve id (0 = unknown
+ *   id). A hook resolves through the SAME descriptor path as a call, but then has to patch bytes,
+ *   and S2_HookInstall takes an address rather than an id. Core treats it as an opaque token and
+ *   never dereferences it; hook_install re-proves the whole patch window is executable. */
 typedef int  (*s2_hook_install_fn)(int hookId, int shape, int64_t addr, char* reasonOut, int reasonCap);
 typedef void (*s2_hook_arm_bypass_fn)(int hookId);
+typedef void (*s2_hook_disarm_bypass_fn)(int hookId);
+typedef int  (*s2_hook_read_f32_fn)(void* argView, int idx, float* out);
+typedef int  (*s2_hook_read_i32_fn)(void* argView, int idx, int32_t* out);
+typedef int  (*s2_hook_write_f32_fn)(void* argView, int idx, float value);
+typedef int  (*s2_hook_write_i32_fn)(void* argView, int idx, int32_t value);
+typedef int  (*s2_hook_receiver_handle_fn)(void* argView, uint32_t* outHandle);
+typedef int64_t (*s2_engine_call_address_fn)(int callId);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI: this struct and `S2EngineOps` in
  * core/src/v8host.rs must stay index-for-index identical and must change in the SAME commit.
@@ -529,6 +551,17 @@ typedef struct {
      * above. Implemented in shim/src/engine_hooks.cpp. */
     s2_hook_install_fn    hook_install;
     s2_hook_arm_bypass_fn hook_arm_bypass;
+    /* declarative inbound hooks, core half — APPENDED after hook_arm_bypass; order is the ABI; do
+     * not reorder above. hook_disarm_bypass closes the latch-leak window (spec §10); the five
+     * accessors are how the block-scoped arg view reaches JS at all; engine_call_address is what
+     * turns a resolved descriptor into an installable address. */
+    s2_hook_disarm_bypass_fn   hook_disarm_bypass;
+    s2_hook_read_f32_fn        hook_read_f32;
+    s2_hook_read_i32_fn        hook_read_i32;
+    s2_hook_write_f32_fn       hook_write_f32;
+    s2_hook_write_i32_fn       hook_write_i32;
+    s2_hook_receiver_handle_fn hook_receiver_handle;
+    s2_engine_call_address_fn  engine_call_address;
 } S2EngineOps;
 
 /* Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant

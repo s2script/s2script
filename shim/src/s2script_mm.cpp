@@ -4850,6 +4850,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // shape) and the bypass latch core arms around its own outbound `bypassWith` call.
     ops.hook_install    = &S2_HookInstall;
     ops.hook_arm_bypass = &S2_HookArmBypass;
+    // The core half of the same slice: the latch DISARM (core arms around its own outbound
+    // `bypassWith` invoke and must be able to clear it when that invoke never reached the hooked
+    // function), and the id -> address hop a hook install needs but a call invoke does not.
+    ops.hook_disarm_bypass  = &S2_HookDisarmBypass;
+    // The block-scoped arg view. Every one of these is liveness-gated shim-side against the view the
+    // thunk is CURRENTLY dispatching, so a pointer core retained past a dispatch fails by -1 instead
+    // of reading (or writing) a stack frame that has since been reused.
+    ops.hook_read_f32        = &S2_HookReadF32;
+    ops.hook_read_i32        = &S2_HookReadI32;
+    ops.hook_write_f32       = &S2_HookWriteF32;
+    ops.hook_write_i32       = &S2_HookWriteI32;
+    ops.hook_receiver_handle = &S2_HookReceiverHandle;
+    ops.engine_call_address  = &S2_EngineCallAddress;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.

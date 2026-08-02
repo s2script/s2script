@@ -327,6 +327,13 @@ void S2_HookArmBypass(int hookId) {
     S2Hook_BypassArm(hookId);   // bounds-checked there; an out-of-range id is a silent no-op
 }
 
+// Take-and-discard: "clear the latch whether or not the call consumed it". Deliberately expressed as
+// the same one-shot take the thunk performs rather than as a second way to write the slot, so there
+// is exactly ONE operation that clears a latch.
+void S2_HookDisarmBypass(int hookId) {
+    (void)S2Hook_BypassTake(hookId);
+}
+
 // Forget every installed hook. One operation with s2detour::RemoveAll() — see engine_hooks.h.
 void S2_HookResetAll(void) {
     for (int i = 0; i < S2_HOOK_MAX; i++) g_hooks[i] = Installed{};

@@ -13,6 +13,7 @@ pub(crate) mod entity_live;
 mod channels;
 mod ffi;
 mod gamedata_calls;
+mod gamedata_hooks;
 mod http;
 mod loader;
 mod multiplexer;
