@@ -5,10 +5,14 @@
 // ItemServices slots 24/25/26 are GiveNamedItem-overload THUNKS. A thunk is valid in-range code, so
 // the .text-range guard (the IsAddressInServerText idiom used throughout s2script_mm.cpp) does NOT
 // catch it — the call silently misbehaves instead of crashing. Hence a "vtable" target MUST carry a
-// masked `prologue` pattern, matched here at the resolved slot; .text-range validation stays as the
-// necessary-but-insufficient first gate. A "signature" target is self-validating (it matches this
-// build or it does not) and is additionally required to match UNIQUELY (the Rule-2 doctrine in
-// docs/re-strategy.md, mirroring ResolveSigValidated in s2script_mm.cpp).
+// masked `prologue` pattern, matched at the resolved slot; .text-range validation stays as the
+// necessary-but-insufficient first gate. A "signature" target must additionally match UNIQUELY (the
+// Rule-2 doctrine in docs/re-strategy.md, mirroring ResolveSigValidated in s2script_mm.cpp).
+//
+// UNIQUENESS IS ALSO INSUFFICIENT, which is why a signature target may carry validators too: a
+// borrowed signature can match exactly ONCE at the WRONG in-range function (proven twice on the
+// pinned build). The whole `validate` object crosses this ABI as JSON and is evaluated by the
+// engine-free call_validate.cpp — see that TU for the closed vocabulary and what each gate proves.
 //
 // THE INVOKE TECHNIQUE. Under SysV x86-64, integer-class and float-class arguments are assigned to
 // two INDEPENDENT register sequences (rdi/rsi/rdx/rcx/r8/r9 and xmm0..7), so positional interleaving
@@ -28,6 +32,11 @@
 #include "engine_calls.h"
 #include "sigscan.h"
 #include "vtable.h"   // s2vtable::GetVTableByName — RTTI vtable-by-name (CS2 exports no game vtables)
+// The CLOSED validator vocabulary (prologue / string-xref / vtable-member). It lives in its own
+// engine-free TU so shim/tests/call_validate_test.cpp can drive the SHIPPED gates over a synthetic
+// module image — this TU cannot be compiled outside the game (it includes the entity system), and a
+// validator that cannot fail in a test is decoration.
+#include "call_validate.h"
 
 // Entity system: CGameEntitySystem / CConcreteEntityList::m_pIdentityChunks / CEntityIdentity /
 // MAX_TOTAL_ENTITIES / EF_IS_INVALID_EHANDLE — the receiver + entity-arg resolution walk below reads
@@ -95,26 +104,50 @@ std::vector<ResolvedCall> g_calls;   // the returned call id is the index; entri
                                      // per-plugin lifetime and drops its own table on unload)
 
 // ---------------------------------------------------------------------------
-// Module text lookup. A per-TU copy of s2script_mm.cpp's FindModuleText (which is file-static
-// there): pick the LARGEST PF_X segment across ALL loaded modules whose soname contains `soname`,
-// because Metamod:Source inserts its own thin libserver.so proxy via the gameinfo SearchPath whose
-// path ALSO contains the substring — stopping at the first match grabs the ~95 KB proxy instead of
-// the real ~25 MB game module (Slice 5D.2). vtable.cpp keeps the same local copy for the same
-// TU-boundary reason.
+// Module lookup. A per-TU copy of s2script_mm.cpp's FindModuleText (which is file-static there):
+// pick the LARGEST PF_X segment across ALL loaded modules whose soname contains `soname`, because
+// Metamod:Source inserts its own thin libserver.so proxy via the gameinfo SearchPath whose path ALSO
+// contains the substring — stopping at the first match grabs the ~95 KB proxy instead of the real
+// ~25 MB game module (Slice 5D.2). vtable.cpp keeps the same local copy for the same TU-boundary
+// reason.
+//
+// ONE walk yields BOTH views, deliberately: the .text segment (where a resolved function must live)
+// and the winning module's FULL mapped [lo, hi) LOAD extent (where a rip-relative string target
+// legitimately lives — .rodata sits BELOW the PF_X base, so `string-xref` MUST range-guard against
+// the whole mapping). Deriving them in one pass means the two can never disagree about which module
+// won, which is the failure mode two hand-copied phdr walks invite.
 // ---------------------------------------------------------------------------
-struct ModText { const uint8_t* text; size_t size; };
+struct ModText {
+    const uint8_t* text = nullptr;   // largest PF_X segment of the winning module
+    size_t         size = 0;
+    const uint8_t* lo   = nullptr;   // full mapped LOAD extent of that SAME module
+    const uint8_t* hi   = nullptr;
+};
 
 ModText FindModuleText(const char* soname) {
-    struct Ctx { const char* name; ModText out; } ctx{ soname, { nullptr, 0 } };
+    struct Ctx { const char* name; size_t bestX; ModText out; } ctx{ soname, 0, {} };
     dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
         auto* c = static_cast<Ctx*>(data);
         if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
+        size_t maxX = 0;
+        const uint8_t* text = nullptr;
+        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
         for (int i = 0; i < info->dlpi_phnum; i++) {
             const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X) && ph.p_filesz > c->out.size) {
-                c->out.text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-                c->out.size = ph.p_filesz;                 // largest PF_X seg across all matches
+            if (ph.p_type != PT_LOAD) continue;
+            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) {
+                maxX = ph.p_filesz;
+                text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
             }
+            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
+            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
+        }
+        if (maxX > c->bestX) {   // largest PF_X wins, module-wide — the metamod proxy loses
+            c->bestX    = maxX;
+            c->out.text = text;
+            c->out.size = maxX;
+            c->out.lo   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
+            c->out.hi   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
         }
         return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the game module
     }, &ctx);
@@ -124,22 +157,31 @@ ModText FindModuleText(const char* soname) {
 // The IsAddressInServerText guard, generalized to the descriptor's own module: a resolved
 // address/slot must land inside that module's executable segment. A borrowed or stale index/xref
 // could point anywhere; this stops the out-of-module case before the first call (it canNOT stop a
-// wrong-but-in-range function — that is what `prologue` is for).
+// wrong-but-in-range function — that is what the VALIDATORS are for, and the two must stay
+// distinguishable in the reason string: "outside .text" means the pattern computed off the map, a
+// validator failure means it computed a real in-range function and it is the WRONG one).
 bool InModuleText(const ModText& mt, const void* fn) {
     if (!mt.text || !fn) return false;
     const uint8_t* p = static_cast<const uint8_t*>(fn);
     return p >= mt.text && p < mt.text + mt.size;
 }
 
-// Masked compare of `pat` at `fn`, fully bounds-checked against the module's text before any read.
-bool MatchesAt(const ModText& mt, const void* fn, const std::vector<int>& pat) {
-    if (!mt.text || !fn || pat.empty()) return false;
-    const uint8_t* p = static_cast<const uint8_t*>(fn);
-    if (p < mt.text || p + pat.size() > mt.text + mt.size) return false;
-    for (size_t i = 0; i < pat.size(); i++) {
-        if (pat[i] >= 0 && p[i] != static_cast<uint8_t>(pat[i])) return false;
-    }
-    return true;
+// Hand the (engine-free) validator TU the module's two views.
+s2validate::ModuleView ViewOf(const ModText& mt) {
+    s2validate::ModuleView mv;
+    mv.text     = mt.text;
+    mv.textSize = mt.size;
+    mv.lo       = mt.lo;
+    mv.hi       = mt.hi;
+    return mv;
+}
+
+// The one engine touchpoint the vocabulary needs, injected rather than reached for: RTTI
+// vtable-by-name. The validators never name a module or a class — both come from the descriptor.
+s2validate::Ops ValidatorOps() {
+    s2validate::Ops ops;
+    ops.vtable_by_name = &s2vtable::GetVTableByName;
+    return ops;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +281,7 @@ using FnF32 = float    (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
 // ---------------------------------------------------------------------------
 int S2_EngineCallResolve(const char* kind, const char* module, const char* pattern,
                          const char* resolve, const char* className, int vtableIndex,
-                         const char* prologue, char* reasonOut, int reasonCap) {
+                         const char* validateJson, char* reasonOut, int reasonCap) {
     if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
     if (!kind || !kind[0]) return Fail(reasonOut, reasonCap, "descriptor has no target kind");
 
@@ -275,22 +317,28 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
         if (!InModuleText(mt, fn)) return Fail(reasonOut, reasonCap, "resolved address outside the module's .text");
     } else if (std::strcmp(kind, "vtable") == 0) {
         if (!className || !className[0]) return Fail(reasonOut, reasonCap, "vtable target has no class");
-        // The v1 validator set is exactly { prologue }, and it is MANDATORY for a vtable target: the
-        // SDK fails the BUILD on a missing one, and this is the load-time backstop.
-        if (!prologue || !prologue[0]) return Fail(reasonOut, reasonCap, "vtable target requires validate.prologue");
+        // A `prologue` is MANDATORY for a vtable target — a rule about which validator must be
+        // PRESENT, separate from how validators are evaluated below. The SDK fails the BUILD on a
+        // missing one; this is the load-time backstop.
+        if (!s2validate::DeclaresPrologue(validateJson))
+            return Fail(reasonOut, reasonCap, "vtable target requires validate.prologue");
         if (vtableIndex < 0 || vtableIndex >= kMaxVtableIndex)
             return Fail(reasonOut, reasonCap, "vtable index out of range");
         void** vt = s2vtable::GetVTableByName(mod, className);
         if (!vt) return Fail(reasonOut, reasonCap, "class RTTI vtable not found on this build");
         fn = vt[vtableIndex];
         if (!InModuleText(mt, fn)) return Fail(reasonOut, reasonCap, "resolved slot outside libserver .text");
-        std::vector<int> pro = s2sig::ParsePattern(prologue);
-        if (pro.empty()) return Fail(reasonOut, reasonCap, "malformed validate.prologue pattern");
-        if (!MatchesAt(mt, fn, pro))
-            return Fail(reasonOut, reasonCap, "prologue mismatch (resolved slot is not the intended function)");
     } else {
         return Fail(reasonOut, reasonCap, "unknown target kind");
     }
+
+    // THE SEMANTIC GATE, after the .text-range check and never merged into it (see InModuleText):
+    // every validator computes or dereferences FROM `fn`, so it must first be known to be inside the
+    // module. One shared, kind-agnostic pass over the descriptor's whole `validate` object — the
+    // vocabulary is CLOSED, so an unknown key fails HERE by name rather than being silently ignored,
+    // which is the one way a mistyped gate could vanish without a trace.
+    if (!s2validate::Run(validateJson, ViewOf(mt), mod, fn, ValidatorOps(), reasonOut, reasonCap))
+        return -1;
 
     // Idempotent: the same resolved address always yields the same id, so a plugin reload (or two
     // plugins declaring the same target) re-uses the entry instead of growing the table.

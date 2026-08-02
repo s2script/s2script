@@ -552,6 +552,43 @@ pub extern "C" fn s2script_core_register_package(name: *const c_char, js: *const
     });
 }
 
+/// Register a game package's own gamedata with core: the `calls` descriptors it declares, plus the
+/// `signatures` they target (A5b, spec §9.1b). The gamedata sibling of
+/// `s2script_core_register_package`, and called with the same `name`.
+///
+/// `gamedata_json` is the shim's MERGED view for that owner (`GameConfig::mergedJson`) — the tree /
+/// master / condition / `custom/` merge stays in the shim's one loader, and core consumes the
+/// result through the same registry a plugin's packed `gamedata.json` goes through. Comments are
+/// already gone (nlohmann parsed it), so plain `serde_json` is enough here.
+///
+/// Descriptors land under a RESERVED owner id derived from `name`, which no `.s2sp` can claim
+/// (`loader::read_s2sp` refuses a manifest that tries), and which is exempt from the `engine:calls`
+/// operator allow-list: this is first-party runtime shipped in the same zip as core, replacing
+/// natives that are unconditionally callable from any plugin today.
+///
+/// Engine-generic: core never names a game — the package name comes entirely from the caller.
+///
+/// # Safety
+/// `name` and `gamedata_json` must be valid null-terminated UTF-8 C strings. Null pointers degrade
+/// to a no-op (never crash). `catch_unwind`-wrapped (no panic may cross the FFI boundary).
+#[no_mangle]
+pub extern "C" fn s2script_core_register_package_gamedata(
+    name: *const c_char,
+    gamedata_json: *const c_char,
+) {
+    let _ = catch_unwind(|| {
+        if name.is_null() || gamedata_json.is_null() {
+            return;
+        }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
+        let Ok(json_str) = (unsafe { CStr::from_ptr(gamedata_json) }).to_str() else { return };
+        // An owner whose tree merged nothing is the normal pre-A5b state, not an error: register it
+        // anyway so the owner id exists and every ask reports "not declared" rather than the
+        // game-scoped natives' "no game package registered".
+        crate::gamedata_calls::register_game_package(name_str, json_str);
+    });
+}
+
 /// Set the plugins directory path for the `.s2sp` watcher (`loader::poll_plugins`).
 ///
 /// Called by the shim at load time with the resolved `addons/s2script/plugins/` path

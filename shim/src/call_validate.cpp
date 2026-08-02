@@ -1,0 +1,294 @@
+#include "call_validate.h"
+
+#include "sigscan.h"
+#include "../third_party/json.hpp"
+
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace s2validate {
+namespace {
+
+using nlohmann::json;
+
+// THE VOCABULARY, spelled ONCE, in evaluation order (cheapest and most local first):
+//
+//   prologue     — a masked byte compare at `fn`. One bounds-checked read of a handful of bytes.
+//   string-xref  — one bounds-checked i32 read plus one bounded memcmp in .rodata.
+//   vtable-member— an RTTI .rodata name scan plus a walk of up to kMaxVtableSlots slots. By far the
+//                  most expensive, and the only one that can fail for a reason unrelated to `fn`
+//                  (the class's RTTI is absent from this build).
+//
+// The dispatcher switches on this array and the unknown-validator reason prints it, so a validator
+// cannot be added to one without the other.
+const char* const kVocabulary[] = { "prologue", "string-xref", "vtable-member" };
+constexpr int kVocabularyCount = 3;
+
+// A vtable has a naturally small bound. The walk terminates on its own at the first slot outside
+// .text (the next sub-vtable's offset-to-top header); this caps a corrupt or hostile table so the
+// walk can never run away — the same bound `engine_calls.cpp` applies to a declared slot index.
+constexpr int kMaxVtableSlots = 512;
+
+// Bounds the compare AND the reason string. 256 is ample for an engine log/scope literal.
+constexpr std::size_t kMaxExpect = 256;
+
+bool Fail(char* out, int cap, const char* fmt, ...) {
+    if (out && cap > 0) {
+        va_list ap;
+        va_start(ap, fmt);
+        std::vsnprintf(out, static_cast<std::size_t>(cap), fmt, ap);
+        va_end(ap);
+    }
+    return false;
+}
+
+bool InText(const ModuleView& mv, const void* p) {
+    if (!mv.text || !p) return false;
+    const uint8_t* q = static_cast<const uint8_t*>(p);
+    return q >= mv.text && q < mv.text + mv.textSize;
+}
+
+// Parse the whole `validate` object. Non-throwing (`allow_exceptions=false`): a malformed blob is a
+// named degrade of ONE descriptor, never an exception escaping into the load path.
+// Absent/""/"null"/"{}" all mean "no validators declared" and yield an empty object.
+bool ParseValidate(const char* validateJson, json* out) {
+    *out = json::object();
+    if (!validateJson || !validateJson[0]) return true;
+    json j = json::parse(validateJson, nullptr, /*allow_exceptions=*/false, /*ignore_comments=*/true);
+    if (j.is_discarded()) return false;
+    if (j.is_null()) return true;
+    if (!j.is_object()) return false;
+    *out = std::move(j);
+    return true;
+}
+
+// -----------------------------------------------------------------------------------------------
+// prologue — the masked compare at `fn`.
+//
+// The original (and still mandatory) validator for a `vtable` target: on the pinned libserver.so the
+// borrowed ItemServices slots 24/25/26 are overload THUNKS, which are valid in-range code, so the
+// .text-range guard does not catch them. Kind-agnostic here: a `signature` target may declare one
+// too, and it is then checked identically.
+// -----------------------------------------------------------------------------------------------
+bool ValidatePrologue(const json& v, const ModuleView& mv, const void* fn, char* out, int cap) {
+    if (!v.is_string() || v.get<std::string>().empty())
+        return Fail(out, cap, "malformed validate.prologue (expected a byte pattern string)");
+    std::vector<int> pat = s2sig::ParsePattern(v.get<std::string>());
+    if (pat.empty()) return Fail(out, cap, "malformed validate.prologue pattern");
+
+    const uint8_t* p = static_cast<const uint8_t*>(fn);
+    // Fully bounds-checked against the module's text BEFORE any read.
+    if (!mv.text || !p || p < mv.text || p + pat.size() > mv.text + mv.textSize)
+        return Fail(out, cap, "prologue mismatch (resolved slot is not the intended function)");
+    for (std::size_t i = 0; i < pat.size(); i++) {
+        if (pat[i] >= 0 && p[i] != static_cast<uint8_t>(pat[i]))
+            return Fail(out, cap, "prologue mismatch (resolved slot is not the intended function)");
+    }
+    return true;
+}
+
+// -----------------------------------------------------------------------------------------------
+// string-xref — follow ONE rip-relative displacement out of the resolved function and assert it
+// targets a known literal.
+//
+// The generalization of the bespoke gate the round-control slice needed: a borrowed signature that
+// matches UNIQUELY at the WRONG function is in-range, unique, and silent — but the wrong function
+// does not reference the right string.
+//
+//   at       — offset from the function start to the first byte of the rip-relative instruction
+//   dispOff  — offset of the little-endian int32 displacement WITHIN that instruction
+//   instrLen — total instruction length (the rip base is at + instrLen)
+//   expect   — the exact C string the displacement must target, compared INCLUDING its NUL
+//
+// Deliberately NOT named `lea-disp` even though the closed RESOLVER vocabulary already has one: the
+// resolver hardcodes (dispOff=3, instrLen=7) and RETURNS the target; the validator parameterizes
+// them and COMPARES it. Same primitive, different verb.
+//
+// This validator cannot verify that an instruction begins at `at`, let alone that it is a `lea` —
+// s2sig::ResolveLeaDisp just reads four bytes. The invariant that makes it sound is that the
+// SIGNATURE PATTERN pins the opcode bytes and wildcards only the displacement, which is enforced
+// statically by scripts/check-gamedata-sigs.sh, before shipping — a stronger check than a runtime
+// byte compare could be.
+// -----------------------------------------------------------------------------------------------
+bool ValidateStringXref(const json& v, const ModuleView& mv, const void* fn, char* out, int cap) {
+    static const char kMalformed[] =
+        "malformed validate.string-xref (expected {at, dispOff, instrLen, expect})";
+    if (!v.is_object()) return Fail(out, cap, "%s", kMalformed);
+    for (const char* key : { "at", "dispOff", "instrLen" }) {
+        if (!v.contains(key) || !v[key].is_number_integer()) return Fail(out, cap, "%s", kMalformed);
+    }
+    if (!v.contains("expect") || !v["expect"].is_string()) return Fail(out, cap, "%s", kMalformed);
+
+    const int64_t at       = v["at"].get<int64_t>();
+    const int64_t dispOff  = v["dispOff"].get<int64_t>();
+    const int64_t instrLen = v["instrLen"].get<int64_t>();
+    if (at < 0 || dispOff < 0 || instrLen <= 0)
+        return Fail(out, cap, "validate.string-xref has a negative/zero offset");
+    // Self-contradictory descriptor: the displacement would lie past the end of its own
+    // instruction, so the rip base could never be right. Catchable without touching the binary.
+    if (dispOff + 4 > instrLen)
+        return Fail(out, cap, "validate.string-xref displacement lies outside the instruction");
+    // The int arithmetic below is done in int64 and only narrowed once the values are known sane.
+    if (at > INT32_MAX || instrLen > INT32_MAX)
+        return Fail(out, cap, "validate.string-xref offsets are out of range");
+
+    const std::string expect = v["expect"].get<std::string>();
+    if (expect.empty() || expect.size() > kMaxExpect)
+        return Fail(out, cap,
+                    "validate.string-xref 'expect' must be a non-empty string of at most %zu bytes",
+                    kMaxExpect);
+    // A JSON string CAN carry an interior NUL (a unicode escape of zero). Core's fail-closed
+    // C-string rule never sees this one, because `expect` crosses inside the JSON blob rather
+    // than as a C string of its own — so fail closed HERE rather than compare against a string
+    // the reason line cannot even print.
+    if (expect.find('\0') != std::string::npos)
+        return Fail(out, cap, "validate.string-xref 'expect' contains an interior NUL");
+
+    if (!mv.text) return Fail(out, cap, "validate.string-xref: module text unavailable");
+    const int64_t fnOff = static_cast<const uint8_t*>(fn) - mv.text;   // fn is in .text (checked)
+    const int64_t tgt = s2sig::ResolveLeaDisp(mv.text, mv.textSize, fnOff + at,
+                                              static_cast<int>(dispOff), static_cast<int>(instrLen));
+    if (tgt == s2sig::kFail)
+        return Fail(out, cap, "validate.string-xref: displacement read is out of bounds");
+
+    // uintptr arithmetic, and the guard is the FULL mapped extent, not .text: the target is normally
+    // BELOW the text base (.rodata precedes .text in the mapping), so `tgt` is legitimately
+    // NEGATIVE. A .text-range guard here would reject every valid xref by construction.
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(mv.text) + static_cast<uintptr_t>(tgt);
+    const uintptr_t lo   = reinterpret_cast<uintptr_t>(mv.lo);
+    const uintptr_t hi   = reinterpret_cast<uintptr_t>(mv.hi);
+    const std::size_t need = expect.size() + 1;                        // compare INCLUDING the NUL
+    if (!lo || !hi || addr < lo || addr >= hi || (hi - addr) < need)
+        return Fail(out, cap, "validate.string-xref target is outside the module");
+
+    // Including the NUL is load-bearing: without it "Round" is satisfied by "RoundEnd", which is
+    // precisely the near-miss a borrowed signature lands on.
+    if (std::memcmp(reinterpret_cast<const void*>(addr), expect.c_str(), need) != 0)
+        return Fail(out, cap,
+                    "the xref at fn+0x%llx does not reference the '%s' string "
+                    "(unique-but-WRONG match — the borrowed-sig trap)",
+                    static_cast<unsigned long long>(at), expect.c_str());
+    return true;
+}
+
+// -----------------------------------------------------------------------------------------------
+// vtable-member — the resolved address must be one of the function-pointer slots of the named
+// class's PRIMARY vtable, derived by the RTTI walk (string -> type_info -> vtable back-reference).
+//
+// The generalization of the bespoke gate the respawn slice needed: that signature has no unique log
+// string to xref, and uniqueness alone was proven insufficient.
+//
+// The walk terminates at the first slot value outside the module's .text — the next sub-vtable's
+// offset-to-top header — and that termination is FAIL-CLOSED: a walk truncated before it reaches
+// `fn` FAILS the gate, it never passes wrongly.
+//
+// The slot INDEX is deliberately not asserted. Asserting it would reintroduce exactly the borrowed-
+// index failure class this validator exists to defeat.
+//
+// Limit worth recording: GetVTableByName resolves only the PRIMARY vtable, so a virtual inherited
+// through a SECONDARY base under multiple inheritance is not in it and would be rejected. Fail-
+// closed is the right default; the fix, if the treadmill ever hits it, is a vtable.cpp capability
+// (enumerate all of a class's vtables), not a gamedata one.
+// -----------------------------------------------------------------------------------------------
+bool ValidateVtableMember(const json& v, const ModuleView& mv, const char* module, const void* fn,
+                          const Ops& ops, char* out, int cap) {
+    if (!v.is_string() || v.get<std::string>().empty())
+        return Fail(out, cap, "malformed validate.vtable-member (expected a class name string)");
+    const std::string cls = v.get<std::string>();
+    if (cls.find('\0') != std::string::npos)
+        return Fail(out, cap, "validate.vtable-member class name contains an interior NUL");
+    if (!ops.vtable_by_name)
+        return Fail(out, cap, "validate.vtable-member: RTTI vtable resolution is unavailable");
+
+    // The module is NOT a parameter of the validator: it is the descriptor's own module, the same
+    // one the resolve step scanned. One fewer thing to get out of sync, and strictly more general
+    // than the hardcoded soname this replaces.
+    void** vt = ops.vtable_by_name(module, cls.c_str());
+    if (!vt) return Fail(out, cap, "class RTTI vtable '%s' not found on this build", cls.c_str());
+
+    for (int i = 0; i < kMaxVtableSlots; i++) {
+        const void* p = vt[i];
+        if (!InText(mv, p)) break;   // sub-vtable offset-to-top header = end of the fn slots
+        if (p == fn) return true;
+    }
+    return Fail(out, cap,
+                "sig-resolved address is NOT a member of the RTTI-derived %s primary vtable "
+                "(unique-but-WRONG match — the borrowed-sig trap)",
+                cls.c_str());
+}
+
+}  // namespace
+
+const char* VocabularyList() {
+    // Built once from kVocabulary so the reason line can never disagree with the dispatcher.
+    static const std::string s = [] {
+        std::string acc;
+        for (int i = 0; i < kVocabularyCount; i++) {
+            if (i) acc += ", ";
+            acc += kVocabulary[i];
+        }
+        return acc;
+    }();
+    return s.c_str();
+}
+
+bool DeclaresPrologue(const char* validateJson) {
+    json v;
+    if (!ParseValidate(validateJson, &v)) return false;
+    auto it = v.find("prologue");
+    return it != v.end() && it->is_string() && !it->get<std::string>().empty();
+}
+
+bool Run(const char* validateJson, const ModuleView& mv, const char* module, const void* fn,
+         const Ops& ops, char* reasonOut, int reasonCap) {
+    if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
+
+    json v;
+    if (!ParseValidate(validateJson, &v))
+        return Fail(reasonOut, reasonCap, "malformed validate (expected a JSON object of validators)");
+    if (v.empty()) return true;   // no validators declared
+
+    // Belt-and-braces: the caller range-checks `fn` into .text first (the two checks are different
+    // treadmill signals), but every validator below computes from `fn` by subtraction or compares
+    // against it, so an unprovenanced address must never reach them.
+    if (!InText(mv, fn))
+        return Fail(reasonOut, reasonCap, "validator input: address is outside the module's .text");
+
+    // Vocabulary closure FIRST, over the whole object: an unknown key must fail even when a known
+    // sibling would have failed anyway, so a typo is never masked by another validator's reason.
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        bool known = false;
+        for (int i = 0; i < kVocabularyCount; i++) {
+            if (it.key() == kVocabulary[i]) { known = true; break; }
+        }
+        if (!known)
+            return Fail(reasonOut, reasonCap, "unknown validator '%s' (valid: %s)",
+                        it.key().c_str(), VocabularyList());
+    }
+
+    // Evaluate in vocabulary order, not JSON order: all validators are AND-ed and the FIRST failure
+    // wins the reason, so the reported reason must be deterministic and must be the cheapest,
+    // most informative signal — never whichever key the author happened to type first.
+    for (int i = 0; i < kVocabularyCount; i++) {
+        const char* name = kVocabulary[i];
+        auto it = v.find(name);
+        if (it == v.end()) continue;
+        bool ok;
+        // Dispatch on the NAME, not the array index, so reordering the vocabulary cannot silently
+        // re-point a validator. The final `else` is closure in the other direction: a name added to
+        // kVocabulary with no implementation degrades by name instead of silently PASSING, which
+        // would be the same silent-drop hazard as an unknown key being ignored.
+        if      (std::strcmp(name, "prologue") == 0)      ok = ValidatePrologue(*it, mv, fn, reasonOut, reasonCap);
+        else if (std::strcmp(name, "string-xref") == 0)   ok = ValidateStringXref(*it, mv, fn, reasonOut, reasonCap);
+        else if (std::strcmp(name, "vtable-member") == 0) ok = ValidateVtableMember(*it, mv, module, fn, ops, reasonOut, reasonCap);
+        else ok = Fail(reasonOut, reasonCap,
+                       "validator '%s' is in the vocabulary but has no implementation", name);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+}  // namespace s2validate

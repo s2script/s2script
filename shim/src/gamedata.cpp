@@ -37,8 +37,20 @@ bool ConditionMatches(const nlohmann::json& entry, const char* field, const std:
     return false;
 }
 
+// Does this dumped `validate` text declare an ACTUAL validator? "" / `null` / `{}` are all the
+// "no semantic gate" spellings (call_validate.cpp's ParseValidate treats them identically), and the
+// override-inheritance rule below has to tell "declares one" from "declares none" without knowing a
+// single validator NAME — the vocabulary is closed in call_validate.cpp and stays there.
+bool DeclaresValidator(const std::string& dumped) {
+    if (dumped.empty()) return false;
+    auto v = nlohmann::json::parse(dumped, nullptr, /*allow_exceptions=*/false);
+    return !v.is_discarded() && v.is_object() && !v.empty();
+}
+
 // Merge one file's sections into `gc`. `isOverride` marks touched entries as operator-supplied.
 // Replacement is at the named-entry level: assigning over the map key drops the old value whole.
+// ONE EXCEPTION, in the signatures branch below: a custom/ override that omits `validate` inherits
+// the previous entry's rather than deleting the semantic gate — see SigSpec::validate.
 // Returns the number of entries actually applied — zero from a file that parsed is itself a
 // reportable condition (see GameConfig::filesEmpty).
 //
@@ -97,6 +109,30 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
                 s.module  = p.value("module", "");
                 s.pattern = p.value("pattern", "");
                 s.resolve = p.value("resolve", "");
+
+                // THE ONE FIELD AN OVERRIDE DOES NOT REPLACE BY OMISSION — see SigSpec::validate for
+                // why. `validate` crosses verbatim and unparsed; an entry with no validator leaves
+                // it empty, which is what "declares none" means everywhere downstream.
+                //
+                // Shipped-tier merges keep the plain named-entry replacement semantics: our own
+                // files are reviewed, and a later shipped file dropping a validator is a code
+                // review's problem, not a live server's. The inheritance is scoped to `isOverride`
+                // precisely because custom/ is the one tier nobody reviews.
+                const auto prevIt = gc.signatures.find(k);
+                const bool prevHadValidator =
+                    prevIt != gc.signatures.end() && DeclaresValidator(prevIt->second.validate);
+                if (p.contains("validate")) {
+                    s.validate = p.at("validate").dump();
+                    // An EXPLICIT empty value is the operator saying "no gate, I mean it". Honoured,
+                    // but never silently: it is a banner line of its own.
+                    if (isOverride && prevHadValidator && !DeclaresValidator(s.validate))
+                        gc.validatorsDisarmed.push_back(k);
+                } else if (isOverride && prevHadValidator) {
+                    // Carried, not dropped. Copied out of the previous entry here, before the
+                    // assignment below overwrites it.
+                    s.validate = prevIt->second.validate;
+                    gc.validatorsCarried.push_back(k);
+                }
                 gc.signatures[k] = s;
                 mark(k);
             } catch (const std::exception& e) {
@@ -111,7 +147,58 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
             else error = "gamedata keys." + k + " has the wrong type (expected a string)";
         }
 
+    // `calls` is NOT platform-keyed at the entry level: a descriptor's platform-specific details
+    // sit one level down (`target[platform]` for a vtable slot; the signature it names for a byte
+    // pattern), and core's flatten step lifts them. The entry crosses this loader verbatim — the
+    // only thing checked here is that it IS an object, because a scalar could never be a
+    // descriptor and would otherwise reach core as an unexplained "malformed descriptor".
+    if (j.contains("calls"))
+        for (auto& [k, v] : j.at("calls").items()) {
+            if (v.is_object()) { gc.calls[k] = v.dump(); mark(k); }
+            else error = "gamedata calls." + k + " has the wrong type (expected an object)";
+        }
+
     return applied;
+}
+
+// Re-serialise the merged view into the JSON text core consumes (GameConfig::mergedJson).
+//
+// `signatures` is re-NESTED under the platform key its details were lifted from: core's
+// `flatten_decl` reads `signatures[name][platform]`, and that platform id is core's own constant.
+// If the two ever diverge, every signature-targeted descriptor degrades with core's named
+// "no '<platform>' entry" reason — loud, per-descriptor, never a silent wrong resolve.
+std::string SerializeMerged(const GameConfig& gc, const std::string& platform) {
+    if (gc.signatures.empty() && gc.calls.empty()) return std::string();
+    nlohmann::json doc = nlohmann::json::object();
+    if (!gc.signatures.empty()) {
+        nlohmann::json sigs = nlohmann::json::object();
+        for (const auto& [name, s] : gc.signatures) {
+            nlohmann::json entry{
+                {"module", s.module}, {"pattern", s.pattern}, {"resolve", s.resolve}};
+            // The semantic gate travels WITH the pattern (see SigSpec::validate). Text this file
+            // dumped from an already-parsed object, so the re-parse cannot fail — but a discarded
+            // parse must degrade THIS entry's validator loudly rather than emit `"validate": null`,
+            // which core would hand the shim as a descriptor with no gate.
+            if (!s.validate.empty()) {
+                auto v = nlohmann::json::parse(s.validate, nullptr, /*allow_exceptions=*/false);
+                if (!v.is_discarded()) entry["validate"] = std::move(v);
+            }
+            sigs[name][platform] = std::move(entry);
+        }
+        doc["signatures"] = std::move(sigs);
+    }
+    if (!gc.calls.empty()) {
+        nlohmann::json calls = nlohmann::json::object();
+        for (const auto& [name, text] : gc.calls) {
+            // Text this file dumped from an already-parsed object, so a re-parse cannot fail —
+            // but degrade THAT ENTRY rather than throw out of the loader if it ever did.
+            auto v = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
+            if (v.is_discarded()) continue;
+            calls[name] = std::move(v);
+        }
+        doc["calls"] = std::move(calls);
+    }
+    return doc.dump();
 }
 
 // Parse one JSONC file. Returns false and sets `error` on read/parse failure.
@@ -127,14 +214,15 @@ bool ParseFile(const std::filesystem::path& p, nlohmann::json& out, std::string&
     return true;
 }
 
-}  // namespace
-
-GameConfig LoadGameConfig(const std::string& gamedataRoot,
-                          const std::string& owner,
-                          const std::string& engine,
-                          const std::string& game,
-                          const std::string& platform,
-                          std::string& error) {
+// The merge itself. Wrapped by LoadGameConfig below, which serialises the result exactly once —
+// this function has five early returns and a per-return `mergedJson` build is a missed one waiting
+// to happen (a degraded owner would hand core an EMPTY string that reads as "no descriptors").
+GameConfig MergeOwner(const std::string& gamedataRoot,
+                      const std::string& owner,
+                      const std::string& engine,
+                      const std::string& game,
+                      const std::string& platform,
+                      std::string& error) {
     namespace fs = std::filesystem;
     GameConfig gc;
     error.clear();
@@ -225,5 +313,21 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
         }
     }
 
+    return gc;
+}
+
+}  // namespace
+
+GameConfig LoadGameConfig(const std::string& gamedataRoot,
+                          const std::string& owner,
+                          const std::string& engine,
+                          const std::string& game,
+                          const std::string& platform,
+                          std::string& error) {
+    GameConfig gc = MergeOwner(gamedataRoot, owner, engine, game, platform, error);
+    // Serialised on EVERY path, including a degraded one: whatever merged before the failure is
+    // what the owner's consumers get, and a partially-merged view must degrade per-descriptor
+    // downstream rather than silently arrive as "this owner declared nothing".
+    gc.mergedJson = SerializeMerged(gc, platform);
     return gc;
 }

@@ -272,6 +272,7 @@ fn imports_from_manifest(m: &Manifest) -> Vec<crate::interfaces::ImportSpec> {
 /// Returns `Err(named_reason)` when:
 /// - `bytes` is not a valid zip archive
 /// - `manifest.json` is absent or fails JSON parsing into `Manifest`
+/// - `manifest.id` claims a RESERVED owner id (see below)
 /// - `plugin.js` is absent or contains invalid UTF-8
 pub fn read_s2sp(bytes: &[u8]) -> Result<(Manifest, String, Option<String>), String> {
     use std::io::{Cursor, Read};
@@ -292,6 +293,22 @@ pub fn read_s2sp(bytes: &[u8]) -> Result<(Manifest, String, Option<String>), Str
         serde_json::from_str(&s)
             .map_err(|e| format!("read_s2sp: invalid manifest.json: {}", e))?
     };
+
+    // A plugin id is an ARBITRARY string out of the archive's own manifest — nothing validates it
+    // against the npm package-name grammar, and nothing has to: it is the key for the plugin's
+    // context, its ledger, its permissions and its declared engine calls. The runtime registers its
+    // own descriptors under RESERVED owner ids (`gamedata_calls::RESERVED_OWNER_PREFIX`), which are
+    // permission-EXEMPT, so a `.s2sp` claiming one would (a) inherit that exemption and (b) delete
+    // the runtime's descriptors on its own unload, `drop_plugin` being keyed by the same id. Refuse
+    // it here, at the single door every load/reload path goes through, rather than anywhere later.
+    if crate::gamedata_calls::is_reserved_owner(&manifest.id) {
+        return Err(format!(
+            "read_s2sp: manifest id {:?} is in the reserved '{}' namespace, which belongs to the \
+             runtime — rename the plugin",
+            manifest.id,
+            crate::gamedata_calls::RESERVED_OWNER_PREFIX
+        ));
+    }
 
     // Read plugin.js (borrow released when entry drops).
     let plugin_js: String = {
@@ -1008,6 +1025,28 @@ mod tests {
             "error must mention 'manifest', got: {}",
             err
         );
+    }
+
+    /// A `.s2sp` may not claim a RESERVED owner id (A5b). That namespace is permission-exempt for
+    /// declared engine calls and is keyed identically in the ledger, so a plugin holding one would
+    /// both inherit the exemption and tear the runtime's descriptors down on its own unload.
+    /// `read_s2sp` is the single door every load/reload path goes through.
+    #[test]
+    fn read_s2sp_refuses_a_manifest_claiming_a_reserved_owner_id() {
+        let spoofed = crate::gamedata_calls::reserved_owner_id("@s2script/cs2");
+        let bytes = make_test_s2sp(
+            &format!(r#"{{"id":"{spoofed}","version":"9.9.9","apiVersion":"2.x"}}"#),
+            "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
+        );
+        let err = read_s2sp(&bytes).expect_err("a reserved owner id must be refused");
+        assert!(err.contains("reserved"), "the refusal must NAME why: {err}");
+        // And the game package's own npm name is NOT the reserved id, so a legitimately-named
+        // first-party plugin under the @s2script scope still loads.
+        let ok = make_test_s2sp(
+            r#"{"id":"@s2script/zones","version":"1.0.0","apiVersion":"2.x"}"#,
+            "module.exports.default={__s2plugin:1,factory:function(ctx){}};",
+        );
+        assert!(read_s2sp(&ok).is_ok(), "an @s2script-scoped plugin id is still legal");
     }
 
     #[test]
