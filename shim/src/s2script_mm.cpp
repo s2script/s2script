@@ -5144,6 +5144,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
     // ALSO restores the ProcessUsercmds detour (usercmd primitive) if it was ever lazily installed —
     // no usercmd-specific teardown code is needed here.
     s2detour::RemoveAll();
+    // ...INCLUDING every declarative inbound hook. RemoveAll() restores their prologues but knows
+    // nothing about engine_hooks.cpp's slot table, so the two MUST be called together: a slot left
+    // `used` would make a later install take the idempotent "already installed" path and return
+    // success without re-patching (every hook silently dead), with `orig` pointing at an munmap'd
+    // trampoline. Metamod dlclose's us right after this today, which hides the coupling rather than
+    // removing it.
+    S2_HookResetAll();
 
     // Unregister the game-event listener before core shutdown (Slice 5D.1).
     // RemoveListener is an all-names call per the SDK — one call removes the listener

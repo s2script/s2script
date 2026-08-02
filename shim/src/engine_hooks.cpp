@@ -24,9 +24,20 @@
 //      to `mutable` params actually reach the engine.
 //
 // DEGRADE, NEVER CRASH. Every S2_HookInstall failure path disables exactly ONE hook with a NAMED
-// reason (out-of-range id, unknown shape, no compiled thunk for the shape, an address another hook
-// already owns, a prologue s2detour refuses) and leaves the framework running. A hook that never
-// installs is a hook whose subscribers never fire — never a patched byte, never a wild jump.
+// reason (out-of-range id, unknown shape, an address outside any module's executable range, an
+// address another hook already owns, no compiled thunk for the shape, a prologue s2detour refuses)
+// and leaves the framework running. A hook that never installs is a hook whose subscribers never
+// fire — never a patched byte, never a wild jump.
+//
+// THE ARG VIEW IS LIVENESS-GATED, not just shape-gated. The view is a pointer to a THUNK'S STACK
+// FRAME that crosses the C ABI, so "is this the currently-live view?" cannot be answered from the
+// pointer's own contents — a retained pointer into a since-reused frame would read a plausible
+// `shape` out of whatever now occupies those bytes and turn S2_HookWriteI32 into a 4-byte write
+// primitive into a dead frame. Each thunk therefore publishes its view in g_activeView for exactly
+// the duration of its dispatch, and every accessor requires the caller's pointer to BE that view.
+// The shim's usual block-scoped-static idiom (s_currentDamageInfo & co, nulled after dispatch)
+// solves the same problem for objects the shim owns; this is that idiom applied to a frame pointer
+// the caller holds.
 //
 // ENGINE-GENERIC: nothing here names a game class, field, or function. The address arrives already
 // resolved and validated; the shape arrives as an id.
@@ -78,6 +89,15 @@ struct ArgView {
     int32_t i[kViewI32Slots] = {};
 };
 
+// THE LIVENESS TOKEN. The one view a thunk is currently dispatching, or null between dispatches. An
+// accessor accepts ONLY this exact pointer, so a view retained past its dispatch fails by -1 instead
+// of reading (or writing) a stack frame that has since been reused. It is a save/restore, not a
+// set/clear: a handler can make the engine call another hooked function, and the inner dispatch must
+// hand the outer one its view back — clearing to null would silently disable the outer frame's
+// accessors for the rest of its dispatch. Single-threaded (the game thread drives every detour), so
+// a plain pointer is the whole mechanism.
+const void* g_activeView = nullptr;
+
 // S2_HOOK_SHAPE_THIS_VOID has no params at all; the array exists only because a zero-length array is
 // not standard C++, and InfoFor() reports count 0 so no index can ever reach it.
 constexpr ParamSlot kParamsThisVoid[] = { { kParamF32, 0 } };
@@ -89,27 +109,41 @@ constexpr ParamSlot kParamsThisF32I32I32I32[] = {
     { kParamI32, 2 },
 };
 
-constexpr bool SlotsFit(const ParamSlot* p, int n) {
-    for (int k = 0; k < n; k++) {
-        const int limit = (p[k].cls == kParamF32) ? kViewF32Slots : kViewI32Slots;
-        if (static_cast<int>(p[k].slot) >= limit) return false;
-    }
-    return true;
-}
-static_assert(SlotsFit(kParamsThisF32I32I32I32, 4),
-              "a shape's params do not fit the ArgView — widen kViewF32Slots/kViewI32Slots");
-
 struct ShapeInfo { const ParamSlot* params; int count; };
 
 // An unknown shape yields count 0, so every accessor index fails: an out-of-vocabulary shape can
 // never be read as if it were shape 0, whose wrong ABI is exactly what hook_dispatch.h warns about.
-ShapeInfo InfoFor(int shape) {
+// constexpr so the fits-the-view proof below can be structural rather than hand-maintained.
+constexpr ShapeInfo InfoFor(int shape) {
     switch (shape) {
         case S2_HOOK_SHAPE_THIS_VOID:            return { kParamsThisVoid, 0 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kParamsThisF32I32I32I32, 4 };
         default:                                 return { nullptr, 0 };
     }
 }
+
+// EVERY shape's params fit the view — checked over the whole id space InfoFor can describe, not per
+// shape by hand. A new shape is only reachable once it is added to InfoFor, and the moment it is,
+// this assert covers it; there is no separate line for its author to forget. That is what lets the
+// accessors index v->f[]/v->i[] with the table's slot and no runtime bound: the bound is proven
+// here, for all shapes, at compile time.
+constexpr bool ShapeFitsView(int shape) {
+    const ShapeInfo si = InfoFor(shape);
+    for (int k = 0; k < si.count; k++) {
+        const int limit = (si.params[k].cls == kParamF32) ? kViewF32Slots : kViewI32Slots;
+        if (static_cast<int>(si.params[k].slot) >= limit) return false;
+    }
+    return true;
+}
+constexpr bool AllShapesFitView(int upTo) {
+    for (int s = 0; s <= upTo; s++)
+        if (!ShapeFitsView(s)) return false;
+    return true;
+}
+// 255 is a deliberate over-scan of the shape id space: a shape InfoFor does not know yields count 0
+// and passes trivially, so the bound costs nothing and cannot be outgrown by a new enumerator.
+static_assert(AllShapesFitView(255),
+              "a shape's params do not fit the ArgView — widen kViewF32Slots/kViewI32Slots");
 
 // ---------------------------------------------------------------------------
 // The thunks: one instantiation per (shape, hook slot).
@@ -129,7 +163,11 @@ void Thunk_ThisVoid(void* self) {
     v.shape  = S2_HOOK_SHAPE_THIS_VOID;
     v.self   = self;
 
+    const void* const prevView = g_activeView;
+    g_activeView = &v;
     const int r = S2Hook_Dispatch(Id, &v);
+    g_activeView = prevView;   // the view dies with this frame; nothing may reach it after here
+
     if (S2Hook_Suppresses(r)) return;
     if (orig) orig(self);
 }
@@ -148,7 +186,11 @@ void Thunk_ThisF32I32I32I32(void* self, float a0, int32_t a1, int32_t a2, int32_
     v.i[1]   = a2;
     v.i[2]   = a3;
 
+    const void* const prevView = g_activeView;
+    g_activeView = &v;
     const int r = S2Hook_Dispatch(Id, &v);
+    g_activeView = prevView;   // the view dies with this frame; nothing may reach it after here
+
     if (S2Hook_Suppresses(r)) return;
     // Read back OUT of the view — a handler's writes to `mutable` params reach the engine here.
     if (orig) orig(self, v.f[0], v.i[0], v.i[1], v.i[2]);
@@ -195,11 +237,20 @@ int Fail(char* out, int cap, const char* reason) {
     return -1;
 }
 
-// The "no entity" marker engine_calls.cpp packs for a pointer the entity system's books do not
-// vouch for. NOT 0 — zero is a legal CEntityHandle (index 0, serial 0).
-constexpr uint32_t kInvalidEntityHandle = 0xFFFFFFFFu;
+// s2detour overwrites the prologue with a 14-byte absolute jump (FF 25 <disp32> <8-byte target>;
+// shim/src/detour.cpp's kAbsJmp). Both ends of that window must be provably executable before we let
+// hde64_disasm read a single byte at the target — an unmapped address SEGVs inside the disassembler,
+// and a mapped-but-wrong one decodes fine and gets patched.
+constexpr int kPatchWindow = 14;
 
 ArgView* ViewOf(void* argView) { return static_cast<ArgView*>(argView); }
+
+// The gate every accessor shares: a non-null view that IS the live one. Returns null otherwise, so
+// a stale or forged pointer fails by -1 and never reaches v->shape.
+ArgView* LiveViewOf(void* argView) {
+    if (!argView || argView != g_activeView) return nullptr;
+    return ViewOf(argView);
+}
 
 }  // namespace
 
@@ -220,6 +271,20 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
     }
 
     if (!addr) return Fail(reasonOut, reasonCap, "hook target address is null");
+
+    // THE ONE INPUT THAT ACTUALLY GETS DISASSEMBLED AND OVERWRITTEN. Everything above validates
+    // core's bookkeeping; this validates the bytes. `addr` arrives already resolved and .text-range
+    // checked by S2_EngineCallResolve — but a hook is installed LATER, from a table that outlives the
+    // resolve, and a stale offset after a CS2 update can resolve to a wrong-but-mapped address:
+    // hde64_disasm decodes it happily, Install returns true, and 14 bytes of unrelated engine code
+    // become a jump into our thunk. Engine corruption reported as success. An UNMAPPED address is
+    // worse still — the SEGV happens inside hde64_disasm, before any of our own guards run. So the
+    // whole patch window is proven executable HERE, at the patch site, before s2detour reads a byte.
+    const uintptr_t target = static_cast<uintptr_t>(addr);
+    if (!S2_AddressIsExecutable(reinterpret_cast<const void*>(target)) ||
+        !S2_AddressIsExecutable(reinterpret_cast<const void*>(target + kPatchWindow - 1)))
+        return Fail(reasonOut, reasonCap,
+                    "hook target is outside any loaded module's executable range (stale gamedata?)");
 
     // Already installed for this id: the same (shape, address) is a success no-op — that IS the
     // idempotence core relies on. A DIFFERENT target on a live slot is refused, because installing
@@ -262,12 +327,19 @@ void S2_HookArmBypass(int hookId) {
     S2Hook_BypassArm(hookId);   // bounds-checked there; an out-of-range id is a silent no-op
 }
 
+// Forget every installed hook. One operation with s2detour::RemoveAll() — see engine_hooks.h.
+void S2_HookResetAll(void) {
+    for (int i = 0; i < S2_HOOK_MAX; i++) g_hooks[i] = Installed{};
+    g_activeView = nullptr;   // no frame survives a teardown
+}
+
 // ---------------------------------------------------------------------------
-// The arg-view accessors. Every one is bounds- AND class-checked against the installed shape.
+// The arg-view accessors. Each one is LIVENESS-gated (the pointer must be the view currently being
+// dispatched), then bounds- and class-checked against that view's shape.
 // ---------------------------------------------------------------------------
 int S2_HookReadF32(void* argView, int idx, float* out) {
-    if (!argView || !out) return -1;
-    const ArgView* v = ViewOf(argView);
+    const ArgView* v = LiveViewOf(argView);
+    if (!v || !out) return -1;
     const ShapeInfo si = InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
     if (si.params[idx].cls != kParamF32) return -1;
@@ -276,8 +348,8 @@ int S2_HookReadF32(void* argView, int idx, float* out) {
 }
 
 int S2_HookReadI32(void* argView, int idx, int32_t* out) {
-    if (!argView || !out) return -1;
-    const ArgView* v = ViewOf(argView);
+    const ArgView* v = LiveViewOf(argView);
+    if (!v || !out) return -1;
     const ShapeInfo si = InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
     if (si.params[idx].cls != kParamI32) return -1;
@@ -286,8 +358,8 @@ int S2_HookReadI32(void* argView, int idx, int32_t* out) {
 }
 
 int S2_HookWriteF32(void* argView, int idx, float value) {
-    if (!argView) return -1;
-    ArgView* v = ViewOf(argView);
+    ArgView* v = LiveViewOf(argView);
+    if (!v) return -1;
     const ShapeInfo si = InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
     if (si.params[idx].cls != kParamF32) return -1;
@@ -296,8 +368,8 @@ int S2_HookWriteF32(void* argView, int idx, float value) {
 }
 
 int S2_HookWriteI32(void* argView, int idx, int32_t value) {
-    if (!argView) return -1;
-    ArgView* v = ViewOf(argView);
+    ArgView* v = LiveViewOf(argView);
+    if (!v) return -1;
     const ShapeInfo si = InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
     if (si.params[idx].cls != kParamI32) return -1;
@@ -311,11 +383,11 @@ int S2_HookWriteI32(void* argView, int idx, int32_t value) {
 // error. The packing is engine_calls.cpp's books-FIRST walk (membership decided without reading a
 // single byte of the pointer), so a non-entity `this` can never be dereferenced here.
 int S2_HookReceiverHandle(void* argView, uint32_t* outHandle) {
-    if (!argView || !outHandle) return -1;
-    const ArgView* v = ViewOf(argView);
+    const ArgView* v = LiveViewOf(argView);
+    if (!v || !outHandle) return -1;
     if (!v->self) return -1;
     const uint32_t h = S2_EntityHandleFromPtr(v->self);
-    if (h == kInvalidEntityHandle) return -1;
+    if (h == S2_ENTITY_HANDLE_NONE) return -1;
     *outHandle = h;
     return 0;
 }

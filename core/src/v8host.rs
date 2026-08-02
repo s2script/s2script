@@ -325,6 +325,21 @@ pub type ClientFakeCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) ->
 // NOT deferred (the isolate was free, so the run proves nothing).
 pub type DeferSelftestFn = extern "C" fn() -> c_int;
 
+// --- declarative inbound hooks (APPENDED after defer_selftest; order is the ABI) ---
+// Implemented in `shim/src/engine_hooks.cpp`; kept signature-identical to the `s2_hook_install_fn` /
+// `s2_hook_arm_bypass_fn` typedefs in `shim/include/s2script_core.h`, which
+// `scripts/check-engine-ops-order.sh` gates against this struct's field order.
+//
+// `hook_install(hookId, shape, addr, reasonOut, reasonCap)` lazily detours `addr` with that hook
+// slot's own compiled thunk for `shape`: 0 = installed (or already was — it is idempotent, so core
+// may call it on every subscribe), -1 with a NAMED reason written into `reasonOut` that core stores
+// verbatim as the hook's degrade reason. `hook_arm_bypass(hookId)` arms the one-shot bypass latch
+// immediately BEFORE core invokes the hook's `bypassWith` descriptor, so our own outbound call does
+// not fire our own hook. ENGINE-GENERIC: the address arrives already resolved and the shape is an id
+// from a closed vocabulary, so no game identifier reaches core.
+pub type HookInstallFn = extern "C" fn(c_int, c_int, i64, *mut c_char, c_int) -> c_int;
+pub type HookArmBypassFn = extern "C" fn(c_int);
+
 /// The C-ABI engine-ops table. Field ORDER is the ABI: the shim fills the matching
 /// `struct s2_engine_ops` in `shim/include/s2script_core.h`, so the two declarations must stay
 /// index-for-index identical and must change in the SAME commit.
@@ -490,6 +505,9 @@ pub struct S2EngineOps {
     pub ent_identity_flags_clear: Option<EntIdentityFlagsClearFn>,
     // --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
     pub defer_selftest: Option<DeferSelftestFn>,
+    // --- declarative inbound hooks (APPENDED after defer_selftest; order is the ABI) ---
+    pub hook_install: Option<HookInstallFn>,
+    pub hook_arm_bypass: Option<HookArmBypassFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -13503,6 +13521,8 @@ mod frame_tests {
             client_fake_command: None,
             ent_identity_flags_clear: None,
             defer_selftest: None,
+            hook_install: None,
+            hook_arm_bypass: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -15005,6 +15025,8 @@ mod frame_tests {
             client_fake_command: None,
             ent_identity_flags_clear: None,
             defer_selftest: None,
+            hook_install: None,
+            hook_arm_bypass: None,
         }
     }
 

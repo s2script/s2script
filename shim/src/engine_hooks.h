@@ -20,6 +20,14 @@ int  S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int re
 // descriptor, so our own outbound call does not fire our own hook (SourceMod parity).
 void S2_HookArmBypass(int hookId);
 
+// Forget every installed hook. MUST be called from wherever s2detour::RemoveAll() is, and only
+// there: the two are one operation. RemoveAll() restores the prologues but knows nothing about this
+// table, so without this a later install would see used == true, take the idempotent
+// "already installed" path, and return success WITHOUT re-patching — every hook silently dead, and
+// `orig` left pointing at an munmap'd trampoline. Today Metamod dlclose's the image immediately
+// after Unload so the leak is unobservable; that is an accident of the lifecycle, not a guarantee.
+void S2_HookResetAll(void);
+
 // Block-scoped arg view accessors. `idx` is the descriptor's positional param index; every one is
 // bounds-checked against the installed shape, so a stale generated binding cannot read off the
 // frame. Return 0 on success, -1 on a bad index or a null view.
