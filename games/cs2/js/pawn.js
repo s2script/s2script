@@ -19,6 +19,13 @@
   // no-op the caller can test for, with engineCallStatus(name) naming why.
   //
   // Older core: the natives are absent, every call reports unavailable, and nothing throws.
+  //
+  // EVERY RULE THE DESCRIPTORS CANNOT EXPRESS IS BELOW, AND EVERY ONE OF THEM IS PINNED. The bounds,
+  // the hardcoded arguments, the two drains and their dedupe/consume-before-call/re-check
+  // properties, the SwitchTeam->ChangeTeam route and the two null guards a descriptor inverts are
+  // tested against the REAL shipped bundle in packages/sdk/test/cs2-engine-calls.test.mjs (offline,
+  // over recording fakes — no engine required). These used to be C++/Rust rules with core-side
+  // tests; the ops are gone, so that file is where they live now. Change one here, change it there.
   function engineCallStatus(name) {
     return typeof __s2_game_call_status === "function"
       ? __s2_game_call_status(name)

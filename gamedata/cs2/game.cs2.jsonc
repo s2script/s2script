@@ -220,6 +220,14 @@
   // rule ("layout is data, semantics are code"). They are all in `games/cs2/js/pawn.js`, in the
   // typed wrapper that owns each call, and each one is commented there with the live-gate finding
   // that produced it. Do not try to move them back into this file.
+  //
+  // WHERE EACH HALF IS PINNED. The entries below are checked against the grammar — arg/return/
+  // receiver/target vocabularies, the SysV arity budget, the validator vocabulary and its shapes,
+  // and that a named signature actually exists — by `scripts/check-call-descriptors.sh`, which
+  // derives every closed set from the code that enforces it. The BEHAVIOUR in pawn.js/weapon.js is
+  // pinned by `packages/sdk/test/cs2-engine-calls.test.mjs`, which drives the real shipped bundle
+  // over recording fakes. Editing a descriptor here without editing its wrapper there is how a
+  // precondition gets lost; both gates run in `make ci`.
   "calls": {
     // pawn.slay(). bExplode/bForce are NOT caller-supplied: pawn.js always passes (false, true),
     // and `bForce = true` is load-bearing — the body is an m_fNextSuicideTime rate limiter with a

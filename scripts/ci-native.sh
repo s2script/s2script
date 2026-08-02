@@ -39,6 +39,9 @@ bash scripts/test-call-validate.sh
 echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
 bash scripts/check-gamedata-owners.sh
 
+echo '== check-call-descriptors.sh (every shipped `calls` descriptor is well-formed) =='
+bash scripts/check-call-descriptors.sh
+
 echo "== check-licenses-generated.sh =="
 bash scripts/check-licenses-generated.sh
 
