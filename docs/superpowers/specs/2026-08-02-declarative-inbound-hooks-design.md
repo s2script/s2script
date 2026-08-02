@@ -101,13 +101,31 @@ Authored in the game package's (or a plugin's) gamedata, beside `calls`:
     "target": { "kind": "signature", "name": "TerminateRound",
                 "validate": { "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7,
                                                "expect": "TerminateRound" } } },
-    "shape":   "this_f32_i32_i32_i32",
-    "params":  ["delay", "reason", "_unused3", "_unused4"],
-    "mutable": ["delay", "reason"],
-    "bypassWith": "terminateRound"
+    "shape":    "this_f32_i32_i32_i32",
+    "receiver": { "kind": "opaque" },
+    "params":   ["delay", "reason", "_unused3", "_unused4"],
+    "mutable":  ["delay", "reason"],
+    "bypassWith": "terminateRound",
+    "expose":   { "ctx": "gameRules" }
+  },
+
+  "onRespawn": {
+    "target": { "kind": "signature", "name": "Respawn",
+                "validate": { "vtable-member": "CCSPlayerController" } },
+    "shape":    "this_void",
+    "receiver": { "kind": "entity", "as": "player" },
+    "params":   [],
+    "mutable":  [],
+    "bypassWith": "respawn",
+    "expose":   { "ctx": "players" }
   }
 }
 ```
+
+The second entry is the vocabulary's proof of generality, not filler: a different shape
+(`this_void`), a surfaced receiver instead of an opaque one, no mutable params, and a second
+`expose.ctx` namespace. If the mechanism only fitted `onTerminateRound`, this descriptor would not
+express.
 
 - `params` names the shape's positional args for the generated `.d.ts` and the JS view. Documentary
   plus type generation; the runtime marshals by position.
@@ -115,6 +133,64 @@ Authored in the game package's (or a plugin's) gamedata, beside `calls`:
 - `bypassWith` names the `calls` descriptor in the **same owner** whose invocation sets the latch —
   the declarative form of `g_pIgnoreTerminateDetour`. Validated at load: an unknown name fails the
   descriptor by name.
+- `receiver` says whether the detour's `this` is surfaced. `{"kind":"opaque"}` hides it (the
+  gamerules proxy is not useful to a handler); `{"kind":"entity","as":"<name>"}` marshals it through
+  the books-gated `EntityRef` path and names it in the view.
+- `expose.ctx` names the plugin-context namespace the subscription attaches to (§5b). The hook's own
+  key — `onTerminateRound` — is the method name.
+
+## 5b. The subscription surface
+
+**Hooks are subscribed through `ctx`, like every other subscription in the framework.**
+
+```ts
+export default plugin((ctx) => {
+  ctx.gameRules.onTerminateRound((ev) => {
+    if (ev.reason === RoundEndReason.RoundDraw) return HookResult.Handled;  // suppress it
+    ev.delay = 1.0;                                                        // or modify, then
+    return HookResult.Changed;                                             // still call the engine
+  });
+
+  ctx.players.onRespawn((ev) => {
+    console.log(`engine respawned ${ev.player.name}`);
+  });
+});
+```
+
+`ctx` is the plugin's load-scope, and the ledger keys teardown off it — the same reason
+`ctx.events.on` and `ctx.entities.onDamage` live there. A module-level
+`GameRules.onTerminateRound(...)` *could* be ledgered correctly (natives derive the calling plugin
+id from the context since `#50`), but it would hide the ownership that `ctx` states outright, and it
+would be the only subscription in the framework not on `ctx`. Actions stay module-level
+(`GameRules.terminateRound()`); subscriptions go on `ctx`. That split is the rule.
+
+**The namespace is contributed by the game package, not the SDK.** `@s2script/cs2` augments the
+SDK's `PluginContext` by declaration merging — the pattern already established for generated
+gamedata types (`declare module "@s2script/sdk/unsafe" { interface EngineCalls {…} }`, plugin-gamedata
+spec §8):
+
+```ts
+// GENERATED into @s2script/cs2 from the hooks descriptors — DO NOT EDIT.
+declare module "@s2script/sdk/plugin" {
+  interface PluginContext {
+    readonly gameRules: { onTerminateRound(h: (ev: TerminateRoundEvent) => HookResultValue | void): void };
+    readonly players:   { onRespawn(h: (ev: RespawnEvent) => HookResultValue | void): void };
+  }
+}
+export interface TerminateRoundEvent { delay: number; reason: number; }   // `mutable` -> writable
+export interface RespawnEvent { readonly player: Player; }                // no mutable params
+```
+
+A game that declares no hooks contributes no namespace, so `ctx.gameRules` type-errors on a non-CS2
+game rather than existing and failing at runtime. Two namespaces ship (`gameRules`, `players`)
+deliberately: it proves the codegen is driven by `expose.ctx` rather than hardcoded to one.
+
+`ev` is the block-scoped mutable view over the thunk's stack args (§6). Fields named in `mutable`
+are writable; everything else is `readonly`; the view cannot outlive the dispatch and no pointer
+crosses into JS.
+
+**Teardown:** unload removes the plugin's handlers via the ledger. It does **not** uninstall the
+detour — see §6.
 
 **A validator is MANDATORY for every hook**, unlike `calls` where uniqueness alone suffices for a
 signature target. A wrong call address misbehaves; a wrong *detour* address overwrites the prologue
@@ -157,8 +233,8 @@ to call engine functions has not thereby granted it the ability to detour them.
 ## 8. Scope
 
 **In:** the `hooks` grammar, two shapes, resolution + mandatory validation, lazy install, the bypass
-latch, the collapse contract, `.d.ts` generation from the descriptor, `GameRules.onTerminateRound`
-and `Player.onRespawn` as the two shipped consumers.
+latch, the collapse contract, the generated `PluginContext` augmentation and view types (§5b), and
+`ctx.gameRules.onTerminateRound` + `ctx.players.onRespawn` as the two shipped consumers.
 
 **Out:** uninstall-on-last-unsubscribe (§6); hooks on vtable targets (signature targets only in v1 —
 a vtable detour has different failure modes and no consumer needs it); return-value interception
@@ -168,10 +244,17 @@ it).
 
 ## 9. Testing
 
-Offline: descriptor grammar (unknown shape, missing `validate`, unknown `bypassWith` all fail the
-build); the collapse contract (`Handled` suppresses, `Changed` writes back, `Continue` passes
-through); the bypass latch (an outbound call through the named descriptor does not fire the hook);
-lazy install (no subscribers → `s2detour::Install` never called).
+Offline: descriptor grammar (unknown shape, missing `validate`, unknown `bypassWith`, unknown
+`expose.ctx` all fail the build); the collapse contract (`Handled` suppresses, `Changed` writes
+back, `Continue` passes through); the bypass latch (an outbound call through the named descriptor
+does not fire the hook); lazy install (no subscribers → `s2detour::Install` never called);
+codegen freshness (a gate diffing the generated `PluginContext` augmentation against the
+descriptors, following `check-events-generated.sh` / `check-schema-generated.sh` /
+`check-csitem-generated.sh`); and that unload removes a plugin's handlers while leaving the detour
+installed.
+
+The generated augmentation is also covered by the existing typecheck gate: a plugin subscribing to
+a hook the game package does not declare is a `tsc` error at build, not a silent no-op at load.
 
 Live gate — the parts only a real server proves:
 1. A natural round end fires `onTerminateRound` with a plausible `reason`.
