@@ -82,6 +82,16 @@ slice, 7–9 coordinated core edit sites per hook (the core-stabilization audit'
 `hooks`, authored beside `calls` in the same gamedata file, closes it for the case a `calls` entry
 cannot express: the engine calling *into* a plugin, not a plugin calling *into* the engine.
 
+**In v1 a hook is declared by a GAME PACKAGE, not by a plugin.** Core's registry is owner-generic —
+`gamedata_hooks::register_plugin` and the `engine:hooks` permission check exist and are tested — but
+that path is not reachable from a shipped artifact: `s2s build` refuses a `hooks` gamedata section
+and an `engine:hooks` permission, so no `.s2sp` can carry either. This is stated rather than quietly
+fixed because the validator is not the only gap; a plugin-declared hook would also need a typed
+subscribe surface (`__s2_hook_on` is not in `packages/sdk/globals.d.ts`; `__s2pkg_game_ctx` is a
+game-package-only extension point) and a `gen-hooks` codegen that is not hardcoded to one game's
+gamedata file. Opening the path is its own slice; until it lands, treat `engine:hooks` as an
+operator-facing permission that exists in core and has no shipping consumer.
+
 **Two axes, and only one of them is data.** *Location* — which function, at what address, in this
 game's binary — is a gamedata fact, resolved through the same `S2_EngineCallResolve` path and the
 same validators `calls` uses (no second resolver). *Shape* — the callee's exact C ABI — is **not**
@@ -137,12 +147,19 @@ firing the hook**. Two independent reasons this is the right behaviour, not an a
 SourceMod's exact semantic (`g_pIgnoreTerminateDetour`,
 `extensions/cstrike/forwards.cpp`) — a plugin's own call should not be reported back to it, or to
 anyone else, as if the engine had independently decided to do it — and it is also what keeps a hook
-from ever firing while core holds the V8 isolate borrow. The outbound descriptor invoke is the
-*only* path that arms the latch, so the remaining path — a genuine engine-originated call — is by
-construction the one case where core is not borrowed, which is exactly where a pre-hook is
-deliverable. This is why `Events.onPre("round_end")` cannot observe a JS-issued `terminateRound`
-(see that method's own doc comment in `packages/cs2/index.d.ts`) while `onTerminateRound` can: they
-run on opposite sides of the same borrow.
+from firing while core holds the V8 isolate borrow *on the path that matters*: the hook's own
+declared outbound descriptor. This is why `Events.onPre("round_end")` cannot observe a JS-issued
+`terminateRound` (see that method's own doc comment in `packages/cs2/index.d.ts`) while
+`onTerminateRound` can: they run on opposite sides of the same borrow.
+
+**The latch is not a proof that a firing hook is engine-originated, and the code does not rely on it
+being one.** `bypassWith` arms latches scoped to *(owner, call name)*, where SourceMod's global flag
+was scoped to the process, so a different JS→engine path to the same address — a plugin's own
+`calls` descriptor under `engine:calls`, say — arms nothing and the detour fires re-entrantly. The
+actual backstop is the fan-out's re-entrancy guard: `dispatch_hook` cannot take the borrow, no
+handler runs, the engine call proceeds **unhooked**, and the skip is recorded as a named degrade on
+that hook (once per hook — it can fire on every engine call). Skipping is the safe direction; the
+guarantee the latch gives is SourceMod's *semantic*, not the absence of the re-entrant case.
 
 **Lifecycle** reuses three existing precedents rather than inventing a fourth. Resolution reuses
 `calls`' path unchanged. Install is lazy, on first subscribe — the same idempotent
@@ -160,7 +177,11 @@ like `Damage.onPre`'s `info` — no pointer crosses into JS, and the view cannot
 **`engine:hooks` is a separate permission from `engine:calls`.** A hook is strictly more dangerous
 than a call — it patches bytes and can suppress engine behaviour — so an operator who granted a
 plugin the ability to *call* engine functions has not thereby granted it the ability to *detour*
-them.
+them. It gates **declaring** a hook, never subscribing to one: subscribing to a hook someone else
+declared is the intended path (that is what the generated `ctx` namespaces are), and matches
+SourceMod, where any plugin subscribing to `CS_OnTerminateRound` installs the detour. Per the v1
+scope note above, the only owner that can declare one today is the game package, which is exempt as
+first-party runtime — so the permission currently has no plugin that can request it.
 
 Two hooks ship today, both declared in `gamedata/cs2/game.cs2.jsonc` — nothing named in `shim/src`
 or `core/src`: `ctx.gameRules.onTerminateRound` (shape `this_f32_i32_i32_i32`, mutable

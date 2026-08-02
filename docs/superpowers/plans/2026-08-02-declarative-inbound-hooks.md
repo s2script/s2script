@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A game package or plugin declares an engine detour in its own gamedata, and plugins subscribe to it through `ctx` — closing the core-stabilization audit's headline gap, that core has a declarative *outbound* path but no declarative *inbound* one.
+**Goal:** A game package declares an engine detour in its own gamedata, and plugins subscribe to it through `ctx` — closing the core-stabilization audit's headline gap, that core has a declarative *outbound* path but no declarative *inbound* one.
+
+> **v1 scope (narrowed after the whole-branch review; the goal line originally read "game package or plugin").** Core's registry and its `engine:hooks` permission check are owner-generic and tested, but `s2s build` refuses a `hooks` gamedata section and an `engine:hooks` permission, so **only a game package can declare a hook in v1**. Opening the plugin path needs three things and is its own slice: the SDK validator's `ALLOWED_SECTIONS`/`KNOWN_PERMISSIONS` (`packages/sdk/src/gamedata/validate.ts`), a plugin-side typed subscribe surface (`__s2_hook_on` is not in `packages/sdk/globals.d.ts`; `__s2pkg_game_ctx` is a game-package-only extension point), and a `gen-hooks` codegen not hardcoded to `gamedata/cs2/game.cs2.jsonc` (`hookgen/gen.ts`). Core's plugin path is deliberately left intact — a default-deny gate is not weakened to match a temporary scope.
 
 **Architecture:** Location is data, shape is compile-time. The shim ships a closed vocabulary of inbound *thunk shapes* (concrete C++ signatures) and never names a game function; gamedata says which shape a hook uses and where the function is. Resolution and validation reuse A5b's `S2_EngineCallResolve` unchanged. A bypass latch — SourceMod's `g_pIgnoreTerminateDetour`, ported — makes our own outbound descriptor call skip our own hook, which also means a hook only fires when core is *not* borrowed, so the pre-hook re-entrancy wall never arises.
 
