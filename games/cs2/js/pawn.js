@@ -230,9 +230,24 @@
   //
   // SCOPE NOTE: this state is per plugin CONTEXT (the prelude is evaluated once per plugin), where
   // the shim's set was host-global. Two different plugins respawning the same player in one frame
-  // therefore each queue an entry — but the second one is skipped at drain by the m_bPawnIsAlive
-  // re-check below, which the first call has by then made true. Teardown is free for the same
-  // reason: the set dies with the context, so there is nothing to clear at unload.
+  // therefore each queue an entry, in two separate pending sets that cannot see each other. The
+  // dedupe above is a WITHIN-PLUGIN guarantee only; cross-plugin, the second engine call is expected
+  // to be skipped by the m_bPawnIsAlive re-check below (the first call should have made it true by
+  // then) — UNVERIFIED, pending the live gate. Do not restate it as a property until it is measured.
+  // Teardown is free for the same reason: the set dies with the context, so there is nothing to
+  // clear at unload.
+  //
+  // PRE-HOOKS DO NOT RUN FOR THE DEFERRED CALL, and this is permanent. The drain below is resolved
+  // from `nextFrame`, whose resolver runs inside core's frame_async_drain — which holds the isolate
+  // borrow across the microtask checkpoint. So the player_spawn the engine fires inside
+  // callRespawn() re-enters core INSIDE that borrow. `Events.on` subscribers are fine (the
+  // deferred-dispatch queue replays them a frame later); `Events.onPre` subscribers are NOT, because
+  // a pre-hook cannot be deferred — its whole contract is answering before the engine proceeds — so
+  // it is silently skipped and any suppression it would have applied is lost. Relocating the drain
+  // does not fix it: ALL JS runs under the borrow. The old shim drain ran in its own GameFrame
+  // SourceHook outside the borrow, so this is a real (today zero-blast-radius) regression, recorded
+  // in the A5 spec §9.2a. Blast radius is zero only for as long as nothing subscribes onPre to
+  // player_spawn.
   var respawnPending = [];                   // Player[] — refs are books-gated, so holding them is safe
   var respawnDrainArmed = false;
   var RESPAWN_PENDING_MAX = 130;             // > 64 slots * controller + margin (the shim's cap, verbatim)
@@ -1012,10 +1027,22 @@
   // --- The round-end drain (A5b: moved out of the shim's Hook_GameFrameRoundDrain, verbatim) ------
   //
   // Same reason as the respawn drain above: TerminateRound fires the round-end event machinery
-  // SYNCHRONOUSLY, so it must not run inside the isolate borrow. SINGLE-SLOT, latest-wins — a round
-  // ends once, so a second request in the same frame REPLACES the first (and says so) rather than
-  // ending the round twice. Consume-before-call for the same reason as respawn: the call re-enters
-  // gamerules, and a round_end handler calling terminateRound() again must arm the NEXT frame.
+  // SYNCHRONOUSLY, so it must not run inside the isolate borrow. SINGLE-SLOT, latest-wins: a second
+  // request in the same frame REPLACES the first (and says so) rather than ending the round twice.
+  // Consume-before-call for the same reason as respawn: the call re-enters gamerules, and a
+  // round_end handler calling terminateRound() again must arm the NEXT frame.
+  //
+  // SCOPE: this slot is per plugin CONTEXT, where the shim's s_pendingTerminate was a host-global
+  // static. "A round ends once" was true of that static and is NOT true of this: two plugins each
+  // calling terminateRound() in the same frame each queue their own request and each drain it, so
+  // the engine call runs twice. Whether cross-plugin dedupe should be restored (and where) is an
+  // open decision — do not paper over it here or in the .d.ts.
+  //
+  // PRE-HOOKS DO NOT RUN FOR THE DEFERRED CALL — same mechanism as the respawn drain above, in
+  // full there: nextFrame resolves inside frame_async_drain, which holds the isolate borrow, so the
+  // round_end the engine fires inside callTerminateRound() re-enters under it. `Events.on`
+  // subscribers are replayed a frame later; `Events.onPre("round_end")` subscribers are skipped and
+  // their suppression is lost. Not fixable by moving the drain. Recorded in the A5 spec §9.2a.
   var terminatePending = null;               // { view, delay, reason } | null
   var terminateDrainArmed = false;
 

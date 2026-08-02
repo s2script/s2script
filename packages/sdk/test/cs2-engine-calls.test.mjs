@@ -370,13 +370,18 @@ test("terminateRound: the reason bound is the engine's own 0..22", async () => {
   for (const r of [0, 2, 3, 15, 22]) assert.equal(h.pkg.GameRules.terminateRound(r), true, `reason ${r}`);
 });
 
-test("terminateRound: single slot, LATEST WINS — a round ends once", async () => {
+// Scoped deliberately: `makeHost()` is ONE plugin context, and the pending slot lives in the
+// prelude closure, which is evaluated once per context. This pins latest-wins WITHIN a plugin.
+// It is NOT "a round ends once" — the shim's s_pendingTerminate was a host-global static and this
+// is not, so two plugins in one frame drain two requests (spec §9.2a). Nothing here can assert
+// that, and no test should be written as if it did.
+test("terminateRound: single slot, LATEST WINS within one plugin context", async () => {
   const h = makeHost();
   h.pkg.GameRules.terminateRound(8);
   h.pkg.GameRules.terminateRound(9);
   assert.ok(h.logs.some((l) => /overwriting a pending request/.test(l)));
   await h.frame();
-  assert.equal(h.invokes.length, 1, "one round end, not two");
+  assert.equal(h.invokes.length, 1, "one round end from this context, not two");
   assert.equal(h.invokes[0].args[1], 9, "the latest reason");
 });
 

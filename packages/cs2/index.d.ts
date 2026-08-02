@@ -163,9 +163,16 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
    *  RTTI-vtable-membership load-validated). QUEUED: the engine call executes on the NEXT engine
    *  frame, so the resulting player_spawn reaches EVERY plugin's `Events.on` handler — including the
    *  caller's — rather than being lost to the isolate borrow. Safe from inside event/command
-   *  handlers; no nextFrame wrapping needed. Calling twice for the same player in one frame is
-   *  idempotent and both calls return true. Returns false when degraded: the player is already
-   *  alive, the ref is stale, or the Respawn/SetPawn descriptors failed their boot gates. */
+   *  handlers; no nextFrame wrapping needed.
+   *
+   *  `Events.onPre("player_spawn")` does NOT run for this call, and cannot suppress it. The engine
+   *  fires player_spawn synchronously inside the next-frame drain, i.e. inside the isolate borrow,
+   *  and only `Events.on` (post/notify) subscribers survive that — they are replayed a frame later
+   *  off the deferred-dispatch queue. A pre-hook is not deferrable by construction, so it is skipped.
+   *
+   *  Calling twice for the same player in one frame FROM THIS PLUGIN is idempotent and both calls
+   *  return true (the pending set is per plugin context). Returns false when degraded: the player is
+   *  already alive, the ref is stale, or the Respawn/SetPawn descriptors failed their boot gates. */
   respawn(): boolean;
 }
 /**
@@ -321,10 +328,19 @@ export interface GameRulesView {
   /** Force the round to end with a RoundEndReason (sig-resolved CCSGameRules::TerminateRound).
    *  QUEUED: executes on the NEXT engine frame, so every plugin's round_end `Events.on` handler —
    *  including the caller's — fires rather than being lost to the isolate borrow (a state read
-   *  immediately after still sees the old round). Single-slot, latest-wins: a second call in the same
-   *  frame replaces the first, because a round ends once. delay (default 5s) is the engine's
-   *  pre-restart delay. Returns true if queued; false when degraded (unresolved signature, stale
-   *  proxy, or reason outside 0..22). */
+   *  immediately after still sees the old round).
+   *
+   *  Single-slot, latest-wins WITHIN ONE PLUGIN: a second call from this plugin in the same frame
+   *  replaces the first. The pending slot is per plugin CONTEXT, so two plugins calling in the same
+   *  frame each queue their own request.
+   *
+   *  `Events.onPre("round_end")` does NOT run for this call, and cannot suppress it. The engine
+   *  fires round_end synchronously inside the next-frame drain, i.e. inside the isolate borrow, and
+   *  only `Events.on` (post/notify) subscribers survive that — they are replayed a frame later off
+   *  the deferred-dispatch queue. A pre-hook is not deferrable by construction, so it is skipped.
+   *
+   *  delay (default 5s) is the engine's pre-restart delay. Returns true if queued; false when
+   *  degraded (unresolved signature, stale proxy, or reason outside 0..22). */
   terminateRound(reason: number, delay?: number): boolean;
 }
 /** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (liveness-gated
