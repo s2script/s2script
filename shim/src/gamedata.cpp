@@ -97,6 +97,9 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
                 s.module  = p.value("module", "");
                 s.pattern = p.value("pattern", "");
                 s.resolve = p.value("resolve", "");
+                // Verbatim, unparsed — see SigSpec::validate. An entry with no validator leaves this
+                // empty, which is what "declares none" means everywhere downstream.
+                if (p.contains("validate")) s.validate = p.at("validate").dump();
                 gc.signatures[k] = s;
                 mark(k);
             } catch (const std::exception& e) {
@@ -136,9 +139,19 @@ std::string SerializeMerged(const GameConfig& gc, const std::string& platform) {
     nlohmann::json doc = nlohmann::json::object();
     if (!gc.signatures.empty()) {
         nlohmann::json sigs = nlohmann::json::object();
-        for (const auto& [name, s] : gc.signatures)
-            sigs[name][platform] = nlohmann::json{
+        for (const auto& [name, s] : gc.signatures) {
+            nlohmann::json entry{
                 {"module", s.module}, {"pattern", s.pattern}, {"resolve", s.resolve}};
+            // The semantic gate travels WITH the pattern (see SigSpec::validate). Text this file
+            // dumped from an already-parsed object, so the re-parse cannot fail — but a discarded
+            // parse must degrade THIS entry's validator loudly rather than emit `"validate": null`,
+            // which core would hand the shim as a descriptor with no gate.
+            if (!s.validate.empty()) {
+                auto v = nlohmann::json::parse(s.validate, nullptr, /*allow_exceptions=*/false);
+                if (!v.is_discarded()) entry["validate"] = std::move(v);
+            }
+            sigs[name][platform] = std::move(entry);
+        }
         doc["signatures"] = std::move(sigs);
     }
     if (!gc.calls.empty()) {

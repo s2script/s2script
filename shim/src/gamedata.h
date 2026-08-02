@@ -19,6 +19,20 @@ struct SigSpec {
     std::string module;
     std::string pattern;
     std::string resolve;
+    // The entry's `validate` object as RAW JSON TEXT (empty when it declares none). Kept unparsed
+    // for the same reason `calls` is: the validator vocabulary is closed in call_validate.cpp, and a
+    // second copy of it here would be the two-implementations-that-disagree bug this loader already
+    // hit twice with its JSONC strippers.
+    //
+    // A validator is authored NEXT TO the pattern it guards, and this field is what carries it to
+    // core (which lifts it onto the descriptor in `flatten_decl`). The override channel is why:
+    // custom/*.jsonc replaces at the NAMED-ENTRY level, and the entry an operator replaces after a
+    // CS2 update is the SIGNATURE — a new pattern. A validator whose offsets lived in another
+    // section would then be checked against the shipped instruction layout the new pattern just made
+    // meaningless, so a correct hot-fix would be spuriously rejected — or worse, coincidentally
+    // pass. Dropping it here instead (which this struct used to do) is worse still: the descriptor
+    // would resolve with NO semantic gate at all and nobody would be told.
+    std::string validate;
 };
 
 // One owner's merged view, for one platform.

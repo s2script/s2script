@@ -156,15 +156,16 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
    * re-resolve `player.pawn` on the next frame before any pawn write. Game events the engine fires
    * inside the call do not re-dispatch to JS handlers on that frame (re-entrancy skip). For None (0) /
    * Spectator (1) this dispatches to `changeTeam` (CSSharp/SwiftlyS2 parity) — prefer `spectate()`.
-   * Serial-gated; a no-op if the ref is stale or the signature is unresolved. Bounded 0..3 engine-side.
+   * Serial-gated; a no-op if the ref is stale or the signature is unresolved. Bounded 0..3.
    */
   switchTeam(team: number): void;
   /** Respawn this (dead) player via the self-resolved CCSPlayerController::Respawn (byte-sig +
    *  RTTI-vtable-membership load-validated). QUEUED: the engine call executes on the NEXT engine
-   *  frame, outside the JS isolate borrow, so the resulting player_spawn reaches EVERY plugin's
-   *  handlers — including the caller's. Safe from inside event/command handlers; no nextFrame
-   *  wrapping needed. Returns false when degraded: the player is already alive, the ref is stale,
-   *  or the Respawn descriptor failed its boot gates. */
+   *  frame, so the resulting player_spawn reaches EVERY plugin's `Events.on` handler — including the
+   *  caller's — rather than being lost to the isolate borrow. Safe from inside event/command
+   *  handlers; no nextFrame wrapping needed. Calling twice for the same player in one frame is
+   *  idempotent and both calls return true. Returns false when degraded: the player is already
+   *  alive, the ref is stale, or the Respawn/SetPawn descriptors failed their boot gates. */
   respawn(): boolean;
 }
 /**
@@ -318,10 +319,12 @@ export interface GameRulesView {
   /** Extend/shrink the round clock by delta seconds (writes roundTime += seconds). */
   addTimeRemaining(seconds: number): boolean;
   /** Force the round to end with a RoundEndReason (sig-resolved CCSGameRules::TerminateRound).
-   *  QUEUED: executes on the NEXT engine frame, outside the JS isolate borrow, so every plugin's
-   *  round_end handler — including the caller's — fires normally (a state read immediately after
-   *  still sees the old round). delay (default 5s) is the engine's pre-restart delay. Returns true if
-   *  queued; false when degraded (unresolved signature, stale proxy, or reason outside 0..22). */
+   *  QUEUED: executes on the NEXT engine frame, so every plugin's round_end `Events.on` handler —
+   *  including the caller's — fires rather than being lost to the isolate borrow (a state read
+   *  immediately after still sees the old round). Single-slot, latest-wins: a second call in the same
+   *  frame replaces the first, because a round ends once. delay (default 5s) is the engine's
+   *  pre-restart delay. Returns true if queued; false when degraded (unresolved signature, stale
+   *  proxy, or reason outside 0..22). */
   terminateRound(reason: number, delay?: number): boolean;
 }
 /** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (liveness-gated

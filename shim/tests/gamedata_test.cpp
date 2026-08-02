@@ -195,6 +195,67 @@ static void test_merged_json_carries_calls_and_platform_nested_signatures() {
     CHECK(doc["calls"]["doThing"]["args"][0] == "int", "the arg vocabulary is untouched");
 }
 
+// A signature's `validate` object is the SEMANTIC gate — the thing that separates a unique-but-WRONG
+// match from the real function. It is authored next to the pattern it guards, and it must survive
+// the merge: dropping it here would leave the descriptor resolving with a .text-range check and
+// nothing else, silently, which is the exact failure the validator vocabulary exists to prevent.
+// It also has to survive VERBATIM and un-flattened — core's flatten step lifts it onto the target,
+// and the shim deliberately does not know the vocabulary.
+static void test_merged_json_carries_a_signature_validator() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "signatures": {
+        "Guarded": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "55 48", "resolve": "direct",
+                     "validate": { "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7, "expect": "Scope" } } } },
+        "Bare":    { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct" } }
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(err.empty(), "a signature carrying a validator parses without error");
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded(), "the merged view is valid JSON");
+    const auto& v = doc["signatures"]["Guarded"]["linuxsteamrt64"]["validate"];
+    CHECK(v["string-xref"]["at"] == 11 && v["string-xref"]["expect"] == "Scope",
+          "the validator crosses to core verbatim, un-flattened");
+    // An entry with no validator must not sprout a null one: core forwards whatever is here to the
+    // shim, and `"validate": null` reads as a descriptor whose gate was declared and lost.
+    CHECK(!doc["signatures"]["Bare"]["linuxsteamrt64"].contains("validate"),
+          "a signature declaring no validator emits no validate key");
+}
+
+// An operator's after-a-CS2-update hot-fix replaces the whole named entry — pattern AND validator
+// together. That atomicity is the reason the validator is authored beside the pattern rather than
+// on the descriptor: a new pattern with the SHIPPED instruction offsets would be checked against a
+// layout that no longer exists.
+static void test_custom_override_replaces_pattern_and_validator_together() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "signatures": { "Guarded": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct",
+                      "validate": { "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7, "expect": "Scope" } } } } }
+    })");
+    put(root.path / "cs2" / "custom" / "fix.jsonc", R"({
+      "signatures": { "Guarded": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "BB", "resolve": "direct",
+                      "validate": { "string-xref": { "at": 19, "dispOff": 3, "instrLen": 7, "expect": "Scope" } } } } }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    const auto& plat = doc["signatures"]["Guarded"]["linuxsteamrt64"];
+    CHECK(!doc.is_discarded() && plat["pattern"] == "BB",
+          "the operator's pattern wins");
+    CHECK(plat["validate"]["string-xref"]["at"] == 19,
+          "and so does the validator offset it was re-derived with");
+}
+
 static void test_merged_json_reflects_a_custom_override() {
     TempRoot root;
     put(root.path / "cs2" / "master.gamedata.jsonc",
@@ -677,6 +738,8 @@ int main() {
     test_other_platform_is_ignored();
     test_keys_section_is_parsed();
     test_merged_json_carries_calls_and_platform_nested_signatures();
+    test_merged_json_carries_a_signature_validator();
+    test_custom_override_replaces_pattern_and_validator_together();
     test_merged_json_reflects_a_custom_override();
     test_calls_entry_of_the_wrong_type_degrades_only_that_entry();
     test_merged_json_is_empty_when_nothing_declares_one();
