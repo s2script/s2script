@@ -116,8 +116,6 @@ pub type DamageReadIntFn    = extern "C" fn(offset: c_int) -> c_int;
 pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
 pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityHandle; -1 = none
 pub type CvarGetFn          = extern "C" fn(name: *const c_char) -> *const c_char;   // Slice 6.7: cvar value string
-// Slice 6.14: kill a pawn via the sig-resolved CommitSuicide (shim reconstructs + serial-gates from idx/serial).
-pub type PawnCommitSuicideFn = extern "C" fn(idx: c_int, serial: c_int);
 // --- ban-reason sub-project 2: console-print + client-address ops (C-ABI; the C header must match exactly) ---
 pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
 pub type ClientAddressFn      = extern "C" fn(slot: c_int) -> *const c_char;
@@ -170,9 +168,9 @@ type EntityRemoveFn   = extern "C" fn(c_int, c_int) -> c_int;
 
 // --- Item slice (APPENDED after entity_remove; order is the ABI). ENGINE-GENERIC: the ops take
 // (idx, serial, offset(s)/index/string) — no CS2 schema/class names in the C ABI itself.
-type GiveNamedItemFn        = extern "C" fn(c_int, c_int, c_int, *const std::os::raw::c_char) -> c_int;
+// (A5b retired the CS2-specific give_named_item/remove_player_item members of this group; they are
+// `calls` descriptors in gamedata/cs2 now. The two survivors keep their original relative order.)
 type EntitySubobjVcallFn    = extern "C" fn(c_int, c_int, c_int, c_int, c_int, c_int) -> c_int;
-type RemovePlayerItemFn     = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
 type EntityReadHandleVecFn  = extern "C" fn(c_int, c_int, *const c_int, c_int, c_int, c_int, *mut c_int) -> c_int;
 /// Entity-I/O slice: fire an entity input via AddEntityIOEvent. See the C typedef comment
 /// (shim/include/s2script_core.h) for the argument shape.
@@ -222,10 +220,8 @@ type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
 // NAME + a recipient slot set + a resource path are Source2-generic; no CS2 names in the C ABI.
 type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
 type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
-// --- changeteam slice (APPENDED after sound_precache_add; order is the ABI). (idx, serial, team).
-type PlayerChangeTeamFn = extern "C" fn(c_int, c_int, c_int);
 
-// --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI). ENGINE-GENERIC:
+// --- Usercmd primitive slice (APPENDED after sound_precache_add; order is the ABI). ENGINE-GENERIC:
 // lazily installs the (Task 3, shim-side) per-tick input-processing detour; takes no CS2 names. Task 2 owns ONLY
 // this one field (the subscribe native's lazy-install call site needs it to compile); Task 3 appends
 // the remaining usercmd_read/write/read_buttons/write_buttons/clear_subtick fields after this one.
@@ -247,18 +243,11 @@ pub type TransmitSetFn = extern "C" fn(index: std::os::raw::c_int, serial: std::
 pub type TransmitClearFn = extern "C" fn(index: std::os::raw::c_int) -> std::os::raw::c_int;
 /// checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}.
 pub type TransmitStatsFn = extern "C" fn(out: *mut u64);
-// --- Round-control slice (APPENDED after transmit_stats; order is the ABI). ENGINE-GENERIC:
-// (proxy idx, serial, rules-ptr field offset, delay, reason) -> 1 queued / 0 degraded. The shim defers
-// the sig-resolved engine call to the next GameFrame OUTSIDE the JS isolate borrow (it fires round_end
-// synchronously). No game names cross the ABI.
-type GamerulesTerminateRoundFn = extern "C" fn(c_int, c_int, c_int, f32, c_int) -> c_int;
-// --- Voice-control slice (APPENDED after gamerules_terminate_round; order is the ABI).
+// --- Voice-control slice (APPENDED after transmit_stats; order is the ABI).
 type VoiceSetMutedFn = extern "C" fn(c_int, c_int) -> c_int;
 type VoiceGetMutedFn = extern "C" fn(c_int) -> c_int;
-// --- switchteam slice (APPENDED after voice_get_muted; order is the ABI). (idx, serial, team).
-type PlayerSwitchTeamFn = extern "C" fn(c_int, c_int, c_int);
 
-// UserMessage-interception slice (APPENDED after player_switch_team; order is the ABI). ENGINE-GENERIC:
+// UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI). ENGINE-GENERIC:
 // message NAMES and dotted field PATHS are strings, ids/slots are ints — no CS2 identifier crosses.
 type UsermsgHookSubFn        = extern "C" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int;
 type UsermsgHookUnsubFn      = extern "C" fn(c_int) -> c_int;
@@ -268,12 +257,7 @@ type UsermsgHookReadStringFn = extern "C" fn(*const std::os::raw::c_char, *mut s
 type UsermsgHookHasFieldFn   = extern "C" fn(*const std::os::raw::c_char) -> c_int;
 type UsermsgHookRecipientsFn = extern "C" fn(*mut u64) -> c_int;
 type UsermsgHookDebugFn      = extern "C" fn(*mut std::os::raw::c_char, c_int) -> c_int;
-// --- player-respawn slice (APPENDED after usermsg_hook_debug; order is the ABI). ENGINE-GENERIC:
-// (controller idx, serial, alive-bool field offset, hplayerpawn handle offset) -> 1 queued / 0 degraded.
-// The shim defers the sig-resolved engine call to the next GameFrame OUTSIDE the JS isolate borrow
-// (it fires player_spawn synchronously). No game names cross the ABI.
-type PlayerRespawnFn = extern "C" fn(c_int, c_int, c_int, c_int) -> c_int;
-// --- Crash-reporter slice: engine build number (C-ABI; the C header must match exactly). APPENDED after player_respawn. ---
+// --- Crash-reporter slice: engine build number (C-ABI; the C header must match exactly). APPENDED after usermsg_hook_debug. ---
 pub type ServerBuildNumberFn = extern "C" fn() -> c_int;
 // --- Crash-harness (dev-only): raise a native fault on command (C-ABI; header must match) ---
 pub type CrashTestNativeFn = extern "C" fn(kind: c_int);
@@ -341,6 +325,18 @@ pub type ClientFakeCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) ->
 // NOT deferred (the isolate was free, so the run proves nothing).
 pub type DeferSelftestFn = extern "C" fn() -> c_int;
 
+/// The C-ABI engine-ops table. Field ORDER is the ABI: the shim fills the matching
+/// `struct s2_engine_ops` in `shim/include/s2script_core.h`, so the two declarations must stay
+/// index-for-index identical and must change in the SAME commit.
+///
+/// **CONVENTION, amended in A5b: append-only across a release boundary, not within one.** The
+/// per-field `APPENDED after <field>` markers below record where each slice landed and still forbid
+/// *reordering* — but they never made a field immortal. Core and the shim ship in the same zip and
+/// nothing outside this repo links this table, so a slice that RETIRES an op deletes its field
+/// outright and renumbers the markers that named it. A5b did exactly that for eight CS2-specific
+/// calls (`CommitSuicide`, `ChangeTeam`, `SwitchTeam`, `TerminateRound`, `Respawn`, `SetPawn`,
+/// `GiveNamedItem`, `RemovePlayerItem`), which are now `calls` descriptors in `gamedata/cs2/` served
+/// by the generic `engine_call_resolve`/`engine_call_invoke` pair further down.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct S2EngineOps {
@@ -392,9 +388,7 @@ pub struct S2EngineOps {
     pub damage_write_float: Option<DamageWriteFloatFn>,
     pub damage_victim:      Option<DamageVictimFn>,
     pub cvar_get:           Option<CvarGetFn>,
-    // --- Slice 6.14: pawn suicide op (APPENDED after cvar_get; order is the ABI; do not reorder above) ---
-    pub pawn_commit_suicide: Option<PawnCommitSuicideFn>,
-    // --- ban-reason sub-project 2 (APPENDED after pawn_commit_suicide; order is the ABI; do not reorder) ---
+    // --- ban-reason sub-project 2 (APPENDED after cvar_get; order is the ABI; do not reorder) ---
     pub client_console_print: Option<ClientConsolePrintFn>,
     pub client_address:       Option<ClientAddressFn>,
     // --- reservedslots+basetriggers: server-info ops (APPENDED after client_address; order is the ABI; do not reorder above) ---
@@ -416,9 +410,7 @@ pub struct S2EngineOps {
     pub entity_teleport: Option<EntityTeleportFn>,
     pub entity_remove:   Option<EntityRemoveFn>,
     // --- Item slice (APPENDED after entity_remove; order is the ABI; do not reorder above) ---
-    pub give_named_item:           Option<GiveNamedItemFn>,
     pub entity_subobj_vcall:       Option<EntitySubobjVcallFn>,
-    pub remove_player_item:        Option<RemovePlayerItemFn>,
     pub entity_read_handle_vector: Option<EntityReadHandleVecFn>,
     // --- Entity-I/O slice (APPENDED after entity_read_handle_vector; order is the ABI; do not reorder above) ---
     pub entity_fire_input: Option<EntityFireInputFn>,
@@ -449,9 +441,7 @@ pub struct S2EngineOps {
     // --- Sound slice (APPENDED after entity_name; order is the ABI; do not reorder above) ---
     pub sound_emit: Option<SoundEmitFn>,
     pub sound_precache_add: Option<SoundPrecacheAddFn>,
-    // --- changeteam slice (APPENDED after sound_precache_add; order is the ABI; do not reorder above) ---
-    pub player_change_team: Option<PlayerChangeTeamFn>,
-    // --- Usercmd primitive slice (APPENDED after player_change_team; order is the ABI; do not reorder
+    // --- Usercmd primitive slice (APPENDED after sound_precache_add; order is the ABI; do not reorder
     // above). Task 2 adds ONLY this field; Task 3 appends usercmd_read/write/read_buttons/
     // write_buttons/clear_subtick after it (do not double-add usercmd_hook_install).
     pub usercmd_hook_install: Option<UsercmdHookInstallFn>,
@@ -466,14 +456,10 @@ pub struct S2EngineOps {
     pub transmit_set:   Option<TransmitSetFn>,
     pub transmit_clear: Option<TransmitClearFn>,
     pub transmit_stats: Option<TransmitStatsFn>,
-    // --- Round-control slice (APPENDED after transmit_stats; order is the ABI; do not reorder above) ---
-    pub gamerules_terminate_round: Option<GamerulesTerminateRoundFn>,
-    // Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
+    // Voice-control slice — APPENDED after transmit_stats; order is the ABI.
     pub voice_set_muted:        Option<VoiceSetMutedFn>,
     pub voice_get_muted:        Option<VoiceGetMutedFn>,
-    // --- switchteam slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
-    pub player_switch_team: Option<PlayerSwitchTeamFn>,
-    // --- UserMessage-interception slice (APPENDED after player_switch_team; order is the ABI; do not reorder above) ---
+    // --- UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
     pub usermsg_hook_sub:         Option<UsermsgHookSubFn>,
     pub usermsg_hook_unsub:       Option<UsermsgHookUnsubFn>,
     pub usermsg_hook_read_int:    Option<UsermsgHookReadIntFn>,
@@ -482,9 +468,7 @@ pub struct S2EngineOps {
     pub usermsg_hook_has_field:   Option<UsermsgHookHasFieldFn>,
     pub usermsg_hook_recipients:  Option<UsermsgHookRecipientsFn>,
     pub usermsg_hook_debug:       Option<UsermsgHookDebugFn>,
-    // --- player-respawn slice (APPENDED after usermsg_hook_debug; order is the ABI; do not reorder above) ---
-    pub player_respawn: Option<PlayerRespawnFn>,
-    // --- Crash-reporter slice — APPENDED after player_respawn; order is the ABI; do not reorder above. ---
+    // --- Crash-reporter slice — APPENDED after usermsg_hook_debug; order is the ABI; do not reorder above. ---
     pub server_build_number: Option<ServerBuildNumberFn>,
     // --- Crash-harness — APPENDED after server_build_number; order is the ABI; do not reorder above. ---
     pub crash_test_native: Option<CrashTestNativeFn>,
@@ -4562,94 +4546,6 @@ fn s2_convar_register(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
     }));
 }
 
-/// `__s2_pawn_commit_suicide(index, serial)` — kill a pawn via the sig-resolved CommitSuicide engine-op.
-/// A thin pass-through: the shim reconstructs + serial-gates the pawn from (index, serial). No-op without
-/// the op (unresolved signature) — the shim itself no-ops a stale ref. Engine-generic (a pawn is a
-/// Source2 base-type concept; only the resolving signature is game-specific).
-fn s2_pawn_commit_suicide(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.pawn_commit_suicide else { return };
-        f(index, serial);
-    }));
-}
-
-/// `__s2_player_change_team(index, serial, team)` — move a player's controller between teams via the
-/// sig-resolved ChangeTeam engine-op. A thin pass-through: the shim reconstructs + serial-gates the
-/// controller from (index, serial) and bounds-checks `team` (0..3). No-op without the op (unresolved
-/// signature) or on a stale ref. Engine-generic here (only the resolving signature is game-specific).
-fn s2_player_change_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.player_change_team else { return };
-        f(index, serial, team);
-    }));
-}
-
-/// `__s2_gamerules_terminate_round(index, serial, rulesPtrOff, delay, reason) -> 0|1` — queue a
-/// round-termination via the sig-resolved engine op. (index, serial) identify the game-rules PROXY
-/// entity; rulesPtrOff is the offset of its rules-struct pointer field (both supplied by the game
-/// package — engine-generic here). 1 = queued: the shim executes on the NEXT GameFrame, outside the
-/// JS isolate borrow, so the resulting round-end event dispatches to ALL plugins (including the
-/// caller). 0 = degraded (no op / unresolved signature / stale proxy / out-of-range reason).
-fn s2_gamerules_terminate_round(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_int32(0);
-        if args.length() < 5 { return; }
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
-        let delay = args.get(3).number_value(scope).unwrap_or(0.0) as f32;
-        let reason = args.get(4).integer_value(scope).unwrap_or(-1) as c_int;
-        if off < 0 { return; }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.gamerules_terminate_round else { return };
-        rv.set_int32(f(index, serial, off, delay, reason));
-    }));
-}
-
-/// `__s2_player_switch_team(index, serial, team)` — NON-LETHAL controller team move via the
-/// sig-resolved SwitchTeam engine-op (the player stays alive and keeps weapons; the pawn may be
-/// respawned — vs `__s2_player_change_team` = jointeam semantics). A thin pass-through: the shim
-/// reconstructs + serial-gates the controller from (index, serial), bounds-checks `team` (0..3), and
-/// dispatches 0/1 (None/Spectator) to ChangeTeam (CSSharp/SwiftlyS2 parity). No-op without the op
-/// (unresolved signature) or on a stale ref. Engine-generic here (only the resolving signature is
-/// game-specific).
-fn s2_player_switch_team(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let team = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.player_switch_team else { return };
-        f(index, serial, team);
-    }));
-}
-
-/// `__s2_player_respawn(index, serial, aliveOff, hplayerpawnOff) -> 0|1` — queue a player respawn via the
-/// sig-resolved engine op. (index, serial) identify the player's CONTROLLER entity; aliveOff is the
-/// offset of its "pawn is alive" bool field (supplied by the game package — engine-generic here;
-/// < 0 skips the shim's drain-time alive re-check). hplayerpawnOff is the opaque handle-field offset
-/// for the player pawn (SetPawn pre-step). 1 = queued: the shim executes on the NEXT
-/// GameFrame, outside the JS isolate borrow, so the resulting player_spawn dispatches to ALL
-/// plugins (including the caller). 0 = degraded (no op / unresolved signature / stale controller).
-fn s2_player_respawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_int32(0);
-        if args.length() < 2 { return; }
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let alive_off = if args.length() >= 3 { args.get(2).integer_value(scope).unwrap_or(-1) as c_int } else { -1 };
-        let hplayerpawn_off = if args.length() >= 4 { args.get(3).integer_value(scope).unwrap_or(-1) as c_int } else { -1 };
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.player_respawn else { return };
-        rv.set_int32(f(index, serial, alive_off, hplayerpawn_off));
-    }));
-}
-
 /// Native `__s2_transmit_set(index, serial, viewerSlots[]) -> boolean` — replace the calling
 /// plugin's visibility rule for the entity: transmit ONLY to the given viewer slots (empty array
 /// = hidden from everyone). The u64 mask is folded core-side from the JS number array (no BigInt
@@ -5774,31 +5670,6 @@ fn s2_entity_listener_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
-/// Native `__s2_give_named_item(index, serial, subObjOffset, name) -> EntityRef | null`. Over the
-/// `give_named_item` engine op (`GiveNamedItem`, sig-resolved shim-side, called on the pawn's
-/// ItemServices sub-object at `subObjOffset` — a schema offset resolved JS-side, opaque here). The
-/// op returns a packed `CEntityHandle` (`ToInt()`) of the created weapon; the raw pointer never
-/// crosses to JS — the handle is decoded and re-validated live (`entity_resolve_ptr`) before
-/// building a serial-gated `EntityRef`, mirroring `s2_entity_create`. Degrades to `null` with no
-/// op / a 0 handle / an unresolvable name / a same-frame stale decode.
-fn s2_give_named_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let name = args.get(3).to_rust_string_lossy(scope);
-        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.give_named_item) {
-            let handle = func(index, serial, off, cname.as_ptr());
-            if handle != 0 {
-                let (i, s) = crate::entity::decode_handle(handle as u32);
-                if let Some(id) = crate::entity_live::adopt(i, s) { rv.set(build_entity_ref(scope, i, id)); }
-            }
-        }
-    }));
-}
-
 /// Native `__s2_entity_subobj_vcall(index, serial, subObjOffset, vtableIndex, argIndex, argSerial)
 /// -> boolean`. Calls a `.text`-validated vtable slot on the sub-object at `subObjOffset` (e.g.
 /// ItemServices' `RemoveWeapons`/`DropActivePlayerWeapon`), optionally passing a second
@@ -6101,22 +5972,6 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                 }
             }
             _ => {}
-        }
-    }));
-}
-
-/// Native `__s2_remove_player_item(pawnIndex, pawnSerial, weaponIndex, weaponSerial) -> boolean`.
-/// Over the `remove_player_item` engine op (`RemovePlayerItem`, sig-resolved shim-side) — a proper
-/// unequip of one specific weapon (vs. `stripWeapons`'s blanket `RemoveWeapons`). Degrades to
-/// `false` with no op / either ref stale.
-fn s2_remove_player_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((pawn_idx, pawn_serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let Some((weapon_idx, weapon_serial)) = ent_op_serial(scope, args.get(2), args.get(3)) else { return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.remove_player_item) {
-            rv.set_bool(func(pawn_idx, pawn_serial, weapon_idx, weapon_serial) != 0);
         }
     }));
 }
@@ -6777,8 +6632,8 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
         // pCaller), never a broad sign test — a live CEntityHandle::ToInt() packs a 17-bit
         // serial into the packed int's upper bits (HANDLE_ENTRY_BITS=15 in entity.rs), so a
         // real handle whose serial has climbed to >= 65536 is a genuinely negative i32 and
-        // must still decode, not be misread as "none" (mirrors the exact-sentinel convention
-        // `s2_give_named_item` already uses for its packed-handle return: `if handle != 0`).
+        // must still decode, not be misread as "none" (the same exact-sentinel convention the
+        // engine-call `entity` return uses: reject `INVALID_ENTITY_HANDLE` and decode the rest).
         let activator_val: v8::Local<v8::Value> = if act_handle == -1 {
             v8::null(tc).into()
         } else {
@@ -6925,9 +6780,9 @@ fn defer_selftest_armed() -> bool {
 /// server does that: `Events.fire()` from a handler is delivered synchronously (CS2 does not route
 /// a JS-fired event back through our listener inside the borrow), and `slay()`'s `player_death`
 /// arrives a frame later from the engine's OWN delivery, not our drain. The genuine trigger is an
-/// engine call that fires an event synchronously inside the borrow — exactly what A5b's
-/// `Respawn`/`TerminateRound` will be, and why the shim still hand-rolls drains for those two. So
-/// the path cannot be exercised naturally until A5b lands. This is the same reason
+/// engine call that fires an event synchronously inside the borrow — which is exactly what A5b's
+/// `Respawn`/`TerminateRound` descriptors now are, but reaching them needs a live player on a real
+/// server, so the synthetic path stays the bot-only-server proof. This is the same reason
 /// `S2_DAMAGE_SELFTEST` exists for the damage detour, and it carries the same discipline: env-gated,
 /// off by default, loudly labelled, and NOT to be run in production — it dispatches a REAL event
 /// name with FAKE field values to every subscribed plugin.
@@ -7126,11 +6981,6 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
-    set_native(scope, global_obj, "__s2_pawn_commit_suicide", s2_pawn_commit_suicide);
-    set_native(scope, global_obj, "__s2_player_change_team", s2_player_change_team);
-    set_native(scope, global_obj, "__s2_gamerules_terminate_round", s2_gamerules_terminate_round);
-    set_native(scope, global_obj, "__s2_player_switch_team", s2_player_switch_team);
-    set_native(scope, global_obj, "__s2_player_respawn", s2_player_respawn);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
     // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
@@ -7204,11 +7054,10 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_sound_precache_add", s2_sound_precache_add);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
-    // Item slice: give/vcall/remove-item natives + the readHandleVector native (wrapped as an
-    // EntityRef prototype method in the prelude, below).
-    set_native(scope, global_obj, "__s2_give_named_item", s2_give_named_item);
+    // Item slice: the sub-object vcall native + the readHandleVector native (wrapped as an
+    // EntityRef prototype method in the prelude, below). A5b retired give/remove-item to
+    // gamedata/cs2 `calls` descriptors.
     set_native(scope, global_obj, "__s2_entity_subobj_vcall", s2_entity_subobj_vcall);
-    set_native(scope, global_obj, "__s2_remove_player_item", s2_remove_player_item);
     set_native(scope, global_obj, "__s2_entity_read_handle_vector", s2_entity_read_handle_vector);
     // Entity-I/O slice: fire inputs (AddEntityIOEvent) + Entity.onOutput subscribe/unsubscribe
     // (FireOutputInternal detour dispatch — installed at shim Load, see dispatch_output).
@@ -13497,7 +13346,6 @@ mod frame_tests {
             damage_write_float: None,
             damage_victim: None,
             cvar_get: None,
-            pawn_commit_suicide: None,
             client_console_print: None,
             client_address: None,
             server_max_clients: None,
@@ -13512,9 +13360,7 @@ mod frame_tests {
             entity_spawn: None,
             entity_teleport: None,
             entity_remove: None,
-            give_named_item: None,
             entity_subobj_vcall: None,
-            remove_player_item: None,
             entity_read_handle_vector: None,
             entity_fire_input: None,
             entity_spawn_kv: None,
@@ -13534,7 +13380,6 @@ mod frame_tests {
             entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
-            player_change_team: None,
             usercmd_hook_install: None,
             usercmd_read: None,
             usercmd_write: None,
@@ -13542,15 +13387,12 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
-            gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
-            player_switch_team: None,
             usermsg_hook_sub: None, usermsg_hook_unsub: None,
             usermsg_hook_read_int: None, usermsg_hook_read_float: None,
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,
             usermsg_hook_recipients: None, usermsg_hook_debug: None,
-            player_respawn: None,
             server_build_number: None,
             crash_test_native: None,
             ent_resolve: None,
@@ -13805,47 +13647,6 @@ mod frame_tests {
             JSON.stringify({ offMiss: offMiss, viaRef: viaRef });
         "#);
         assert_eq!(out, r#"{"offMiss":-1,"viaRef":null}"#);
-        shutdown();
-    }
-
-    /// changeteam slice: `__s2_player_change_team` (and `Player.changeTeam`/`.spectate`) no-op with no
-    /// `player_change_team` op (unresolved signature / every in-isolate test) — never a crash.
-    #[test]
-    fn player_change_team_degrades_without_op() {
-        init(dummy_logger()).unwrap();
-        // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
-        let out = eval_std("pct1", r#"
-            var r = __s2_player_change_team(5, 7, 1);
-            String(r === undefined);
-        "#);
-        assert_eq!(out, "true");
-        shutdown();
-    }
-
-    /// switchteam slice: `__s2_player_switch_team` (and `Player.switchTeam`) no-op with no
-    /// `player_switch_team` op (unresolved signature / every in-isolate test) — never a crash.
-    #[test]
-    fn player_switch_team_degrades_without_op() {
-        init(dummy_logger()).unwrap();
-        // No ENGINE_OPS installed -> the op is absent -> the native no-ops (returns undefined), no throw.
-        let out = eval_std("pst1", r#"
-            var r = __s2_player_switch_team(5, 7, 2);
-            String(r === undefined);
-        "#);
-        assert_eq!(out, "true");
-        shutdown();
-    }
-
-    /// player-respawn slice (degrade-never-crash): with NO engine ops installed,
-    /// `__s2_player_respawn` returns 0 (an int, never undefined) and never throws — the
-    /// `Player.respawn() -> false` degrade contract holds without a shim.
-    #[test]
-    fn player_respawn_degrades_without_op() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        assert_eq!(eval_in_context_string("p", "String(__s2_player_respawn(3, 7, 1988))"), "0", "degrades to 0 without ops");
-        assert_eq!(eval_in_context_string("p", "String(__s2_player_respawn())"), "0", "no-args degrades to 0, no throw");
         shutdown();
     }
 
@@ -14903,9 +14704,9 @@ mod frame_tests {
         shutdown();
     }
 
-    /// Item slice: `__s2_give_named_item`/`__s2_entity_subobj_vcall`/`__s2_remove_player_item`/
-    /// `EntityRef.readHandleVector` all degrade (null/false/false/[]) with no engine ops wired —
-    /// never a crash.
+    /// Item slice: `__s2_entity_subobj_vcall` and `EntityRef.readHandleVector` degrade (false/[])
+    /// with no engine ops wired — never a crash. (A5b retired give/remove-item to gamedata/cs2
+    /// `calls` descriptors; `engine_call_degrades_without_ops` covers their degrade path now.)
     #[test]
     fn item_natives_degrade_without_op() {
         let _ = init(dummy_logger());
@@ -14913,12 +14714,10 @@ mod frame_tests {
         create_plugin_context("p");
         let out = eval_in_context_string("p", r#"
             const r = new (__s2pkg_entity.EntityRef)(1, 7);
-            [ String(__s2_give_named_item(1,7,3304,"weapon_ak47")),
-              __s2_entity_subobj_vcall(1,7,3304,25,-1,-1),
-              __s2_remove_player_item(1,7,2,9),
+            [ __s2_entity_subobj_vcall(1,7,3304,25,-1,-1),
               JSON.stringify(r.readHandleVector([3296], 100, 64)) ].join("|")
         "#);
-        assert_eq!(out, "null|false|false|[]");
+        assert_eq!(out, "false|[]");
         shutdown();
     }
 
@@ -15049,7 +14848,6 @@ mod frame_tests {
             damage_write_float: None,
             damage_victim: None,
             cvar_get: None,
-            pawn_commit_suicide: None,
             client_console_print: None,
             client_address: None,
             server_max_clients: None,
@@ -15064,9 +14862,7 @@ mod frame_tests {
             entity_spawn: None,
             entity_teleport: None,
             entity_remove: None,
-            give_named_item: None,
             entity_subobj_vcall: None,
-            remove_player_item: None,
             entity_read_handle_vector: None,
             entity_fire_input: None,
             entity_spawn_kv: None,
@@ -15086,7 +14882,6 @@ mod frame_tests {
             entity_name: None,
             sound_emit: None,
             sound_precache_add: None,
-            player_change_team: None,
             usercmd_hook_install: None,
             usercmd_read: None,
             usercmd_write: None,
@@ -15094,15 +14889,12 @@ mod frame_tests {
             usercmd_write_buttons: None,
             usercmd_clear_subtick: None,
             transmit_set: None, transmit_clear: None, transmit_stats: None,
-            gamerules_terminate_round: None,
             voice_set_muted: None,
             voice_get_muted: None,
-            player_switch_team: None,
             usermsg_hook_sub: None, usermsg_hook_unsub: None,
             usermsg_hook_read_int: None, usermsg_hook_read_float: None,
             usermsg_hook_read_string: None, usermsg_hook_has_field: None,
             usermsg_hook_recipients: None, usermsg_hook_debug: None,
-            player_respawn: None,
             server_build_number: None,
             crash_test_native: None,
             ent_resolve: None,
@@ -15887,8 +15679,6 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.maxPlayers)"), "0");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.mapName)"), "");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.gameTime)"), "0");
-        // Slice 6.14: __s2_pawn_commit_suicide degrades to a no-op (undefined) without the op.
-        assert_eq!(eval_in_context_string("p", "String(__s2_pawn_commit_suicide(1,7))"), "undefined");
         // Slice 6.12: plugin natives degrade (no file-watch in-isolate → empty list, ops false) + module wires.
         assert_eq!(eval_in_context_string("p", "__s2_plugins_list()"), "[]");
         assert_eq!(eval_in_context_string("p", "String(__s2_plugin_unload('x'))"), "false");
@@ -16096,19 +15886,6 @@ mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_read_buttons())"), "0", "read_buttons degrades to 0n");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_write_buttons(5n))"), "undefined", "write_buttons no-throws");
         assert_eq!(eval_in_context_string("p", "String(__s2_usercmd_clear_subtick())"), "undefined", "clear_subtick no-throws");
-        shutdown();
-    }
-
-    /// Round-control slice (degrade-never-crash): with NO engine ops installed,
-    /// `__s2_gamerules_terminate_round` returns 0 (an int, never undefined) and never throws —
-    /// the `GameRules.terminateRound -> false` degrade contract holds without a shim.
-    #[test]
-    fn gamerules_terminate_round_degrades_without_ops() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        assert_eq!(eval_in_context_string("p", "String(__s2_gamerules_terminate_round(1, 2, 8, 5.0, 9))"), "0", "degrades to 0 without ops");
-        assert_eq!(eval_in_context_string("p", "String(__s2_gamerules_terminate_round())"), "0", "no-args degrades to 0, no throw");
         shutdown();
     }
 

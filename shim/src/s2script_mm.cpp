@@ -585,8 +585,8 @@ static std::set<std::string> s_subscribedNames;
 // signal inverts: core's five NOTIFY entries return S2_DISPATCH_DEFERRED instead of returning
 // silently, and THE SHIM — which still has the arguments on its own stack — queues a replay that
 // runs at the top of the next GameFrame, where HOST is provably free. A dispatch deferred during
-// frame N is delivered at frame N+1, exactly like the hand-rolled s_pendingRespawn/s_pendingTerminate
-// drains below.
+// frame N is delivered at frame N+1 — exactly what the hand-rolled s_pendingRespawn/s_pendingTerminate
+// drains used to do for Respawn/TerminateRound alone, before A5b deleted them in favour of this.
 //
 // ONE FIFO, so a deferred player_death and a deferred client-disconnect keep their relative order
 // (splitting by payload type would leave it undefined). An entry is a TAG plus that entry's OWN
@@ -883,22 +883,21 @@ static int s2_event_fire(int dontBroadcast) {
 // THE DEFERRED-DISPATCH SELFTEST (dev-only; S2_DEFER_SELFTEST).
 //
 // WHY IT HAS TO EXIST. The queue's scalar variants all have natural triggers. Its GAME-EVENT
-// variant does not — not on this server, and not before A5b. A defer needs the ENGINE to dispatch
-// an event into core WHILE CORE HOLDS THE ISOLATE BORROW, and the two triggers that look like they
-// would both fail to:
+// variant does not — not on this server. A defer needs the ENGINE to dispatch an event into core
+// WHILE CORE HOLDS THE ISOLATE BORROW, and the two triggers that look like they would both fail to:
 //   * Events.fire() from inside a handler — CS2 does not route a JS-fired event back through our
 //     listener inside the borrow; it arrives synchronously and never defers.
-//   * pawn.slay() (CommitSuicide fires player_death inline) from inside a dispatch — player_death
-//     does land a frame later, but from the ENGINE'S OWN next-frame delivery, not our drain. The
-//     drain runs at the TOP of Hook_GameFramePre, before the frame dispatch increments a plugin's
-//     counter, so a drained delivery reads the OLD counter value; the observed delivery read the
-//     NEW one. Not our path.
+//   * pawn.slay() (the CommitSuicide descriptor fires player_death inline) from inside a dispatch —
+//     player_death does land a frame later, but from the ENGINE'S OWN next-frame delivery, not our
+//     drain. The drain runs at the TOP of Hook_GameFramePre, before the frame dispatch increments a
+//     plugin's counter, so a drained delivery reads the OLD counter value; the observed delivery
+//     read the NEW one. Not our path.
 // The genuine trigger is an engine call that fires an event synchronously inside the borrow — which
-// is exactly A5b's Respawn/TerminateRound, and exactly why this file still hand-rolls
-// s_pendingRespawn/s_pendingTerminate drains for those two. So the path is unreachable until A5b
-// lands, and the queue would otherwise ship with its headline variant never once executed on a real
-// server (the boot log says "armed (pending the first-duplication round-trip)" and the round-trip
-// line never appears).
+// is exactly what A5b's Respawn/TerminateRound descriptors are (and exactly why this file used to
+// hand-roll a next-frame drain for those two: this queue is their generic replacement). Reaching it
+// takes a LIVE player, which a bots-only server cannot supply, so without a synthetic trigger the
+// queue would ship with its headline variant never once executed on a real server (the boot log
+// says "armed (pending the first-duplication round-trip)" and the round-trip line never appears).
 //
 // This is the same shape of problem as combat on a bots-only gate, and it takes the same answer as
 // S2_DAMAGE_SELFTEST in Hook_GameFramePre: a synthetic, ENV-GATED, off-by-default, loudly labelled
@@ -1981,180 +1980,6 @@ static const char* s2_cvar_get(const char* name) {
 }
 
 // ---------------------------------------------------------------------------
-// pawn_commit_suicide (Slice 6.14) — kill a pawn via CBasePlayerPawn::CommitSuicide. The failed Slice-6.8
-// branch (a085d5a) reached it by the borrowed ModSharp VTABLE INDEX (400 — wrong on our build; it's 819
-// here), which broke live. Per the RE doctrine we resolve it by a DIRECT prologue SIGNATURE self-scanned
-// on OUR libserver.so (s_pCommitSuicide, loaded in Load), NOT a borrowed index. GUARDED: the pawn is
-// reconstructed from (idx, serial) + serial-gated (s2_deref_handle → null if stale), and the resolved fn
-// ptr must point into libserver's .text (a null/out-of-range ptr degrades to a logged no-op, not a crash).
-// Signature: void CBasePlayerPawn::CommitSuicide(bool bExplode /*esi*/, bool bForce /*edx*/).
-// ---------------------------------------------------------------------------
-typedef void (*CommitSuicide_t)(void* thisptr, bool bExplode, bool bForce);
-static CommitSuicide_t s_pCommitSuicide = nullptr;       // sig-resolved fn ptr (loaded in Load)
-static const uint8_t*  s_serverText     = nullptr;       // libserver.so .text range for the call-site guard
-static size_t          s_serverTextSize = 0;
-static void s2_pawn_commit_suicide(int idx, int serial) {
-    if (!s_pCommitSuicide) return;                        // signature unresolved -> no-op
-    // Reconstruct the packed CEntityHandle from (index, serial) using the SDK bitfield layout
-    // (m_EntityIndex:15, m_Serial:17) — no magic constants — then serial-gate via s2_deref_handle.
-    CEntityHandle h(idx, serial);
-    void* pawn = s2_deref_handle(static_cast<unsigned int>(h.ToInt()));  // null if stale/free slot
-    if (!pawn) return;
-    const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pCommitSuicide);
-    if (!s_serverText || f < s_serverText || f >= s_serverText + s_serverTextSize) {
-        META_CONPRINTF("[s2script] CommitSuicide fn %p out of libserver .text — no-op\n", (const void*)f);
-        return;
-    }
-    s_pCommitSuicide(pawn, /*bExplode=*/false, /*bForce=*/true);
-}
-
-// ---------------------------------------------------------------------------
-// player_change_team (changeteam slice) — move a player's CONTROLLER between teams via
-// CCSPlayerController::ChangeTeam(int team), sig-resolved on OUR libserver.so (s_pChangeTeam, loaded in
-// Load). ChangeTeam (the poor-sharptimer/CSSharp `!spec` path) moves the player IMMEDIATELY — unlike
-// SwitchTeam, which the live gate proved queues a deferred switch (no move). The signature self-resolves
-// the real function (CSSharp's vtable OFFSET 101 is a `ret` stub here; ChangeTeam is slot 102 — the
-// CommitSuicide-index drift), so it is NOT a borrowed index. GUARDED identically to pawn_commit_suicide:
-// the controller is reconstructed from (idx, serial) + serial-gated (s2_deref_handle → null if stale), and
-// the resolved fn ptr must point into libserver's .text (reuses s_serverText/s_serverTextSize) — a
-// null/out-of-range ptr or a stale ref degrades to a logged no-op, never a crash. `team` is bounded to
-// 0..3 (Unassigned/Spec/T/CT). ABI: void CCSPlayerController::ChangeTeam(this /*rdi*/, int team /*esi*/).
-// ---------------------------------------------------------------------------
-typedef void (*ChangeTeam_t)(void* thisptr, int team);
-static ChangeTeam_t s_pChangeTeam = nullptr;             // sig-resolved fn ptr (loaded in Load)
-static void s2_player_change_team(int idx, int serial, int team) {
-    if (!s_pChangeTeam) return;                          // signature unresolved -> no-op
-    if (team < 0 || team > 3) return;                    // Unassigned/Spectator/T/CT only
-    CEntityHandle h(idx, serial);
-    void* controller = s2_deref_handle(static_cast<unsigned int>(h.ToInt()));  // null if stale/free slot
-    if (!controller) return;
-    const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pChangeTeam);
-    if (!s_serverText || f < s_serverText || f >= s_serverText + s_serverTextSize) {
-        META_CONPRINTF("[s2script] ChangeTeam fn %p out of libserver .text — no-op\n", (const void*)f);
-        return;
-    }
-    s_pChangeTeam(controller, team);
-}
-
-// ---------------------------------------------------------------------------
-// player_switch_team (switchteam slice) — NON-LETHAL controller team move via
-// CCSPlayerController::SwitchTeam(this, team): the player stays alive and keeps weapons (vs ChangeTeam
-// = jointeam semantics); the pawn MAY be respawned (consumers re-resolve player.pawn next frame). For
-// team <= 1 (None/Spectator) dispatches to s2_player_change_team — CSSharp/SwiftlyS2 parity: the
-// engine SwitchTeam is CS:GO-lineage T/CT-only. Guarded identically to change_team: serial-gate +
-// 0..3 bounds + .text-range check; any failure degrades to a (logged) no-op, never a crash.
-// HISTORY: an earlier borrowed "SwitchTeam" sig hit the WRONG function on our build (the deferred
-// m_bSwitchTeamsOnNextRoundReset halftime swap — live-gate-proven no-move); this sig is the real
-// per-player function, validated UNIQUE @0x1525f40 on 2000875 and re-validated every boot.
-// ABI: void CCSPlayerController::SwitchTeam(this /*rdi*/, unsigned int team /*esi*/).
-// ---------------------------------------------------------------------------
-typedef void (*SwitchTeam_t)(void* thisptr, int team);
-static SwitchTeam_t s_pSwitchTeam = nullptr;             // sig-resolved fn ptr (loaded in Load)
-static void s2_player_switch_team(int idx, int serial, int team) {
-    if (team < 0 || team > 3) return;                    // Unassigned/Spectator/T/CT only
-    if (team <= 1) {                                     // None/Spectator -> ChangeTeam (parity path)
-        s2_player_change_team(idx, serial, team);
-        return;
-    }
-    if (!s_pSwitchTeam) return;                          // signature unresolved -> no-op
-    CEntityHandle h(idx, serial);
-    void* controller = s2_deref_handle(static_cast<unsigned int>(h.ToInt()));  // null if stale/free slot
-    if (!controller) return;
-    const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pSwitchTeam);
-    if (!s_serverText || f < s_serverText || f >= s_serverText + s_serverTextSize) {
-        META_CONPRINTF("[s2script] SwitchTeam fn %p out of libserver .text — no-op\n", (const void*)f);
-        return;
-    }
-    s_pSwitchTeam(controller, team);
-}
-
-// ---------------------------------------------------------------------------
-// player_respawn (player-respawn slice) — re-activate a (dead) player via the sig-resolved
-// CCSPlayerController::Respawn(this) (s_pRespawn, loaded in Load behind TWO gates: unique-match AND
-// the Respawn.vtable-member RTTI check — CSSharp ships a BARE vtable index here, the sm_slay/ChangeTeam
-// borrowed-index failure class, so the shipped sig must prove it landed on a genuine CCSPlayerController
-// virtual). DEFERRED EXECUTION: Respawn fires player_spawn SYNCHRONOUSLY; called inline from a JS
-// native (inside the core's isolate borrow) the re-entry would be try_borrow-skipped and EVERY plugin
-// would silently miss the event. So the op only enqueues into a deduped MULTI-ENTRY pending set
-// (TTT's round-start loops respawn many players in one dispatch — unlike terminate-round, latest-wins
-// would be a correctness bug) and Hook_GameFrameRespawnDrain (installed eagerly at Load iff both gates
-// passed) executes OUTSIDE the JS borrow. (idx, serial) = the CONTROLLER entity; alive_off = the
-// "pawn is alive" bool offset from the game package (re-checked at drain to close the enqueue->drain
-// TOCTOU; < 0 skips the re-check). Serial-gated at BOTH enqueue and drain; .text-guarded like
-// ChangeTeam. NOTE Plan A (spec §2.3): Respawn ALONE, no SetPawn pre-call — CSSharp's SetPawn sig is
-// STALE on 2000875 (0 hits); if the live gate shows a dead player is not re-activated, Plan B is a
-// pawn.js schema pre-write (m_hPawn <- m_hPlayerPawn), zero shim changes.
-// ---------------------------------------------------------------------------
-typedef void (*Respawn_t)(void* controller);
-static Respawn_t s_pRespawn = nullptr;                   // sig-resolved fn ptr (loaded in Load, dual-gated)
-// CBasePlayerController::SetPawn(pawn, b1, b2) — called (playerPawn, true, false) BEFORE Respawn to
-// re-activate a dead player's pawn (observer teardown + m_hPawn repoint + dirty flags). A 4-ARG function
-// (void*,void*,bool,bool) — verbatim what SwiftlyS2 (player.cpp:345, gamedata sig BYTE-IDENTICAL to ours)
-// and CSSharp both declare + call; passing extra args feeds the function a different reset flag. NON-VIRTUAL
-// on 2000875 (unique sig + .text guard; no vtable-member gate). SysV: rdi=controller, rsi=pawn, edx=b1, ecx=b2.
-typedef void (*SetPawn_t)(void* controller, void* pawn, int b1, int b2);
-static SetPawn_t s_pSetPawn = nullptr;                   // sig-resolved fn ptr (loaded in Load)
-struct PendingRespawn { uint32_t handle; int aliveOff; int hplayerpawnOff; };
-static const int kRespawnPendingMax = 130;               // > 64 slots * controller+margin; engine-generic cap
-static PendingRespawn s_pendingRespawn[kRespawnPendingMax];
-static int s_pendingRespawnCount = 0;
-static bool s_respawnDrainHooked = false;                // Load-installed, Unload-removed
-
-static int s2_player_respawn(int idx, int serial, int alive_off, int hplayerpawn_off) {
-    if (!s_pRespawn || !s_pSetPawn) return 0;            // respawn needs BOTH engine facts resolved -> degrade
-    if (!s_respawnDrainHooked) return 0;                 // no drain hook installed -> nothing would drain the queue
-    CEntityHandle h(idx, serial);
-    if (!s2_deref_handle(static_cast<unsigned int>(h.ToInt()))) return 0;  // stale NOW; re-gated at drain
-    uint32_t hv = static_cast<uint32_t>(h.ToInt());
-    for (int i = 0; i < s_pendingRespawnCount; i++)
-        if (s_pendingRespawn[i].handle == hv) return 1;  // dedupe: double-respawn-same-frame is idempotent
-    if (s_pendingRespawnCount >= kRespawnPendingMax) {
-        META_CONPRINTF("[s2script] player_respawn: pending set full (%d) — rejected\n", kRespawnPendingMax);
-        return 0;
-    }
-    // ENQUEUE — the SetPawn+Respawn engine sequence runs at the next GameFrame drain, OUTSIDE the JS isolate
-    // borrow, so the resulting player_spawn reaches every plugin's handlers (round-control §4.1 precedent).
-    s_pendingRespawn[s_pendingRespawnCount++] = { hv, alive_off, hplayerpawn_off };
-    return 1;
-}
-
-// ---------------------------------------------------------------------------
-// gamerules_terminate_round (round-control slice) — force the round to end via the sig-resolved
-// CCSGameRules::TerminateRound(float delay, uint32 reason, void* unk3=0, uint32 unk4=0) (s_pTerminateRound,
-// loaded in Load behind TWO gates: unique-match AND the scope-string semantic check — the borrowed
-// CSSharp/Swiftly sig is unique-but-WRONG on 2000875). DEFERRED EXECUTION: TerminateRound fires the
-// round-end event machinery SYNCHRONOUSLY; called inline from a JS native (inside the core's isolate
-// borrow) the round_end re-entry would be try_borrow-skipped and EVERY plugin would silently miss the
-// event. So the op only arms a single-slot pending request (latest-wins — a round ends once) and
-// Hook_GameFrameRoundDrain (installed eagerly at Load iff the sig resolved; one branch/frame) executes
-// it OUTSIDE the JS borrow. (idx, serial) identify the rules PROXY entity and rules_ptr_off the offset
-// of its rules-struct pointer field — both come from the game package; no game names live here. The
-// proxy is serial-gated at BOTH enqueue (fast feedback) and drain (it can die in between); the fn ptr
-// is .text-range-guarded like ChangeTeam. reason is host-bounded 0..22 (mirrors the engine's own
-// `cmp $0x16` check; in-range legacy holes 2/3/15 pass through — the engine's switch handles them).
-// ---------------------------------------------------------------------------
-typedef void (*TerminateRound_t)(void* rules, float delay, uint32_t reason, void* unk3, uint32_t unk4);
-static TerminateRound_t s_pTerminateRound = nullptr;     // sig-resolved fn ptr (loaded in Load, dual-gated)
-struct PendingTerminate { bool armed; uint32_t proxyHandle; int rulesPtrOff; float delay; int reason; };
-static PendingTerminate s_pendingTerminate = { false, 0, 0, 0.0f, 0 };
-static bool s_termDrainHooked = false;                   // Load-installed, Unload-removed
-
-static int s2_gamerules_terminate_round(int idx, int serial, int rules_ptr_off, float delay, int reason) {
-    if (!s_pTerminateRound) return 0;                    // signature unresolved/failed-semantic -> degrade
-    if (reason < 0 || reason > 22) {
-        META_CONPRINTF("[s2script] terminate_round: reason %d out of range 0..22 — rejected\n", reason);
-        return 0;
-    }
-    if (rules_ptr_off < 0) return 0;
-    CEntityHandle h(idx, serial);
-    if (!s2_deref_handle(static_cast<unsigned int>(h.ToInt()))) return 0;  // stale proxy NOW; re-gated at drain
-    if (s_pendingTerminate.armed)
-        META_CONPRINTF("[s2script] terminate_round: overwriting a pending request (latest wins)\n");
-    s_pendingTerminate = { true, static_cast<uint32_t>(h.ToInt()), rules_ptr_off, delay, reason };
-    return 1;
-}
-
-// ---------------------------------------------------------------------------
 // Usercmd primitive (per-tick input read/modify/block; SM OnPlayerRunCmd parity) — detours
 // CCSPlayer_MovementServices::ProcessUsercmds (self-resolved sig "ProcessUsercmds"; batch ABI + return
 // type + CUserCmd stride confirmed by an offline disassembly spike, 2026-07-14 — see
@@ -3029,20 +2854,6 @@ static ModBounds FindModuleBounds(const char* soname) {
     return ctx.out;
 }
 
-// Semantic load-gate for the TerminateRound descriptor (uniqueness is NOT enough — the borrowed
-// CSSharp/Swiftly sig matches UNIQUELY at the WRONG function on build 2000875). The self-derived
-// pattern pins the `48 8D 35` (lea rsi,[rip+disp32]) opcode at fn+0xb and masks only the disp;
-// this follows the disp and verifies the target is the literal scope string "TerminateRound".
-static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, const char* module) {
-    int64_t tgt = s2sig::ResolveLeaDisp(mt.text, mt.size, fnOff + 0xb, /*dispOff=*/3, /*instrLen=*/7);
-    if (tgt == s2sig::kFail) return false;
-    const uint8_t* p = mt.text + tgt;   // typically BELOW mt.text (.rodata precedes .text in the map)
-    ModBounds mb = FindModuleBounds(module);
-    static const char kScope[] = "TerminateRound";   // compare INCLUDING the NUL
-    if (!mb.lo || p < mb.lo || p + sizeof(kScope) > mb.hi) return false;
-    return std::memcmp(p, kScope, sizeof(kScope)) == 0;
-}
-
 // ---------------------------------------------------------------------------
 // Gamedata validation report (Slice 6.9). Every engine fact resolved against the LIVE binary records a
 // pass/fail here so a version mismatch / stale signature is LOUD at boot, not a silent no-op (the sm_slay
@@ -3094,26 +2905,6 @@ static int64_t ResolveSigValidated(const char* name, const SigSpec& sig) {
     return targetOff;
 }
 
-// Semantic load-gate for the Respawn descriptor (uniqueness is NOT enough — the round-control slice
-// proved a sig can match exactly once at the WRONG function, and Respawn has no unique log string to
-// xref). Runtime-resolves the CCSPlayerController PRIMARY vtable via RTTI (s2vtable::GetVTableByName —
-// the trace-slice precedent) and asserts the sig-resolved address is one of its fn slots. The walk
-// ends at the first slot value outside libserver .text (the next sub-vtable's offset-to-top header) —
-// fail-closed: a truncated walk that misses the fn FAILS the gate, it never passes wrongly. Logs the
-// matched slot as a treadmill breadcrumb (CSSharp's offline hint was 274 on 2000875).
-static bool ValidateRespawnVtableMember(const uint8_t* fn, const ModText& mt) {
-    void** vt = s2vtable::GetVTableByName("libserver.so", "CCSPlayerController");
-    if (!vt) return false;
-    for (int i = 0; i < 512; i++) {
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(vt[i]);
-        if (!p || p < mt.text || p >= mt.text + mt.size) break;   // sub-vtable header = end of fn slots
-        if (p == fn) {
-            META_CONPRINTF("[s2script] Respawn = CCSPlayerController vtable slot %d\n", i);
-            return true;
-        }
-    }
-    return false;
-}
 static void GamedataBanner() {
     META_CONPRINTF("[s2script] === GAMEDATA VALIDATION: %d ok, %d FAILED%s ===\n", s_gdOk, s_gdFail,
                    s_gdFail ? "  (STALE for this CS2 build — regenerate; see docs/re-strategy.md)" : "");
@@ -3198,8 +2989,7 @@ static bool IsAddressInServerText(void* fn) {
     if (!fn) return false;
     // libserver.so's .text range is fixed after load; cache it on first use so the per-frame
     // entity_teleport hot path (a beam.update per held-E player each frame) does NOT re-walk every
-    // loaded module via dl_iterate_phdr on every call. Function-local statics keep this decoupled
-    // from the CommitSuicide-path s_serverText global (which is only populated if that sig resolves).
+    // loaded module via dl_iterate_phdr on every call.
     static const uint8_t* s_text = nullptr;
     static size_t          s_textSize = 0;
     if (!s_text) { ModText mt = FindModuleText("libserver.so"); s_text = mt.text; s_textSize = mt.size; }
@@ -3914,9 +3704,10 @@ static int Shim_CollisionActivate(int index, int serial) {
 }
 
 // ---------------------------------------------------------------------------
-// Item / weapon manipulation slice (Task 2): GiveNamedItem / RemovePlayerItem are self-validated
-// DIRECT byte signatures (resolved below, in Load()), re-confirmed unique + ABI-checked by disasm
-// (spike, Task 2). entity_subobj_vcall is the reusable engine-generic primitive: it reads a
+// Item / weapon manipulation slice (Task 2). GiveNamedItem / RemovePlayerItem used to live here as
+// two more sig-resolved fn pointers; A5b retired them to `calls` descriptors in gamedata/cs2 (their
+// signatures and the RE notes moved with them, verbatim). What remains here is engine-generic and
+// stays: entity_subobj_vcall is the reusable primitive — it reads a
 // sub-object pointer off the entity at a caller-supplied offset (m_pItemServices/m_pWeaponServices,
 // live-schema-resolved JS-side — never a CS2 name in this file) and calls a caller-supplied vtable
 // INDEX on it, .text-validated before every call (the same IsAddressInServerText guard as
@@ -3937,27 +3728,8 @@ static int Shim_CollisionActivate(int index, int serial) {
 // via ResolveEntityBySerial (through entity_resolve_ptr on the Rust side) before becoming an
 // EntityRef.
 // ---------------------------------------------------------------------------
-using GiveNamedItemFn    = CEntityInstance* (*)(void* itemServices, const char* name, void* iSubType, void* pScriptItem, void* a5, void* a6);
-using RemovePlayerItemFn = bool (*)(void* pawn, void* weapon);
-static GiveNamedItemFn    s_pGiveNamedItem    = nullptr;   // sig-resolved fn ptr (loaded in Load)
-static RemovePlayerItemFn s_pRemovePlayerItem = nullptr;   // sig-resolved fn ptr (loaded in Load)
 static int s_removeWeaponsVtblIndex = -1;   // gamedata (informational; the call site takes the index from the JS caller — see the header comment)
 static int s_dropActiveVtblIndex    = -1;   // gamedata (informational; the call site takes the index from the JS caller — see the header comment)
-
-// give: read a sub-object pointer (e.g. m_pItemServices) off a serial-gated entity, call
-// GiveNamedItem(itemServices, name, 0, nullptr, 0, nullptr). Returns a packed CEntityHandle
-// (ToInt) of the created weapon, or 0 on failure/unresolved. The raw CBaseEntity*/sub-object ptr
-// never crosses to JS.
-static int Shim_GiveNamedItem(int index, int serial, int subObjOffset, const char* className) {
-    if (!s_pGiveNamedItem || !className || subObjOffset < 0) return 0;
-    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
-    if (!ent) return 0;
-    void* subObj = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ent) + subObjOffset);
-    if (!subObj) return 0;
-    CEntityInstance* w = s_pGiveNamedItem(subObj, className, 0, nullptr, 0, nullptr);
-    if (!w) return 0;
-    return w->GetRefEHandle().ToInt();
-}
 
 // subobj vcall: read a sub-object pointer off a serial-gated entity, then call vtable[vtableIndex]
 // on that sub-object with an optional single entity arg (argIdx<0 -> null). The resolved fn ptr is
@@ -3982,16 +3754,6 @@ static int Shim_EntitySubobjVcall(int index, int serial, int subObjOffset, int v
     void* fn = vtbl[vtableIndex];
     if (!IsAddressInServerText(fn)) return 0;
     reinterpret_cast<void (*)(void*, void*)>(fn)(subObj, argPtr);
-    return 1;
-}
-
-// remove item: RemovePlayerItem(pawn, weapon) -> bool, both serial-gated. Returns 1/0.
-static int Shim_RemovePlayerItem(int pawnIndex, int pawnSerial, int weaponIndex, int weaponSerial) {
-    if (!s_pRemovePlayerItem) return 0;
-    CEntityInstance* pawn = ResolveEntityBySerial(pawnIndex, pawnSerial);
-    CEntityInstance* w    = ResolveEntityBySerial(weaponIndex, weaponSerial);
-    if (!pawn || !w) return 0;
-    s_pRemovePlayerItem(pawn, w);
     return 1;
 }
 
@@ -4549,145 +4311,6 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] ClientPrintAll resolved @%p (broadcast colored chat)\n", reinterpret_cast<void*>(g_ClientPrintAll));
                 }   // caOff == kFail: ResolveSigValidated already recorded the reason
             }
-            // Slice 6.14: resolve CBasePlayerPawn::CommitSuicide (the lethal-kill entry; sm_slay). A DIRECT
-            // prologue signature self-resolved on OUR libserver.so (NOT the ModSharp vtable index, which was
-            // version-wrong on the pinned build). Store the fn ptr + libserver's .text range for the call-site
-            // guard. Degrade-never-crash: unresolved -> pawn_commit_suicide no-op.
-            auto csit = sigs.find("CommitSuicide");
-            if (csit == sigs.end()) {
-                GamedataResult("CommitSuicide", false, "signature absent from gamedata");
-            } else {
-                int64_t csOff = ResolveSigValidated("CommitSuicide", csit->second);
-                ModText csmt = FindModuleText(csit->second.module.c_str());
-                if (csOff != s2sig::kFail && csmt.text) {  // resolve=="direct": the unique match IS the function start
-                    s_pCommitSuicide = reinterpret_cast<CommitSuicide_t>(const_cast<uint8_t*>(csmt.text) + csOff);
-                    s_serverText = csmt.text; s_serverTextSize = csmt.size;   // .text range for the call guard
-                    META_CONPRINTF("[s2script] CommitSuicide resolved @%p (sm_slay; libserver .text=%p+%zu)\n",
-                                   reinterpret_cast<void*>(s_pCommitSuicide), (const void*)s_serverText, s_serverTextSize);
-                }   // csOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            // changeteam slice: resolve CCSPlayerController::ChangeTeam (Player.changeTeam / .spectate). A
-            // DIRECT prologue signature self-resolved on OUR libserver.so (the real function, located via the
-            // CTMDBG log-string xref — NOT CSSharp's SwitchTeam sig [deferred switch] nor its ChangeTeam vtable
-            // OFFSET [slot 101 is a ret stub here; ChangeTeam is slot 102 — index drift]). Also (re)sets
-            // s_serverText so the call-site .text guard holds even if the CommitSuicide sig failed.
-            // Degrade-never-crash: unresolved -> change_team no-op.
-            auto stit = sigs.find("ChangeTeam");
-            if (stit == sigs.end()) {
-                GamedataResult("ChangeTeam", false, "signature absent from gamedata");
-            } else {
-                int64_t stOff = ResolveSigValidated("ChangeTeam", stit->second);
-                ModText stmt = FindModuleText(stit->second.module.c_str());
-                if (stOff != s2sig::kFail && stmt.text) {  // resolve=="direct": the unique match IS the function start
-                    s_pChangeTeam = reinterpret_cast<ChangeTeam_t>(const_cast<uint8_t*>(stmt.text) + stOff);
-                    s_serverText = stmt.text; s_serverTextSize = stmt.size;   // .text range for the call guard
-                    META_CONPRINTF("[s2script] ChangeTeam resolved @%p (Player.changeTeam; libserver .text=%p+%zu)\n",
-                                   reinterpret_cast<void*>(s_pChangeTeam), (const void*)s_serverText, s_serverTextSize);
-                }   // stOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            // switchteam slice: resolve CCSPlayerController::SwitchTeam (Player.switchTeam — the
-            // NON-LETHAL T/CT move). Sig corroborated by SwiftlyS2 + CSSharp but VALIDATED on OUR
-            // libserver.so (unique @0x1525f40 on 2000875) — NOT the changeteam-era borrowed sig that
-            // hit the deferred m_bSwitchTeamsOnNextRoundReset function (see the gamedata comment).
-            // Degrade-never-crash: unresolved -> switch_team no-ops (the spectator dispatch to
-            // ChangeTeam still works if that sig resolved).
-            auto swit = sigs.find("SwitchTeam");
-            if (swit == sigs.end()) {
-                GamedataResult("SwitchTeam", false, "signature absent from gamedata");
-            } else {
-                int64_t swOff = ResolveSigValidated("SwitchTeam", swit->second);
-                ModText swmt = FindModuleText(swit->second.module.c_str());
-                if (swOff != s2sig::kFail && swmt.text) {  // resolve=="direct": the unique match IS the function start
-                    s_pSwitchTeam = reinterpret_cast<SwitchTeam_t>(const_cast<uint8_t*>(swmt.text) + swOff);
-                    META_CONPRINTF("[s2script] SwitchTeam resolved @%p (Player.switchTeam; libserver .text=%p+%zu)\n",
-                                   reinterpret_cast<void*>(s_pSwitchTeam), (const void*)s_serverText, s_serverTextSize);
-                }   // swOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            // Round-control slice: resolve CCSGameRules::TerminateRound (GameRules.terminateRound).
-            // DUAL-GATED: unique-match (ResolveSigValidated) AND the scope-string semantic check —
-            // on THIS build the borrowed CSSharp/Swiftly sig is unique yet lands on the WRONG function,
-            // so uniqueness alone must never assign the pointer. Failure of either gate leaves
-            // s_pTerminateRound null -> the op degrades to 0 (degrade-never-crash).
-            auto trit = sigs.find("TerminateRound");
-            if (trit == sigs.end()) {
-                GamedataResult("TerminateRound", false, "signature absent from gamedata");
-            } else {
-                int64_t trOff = ResolveSigValidated("TerminateRound", trit->second);
-                ModText trmt = FindModuleText(trit->second.module.c_str());
-                if (trOff != s2sig::kFail && trmt.text) {
-                    if (!ValidateTerminateRoundScopeString(trmt, trOff, trit->second.module.c_str())) {
-                        GamedataResult("TerminateRound.scope-string", false,
-                            "prologue lea does not reference the 'TerminateRound' scope string "
-                            "(unique-but-WRONG match — the borrowed-sig trap); descriptor disabled");
-                    } else {
-                        GamedataResult("TerminateRound.scope-string", true, nullptr);
-                        s_pTerminateRound = reinterpret_cast<TerminateRound_t>(const_cast<uint8_t*>(trmt.text) + trOff);
-                        s_serverText = trmt.text; s_serverTextSize = trmt.size;
-                        META_CONPRINTF("[s2script] TerminateRound resolved @%p (GameRules.terminateRound)\n",
-                                       reinterpret_cast<void*>(s_pTerminateRound));
-                        // Eager drain-hook install (NOT lazy): adding a SourceHook from inside a frame
-                        // dispatch would mutate the hook chain mid-iteration; one if-not-armed branch
-                        // per frame is negligible.
-                        if (m_server && !s_termDrainHooked) {
-                            SH_ADD_HOOK(ISource2Server, GameFrame, m_server,
-                                        SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
-                            s_termDrainHooked = true;
-                        }
-                    }
-                }   // trOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            // player-respawn slice: resolve CCSPlayerController::Respawn (Player.respawn).
-            // DUAL-GATED: unique-match (ResolveSigValidated) AND RTTI vtable membership — CSSharp
-            // ships a bare vtable index here (the sm_slay-400/ChangeTeam-101 borrowed-index class),
-            // so the shipped self-derived sig must additionally prove it landed on a genuine
-            // CCSPlayerController virtual. Failure of either gate leaves s_pRespawn null -> the op
-            // degrades to 0 (degrade-never-crash) and the drain hook is never installed.
-            auto rsit = sigs.find("Respawn");
-            if (rsit == sigs.end()) {
-                GamedataResult("Respawn", false, "signature absent from gamedata");
-            } else {
-                int64_t rsOff = ResolveSigValidated("Respawn", rsit->second);
-                ModText rsmt = FindModuleText(rsit->second.module.c_str());
-                if (rsOff != s2sig::kFail && rsmt.text) {
-                    const uint8_t* rsfn = rsmt.text + rsOff;
-                    if (!ValidateRespawnVtableMember(rsfn, rsmt)) {
-                        GamedataResult("Respawn.vtable-member", false,
-                            "sig-resolved address is NOT a member of the RTTI-derived "
-                            "CCSPlayerController primary vtable (unique-but-WRONG match — the "
-                            "borrowed-sig trap); descriptor disabled");
-                    } else {
-                        GamedataResult("Respawn.vtable-member", true, nullptr);
-                        s_pRespawn = reinterpret_cast<Respawn_t>(const_cast<uint8_t*>(rsfn));
-                        s_serverText = rsmt.text; s_serverTextSize = rsmt.size;
-                        META_CONPRINTF("[s2script] Respawn resolved @%p (Player.respawn)\n",
-                                       reinterpret_cast<void*>(s_pRespawn));
-                    }
-                }   // rsOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            // player-respawn slice: resolve CBasePlayerController::SetPawn (the pre-step that re-activates
-            // a dead player's pawn — Respawn-alone only clears the death screen, live-gate proven). NON-
-            // VIRTUAL on 2000875 -> unique-match + .text guard only (no vtable-member gate). Unresolved ->
-            // s_pSetPawn null -> the op degrades to 0 (respawn needs BOTH Respawn AND SetPawn).
-            auto spit = sigs.find("SetPawn");
-            if (spit == sigs.end()) {
-                GamedataResult("SetPawn", false, "signature absent from gamedata");
-            } else {
-                int64_t spOff = ResolveSigValidated("SetPawn", spit->second);
-                ModText spmt = FindModuleText(spit->second.module.c_str());
-                if (spOff != s2sig::kFail && spmt.text) {
-                    s_pSetPawn = reinterpret_cast<SetPawn_t>(const_cast<uint8_t*>(spmt.text) + spOff);
-                    if (!s_serverText) { s_serverText = spmt.text; s_serverTextSize = spmt.size; }
-                    META_CONPRINTF("[s2script] SetPawn resolved @%p (respawn pre-step)\n",
-                                   reinterpret_cast<void*>(s_pSetPawn));
-                }   // spOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            // Eager drain-hook install (NOT lazy — mutating the hook chain from inside a frame dispatch is
-            // unsafe). Install ONLY if BOTH engine facts resolved: respawn needs Respawn AND SetPawn.
-            if (s_pRespawn && s_pSetPawn && m_server && !s_respawnDrainHooked) {
-                SH_ADD_HOOK(ISource2Server, GameFrame, m_server,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRespawnDrain), false);
-                s_respawnDrainHooked = true;
-            }
             // Slice menu: resolve GetLegacyGameEventListener (per-client event fire; Events.fireToClient).
             // A DIRECT prologue signature self-resolved on OUR libserver.so (CSSharp reaches the per-client
             // listener via this engine function, NOT a CServerSideClient cast). Unresolved ->
@@ -4876,34 +4499,6 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] UtilRemove resolved @%p (EntityRef.remove)\n",
                                    reinterpret_cast<void*>(s_pUtilRemove));
                 }   // urOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            // Item slice (Task 2): resolve CCSPlayer_ItemServices::GiveNamedItem and
-            // CBasePlayerPawn::RemovePlayerItem — DIRECT prologue signatures self-validated on OUR
-            // libserver.so (re-confirmed unique + ABI-checked by disasm in the Task-2 spike).
-            // Degrade-never-crash: unresolved leaves its s_p* null -> the matching op no-ops.
-            auto gnit = sigs.find("GiveNamedItem");
-            if (gnit == sigs.end()) {
-                GamedataResult("GiveNamedItem", false, "signature absent from gamedata");
-            } else {
-                int64_t gnOff = ResolveSigValidated("GiveNamedItem", gnit->second);
-                ModText gnmt = FindModuleText(gnit->second.module.c_str());
-                if (gnOff != s2sig::kFail && gnmt.text) {  // resolve=="direct": the unique match IS the function start
-                    s_pGiveNamedItem = reinterpret_cast<GiveNamedItemFn>(const_cast<uint8_t*>(gnmt.text) + gnOff);
-                    META_CONPRINTF("[s2script] GiveNamedItem resolved @%p (pawn.giveNamedItem)\n",
-                                   reinterpret_cast<void*>(s_pGiveNamedItem));
-                }   // gnOff == kFail: ResolveSigValidated already recorded the reason
-            }
-            auto rpiit = sigs.find("RemovePlayerItem");
-            if (rpiit == sigs.end()) {
-                GamedataResult("RemovePlayerItem", false, "signature absent from gamedata");
-            } else {
-                int64_t rpiOff = ResolveSigValidated("RemovePlayerItem", rpiit->second);
-                ModText rpimt = FindModuleText(rpiit->second.module.c_str());
-                if (rpiOff != s2sig::kFail && rpimt.text) {  // resolve=="direct": the unique match IS the function start
-                    s_pRemovePlayerItem = reinterpret_cast<RemovePlayerItemFn>(const_cast<uint8_t*>(rpimt.text) + rpiOff);
-                    META_CONPRINTF("[s2script] RemovePlayerItem resolved @%p (pawn.removeWeapon)\n",
-                                   reinterpret_cast<void*>(s_pRemovePlayerItem));
-                }   // rpiOff == kFail: ResolveSigValidated already recorded the reason
             }
             // Entity-I/O slice (Task 2): resolve CEntitySystem::AddEntityIOEvent (fires inputs; the
             // primary EntityRef.acceptInput mechanism) — a DIRECT prologue signature self-validated
@@ -5127,9 +4722,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.damage_write_float = &s2_damage_write_float;
     ops.damage_victim      = &s2_damage_victim;
     ops.cvar_get           = &s2_cvar_get;
-    // Pawn suicide (Slice 6.14): APPENDED after cvar_get; order MUST match S2EngineOps.
-    ops.pawn_commit_suicide = &s2_pawn_commit_suicide;
-    // Console print + client address (ban-reason sub-project 2): APPENDED after pawn_commit_suicide; order MUST match S2EngineOps.
+    // Console print + client address (ban-reason sub-project 2): APPENDED after cvar_get; order MUST match S2EngineOps.
     ops.client_console_print = &s2_client_console_print;
     ops.client_address       = &s2_client_address;
     // Server-info ops (reservedslots+basetriggers): APPENDED after client_address; order MUST match S2EngineOps.
@@ -5151,9 +4744,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_teleport = &Shim_EntityTeleport;
     ops.entity_remove   = &Shim_EntityRemove;
     // Item slice — APPENDED after entity_remove; order MUST match S2EngineOps.
-    ops.give_named_item           = &Shim_GiveNamedItem;
     ops.entity_subobj_vcall       = &Shim_EntitySubobjVcall;
-    ops.remove_player_item        = &Shim_RemovePlayerItem;
     ops.entity_read_handle_vector = &Shim_EntityReadHandleVector;
     // Entity-I/O slice — APPENDED after entity_read_handle_vector; order MUST match S2EngineOps.
     ops.entity_fire_input = &Shim_EntityFireInput;
@@ -5186,9 +4777,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // precache vtable-hook block (which also defines Detour_OnPrecacheResource / InstallPrecacheHook).
     ops.sound_emit         = &s2_sound_emit;
     ops.sound_precache_add = &s2_sound_precache_add;
-    // changeteam slice — APPENDED after sound_precache_add; order MUST match S2EngineOps.
-    ops.player_change_team = &s2_player_change_team;
-    // Usercmd primitive — APPENDED after player_change_team; order MUST match S2EngineOps.
+    // Usercmd primitive — APPENDED after sound_precache_add; order MUST match S2EngineOps.
     ops.usercmd_hook_install  = &Shim_UsercmdHookInstall;
     ops.usercmd_read          = &s2_usercmd_read;
     ops.usercmd_write         = &s2_usercmd_write;
@@ -5199,14 +4788,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.transmit_set   = &s2_transmit_set;
     ops.transmit_clear = &s2_transmit_clear;
     ops.transmit_stats = &s2_transmit_stats;
-    // Round-control slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
-    ops.gamerules_terminate_round = &s2_gamerules_terminate_round;
-    // Voice-control slice — APPENDED after gamerules_terminate_round; order MUST match S2EngineOps.
+    // Voice-control slice — APPENDED after transmit_stats; order MUST match S2EngineOps.
     ops.voice_set_muted = &s2_voice_set_muted;
     ops.voice_get_muted = &s2_voice_get_muted;
-    // switchteam slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
-    ops.player_switch_team = &s2_player_switch_team;
-    // UserMessage-interception slice — APPENDED after player_switch_team; order MUST match S2EngineOps.
+    // UserMessage-interception slice — APPENDED after voice_get_muted; order MUST match S2EngineOps.
     ops.usermsg_hook_sub         = &s2_usermsg_hook_sub;
     ops.usermsg_hook_unsub       = &s2_usermsg_hook_unsub;
     ops.usermsg_hook_read_int    = &s2_usermsg_hook_read_int;
@@ -5215,9 +4800,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.usermsg_hook_has_field   = &s2_usermsg_hook_has_field;
     ops.usermsg_hook_recipients  = &s2_usermsg_hook_recipients;
     ops.usermsg_hook_debug       = &s2_usermsg_hook_debug;
-    // player-respawn slice — APPENDED after usermsg_hook_debug; order MUST match S2EngineOps.
-    ops.player_respawn = &s2_player_respawn;
-    // Crash-reporter slice — APPENDED after player_respawn; order MUST match S2EngineOps.
+    // Crash-reporter slice — APPENDED after usermsg_hook_debug; order MUST match S2EngineOps.
     ops.server_build_number = &s2_server_build_number;
     // Crash-harness — APPENDED after server_build_number; order MUST match S2EngineOps.
     ops.crash_test_native = &s2_crash_test_native;
@@ -5416,22 +4999,6 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
         m_frameHookInstalled = false;
     }
 
-    // player-respawn slice: remove the deferred-drain GameFrame pre-hook (installed eagerly at Load
-    // iff both Respawn boot gates passed) and clear any un-drained pending entries.
-    if (s_respawnDrainHooked && m_server) {
-        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRespawnDrain), false);
-        s_respawnDrainHooked = false;
-        s_pendingRespawnCount = 0;
-    }
-
-    if (s_termDrainHooked && m_server) {
-        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFrameRoundDrain), false);
-        s_termDrainHooked = false;
-        s_pendingTerminate.armed = false;
-    }
-
     // Remove the FireEvent pre-hook (Slice 5D.3) before tearing down the event listener.
     if (m_eventHookInstalled && s_pGameEventManager) {
         SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
@@ -5627,81 +5194,6 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
 void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) {
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
-    RETURN_META(MRES_IGNORED);
-}
-
-// player-respawn slice: drain the pending respawn set (enqueued by s2_player_respawn from a JS native)
-// OUTSIDE the JS isolate borrow — the entire point of the deferral. Respawn fires player_spawn
-// SYNCHRONOUSLY, so running it here (not inline in the op) lets that event flow through the normal
-// FireEvent pre-hook -> core dispatch -> every plugin's subscribers instead of being try_borrow-skipped.
-// Installed eagerly at Load iff both boot gates passed; removed at Unload. Per entry: re-deref the
-// handle (serial-gated at drain, not just enqueue — the controller can die in between), re-check
-// m_bPawnIsAlive at alive_off (skip if the player came alive), .text-guard s_pRespawn.
-void S2ScriptPlugin::Hook_GameFrameRespawnDrain(bool, bool, bool) {
-    if (s_pendingRespawnCount > 0) {
-        PendingRespawn batch[kRespawnPendingMax];
-        int n = s_pendingRespawnCount;
-        std::memcpy(batch, s_pendingRespawn, sizeof(PendingRespawn) * n);
-        s_pendingRespawnCount = 0;                       // consume BEFORE calling (the call re-enters)
-        const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pRespawn);
-        const uint8_t* g = reinterpret_cast<const uint8_t*>(s_pSetPawn);
-        if (!s_pRespawn || !s_pSetPawn || !s_serverText ||
-            f < s_serverText || f >= s_serverText + s_serverTextSize ||
-            g < s_serverText || g >= s_serverText + s_serverTextSize) {
-            META_CONPRINTF("[s2script] player_respawn: Respawn/SetPawn fn out of libserver .text at drain — batch dropped\n");
-            RETURN_META(MRES_IGNORED);
-        }
-        for (int i = 0; i < n; i++) {
-            void* controller = s2_deref_handle(batch[i].handle);   // re-gate: it can die in between
-            if (!controller) {
-                META_CONPRINTF("[s2script] player_respawn: stale controller at drain — skipped\n");
-                continue;
-            }
-            if (batch[i].aliveOff >= 0 &&
-                *reinterpret_cast<const uint8_t*>(reinterpret_cast<const char*>(controller) + batch[i].aliveOff)) {
-                continue;                                // came alive between enqueue and drain — skip
-            }
-            // SetPawn(playerPawn, true, false) THEN Respawn — SwiftlyS2/CSSharp's exact sequence, SAME
-            // frame. A dead controller's active m_hPawn points at the observer pawn; SetPawn re-points it +
-            // tears down observer mode + sets dirty flags — a raw m_hPawn write does NOT (live-gate proven on
-            // 2000875: Respawn alone only clears the death screen, never spawns). Resolve the player pawn from
-            // its handle (opaque offset; schema strings stay in games/cs2); skip SetPawn on a stale/absent
-            // pawn handle (Respawn alone still runs — degrade, not crash). NOTE the engine Respawn HONORS the
-            // game's respawn rules — it no-ops on a competitive mid-round server (verified) and fires in
-            // gamemodes that permit respawn (warmup / TTT's own rules), which is the correct behavior.
-            if (batch[i].hplayerpawnOff >= 0) {
-                uint32_t hp = *reinterpret_cast<const uint32_t*>(
-                    reinterpret_cast<const char*>(controller) + batch[i].hplayerpawnOff);
-                void* playerPawn = s2_deref_handle(hp);
-                if (playerPawn) s_pSetPawn(controller, playerPawn, /*b1*/1, /*b2*/0);   // (pawn,true,false) — SwiftlyS2/CSSharp exact
-            }
-            // OUTSIDE the JS isolate borrow: the synchronous player_spawn flows through the normal
-            // FireEvent pre-hook -> core dispatch -> every plugin's subscribers.
-            s_pRespawn(controller);
-        }
-    }
-    RETURN_META(MRES_IGNORED);
-}
-
-void S2ScriptPlugin::Hook_GameFrameRoundDrain(bool, bool, bool) {
-    if (s_pendingTerminate.armed) {
-        PendingTerminate req = s_pendingTerminate;
-        s_pendingTerminate.armed = false;               // consume before calling (the call re-enters gamerules)
-        void* proxy = s2_deref_handle(req.proxyHandle); // re-gate: the proxy can die between enqueue and drain
-        const uint8_t* f = reinterpret_cast<const uint8_t*>(s_pTerminateRound);
-        if (proxy && s_pTerminateRound && s_serverText && f >= s_serverText && f < s_serverText + s_serverTextSize) {
-            void* rules = *reinterpret_cast<void**>(reinterpret_cast<char*>(proxy) + req.rulesPtrOff);
-            if (rules) {
-                // OUTSIDE the JS isolate borrow: the synchronous round_end flows through the normal
-                // FireEvent pre-hook -> core dispatch -> every plugin's subscribers.
-                s_pTerminateRound(rules, req.delay, static_cast<uint32_t>(req.reason), nullptr, 0);
-            } else {
-                META_CONPRINTF("[s2script] terminate_round: null rules pointer at drain — dropped\n");
-            }
-        } else {
-            META_CONPRINTF("[s2script] terminate_round: stale proxy / fn out of .text at drain — dropped\n");
-        }
-    }
     RETURN_META(MRES_IGNORED);
 }
 
@@ -6013,8 +5505,8 @@ bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot s
 void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISource2WorldSession*, const char*) {
     // deferred-dispatch: drop anything still queued from the OLD map, BEFORE the map_start dispatch
     // below (which is itself deferrable). Queued entries reference a world that no longer exists,
-    // and a queued IGameEvent duplicate must not outlive the map. Mirrors the s_pendingRespawnCount
-    // reset precedent.
+    // and a queued IGameEvent duplicate must not outlive the map (the same reset the retired
+    // s_pendingRespawn/s_pendingTerminate drains did at Unload).
     S2Defer_Flush("map start");
     INetworkGameServer* gs = S2_GameServer();
     const char* map = gs ? gs->GetMapName() : nullptr;

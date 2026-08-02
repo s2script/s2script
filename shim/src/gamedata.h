@@ -98,7 +98,7 @@ struct GameConfig {
 //   platform      platform key whose nested details are lifted ("linuxsteamrt64")
 //
 // Apply order: master order first, then <owner>/custom/*.jsonc in sorted filename order. Later
-// wins, replacing at the NAMED-ENTRY level — signatures.Respawn is swapped wholesale, never
+// wins, replacing at the NAMED-ENTRY level — one `signatures.<key>` is swapped wholesale, never
 // deep-merged. That is what lets an operator override be a one-entry file.
 //
 // `error` is empty on success. A missing master, an unparseable file, a listed-but-absent file, or

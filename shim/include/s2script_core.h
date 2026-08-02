@@ -102,10 +102,6 @@ typedef void  (*s2_damage_write_float_fn)(int offset, float value);
 typedef int   (*s2_damage_victim_fn)(void);
 // Slice 6.7: read a cvar's current value as a string ("" if absent). Valid until the next cvar_get call.
 typedef const char* (*s2_cvar_get_fn)(const char* name);
-// Slice 6.14: kill a player pawn via CBasePlayerPawn::CommitSuicide (a sig-resolved DIRECT call — NOT a
-// vtable index). The shim reconstructs + serial-gates the pawn from (idx, serial); no-op on a stale ref or
-// an unresolved signature. Calls CommitSuicide(pawn, /*bExplode=*/false, /*bForce=*/true).
-typedef void (*s2_pawn_commit_suicide_fn)(int idx, int serial);
 // Slice sub-project-2: print one line to a client's developer console (IVEngineServer2::ClientPrintf).
 typedef void (*s2_client_console_print_fn)(int slot, const char* msg);
 // Client IP address ("IP:port"; "" for a bot/no netchannel). Valid until the next call.
@@ -157,18 +153,15 @@ typedef int (*s2_entity_spawn_fn)(int index, int serial);
 typedef int (*s2_entity_teleport_fn)(int index, int serial, const float* origin, const float* angles, const float* velocity);
 typedef int (*s2_entity_remove_fn)(int index, int serial);
 
-/* Item slice — APPENDED after entity_remove; order is the ABI.
- * give_named_item: (index,serial) of a pawn + a subObjOffset (m_pItemServices, live-schema-resolved
- * JS-side) + a className -> a packed CEntityHandle (ToInt) of the created weapon, 0 on failure.
+/* Item slice — APPENDED after entity_remove; order is the ABI. (A5b retired this group's
+ * CS2-specific give_named_item/remove_player_item members to gamedata/cs2 `calls` descriptors; the
+ * two survivors keep their original relative order.)
  * entity_subobj_vcall: (index,serial) of an entity + a subObjOffset + a vtableIndex (.text-validated
  * shim-side) + an optional (argIdx,argSerial) entity arg (-1,-1 = no arg) -> 1/0 success.
- * remove_player_item: (pawnIndex,pawnSerial,weaponIndex,weaponSerial) -> 1/0 success.
  * entity_read_handle_vector: (index,serial) + a pointer-deref chain (ptrOffs[ptrCount]) + a
  * vectorOff (CUtlVector base) + a maxCount cap -> fills outHandles[] with packed CEntityHandles,
  * returns the element count written (<= maxCount), 0 on any unresolved step. */
-typedef int (*s2_give_named_item_fn)(int index, int serial, int subObjOffset, const char* className);
 typedef int (*s2_entity_subobj_vcall_fn)(int index, int serial, int subObjOffset, int vtableIndex, int argIndex, int argSerial);
-typedef int (*s2_remove_player_item_fn)(int pawnIndex, int pawnSerial, int weaponIndex, int weaponSerial);
 typedef int (*s2_entity_read_handle_vector_fn)(int index, int serial, const int* ptrOffs, int ptrCount, int vectorOff, int maxCount, int* outHandles);
 
 /* Entity-I/O slice — APPENDED after entity_read_handle_vector; order is the ABI.
@@ -259,10 +252,6 @@ typedef int (*s2_sound_emit_fn)(const char* soundName, int entIndex, int entSeri
  * pointer is live only then; block-scoped like a game event). Returns 1 on add, 0 if no active
  * manifest / unresolved. ENGINE-GENERIC. */
 typedef int (*s2_sound_precache_add_fn)(const char* path);
-/* player_change_team: move a player's controller (idx,serial → serial-gated CCSPlayerController*) to
- * `team` (Spectator=1/T=2/CT=3) via the sig-resolved CCSPlayerController::ChangeTeam. No-op if the
- * signature is unresolved or the ref is stale. APPENDED after sound_precache_add; order is the ABI. */
-typedef void (*s2_player_change_team_fn)(int idx, int serial, int team);
 /* checktransmit slice: upsert the merged visibility mask for a serial-gated entity.
  * Returns 1 on success, 0 on a stale ref / full table / uninstalled hook / disabled descriptor. */
 typedef int (*s2_transmit_set_fn)(int index, int serial, unsigned long long mask);
@@ -270,15 +259,6 @@ typedef int (*s2_transmit_set_fn)(int index, int serial, unsigned long long mask
 typedef int (*s2_transmit_clear_fn)(int index);
 /* checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}. */
 typedef void (*s2_transmit_stats_fn)(unsigned long long* out);
-
-/* player-respawn slice — APPENDED after usermsg_hook_debug; order is the ABI.
- * player_respawn(idx, serial, alive_off) -> 1 queued / 0 degraded. (idx, serial) = the player's
- * CONTROLLER entity; alive_off = the offset of its "pawn is alive" bool field (resolved by the game
- * package; no game names cross this ABI; < 0 skips the drain-time re-check). DEFERRED: the shim
- * queues into a deduped multi-entry set and drains on the next GameFrame OUTSIDE the JS isolate
- * borrow — the engine call fires player_spawn synchronously, and an inline call from JS would
- * silently skip every plugin's handlers via the try_borrow re-entrancy guard. */
-typedef int (*s2_player_respawn_fn)(int idx, int serial, int alive_off, int hplayerpawn_off);
 
 /* usercmd slice — APPENDED after sound_precache_add; order is the ABI. All operate on the shim's
  * s_currentUserCmd (the in-flight cmd's CSGOUserCmdPB); valid only during a usercmd dispatch. */
@@ -289,16 +269,7 @@ typedef uint64_t (*s2_usercmd_read_buttons_fn)(void);           /* base.buttons_
 typedef void  (*s2_usercmd_write_buttons_fn)(uint64_t mask);
 typedef void  (*s2_usercmd_clear_subtick_fn)(void);             /* clear base.subtick_moves */
 
-/* Round-control slice — APPENDED after transmit_stats; order is the ABI.
- * gamerules_terminate_round(idx, serial, rules_ptr_off, delay, reason) -> 1 queued / 0 degraded.
- * (idx, serial) = the rules PROXY entity; rules_ptr_off = the offset of its rules-struct pointer
- * field (resolved by the game package; no game names cross this ABI). DEFERRED: the shim queues the
- * call and drains it on the next GameFrame OUTSIDE the JS isolate borrow — the engine call fires the
- * round-end event machinery synchronously, and an inline call from JS would silently skip every
- * plugin's round_end handler via the try_borrow re-entrancy guard. reason is bounded 0..22. */
-typedef int   (*s2_gamerules_terminate_round_fn)(int idx, int serial, int rules_ptr_off,
-                                                 float delay, int reason);
-/* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI.
+/* Voice-control slice — APPENDED after transmit_stats; order is the ABI.
  * voice_set_muted: set/clear the per-slot server-side voice mute (sender -> ALL receivers). The flag
  * lives SHIM-side: the SetClientListening pre-hook consults it allocation-free (O(n^2) per game voice
  * refresh), so JS only flips state through this op. Returns 1 = recorded + enforceable; 0 = slot out
@@ -366,14 +337,7 @@ typedef int (*s2_voice_audible_set_fn)(int sender, uint64_t mask);
 typedef int (*s2_voice_audible_clear_fn)(int sender);
 typedef int (*s2_voice_audible_stats_fn)(uint64_t* out);
 
-/* switchteam slice: player_switch_team — NON-LETHAL controller team move (idx,serial → serial-gated
- * CCSPlayerController*) to `team` via the sig-resolved CCSPlayerController::SwitchTeam (alive +
- * weapons kept; the pawn may be respawned). team 0/1 (None/Spectator) dispatches to ChangeTeam
- * (CSSharp/SwiftlyS2 parity). No-op if the signature is unresolved or the ref is stale.
- * APPENDED after voice_get_muted; order is the ABI. */
-typedef void (*s2_player_switch_team_fn)(int idx, int serial, int team);
-
-/* UserMessage-interception slice — APPENDED after player_switch_team; order is the ABI.
+/* UserMessage-interception slice — APPENDED after voice_get_muted; order is the ABI.
  * usermsg_hook_sub: resolve an unscoped message name (FindNetworkMessagePartial, the live-proven
  * SayText2 path), VALIDATE the m_MessageId extraction fail-closed (non-null NetMessageInfo, id in
  * [0,2048), requested name a substring of GetUnscopedName), lazily SH_ADD_HOOK PostEventAbstract on
@@ -389,6 +353,17 @@ typedef int (*s2_usermsg_hook_has_field_fn)(const char* path);
 typedef int (*s2_usermsg_hook_recipients_fn)(unsigned long long* outMask);
 typedef int (*s2_usermsg_hook_debug_fn)(char* buf, int buflen);
 
+/* The C-ABI engine-ops table. Field ORDER is the ABI: this struct and `S2EngineOps` in
+ * core/src/v8host.rs must stay index-for-index identical and must change in the SAME commit.
+ *
+ * CONVENTION, amended in A5b: append-only ACROSS a release boundary, not WITHIN one. The
+ * per-field `APPENDED after <field>` markers below record where each slice landed and still forbid
+ * reordering — but they never made a field immortal. Core and the shim ship in the same zip and
+ * nothing outside this repo links this table, so a slice that RETIRES an op deletes its field
+ * outright and renumbers the markers that named it. A5b did exactly that for eight CS2-specific
+ * calls (CommitSuicide, ChangeTeam, SwitchTeam, TerminateRound, Respawn, SetPawn, GiveNamedItem,
+ * RemovePlayerItem), now `calls` descriptors in gamedata/cs2/ served by the generic
+ * engine_call_resolve/engine_call_invoke pair further down. */
 typedef struct {
     s2_schema_offset_fn       schema_offset;
     s2_ent_by_index_fn        ent_by_index;
@@ -436,9 +411,7 @@ typedef struct {
     s2_damage_write_float_fn damage_write_float;
     s2_damage_victim_fn      damage_victim;
     s2_cvar_get_fn           cvar_get;
-    /* Pawn suicide (Slice 6.14) — APPENDED after cvar_get; order is the ABI. */
-    s2_pawn_commit_suicide_fn pawn_commit_suicide;
-    /* Console print + client address (ban-reason sub-project 2) — APPENDED after pawn_commit_suicide; order is the ABI. */
+    /* Console print + client address (ban-reason sub-project 2) — APPENDED after cvar_get; order is the ABI. */
     s2_client_console_print_fn client_console_print;
     s2_client_address_fn       client_address;
     /* Server-info ops (reservedslots+basetriggers) — APPENDED after client_address; order is the ABI. */
@@ -460,9 +433,7 @@ typedef struct {
     s2_entity_teleport_fn entity_teleport;
     s2_entity_remove_fn   entity_remove;
     /* Item slice — APPENDED after entity_remove; order is the ABI. */
-    s2_give_named_item_fn           give_named_item;
     s2_entity_subobj_vcall_fn       entity_subobj_vcall;
-    s2_remove_player_item_fn        remove_player_item;
     s2_entity_read_handle_vector_fn entity_read_handle_vector;
     /* Entity-I/O slice — APPENDED after entity_read_handle_vector; order is the ABI. */
     s2_entity_fire_input_fn entity_fire_input;
@@ -493,9 +464,7 @@ typedef struct {
     /* Sound slice — APPENDED after entity_name (the struct tail); order is the ABI. */
     s2_sound_emit_fn         sound_emit;
     s2_sound_precache_add_fn sound_precache_add;
-    /* changeteam slice — APPENDED after sound_precache_add; order is the ABI; do not reorder above. */
-    s2_player_change_team_fn player_change_team;
-    /* usercmd slice — APPENDED after player_change_team; order is the ABI; do not reorder above. */
+    /* usercmd slice — APPENDED after sound_precache_add; order is the ABI; do not reorder above. */
     s2_usercmd_hook_install_fn  usercmd_hook_install;
     s2_usercmd_read_fn          usercmd_read;
     s2_usercmd_write_fn         usercmd_write;
@@ -506,14 +475,10 @@ typedef struct {
     s2_transmit_set_fn   transmit_set;
     s2_transmit_clear_fn transmit_clear;
     s2_transmit_stats_fn transmit_stats;
-    /* Round-control slice — APPENDED after transmit_stats; order is the ABI; do not reorder above. */
-    s2_gamerules_terminate_round_fn gamerules_terminate_round;
-    /* Voice-control slice — APPENDED after gamerules_terminate_round; order is the ABI. */
+    /* Voice-control slice — APPENDED after transmit_stats; order is the ABI. */
     s2_voice_set_muted_fn  voice_set_muted;
     s2_voice_get_muted_fn  voice_get_muted;
-    /* switchteam slice — APPENDED after voice_get_muted; order is the ABI; do not reorder above. */
-    s2_player_switch_team_fn player_switch_team;
-    /* UserMessage-interception slice — APPENDED after player_switch_team; order is the ABI. */
+    /* UserMessage-interception slice — APPENDED after voice_get_muted; order is the ABI. */
     s2_usermsg_hook_sub_fn         usermsg_hook_sub;
     s2_usermsg_hook_unsub_fn       usermsg_hook_unsub;
     s2_usermsg_hook_read_int_fn    usermsg_hook_read_int;
@@ -522,9 +487,7 @@ typedef struct {
     s2_usermsg_hook_has_field_fn   usermsg_hook_has_field;
     s2_usermsg_hook_recipients_fn  usermsg_hook_recipients;
     s2_usermsg_hook_debug_fn       usermsg_hook_debug;
-    /* player-respawn slice — APPENDED after usermsg_hook_debug; order is the ABI; do not reorder above. */
-    s2_player_respawn_fn player_respawn;
-    /* Crash-reporter slice — APPENDED after player_respawn; order is the ABI. */
+    /* Crash-reporter slice — APPENDED after usermsg_hook_debug; order is the ABI. */
     s2_server_build_number_fn server_build_number;
     /* Crash-harness — APPENDED after server_build_number; order is the ABI. */
     s2_crash_test_native_fn crash_test_native;
