@@ -21,6 +21,11 @@ static void test_shape_vocabulary_is_closed() {
     CHECK(S2Hook_ShapeFromName("") == -1, "an empty shape name is rejected");
     CHECK(std::strcmp(S2Hook_ShapeName(S2_HOOK_SHAPE_THIS_VOID), "this_void") == 0,
           "shape ids round-trip back to their names");
+    // The check above only ever exercises id 0 — a mutation that hardcodes S2Hook_ShapeName to
+    // always return kShapes[0] would pass it. Round-trip the OTHER shape too.
+    CHECK(std::strcmp(S2Hook_ShapeName(S2_HOOK_SHAPE_THIS_F32_I32_I32_I32),
+                       "this_f32_i32_i32_i32") == 0,
+          "the second shape id round-trips back to its own name, not the first shape's");
     CHECK(S2Hook_ShapeName(99) == nullptr, "an out-of-range shape id has no name");
 }
 
@@ -34,6 +39,27 @@ static void test_bypass_latch_is_one_shot_and_per_hook() {
     S2Hook_BypassArm(0);
     CHECK(!S2Hook_BypassTake(1), "the latch is per-hook, not global");
     CHECK(S2Hook_BypassTake(0), "and hook 0's latch survived hook 1's take");
+}
+
+static void test_bypass_latch_rejects_out_of_range_ids() {
+    // The hook id crosses in from OUTSIDE this TU (a gamedata-declared index), so it is exactly the
+    // input this code cannot assume is in range. S2_HOOK_MAX exists so the latch array is a FIXED
+    // size; only the bounds guard in each function keeps an out-of-range id from reading or writing
+    // past the end of it. Drive negative, exactly-at-the-boundary, and well-past-the-boundary ids
+    // through BOTH functions so deleting either guard is a provable regression, not a hope.
+    CHECK(!S2Hook_BypassTake(-1), "BypassTake rejects a negative hook id");
+    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX), "BypassTake rejects hook id == S2_HOOK_MAX (one past the last valid slot)");
+    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX + 1000), "BypassTake rejects a hook id far past S2_HOOK_MAX");
+
+    // Arming an out-of-range id must be a pure no-op: it must not corrupt a NEIGHBOURING valid slot.
+    // Slot 0 and the last valid slot (S2_HOOK_MAX - 1) are both known-clear at this point (the
+    // previous test left hook 0 taken and never touched any other slot) — confirm they are still
+    // clear after arming several out-of-range ids that bracket them.
+    S2Hook_BypassArm(-1);
+    S2Hook_BypassArm(S2_HOOK_MAX);
+    S2Hook_BypassArm(S2_HOOK_MAX + 1000);
+    CHECK(!S2Hook_BypassTake(0), "an out-of-range BypassArm left slot 0 undisturbed");
+    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX - 1), "an out-of-range BypassArm left the last valid slot undisturbed");
 }
 
 static void test_collapse_contract() {
@@ -72,6 +98,7 @@ static void test_ops_are_injected_not_linked() {
 int main() {
     test_shape_vocabulary_is_closed();
     test_bypass_latch_is_one_shot_and_per_hook();
+    test_bypass_latch_rejects_out_of_range_ids();
     test_collapse_contract();
     test_ops_are_injected_not_linked();
     if (g_fail) { std::cerr << g_fail << " check(s) FAILED\n"; return 1; }
