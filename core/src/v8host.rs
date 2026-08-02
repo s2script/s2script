@@ -13852,6 +13852,31 @@ mod frame_tests {
         shutdown();
     }
 
+    /// Declarative inbound hooks, Task 4 fix round 1: a game package's `__s2pkg_game_ctx` must
+    /// never silently clobber a built-in `ctx` member. A package that declares (by typo or by
+    /// design) a namespace named `events` is REFUSED — the built-in `ctx.events` survives intact —
+    /// while a non-colliding namespace (`gameRules`) still merges normally.
+    #[test]
+    fn game_ctx_namespace_cannot_clobber_a_builtin() {
+        let _ = init(dummy_logger());
+        register_injected_package(
+            "@s2script/cs2",
+            r#"globalThis.__s2pkg_game_ctx = {
+                 events: function (reg, viaId) { return { bogus: true }; },
+                 gameRules: function (reg, viaId) { return { ok: true }; },
+               };"#,
+        );
+        load_body("gctx", r#"
+            globalThis.__eventsOnIsFn = String(typeof ctx.events.on === "function");
+            globalThis.__eventsBogus  = String(ctx.events.bogus);
+            globalThis.__gameRulesOk  = String(ctx.gameRules.ok);
+        "#, "{}");
+        assert_eq!(read_global_string("gctx", "__eventsOnIsFn"), "true");     // built-in survives
+        assert_eq!(read_global_string("gctx", "__eventsBogus"), "undefined"); // the collision never landed
+        assert_eq!(read_global_string("gctx", "__gameRulesOk"), "true");      // a non-colliding name still merges
+        shutdown();
+    }
+
     // --- Slice 4.5 Task 1: EntityRef replacer/reviver wire round-trip ---
 
     #[test]
