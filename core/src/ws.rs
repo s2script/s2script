@@ -54,13 +54,77 @@ fn engine() -> &'static Engine {
     })
 }
 
-pub fn connect(conn_id: u64, url: String, owner: String) {
+/// Headers the handshake owns. A plugin that sets one of these does not get a
+/// custom connection — it gets a corrupt or spoofed one, so they are refused by
+/// name rather than passed through and left to fail somewhere less obvious.
+///
+/// `Host` is included deliberately: tungstenite derives it from the URL, and
+/// letting a plugin override it is request smuggling against whatever sits in
+/// front of the target.
+const RESERVED_HEADERS: &[&str] = &[
+    "host",
+    "connection",
+    "upgrade",
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-accept",
+    "sec-websocket-extensions",
+    "sec-websocket-protocol",
+    "content-length",
+    "transfer-encoding",
+];
+
+/// Build the handshake request, applying caller headers over the derived one.
+///
+/// Returns the rejection reason as `Err` so the caller can surface it through
+/// the same `ConnectFailed` path a bad URL takes — a plugin should not have to
+/// distinguish "your header was refused" from "the socket did not open" by
+/// where the failure arrived.
+fn build_request(
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
+
+    let mut req = url
+        .into_client_request()
+        .map_err(|e| format!("invalid websocket url: {e}"))?;
+
+    for (name, value) in headers {
+        let lower = name.to_ascii_lowercase();
+        if RESERVED_HEADERS.contains(&lower.as_str()) {
+            return Err(format!("header '{name}' is reserved by the websocket handshake"));
+        }
+        let hname = HeaderName::from_bytes(lower.as_bytes())
+            .map_err(|_| format!("invalid header name: '{name}'"))?;
+        // Rejects control characters and newlines, which is what stops a value
+        // from injecting additional headers into the request.
+        let hvalue = HeaderValue::from_str(value)
+            .map_err(|_| format!("invalid value for header '{name}'"))?;
+        req.headers_mut().insert(hname, hvalue);
+    }
+
+    Ok(req)
+}
+
+pub fn connect(conn_id: u64, url: String, owner: String, headers: Vec<(String, String)>) {
     let e = engine();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<WsCommand>();
     e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner });
     let sig_tx = e.sig_tx.clone();
     crate::http::spawn(async move {
-        let stream = match tokio_tungstenite::connect_async(&url).await {
+        let request = match build_request(&url, &headers) {
+            Ok(r) => r,
+            Err(reason) => {
+                let _ = sig_tx.send(WsSignal {
+                    conn_id,
+                    kind: WsSignalKind::ConnectFailed(reason),
+                });
+                return;
+            }
+        };
+        let stream = match tokio_tungstenite::connect_async(request).await {
             Ok((s, _resp)) => s,
             Err(err) => {
                 let _ = sig_tx.send(WsSignal {
@@ -207,7 +271,7 @@ mod tests {
     #[test]
     fn connect_send_echo_close() {
         let port = echo_server_port();
-        connect(1, format!("ws://127.0.0.1:{port}/"), "p".into());
+        connect(1, format!("ws://127.0.0.1:{port}/"), "p".into(), Vec::new());
         // Drive the full signal flow the design doc calls for: Connected -> Message -> Closed.
         // On the echo, self-initiate a close and verify it actually produces a Closed signal
         // (the regression this test used to miss: it called close() with no follow-up assertion).
@@ -250,14 +314,14 @@ mod tests {
     #[test]
     fn connect_bad_port_fails() {
         crate::http::init();
-        connect(2, "ws://127.0.0.1:1/".into(), "p".into());
+        connect(2, "ws://127.0.0.1:1/".into(), "p".into(), Vec::new());
         let sigs = drain_for(1);
         assert!(sigs.iter().any(|s| matches!(s.kind, WsSignalKind::ConnectFailed(_))));
     }
     #[test]
     fn send_wrong_owner_denied() {
         let port = echo_server_port();
-        connect(3, format!("ws://127.0.0.1:{port}/"), "pA".into());
+        connect(3, format!("ws://127.0.0.1:{port}/"), "pA".into(), Vec::new());
         // wait for connect
         for _ in 0..200 {
             if try_recv_signal().is_some() {
@@ -267,5 +331,70 @@ mod tests {
         }
         assert!(!send(3, "pB", "x".into())); // wrong owner
         close(3, "pA");
+    }
+
+    #[test]
+    fn build_request_applies_caller_headers() {
+        let req = build_request(
+            "ws://127.0.0.1:1/",
+            &[("Authorization".into(), "Bearer abc123".into())],
+        )
+        .expect("should build");
+        assert_eq!(req.headers().get("authorization").unwrap(), "Bearer abc123");
+    }
+
+    #[test]
+    fn build_request_keeps_the_handshake_headers_it_derives() {
+        // Caller headers must be additive — the derived handshake must survive.
+        let req = build_request("ws://127.0.0.1:1/", &[("X-Trace".into(), "1".into())])
+            .expect("should build");
+        assert!(req.headers().get("sec-websocket-key").is_some());
+        assert_eq!(req.headers().get("x-trace").unwrap(), "1");
+    }
+
+    #[test]
+    fn build_request_refuses_reserved_headers() {
+        for name in ["Host", "Connection", "Upgrade", "Sec-WebSocket-Key", "sec-websocket-version"] {
+            let err = build_request("ws://127.0.0.1:1/", &[(name.into(), "x".into())])
+                .expect_err("reserved header must be refused");
+            assert!(err.contains("reserved"), "unexpected reason for {name}: {err}");
+        }
+    }
+
+    /// A newline in a value is how a header injection would be attempted; the
+    /// value must be rejected rather than truncated or passed through.
+    #[test]
+    fn build_request_refuses_values_with_control_characters() {
+        let err = build_request(
+            "ws://127.0.0.1:1/",
+            &[("X-Evil".into(), "ok\r\nX-Injected: yes".into())],
+        )
+        .expect_err("control characters must be refused");
+        assert!(err.contains("invalid value"), "unexpected reason: {err}");
+    }
+
+    #[test]
+    fn build_request_refuses_invalid_header_names() {
+        let err = build_request("ws://127.0.0.1:1/", &[("bad header".into(), "x".into())])
+            .expect_err("invalid name must be refused");
+        assert!(err.contains("invalid header name"), "unexpected reason: {err}");
+    }
+
+    /// A refused header has to arrive as ConnectFailed, the same channel a bad
+    /// URL uses — otherwise a plugin has no way to observe it at all.
+    #[test]
+    fn reserved_header_surfaces_as_connect_failed() {
+        crate::http::init();
+        connect(
+            42,
+            "ws://127.0.0.1:1/".into(),
+            "p".into(),
+            vec![("Host".into(), "evil.example".into())],
+        );
+        let sigs = drain_for(1);
+        assert!(sigs.iter().any(|s| match &s.kind {
+            WsSignalKind::ConnectFailed(reason) => reason.contains("reserved"),
+            _ => false,
+        }));
     }
 }
