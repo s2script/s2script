@@ -879,6 +879,49 @@ mod tests {
         s2script_core_shutdown();
     }
 
+    /// The deferred-dispatch selftest native EXISTS ONLY when `S2_DEFER_SELFTEST` is set.
+    ///
+    /// The gate is on INSTALLATION, not on the call, and this is what pins that: in a production
+    /// process the property is not on the global at all, so there is no reachable path to the
+    /// synthetic re-entrancy — a plugin cannot call it, feature-detect its way into it, or find it
+    /// by enumerating the global. Both directions are asserted in one test, in one process, because
+    /// "absent" is only meaningful next to a demonstration that the same code path CAN install it.
+    #[test]
+    fn defer_selftest_native_exists_only_when_the_env_var_is_set() {
+        std::env::remove_var("S2_DEFER_SELFTEST");
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        v8host::create_plugin_context("ddq_unarmed");
+        v8host::eval_in_context(
+            "ddq_unarmed",
+            r#"
+                if (typeof __s2_defer_selftest !== "undefined")
+                    throw new Error("the selftest native must NOT exist without S2_DEFER_SELFTEST");
+                if (Object.getOwnPropertyNames(globalThis).indexOf("__s2_defer_selftest") !== -1)
+                    throw new Error("the selftest native must not be enumerable on the global either");
+            "#,
+        )
+        .unwrap();
+
+        // Armed — same process, a NEW context. The gate is re-read per install_natives, so arming
+        // takes effect for contexts created afterwards without a restart.
+        std::env::set_var("S2_DEFER_SELFTEST", "1");
+        v8host::create_plugin_context("ddq_armed");
+        let armed = v8host::eval_in_context(
+            "ddq_armed",
+            r#"
+                if (typeof __s2_defer_selftest !== "function")
+                    throw new Error("armed, the selftest native must exist");
+                // No engine-ops table -> the op is absent and the native degrades to 0. Never a
+                // crash, and never a false "1" that would let a gate pass without the shim.
+                if (__s2_defer_selftest() !== 0)
+                    throw new Error("with no engine ops the native must return 0");
+            "#,
+        );
+        std::env::remove_var("S2_DEFER_SELFTEST");
+        armed.unwrap();
+        s2script_core_shutdown();
+    }
+
     /// E1: the books feed lives in THIS ffi entry, unconditionally — with ZERO JS
     /// subscribers (dispatch_entity_event early-returns) the books must still update.
     #[test]

@@ -328,6 +328,13 @@ type VoiceAudibleStatsFn = extern "C" fn(*mut u64) -> c_int;
 // CCommand that failed to tokenize) — never a silent no-op.
 pub type ClientCommandFn     = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
 pub type ClientFakeCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
+// --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
+// DEV-ONLY. Fires ONE synthetic notify dispatch from inside the caller's borrow so the queue's
+// game-event path — which no natural trigger on a bot-only server can reach — executes end to end.
+// ENGINE-GENERIC by signature: the event name and every field it carries live in the shim, because
+// they are game facts. Returns 1 = deferred + queued, 0 = refused/degraded, -1 = the dispatch was
+// NOT deferred (the isolate was free, so the run proves nothing).
+pub type DeferSelftestFn = extern "C" fn() -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -492,6 +499,8 @@ pub struct S2EngineOps {
     pub client_fake_command: Option<ClientFakeCommandFn>,
     // --- identity-flag clear (APPENDED after client_fake_command; order is the ABI) ---
     pub ent_identity_flags_clear: Option<EntIdentityFlagsClearFn>,
+    // --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
+    pub defer_selftest: Option<DeferSelftestFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -6832,6 +6841,57 @@ fn s2_crash_test(
     }));
 }
 
+/// The deferred-dispatch selftest's opt-in gate: `S2_DEFER_SELFTEST` set to ANYTHING arms it.
+///
+/// DEV-ONLY, off by default, and the gate is on INSTALLATION rather than on the call — with the
+/// variable unset (every production process) `__s2_defer_selftest` is not a property of any
+/// context's global at all, so no plugin can reach the synthetic re-entrancy even by accident.
+/// Read on every `install_natives` (once per context, a `getenv`) rather than cached in a
+/// `OnceLock`, so a test can arm and disarm it around a context and get the honest answer both
+/// ways. The shim re-checks the SAME variable before doing anything, so arming needs the process
+/// environment, not just a core-side flag.
+fn defer_selftest_armed() -> bool {
+    std::env::var_os("S2_DEFER_SELFTEST").is_some()
+}
+
+/// Native `__s2_defer_selftest() -> number` — DEV-ONLY (`S2_DEFER_SELFTEST`), the synthetic
+/// re-entrancy that makes the deferred-dispatch queue's GAME-EVENT path live-provable.
+///
+/// The queue's scalar variants have natural triggers, but the game-event variant needs the engine
+/// to dispatch an event back into core WHILE CORE HOLDS THE BORROW, and nothing on a bot-only dev
+/// server does that: `Events.fire()` from a handler is delivered synchronously (CS2 does not route
+/// a JS-fired event back through our listener inside the borrow), and `slay()`'s `player_death`
+/// arrives a frame later from the engine's OWN delivery, not our drain. The genuine trigger is an
+/// engine call that fires an event synchronously inside the borrow — exactly what A5b's
+/// `Respawn`/`TerminateRound` will be, and why the shim still hand-rolls drains for those two. So
+/// the path cannot be exercised naturally until A5b lands. This is the same reason
+/// `S2_DAMAGE_SELFTEST` exists for the damage detour, and it carries the same discipline: env-gated,
+/// off by default, loudly labelled, and NOT to be run in production — it dispatches a REAL event
+/// name with FAKE field values to every subscribed plugin.
+///
+/// This native is only the doorway. Everything the selftest does happens in the shim, because the
+/// shim is the side that owns an `IGameEvent` and the queue — and because the event name is a game
+/// fact. Calling it from JS is what makes it work: core is inside `HOST.borrow_mut()` for the whole
+/// native call, so the shim's dispatch into core MUST report `S2_DISPATCH_DEFERRED`.
+///
+/// Returns 1 (deferred + queued — the path ran), 0 (refused or degraded: op absent, shim gate off,
+/// no event manager, `CreateEvent` failed, or duplication unavailable), or -1 (the dispatch was NOT
+/// deferred, i.e. the isolate was free and the run proves nothing).
+fn s2_defer_selftest(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.defer_selftest) else {
+            log_warn("WARN: __s2_defer_selftest: defer_selftest op unavailable");
+            rv.set_int32(0);
+            return;
+        };
+        rv.set_int32(f());
+    }));
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -6895,6 +6955,14 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_crash_set_game", s2_crash_set_game);
     set_native(scope, global_obj, "__s2_server_build", s2_server_build);
     set_native(scope, global_obj, "__s2_crash_test", s2_crash_test);
+    // Deferred-dispatch selftest — INSTALLED ONLY when S2_DEFER_SELFTEST is set in the process
+    // environment. Gating the INSTALL (not the call) is the point: in a production process the
+    // property does not exist on any global, so `typeof __s2_defer_selftest === "undefined"` and
+    // there is nothing for a plugin to reach. See `s2_defer_selftest` for why the path it exercises
+    // has no natural trigger before A5b.
+    if defer_selftest_armed() {
+        set_native(scope, global_obj, "__s2_defer_selftest", s2_defer_selftest);
+    }
     // Inter-plugin interface primitives (Slice 4.5).
     set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
@@ -13368,6 +13436,7 @@ mod frame_tests {
             client_command: None,
             client_fake_command: None,
             ent_identity_flags_clear: None,
+            defer_selftest: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -14919,6 +14988,7 @@ mod frame_tests {
             client_command: None,
             client_fake_command: None,
             ent_identity_flags_clear: None,
+            defer_selftest: None,
         }
     }
 

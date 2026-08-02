@@ -342,6 +342,17 @@ typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial,
 typedef long long (*s2_ent_identity_flags_clear_fn)(int index, int serial, unsigned int mask);
 typedef int (*s2_client_command_fn)(int slot, const char* cmd);
 typedef int (*s2_client_fake_command_fn)(int slot, const char* cmd);
+/* --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
+ * DEV-ONLY, gated on the S2_DEFER_SELFTEST env var on BOTH sides: core installs the
+ * `__s2_defer_selftest` native only when it is set, and the shim refuses the call when it is not.
+ * Fires ONE synthetic notify dispatch from inside the calling JS native's borrow, so the queue's
+ * GAME-EVENT path executes end to end — a path with no natural trigger before A5b (see the block
+ * comment on s2_defer_selftest in s2script_mm.cpp). MUST NOT be armed in production: it dispatches
+ * a real event name with FAKE fields to every subscribed plugin.
+ *   1 = the dispatch reported DEFERRED and a duplicate was queued (the path ran)
+ *   0 = refused or degraded (gate off, no event manager, CreateEvent failed, duplication unavailable)
+ *  -1 = the dispatch was NOT deferred — the isolate was free, so the run proves nothing */
+typedef int (*s2_defer_selftest_fn)(void);
 
 /* --- voice hearability slice (APPENDED after engine_call_invoke; order is the ABI) ---
  * Per-SENDER "who may hear me" bitmask, enforced by the SetClientListening PRE hook. The core owns
@@ -533,6 +544,9 @@ typedef struct {
     s2_client_fake_command_fn client_fake_command;
     /* identity-flag clear — APPENDED after client_fake_command; order is the ABI; do not reorder. */
     s2_ent_identity_flags_clear_fn ent_identity_flags_clear;
+    /* deferred-dispatch selftest (DEV-ONLY) — APPENDED after ent_identity_flags_clear; order is
+     * the ABI; do not reorder above. */
+    s2_defer_selftest_fn defer_selftest;
 } S2EngineOps;
 
 /* Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant

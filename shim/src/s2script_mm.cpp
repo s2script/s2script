@@ -617,6 +617,26 @@ static std::set<std::string> s_subscribedNames;
 static bool s_deferEventOk   = false;   // stage 1 passed (Load)
 static bool s_deferDupProven = false;   // stage 2 passed (first duplication)
 
+// The GameFrame counter, hoisted to file scope so the selftest below can stamp both the defer and
+// the replay with it — "one frame later" (spec §4) is the claim, and a claim about frames needs the
+// frame number on BOTH lines, from ONE counter, on the side that owns the drain. A plugin's own
+// counter cannot settle it: the drain runs at the TOP of Hook_GameFramePre, BEFORE the frame
+// dispatch that increments a JS counter, so a drained delivery reads the OLD JS value and an
+// engine-delivered one reads the NEW value. Incremented in Hook_GameFramePre and nowhere else.
+static long s_frameNo = 0;
+
+// The deferred-dispatch SELFTEST's opt-in gate (S2_DEFER_SELFTEST set to anything).
+//
+// Off by default and re-checked HERE as well as in core, so arming it needs the process
+// environment, not just a core-side flag: core will not even install `__s2_defer_selftest` on a
+// context without the variable, and if it somehow called through anyway this side still refuses.
+// While armed it also turns the drain's replay + free into a log transcript (below) — every stage
+// on its own line, so a failure is attributable to one stage instead of to "it didn't work".
+static bool S2_DeferSelfTestArmed() {
+    static const bool on = (getenv("S2_DEFER_SELFTEST") != nullptr);
+    return on;
+}
+
 // --- push helpers: the five call sites keep their engine types --------------------------------
 static void S2_DeferClientEvent(const char* name, int slot) {
     S2Defer_PushScalar(S2_DEFERRED_CLIENT_EVENT, name, nullptr, nullptr, slot);
@@ -656,6 +676,12 @@ struct S2ReplayEventScope {
 // Replay ONE queued entry through core. Game events replay under s_currentEvent = the duplicate, so
 // handlers read the REAL field values instead of the zeroes a dead IGameEvent would give.
 static int S2Defer_ReplayOp(const S2Deferred& e) {
+    // Selftest transcript stage 4: the drain is replaying. Armed-only, so production pays a
+    // predictable-branch and prints nothing. The frame number is the whole point — compare it with
+    // the "DEFERRED at frame N" line the selftest printed to read the one-frame delivery directly.
+    if (S2_DeferSelfTestArmed())
+        META_CONPRINTF("[s2script] defer self-test: DRAIN replaying %s '%s' at frame %ld\n",
+                       S2DeferredKindName(e.kind), e.a.c_str(), s_frameNo);
     switch (e.kind) {
         case S2_DEFERRED_GAME_EVENT: {
             S2ReplayEventScope scope(reinterpret_cast<IGameEvent*>(e.dup));
@@ -674,6 +700,11 @@ static int S2Defer_ReplayOp(const S2Deferred& e) {
 }
 
 static void S2Defer_FreeEventOp(void* dup) {
+    // Selftest transcript stage 5: the exactly-once free. Armed-only. A missing FREE line after a
+    // DRAIN line is the leak this op exists to prevent, and it is the one failure mode that is
+    // otherwise invisible (it shows only as RSS creep across many runs).
+    if (S2_DeferSelfTestArmed())
+        META_CONPRINTF("[s2script] defer self-test: FREE duplicate %p at frame %ld\n", dup, s_frameNo);
     if (dup && s_pGameEventManager) s_pGameEventManager->FreeEvent(reinterpret_cast<IGameEvent*>(dup));
 }
 static void S2Defer_LogOp(const char* line) { META_CONPRINTF("%s", line); }
@@ -846,6 +877,132 @@ static int s2_event_fire(int dontBroadcast) {
     s_savedCurrentEvent = nullptr;
     // FireEvent flows through our own Hook_FireEventPre (SM parity: fired events are hookable).
     return s_pGameEventManager->FireEvent(e, dontBroadcast != 0) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// THE DEFERRED-DISPATCH SELFTEST (dev-only; S2_DEFER_SELFTEST).
+//
+// WHY IT HAS TO EXIST. The queue's scalar variants all have natural triggers. Its GAME-EVENT
+// variant does not — not on this server, and not before A5b. A defer needs the ENGINE to dispatch
+// an event into core WHILE CORE HOLDS THE ISOLATE BORROW, and the two triggers that look like they
+// would both fail to:
+//   * Events.fire() from inside a handler — CS2 does not route a JS-fired event back through our
+//     listener inside the borrow; it arrives synchronously and never defers.
+//   * pawn.slay() (CommitSuicide fires player_death inline) from inside a dispatch — player_death
+//     does land a frame later, but from the ENGINE'S OWN next-frame delivery, not our drain. The
+//     drain runs at the TOP of Hook_GameFramePre, before the frame dispatch increments a plugin's
+//     counter, so a drained delivery reads the OLD counter value; the observed delivery read the
+//     NEW one. Not our path.
+// The genuine trigger is an engine call that fires an event synchronously inside the borrow — which
+// is exactly A5b's Respawn/TerminateRound, and exactly why this file still hand-rolls
+// s_pendingRespawn/s_pendingTerminate drains for those two. So the path is unreachable until A5b
+// lands, and the queue would otherwise ship with its headline variant never once executed on a real
+// server (the boot log says "armed (pending the first-duplication round-trip)" and the round-trip
+// line never appears).
+//
+// This is the same shape of problem as combat on a bots-only gate, and it takes the same answer as
+// S2_DAMAGE_SELFTEST in Hook_GameFramePre: a synthetic, ENV-GATED, off-by-default, loudly labelled
+// re-entrancy. THIS MUST NOT BE ARMED IN PRODUCTION — it dispatches a REAL catalog event name with
+// FAKE field values to every subscribed plugin.
+//
+// WHY IT IS REACHED FROM JS AND NOT FROM A FRAME HOOK. A defer happens only when the shim calls a
+// s2script_core_dispatch_* entry while core is INSIDE HOST.borrow_mut(), and the shim is inside
+// that borrow only when core called into it — i.e. during an engine op invoked by a JS native. A
+// bare frame hook runs with the isolate free and would simply dispatch normally, proving nothing.
+// So the entry point is the `__s2_defer_selftest()` native, which core installs ONLY when the same
+// env var is set.
+//
+// IT TAKES THE PRODUCTION PATH. The dispatch goes through the real s2script_core_dispatch_game_event
+// entry, and the queueing goes through the real S2_DeferGameEvent -> S2Defer_PushGameEvent -> the
+// real duplicate_event op (which is where the DuplicateEvent round-trip is proven on the live
+// binary) -> the real drain -> the real free. Nothing here is a parallel copy of any of that; the
+// only synthetic part is the event we hand it.
+//
+// Every stage prints its own line so `docker logs | grep 'defer self-test'` reads as a transcript
+// and a failure is attributable to ONE stage.
+// ---------------------------------------------------------------------------
+static int s2_defer_selftest() {
+    if (!S2_DeferSelfTestArmed()) {
+        META_CONPRINTF("[s2script] defer self-test: REFUSED — S2_DEFER_SELFTEST is not set "
+                       "(this is the production posture)\n");
+        return 0;
+    }
+    if (!s_pGameEventManager) {
+        META_CONPRINTF("[s2script] defer self-test: REFUSED — IGameEventManager2 unavailable\n");
+        return 0;
+    }
+
+    static int s_seq = 0;
+    ++s_seq;
+
+    // A REAL catalog event. A forced custom name can be CreateEvent'd and fired, but core fans out
+    // by name to whoever subscribed, and a plugin can only subscribe to a name the game defines —
+    // so an invented name would defer with nobody to deliver to and prove half the path.
+    // bForce=true so this works regardless of the event's listener state.
+    IGameEvent* ev = s_pGameEventManager->CreateEvent("player_changename", /*bForce=*/true);
+    if (!ev) {
+        META_CONPRINTF("[s2script] defer self-test #%d: REFUSED — CreateEvent('player_changename') "
+                       "returned null (event descriptors not loaded?)\n", s_seq);
+        return 0;
+    }
+    // Recognisable, NON-DEFAULT field values, in both an int field and a string field. This is the
+    // assertion the duplication exists to carry: a queued dispatch that lost its IGameEvent replays
+    // against a dead s_currentEvent and every getter returns its DEFAULT — so a subscriber that
+    // reads back userid=0 and oldname="" is the failure, and reading back the sequence number is
+    // the proof the copy carried the payload. (Non-zero on purpose: 0 is also the default.)
+    ev->SetInt(CKV3MemberName("userid"), s_seq);
+    ev->SetString(CKV3MemberName("oldname"), "ddq-selftest");
+    char newname[64];
+    snprintf(newname, sizeof(newname), "selftest-%d@frame-%ld", s_seq, s_frameNo);
+    ev->SetString(CKV3MemberName("newname"), newname);
+
+    META_CONPRINTF("[s2script] defer self-test #%d: SYNTHETIC dispatch of 'player_changename' "
+                   "(oldname='ddq-selftest' newname='%s') from inside a JS native at frame %ld — "
+                   "NOT PRODUCTION DATA\n", s_seq, newname, s_frameNo);
+
+    // The dispatch, on the production entry, with s_currentEvent pointed at our event exactly as
+    // FireGameEvent does. Save/restore NESTS (we are called from inside a JS native, which may
+    // itself be inside a dispatch).
+    IGameEvent* prev = s_currentEvent;
+    s_currentEvent = ev;
+    const int r = s2script_core_dispatch_game_event("player_changename");
+    s_currentEvent = prev;
+
+    if (r != S2_DISPATCH_DEFERRED) {
+        // The whole premise failed: core was NOT borrowed, so nothing deferred and the run proves
+        // nothing. Loud, because a silent "looks fine" here is exactly the failure mode this slice
+        // exists to end. (r == 0 with no subscribers is included: with no plugin listening to
+        // player_changename there is nothing to defer.)
+        META_CONPRINTF("[s2script] defer self-test #%d: NOT DEFERRED (dispatch returned %d) — the "
+                       "isolate was FREE, or nothing is subscribed to 'player_changename'. This run "
+                       "proves nothing.\n", s_seq, r);
+        s_pGameEventManager->FreeEvent(ev);
+        return -1;
+    }
+    META_CONPRINTF("[s2script] defer self-test #%d: core reported DEFERRED at frame %ld — queueing\n",
+                   s_seq, s_frameNo);
+
+    // The NORMAL push path: duplicate + queue, through the same helper FireGameEvent uses. The
+    // first call through here is also where the DuplicateEvent round-trip is proven on the live
+    // binary, so its verdict line lands between this line and the next one.
+    const size_t before = S2Defer_QueuedCount();
+    S2_DeferGameEvent("player_changename", ev);
+    const size_t after = S2Defer_QueuedCount();
+
+    // We minted `ev` ourselves and never fired it, so we own it: the queue holds an independent
+    // DuplicateEvent copy (and frees that one itself). Freeing here, before any of the queue's own
+    // frees, also keeps a duplication failure from stranding it.
+    s_pGameEventManager->FreeEvent(ev);
+
+    if (after <= before) {
+        META_CONPRINTF("[s2script] defer self-test #%d: QUEUE REFUSED the entry (queued=%d) — "
+                       "game-event deferral is degraded; see the DuplicateEvent line above\n",
+                       s_seq, (int)after);
+        return 0;
+    }
+    META_CONPRINTF("[s2script] defer self-test #%d: QUEUED (depth %d) — expect a DRAIN line at "
+                   "frame %ld and a FREE line right after it\n", s_seq, (int)after, s_frameNo + 1);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -5082,6 +5239,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // --- client-command slice (APPENDED after voice_audible_stats; order is the ABI) ---
     ops.client_command      = &s2_client_command;
     ops.client_fake_command = &s2_client_fake_command;
+    // --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
+    // Always wired; the op itself refuses unless S2_DEFER_SELFTEST is set, and core does not install
+    // the native that reaches it without the same variable. Two independent gates on one env fact.
+    ops.defer_selftest = &s2_defer_selftest;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -5411,10 +5572,15 @@ static bool   s_legacyFilterActive = false;
 static uint64_t s_legacyAllowMask  = 0;
 
 void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
-    // deferred-dispatch: FIRST statement in the hook, before ANYTHING here enters JS — the damage
-    // self-test below is the first thing in this hook that reaches core, so the isolate is provably
-    // free at this point and a replay cannot re-defer. Delivers everything a re-entrant dispatch
-    // could not deliver last frame.
+    // The frame counter first, so every line printed from here on — including the drain's — names
+    // the frame it is actually on, and "deferred at frame N, replayed at frame N+1" is readable
+    // straight off the log. A counter bump touches no JS, no engine and no core, so it does not
+    // weaken the drain's position below.
+    ++s_frameNo;
+    // deferred-dispatch: the FIRST statement in this hook that reaches core, before ANYTHING here
+    // enters JS — the damage self-test below is the next thing that does, so the isolate is
+    // provably free at this point and a replay cannot re-defer. Delivers everything a re-entrant
+    // dispatch could not deliver last frame.
     S2Defer_Drain();
     // Slice 6.6 Stage-2 self-test: fire a synthetic damage dispatch over a fake CTakeDamageInfo
     // (m_flDamage@68 = 42) to prove detour->core mux->JS handler->schema read end-to-end (combat is
@@ -5422,8 +5588,6 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
     // with FAKE data, so it must NOT run in production — set S2_DAMAGE_SELFTEST=1 to opt in for verification.
     // Fired at a few LATER frames (frame 1 caught the plugin mid boot-reload with no live subscriber).
     static bool s_dmgSelfTestOn = (getenv("S2_DAMAGE_SELFTEST") != nullptr);
-    static long s_frameNo = 0;
-    ++s_frameNo;
     if (s_dmgSelfTestOn && (s_frameNo == 300 || s_frameNo == 900 || s_frameNo == 1800) && g_origDTA) {
         static char fakeInfo[256];
         memset(fakeInfo, 0, sizeof(fakeInfo));

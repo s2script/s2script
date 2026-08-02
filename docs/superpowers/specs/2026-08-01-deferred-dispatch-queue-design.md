@@ -191,6 +191,29 @@ rather than whatever the heap happens to contain.
 2. The deferred delivery lands in the same frame as the defer.
 3. `FreeEvent` runs on the throwing path (a deferred handler that throws does not leak).
 
+> **Amended after the first live gate attempt: the game-event path has no natural trigger before
+> A5b, so it is driven synthetically.** Both candidate triggers were tried on CS2 and neither
+> re-enters. `Events.fire()` from inside a handler is delivered *synchronously* — the engine does not
+> route a JS-fired event back through our listener inside the borrow. `pawn.slay()` (`CommitSuicide`,
+> which fires `player_death` inline) called from inside a dispatch *does* produce a `player_death` a
+> frame later, but from the engine's **own** next-frame delivery: the drain runs at the top of
+> `Hook_GameFramePre`, before the frame dispatch that increments a plugin's counter, so a drained
+> delivery reads the **old** counter value and the observed one read the new value.
+>
+> That is not a gap in the queue — it is §1 restated. A defer needs an engine call that fires an
+> event synchronously *inside* the borrow, which is precisely A5b's `Respawn`/`TerminateRound` and
+> precisely why the shim still hand-rolls drains for those two (§6). So checks 1–3 above are
+> unreachable until A5b lands.
+>
+> The path is therefore exercised by a synthetic, **env-gated** re-entrancy (`S2_DEFER_SELFTEST`),
+> modelled on `S2_DAMAGE_SELFTEST`: a `__s2_defer_selftest()` native that core installs **only**
+> when the variable is set, calling a shim op that dispatches one synthetic `player_changename` from
+> inside the caller's borrow and then takes the **normal** duplicate-and-queue path. Off by default;
+> the native does not exist on any global in a production process
+> (`defer_selftest_native_exists_only_when_the_env_var_is_set`, `scripts/check-defer-selftest-gate.sh`).
+> Stage-by-stage transcript and failure attribution: `tools/ddqgate/README.md`. `ddq_fire` /
+> `ddq_slay` are kept in the fixtures as the negative controls.
+
 ## 6. Non-goals
 
 - Pre-hook deferral (§2) — permanent, documented.
