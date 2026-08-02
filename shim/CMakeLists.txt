@@ -111,6 +111,10 @@ target_compile_options(breakpad_client PRIVATE
 add_executable(ccommand_selftest src/ccommand_selftest.cpp src/ccommand_tokenize.cpp)
 target_include_directories(ccommand_selftest PRIVATE src)
 
+# Owner-scoped gamedata loader unit test (not shipped; run by scripts/ci-native.sh).
+add_executable(gamedata_selftest src/gamedata.cpp tests/gamedata_test.cpp)
+target_include_directories(gamedata_selftest PRIVATE src third_party)
+
 
 # The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).
 add_executable(crash_selftest src/crash_selftest.cpp src/crash_handler.cpp)

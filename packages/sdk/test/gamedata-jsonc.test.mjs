@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stripJsonComments } from "../src/gamedata/jsonc.ts";
 
-test("strips trailing line comments (the style core.gamedata.jsonc uses)", () => {
+test("strips trailing line comments (the style gamedata/core/*.jsonc uses)", () => {
   const src = '{\n  "a": 1, // the sig\n  "b": 2\n}';
   assert.deepEqual(JSON.parse(stripJsonComments(src)), { a: 1, b: 2 });
 });

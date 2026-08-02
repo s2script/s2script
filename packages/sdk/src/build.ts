@@ -140,19 +140,22 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
         `s2script.gamedata escapes the plugin directory: ${JSON.stringify(s2.gamedata)} resolves to ${gdPath}`
       );
     }
-    // Naming convention: `<plugin-name-without-scope>.gamedata.jsonc`, mirroring the framework's own
-    // `gamedata/core.gamedata.jsonc` — a gamedata file is named for whoever owns it. Enforced rather
-    // than documented so the convention actually holds: `@me/burn` -> `burn.gamedata.jsonc`.
+    // Naming convention: `<plugin-name-without-scope>.gamedata.jsonc` — a plugin's one gamedata file
+    // is named for its OWNER (the plugin), the same way `gamedata/core/` and `gamedata/cs2/` are
+    // owner-named DIRECTORIES in the framework's own tree. (The files inside those directories are
+    // named for their TARGET instead — common/engine.<engine>/game.<mod> — a distinction a plugin's
+    // single file has no need of, since a plugin has exactly one owner and no target axis.)
+    // Enforced rather than documented so the convention actually holds: `@me/burn` -> `burn.gamedata.jsonc`.
     const unscoped = pkg.name.includes("/") ? pkg.name.slice(pkg.name.lastIndexOf("/") + 1) : pkg.name;
     const actualBase = basename(gdPath);
     const allowedBases = [`${unscoped}.gamedata.jsonc`, `${unscoped}.gamedata.json`];
     if (!allowedBases.includes(actualBase)) {
       throw new Error(
         `s2script.gamedata must be named '${unscoped}.gamedata.jsonc' (after the plugin name without ` +
-          `its scope, like the framework's own core.gamedata.jsonc), but is '${actualBase}'`
+          `its scope — a plugin's gamedata is named for its owner, the plugin itself), but is '${actualBase}'`
       );
     }
-    // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core.gamedata.jsonc —
+    // Full JSONC: trailing `// …` and `/* … */` too, string-aware. gamedata/core/*.jsonc —
     // which authors are told to imitate — uses both freely, so a line-only stripper rejected the
     // house style. See gamedata/jsonc.ts.
     const raw = stripJsonComments(readFileSync(gdPath, "utf8"));

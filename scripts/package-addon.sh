@@ -29,9 +29,16 @@ fi
 cp "$CORE_SO" "$DIST/s2script/bin/linuxsteamrt64/libs2script_core.so"
 echo "core: $CORE_SO"
 
-# --- Gamedata (optional; created in a later task) ---
-if [ -f gamedata/core.gamedata.jsonc ]; then
-    cp gamedata/core.gamedata.jsonc "$DIST/s2script/gamedata/"
+# --- Gamedata (owner tree: core/ + cs2/, each with its master) ---
+# <owner>/custom/ is EXCLUDED. It is the operator override channel: a maintainer's local hot-fix is
+# untracked (see .gitignore) but would otherwise be copied here, then into the release zip by
+# package-release.sh, and land on every operator's server indistinguishable from shipped data.
+# .gitignore stops it being committed; this stops it being shipped.
+if [ -d gamedata ]; then
+    tar -C gamedata --exclude=custom -cf - . | tar -C "$DIST/s2script/gamedata" -xf -
+else
+    echo "ERROR: gamedata/ tree not found" >&2
+    exit 1
 fi
 
 # --- CS2 JS package (schema.generated.js + nav.generated.js + pawn.js — CS2 names live here, never in core) ---

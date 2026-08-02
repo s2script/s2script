@@ -21,6 +21,12 @@ bash scripts/test-boundary-nameleak.sh
 echo "== test-sigscan.sh =="
 bash scripts/test-sigscan.sh
 
+echo "== test-gamedata.sh =="
+bash scripts/test-gamedata.sh
+
+echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
+bash scripts/check-gamedata-owners.sh
+
 echo "== check-licenses-generated.sh =="
 bash scripts/check-licenses-generated.sh
 

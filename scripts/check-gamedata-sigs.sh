@@ -17,15 +17,32 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 - "$@" <<'PY'
-import json, re, pathlib, sys
+import json, pathlib, sys
 
-path = pathlib.Path("gamedata/core.gamedata.jsonc")
-raw = re.sub(r'^\s*//.*$', '', path.read_text(), flags=re.M)
-sigs = json.loads(raw).get("signatures", {})
+sys.path.insert(0, 'scripts/lib')
+from jsonc import strip_jsonc_comments  # shared with check-gamedata-owners.sh — one stripper, one file format
+
+root = pathlib.Path("gamedata")
+# custom/ is the operator override channel (hand-written hot-fixes an admin drops in at deploy
+# time) — never shipped data, gitignored (see .gitignore), and check-gamedata-owners.sh already
+# never descends into it (non-recursive glob). Skip any path under a custom/ dir at any depth so
+# both gates agree on what "shipped data" means.
+paths = sorted(p for p in root.rglob("*.jsonc") if "custom" not in p.relative_to(root).parts[:-1])
+
+# Keyed by (owner-relative path, signature name), NOT by name alone: two owners (or two files)
+# defining the same signature name are namespaced apart (gamedata/core vs gamedata/cs2 never
+# share an entry — see check-gamedata-owners.sh), and a flat dict keyed by name would silently
+# drop one of them from this gate.
+sigs = {}
+for path in paths:
+    rel = str(path.relative_to(root))
+    data = json.loads(strip_jsonc_comments(path.read_text()))
+    for name, plats in data.get("signatures", {}).items():
+        sigs[(rel, name)] = plats
 
 REL = {"E8": "call rel32", "E9": "jmp rel32"}
 bad = []
-for name, plats in sigs.items():
+for (rel, name), plats in sigs.items():
     for plat, spec in plats.items():
         toks = spec.get("pattern", "").split()
         for i, t in enumerate(toks):
@@ -38,13 +55,13 @@ for name, plats in sigs.items():
                 if m != "?" and (int(m, 16) & 0xC7) == 0x05:
                     kind, operand = "lea rip-relative disp32", toks[i+3:i+7]
             if kind and len(operand) == 4 and all(o != "?" for o in operand):
-                bad.append((name, plat, kind, " ".join(operand)))
+                bad.append((rel, name, plat, kind, " ".join(operand)))
 
 if bad:
     print("check-gamedata-sigs: FAIL — build-specific operand baked into a signature.", file=sys.stderr)
     print("  These shift on ANY recompile; the signature cannot survive a CS2 update:", file=sys.stderr)
-    for n, p, k, o in bad:
-        print(f"    {n} [{p}]: {k}, operand {o}", file=sys.stderr)
+    for r, n, p, k, o in bad:
+        print(f"    {r}: {n} [{p}]: {k}, operand {o}", file=sys.stderr)
     print("\n  Wildcard the operand ('? ? ? ?') and break any tie structurally instead.", file=sys.stderr)
     raise SystemExit(1)
 

@@ -2377,17 +2377,23 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
 }
 
 // ---------------------------------------------------------------------------
-// GamedataPath: resolve the gamedata file relative to the plugin .so via
-// dladdr so the path works regardless of the server's working directory.
-// Expected layout: addons/s2script/bin/linuxsteamrt64/s2script.so
-//   dirname ×1 → .../bin/linuxsteamrt64  → bin
-//   dirname ×2 → .../bin                 → s2script addon dir
-//   dirname ×3 → .../s2script            → addons/s2script
-//   + /gamedata/core.gamedata.jsonc
+// GamedataRoot / DetectModDir: resolve the gamedata tree and the mod directory relative to the
+// plugin .so via dladdr, so both work regardless of the server's working directory.
+//
+// Expected layout: <game>/csgo/addons/s2script/bin/linuxsteamrt64/s2script.so
+//   dirname x1 -> .../bin/linuxsteamrt64
+//   dirname x2 -> .../bin
+//   dirname x3 -> .../addons/s2script      <- addon root, + /gamedata
+//   dirname x4 -> .../addons
+//   dirname x5 -> .../csgo                 <- basename = the mod directory ("game" condition)
+//
+// The mod directory is the `game` axis of the gamedata master index (spec §6). Deriving it from
+// the .so path costs no new engine dependency and is correct before any interface is acquired,
+// which matters because the gamedata load happens first in Load().
 // ---------------------------------------------------------------------------
-static std::string GamedataPath() {
+static std::string AddonRoot() {
     Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&GamedataPath), &info) && info.dli_fname) {
+    if (dladdr(reinterpret_cast<void*>(&AddonRoot), &info) && info.dli_fname) {
         char buf[4096];
         // dirname mutates the buffer in-place; copy each time.
         snprintf(buf, sizeof buf, "%s", info.dli_fname);
@@ -2396,15 +2402,33 @@ static std::string GamedataPath() {
         dir = dirname(buf);                         // bin
         snprintf(buf, sizeof buf, "%s", dir.c_str());
         dir = dirname(buf);                         // s2script addon root
-        return dir + "/gamedata/core.gamedata.jsonc";
+        return dir;
     }
+    return std::string();
+}
+
+static std::string GamedataRoot() {
+    std::string root = AddonRoot();
+    if (!root.empty()) return root + "/gamedata";
     // Fallback: relative to the server's cwd (mirrors the Slice-0 behaviour).
-    return "addons/s2script/gamedata/core.gamedata.jsonc";
+    return "addons/s2script/gamedata";
+}
+
+static std::string DetectModDir() {
+    std::string root = AddonRoot();
+    if (root.empty()) return std::string();
+    char buf[4096];
+    snprintf(buf, sizeof buf, "%s", root.c_str());
+    std::string dir = dirname(buf);                 // addons
+    snprintf(buf, sizeof buf, "%s", dir.c_str());
+    dir = dirname(buf);                             // the mod directory
+    snprintf(buf, sizeof buf, "%s", dir.c_str());
+    return std::string(basename(buf));              // "csgo"
 }
 
 // ---------------------------------------------------------------------------
 // Cs2JsPath: resolve pawn.js relative to the plugin .so via dladdr (mirrors
-// GamedataPath).  Expected layout (three dirname steps from the .so):
+// GamedataRoot).  Expected layout (three dirname steps from the .so):
 //   addons/s2script/bin/linuxsteamrt64/s2script.so
 //     dirname ×1 → bin/linuxsteamrt64
 //     dirname ×2 → bin
@@ -2423,13 +2447,13 @@ static std::string Cs2JsPath() {
         dir = dirname(buf);                         // s2script addon root
         return dir + "/js/pawn.js";
     }
-    // Fallback: relative to the server's cwd (mirrors the GamedataPath fallback).
+    // Fallback: relative to the server's cwd (mirrors the GamedataRoot fallback).
     return "addons/s2script/js/pawn.js";
 }
 
 // ---------------------------------------------------------------------------
 // PluginsDir: resolve the plugins directory relative to the plugin .so via dladdr
-// (mirrors Cs2JsPath / GamedataPath).  Expected layout:
+// (mirrors Cs2JsPath / GamedataRoot).  Expected layout:
 //   addons/s2script/bin/linuxsteamrt64/s2script.so
 //     dirname ×1 → bin/linuxsteamrt64
 //     dirname ×2 → bin
@@ -2739,6 +2763,29 @@ static bool ValidateTerminateRoundScopeString(const ModText& mt, int64_t fnOff, 
 // class of bug). See docs/re-strategy.md. Reset at each Load; a banner is emitted after resolution.
 // ---------------------------------------------------------------------------
 static int s_gdOk = 0, s_gdFail = 0;
+static GameConfig s_gdCore;   // the core owner's merged gamedata, rebuilt each Load
+static GameConfig s_gdGame;   // the cs2 game-package owner's, likewise (spec §8: loader-exercised
+                              // from the first commit, so a mistyped master fails HERE, not in the
+                              // slice that first consumes one of its entries)
+// Kept for GamedataBanner(): the summary an operator is pointed at must report the load errors
+// too, otherwise a broken custom/ override looks exactly like "my fix didn't work".
+static std::string s_gdErrorCore, s_gdErrorGame, s_gdModDir;
+
+// THE owner set this build loads, and where each owner's merged view and load error live. Single
+// source of truth: Load(), GamedataBanner() and the crash fingerprint all walk this array, and
+// scripts/check-gamedata-owners.sh PARSES it — a gamedata/<owner>/ directory missing from here
+// fails that gate, because a tree nothing loads is data that can never take effect.
+//
+// PARSER WARNING: that script derives its owner list with a regex that pulls every quoted string
+// out from between the braces below, blind to whether it's an initializer or a comment. A stray
+// string literal ANYWHERE in there — including inside a `//` or `/* */` comment on one of the rows
+// — becomes a phantom owner and fails the gate with a confusing "<phantom>: owner directory
+// missing". Keep the braces free of quoted text other than the real owner-name initializers.
+struct GamedataOwner { const char* name; GameConfig* cfg; std::string* error; };
+static const GamedataOwner kGamedataOwners[] = {
+    { "core", &s_gdCore, &s_gdErrorCore },
+    { "cs2",  &s_gdGame, &s_gdErrorGame },
+};
 static void GamedataResult(const char* name, bool ok, const char* reason) {
     if (ok) { s_gdOk++;  META_CONPRINTF("[s2script]   gamedata OK    %s\n", name); }
     else    { s_gdFail++; META_CONPRINTF("[s2script]   gamedata FAIL  %s — %s\n", name, reason ? reason : "?"); }
@@ -2784,6 +2831,24 @@ static bool ValidateRespawnVtableMember(const uint8_t* fn, const ModText& mt) {
 static void GamedataBanner() {
     META_CONPRINTF("[s2script] === GAMEDATA VALIDATION: %d ok, %d FAILED%s ===\n", s_gdOk, s_gdFail,
                    s_gdFail ? "  (STALE for this CS2 build — regenerate; see docs/re-strategy.md)" : "");
+    // The LOAD errors, not just the resolve results. A malformed custom/ override sets these and
+    // nothing else: without this line the summary an operator reads after dropping in a hot-fix is
+    // identical to a clean boot, and the stale shipped value is silently still in use.
+    for (const auto& o : kGamedataOwners)
+        if (!o.error->empty())
+            META_CONPRINTF("[s2script] === GAMEDATA LOAD ERROR (%s): %s ===\n",
+                           o.name, o.error->c_str());
+    // An undetected mod directory deselects every `game`-conditioned file — which today is where
+    // essentially all of the data lives. That is a FAILURE, not a value worth printing quietly.
+    if (s_gdModDir.empty())
+        META_CONPRINTF("[s2script] === GAMEDATA FAIL: mod directory UNDETECTED — every "
+                       "\"game\"-conditioned gamedata file was skipped (unexpected addon layout; "
+                       "expected <game>/csgo/addons/s2script/bin/linuxsteamrt64/) ===\n");
+    for (const auto& o : kGamedataOwners)
+        if (!o.cfg->overridden.empty())
+            META_CONPRINTF("[s2script] === %zu ENTRY/ENTRIES FROM gamedata/%s/custom/ — "
+                           "operator-supplied, NOT the shipped values ===\n",
+                           o.cfg->overridden.size(), o.name);
 }
 
 // ---------------------------------------------------------------------------
@@ -3610,11 +3675,74 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     PLUGIN_SAVEVARS();  // sets g_SHPtr = ismm->GetSHPtr() — required by SH_ADD_HOOK
     s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
 
+    const std::string gdRoot = GamedataRoot();
+    const std::string modDir = DetectModDir();
+    s_gdModDir = modDir;
+    META_CONPRINTF("[s2script] gamedata root=%s engine=source2 game=%s\n",
+                   gdRoot.c_str(), modDir.empty() ? "<UNDETECTED>" : modDir.c_str());
+    if (modDir.empty()) {
+        // Not a value: with no mod directory, every `game`-conditioned master entry is deselected,
+        // which today means game.cs2.jsonc — nearly the whole tree — never loads. Say so where it
+        // happens as well as in the banner.
+        META_CONPRINTF("[s2script] WARN: mod directory UNDETECTED — every \"game\"-conditioned "
+                       "gamedata file will be SKIPPED\n");
+    }
+
+    // --- Gamedata (owner-scoped; built ONCE per Load, spec §6) ---
+    // One helper, run per owner: the owners differ only in name and in who consumes them.
+    auto loadOwner = [&](const char* owner, GameConfig& out, std::string& outError) {
+        out = LoadGameConfig(gdRoot, owner, "source2", modDir, "linuxsteamrt64", outError);
+        if (!outError.empty())
+            META_CONPRINTF("[s2script] WARN: %s — %s gamedata degraded\n", outError.c_str(), owner);
+        META_CONPRINTF("[s2script] gamedata %s: %zu interfaces, %zu offsets, %zu signatures, "
+                       "%zu keys from %zu file(s)\n", owner,
+                       out.interfaces.size(), out.offsets.size(), out.signatures.size(),
+                       out.keys.size(), out.filesLoaded.size());
+        for (const auto& name : out.filesFailed) {
+            META_CONPRINTF("[s2script] WARN: gamedata %s/%s was SELECTED but could not be "
+                           "applied — this owner's data is INCOMPLETE\n", owner, name.c_str());
+        }
+        // A file that parses but contributes nothing looks identical to a working one. For a
+        // custom/ file that is the operator's most likely mistake (wrong section name, wrong
+        // platform key, flat non-platform-keyed shape) and gets a WARN; a shipped placeholder
+        // (common.gamedata.jsonc is `{}` today) is merely reported.
+        for (const auto& name : out.filesEmpty) {
+            const bool isCustom = name.rfind("custom/", 0) == 0;
+            META_CONPRINTF(isCustom
+                    ? "[s2script] WARN: gamedata %s/%s applied NO entries — check the section "
+                      "names, the platform key, and that offsets/signatures are platform-keyed\n"
+                    : "[s2script]   gamedata %s/%s contributed no entries (placeholder)\n",
+                    owner, name.c_str());
+        }
+        for (const auto& name : out.overridden) {
+            META_CONPRINTF("[s2script]   gamedata OVERRIDE %s (from %s/custom/) — "
+                           "operator-supplied, not the shipped value\n", name.c_str(), owner);
+        }
+    };
+
+    // Every owner in kGamedataOwners, in order. "cs2" is loaded even though nothing consumes its
+    // entries yet (A5b wires them): loading it now is what makes a mistyped master or a missing
+    // file a boot-time error in THIS slice rather than a surprise in the next one (spec §8).
+    for (const auto& o : kGamedataOwners) loadOwner(o.name, *o.cfg, *o.error);
+
     // --- Interface acquisition (data-driven, degrade-never-crash) ---
-    std::string gdError;
-    auto versions = LoadInterfaceVersions(GamedataPath(), gdError);
-    if (!gdError.empty()) {
-        META_CONPRINTF("[s2script] WARN: %s — skipping interface acquisition\n", gdError.c_str());
+    auto& versions = s_gdCore.interfaces;
+    // Gate on whether a SELECTED FILE failed, not on gdError and not on filesLoaded alone:
+    //   * gdError is shared across every entry in every file (spec §6 / gamedata.cpp MergeFile),
+    //     so a single malformed offset or signature entry sets it — and that must WARN-and-continue
+    //     through the descriptor's own GamedataResult(...), never take down every interface/hook/
+    //     detour with it ("degrade per-descriptor, never crash globally").
+    //   * filesLoaded.empty() alone is INERT: common.gamedata.jsonc is unconditional and applies
+    //     first, so filesLoaded is non-empty whenever the master parses — including when every
+    //     later file failed and we hold zero interfaces. Acquisition would then fall through to the
+    //     compiled-in INTERFACEVERSION_* constants and print "interface OK:" having loaded nothing.
+    // filesFailed is the whole-file signal: a master-listed, condition-matching file (or the master
+    // itself) that could not be applied at all. That is the modern equivalent of the old flat-file
+    // "file not found or didn't parse at all" condition this gate originally guarded.
+    if (s_gdCore.filesLoaded.empty() || !s_gdCore.filesFailed.empty()) {
+        META_CONPRINTF("[s2script] WARN: core gamedata is incomplete (%zu file(s) loaded, %zu "
+                       "FAILED) — skipping interface acquisition\n",
+                       s_gdCore.filesLoaded.size(), s_gdCore.filesFailed.size());
     } else {
         CreateInterfaceFn serverFactory = ismm->GetServerFactory(false);
         CreateInterfaceFn engineFactory = ismm->GetEngineFactory(false);
@@ -3687,13 +3815,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             int ret = 0;
             m_gameEntities = serverFactory
                 ? reinterpret_cast<ISource2GameEntities*>(serverFactory(verStr, &ret)) : nullptr;
-            std::string ctiErr;
-            auto ctiOffsets = LoadOffsets(GamedataPath(), "linuxsteamrt64", ctiErr);
-            auto cit = ctiOffsets.find("CheckTransmitInfo_clientEntityIndex");
-            s_ctiClientOff = (ctiErr.empty() && cit != ctiOffsets.end() && cit->second >= 0)
-                                 ? cit->second : -1;
+            auto cit = s_gdCore.offsets.find("CheckTransmitInfo_clientEntityIndex");
+            s_ctiClientOff = (cit != s_gdCore.offsets.end() && cit->second >= 0) ? cit->second : -1;
             GamedataResult("CheckTransmitInfo_clientEntityIndex", s_ctiClientOff >= 0,
-                           !ctiErr.empty() ? ctiErr.c_str() : "offset key absent from gamedata");
+                           "offset key absent from gamedata");
             // Reset the per-Load hook state (a shim reload starts a fresh validation cycle).
             s_transmitTable.clear();
             s_transmitLayoutState = 0;
@@ -3862,14 +3987,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
             if (pGameResSvc && ret == 0) {
                 // Read entity-system offset from gamedata (layout-is-data, never hardcoded).
-                std::string offsetError;
-                auto offsets = LoadOffsets(GamedataPath(), "linuxsteamrt64", offsetError);
-                if (!offsetError.empty()) {
-                    META_CONPRINTF("[s2script] WARN: %s — entity-system offset unavailable\n",
-                                   offsetError.c_str());
-                }
-                auto oit = offsets.find("GameEntitySystem");
-                if (oit != offsets.end() && oit->second >= 0) {
+                auto oit = s_gdCore.offsets.find("GameEntitySystem");
+                if (oit != s_gdCore.offsets.end() && oit->second >= 0) {
                     int entSysOffset = oit->second;
                     // Cache the service pointer and offset; do NOT read CGameEntitySystem* here.
                     // The entity-system field is null at Load (the map doesn't exist yet); we read
@@ -3892,11 +4011,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // by pattern. Signature + module are gamedata (layout-is-data). Degrade-never-crash: any
         // failure leaves s_pGameEventManager null -> event ops no-op.
         {
-            std::string sigErr;
-            auto sigs = LoadSignatures(GamedataPath(), "linuxsteamrt64", sigErr);
-            if (!sigErr.empty()) {
-                META_CONPRINTF("[s2script] WARN: %s — GameEventManager sig unavailable\n", sigErr.c_str());
-            }
+            auto& sigs = s_gdCore.signatures;
             // Slice 6.9: resolve + VALIDATE (unique match) via the gamedata gate, so a stale/moved sig is loud.
             auto it = sigs.find("GameEventManager");
             if (it == sigs.end()) {
@@ -4412,8 +4527,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.
         {
-            std::string offErr;
-            auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
+            auto& offs = s_gdCore.offsets;
             auto pick = [&](const char* k) { auto i = offs.find(k); return i != offs.end() ? i->second : -1; };
             // Entity-creation lifecycle slice (Task 2): CBaseEntity::Teleport's vtable INDEX. A
             // borrowed index is a HINT, not trusted blind — Shim_EntityTeleport re-validates the
@@ -4447,10 +4561,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 GamedataResult("CNavPhysicsInterface (RTTI vtable)", false,
                                "RTTI typeinfo/vtable not found in libserver.so — regenerate");
             } else {
-                std::string offErr;
-                auto offs = LoadOffsets(GamedataPath(), "linuxsteamrt64", offErr);
-                auto oit = offs.find("CNavPhysicsInterface_TraceShape");
-                if (oit == offs.end() || oit->second < 0) {
+                auto oit = s_gdCore.offsets.find("CNavPhysicsInterface_TraceShape");
+                if (oit == s_gdCore.offsets.end() || oit->second < 0) {
                     GamedataResult("CNavPhysicsInterface_TraceShape", false,
                                    "offset (vtable index) key absent from gamedata");
                 } else {
@@ -4476,16 +4588,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         }
         // Sound slice: install the precache hook (a CGameRulesGameSystem class-vtable swap resolved by
         // RTTI, like the trace block above). The class vtable is static data present at module load, so
-        // this installs ONCE here — no lazy StartupServer retry. Before GamedataBanner so its warn (if
-        // the RTTI vtable is missing) prints alongside the rest of the gamedata report.
+        // this installs ONCE here — no lazy StartupServer retry.
         InstallPrecacheHook();
-        GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
 
         // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
         // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
         META_CONPRINTF("[s2script] EKV self-test: %s\n", S2EKV_SelfTest() ? "OK" : "FAILED (kv-spawn degraded)");
     }
     // --- end interface acquisition ---
+    // Slice 6.9 (residual fix, review round 2): hoisted OUT of the `else` above so it always runs.
+    // The gate that skips interface acquisition (filesLoaded.empty() || !filesFailed.empty()) is
+    // exactly the catastrophic case the "=== GAMEDATA LOAD ERROR (owner): ... ===" line exists to
+    // surface — a banner reachable only from the success branch could never print it, leaving just
+    // the mid-boot WARNs. Safe to call unconditionally: s_gdOk/s_gdFail are reset once per Load and
+    // only incremented by GamedataResult() inside the (skipped, in that case) acquisition block, so
+    // they correctly read 0/0 there; the per-owner error/overridden state GamedataBanner() also
+    // reports is populated by loadOwner() above, before this gate, on both paths.
+    GamedataBanner();
 
     META_CONPRINTF("[s2script] Load(): initializing V8 core\n");
 
@@ -4680,13 +4799,33 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             fclose(f);
             return s;
         };
-        std::string gdPath = GamedataPath();
-        std::string gdBytes = slurp(gdPath);
-        std::string gdFp = gdBytes.empty() ? "" : fnv64hex(gdBytes);
+        // Fingerprint every gamedata file actually applied, in apply order, plus a marker for how
+        // many entries an operator override supplied. An incident must never attribute a patched
+        // signature to the shipped value. EVERY owner is covered — a cs2-tier fact is as capable
+        // of causing the incident as a core one, and hardcoding one owner's directory here would
+        // silently omit the rest.
+        std::string gdBytes;
         char gdMtime[32] = "";
-        struct stat st{};
-        if (stat(gdPath.c_str(), &st) == 0)
-            snprintf(gdMtime, sizeof gdMtime, "%lld", (long long)st.st_mtime);
+        long long newest = 0;
+        size_t gdOverrides = 0;
+        for (const auto& o : kGamedataOwners) {
+            for (const auto& name : o.cfg->filesLoaded) {
+                const std::string p = gdRoot + "/" + o.name + "/" + name;
+                gdBytes += slurp(p);
+                struct stat fst{};
+                if (stat(p.c_str(), &fst) == 0 && (long long)fst.st_mtime > newest)
+                    newest = (long long)fst.st_mtime;
+            }
+            gdOverrides += o.cfg->overridden.size();
+        }
+        // NOTE (A5a): inside the FROZEN schema_version:1 crash envelope, `gdMtime` kept its NAME
+        // but changed its MEANING when the single flat gamedata file became an owner tree. It was
+        // that one file's mtime; it is now the NEWEST mtime across every applied file in every
+        // owner. Same field, same "how fresh is this deployment's gamedata" question, different
+        // basis — anything comparing values across the split has to know that.
+        if (newest) snprintf(gdMtime, sizeof gdMtime, "%lld", newest);
+        std::string gdFp = gdBytes.empty() ? "" : fnv64hex(gdBytes);
+        if (gdOverrides) gdFp += "+custom" + std::to_string(gdOverrides);
         std::string schemaHash;
         {
             std::string js = slurp(Cs2JsPath());   // the deployed pawn.js concat carries the

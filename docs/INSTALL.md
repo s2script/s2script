@@ -27,7 +27,8 @@ Linux x86-64 only. Windows is not supported yet.
      VERSION
      bin/linuxsteamrt64/s2script.so
      bin/linuxsteamrt64/libs2script_core.so
-     gamedata/core.gamedata.jsonc
+     gamedata/core/            # common / engine.source2 / game.cs2 + master.gamedata.jsonc
+     gamedata/cs2/             # the CS2 game package's own facts + master.gamedata.jsonc
      js/pawn.js
      plugins/          # base .s2sp plugins + drop more here
      configs/          # auto-generated on first load
@@ -98,7 +99,32 @@ Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismat
 ## After a CS2 update
 
 - Re-check `gameinfo.gi` — a full game re-download often removes the Metamod SearchPath; re-apply the patch above.
-- If signatures/offsets moved, install a newer s2script release (updated `gamedata/core.gamedata.jsonc` and/or binaries). Prefer replacing the whole zip contents rather than mixing versions.
+- If signatures/offsets moved, install a newer s2script release (updated `gamedata/` tree and/or binaries). Prefer replacing the whole zip contents rather than mixing versions.
+
+### Hot-fixing a broken signature
+
+If the boot banner reports `gamedata FAIL <Name> — signature NOT FOUND (moved — regenerate)`, you
+do not have to wait for a release. Create `addons/s2script/gamedata/core/custom/fix.jsonc` with
+just the entries you are replacing:
+
+```jsonc
+{
+  "signatures": {
+    "SetModel": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 ...",
+        "resolve": "direct"
+      }
+    }
+  }
+}
+```
+
+Files in `custom/` are applied after everything shipped, in sorted filename order, replacing whole
+named entries. Never edit the shipped files — an upgrade overwrites them. Overrides are announced
+at boot and recorded in any crash report, so a patched signature is never mistaken for a shipped
+one.
 
 ## Publishing a release (maintainers)
 
