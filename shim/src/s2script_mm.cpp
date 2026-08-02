@@ -570,6 +570,218 @@ static IGameEventManager2* s_pGameEventManager = nullptr;
 static IGameEvent*         s_currentEvent      = nullptr;
 static std::set<std::string> s_subscribedNames;
 
+// ---------------------------------------------------------------------------
+// The DEFERRED-DISPATCH QUEUE (deferred-dispatch-queue slice).
+//
+// Core holds the V8 isolate borrow across ALL JS. When a JS handler makes the engine synchronously
+// dispatch back into core — Events.fire() from an event handler, or an engine call whose side
+// effect fires an event — the inner dispatch's try_borrow_mut fails, and before this slice that
+// dispatch was SILENTLY DROPPED: no error, no log, presenting only as "my plugin stopped getting
+// events".
+//
+// Core cannot fix that alone. It detects the failed borrow but owns no dispatch payload, and a game
+// event's data lives in an engine-owned IGameEvent valid only for the duration of the call. So the
+// signal inverts: core's five NOTIFY entries return S2_DISPATCH_DEFERRED instead of returning
+// silently, and THE SHIM — which still has the arguments on its own stack — queues a replay that
+// runs at the top of the next GameFrame, where HOST is provably free. A dispatch deferred during
+// frame N is delivered at frame N+1, exactly like the hand-rolled s_pendingRespawn/s_pendingTerminate
+// drains below.
+//
+// ONE FIFO, so a deferred player_death and a deferred client-disconnect keep their relative order
+// (splitting by payload type would leave it undefined). An entry is a TAG plus that entry's OWN
+// arguments — the deferrable entries do not share a signature, and the shim owns the union
+// precisely because it is the side that already has those arguments typed and on the stack. Adding
+// a deferrable dispatch means adding a variant: the same shape as adding a fan_out channel, and
+// deliberately explicit rather than a void* blob.
+//
+// NO RAW POINTER IS EVER QUEUED. Every string is an owned copy — ev->GetName(), GetClassname(),
+// GetMapName() and the cvar value buffers are all engine-owned and call-scoped — and the single
+// pointer in the union is a DuplicateEvent-minted IGameEvent, a shim-owned copy the engine no
+// longer references. PRE-hooks are not deferrable by construction (the engine consumes their
+// answer synchronously, and their block-scoped raw views die at return); they keep today's
+// graceful skip, which is a permanent, documented limitation.
+// ---------------------------------------------------------------------------
+enum S2DeferredKind {
+    S2_DEFERRED_GAME_EVENT = 0,
+    S2_DEFERRED_CLIENT_EVENT,
+    S2_DEFERRED_MAP_START,
+    S2_DEFERRED_ENTITY_EVENT,
+    S2_DEFERRED_CVAR_CHANGE,
+};
+
+struct S2Deferred {
+    S2DeferredKind kind;
+    std::string    a;   // game_event: name | client_event: name | map_start: map | entity_event: kind | cvar_change: name
+    std::string    b;   // entity_event: className | cvar_change: newValue                             (else empty)
+    std::string    c;   // cvar_change: oldValue                                                       (else empty)
+    int            i = 0;          // client_event: slot | entity_event: packed CEntityHandle          (else 0)
+    IGameEvent*    dup = nullptr;  // game_event ONLY. Owned by the queue; freed by the drain (RAII)
+                                   // or by the flush. Ownership is explicit rather than RAII on the
+                                   // struct itself so an entry can be moved through the vector's
+                                   // buffer without a FreeEvent per move.
+};
+
+// Bounded: an unbounded queue turns a plugin bug (a handler that re-fires its own event forever)
+// into an OOM. Engine-generic, mirroring kRespawnPendingMax below. Overflow drops the NEWEST and
+// names what it dropped — a silent drop is the exact failure mode this slice exists to end.
+static const int kDeferredQueueMax = 256;
+
+// DOUBLE BUFFERED. The drain swaps buffers BEFORE replaying, so a dispatch deferred *by* a deferred
+// handler lands in the NEXT drain instead of extending the batch being walked. Without the swap, a
+// handler that re-fires its own event spins the frame forever. (Same discipline as the engine's own
+// RunFrameHooks frame_queue/frame_actions swap.)
+static std::vector<S2Deferred> s_deferQueue;   // push target
+static std::vector<S2Deferred> s_deferBatch;   // the batch being replayed this frame
+
+// Game-event deferral needs IGameEventManager2::DuplicateEvent, whose vtable slot is a fact about
+// OUR binary and is validated at Load (ArmDeferredEventDuplication). False = game-event deferral is
+// degraded to today's drop, by name, at boot; SCALAR deferral is unaffected.
+static bool s_deferEventOk = false;
+
+static const char* S2DeferredKindName(S2DeferredKind k) {
+    switch (k) {
+        case S2_DEFERRED_GAME_EVENT:   return "game_event";
+        case S2_DEFERRED_CLIENT_EVENT: return "client_event";
+        case S2_DEFERRED_MAP_START:    return "map_start";
+        case S2_DEFERRED_ENTITY_EVENT: return "entity_event";
+        case S2_DEFERRED_CVAR_CHANGE:  return "cvar_change";
+    }
+    return "?";
+}
+
+// The scalar variants' one constructor. Every string is COPIED here: the engine buffers they come
+// from are call-scoped and may be freed (or reused) before the drain.
+static void DeferPushScalar(S2DeferredKind kind, const char* a, const char* b, const char* c, int i) {
+    if (static_cast<int>(s_deferQueue.size()) >= kDeferredQueueMax) {
+        META_CONPRINTF("[s2script] deferred-dispatch: queue full (%d) — dropped %s '%s' (newest)\n",
+                       kDeferredQueueMax, S2DeferredKindName(kind), a ? a : "");
+        return;
+    }
+    S2Deferred e;
+    e.kind = kind;
+    if (a) e.a = a;
+    if (b) e.b = b;
+    if (c) e.c = c;
+    e.i = i;
+    s_deferQueue.push_back(std::move(e));
+}
+
+static void S2_DeferClientEvent(const char* name, int slot) {
+    DeferPushScalar(S2_DEFERRED_CLIENT_EVENT, name, nullptr, nullptr, slot);
+}
+static void S2_DeferMapStart(const char* map) {
+    DeferPushScalar(S2_DEFERRED_MAP_START, map, nullptr, nullptr, 0);
+}
+static void S2_DeferCvarChange(const char* name, const char* newValue, const char* oldValue) {
+    DeferPushScalar(S2_DEFERRED_CVAR_CHANGE, name, newValue, oldValue, 0);
+}
+// entity_listener.cpp (the isolated IEntityListener TU) is this variant's only caller, so it is
+// extern "C" for exactly the reason S2_GetEntityListener is: that TU sees the queue as one
+// function and never the union. `handle` is a packed CEntityHandle int, never a pointer.
+extern "C" void S2_DeferEntityEvent(const char* kind, const char* className, int handle) {
+    DeferPushScalar(S2_DEFERRED_ENTITY_EVENT, kind, className, nullptr, handle);
+}
+
+// game_event is the ONE variant with a payload. Its handlers must read the REAL field values, and
+// the engine's IGameEvent is valid only across the original call — so the queue takes its own copy
+// via DuplicateEvent. Capacity is checked BEFORE the duplication, so an overflow can never leak an
+// event. Both failure paths (queue full, duplication unavailable) name what was dropped.
+static void S2_DeferGameEvent(const char* name, IGameEvent* ev) {
+    if (!name) return;
+    if (static_cast<int>(s_deferQueue.size()) >= kDeferredQueueMax) {
+        META_CONPRINTF("[s2script] deferred-dispatch: queue full (%d) — dropped game_event '%s' (newest)\n",
+                       kDeferredQueueMax, name);
+        return;
+    }
+    S2Deferred e;
+    e.kind = S2_DEFERRED_GAME_EVENT;
+    e.a = name;                       // copy the name BEFORE minting the duplicate we would have to free
+    e.dup = (s_deferEventOk && s_pGameEventManager && ev) ? s_pGameEventManager->DuplicateEvent(ev) : nullptr;
+    if (!e.dup) {
+        META_CONPRINTF("[s2script] deferred-dispatch: DuplicateEvent unavailable — dropped game_event '%s'\n", name);
+        return;
+    }
+    s_deferQueue.push_back(std::move(e));
+}
+
+// A deferred game-event replay must restore s_currentEvent and FreeEvent the duplicate on EVERY
+// exit path, including a C++ throw out of a handler. s_currentEvent save/restore NESTS — the same
+// discipline FireGameEvent and event_create/event_fire already use — so the drain never assumes
+// s_currentEvent is null on entry, and a deferred handler that itself calls Events.fire() composes
+// with no special handling.
+struct S2ReplayEventScope {
+    IGameEvent* prev;
+    IGameEvent* dup;
+    explicit S2ReplayEventScope(IGameEvent* d) : prev(s_currentEvent), dup(d) { s_currentEvent = d; }
+    ~S2ReplayEventScope() {
+        s_currentEvent = prev;
+        if (dup && s_pGameEventManager) s_pGameEventManager->FreeEvent(dup);
+    }
+    S2ReplayEventScope(const S2ReplayEventScope&) = delete;
+    S2ReplayEventScope& operator=(const S2ReplayEventScope&) = delete;
+};
+
+// Empty a buffer, freeing any IGameEvent duplicate an entry still owns. Used EVERY time a buffer is
+// emptied, so a batch that was only partly drained (a handler that unwound past the drain) can never
+// strand a duplicate when the buffer is next reused.
+static void S2_ClearDeferredBuffer(std::vector<S2Deferred>& v) {
+    for (S2Deferred& e : v) {
+        if (e.dup && s_pGameEventManager) s_pGameEventManager->FreeEvent(e.dup);
+        e.dup = nullptr;
+    }
+    v.clear();
+}
+
+// Drained at the TOP of Hook_GameFramePre, BEFORE anything else in that hook reaches core (the
+// damage self-test is the first thing that does), so the isolate is provably free here.
+static void S2_DrainDeferredDispatches() {
+    if (s_deferQueue.empty()) return;
+    S2_ClearDeferredBuffer(s_deferBatch);
+    s_deferBatch.swap(s_deferQueue);        // swap FIRST — see the double-buffer note above
+    for (S2Deferred& e : s_deferBatch) {
+        int r = 0;
+        switch (e.kind) {
+            case S2_DEFERRED_GAME_EVENT: {
+                S2ReplayEventScope scope(e.dup);   // restores s_currentEvent + FreeEvent, throw or not
+                e.dup = nullptr;                   // ownership moved to the scope (no double free at flush)
+                r = s2script_core_replay_game_event(e.a.c_str());
+                break;
+            }
+            case S2_DEFERRED_CLIENT_EVENT:
+                r = s2script_core_replay_client_event(e.a.c_str(), e.i);
+                break;
+            case S2_DEFERRED_MAP_START:
+                r = s2script_core_replay_map_start(e.a.c_str());
+                break;
+            case S2_DEFERRED_ENTITY_EVENT:
+                r = s2script_core_replay_entity_event(e.a.c_str(), e.b.c_str(), e.i);
+                break;
+            case S2_DEFERRED_CVAR_CHANGE:
+                r = s2script_core_replay_cvar_change(e.a.c_str(), e.b.c_str(), e.c.c_str());
+                break;
+        }
+        // A replay that itself defers can only mean a bug — the drain runs with the isolate free.
+        // Drop it with a named reason; re-queueing would spin the same entry across frames forever.
+        if (r == S2_DISPATCH_DEFERRED) {
+            META_CONPRINTF("[s2script] deferred-dispatch: replay re-deferred (HOST busy at drain) — dropped %s '%s'\n",
+                           S2DeferredKindName(e.kind), e.a.c_str());
+        }
+    }
+    S2_ClearDeferredBuffer(s_deferBatch);
+}
+
+// Queued entries reference a world that no longer exists, and a queued IGameEvent duplicate must
+// not outlive the map (or the plugin). Called at the TOP of Hook_StartupServer — BEFORE the
+// map_start dispatch — and again at Unload: the ledger-is-teardown-authority rule applied to
+// engine-owned memory the shim itself minted. `why` names the occasion in the log line.
+static void S2_FlushDeferredQueue(const char* why) {
+    const int n = static_cast<int>(s_deferQueue.size() + s_deferBatch.size());
+    S2_ClearDeferredBuffer(s_deferQueue);
+    S2_ClearDeferredBuffer(s_deferBatch);
+    if (n > 0)
+        META_CONPRINTF("[s2script] deferred-dispatch: %s — flushed %d queued dispatch(es)\n", why, n);
+}
+
 // Slice 6.6 (Stage 1): the CBaseEntity::DispatchTraceAttack detour. g_origDTA is the trampoline to the
 // original (relocated prologue + jump back). The handler is READ-ONLY here — it logs candidate m_flDamage
 // reads to prove the hook fires + identify the CTakeDamageInfo arg, then always calls the original.
@@ -616,7 +828,11 @@ public:
         // call will see its own event in s_currentEvent; we restore ours on return).
         IGameEvent* prev = s_currentEvent;
         s_currentEvent = ev;
-        s2script_core_dispatch_game_event(ev->GetName());
+        // A re-entrant dispatch (this event was fired from inside another dispatch's JS) delivers
+        // nothing: queue a duplicate of the live event and replay it at the next GameFrame, rather
+        // than dropping it silently. GetName()'s buffer is engine-owned — S2_DeferGameEvent copies it.
+        if (s2script_core_dispatch_game_event(ev->GetName()) == S2_DISPATCH_DEFERRED)
+            S2_DeferGameEvent(ev->GetName(), ev);
         s_currentEvent = prev;  // restore
     }
 };
@@ -1614,7 +1830,10 @@ static void s2_cvar_change_cb(ConVarRefAbstract* ref, CSplitScreenSlot /*slot*/,
     if (!ref) return;
     const char* name = ref->GetName();
     if (!name || !name[0]) return;
-    s2script_core_dispatch_cvar_change(name, newValue ? newValue : "", oldValue ? oldValue : "");
+    // All three buffers are call-scoped engine memory; the deferral copies them.
+    if (s2script_core_dispatch_cvar_change(name, newValue ? newValue : "", oldValue ? oldValue : "")
+            == S2_DISPATCH_DEFERRED)
+        S2_DeferCvarChange(name, newValue ? newValue : "", oldValue ? oldValue : "");
 }
 
 static int s2_server_map_valid(const char* map) {
@@ -2921,6 +3140,82 @@ static bool IsAddressInServerText(void* fn) {
     return s_text && f >= s_text && f < s_text + s_textSize;
 }
 
+// ---------------------------------------------------------------------------
+// deferred-dispatch: arm game-event duplication (re-strategy Rule 2 for a vtable-index fact).
+//
+// The queue's game_event variant needs IGameEventManager2::DuplicateEvent, and frees its copy with
+// the adjacent FreeEvent. hl2sdk declares the two next to each other, immediately after
+// FireEventClientSide (third_party/hl2sdk/public/igameevents.h:181,184) — but per docs/re-strategy.md
+// that header is a HINT, NOT A NUMBER: the vtable INDEX is a fact about the binary WE are loaded
+// into, and the vendored SDK lags Valve by design.
+//
+// So: derive the index the compiler itself will emit for the call (below), read that slot out of the
+// LIVE manager's vtable, and require both resolved pointers to land inside libserver.so's own .text
+// before either is ever called. Header drift then surfaces at BOOT as a slot pointing outside .text
+// (or as a member that is no longer a plain virtual), and it degrades GAME-EVENT deferral by name —
+// scalar deferral (client / entity / map / cvar) is untouched, because it needs neither function.
+//
+// FreeEvent is already exercised in production by s2_event_fire_to_client; it is validated here all
+// the same, because the drain's RAII free path is new and must not be the thing that discovers a
+// moved slot.
+// ---------------------------------------------------------------------------
+
+// The vtable slot index the compiler emits for `pmf`, or -1 if the member is not a plain virtual
+// with a zero this-adjustment (i.e. the SDK's declaration is no longer the shape we assume). The
+// Itanium C++ ABI represents a pointer-to-member-function as { ptr, adj }, where a VIRTUAL member's
+// `ptr` is (vtable byte offset + 1) — the low bit is the virtual/non-virtual discriminator — and
+// `adj` is the this-adjustment (nonzero only under multiple inheritance). Reading it is how we turn
+// the header's declaration order into the number the call site would actually use, without
+// hand-counting slots (a virtual destructor alone occupies TWO of them).
+template <typename Pmf>
+static int VTableSlotOfPmf(Pmf pmf) {
+    struct ItaniumPmf { uintptr_t ptr; intptr_t adj; };
+    static_assert(sizeof(Pmf) == sizeof(ItaniumPmf), "unexpected pointer-to-member-function layout");
+    ItaniumPmf raw;
+    std::memcpy(&raw, &pmf, sizeof(raw));
+    if ((raw.ptr & 1) == 0) return -1;                    // not virtual — the declaration changed shape
+    if (raw.adj != 0) return -1;                          // this-adjusting thunk — not the layout we assume
+    const uintptr_t byteOff = raw.ptr - 1;
+    if (byteOff % sizeof(void*) != 0) return -1;
+    return static_cast<int>(byteOff / sizeof(void*));
+}
+
+static void ArmDeferredEventDuplication() {
+    s_deferEventOk = false;
+    // A null manager means the GameEventManager descriptor already recorded its OWN failure; do not
+    // count a second one for the same root cause (the s_precacheVtblIdx precedent).
+    if (!s_pGameEventManager) return;
+
+    const int idxDup  = VTableSlotOfPmf(&IGameEventManager2::DuplicateEvent);
+    const int idxFree = VTableSlotOfPmf(&IGameEventManager2::FreeEvent);
+    // The manager's vptr must itself land inside libserver.so's mapping (a vtable lives in
+    // .data.rel.ro, NOT .text) and the two slots must be fully inside it, before we read either.
+    ModBounds mb = FindModuleBounds("libserver.so");
+    void** vt = *reinterpret_cast<void***>(s_pGameEventManager);
+    const uint8_t* vtb = reinterpret_cast<const uint8_t*>(vt);
+    const char* why = nullptr;
+    bool ok = true;
+    if (idxDup < 0 || idxFree < 0)          { ok = false; why = "DuplicateEvent/FreeEvent are no longer plain virtuals in the SDK header"; }
+    else if (idxFree != idxDup + 1)         { ok = false; why = "DuplicateEvent/FreeEvent are no longer adjacent slots"; }
+    else if (!mb.lo || vtb < mb.lo || vtb + (idxFree + 1) * sizeof(void*) > mb.hi) {
+        ok = false; why = "IGameEventManager2 vptr outside libserver.so's mapping";
+    }
+    void* fnDup  = ok ? vt[idxDup]  : nullptr;
+    void* fnFree = ok ? vt[idxFree] : nullptr;
+    if (ok && !(IsAddressInServerText(fnDup) && IsAddressInServerText(fnFree))) {
+        ok = false; why = "resolved slot outside libserver .text (header drift — see docs/re-strategy.md)";
+    }
+    GamedataResult("IGameEventManager2_DuplicateEvent+FreeEvent", ok, why);
+    if (ok) {
+        s_deferEventOk = true;
+        META_CONPRINTF("[s2script] deferred-dispatch: DuplicateEvent = vtable slot %d (%p), FreeEvent = slot %d (%p)"
+                       " — game-event deferral armed\n", idxDup, fnDup, idxFree, fnFree);
+    } else {
+        META_CONPRINTF("[s2script] deferred-dispatch: DuplicateEvent/FreeEvent slot validation failed — "
+                       "game-event deferral disabled (scalar deferral active)\n");
+    }
+}
+
 // create: className -> packed CEntityHandle (ToInt). The raw ptr NEVER leaves the shim.
 static int Shim_EntityCreate(const char* className) {
     if (!s_pCreateEntityByName || !className) return 0;
@@ -4027,6 +4322,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     s_pGameEventManager = nullptr;   // ResolveSigValidated already recorded the failure reason
                 }
             }
+            // deferred-dispatch: with the manager resolved (or not), validate the DuplicateEvent /
+            // FreeEvent vtable slots the replay queue needs. Loud at boot, degrades game-event
+            // deferral by name; scalar deferral stays on either way.
+            ArmDeferredEventDuplication();
             // Slice 6.6 (Stage 1): resolve CBaseEntity::DispatchTraceAttack (the damage entry) by direct
             // prologue signature and install the read-only detour. Degrade-never-crash: any failure leaves
             // the game unhooked (no damage callback), never a crash.
@@ -4913,6 +5212,11 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
     }
     META_CONPRINTF("[s2script] Unload(): shutting down V8 core\n");
 
+    // deferred-dispatch: free every queued IGameEvent duplicate and drop the queue. The frame hook
+    // that drains it is removed below, so anything left here would never be replayed and its
+    // duplicates would leak engine memory (the ledger-is-teardown-authority rule).
+    S2_FlushDeferredQueue("unload");
+
     // Remove hooks before shutdown so no in-flight dispatch can reach a
     // freed core.  SH_REMOVE_HOOK is a no-op if the hook was never added.
     if (m_frameHookInstalled && m_server) {
@@ -5096,6 +5400,11 @@ static bool   s_legacyFilterActive = false;
 static uint64_t s_legacyAllowMask  = 0;
 
 void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
+    // deferred-dispatch: FIRST statement in the hook, before ANYTHING here enters JS — the damage
+    // self-test below is the first thing in this hook that reaches core, so the isolate is provably
+    // free at this point and a replay cannot re-defer. Delivers everything a re-entrant dispatch
+    // could not deliver last frame.
+    S2_DrainDeferredDispatches();
     // Slice 6.6 Stage-2 self-test: fire a synthetic damage dispatch over a fake CTakeDamageInfo
     // (m_flDamage@68 = 42) to prove detour->core mux->JS handler->schema read end-to-end (combat is
     // un-generatable on the bots-only gate). GATED OFF by default: it fires plugins' Damage.onPre handlers
@@ -5390,31 +5699,40 @@ void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) 
 void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
-    s2script_core_dispatch_client_event("connect", s);
+    if (s2script_core_dispatch_client_event("connect", s) == S2_DISPATCH_DEFERRED)
+        S2_DeferClientEvent("connect", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, uint64) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonSpawn;
-    s2script_core_dispatch_client_event("putinserver", s);
+    if (s2script_core_dispatch_client_event("putinserver", s) == S2_DISPATCH_DEFERRED)
+        S2_DeferClientEvent("putinserver", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
     MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
-    s2script_core_dispatch_client_event("active", s);
+    if (s2script_core_dispatch_client_event("active", s) == S2_DISPATCH_DEFERRED)
+        S2_DeferClientEvent("active", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientFullyConnect(CPlayerSlot slot) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
-    s2script_core_dispatch_client_event("fullyconnect", s);
+    if (s2script_core_dispatch_client_event("fullyconnect", s) == S2_DISPATCH_DEFERRED)
+        S2_DeferClientEvent("fullyconnect", s);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason, const char*, uint64, const char*) {
     int s = slot.Get();
-    s2script_core_dispatch_client_event("disconnect", s);   // dispatch FIRST — handler still sees valid
+    // dispatch FIRST — the handler still sees the client valid. A DEFERRED disconnect inverts that:
+    // it is replayed next frame, after the state below has been cleared, so its handler reads
+    // Clients.isValid(slot) == false (and the slot may even have been reused). Accepted, and
+    // documented in the clients .d.ts — it is strictly more than today's total drop.
+    if (s2script_core_dispatch_client_event("disconnect", s) == S2_DISPATCH_DEFERRED)
+        S2_DeferClientEvent("disconnect", s);
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonNone;
     if (s >= 0 && s < kMaxClientSlots) {
         // slot-reuse hygiene. Hearability state MUST be cleared here alongside the mute: a rule is
@@ -5430,7 +5748,8 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
-    s2script_core_dispatch_client_event("settingschanged", slot.Get());
+    if (s2script_core_dispatch_client_event("settingschanged", slot.Get()) == S2_DISPATCH_DEFERRED)
+        S2_DeferClientEvent("settingschanged", slot.Get());
     RETURN_META(MRES_IGNORED);
 }
 
@@ -5445,7 +5764,8 @@ void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
         time_t now = time(nullptr);
         if (now != s_voiceLastNotify[s]) {
             s_voiceLastNotify[s] = now;
-            s2script_core_dispatch_client_event("voice", s);
+            if (s2script_core_dispatch_client_event("voice", s) == S2_DISPATCH_DEFERRED)
+                S2_DeferClientEvent("voice", s);
         }
     }
     RETURN_META(MRES_IGNORED);
@@ -5499,13 +5819,22 @@ bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot s
 // name in its POST hook the same way). Also doubles as the client-list slice's boot sanity line —
 // a garbage GetIGameServer()/GetMapName()/GetMaxClients() vtable read would be visible here.
 void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISource2WorldSession*, const char*) {
+    // deferred-dispatch: drop anything still queued from the OLD map, BEFORE the map_start dispatch
+    // below (which is itself deferrable). Queued entries reference a world that no longer exists,
+    // and a queued IGameEvent duplicate must not outlive the map. Mirrors the s_pendingRespawnCount
+    // reset precedent.
+    S2_FlushDeferredQueue("map start");
     INetworkGameServer* gs = S2_GameServer();
     const char* map = gs ? gs->GetMapName() : nullptr;
     META_CONPRINTF("[s2script] map start: %s (maxClients=%d)\n",
                    map ? map : "<null>", gs ? gs->GetMaxClients() : -1);
     // (Sound slice precache: no retry needed here — the OnPrecacheResource hook is a class-vtable swap
     // installed once at Load, since the class vtable is static data present from module load.)
-    s2script_core_dispatch_map_start(map ? map : "");
+    // GetMapName()'s buffer is not ours to retain — the deferral copies it. (StartupServer runs
+    // outside a frame, so the isolate is normally free here; a plugin-declared engine call that
+    // reaches a changelevel from JS is the case this covers.)
+    if (s2script_core_dispatch_map_start(map ? map : "") == S2_DISPATCH_DEFERRED)
+        S2_DeferMapStart(map ? map : "");
     EnsureEntityListenerRegistered();   // re-assert the IEntityListener each map (idempotent Find-guard)
     RETURN_META(MRES_IGNORED);
 }

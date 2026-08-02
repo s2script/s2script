@@ -535,6 +535,20 @@ typedef struct {
     s2_ent_identity_flags_clear_fn ent_identity_flags_clear;
 } S2EngineOps;
 
+/* Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant
+ * dispatch — a handler made the engine synchronously dispatch back into core): core delivered
+ * NOTHING and the caller must queue a replay for the next GameFrame. Any other value means the
+ * entry was handled (delivered, or there were no subscribers) — do not queue.
+ *
+ * Test it EXACTLY (`== S2_DISPATCH_DEFERRED`). Never `< 0`, never `if (r)` truthiness: -1000 is
+ * C-truthy, which is why no entry whose result is consumed as a boolean may ever be made
+ * deferrable. Negative on purpose — a future deferrable entry read as `if (r >= 2) SUPERCEDE`
+ * degrades to today's "engine proceeds unhooked" if a call site forgets the check, instead of
+ * superseding a message it never meant to.
+ *
+ * MUST stay byte-identical to `S2_DISPATCH_DEFERRED` in core/src/ffi.rs. */
+#define S2_DISPATCH_DEFERRED (-1000)
+
 /* ops may be null -> all engine natives degrade.  The core copies the struct by
  * value at init; the caller's storage need not outlive the call. */
 int  s2script_core_init(s2_log_fn logger, s2_hook_request_fn request_hook, const S2EngineOps* ops);
@@ -569,22 +583,54 @@ int s2script_core_dispatch_command_listeners(int slot, const char* name, const c
  * plugin expressed no opinion and the caller must NOT filter. */
 int s2script_core_take_event_recipients(uint64_t* out_mask);
 
+/* ---------------------------------------------------------------------------------------------
+ * The five DEFERRABLE notify entries, and their replays (deferred-dispatch-queue slice).
+ *
+ * Each of the five is SPLIT in two, and the split is part of the ABI contract:
+ *
+ *     s2script_core_dispatch_X(args) = host bookkeeping (ALWAYS runs, NEVER deferred)
+ *                                    + s2script_core_replay_X(args)   // the JS fan-out, and nothing else
+ *
+ * The shim queues the REPLAY entry, never the dispatch entry, because the bookkeeping halves are
+ * not idempotent: replaying map_start's entity-books clear would wipe the books a frame INTO the
+ * new map, a replayed entity "create" would resurrect a since-deleted entity, and a replayed
+ * client_event would double-count the crash breadcrumb's player total.
+ *
+ * All ten return S2_DISPATCH_DEFERRED when the isolate was already borrowed, and 0 otherwise
+ * (delivered, no subscribers, or any degrade path — a null pointer, invalid UTF-8 or a caught
+ * panic is NOT deferrable). A replay that itself reports DEFERRED is a bug (the drain runs with the
+ * isolate provably free); the shim drops it with a named reason and never re-queues it.
+ * --------------------------------------------------------------------------------------------- */
+
 /**
  * A cvar's value changed (ICvar global change callback). NOTIFY-only — the engine has already
  * applied the value by the time this fires, so there is no return value to veto with.
  */
-void s2script_core_dispatch_cvar_change(const char* name, const char* newValue, const char* oldValue);
-/* Shim -> core: called by the six ISource2GameClients lifecycle hooks (@s2script/clients sub-project).
- * name is one of connect/putinserver/active/fullyconnect/disconnect/settingschanged; slot is the
+int s2script_core_dispatch_cvar_change(const char* name, const char* newValue, const char* oldValue);
+/* Replay of a deferred cvar-change: the JS fan-out only (this path carries no bookkeeping; the
+ * entry exists so the shim's drain has one uniform replay vocabulary). */
+int s2script_core_replay_cvar_change(const char* name, const char* newValue, const char* oldValue);
+/* Shim -> core: called by the seven client lifecycle hooks (@s2script/clients sub-project). name is
+ * one of connect/putinserver/active/fullyconnect/disconnect/settingschanged/voice; slot is the
  * player's slot (CPlayerSlot::Get()). Notify-only: runs the JS Clients.on(name) subscribers. */
-void s2script_core_dispatch_client_event(const char* name, int slot);
+int s2script_core_dispatch_client_event(const char* name, int slot);
+/* Replay of a deferred client-lifecycle event: JS fan-out only. The breadcrumb player count and the
+ * voice slot-reuse clear already ran, unconditionally, at dispatch time. NOTE a deferred
+ * "disconnect" arrives AFTER the shim cleared the slot, so the handler sees the client invalid. */
+int s2script_core_replay_client_event(const char* name, int slot);
 /* Shim -> core: the INetworkServerService::StartupServer POST hook reports a map start with the
  * live map name (clientlist-fakeconvar-onmapstart slice). Notify-only: runs the JS Server.onMapStart
  * subscribers. catch_unwind-wrapped; a null pointer degrades to "" (never panic across the boundary). */
-void s2script_core_dispatch_map_start(const char* map);
+int s2script_core_dispatch_map_start(const char* map);
+/* Replay of a deferred map start: JS fan-out only — it must NEVER touch the entity books. */
+int s2script_core_replay_map_start(const char* map);
 /* Shim -> core: an IEntityListener callback (create/spawn/delete) reports an entity by its packed
  * CEntityHandle (ToInt()) + class name. Notify-only; core builds a serial-gated EntityRef. */
-void s2script_core_dispatch_entity_event(const char* kind, const char* className, int handle);
+int s2script_core_dispatch_entity_event(const char* kind, const char* className, int handle);
+/* Replay of a deferred entity-lifecycle event: JS fan-out only (the books feed ran at dispatch
+ * time). A replayed "delete" hands the handler a null EntityRef — the books already say dead —
+ * which is the same books-gated degrade any stale ref gets, and the className still names what died. */
+int s2script_core_replay_entity_event(const char* kind, const char* className, int handle);
 /* Shim -> core: the CGameRulesGameSystem::OnPrecacheResource manual hook reports the session
  * resource-manifest build (Sound slice). The shim stashes the live IResourceManifest* around this
  * call so the sound_precache_add op can AddResource into it; the stash is cleared when this
@@ -601,7 +647,12 @@ int s2script_core_ban_check(uint64_t xuid, int64_t now, char* out_reason, int ca
  * event accessor ops (event_get_int / float / bool / string / uint64 / player_slot)
  * read live data from the current IGameEvent*.  After dispatch returns, s_currentEvent
  * is restored to its previous value (re-entrancy guard). */
-void s2script_core_dispatch_game_event(const char* name);
+int s2script_core_dispatch_game_event(const char* name);
+/* Replay of a deferred game event: JS fan-out only. The shim has pointed s_currentEvent at its own
+ * DuplicateEvent copy for the duration of this call, so handlers read the REAL field values (the
+ * engine's original IGameEvent died when the original dispatch returned); the copy is FreeEvent'd
+ * after, under RAII, so a throwing handler cannot leak it. */
+int s2script_core_replay_game_event(const char* name);
 // Slice 6.6 Stage 2: run the Damage.onPre subscribers over the current CTakeDamageInfo (set by the shim
 // detour). Handlers read/modify the live info in place (setting damage to 0 = block).
 void s2script_core_dispatch_damage(void);

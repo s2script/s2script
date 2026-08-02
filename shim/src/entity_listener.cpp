@@ -11,6 +11,11 @@
 #include <entity2/entityinstance.h>     // CEntityInstance::GetClassname/GetRefEHandle
 #include "s2script_core.h"              // s2script_core_dispatch_entity_event (Task 1 core export)
 
+// deferred-dispatch-queue slice: the queue itself lives in s2script_mm.cpp (it owns the payload and
+// the drain). This TU sees exactly one function of it — the same opaque-boundary discipline as
+// S2_GetEntityListener below, so the entity listener never learns the queue's tagged union.
+extern "C" void S2_DeferEntityEvent(const char* kind, const char* className, int handle);
+
 namespace {
 class S2EntityListener : public IEntityListener {
 public:
@@ -23,7 +28,12 @@ private:
         if (!pEntity) return;
         const char* cls = pEntity->GetClassname();          // designer name; valid at create/spawn/delete
         int handle = pEntity->GetRefEHandle().ToInt();       // packed CEntityHandle — the shim's handle idiom
-        s2script_core_dispatch_entity_event(kind, cls ? cls : "", handle);
+        // A re-entrant dispatch (this entity was created/deleted BY a JS handler, e.g. a plugin's own
+        // synchronous createEntity) delivers nothing — queue the scalars for the next GameFrame
+        // instead of dropping it silently. GetClassname() points into engine memory that may be gone
+        // by then, so the queue copies it; `handle` is a packed CEntityHandle, never a pointer.
+        if (s2script_core_dispatch_entity_event(kind, cls ? cls : "", handle) == S2_DISPATCH_DEFERRED)
+            S2_DeferEntityEvent(kind, cls ? cls : "", handle);
     }
 };
 S2EntityListener g_entityListener;   // static; lives for the process — its address is a stable IEntityListener*
