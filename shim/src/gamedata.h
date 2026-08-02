@@ -32,6 +32,17 @@ struct SigSpec {
     // meaningless, so a correct hot-fix would be spuriously rejected — or worse, coincidentally
     // pass. Dropping it here instead (which this struct used to do) is worse still: the descriptor
     // would resolve with NO semantic gate at all and nobody would be told.
+    //
+    // WHICH IS WHY THIS ONE FIELD IS **NOT** REPLACED WHOLESALE BY AN OPERATOR OVERRIDE. It is the
+    // single exception to the named-entry replacement rule, and it is a deliberate one: an operator
+    // hot-fixing a moved pattern writes `module`/`pattern`/`resolve` and stops, because those are
+    // what "the signature" means to them. Taking the omission literally would silently DELETE the
+    // semantic gate — and `gamedata/cs2/game.cs2.jsonc` records, by name, a borrowed TerminateRound
+    // signature that matches UNIQUELY at the WRONG function, which uniqueness and the .text-range
+    // check both wave through. The documented repair procedure would then be memory corruption.
+    // So an override that omits `validate` INHERITS the previous entry's (reported in
+    // GameConfig::validatorsCarried); an override that means it writes `"validate": {}` explicitly
+    // (reported in GameConfig::validatorsDisarmed). Both are loud boot-banner lines.
     std::string validate;
 };
 
@@ -65,6 +76,18 @@ struct GameConfig {
     // crash fingerprint — an operator's patched signature must never be silently attributed
     // to a shipped one.
     std::set<std::string> overridden;
+
+    // Signature names where a custom/ override supplied a new pattern but NO `validate`, so the
+    // PREVIOUS entry's validator was carried forward onto it (see SigSpec::validate). Reported at
+    // boot because the carried gate is now checked against a pattern it was not derived for: if the
+    // operator's pattern moved the instruction the validator reads, the descriptor will degrade with
+    // the validator's reason and the operator has to know that is why.
+    std::vector<std::string> validatorsCarried;
+    // Signature names where a custom/ override REPLACED a real validator with an explicitly empty
+    // one (`"validate": {}` / `null`) — the deliberate "I want no semantic gate" spelling. Reported
+    // at boot at the same volume: that descriptor now resolves on uniqueness and a .text-range check
+    // alone, which is exactly the state the validator vocabulary exists to prevent.
+    std::vector<std::string> validatorsDisarmed;
     // Every file actually applied, in apply order (for the banner and the fingerprint hash).
     std::vector<std::string> filesLoaded;
 
@@ -99,7 +122,9 @@ struct GameConfig {
 //
 // Apply order: master order first, then <owner>/custom/*.jsonc in sorted filename order. Later
 // wins, replacing at the NAMED-ENTRY level — one `signatures.<key>` is swapped wholesale, never
-// deep-merged. That is what lets an operator override be a one-entry file.
+// deep-merged. That is what lets an operator override be a one-entry file. The single exception is
+// a signature's `validate` block under a custom/ override, which is INHERITED when omitted rather
+// than deleted (SigSpec::validate; reported in validatorsCarried / validatorsDisarmed).
 //
 // `error` is empty on success. A missing master, an unparseable file, a listed-but-absent file, or
 // a single malformed ENTRY sets it with a NAMED reason and returns whatever was merged before the

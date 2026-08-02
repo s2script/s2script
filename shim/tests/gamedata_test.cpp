@@ -256,6 +256,110 @@ static void test_custom_override_replaces_pattern_and_validator_together() {
           "and so does the validator offset it was re-derived with");
 }
 
+// THE ONE EXCEPTION to named-entry replacement, and the reason for it.
+//
+// docs/INSTALL.md tells an operator to hot-fix a moved signature by dropping module/pattern/resolve
+// into custom/. Nobody re-types the `validate` block with it — it is not what "the signature" means
+// to the person doing the fix. Taking that omission literally DELETES the semantic gate: uniqueness
+// passes, the .text-range check passes, and call_validate.cpp's `if (v.empty()) return true;` waves
+// the entry through. gamedata/cs2/game.cs2.jsonc records by name a borrowed TerminateRound signature
+// that matches UNIQUELY at the WRONG function, so that path ends in a call through a bogus address.
+// Neither gate can see it: check-call-descriptors.sh skips custom/ by design and the boot banner
+// only counts overrides.
+//
+// So the override INHERITS the shipped validator, and says so.
+static void test_custom_override_without_validate_inherits_the_shipped_one() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "signatures": { "Guarded": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct",
+                      "validate": { "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7, "expect": "TerminateRound" } } } } }
+    })");
+    // The operator's hot-fix, written the way the install doc's example is written: the three keys
+    // that spell "the signature", and nothing else.
+    put(root.path / "cs2" / "custom" / "fix.jsonc", R"({
+      "signatures": { "Guarded": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "BB", "resolve": "direct" } } }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.signatures["Guarded"].pattern == "BB", "the operator's pattern still wins");
+    CHECK(!gc.signatures["Guarded"].validate.empty(),
+          "an override that omits validate does NOT disarm the shipped validator");
+
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded(), "the merged view is valid JSON");
+    const auto& plat = doc["signatures"]["Guarded"]["linuxsteamrt64"];
+    CHECK(plat.contains("validate") &&
+              plat["validate"]["string-xref"]["expect"] == "TerminateRound",
+          "and the carried validator reaches the descriptor core resolves");
+    CHECK(gc.validatorsCarried.size() == 1 && gc.validatorsCarried[0] == "Guarded",
+          "the carry-forward is REPORTED by name, never silent");
+    CHECK(gc.validatorsDisarmed.empty(), "and is not reported as a deliberate disarm");
+}
+
+// The escape hatch, and it has to be spelled out loud. An operator who genuinely wants no semantic
+// gate writes an explicit empty `validate`; it is honoured, and it is a banner line of its own.
+static void test_custom_override_can_disarm_a_validator_explicitly() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "signatures": { "Guarded": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct",
+                      "validate": { "vtable-member": "CCSPlayerController" } } } }
+    })");
+    put(root.path / "cs2" / "custom" / "fix.jsonc", R"({
+      "signatures": { "Guarded": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "BB", "resolve": "direct",
+                      "validate": {} } } }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded(), "the merged view is valid JSON");
+    const auto& plat = doc["signatures"]["Guarded"]["linuxsteamrt64"];
+    // `{}` is one of the "no validators declared" spellings call_validate.cpp already accepts, so
+    // emitting it verbatim is the same thing as emitting nothing — and it PROVES the shipped
+    // validator did not come back.
+    CHECK(!plat.contains("validate") || plat["validate"].empty(),
+          "an explicit empty validate is honoured, not overwritten by the shipped one");
+    CHECK(gc.validatorsDisarmed.size() == 1 && gc.validatorsDisarmed[0] == "Guarded",
+          "a deliberate disarm is REPORTED by name");
+    CHECK(gc.validatorsCarried.empty(), "and is not reported as a carry-forward");
+}
+
+// Scope guard for the exception. A later SHIPPED file replacing an earlier one keeps plain
+// named-entry semantics: our own tree is reviewed, and quietly resurrecting a validator a shipped
+// file deliberately dropped would be its own silent-wrong-data bug.
+static void test_shipped_replacement_does_not_inherit_a_validator() {
+    TempRoot root;
+    put(root.path / "core" / "master.gamedata.jsonc", R"({
+      "files": [
+        { "file": "base.gamedata.jsonc" },
+        { "file": "later.gamedata.jsonc" }
+      ]
+    })");
+    put(root.path / "core" / "base.gamedata.jsonc", R"({
+      "signatures": { "Sig": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct",
+                      "validate": { "prologue": "55 48" } } } }
+    })");
+    put(root.path / "core" / "later.gamedata.jsonc", R"({
+      "signatures": { "Sig": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "BB", "resolve": "direct" } } }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.signatures["Sig"].pattern == "BB", "the later shipped file wins");
+    CHECK(gc.signatures["Sig"].validate.empty(),
+          "shipped-over-shipped is still a whole-entry replacement");
+    CHECK(gc.validatorsCarried.empty() && gc.validatorsDisarmed.empty(),
+          "and neither override-only report fires for a shipped merge");
+}
+
 static void test_merged_json_reflects_a_custom_override() {
     TempRoot root;
     put(root.path / "cs2" / "master.gamedata.jsonc",
@@ -740,6 +844,9 @@ int main() {
     test_merged_json_carries_calls_and_platform_nested_signatures();
     test_merged_json_carries_a_signature_validator();
     test_custom_override_replaces_pattern_and_validator_together();
+    test_custom_override_without_validate_inherits_the_shipped_one();
+    test_custom_override_can_disarm_a_validator_explicitly();
+    test_shipped_replacement_does_not_inherit_a_validator();
     test_merged_json_reflects_a_custom_override();
     test_calls_entry_of_the_wrong_type_degrades_only_that_entry();
     test_merged_json_is_empty_when_nothing_declares_one();

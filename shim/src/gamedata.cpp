@@ -37,8 +37,20 @@ bool ConditionMatches(const nlohmann::json& entry, const char* field, const std:
     return false;
 }
 
+// Does this dumped `validate` text declare an ACTUAL validator? "" / `null` / `{}` are all the
+// "no semantic gate" spellings (call_validate.cpp's ParseValidate treats them identically), and the
+// override-inheritance rule below has to tell "declares one" from "declares none" without knowing a
+// single validator NAME — the vocabulary is closed in call_validate.cpp and stays there.
+bool DeclaresValidator(const std::string& dumped) {
+    if (dumped.empty()) return false;
+    auto v = nlohmann::json::parse(dumped, nullptr, /*allow_exceptions=*/false);
+    return !v.is_discarded() && v.is_object() && !v.empty();
+}
+
 // Merge one file's sections into `gc`. `isOverride` marks touched entries as operator-supplied.
 // Replacement is at the named-entry level: assigning over the map key drops the old value whole.
+// ONE EXCEPTION, in the signatures branch below: a custom/ override that omits `validate` inherits
+// the previous entry's rather than deleting the semantic gate — see SigSpec::validate.
 // Returns the number of entries actually applied — zero from a file that parsed is itself a
 // reportable condition (see GameConfig::filesEmpty).
 //
@@ -97,9 +109,30 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
                 s.module  = p.value("module", "");
                 s.pattern = p.value("pattern", "");
                 s.resolve = p.value("resolve", "");
-                // Verbatim, unparsed — see SigSpec::validate. An entry with no validator leaves this
-                // empty, which is what "declares none" means everywhere downstream.
-                if (p.contains("validate")) s.validate = p.at("validate").dump();
+
+                // THE ONE FIELD AN OVERRIDE DOES NOT REPLACE BY OMISSION — see SigSpec::validate for
+                // why. `validate` crosses verbatim and unparsed; an entry with no validator leaves
+                // it empty, which is what "declares none" means everywhere downstream.
+                //
+                // Shipped-tier merges keep the plain named-entry replacement semantics: our own
+                // files are reviewed, and a later shipped file dropping a validator is a code
+                // review's problem, not a live server's. The inheritance is scoped to `isOverride`
+                // precisely because custom/ is the one tier nobody reviews.
+                const auto prevIt = gc.signatures.find(k);
+                const bool prevHadValidator =
+                    prevIt != gc.signatures.end() && DeclaresValidator(prevIt->second.validate);
+                if (p.contains("validate")) {
+                    s.validate = p.at("validate").dump();
+                    // An EXPLICIT empty value is the operator saying "no gate, I mean it". Honoured,
+                    // but never silently: it is a banner line of its own.
+                    if (isOverride && prevHadValidator && !DeclaresValidator(s.validate))
+                        gc.validatorsDisarmed.push_back(k);
+                } else if (isOverride && prevHadValidator) {
+                    // Carried, not dropped. Copied out of the previous entry here, before the
+                    // assignment below overwrites it.
+                    s.validate = prevIt->second.validate;
+                    gc.validatorsCarried.push_back(k);
+                }
                 gc.signatures[k] = s;
                 mark(k);
             } catch (const std::exception& e) {

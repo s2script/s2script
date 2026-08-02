@@ -4,6 +4,18 @@
 // entries, needs no rebuild, and survives upgrades. See docs/INSTALL.md ("Hot-fixing a
 // broken signature").
 //
+// ONE EXCEPTION TO "REPLACES WHOLE NAMED ENTRIES": a signature's `validate` block. If your
+// custom/ entry supplies a pattern but no `validate`, the SHIPPED validator is CARRIED FORWARD
+// onto it and the boot banner says so — because omitting it is almost always "I only re-derived
+// the pattern", not "disarm the semantic gate". That gate is what separates a real match from a
+// unique-but-WRONG one, and the CCSGameRules_TerminateRound comment below is the worked example:
+// the borrowed CSSharp signature matches EXACTLY ONCE on this build, at the wrong function, so
+// uniqueness and the .text-range check both wave it through and only the `string-xref` validator
+// catches it. If your new pattern moved the instruction a carried validator reads, re-derive its
+// offsets and ship them in the same entry. If you genuinely want the entry checked by nothing but
+// uniqueness and .text-range, say so explicitly with `"validate": {}` — that is honoured, and is
+// its own WARN at boot.
+//
 // Owner: cs2 — the @s2script/cs2 game package. Nothing in shim/src or core/src may name a key in
 // this file (scripts/check-gamedata-owners.sh enforces it).
 // Target: CS2 — "game": "csgo".

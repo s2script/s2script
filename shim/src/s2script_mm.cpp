@@ -3943,6 +3943,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             META_CONPRINTF("[s2script]   gamedata OVERRIDE %s (from %s/custom/) — "
                            "operator-supplied, not the shipped value\n", name.c_str(), owner);
         }
+        // The semantic validator is the ONE field an override does not replace by omission
+        // (SigSpec::validate). Both outcomes are WARNs, because both change what gate the resolved
+        // address is held to and neither is visible anywhere else: the override count above says a
+        // value was replaced, never which half of it.
+        for (const auto& name : out.validatorsCarried) {
+            META_CONPRINTF("[s2script] WARN: gamedata OVERRIDE %s (%s/custom/) supplied a pattern "
+                           "but NO \"validate\" — the SHIPPED validator was CARRIED FORWARD and is "
+                           "now checked against YOUR pattern. If it fails, re-derive the validator's "
+                           "offsets for the new match; to run with no semantic gate at all, say so "
+                           "with \"validate\": {}\n", name.c_str(), owner);
+        }
+        for (const auto& name : out.validatorsDisarmed) {
+            META_CONPRINTF("[s2script] WARN: gamedata OVERRIDE %s (%s/custom/) explicitly DISARMED "
+                           "its semantic validator — this signature is now accepted on uniqueness "
+                           "and a .text-range check ALONE, which a unique-but-WRONG match passes\n",
+                           name.c_str(), owner);
+        }
     };
 
     // Every owner in kGamedataOwners, in order. "cs2" is loaded even though nothing consumes its
