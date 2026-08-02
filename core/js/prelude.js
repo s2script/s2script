@@ -1566,8 +1566,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // --- @s2script/ws: client WebSocket over __s2_ws_* (connect resolver + per-conn event subs) ---
   globalThis.__s2pkg_ws = {
     WebSocket: {
-      connect: function (url) {
-        return __s2_ws_connect(String(url)).then(function (id) {
+      connect: function (url, init) {
+        return __s2_ws_connect(String(url), init).then(function (id) {
           return {
             onMessage: function (h) { __s2_ws_on(id, "message", function (m) { h(m); }); },
             onClose:   function (h) { __s2_ws_on(id, "close", function (code, reason) { h(code, reason); }); },

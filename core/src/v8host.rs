@@ -1696,6 +1696,29 @@ fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
 fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let url = args.get(0).to_rust_string_lossy(scope);
+        // Optional `{ headers }` init, read exactly like s2_fetch's. A header the
+        // handshake owns is refused in ws::build_request, not here — the rejection
+        // has to reach JS through ConnectFailed like every other connect failure,
+        // and this native has no promise to reject with yet.
+        let mut headers: Vec<(String, String)> = Vec::new();
+        if let Ok(opts) = v8::Local::<v8::Object>::try_from(args.get(1)) {
+            if let Some(k) = v8::String::new(scope, "headers") {
+                if let Some(hv) = opts.get(scope, k.into()) {
+                    if let Ok(ho) = v8::Local::<v8::Object>::try_from(hv) {
+                        if let Some(names) = ho.get_own_property_names(scope, Default::default()) {
+                            for i in 0..names.length() {
+                                let Some(key) = names.get_index(scope, i) else { continue };
+                                let Some(val) = ho.get(scope, key) else { continue };
+                                headers.push((
+                                    key.to_rust_string_lossy(scope),
+                                    val.to_rust_string_lossy(scope),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let id = next_async_id();
@@ -1718,7 +1741,7 @@ fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
                 .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
         });
         PENDING_JOBS.with(|c| c.set(c.get() + 1));
-        crate::ws::connect(id, url, owner_string);
+        crate::ws::connect(id, url, owner_string, headers);
         refresh_detour();
         rv.set(promise.into());
     }));
@@ -17208,6 +17231,124 @@ mod frame_tests {
             }
         });
         port
+    }
+
+    /// A local ws server that reports back what it saw on the HANDSHAKE rather than echoing frames:
+    /// its first message is the request's `Authorization` header (or `"<none>"`). That is what lets
+    /// a test assert a JS-supplied header actually crossed the wire, instead of only asserting the
+    /// Rust request builder set it.
+    fn spawn_local_ws_header_reporting_server() -> u16 {
+        use futures_util::SinkExt;
+        crate::http::init();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        crate::http::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            if let Ok((stream, _)) = listener.accept().await {
+                let seen = std::sync::Arc::new(std::sync::Mutex::new(String::from("<none>")));
+                let captured = seen.clone();
+                let cb = |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                          res: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    if let Some(v) = req.headers().get("authorization") {
+                        *captured.lock().unwrap() = v.to_str().unwrap_or("<unreadable>").to_string();
+                    }
+                    Ok(res)
+                };
+                if let Ok(ws) = tokio_tungstenite::accept_hdr_async(stream, cb).await {
+                    // Reply only when asked. Pushing unprompted races the client's
+                    // `onMessage` subscription, which is registered in the connect
+                    // promise's `.then` and so does not exist yet at handshake time.
+                    use futures_util::StreamExt;
+                    let (mut w, mut r) = ws.split();
+                    if let Some(Ok(_)) = r.next().await {
+                        let value = seen.lock().unwrap().clone();
+                        let _ = w
+                            .send(tokio_tungstenite::tungstenite::Message::text(value))
+                            .await;
+                    }
+                }
+            }
+        });
+        port
+    }
+
+    /// A header passed to `__s2_ws_connect`'s init object reaches the server's handshake.
+    ///
+    /// This is the whole point of the init parameter: servers that authenticate the UPGRADE (rather
+    /// than the first frame) are unreachable without it. The server echoes back the `Authorization`
+    /// it saw, so a pass means the value genuinely crossed the wire.
+    #[test]
+    fn ws_connect_sends_caller_supplied_headers_on_the_handshake() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_header_reporting_server();
+        load_body(
+            "wsh",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            __s2_ws_connect("ws://127.0.0.1:{port}/", {{ headers: {{ Authorization: "Bearer tok-123" }} }})
+              .then(function (id) {{
+                __s2_ws_on(id, "message", function (m) {{ globalThis.__out = m; }});
+                // Subscribe first, then ask — the server replies only on request.
+                __s2_ws_send(id, "what-did-you-see");
+              }}).catch(function (e) {{
+                globalThis.__out = "ERROR:" + String(e);
+              }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsh", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "handshake report never arrived on a drain");
+        assert_eq!(read_global_string("wsh", "__out"), "Bearer tok-123");
+        shutdown();
+    }
+
+    /// A reserved header rejects the connect Promise instead of silently dropping it — a plugin
+    /// that thinks it authenticated must not get an anonymous socket.
+    #[test]
+    fn ws_connect_reserved_header_rejects_the_promise() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_header_reporting_server();
+        load_body(
+            "wsr",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            __s2_ws_connect("ws://127.0.0.1:{port}/", {{ headers: {{ Host: "evil.example" }} }})
+              .then(function () {{ globalThis.__out = "RESOLVED"; }})
+              .catch(function (e) {{ globalThis.__out = "REJECTED:" + String(e); }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut resolved = false;
+        for _ in 0..500 {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsr", "__out") != "pending" {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(resolved, "connect never settled");
+        let out = read_global_string("wsr", "__out");
+        assert!(out.starts_with("REJECTED:"), "expected a rejection, got: {out}");
+        assert!(out.contains("reserved"), "rejection should name the cause: {out}");
+        shutdown();
     }
 
     /// `__s2_ws_connect` end-to-end against a local ws echo server: the native hands off to the
