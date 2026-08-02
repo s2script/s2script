@@ -47,6 +47,18 @@ int S2Hook_Dispatch(int hookId, void* argView);
 void S2Hook_BypassArm(int hookId);
 bool S2Hook_BypassTake(int hookId);   // true AND clears, iff it was armed
 
+// Clear EVERY latch. Part of teardown, called by S2_HookResetAll (engine_hooks.cpp) so the two
+// halves of "forget every hook" cannot drift apart.
+//
+// Not hypothetical: the latch is one-shot but only the THUNK clears it, and a latch that was armed
+// and never taken (an outbound invoke that degraded before reaching the hooked function, on a build
+// whose ops table has no disarm) outlives the hook it belonged to. Hook slot ids are reused across a
+// reload — that is the whole point of the slot table surviving `drop_owner` — so a stale armed latch
+// would be TAKEN by the first genuine engine-driven call to whatever hook inherits that id, and that
+// dispatch would silently not fire. Clearing at teardown is what keeps a slot id from carrying state
+// across the boundary that resets everything else about it.
+void S2Hook_BypassResetAll();
+
 // TEST-ONLY. BypassArm/BypassTake's bounds guard is proven in shim/tests/hook_dispatch_test.cpp
 // against two sentinel bytes that flank the latch storage on purpose (see the BypassState comment
 // in hook_dispatch.cpp), instead of against a sanitizer: two SEPARATE globals have unspecified

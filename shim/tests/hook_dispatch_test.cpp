@@ -78,6 +78,29 @@ static void test_bypass_latch_rejects_out_of_range_ids() {
     S2Hook_DebugSetSentinels(false, false);  // leave the debug state clean for anything run after
 }
 
+static void test_bypass_reset_clears_every_latch_and_nothing_else() {
+    // TEARDOWN. A latch is one-shot but only the THUNK clears it, so one that was armed and never
+    // taken (an outbound invoke that degraded before reaching the hooked function) outlives the hook
+    // it belonged to. Slot ids are REUSED across a reload, so without this reset the next load's
+    // first genuine engine-driven call to that id is silently bypassed — a hook that looks installed
+    // and never fires, which is the exact failure S2_HookResetAll exists to prevent on its own side
+    // of the boundary.
+    S2Hook_BypassArm(0);
+    S2Hook_BypassArm(1);
+    S2Hook_BypassArm(S2_HOOK_MAX - 1);
+    // Sentinels planted SET, so a reset that walks past either edge of the array is observable.
+    S2Hook_DebugSetSentinels(true, true);
+
+    S2Hook_BypassResetAll();
+
+    CHECK(!S2Hook_BypassTake(0), "reset cleared latch 0");
+    CHECK(!S2Hook_BypassTake(1), "reset cleared latch 1");
+    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX - 1), "reset cleared the LAST latch");
+    CHECK(S2Hook_DebugGuardLo(), "and did not write below the array");
+    CHECK(S2Hook_DebugGuardHi(), "and did not write past the end of it");
+    S2Hook_DebugSetSentinels(false, false);
+}
+
 static void test_collapse_contract() {
     CHECK(!S2Hook_Suppresses(0), "Continue does not suppress");
     CHECK(!S2Hook_Suppresses(1), "Changed does not suppress — it writes params back and still calls");
@@ -115,6 +138,7 @@ int main() {
     test_shape_vocabulary_is_closed();
     test_bypass_latch_is_one_shot_and_per_hook();
     test_bypass_latch_rejects_out_of_range_ids();
+    test_bypass_reset_clears_every_latch_and_nothing_else();
     test_collapse_contract();
     test_ops_are_injected_not_linked();
     if (g_fail) { std::cerr << g_fail << " check(s) FAILED\n"; return 1; }

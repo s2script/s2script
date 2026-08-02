@@ -108,6 +108,24 @@ if not HOOK_SHAPES:
     bad.append('no SHAPES[] table found in core/src/gamedata_hooks.rs — this gate cannot derive the '
                'hook shape vocabulary')
 
+# The ARITY each shape implies, derived FROM THE SHAPE NAME — never from a second table here.
+#
+# The name IS the ABI: `this_f32_i32_i32_i32` is `void(void* self, float, int, int, int)`, and
+# `this_void` is `void(void* self)`. A lookup table in this script would be a FIFTH copy of a closed
+# cross-language set (core's SHAPES, the shim's kShapes, the enum, the thunks) and would need its own
+# drift gate — exactly the failure mode the "vocabulary is not hardcoded here" rule at the top of
+# this file exists to prevent. A shape whose name does not follow the rule fails the gate LOUDLY
+# rather than silently skipping its descriptors' arity check.
+SHAPE_ARITY = {}
+for _shape_name in sorted(HOOK_SHAPES):
+    m = re.fullmatch(r'this_(void|[a-z0-9]+(?:_[a-z0-9]+)*)', _shape_name)
+    if not m:
+        bad.append(f'hook shape "{_shape_name}" does not follow the `this_void` / '
+                   f'`this_<param>_<param>...` naming rule, so this gate cannot derive its arity '
+                   f'from its name — rename the shape, or teach this derivation the new form')
+        continue
+    SHAPE_ARITY[_shape_name] = 0 if m.group(1) == 'void' else len(m.group(1).split('_'))
+
 # `expect`'s byte cap, read from the validator that enforces it.
 m = re.search(r'kMaxExpect\s*=\s*(\d+)', VALIDATE_SRC)
 MAX_EXPECT = int(m.group(1)) if m else 256
@@ -407,6 +425,21 @@ for scope, sc in sorted(scopes.items()):
                 bad.append(f'{where}: param name {p!r} is declared more than once')
             if isinstance(p, str):
                 seen_params.add(p)
+
+        # THE ONE PLACE THE "shape is compile-time, location is data" SPLIT LEAKS. `params` is data,
+        # but it must agree with a COMPILE-TIME fact — how many arguments the thunk for this shape
+        # actually receives. Nothing else connects them: core marshals by position and simply never
+        # finds a param the shape does not have, `hookgen` emits one generated `.d.ts` field per
+        # entry regardless, and check-hooks-generated.sh is satisfied by any freshly regenerated
+        # file. So a fifth param on a 4-arg shape ships as a `readonly x: number` that is
+        # `undefined` at every runtime read — a typed lie, behind no error anywhere.
+        arity = SHAPE_ARITY.get(shape) if isinstance(shape, str) else None
+        if arity is not None and len(params) > arity:
+            bad.append(f'{where}: declares {len(params)} `params` but shape {shape!r} passes only '
+                       f'{arity} — param(s) {", ".join(repr(p) for p in params[arity:])} name '
+                       f'arguments the thunk never receives. Every read of them is `undefined` at '
+                       f'runtime behind a generated `number` type, with no error anywhere')
+
         mutable = decl.get('mutable', [])
         if not isinstance(mutable, list):
             bad.append(f'{where}: `mutable` must be an array')

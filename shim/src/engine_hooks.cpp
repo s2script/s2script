@@ -338,6 +338,12 @@ void S2_HookDisarmBypass(int hookId) {
 void S2_HookResetAll(void) {
     for (int i = 0; i < S2_HOOK_MAX; i++) g_hooks[i] = Installed{};
     g_activeView = nullptr;   // no frame survives a teardown
+    // ...and neither does a LATCH. Only the thunk clears one, so an armed-but-never-taken latch (an
+    // outbound invoke that degraded before reaching the hooked function) survives unload — and slot
+    // ids are reused on reload, so the next load's first genuine engine-driven call to that id would
+    // be silently bypassed. Called from here rather than from the Unload site so it cannot be
+    // forgotten: "forget every installed hook" is one operation, not two that must be kept adjacent.
+    S2Hook_BypassResetAll();
 }
 
 // ---------------------------------------------------------------------------
