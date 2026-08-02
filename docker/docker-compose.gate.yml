@@ -26,6 +26,10 @@ services:
       CS2_STARTMAP: "${GATE_STARTMAP:-de_inferno}"
       # Off by default (production default). A damage-hook gate sets GATE_DAMAGE_SELFTEST=1.
       S2_DAMAGE_SELFTEST: "${GATE_DAMAGE_SELFTEST:-0}"
+      # Same shape as the damage selftest above, and the same warning: a SYNTHETIC re-entrant
+      # dispatch with fake fields, armed only because a bot-only gate server cannot produce a
+      # natural one before A5b lands. A deferred-dispatch gate sets GATE_DEFER_SELFTEST=1.
+      S2_DEFER_SELFTEST: "${GATE_DEFER_SELFTEST:-}"
       SRCDS_TOKEN: ""
     ports:
       - "${GATE_PORT}:${GATE_PORT}/udp"

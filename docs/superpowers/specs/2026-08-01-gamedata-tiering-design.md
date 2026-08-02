@@ -269,6 +269,51 @@ Evaluated shim-side after the `.text`-range check, reusing the existing `s2vtabl
 RTTI walk. This is the extension the plugin-gamedata spec anticipated deferring (§14), arriving
 because a real descriptor needs it rather than on spec.
 
+**Correction, found while planning A5b: there are TWO bespoke gates among the eight, not one.**
+`TerminateRound` carries `ValidateTerminateRoundScopeString` (`s2script_mm.cpp:2750`), which exists
+for the same reason — *"the borrowed CSSharp/Swiftly sig matches UNIQUELY at the WRONG function on
+build 2000875"*. It follows a `lea rsi,[rip+disp32]` at `fn+0xb` and asserts the target is the
+literal string `"TerminateRound"`. The other six are uniqueness-only.
+
+So the closed validator vocabulary gains **two** entries, not one. The second generalizes cleanly —
+it is ~10 lines reusing `s2sig::ResolveLeaDisp` and `FindModuleBounds`, both already present, and
+`lea-disp` is already in the closed *resolver* vocabulary:
+
+```jsonc
+"validate": { "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7, "expect": "TerminateRound" } }
+```
+
+String-xref is a doctrine-endorsed resolution technique (`docs/re-strategy.md`), so parameterizing
+it is a capability the treadmill wants anyway rather than a one-off carve-out. Both validators land
+in A5b under the same principle: a validator is added when a real descriptor needs it.
+
+### 9.1b Settled: the two questions A5a's spec left to the plan
+
+**`TerminateRound`'s receiver is an entity with a `via` hop — `receiverless` is not needed.** The
+current op is `s2_gamerules_terminate_round(int idx, int serial, int rules_ptr_off, float delay,
+int reason)`: it already takes an `EntityRef` (the gamerules proxy) plus a schema offset to the
+rules pointer. That is exactly `receiver: {kind:"entity", via:{class, field}}`, and `via` is
+live-resolved through the cached `__s2_schema_offset`, so the offset stops being passed from JS.
+Args 3 and 4 of the engine function are hardcoded `0` today and stay declared as `int` zeros.
+
+**The game package registers its descriptors over the channel that already exists.** Core's
+`gamedata_calls::register_plugin(owner_id, raw_gamedata_json)` (`loader.rs:224`) takes the raw JSON
+text and reads both `calls` and `signatures` from it. The shim already hands core the game package
+under exactly the right identity — `s2script_core_register_package("@s2script/cs2", js)`
+(`s2script_mm.cpp:4870`) — so A5b adds the gamedata sibling of that call, passing the **merged**
+JSON the shim's `GameConfig` already produced for the `cs2` owner. Core parses it with `serde_json`
+(the shim's nlohmann parse already stripped comments) and registers under `@s2script/cs2`.
+
+This deliberately avoids a second loader: the tree/master/condition/`custom` merge logic stays in
+the shim, in one place. Re-implementing it in Rust would recreate exactly the two-implementations
+-that-disagree bug A5a hit twice with its JSONC strippers.
+
+`GameConfig` therefore gains the owner's merged JSON as text alongside the parsed sections, and
+`@s2script/cs2` is permission-exempt — it is first-party runtime, not a third-party plugin, and no
+npm-style plugin id can be spelled with a leading `@s2script/` scope the loader would accept as a
+third party. **This is not a privilege change:** the eight natives are unconditionally callable
+from any plugin today.
+
 ### 9.2 Blocker — the next-frame drains
 
 `Respawn` and `TerminateRound` are drained at the frame boundary in the shim today

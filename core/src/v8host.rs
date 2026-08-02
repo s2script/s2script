@@ -328,6 +328,13 @@ type VoiceAudibleStatsFn = extern "C" fn(*mut u64) -> c_int;
 // CCommand that failed to tokenize) — never a silent no-op.
 pub type ClientCommandFn     = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
 pub type ClientFakeCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
+// --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
+// DEV-ONLY. Fires ONE synthetic notify dispatch from inside the caller's borrow so the queue's
+// game-event path — which no natural trigger on a bot-only server can reach — executes end to end.
+// ENGINE-GENERIC by signature: the event name and every field it carries live in the shim, because
+// they are game facts. Returns 1 = deferred + queued, 0 = refused/degraded, -1 = the dispatch was
+// NOT deferred (the isolate was free, so the run proves nothing).
+pub type DeferSelftestFn = extern "C" fn() -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -492,6 +499,8 @@ pub struct S2EngineOps {
     pub client_fake_command: Option<ClientFakeCommandFn>,
     // --- identity-flag clear (APPENDED after client_fake_command; order is the ABI) ---
     pub ent_identity_flags_clear: Option<EntIdentityFlagsClearFn>,
+    // --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
+    pub defer_selftest: Option<DeferSelftestFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -2964,15 +2973,39 @@ pub(crate) enum StopAt {
     Handled,
 }
 
+/// Did a NOTIFY dispatch actually reach JS, or must the caller replay it one drain later?
+///
+/// Core holds `HOST.borrow_mut()` across ALL JS, so a handler that causes the engine to
+/// synchronously dispatch back into core hits a failed `try_borrow_mut` on the inner dispatch.
+/// Historically that dispatch was **silently dropped** — no error, no log, presenting only as "my
+/// plugin stopped getting events". `Deferred` is that condition made visible: core delivered
+/// NOTHING and the caller (the shim, which still owns the arguments) must queue a replay for the
+/// next `GameFrame`.
+///
+/// Only **notify-only** dispatches can carry this. A pre-hook returns a `HookResult` the engine
+/// consumes synchronously; there is no answer to give a frame later, so pre-hooks keep today's
+/// graceful skip and `fan_out_collapsing` never reports `Deferred` to anyone.
+///
+/// `#[must_use]`: dropping a `Delivery` is exactly the silent drop this type exists to end.
+#[must_use]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Delivery {
+    /// The fan-out ran (or there was nobody to run it for). Nothing to replay.
+    Delivered,
+    /// `HOST` was already borrowed and the snapshot was non-empty: nothing ran. Replay next frame.
+    Deferred,
+}
+
 pub(crate) fn fan_out<F>(
     snap: &[(String, u64, v8::Global<v8::Function>)],
     label: &str,
     instrument: Instrument<'_>,
     build_args: F,
-) where
+) -> Delivery
+where
     F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
 {
-    let _ = fan_out_collapsing(snap, label, instrument, StopAt::Never, build_args);
+    fan_out_inner(snap, label, instrument, StopAt::Never, build_args).1
 }
 
 /// `fan_out` with the handlers' return values collapsed into a single `HookResult`.
@@ -2997,15 +3030,45 @@ pub(crate) fn fan_out_collapsing<F>(
 where
     F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
 {
+    // The collapsing paths are the pre/collapsing entries: the engine consumes their answer
+    // synchronously, so a re-entrant one has nobody to answer a frame later. Their `Delivery` is
+    // deliberately DISCARDED here and never surfaces — that is the documented, permanent limitation
+    // (spec §2), not an oversight.
+    fan_out_inner(snap, label, instrument, stop_at, build_args).0
+}
+
+/// The one fan-out body. Returns BOTH the collapsed `HookResult` (for `fan_out_collapsing`) and
+/// whether anything ran at all (for `fan_out`). Keeping them in one function is the point: the two
+/// public wrappers must not drift in re-entrancy discipline, and the borrow-failure signal exists in
+/// exactly one place. Nothing outside this module observes it except through `Delivery`.
+fn fan_out_inner<F>(
+    snap: &[(String, u64, v8::Global<v8::Function>)],
+    label: &str,
+    instrument: Instrument<'_>,
+    stop_at: StopAt,
+    build_args: F,
+) -> (HookResult, Delivery)
+where
+    F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
+{
     if snap.is_empty() {
-        return HookResult::Continue;
+        // Nobody subscribed → nothing to replay. Reporting `Deferred` here would make the shim
+        // `DuplicateEvent` every event on the server with no one listening.
+        return (HookResult::Continue, Delivery::Delivered);
     }
     HOST.with(|h| {
         // Re-entrancy: a handler that re-enters dispatch while HOST is already borrowed cannot run
         // this pass. ALLOW (Continue) rather than double-borrow, which would panic — the engine-side
-        // action proceeds unhooked, which is the safe direction.
-        let Ok(mut borrow) = h.try_borrow_mut() else { return HookResult::Continue };
-        let Some(host) = borrow.as_mut() else { return HookResult::Continue };
+        // action proceeds unhooked, which is the safe direction. NOTIFY callers additionally learn
+        // that nothing ran (`Deferred`) and replay one frame later instead of dropping it.
+        let Ok(mut borrow) = h.try_borrow_mut() else {
+            return (HookResult::Continue, Delivery::Deferred);
+        };
+        // Host is None = core not initialized. Deferring would loop forever (the next drain finds
+        // it just as uninitialized), so this stays a plain drop.
+        let Some(host) = borrow.as_mut() else {
+            return (HookResult::Continue, Delivery::Delivered);
+        };
 
         let mut result = HookResult::Continue;
         for (owner, generation, handler_g) in snap {
@@ -3083,11 +3146,16 @@ where
                 Some(_) => {}
             }
         }
-        result
+        (result, Delivery::Delivered)
     })
 }
 
-pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
+/// `dispatch_client_event` = **bookkeeping** (unconditional, never replayed) + the JS fan-out.
+///
+/// The split is the deferred-dispatch contract's §6.1 invariant: the breadcrumb player count and the
+/// voice slot-reuse hygiene are NOT idempotent, so a replayed dispatch must run the fan-out ONLY.
+/// The shim queues `replay_client_event`, never this entry.
+pub(crate) fn dispatch_client_event(event: &str, slot: i32) -> Delivery {
     {
         let s = crate::crash::breadcrumb::snapshot();
         match event {
@@ -3104,11 +3172,21 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
     if event == "disconnect" {
         voice_clear_slot(slot);
     }
+    replay_client_event(event, slot)
+}
+
+/// The JS half of `dispatch_client_event`, and NOTHING else — no bookkeeping, so it is safe to run
+/// a frame late. This is what the shim's deferred queue replays.
+///
+/// A deferred `"disconnect"` therefore arrives AFTER the shim has cleared the slot: the handler sees
+/// `Clients.isValid(slot) === false`, and in principle the slot could already be reused. Accepted —
+/// strictly more than today's total drop — and documented in the clients `.d.ts`.
+pub(crate) fn replay_client_event(event: &str, slot: i32) -> Delivery {
     // Snapshot — releases the CLIENT_MUX borrow before any JS runs (see `fan_out` §1).
     let snap = CLIENT_MUX.with(|m| m.borrow().snapshot(event));
     fan_out(&snap, &format!("dispatch_client('{}')", event), Instrument::none(), |tc| {
         Some(vec![v8::Integer::new(tc, slot).into()])
-    });
+    })
 }
 
 /// Deliver a map-start notification to the `Server.onMapStart` subscribers. Called from ffi.rs's
@@ -3117,12 +3195,22 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) {
 /// re-entrancy guard, per-subscriber `is_live` + context clone + HandleScope/ContextScope/TryCatch +
 /// WARN-on-throw. Notify-only — each handler is called with the single String `map` and its return
 /// is ignored.
-pub(crate) fn dispatch_map_start(map: &str) {
+///
+/// `dispatch_map_start` = **bookkeeping** (the breadcrumb map name here; `entity_live::
+/// clear_for_map_transition` in `ffi.rs`) + the JS fan-out. Replaying the bookkeeping half would
+/// wipe the entity books a frame INTO the new map, killing every ref minted since map start — hence
+/// the split (contract §6.1). The shim queues `replay_map_start`, never this entry.
+pub(crate) fn dispatch_map_start(map: &str) -> Delivery {
     crate::crash::breadcrumb::set_map(map);
+    replay_map_start(map)
+}
+
+/// The JS half of `dispatch_map_start`, and NOTHING else — safe to run a frame late.
+pub(crate) fn replay_map_start(map: &str) -> Delivery {
     let snap = MAP_MUX.with(|m| m.borrow().snapshot(""));
     fan_out(&snap, "dispatch_map_start", Instrument::none(), |tc| {
         Some(vec![v8::String::new(tc, map)?.into()])
-    });
+    })
 }
 
 /// Fan a cvar change out to `Server.onCvarChange` subscribers for that exact name AND for `"*"`.
@@ -3130,7 +3218,17 @@ pub(crate) fn dispatch_map_start(map: &str) {
 /// first so no mux borrow is held across JS, per-handler TryCatch so one thrower cannot stop the
 /// rest, and a `try_borrow_mut` graceful-skip so a handler that itself sets a cvar (re-entering this
 /// dispatch) is skipped rather than double-borrowing the isolate.
-pub(crate) fn dispatch_cvar_change(name: &str, new_value: &str, old_value: &str) {
+///
+/// This path carries NO bookkeeping, so `dispatch` and `replay` are the same work; both names exist
+/// so the shim's queue has one uniform `replay_*` vocabulary and a future bookkeeping half has an
+/// obvious home that the replay cannot reach.
+pub(crate) fn dispatch_cvar_change(name: &str, new_value: &str, old_value: &str) -> Delivery {
+    replay_cvar_change(name, new_value, old_value)
+}
+
+/// The JS half of `dispatch_cvar_change` — safe to run a frame late (the engine has ALREADY applied
+/// the value; this is pure notification).
+pub(crate) fn replay_cvar_change(name: &str, new_value: &str, old_value: &str) -> Delivery {
     // A "*" subscriber hears every cvar; a named one hears only its own. Both snapshots are taken
     // before any JS runs, and a "*" fire must not deliver twice to the wildcard subscribers.
     let mut snap = CVAR_MUX.with(|m| m.borrow().snapshot(name));
@@ -3141,7 +3239,7 @@ pub(crate) fn dispatch_cvar_change(name: &str, new_value: &str, old_value: &str)
             v8::String::new(tc, new_value)?.into(),
             v8::String::new(tc, old_value)?.into(),
         ])
-    });
+    })
 }
 
 /// E1 repair sweep (north-star §7, the E0-V4 contingency): armed by the map-start books
@@ -3175,9 +3273,16 @@ pub(crate) fn entity_repair_sweep_if_armed(simulating: bool) {
 /// guard, per-subscriber `is_live` + context clone + HandleScope/ContextScope/TryCatch +
 /// WARN-on-throw. Notify-only — each handler is called with NO args (the prelude wrapper builds
 /// the PrecacheContext) and its return is ignored.
+///
+/// NOT DEFERRABLE, and deliberately so: this is the one notify-only entry that fails the deferral
+/// test on semantics rather than on its signature. The manifest the handlers write into is
+/// block-scoped shim-side (`s_currentPrecacheManifest`, cleared when the hook returns) AND consumed
+/// by the engine the moment the hook returns, so a replayed handler's `sound_precache_add` would
+/// write into a null-or-freed `IEntityResourceManifest*` and mean nothing even if it were safe. Its
+/// `Delivery` is discarded here on purpose — a re-entrant precache keeps today's graceful skip.
 pub(crate) fn dispatch_precache() {
     let snap = PRECACHE_MUX.with(|m| m.borrow().snapshot(""));
-    fan_out(&snap, "dispatch_precache", Instrument::none(), |_tc| Some(vec![]));
+    let _ = fan_out(&snap, "dispatch_precache", Instrument::none(), |_tc| Some(vec![]));
 }
 
 /// Deliver an entity lifecycle event to the `Entity.on{Create,Spawn,Delete}` subscribers. Called from
@@ -3187,7 +3292,23 @@ pub(crate) fn dispatch_precache() {
 /// re-entrancy guard, per-sub `is_live` + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw.
 /// The entity crosses as a packed handle → a serial-gated EntityRef (null if stale/free — the exact-(-1)
 /// + resolve-null discipline of `dispatch_output`); className is passed as a 2nd arg (always valid).
-pub(crate) fn dispatch_entity_event(kind: &str, class_name: &str, handle: i32) {
+///
+/// `dispatch_entity_event` = **bookkeeping** (`entity_live::on_created`/`on_spawned`/`on_deleted`,
+/// in `ffi.rs`) + this JS fan-out. A replayed `"create"` would RESURRECT a since-deleted entity in
+/// the books (`on_created` is an unconditional insert), which is why the shim queues
+/// `replay_entity_event` and never the dispatch entry (contract §6.1).
+pub(crate) fn dispatch_entity_event(kind: &str, class_name: &str, handle: i32) -> Delivery {
+    replay_entity_event(kind, class_name, handle)
+}
+
+/// The JS half of `dispatch_entity_event`, and NOTHING else — no books feed, safe to run a frame
+/// late.
+///
+/// A deferred `"delete"` delivers a `null` EntityRef: `ffi.rs` books the delete immediately after
+/// the (skipped) dispatch, so by drain time `entity_live::adopt` fails. Accepted — it is the same
+/// books-gated degrade any stale ref already gets, the className still identifies what died, and it
+/// is strictly more than today's total drop. Documented in the entity `.d.ts`.
+pub(crate) fn replay_entity_event(kind: &str, class_name: &str, handle: i32) -> Delivery {
     // Snapshot the exact-class key + the "<kind>\0*" wildcard (skip the wild when class == "*", else
     // the same key would be snapshotted twice). Both taken before any JS runs.
     let exact = format!("{}\0{}", kind, class_name);
@@ -3213,7 +3334,7 @@ pub(crate) fn dispatch_entity_event(kind: &str, class_name: &str, handle: i32) {
             None => v8::undefined(tc).into(),
         };
         Some(vec![entity_val, class_val])
-    });
+    })
 }
 
 /// Drain `COOKIE_CACHED_PENDING` and fan each queued slot out to the `Cookies.onCached` subscribers
@@ -6397,10 +6518,24 @@ fn s2_event_fire_to_client(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
 /// **Re-entrancy discipline:** snapshot before invoke — release `EVENT_MUX` borrow, then enter
 /// each subscriber's PLUGIN context in its own HandleScope+ContextScope+TryCatch.  `EVENT_MUX` and
 /// `PLUGINS`/`REGISTRY` are NOT held across any JS call.
-pub(crate) fn dispatch_game_event(name: &str) {
+///
+/// This path carries NO bookkeeping, so `dispatch` and `replay` are the same work; both names exist
+/// so the shim's queue has one uniform `replay_*` vocabulary (contract §6.1).
+pub(crate) fn dispatch_game_event(name: &str) -> Delivery {
+    replay_game_event(name)
+}
+
+/// The JS half of `dispatch_game_event` — the entry the shim's deferred queue replays.
+///
+/// This is the ONE deferrable entry whose payload is not scalars: the handlers read the event's
+/// fields through the shim's `s_currentEvent` accessor ops, and the engine's `IGameEvent` is valid
+/// only for the duration of the original call. The shim therefore `DuplicateEvent`s it, points
+/// `s_currentEvent` at the copy for this call, and `FreeEvent`s it after. Nothing about an
+/// `IGameEvent` is ever represented in Rust — no raw pointer is queued on this side.
+pub(crate) fn replay_game_event(name: &str) -> Delivery {
     // Snapshot — releases the EVENT_MUX borrow before any JS runs, so `Events.fire()` from inside a
-    // handler cannot mutate the list being walked (the re-entrant dispatch itself is skipped by
-    // fan_out's borrow guard; the engine-side fire has already happened).
+    // handler cannot mutate the list being walked (a re-entrant dispatch reports `Deferred` and is
+    // replayed by the shim next frame; the engine-side fire has already happened).
     let snap = EVENT_MUX.with(|m| m.borrow().snapshot(name));
     let tag = format!("event:{}", name);
     fan_out(&snap, &format!("dispatch_game_event('{}')", name), Instrument::full(&tag), |tc| {
@@ -6418,7 +6553,7 @@ pub(crate) fn dispatch_game_event(name: &str) {
             ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
         })();
         Some(vec![event_val.unwrap_or_else(|| v8::undefined(tc).into())])
-    });
+    })
 }
 
 /// Slice 6.6 Stage 2: run the `Damage.onPre` subscribers over the current CTakeDamageInfo (set by the
@@ -6706,6 +6841,57 @@ fn s2_crash_test(
     }));
 }
 
+/// The deferred-dispatch selftest's opt-in gate: `S2_DEFER_SELFTEST` set to ANYTHING arms it.
+///
+/// DEV-ONLY, off by default, and the gate is on INSTALLATION rather than on the call — with the
+/// variable unset (every production process) `__s2_defer_selftest` is not a property of any
+/// context's global at all, so no plugin can reach the synthetic re-entrancy even by accident.
+/// Read on every `install_natives` (once per context, a `getenv`) rather than cached in a
+/// `OnceLock`, so a test can arm and disarm it around a context and get the honest answer both
+/// ways. The shim re-checks the SAME variable before doing anything, so arming needs the process
+/// environment, not just a core-side flag.
+fn defer_selftest_armed() -> bool {
+    std::env::var_os("S2_DEFER_SELFTEST").is_some()
+}
+
+/// Native `__s2_defer_selftest() -> number` — DEV-ONLY (`S2_DEFER_SELFTEST`), the synthetic
+/// re-entrancy that makes the deferred-dispatch queue's GAME-EVENT path live-provable.
+///
+/// The queue's scalar variants have natural triggers, but the game-event variant needs the engine
+/// to dispatch an event back into core WHILE CORE HOLDS THE BORROW, and nothing on a bot-only dev
+/// server does that: `Events.fire()` from a handler is delivered synchronously (CS2 does not route
+/// a JS-fired event back through our listener inside the borrow), and `slay()`'s `player_death`
+/// arrives a frame later from the engine's OWN delivery, not our drain. The genuine trigger is an
+/// engine call that fires an event synchronously inside the borrow — exactly what A5b's
+/// `Respawn`/`TerminateRound` will be, and why the shim still hand-rolls drains for those two. So
+/// the path cannot be exercised naturally until A5b lands. This is the same reason
+/// `S2_DAMAGE_SELFTEST` exists for the damage detour, and it carries the same discipline: env-gated,
+/// off by default, loudly labelled, and NOT to be run in production — it dispatches a REAL event
+/// name with FAKE field values to every subscribed plugin.
+///
+/// This native is only the doorway. Everything the selftest does happens in the shim, because the
+/// shim is the side that owns an `IGameEvent` and the queue — and because the event name is a game
+/// fact. Calling it from JS is what makes it work: core is inside `HOST.borrow_mut()` for the whole
+/// native call, so the shim's dispatch into core MUST report `S2_DISPATCH_DEFERRED`.
+///
+/// Returns 1 (deferred + queued — the path ran), 0 (refused or degraded: op absent, shim gate off,
+/// no event manager, `CreateEvent` failed, or duplication unavailable), or -1 (the dispatch was NOT
+/// deferred, i.e. the isolate was free and the run proves nothing).
+fn s2_defer_selftest(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(f) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.defer_selftest) else {
+            log_warn("WARN: __s2_defer_selftest: defer_selftest op unavailable");
+            rv.set_int32(0);
+            return;
+        };
+        rv.set_int32(f());
+    }));
+}
+
 /// Install the full native API on a context's global object: `console` plus every `__s2_*`
 /// primitive and the `__s2require` shim.  Called for BOTH the shared `HOST` context (so the
 /// C-ABI `eval` surface keeps `console`/`__s2_concommand` etc.) and every per-plugin context.
@@ -6769,6 +6955,14 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_crash_set_game", s2_crash_set_game);
     set_native(scope, global_obj, "__s2_server_build", s2_server_build);
     set_native(scope, global_obj, "__s2_crash_test", s2_crash_test);
+    // Deferred-dispatch selftest — INSTALLED ONLY when S2_DEFER_SELFTEST is set in the process
+    // environment. Gating the INSTALL (not the call) is the point: in a production process the
+    // property does not exist on any global, so `typeof __s2_defer_selftest === "undefined"` and
+    // there is nothing for a plugin to reach. See `s2_defer_selftest` for why the path it exercises
+    // has no natural trigger before A5b.
+    if defer_selftest_armed() {
+        set_native(scope, global_obj, "__s2_defer_selftest", s2_defer_selftest);
+    }
     // Inter-plugin interface primitives (Slice 4.5).
     set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
@@ -10565,8 +10759,8 @@ mod frame_tests {
             __s2pkg_server.Server.onCvarChange("mp_friendlyfire", (n, nv, ov) => { __seen.push("exact:"+n+":"+nv+":"+ov); });
             __s2pkg_server.Server.onCvarChange("*",               (n, nv, ov) => { __seen.push("star:"+n+":"+nv+":"+ov); });
         "#);
-        dispatch_cvar_change("mp_friendlyfire", "1", "0");
-        dispatch_cvar_change("sv_gravity", "600", "800");
+        let _ = dispatch_cvar_change("mp_friendlyfire", "1", "0");
+        let _ = dispatch_cvar_change("sv_gravity", "600", "800");
         assert_eq!(eval_in_context_string("p", "__seen.join('|')"),
             "exact:mp_friendlyfire:1:0|star:mp_friendlyfire:1:0|star:sv_gravity:600:800");
         shutdown();
@@ -10581,7 +10775,7 @@ mod frame_tests {
             __s2pkg_server.Server.onCvarChange("*", () => { throw new Error("boom"); });
             __s2pkg_server.Server.onCvarChange("*", () => { globalThis.__n++; });
         "#);
-        dispatch_cvar_change("sv_cheats", "1", "0");
+        let _ = dispatch_cvar_change("sv_cheats", "1", "0");
         assert_eq!(read_i32_global_in("p", "__n"), 1);
         shutdown();
     }
@@ -10594,10 +10788,10 @@ mod frame_tests {
             globalThis.__n = 0;
             globalThis.__h = __s2pkg_server.Server.onCvarChange("sv_cheats", () => { globalThis.__n++; });
         "#);
-        dispatch_cvar_change("sv_cheats", "1", "0");
+        let _ = dispatch_cvar_change("sv_cheats", "1", "0");
         assert_eq!(read_i32_global_in("p", "__n"), 1);
         eval_in_context_string("p", "__h.dispose(); ''");
-        dispatch_cvar_change("sv_cheats", "0", "1");
+        let _ = dispatch_cvar_change("sv_cheats", "0", "1");
         assert_eq!(read_i32_global_in("p", "__n"), 1, "no delivery after dispose");
         shutdown();
     }
@@ -10612,7 +10806,7 @@ mod frame_tests {
         unload_plugin("demo");
         assert!(CVAR_MUX.with(|m| m.borrow().snapshot("*").is_empty()),
             "unload must drop the subscription");
-        dispatch_cvar_change("sv_cheats", "1", "0");   // must not panic into a dead context
+        let _ = dispatch_cvar_change("sv_cheats", "1", "0");   // must not panic into a dead context
         shutdown();
     }
 
@@ -11213,7 +11407,7 @@ mod frame_tests {
         assert_eq!(plugin_phase("sc"), Some(crate::plugin::Phase::Active));
         assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 2, "ctx + scope subs both registered");
 
-        dispatch_game_event("round_start");
+        let _ = dispatch_game_event("round_start");
         assert_eq!(eval_in_context_string("sc", "String(globalThis.PLUGIN_HITS|0)"), "1");
         assert_eq!(eval_in_context_string("sc", "String(globalThis.SCOPE_HITS|0)"), "1");
 
@@ -11221,7 +11415,7 @@ mod frame_tests {
         let _ = eval_in_context("sc", "globalThis.S.clear();");
         assert_eq!(EVENT_MUX.with(|m| m.borrow().snapshot("round_start").len()), 1, "only the ctx sub remains");
 
-        dispatch_game_event("round_start");
+        let _ = dispatch_game_event("round_start");
         assert_eq!(eval_in_context_string("sc", "String(globalThis.PLUGIN_HITS|0)"), "2", "ctx sub still fires");
         assert_eq!(eval_in_context_string("sc", "String(globalThis.SCOPE_HITS|0)"), "1", "scope sub gone after clear()");
         shutdown();
@@ -12065,53 +12259,133 @@ mod frame_tests {
         shutdown();
     }
 
-    /// Clients sub-project Task 1: a subscribed `onConnect` handler receives a `Client` whose `.slot`
-    /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
-    /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
-    /// `unload_plugin` (remove_by_owner teardown) further dispatches are a safe no-op.
-    /// `fan_out`'s throw-isolation guarantee, asserted on a converted path.
+    // ============================================================================================
+    // Deferred-dispatch queue — the CORE half.
+    //
+    // Core holds `HOST.borrow_mut()` across ALL JS, so a handler that causes the engine to
+    // synchronously dispatch back into core hits a failed `try_borrow_mut` on the inner dispatch.
+    // That used to be a SILENT DROP — no error, no log, presenting only as "my plugin stopped
+    // getting events". Core now reports `Delivery::Deferred` instead.
+    //
+    // Core detects the failed borrow but owns no dispatch payload: every dispatch ORIGINATES in the
+    // shim, which still has its arguments on the stack, and a game event's data lives in an
+    // engine-owned `IGameEvent` valid only for the duration of the call. So the SHIM owns the queue
+    // and the replay. There is no shim in this process, which is why these tests stand a minimal one
+    // up: `reentrant_event_fire` is the engine op a plugin's `Events.fire()` reaches, it observes
+    // the `Delivery` core hands back, and `drain_deferred()` is the next frame's
+    // `Hook_GameFramePre`. That is faithful — in the real system the shim is exactly the thing
+    // behind that op — and it is why `v8host::dispatch_*` (not just the FFI wrapper) returns the
+    // delivery status.
+    //
+    // INVESTIGATED AND REJECTED in #63: `v8::CallbackScope`, the sanctioned way to obtain a scope
+    // when V8 is already on the stack. Every `NewCallbackScope` impl in rusty_v8 149.4.0 requires
+    // either `&mut Isolate` — the borrow we do not have — or a live V8 handle
+    // (`FunctionCallbackInfo`, `Local<Context>`, `PromiseRejectMessage`). The re-entrant dispatch
+    // arrives through the C ABI (engine -> shim -> `s2script_core_dispatch_*`) with none of those in
+    // hand, and reconstructing one from a stashed `*mut Isolate` would alias a live `&mut`. That
+    // door is closed; deferral is the tractable fix.
+    // ============================================================================================
+
+    thread_local! {
+        /// The mock shim's FIFO of deferred game-event replays (by name).
+        static DEFERRED_Q: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        /// The mock shim's named-drop log — the lines `META_CONPRINTF`s in the real one.
+        static DEFERRED_DROPS: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        /// What a re-entrant PRE hook answered (see `reentrant_pre_hook_is_skipped_not_deferred`).
+        static PRE_REENTRANT_RESULT: std::cell::Cell<i32> = std::cell::Cell::new(-1);
+        /// Did a re-entrant dispatch with NO subscribers report `Deferred`?
+        static NOSUB_WAS_DEFERRED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    }
+
+    /// The mock shim's queue bound, standing in for `kDeferredQueueMax` (`shim/src/s2script_mm.cpp`).
     ///
-    /// The per-handler `TryCatch` is the part of the preamble a deduplication most easily loses —
-    /// hoisting it out of the loop, or dropping it because "the caller has one", would make ONE
-    /// plugin's throwing handler silently deny every later subscriber its dispatch. That failure is
-    /// invisible in a diff and invisible at runtime except as "my plugin stopped getting events",
-    /// so it gets its own test rather than riding on the existing per-capability ones.
+    /// Deliberately 3 rather than the shim's 256: what is under test is the BEHAVIOUR at the
+    /// boundary — drop the newest, name it, do not grow — not the number, which is a shim-side
+    /// tuning knob. Driving 257 real JS dispatches to reach the shipped cap would test the same
+    /// three assertions much more slowly.
+    const MOCK_DEFER_MAX: usize = 3;
+
+    fn deferred_len() -> usize { DEFERRED_Q.with(|q| q.borrow().len()) }
+    fn deferred_names() -> Vec<String> { DEFERRED_Q.with(|q| q.borrow().clone()) }
+    fn deferred_drops() -> Vec<String> { DEFERRED_DROPS.with(|d| d.borrow().clone()) }
+    fn deferred_clear() {
+        DEFERRED_Q.with(|q| q.borrow_mut().clear());
+        DEFERRED_DROPS.with(|d| d.borrow_mut().clear());
+    }
+
+    /// The mock shim's bounded push, mirroring `S2_DeferGameEvent`: an unbounded queue would turn a
+    /// plugin bug (a handler that re-fires its own event forever) into an OOM, so past the cap the
+    /// NEWEST is dropped — and SAID, because a silent drop is the exact failure mode this slice
+    /// exists to end. The wording matches the shim's log line so both are greppable as one string.
+    fn defer_push(name: &str) {
+        if deferred_len() >= MOCK_DEFER_MAX {
+            DEFERRED_DROPS.with(|d| d.borrow_mut().push(format!(
+                "deferred-dispatch: queue full ({}) — dropped game_event '{}' (newest)",
+                MOCK_DEFER_MAX, name
+            )));
+            return;
+        }
+        DEFERRED_Q.with(|q| q.borrow_mut().push(name.to_string()));
+    }
+
+    /// The mock shim's drain, standing in for the top of `Hook_GameFramePre`. Returns how many
+    /// entries it replayed.
     ///
-    /// Two plugins subscribe to the same event; the first throws. The second must still run, and a
-    /// later dispatch must still reach both.
-    /// A re-entrant dispatch is DROPPED, and this pins that so the limitation is visible in the
-    /// suite rather than discovered on a live server.
+    /// `mem::take` IS the spec's double buffer: a dispatch deferred BY a deferred handler lands in
+    /// the NEXT drain rather than extending the current one, so a handler that re-fires its own
+    /// event cannot spin the frame forever.
     ///
-    /// Simulates the real engine path exactly: JS calls `__s2_event_fire`, the engine op fires the
-    /// event, and the engine synchronously dispatches it back into core — re-entering
-    /// `dispatch_game_event` while the OUTER dispatch still holds `HOST.borrow_mut()`. The inner
-    /// `try_borrow_mut` fails, `fan_out` returns, and the second plugin never sees the event. No
-    /// error, no log — the failure presents only as "my plugin stopped getting events".
-    ///
-    /// INVESTIGATED AND REJECTED: `v8::CallbackScope`, which is the sanctioned way to obtain a scope
-    /// when V8 is already on the stack (and is what the promise-reject callback above legitimately
-    /// uses). It cannot help here. Every `NewCallbackScope` impl in rusty_v8 149.4.0 requires either
-    /// `&mut Isolate` — the borrow we do not have — or a live V8 handle (`FunctionCallbackInfo`,
-    /// `Local<Context>`, `PromiseRejectMessage`). The re-entrant dispatch arrives through the C ABI
-    /// (engine -> shim -> `s2script_core_dispatch_*`) with none of those in hand. Reconstructing one
-    /// from a stashed `*mut Isolate` would alias a live `&mut`, which is UB regardless of V8 being
-    /// happy with nested HandleScopes.
-    ///
-    /// The tractable fix is a deferred-dispatch queue: on a failed borrow, push the dispatch and
-    /// drain it at the next frame boundary, double-buffered the way SourceMod's `RunFrameHooks`
-    /// swaps `frame_queue`/`frame_actions`. That converts "silently dropped" into "delivered one
-    /// frame later". It cannot serve PRE-hooks, which must answer synchronously — those stay
-    /// skipped, and that should be documented in the .d.ts rather than papered over.
-    ///
-    /// When that queue lands, this test flips to asserting the listener DID run.
+    /// **This mock covers CORE'S half of the contract only** — that a re-entrant dispatch reports
+    /// `Deferred` and that its replay delivers. It is NOT coverage of the shipped drain, and must
+    /// not be read as such: the real one lives in `shim/src/defer_queue.cpp` over two file-scope
+    /// buffers plus a `swap`, and a `mem::take` into a local `Vec` is structurally incapable of
+    /// reproducing that shape (a flush re-entered from inside a replay clearing the buffer being
+    /// walked shipped past this file for exactly that reason). The drain itself is tested by
+    /// `shim/tests/defer_queue_test.cpp` — `scripts/test-defer-queue.sh` in `ci-native.sh`.
+    fn drain_deferred() -> usize {
+        let batch: Vec<String> = DEFERRED_Q.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        for name in &batch {
+            // A replay that itself re-defers is dropped with a named reason, NEVER re-queued: the
+            // drain runs with HOST provably free, so it can only mean a bug, and re-queueing would
+            // spin across frames.
+            assert_ne!(
+                replay_game_event(name), Delivery::Deferred,
+                "replay of '{}' re-deferred — the drain must run with HOST free", name
+            );
+        }
+        batch.len()
+    }
+
+    /// The engine op behind a plugin's `Events.fire()`: the engine fires the event and synchronously
+    /// dispatches it back into core. Under the OUTER dispatch's borrow that inner dispatch reports
+    /// `Deferred`, and the shim (here, us) queues the replay.
     extern "C" fn reentrant_event_fire(_dont: c_int) -> c_int {
-        dispatch_game_event("inner");
+        if dispatch_game_event("inner") == Delivery::Deferred {
+            defer_push("inner");
+        }
         1
     }
 
+    /// The engine op for the ORDERING case: one `Events.fire()` that re-enters TWO different
+    /// dispatches. Pushed B-then-A on purpose — see `deferred_dispatches_replay_in_push_order`.
+    extern "C" fn reentrant_fire_two_events(_dont: c_int) -> c_int {
+        for name in ["innerB", "innerA"] {
+            if dispatch_game_event(name) == Delivery::Deferred {
+                defer_push(name);
+            }
+        }
+        1
+    }
+
+    /// A re-entrant NOTIFY dispatch is DELIVERED ONE DRAIN LATER instead of being silently dropped.
+    ///
+    /// This is the slice's acceptance tripwire, written in #63 as `reentrant_dispatch_is_currently_
+    /// dropped` with the listener asserted at 0 and a doc comment saying "when the queue lands, this
+    /// test flips to asserting the listener DID run". This is that flip.
     #[test]
-    fn reentrant_dispatch_is_currently_dropped() {
+    fn reentrant_dispatch_is_delivered_next_drain() {
         let _ = init(dummy_logger());
+        deferred_clear();
         set_engine_ops(Some(S2EngineOps {
             event_fire: Some(reentrant_event_fire),
             ..mock_event_ops()
@@ -12123,21 +12397,284 @@ mod frame_tests {
             });
         "#, "{}");
         load_body("listener", r#"
-            __s2pkg_events.Events.on("inner", function () { globalThis.__ran = 1; });
+            __s2pkg_events.Events.on("inner", function () {
+                globalThis.__ran = (globalThis.__ran || 0) + 1;
+            });
         "#, "{}");
 
-        dispatch_game_event("outer");
+        let _ = dispatch_game_event("outer");
         assert_eq!(read_i32_global_in("firer", "__ran"), 1, "outer handler must run");
         assert_eq!(
             read_i32_global_in("listener", "__ran"), 0,
-            "CURRENT behaviour: the re-entrant dispatch is dropped. Flip to 1 when the \
-             deferred-dispatch queue lands (see this test's doc comment)."
+            "the re-entrant dispatch still cannot run INSIDE the outer borrow"
         );
+        assert_eq!(deferred_len(), 1, "core must have reported Deferred so the shim queued a replay");
+
+        // Next frame: the drain.
+        assert_eq!(drain_deferred(), 1);
+        assert_eq!(
+            read_i32_global_in("listener", "__ran"), 1,
+            "delivered one drain later — this is the whole point of the queue"
+        );
+        assert_eq!(deferred_len(), 0, "and the drain left nothing behind");
+
         set_engine_ops(None);
+        deferred_clear();
         shutdown();
     }
 
+    /// A dispatch deferred BY a deferred handler lands in the NEXT drain, not the current one.
+    ///
+    /// Without the double buffer, a handler that re-fires its own event extends the batch it is
+    /// being replayed from and spins the frame forever. The listener here re-fires unconditionally,
+    /// so the ONLY thing stopping an infinite loop is the buffer swap.
     #[test]
+    fn nested_defer_lands_in_the_next_drain_not_the_current_one() {
+        let _ = init(dummy_logger());
+        deferred_clear();
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_event_fire),
+            ..mock_event_ops()
+        }));
+        load_body("firer", r#"
+            __s2pkg_events.Events.on("outer", function () { __s2_event_fire(false); });
+        "#, "{}");
+        load_body("listener", r#"
+            __s2pkg_events.Events.on("inner", function () {
+                globalThis.__ran = (globalThis.__ran || 0) + 1;
+                __s2_event_fire(false);       // re-fire from INSIDE the replay
+            });
+        "#, "{}");
+
+        let _ = dispatch_game_event("outer");
+        assert_eq!(deferred_len(), 1);
+
+        // Drain 1 replays exactly one entry. The listener's own re-fire defers into the NEXT batch.
+        assert_eq!(drain_deferred(), 1, "the drain must not grow while it is running");
+        assert_eq!(read_i32_global_in("listener", "__ran"), 1);
+        assert_eq!(deferred_len(), 1, "the nested defer waits for the next drain");
+
+        // Drain 2 delivers it — the second delivery still arrives, it is merely a frame later.
+        assert_eq!(drain_deferred(), 1);
+        assert_eq!(read_i32_global_in("listener", "__ran"), 2);
+        assert_eq!(deferred_len(), 1, "and it re-fires again, one bounded step per frame");
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// Two dispatches deferred in ONE frame replay in PUSH order.
+    ///
+    /// The spec's reason for ONE FIFO rather than a queue per payload type: a deferred `player_death`
+    /// and a deferred client-disconnect must keep their relative order, which a split queue leaves
+    /// undefined. The op below pushes `innerB` BEFORE `innerA` precisely so the assertion can tell
+    /// push order apart from the orders a broken drain would produce — sorted or LIFO both read
+    /// `"AB"`, only a FIFO reads `"BA"`.
+    #[test]
+    fn deferred_dispatches_replay_in_push_order() {
+        let _ = init(dummy_logger());
+        deferred_clear();
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_fire_two_events),
+            ..mock_event_ops()
+        }));
+        load_body("firer", r#"
+            __s2pkg_events.Events.on("outer", function () { __s2_event_fire(false); });
+        "#, "{}");
+        load_body("listener", r#"
+            __s2pkg_events.Events.on("innerA", function () {
+                globalThis.__order = (globalThis.__order || "") + "A";
+            });
+            __s2pkg_events.Events.on("innerB", function () {
+                globalThis.__order = (globalThis.__order || "") + "B";
+            });
+        "#, "{}");
+
+        let _ = dispatch_game_event("outer");
+        assert_eq!(
+            deferred_names(), vec!["innerB".to_string(), "innerA".to_string()],
+            "both re-entrant dispatches must land in the ONE queue, in the order they were pushed"
+        );
+        assert_eq!(
+            read_string_global_in("listener", "__order"), "undefined",
+            "neither ran inside the outer borrow"
+        );
+
+        assert_eq!(drain_deferred(), 2, "one drain replays the whole batch");
+        assert_eq!(
+            read_string_global_in("listener", "__order"), "BA",
+            "replayed in PUSH order; sorted or LIFO order would read 'AB'"
+        );
+        assert_eq!(deferred_len(), 0);
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// The queue is BOUNDED: pushing past the cap drops the newest, SAYS SO BY NAME, and the queue
+    /// does not grow.
+    ///
+    /// An unbounded queue turns a plugin bug — a handler that re-fires its own event every time —
+    /// into an OOM, so the bound is not optional. What makes the bound safe rather than a
+    /// re-introduction of the silent drop is that overflow is NAMED: the log says which dispatch was
+    /// dropped and that it was the newest. This asserts all three (cap held, drop counted, drop
+    /// named) against the mock shim's `defer_push`; the shipped bound is the shim's
+    /// `kDeferredQueueMax` and its `META_CONPRINTF` (`shim/src/s2script_mm.cpp`), which this mirrors
+    /// line for line at a smaller cap.
+    #[test]
+    fn deferred_queue_is_bounded_and_names_what_it_drops() {
+        const BURST: usize = MOCK_DEFER_MAX + 2;
+        let _ = init(dummy_logger());
+        deferred_clear();
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_event_fire),
+            ..mock_event_ops()
+        }));
+        load_body("firer", &format!(r#"
+            __s2pkg_events.Events.on("outer", function () {{
+                // {BURST} re-entrant defers inside ONE outer borrow — the runaway-handler shape.
+                for (var i = 0; i < {BURST}; i++) __s2_event_fire(false);
+            }});
+        "#), "{}");
+        load_body("listener", r#"
+            __s2pkg_events.Events.on("inner", function () {
+                globalThis.__ran = (globalThis.__ran || 0) + 1;
+            });
+        "#, "{}");
+
+        let _ = dispatch_game_event("outer");
+
+        assert_eq!(deferred_len(), MOCK_DEFER_MAX, "the queue must not grow past its cap");
+        let drops = deferred_drops();
+        assert_eq!(
+            drops.len(), BURST - MOCK_DEFER_MAX,
+            "every push past the cap is dropped — and counted, not swallowed"
+        );
+        for d in &drops {
+            assert!(
+                d.contains("queue full") && d.contains("game_event 'inner'") && d.contains("(newest)"),
+                "an overflow drop must NAME the dispatch it dropped, not vanish: {}", d
+            );
+        }
+
+        // The entries that DID fit are still delivered — overflow degrades this dispatch, not the queue.
+        assert_eq!(drain_deferred(), MOCK_DEFER_MAX);
+        assert_eq!(read_i32_global_in("listener", "__ran"), MOCK_DEFER_MAX as i32);
+        assert_eq!(deferred_len(), 0);
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// The engine op for the PRE-hook contrast: re-enter `dispatch_game_event_pre` under the borrow.
+    extern "C" fn reentrant_event_fire_pre(_dont: c_int) -> c_int {
+        // No `Delivery` to observe and nothing to queue — `dispatch_game_event_pre` returns a plain
+        // suppress/allow int, BY CONSTRUCTION. That is the point of the test.
+        PRE_REENTRANT_RESULT.with(|c| c.set(dispatch_game_event_pre("innerpre")));
+        1
+    }
+
+    /// A re-entrant PRE hook stays on today's GRACEFUL SKIP and is never queued.
+    ///
+    /// A pre-hook returns a `HookResult` the engine consumes synchronously; there is no answer to
+    /// give a frame later, so deferral cannot serve it. This is a permanent, documented limitation
+    /// (spec §2 / the `.d.ts` note), not a gap to close later — and it is enforced by the type
+    /// system: `fan_out_collapsing` discards its `Delivery` and `dispatch_game_event_pre` has none
+    /// to return. This test pins the observable half: the subscriber does NOT run, and the answer
+    /// the engine gets is ALLOW (the fail-open direction), not the suppress its subscriber wanted.
+    #[test]
+    fn reentrant_pre_hook_is_skipped_not_deferred() {
+        let _ = init(dummy_logger());
+        deferred_clear();
+        PRE_REENTRANT_RESULT.with(|c| c.set(-1));
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_event_fire_pre),
+            ..mock_event_ops()
+        }));
+        load_body("firer", r#"
+            __s2pkg_events.Events.on("outer", function () {
+                globalThis.__ran = 1;
+                __s2_event_fire(false);   // engine fires -> re-enters dispatch_game_event_pre("innerpre")
+            });
+        "#, "{}");
+        load_body("prelistener", r#"
+            // Raw pre-subscribe native; `2` is HookResult.Handled = SUPPRESS the broadcast.
+            __s2_event_subscribe_pre("innerpre", function () {
+                globalThis.__ran = 1;
+                return 2;
+            });
+        "#, "{}");
+
+        let _ = dispatch_game_event("outer");
+        assert_eq!(read_i32_global_in("firer", "__ran"), 1, "outer handler must run");
+        assert_eq!(
+            read_i32_global_in("prelistener", "__ran"), 0,
+            "a re-entrant PRE hook is SKIPPED — it cannot be delivered a frame later"
+        );
+        assert_eq!(
+            PRE_REENTRANT_RESULT.with(|c| c.get()), 0,
+            "and it must answer ALLOW (0) — fail-open — not the Handled(1) its subscriber wanted"
+        );
+        assert_eq!(deferred_len(), 0, "nothing was queued: pre-hooks are not deferrable");
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// The engine op for the empty-snapshot case: re-enter a dispatch NOBODY subscribes to.
+    extern "C" fn reentrant_fire_no_subscribers(_dont: c_int) -> c_int {
+        NOSUB_WAS_DEFERRED.with(|c| c.set(dispatch_game_event("nobody_listens") == Delivery::Deferred));
+        1
+    }
+
+    /// An EMPTY subscriber snapshot never defers, even under a held borrow.
+    ///
+    /// Core reports `Deferred` iff the snapshot is non-empty AND `try_borrow_mut` failed. Reporting
+    /// it for an unsubscribed event would make the shim `DuplicateEvent` (and hold, and free) every
+    /// event fired on a server with nobody listening — a per-event allocation for a replay that
+    /// would reach no one.
+    #[test]
+    fn empty_snapshot_never_defers() {
+        let _ = init(dummy_logger());
+        deferred_clear();
+        NOSUB_WAS_DEFERRED.with(|c| c.set(true));   // must be cleared BY the dispatch, not by default
+        set_engine_ops(Some(S2EngineOps {
+            event_fire: Some(reentrant_fire_no_subscribers),
+            ..mock_event_ops()
+        }));
+        load_body("firer", r#"
+            __s2pkg_events.Events.on("outer", function () {
+                globalThis.__ran = 1;
+                __s2_event_fire(false);
+            });
+        "#, "{}");
+
+        let _ = dispatch_game_event("outer");
+        assert_eq!(read_i32_global_in("firer", "__ran"), 1, "outer handler must run");
+        assert!(
+            !NOSUB_WAS_DEFERRED.with(|c| c.get()),
+            "a re-entrant dispatch with no subscribers must report Delivered, not Deferred"
+        );
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// `fan_out`'s throw-isolation guarantee, asserted on a converted path.
+    ///
+    /// The per-handler `TryCatch` is the part of the preamble a deduplication most easily loses —
+    /// hoisting it out of the loop, or dropping it because "the caller has one", would make ONE
+    /// plugin's throwing handler silently deny every later subscriber its dispatch. That failure is
+    /// invisible in a diff and invisible at runtime except as "my plugin stopped getting events",
+    /// so it gets its own test rather than riding on the existing per-capability ones.
+    ///
+    /// Two plugins subscribe to the same event; the first throws. The second must still run, and a
+    /// later dispatch must still reach both.
     #[test]
     fn fan_out_isolates_a_throwing_handler_from_the_rest() {
         let _ = init(dummy_logger());
@@ -12155,7 +12692,7 @@ mod frame_tests {
             });
         "#, "{}");
 
-        dispatch_client_event("connect", 3);
+        let _ = dispatch_client_event("connect", 3);
         assert_eq!(read_i32_global_in("thrower", "__ran"), 1, "the throwing handler must run");
         assert_eq!(
             read_i32_global_in("survivor", "__ran"), 1,
@@ -12164,13 +12701,17 @@ mod frame_tests {
         assert_eq!(read_i32_global_in("survivor", "__slot"), 3, "and its arguments must be intact");
 
         // The throw must not have poisoned the subscription either — both run again next dispatch.
-        dispatch_client_event("connect", 4);
+        let _ = dispatch_client_event("connect", 4);
         assert_eq!(read_i32_global_in("thrower", "__ran"), 2, "throwing must not disable the sub");
         assert_eq!(read_i32_global_in("survivor", "__ran"), 2);
         assert_eq!(read_i32_global_in("survivor", "__slot"), 4);
         shutdown();
     }
 
+    /// Clients sub-project Task 1: a subscribed `onConnect` handler receives a `Client` whose `.slot`
+    /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
+    /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
+    /// `unload_plugin` (remove_by_owner teardown) further dispatches are a safe no-op.
     #[test]
     fn client_dispatch_delivers_client_with_slot() {
         let _ = init(dummy_logger());
@@ -12187,19 +12728,19 @@ mod frame_tests {
         "#, "{}");
 
         // Dispatch "connect" slot 3 → the connect handler runs once and receives a Client(3).
-        dispatch_client_event("connect", 3);
+        let _ = dispatch_client_event("connect", 3);
         assert_eq!(read_i32_global_in("pcl", "__cl_ran"), 1, "connect handler must run exactly once");
         assert_eq!(read_i32_global_in("pcl", "__cl_slot"), 3, "handler must receive the dispatched slot");
         assert_eq!(read_i32_global_in("pcl", "__cl_ctor"), 1, "the argument must be a Client instance");
 
         // Independence: dispatching "active" must not re-run the connect handler.
-        dispatch_client_event("active", 5);
+        let _ = dispatch_client_event("active", 5);
         assert_eq!(read_i32_global_in("pcl", "__cl_ran"), 1, "connect handler must not run for 'active'");
         assert_eq!(read_i32_global_in("pcl", "__cl_active_slot"), 5, "the active handler receives its own slot");
 
         // Teardown: unload removes all of pcl's client subs; a later dispatch is a safe no-op.
         unload_plugin("pcl");
-        dispatch_client_event("connect", 9);   // must not crash / must not deliver (context disposed)
+        let _ = dispatch_client_event("connect", 9);   // must not crash / must not deliver (context disposed)
         shutdown();
     }
 
@@ -12258,10 +12799,10 @@ mod frame_tests {
                 globalThis.__v_slot = c.slot;
             });
         "#, "{}");
-        dispatch_client_event("voice", 4);
+        let _ = dispatch_client_event("voice", 4);
         assert_eq!(read_i32_global_in("pvv", "__v_ran"), 1, "onVoice handler runs once");
         assert_eq!(read_i32_global_in("pvv", "__v_slot"), 4, "handler receives the dispatched slot");
-        dispatch_client_event("settingschanged", 4);   // a different name must not re-run it
+        let _ = dispatch_client_event("settingschanged", 4);   // a different name must not re-run it
         assert_eq!(read_i32_global_in("pvv", "__v_ran"), 1);
         shutdown();
     }
@@ -12278,7 +12819,7 @@ mod frame_tests {
             __s2pkg_server.Server.onMapStart(function (m) { globalThis.__map = m; });
             "ok"
         "#);
-        dispatch_map_start("de_test");
+        let _ = dispatch_map_start("de_test");
         assert_eq!(eval_in_context_string("pms", "globalThis.__map"), "de_test");
         shutdown();
     }
@@ -12460,7 +13001,7 @@ mod frame_tests {
             E.onCreate("weapon_ak47", function (e, cls) { globalThis.__hits.push("create:" + cls); });
             "ok"
         "#);
-        dispatch_entity_event("spawn", "weapon_ak47", -1);   // hits the exact + the "*" spawn subs, NOT the create sub
+        let _ = dispatch_entity_event("spawn", "weapon_ak47", -1);   // hits the exact + the "*" spawn subs, NOT the create sub
         assert_eq!(eval_in_context_string("pel", "globalThis.__hits.slice().sort().join('|')"),
                    "exact:weapon_ak47:true|star:weapon_ak47:true");
         shutdown();
@@ -12477,10 +13018,10 @@ mod frame_tests {
             __s2pkg_entity.Entity.onSpawn("*", function () { globalThis.__n++; });
             "ok"
         "#);
-        dispatch_entity_event("delete", "prop_physics", -1);
-        dispatch_entity_event("create", "prop_physics", -1);
+        let _ = dispatch_entity_event("delete", "prop_physics", -1);
+        let _ = dispatch_entity_event("create", "prop_physics", -1);
         assert_eq!(eval_in_context_string("pel2", "String(globalThis.__n)"), "0", "spawn sub must not fire on delete/create");
-        dispatch_entity_event("spawn", "prop_physics", -1);
+        let _ = dispatch_entity_event("spawn", "prop_physics", -1);
         assert_eq!(eval_in_context_string("pel2", "String(globalThis.__n)"), "1");
         shutdown();
     }
@@ -12522,7 +13063,7 @@ mod frame_tests {
             });
             "ok"
         "#);
-        dispatch_entity_event("spawn", "weapon_ak47", handle as i32);
+        let _ = dispatch_entity_event("spawn", "weapon_ak47", handle as i32);
         assert_eq!(eval_in_context_string("pel4", "globalThis.__got"),
                    format!("live:weapon_ak47:true:{idx}:{id}"));
         shutdown();
@@ -12895,6 +13436,7 @@ mod frame_tests {
             client_command: None,
             client_fake_command: None,
             ent_identity_flags_clear: None,
+            defer_selftest: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -14227,7 +14769,7 @@ mod frame_tests {
         voice_set_rule_for_test("@b/two", 5, 0b11);
         // No plugin subscribes to "disconnect" here ON PURPOSE: the cleanup must run ahead of the
         // dispatcher's no-subscriber early return.
-        dispatch_client_event("disconnect", 5);
+        let _ = dispatch_client_event("disconnect", 5);
         assert_eq!(voice_merged_for_test(5), None, "every owner's rule for slot 5 is gone");
         assert_eq!(VOICE_CLEAR_CALLS.lock().unwrap().as_slice(), &[5], "and the shim was told");
         shutdown();
@@ -14446,6 +14988,7 @@ mod frame_tests {
             client_command: None,
             client_fake_command: None,
             ent_identity_flags_clear: None,
+            defer_selftest: None,
         }
     }
 
@@ -14486,7 +15029,7 @@ mod frame_tests {
         );
 
         // Dispatch player_death → handler runs and reads mocked accessor values.
-        dispatch_game_event("player_death");
+        let _ = dispatch_game_event("player_death");
         assert_eq!(read_i32_global_in("pev", "__ev_ran"),  1,             "handler must run exactly once");
         assert_eq!(read_global_string("pev", "__ev_name"), "player_death","GameEvent.name must be set");
         assert_eq!(read_i32_global_in("pev", "__ev_int"),  42,            "getInt() returns mock 42");
@@ -14496,7 +15039,7 @@ mod frame_tests {
         assert_eq!(read_bool_global_in("pev", "__ev_bool"), true,         "getBool() returns mock true");
 
         // Dispatching a different name must NOT call the handler.
-        dispatch_game_event("round_start");
+        let _ = dispatch_game_event("round_start");
         assert_eq!(read_i32_global_in("pev", "__ev_ran"), 1,
                    "handler must not run for unsubscribed event name");
 
@@ -14509,7 +15052,7 @@ mod frame_tests {
         );
 
         // After unload, dispatching must be a safe no-op (no crash, no delivery).
-        dispatch_game_event("player_death");
+        let _ = dispatch_game_event("player_death");
         // (No count assertion — the context is disposed; just confirm no panic.)
 
         shutdown();
@@ -14543,7 +15086,7 @@ mod frame_tests {
         assert_eq!(EV_SUBSCRIBED.lock().unwrap().iter().filter(|n| *n == "player_hurt").count(), 1,
                    "event_subscribe must only fire on the FIRST subscriber");
 
-        dispatch_game_event("player_hurt");
+        let _ = dispatch_game_event("player_hurt");
         assert_eq!(read_i32_global_in("p1", "__p1_ran"), 1);
         assert_eq!(read_i32_global_in("p2", "__p2_ran"), 1);
 
@@ -14553,7 +15096,7 @@ mod frame_tests {
                 "event_unsubscribe must NOT fire while p2 is still subscribed");
 
         // Dispatch again → only p2 runs.
-        dispatch_game_event("player_hurt");
+        let _ = dispatch_game_event("player_hurt");
         assert_eq!(read_i32_global_in("p2", "__p2_ran"), 2);
 
         // Unload p2: last subscriber → event_unsubscribe fires.
@@ -14630,7 +15173,7 @@ mod frame_tests {
         );
 
         // Dispatch must NOT invoke the removed handler.
-        dispatch_game_event("test_event");
+        let _ = dispatch_game_event("test_event");
         assert_eq!(
             read_i32_global_in("pev", "__ev_ran"), 0,
             "handler must not run after explicit unsubscribe"
@@ -14666,7 +15209,7 @@ mod frame_tests {
         "#, "{}");
 
         // Confirm both handlers run on dispatch before any explicit unsubscribe.
-        dispatch_game_event("test_event");
+        let _ = dispatch_game_event("test_event");
         assert_eq!(read_i32_global_in("p1", "__p1_ran"), 1, "p1 handler must run before unsubscribe");
         assert_eq!(read_i32_global_in("p2", "__p2_ran"), 1, "p2 handler must run before unsubscribe");
 
@@ -14678,7 +15221,7 @@ mod frame_tests {
         );
 
         // Dispatch: only p2 runs; p1's handler must be gone.
-        dispatch_game_event("test_event");
+        let _ = dispatch_game_event("test_event");
         assert_eq!(read_i32_global_in("p1", "__p1_ran"), 1, "p1 must not run after explicit unsubscribe");
         assert_eq!(read_i32_global_in("p2", "__p2_ran"), 2, "p2 must still receive the event");
 
@@ -14690,7 +15233,7 @@ mod frame_tests {
         );
 
         // After both unsubscribed, dispatch is a safe no-op.
-        dispatch_game_event("test_event");
+        let _ = dispatch_game_event("test_event");
         assert_eq!(read_i32_global_in("p2", "__p2_ran"), 2, "p2 must not run after explicit unsubscribe");
 
         shutdown();
@@ -14726,7 +15269,7 @@ mod frame_tests {
         );
 
         // Dispatch → handler runs; ev.name="player_death", ev.getInt → mock 42.
-        dispatch_game_event("player_death");
+        let _ = dispatch_game_event("player_death");
         assert_eq!(
             read_global_string("ep", "__saw"),
             "player_death:42",
@@ -14741,7 +15284,7 @@ mod frame_tests {
 
         // Dispatch again → __saw must remain unchanged (handler must NOT run).
         let saw_before = read_global_string("ep", "__saw");
-        dispatch_game_event("player_death");
+        let _ = dispatch_game_event("player_death");
         assert_eq!(
             read_global_string("ep", "__saw"),
             saw_before,
@@ -14812,7 +15355,7 @@ mod frame_tests {
         assert_eq!(pre, 0, "re-entrant pre-dispatch allows instead of double-borrow panic");
         HOST.with(|h| {
             let _b = h.borrow_mut();
-            dispatch_game_event("player_hurt");       // must not panic (nested notify skipped)
+            let _ = dispatch_game_event("player_hurt");       // must not panic (nested notify skipped)
         });
         shutdown();
     }

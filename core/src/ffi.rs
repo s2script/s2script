@@ -1,8 +1,38 @@
 use crate::multiplexer::Phase;
-use crate::v8host::{self, HookRequestFn, LogFn, S2EngineOps};
+use crate::v8host::{self, Delivery, HookRequestFn, LogFn, S2EngineOps};
 use std::os::raw::{c_char, c_int};
 use std::panic::catch_unwind;
 use std::ffi::CStr;
+
+/// Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant
+/// dispatch): core delivered NOTHING and the caller must queue a replay for the next `GameFrame`.
+/// Any other value means the entry was handled (delivered, or no subscribers) — do not queue.
+///
+/// Must stay byte-identical to `S2_DISPATCH_DEFERRED` in `shim/include/s2script_core.h`
+/// (`scripts/ci-native.sh` gates the pair).
+///
+/// **Why `-1000`.** It is outside every value any dispatch entry can return today: `HookResult` is
+/// `0..=3`, the boolean entries are `0..=1`, the `catch_unwind` fallbacks are `0` (and `-99` for
+/// `game_frame` alone), and the header's "unavailable" idiom is `-1`. Deliberately far outside, so
+/// an off-by-one or a widened `HookResult` cannot creep into it.
+///
+/// **Why negative.** Shim code that reads a dispatch result is shaped `if (r >= 2) MRES_SUPERCEDE`.
+/// A negative sentinel fails that test, so a call site that forgets to check for it degrades to
+/// TODAY's behaviour — "engine proceeds unhooked", the documented safe direction — instead of
+/// superseding something it never meant to. A large positive sentinel would fail closed the wrong
+/// way. (It is still C-truthy, which is why no entry whose result is consumed as a boolean may ever
+/// be made deferrable — none are.)
+pub const S2_DISPATCH_DEFERRED: c_int = -1000;
+
+/// Map a `Delivery` onto the C-ABI dispatch result. `Delivered` is `0` — the value every one of
+/// these entries returned (as `void`) before the deferred-dispatch queue existed.
+#[inline]
+fn deferral_code(d: Delivery) -> c_int {
+    match d {
+        Delivery::Deferred => S2_DISPATCH_DEFERRED,
+        Delivery::Delivered => 0,
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn s2script_core_init(
@@ -82,35 +112,76 @@ pub extern "C" fn s2script_core_shutdown() {
 ///
 /// `catch_unwind`-wrapped; null pointer and invalid UTF-8 degrade to a no-op (never panic across
 /// the FFI boundary per spec §6).
+///
+/// Returns `S2_DISPATCH_DEFERRED` iff there were subscribers AND the isolate was already borrowed
+/// (a re-entrant dispatch): the shim must `DuplicateEvent` the live `IGameEvent` and replay via
+/// `s2script_core_replay_game_event` at the next `GameFrame`. Every degrade path (null, bad UTF-8,
+/// panic) returns `0` — a malformed call is not deferrable.
 #[no_mangle]
-pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) {
-    let _ = catch_unwind(|| {
-        if name.is_null() { return; }
-        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
-        v8host::dispatch_game_event(name_str);
-    });
+pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        deferral_code(v8host::dispatch_game_event(name_str))
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: replay a game-event dispatch that was deferred one frame earlier. The JS fan-out
+/// and NOTHING else — this entry runs no bookkeeping, which is what makes it safe to run late.
+/// The shim has pointed `s_currentEvent` at its `DuplicateEvent` copy for the duration of the call.
+///
+/// A replay that itself returns `S2_DISPATCH_DEFERRED` must be DROPPED with a named log, never
+/// re-queued: the drain runs with the isolate provably free, so it can only mean a bug, and
+/// re-queueing would spin across frames.
+#[no_mangle]
+pub extern "C" fn s2script_core_replay_game_event(name: *const c_char) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        deferral_code(v8host::replay_game_event(name_str))
+    })
+    .unwrap_or(0)
 }
 
 /// Shim → core: called by the shim's six client-lifecycle SourceHooks (Clients sub-project) with the
 /// lifecycle event `name` ("connect"/"putinserver"/"active"/"fullyconnect"/"disconnect"/
 /// "settingschanged") + the client's `slot`. Notify-only: dispatches to the name's `Clients.on*` JS
 /// subscribers. `catch_unwind`-wrapped; null pointer / invalid UTF-8 degrade to a no-op (never panic
-/// across the FFI boundary per spec §6).
+/// across the FFI boundary per spec §6). Returns `S2_DISPATCH_DEFERRED` on a re-entrant dispatch
+/// (see `s2script_core_dispatch_game_event`); the shim replays it from the scalars it already holds.
 #[no_mangle]
-pub extern "C" fn s2script_core_dispatch_client_event(name: *const c_char, slot: c_int) {
-    let _ = catch_unwind(|| {
-        if name.is_null() { return; }
-        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
-        v8host::dispatch_client_event(name_str, slot as i32);
-    });
+pub extern "C" fn s2script_core_dispatch_client_event(name: *const c_char, slot: c_int) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        deferral_code(v8host::dispatch_client_event(name_str, slot as i32))
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: replay a deferred client-lifecycle dispatch. JS fan-out ONLY — the breadcrumb
+/// player count and the voice slot-reuse clear already ran, unconditionally, at dispatch time and
+/// must NEVER be replayed (they are not idempotent).
+#[no_mangle]
+pub extern "C" fn s2script_core_replay_client_event(name: *const c_char, slot: c_int) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        deferral_code(v8host::replay_client_event(name_str, slot as i32))
+    })
+    .unwrap_or(0)
 }
 
 /// Shim → core: the INetworkServerService::StartupServer POST hook reports a map start with the
 /// live map name. Notify-only: dispatches to the `Server.onMapStart` JS subscribers.
 /// `catch_unwind`-wrapped; a null pointer degrades to "" (never panic across the FFI boundary).
+/// Returns `S2_DISPATCH_DEFERRED` on a re-entrant dispatch (rare — StartupServer is outside a
+/// frame, so the isolate is normally free — but a plugin-declared engine call can reach a
+/// changelevel from JS).
 #[no_mangle]
-pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) {
-    let _ = catch_unwind(|| {
+pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) -> c_int {
+    catch_unwind(|| {
         let map_str = if map.is_null() { "" } else {
             (unsafe { CStr::from_ptr(map) }).to_str().unwrap_or("")
         };
@@ -118,8 +189,25 @@ pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) {
         // dispatch (which early-returns when no Server.onMapStart subscribers exist),
         // and arm the one-shot repair sweep (consumed at the next simulating frame).
         crate::entity_live::clear_for_map_transition();
-        v8host::dispatch_map_start(map_str);
-    });
+        deferral_code(v8host::dispatch_map_start(map_str))
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: replay a deferred map-start dispatch. JS fan-out ONLY.
+///
+/// THE reason the split exists: replaying `entity_live::clear_for_map_transition()` would wipe the
+/// entity books a frame INTO the new map and re-arm the repair sweep, killing every `EntityRef`
+/// minted since map start. This entry must never touch the books.
+#[no_mangle]
+pub extern "C" fn s2script_core_replay_map_start(map: *const c_char) -> c_int {
+    catch_unwind(|| {
+        let map_str = if map.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(map) }).to_str().unwrap_or("")
+        };
+        deferral_code(v8host::replay_map_start(map_str))
+    })
+    .unwrap_or(0)
 }
 
 /// Shim → core: the CGameRulesGameSystem::OnPrecacheResource manual hook reports that the session
@@ -137,12 +225,16 @@ pub extern "C" fn s2script_core_dispatch_precache() {
 /// Shim → core: an IEntityListener callback (create/spawn/delete) with the entity's packed
 /// CEntityHandle (ToInt()) + class name. Notify-only: dispatches to the `Entity.on{Create,Spawn,Delete}`
 /// JS subscribers. `catch_unwind`-wrapped; null/invalid-UTF-8 degrade to a no-op.
+///
+/// Returns `S2_DISPATCH_DEFERRED` on a re-entrant dispatch (e.g. a plugin's own synchronous
+/// `createEntity` from inside a handler). **The books feed below is NOT part of the replay** — the
+/// shim queues `s2script_core_replay_entity_event`, which is the JS fan-out alone.
 #[no_mangle]
-pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class_name: *const c_char, handle: c_int) {
-    let _ = catch_unwind(|| {
-        if kind.is_null() || class_name.is_null() { return; }
-        let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return };
-        let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return };
+pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class_name: *const c_char, handle: c_int) -> c_int {
+    catch_unwind(|| {
+        if kind.is_null() || class_name.is_null() { return 0; }
+        let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return 0 };
+        let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return 0 };
         // THE BOOKS FEED (north-star §3.1, critical): unconditional, BEFORE and
         // independent of the JS mux dispatch below — dispatch_entity_event early-returns
         // when no subscribers exist and skips under the HOST try_borrow_mut re-entrancy
@@ -159,14 +251,35 @@ pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class
                 _ => {}
             }
         }
-        v8host::dispatch_entity_event(kind_str, class_str, handle as i32);
+        let delivery = v8host::dispatch_entity_event(kind_str, class_str, handle as i32);
         // Delete is booked AFTER the dispatch: an onDelete handler may still resolve
         // the dying entity (slot-validated stage 2 stays the guard); the moment this
         // FFI entry returns, the books say dead — fail-closed for any stashed ref.
+        // A DEFERRED delete is booked here all the same, which is why a replayed "delete"
+        // hands the handler a null EntityRef (contract §6.2, accepted).
         if let Some((idx, ser)) = decoded {
             if kind_str == "delete" { crate::entity_live::on_deleted(idx, ser); }
         }
-    });
+        deferral_code(delivery)
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: replay a deferred entity-lifecycle dispatch. JS fan-out ONLY.
+///
+/// The books feed (`entity_live::on_created`/`on_spawned`/`on_deleted`) ran unconditionally at
+/// dispatch time and must NEVER run here: a replayed `"create"` would RESURRECT a since-deleted
+/// entity in the books, because `on_created` is an unconditional insert. No pointer is involved —
+/// `handle` is a packed `CEntityHandle` int, resolved books-first as always.
+#[no_mangle]
+pub extern "C" fn s2script_core_replay_entity_event(kind: *const c_char, class_name: *const c_char, handle: c_int) -> c_int {
+    catch_unwind(|| {
+        if kind.is_null() || class_name.is_null() { return 0; }
+        let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return 0 };
+        let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return 0 };
+        deferral_code(v8host::replay_entity_event(kind_str, class_str, handle as i32))
+    })
+    .unwrap_or(0)
 }
 
 /// Shim → core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
@@ -203,32 +316,64 @@ pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
     catch_unwind(|| v8host::dispatch_usercmd(slot)).unwrap_or(0)
 }
 
+/// Shim → core: a cvar's value changed. Called from the shim's ONE `ICvar` global change callback.
+///
+/// NOTIFY-ONLY — the engine has ALREADY applied the value, so there is nothing to veto: this entry
+/// returns `S2_DISPATCH_DEFERRED` on a re-entrant dispatch (never a `HookResult`), and the shim
+/// replays it next frame from its own copies of the three strings. Test the result EXACTLY against
+/// the sentinel; it is not a collapsed hook result and `-1000` is C-truthy.
+///
+/// `catch_unwind`-wrapped; a null pointer or invalid UTF-8 degrades to `0` (delivered/no-op) and is
+/// never deferrable — there would be nothing meaningful to replay.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_cvar_change(
+    name: *const c_char,
+    new_value: *const c_char,
+    old_value: *const c_char,
+) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(n) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        let nv = if new_value.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(new_value) }).to_str().unwrap_or("") };
+        let ov = if old_value.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(old_value) }).to_str().unwrap_or("") };
+        deferral_code(crate::v8host::dispatch_cvar_change(n, nv, ov))
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: replay a deferred cvar-change notification. JS fan-out ONLY (this path carries no
+/// bookkeeping; the entry exists so the shim's drain has one uniform `replay_*` vocabulary).
+#[no_mangle]
+pub extern "C" fn s2script_core_replay_cvar_change(
+    name: *const c_char,
+    new_value: *const c_char,
+    old_value: *const c_char,
+) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(n) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        let nv = if new_value.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(new_value) }).to_str().unwrap_or("") };
+        let ov = if old_value.is_null() { "" } else {
+            (unsafe { CStr::from_ptr(old_value) }).to_str().unwrap_or("") };
+        deferral_code(crate::v8host::replay_cvar_change(n, nv, ov))
+    })
+    .unwrap_or(0)
+}
+
 /// Shim → core: called by the `FireOutputInternal` detour (entity-I/O slice) with the firing entity's
 /// classname, the output name, packed activator/caller `CEntityHandle` ints (-1 = none), the output's
 /// value as a string, and the delay. Runs the matching `Entity.onOutput` subscribers SYNCHRONOUSLY and
 /// returns the collapsed `HookResult` (0 Continue .. 3 Stop) — the shim supersedes (suppresses) the
 /// original `FireOutputInternal` call when the result is >= Handled (2).
 ///
+/// NOT deferrable: the engine consumes this answer synchronously, so it never returns
+/// `S2_DISPATCH_DEFERRED` and a re-entrant dispatch keeps today's graceful skip (→ 0 Continue).
+///
 /// `catch_unwind`-wrapped and FAIL-OPEN (-> 0 Continue on a panic or invalid UTF-8): a core bug must
 /// never suppress an output it didn't mean to, mirroring `s2script_core_ban_check`'s fail-open shape.
-/// Called from the shim's ONE `ICvar` global change callback. Notify-only.
-#[no_mangle]
-pub extern "C" fn s2script_core_dispatch_cvar_change(
-    name: *const c_char,
-    new_value: *const c_char,
-    old_value: *const c_char,
-) {
-    catch_unwind(|| {
-        if name.is_null() { return; }
-        let Ok(n) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
-        let nv = if new_value.is_null() { "" } else {
-            (unsafe { CStr::from_ptr(new_value) }).to_str().unwrap_or("") };
-        let ov = if old_value.is_null() { "" } else {
-            (unsafe { CStr::from_ptr(old_value) }).to_str().unwrap_or("") };
-        crate::v8host::dispatch_cvar_change(n, nv, ov);
-    });
-}
-
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_output(
     classname: *const c_char,
@@ -483,6 +628,31 @@ mod tests {
         CAPTURED.lock().unwrap().push(s);
     }
 
+    /// The deferred-dispatch sentinel cannot collide with anything a dispatch entry returns.
+    ///
+    /// The shim tests `== S2_DISPATCH_DEFERRED` EXACTLY — never `< 0`, never truthiness — but a
+    /// collision would still be silent and catastrophic (a `HookResult` read as "queue a replay",
+    /// or a deferral read as SUPERCEDE). `scripts/ci-native.sh` gates this constant against the
+    /// shim header's copy; this pins the ranges it must avoid, on the core side, at build time.
+    #[test]
+    fn deferred_sentinel_cannot_collide_with_any_dispatch_result() {
+        // HookResult is 0..=3 (multiplexer.rs), the boolean entries are 0..=1.
+        assert!(!(0..=3).contains(&S2_DISPATCH_DEFERRED), "must be outside the HookResult range");
+        // The catch_unwind fallbacks (0, and -99 for game_frame), the header's "unavailable" idiom
+        // (-1), and the init/eval error codes (-1, -2, -3, -99).
+        for reserved in [0, -1, -2, -3, -99] {
+            assert_ne!(S2_DISPATCH_DEFERRED, reserved as c_int);
+        }
+        // Negative on purpose: shim code shaped `if (r >= 2) MRES_SUPERCEDE` must FAIL that test, so
+        // a call site that forgets to check degrades to today's "engine proceeds unhooked".
+        assert!(S2_DISPATCH_DEFERRED < 0, "a positive sentinel would fail closed the wrong way");
+        // Far outside, so a widened HookResult cannot creep into it.
+        assert_eq!(S2_DISPATCH_DEFERRED, -1000);
+        // And the mapping the C ABI actually ships.
+        assert_eq!(deferral_code(Delivery::Deferred), S2_DISPATCH_DEFERRED);
+        assert_eq!(deferral_code(Delivery::Delivered), 0);
+    }
+
     #[test]
     fn init_eval_console_log_shutdown_and_reinit() {
         CAPTURED.lock().unwrap().clear();
@@ -706,6 +876,49 @@ mod tests {
             "#,
         )
         .unwrap();
+        s2script_core_shutdown();
+    }
+
+    /// The deferred-dispatch selftest native EXISTS ONLY when `S2_DEFER_SELFTEST` is set.
+    ///
+    /// The gate is on INSTALLATION, not on the call, and this is what pins that: in a production
+    /// process the property is not on the global at all, so there is no reachable path to the
+    /// synthetic re-entrancy — a plugin cannot call it, feature-detect its way into it, or find it
+    /// by enumerating the global. Both directions are asserted in one test, in one process, because
+    /// "absent" is only meaningful next to a demonstration that the same code path CAN install it.
+    #[test]
+    fn defer_selftest_native_exists_only_when_the_env_var_is_set() {
+        std::env::remove_var("S2_DEFER_SELFTEST");
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        v8host::create_plugin_context("ddq_unarmed");
+        v8host::eval_in_context(
+            "ddq_unarmed",
+            r#"
+                if (typeof __s2_defer_selftest !== "undefined")
+                    throw new Error("the selftest native must NOT exist without S2_DEFER_SELFTEST");
+                if (Object.getOwnPropertyNames(globalThis).indexOf("__s2_defer_selftest") !== -1)
+                    throw new Error("the selftest native must not be enumerable on the global either");
+            "#,
+        )
+        .unwrap();
+
+        // Armed — same process, a NEW context. The gate is re-read per install_natives, so arming
+        // takes effect for contexts created afterwards without a restart.
+        std::env::set_var("S2_DEFER_SELFTEST", "1");
+        v8host::create_plugin_context("ddq_armed");
+        let armed = v8host::eval_in_context(
+            "ddq_armed",
+            r#"
+                if (typeof __s2_defer_selftest !== "function")
+                    throw new Error("armed, the selftest native must exist");
+                // No engine-ops table -> the op is absent and the native degrades to 0. Never a
+                // crash, and never a false "1" that would let a gate pass without the shim.
+                if (__s2_defer_selftest() !== 0)
+                    throw new Error("with no engine ops the native must return 0");
+            "#,
+        );
+        std::env::remove_var("S2_DEFER_SELFTEST");
+        armed.unwrap();
         s2script_core_shutdown();
     }
 
