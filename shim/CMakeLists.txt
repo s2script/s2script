@@ -49,6 +49,11 @@ add_library(s2script SHARED
     # Plugin-gamedata slice: plugin-declared engine calls — descriptor resolution (byte signature /
     # RTTI vtable slot + prologue validation + .text range) and the fixed-max-arity SysV invoke.
     src/engine_calls.cpp
+    # A5b: the CLOSED validator vocabulary (prologue / string-xref / vtable-member). Its own TU
+    # because engine_calls.cpp cannot be compiled outside the game (it includes the entity system);
+    # every outside contact is injected, so shim/tests/call_validate_test.cpp drives the SHIPPED
+    # gates over a synthetic module image.
+    src/call_validate.cpp
     # deferred-dispatch slice: the queue/drain POLICY, engine-free (every engine + core call is
     # injected through S2DeferOps), so shim/tests/defer_queue_test.cpp drives the SHIPPED drain.
     src/defer_queue.cpp
@@ -123,6 +128,13 @@ target_include_directories(gamedata_selftest PRIVATE src third_party)
 # the test also builds under the ordinary cmake configuration.
 add_executable(defer_queue_selftest src/defer_queue.cpp tests/defer_queue_test.cpp)
 target_include_directories(defer_queue_selftest PRIVATE src include)
+
+# Descriptor-validator unit test (not shipped; run by scripts/ci-native.sh via
+# scripts/test-call-validate.sh, which adds the sanitizers). This target exists so the test also
+# builds under the ordinary cmake configuration.
+add_executable(call_validate_selftest
+    src/call_validate.cpp src/sigscan.cpp tests/call_validate_test.cpp)
+target_include_directories(call_validate_selftest PRIVATE src third_party)
 
 
 # The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).

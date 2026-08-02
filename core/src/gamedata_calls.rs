@@ -3,7 +3,7 @@
 //! argument classification the invoke native marshals against.
 //!
 //! BOUNDARY (spec §10). Every name in a descriptor — target kind, module, byte pattern, resolver
-//! strategy, class, field, prologue — is an OPAQUE plugin-supplied string that crosses core
+//! strategy, class, field, the whole `validate` object — is an OPAQUE plugin-supplied string that crosses core
 //! untouched, exactly the discipline `__s2_schema_offset` already follows. No game identifier is
 //! compiled into core; `scripts/check-core-boundary.sh` stays green.
 //!
@@ -385,9 +385,12 @@ fn resolve_target(target: &serde_json::Value) -> Result<i32, String> {
     let pattern = cstr(s("pattern"))?;
     let resolve = cstr(s("resolve"))?;
     let class_name = cstr(s("class"))?;
-    let prologue = cstr(
-        target.get("validate").and_then(|v| v.get("prologue")).and_then(|v| v.as_str()).unwrap_or(""),
-    )?;
+    // The WHOLE `validate` object, verbatim. Core does not know the validator vocabulary and must
+    // not learn it: it is closed in the shim, which is what dispatches on it, so a mistyped
+    // validator (`vtable_member`) degrades that descriptor by name instead of being quietly dropped
+    // on the way across — which is what cherry-picking one known key here used to do. serde_json
+    // never emits a literal NUL, so `cstr` cannot fail on this one.
+    let validate = cstr(&target.get("validate").map(|v| v.to_string()).unwrap_or_default())?;
     // A missing/oversized index becomes -1, which the shim rejects with its own named reason.
     let index = target
         .get("index")
@@ -403,7 +406,7 @@ fn resolve_target(target: &serde_json::Value) -> Result<i32, String> {
         resolve.as_ptr(),
         class_name.as_ptr(),
         index,
-        prologue.as_ptr(),
+        validate.as_ptr(),
         reason.as_mut_ptr() as *mut c_char,
         REASON_CAP as i32,
     );
@@ -455,6 +458,20 @@ fn flatten_decl(
                 for key in ["module", "pattern", "resolve"] {
                     if let Some(v) = spec.get(key) {
                         target.insert(key.to_string(), v.clone());
+                    }
+                }
+                // `validate` is authored NEXT TO the pattern it guards, and is lifted with it.
+                // The override channel is why: `custom/*.jsonc` replaces at the NAMED-ENTRY level,
+                // and the entry an operator replaces after a game update is the SIGNATURE — a new
+                // pattern. A validator whose offsets live in another section would then be checked
+                // against the shipped instruction layout, which the new pattern has just made
+                // meaningless: either a correct hot-fix is spuriously rejected, or worse, it
+                // coincidentally passes. Co-locating them makes one override replace both,
+                // atomically. An inline `target.validate` still wins, exactly as an inline
+                // `pattern` does.
+                if !target.contains_key("validate") {
+                    if let Some(v) = spec.get("validate") {
+                        target.insert("validate".to_string(), v.clone());
                     }
                 }
             }
@@ -691,6 +708,46 @@ mod tests {
         assert_eq!(flat["target"]["pattern"], "55 48");
         assert_eq!(flat["target"]["module"], "m.so");
         assert_eq!(flat["target"]["resolve"], "direct");
+    }
+
+    /// A signature entry's `validate` is lifted WITH its pattern: the two are co-derived from the
+    /// same disassembly pass and an operator's `custom/` override replaces the signature entry
+    /// whole, so a validator parked in another section would be checked against a pattern it no
+    /// longer describes.
+    #[test]
+    fn flatten_lifts_the_signature_entrys_validate_with_its_pattern() {
+        let gd: serde_json::Value = serde_json::from_str(
+            r#"{"signatures":{"Ig":{"linuxsteamrt64":{"module":"m.so","pattern":"55 48","resolve":"direct",
+                                    "validate":{"string-xref":{"at":11,"dispOff":3,"instrLen":7,"expect":"Scope"}}}}},
+                "calls":{"ignite":{"receiver":{"kind":"entity"},
+                                   "target":{"kind":"signature","name":"Ig"},
+                                   "args":[],"returns":"void"}}}"#,
+        )
+        .unwrap();
+        let sigs = gd.get("signatures").unwrap().as_object();
+        let decl = gd.get("calls").unwrap().get("ignite").unwrap();
+        let flat: serde_json::Value = serde_json::from_str(&flatten_decl(decl, sigs).unwrap()).unwrap();
+        assert_eq!(flat["target"]["validate"]["string-xref"]["at"], 11);
+        assert_eq!(flat["target"]["validate"]["string-xref"]["expect"], "Scope");
+    }
+
+    /// An inline `target.validate` wins over the signature entry's, exactly as an inline `pattern`
+    /// does — a hand-written flattened descriptor stays legal, and flattening stays idempotent.
+    #[test]
+    fn an_inline_target_validate_wins_over_the_signature_entrys() {
+        let gd: serde_json::Value = serde_json::from_str(
+            r#"{"signatures":{"Ig":{"linuxsteamrt64":{"module":"m.so","pattern":"55 48","resolve":"direct",
+                                    "validate":{"vtable-member":"CFromSignature"}}}},
+                "calls":{"ignite":{"receiver":{"kind":"entity"},
+                                   "target":{"kind":"signature","name":"Ig",
+                                             "validate":{"vtable-member":"CFromTarget"}},
+                                   "args":[],"returns":"void"}}}"#,
+        )
+        .unwrap();
+        let sigs = gd.get("signatures").unwrap().as_object();
+        let decl = gd.get("calls").unwrap().get("ignite").unwrap();
+        let flat: serde_json::Value = serde_json::from_str(&flatten_decl(decl, sigs).unwrap()).unwrap();
+        assert_eq!(flat["target"]["validate"]["vtable-member"], "CFromTarget");
     }
 
     /// A signature with no entry for THIS platform is a named load-time degrade (spec §12), not a

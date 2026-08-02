@@ -290,15 +290,20 @@ pub type EntSnapshotFn      = extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_
 
 // --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI). ENGINE-GENERIC:
 // every string crossing here (target kind, module soname, byte pattern, resolver strategy, class
-// name, prologue) is an OPAQUE plugin-supplied string core never interprets — the same discipline as
-// `schema_offset`'s class/field, so no game identifier is compiled into core (spec §10).
+// name, the validate object) is an OPAQUE plugin-supplied string core never interprets — the same
+// discipline as `schema_offset`'s class/field, so no game identifier is compiled into core (spec §10).
 //
 // `engine_call_resolve`: resolve ONE descriptor against the live binary. Returns a call id >= 0, or
 // -1 having written a human-readable reason into `reason_out` (which core stores verbatim as that
 // descriptor's named degrade reason — spec §12).
+//
+// `validate_json` carries the descriptor's WHOLE `validate` object as serialized JSON. Core does not
+// know the validator vocabulary and must not: it is CLOSED in the shim, which is what dispatches on
+// it, so a mistyped validator degrades one descriptor by name rather than being silently dropped on
+// the way across — and a new validator is a shim + gamedata change with no core diff and no ABI move.
 pub type EngineCallResolveFn = extern "C" fn(
     kind: *const c_char, module: *const c_char, pattern: *const c_char, resolve: *const c_char,
-    class_name: *const c_char, vtable_index: c_int, prologue: *const c_char,
+    class_name: *const c_char, vtable_index: c_int, validate_json: *const c_char,
     reason_out: *mut c_char, reason_cap: c_int) -> c_int;
 // `engine_call_invoke`: call a resolved descriptor on a serial-gated entity receiver. Args arrive
 // pre-classified into the two SysV register sequences (`gp`+`gp_kind`, `fp`) with strings/vectors
@@ -11633,7 +11638,7 @@ mod frame_tests {
     extern "C" fn fake_call_resolve(
         _kind: *const c_char, _module: *const c_char, _pattern: *const c_char,
         _resolve: *const c_char, _class_name: *const c_char, _vtable_index: c_int,
-        _prologue: *const c_char, _reason_out: *mut c_char, _reason_cap: c_int,
+        _validate_json: *const c_char, _reason_out: *mut c_char, _reason_cap: c_int,
     ) -> c_int { 7 }
 
     extern "C" fn fake_call_invoke(
