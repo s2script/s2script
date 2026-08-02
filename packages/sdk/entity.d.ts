@@ -3,6 +3,8 @@
  * NO runtime code: the engine injects the implementation at load time.
  */
 
+import type { Vector } from "./math";
+
 /**
  * A host-liveness-gated handle to a live entity. `id` is a HOST-MINTED monotonic liveness
  * id — liveness is decided by the host's books (fed by engine create/delete notifications,
@@ -26,6 +28,13 @@ export declare class EntityRef {
   /** This entity's target (`CBaseEntity::m_target`) — the targetname of the entity it acts on, e.g. a
    *  `func_button`'s target entity. `""` if the entity has no target; `null` if the ref is stale/invalid. */
   readonly target: string | null;
+  /** This entity's world-space position (`CGameSceneNode::m_vecAbsOrigin`, reached via
+   *  `CBaseEntity::m_CBodyComponent` -> `CBodyComponent::m_pSceneNode`) — the same field CS2's
+   *  `Pawn.origin` exposes for player pawns, readable here on any entity (e.g. ranking candidate
+   *  `func_button`s by distance to a reference point). There is no meaningful "empty" position, so
+   *  unlike {@link EntityRef.name}/{@link EntityRef.target}, `null` means exactly one thing: could not
+   *  read (the ref is stale/invalid, or the field/chain didn't resolve) — never "no position". */
+  readonly origin: Vector | null;
   /** @internal The host mints refs; this is not part of the public API surface. */
   private constructor();
   /** True iff the host's books say live AND the identity slot still matches. */
