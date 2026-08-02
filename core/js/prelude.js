@@ -183,6 +183,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Object.defineProperty(EntityRef.prototype, "name", {
     get: function () { var n = __s2_entity_name(this.index, this.id); return n == null ? null : n; }
   });
+  // Target (CBaseEntity::m_target) — e.g. a func_button's target entity name. null if stale; "" if unset.
+  Object.defineProperty(EntityRef.prototype, "target", {
+    get: function () { var t = __s2_entity_target(this.index, this.id); return t == null ? null : t; }
+  });
   // Create a new entity by class name (e.g. "env_beam"). Returns a serial-gated EntityRef, or null.
   // With keyvalues: create + DispatchSpawn(keyvalues) in one call — a non-null result is a LIVE,
   // SPAWNED entity (on spawn failure the entity is removed and null returned).
