@@ -7045,7 +7045,16 @@ fn build_hook_view<'s>(
     if let Some(rname) = &plan.receiver {
         let key = v8::String::new(tc, rname)?;
         let mut handle: u32 = 0;
-        let ent: v8::Local<v8::Value> = (|| {
+        // Liveness is decided here; the OBJECT is minted by `build_entity_ref`, the one path every
+        // entity crossing into JS takes.
+        //
+        // It is not a formality. An `EntityRef` is a class with methods, and — the part that bites
+        // silently — with NAMED `.index`/`.id` properties, which is what `pack_entity_arg` reads
+        // when the ref is passed back to any native. A hand-rolled `[index, id]` array would put
+        // those at NUMERIC indices, so the packer would read `undefined` twice and compute
+        // "no entity": a live, just-respawned player would reach an engine call looking absent,
+        // with no error anywhere. A thrown `isValid is not a function` would at least be loud.
+        let live: Option<(i32, u64)> = (|| {
             let ops = ENGINE_OPS.with(|o| o.get())?;
             let f = ops.hook_receiver_handle?;
             // -1 is NORMAL, not a degrade: a detour `this` is frequently not an entity at all (a
@@ -7054,15 +7063,12 @@ fn build_hook_view<'s>(
                 return None;
             }
             let (index, serial) = crate::entity::decode_handle(handle);
-            let id = crate::entity_live::adopt(index, serial)?;
-            let arr = v8::Array::new(tc, 2);
-            let iv = v8::Integer::new(tc, index);
-            let dv = v8::Number::new(tc, id as f64);
-            arr.set_index(tc, 0, iv.into());
-            arr.set_index(tc, 1, dv.into());
-            Some(arr.into())
-        })()
-        .unwrap_or_else(|| v8::null(tc).into());
+            Some((index, crate::entity_live::adopt(index, serial)?))
+        })();
+        let ent: v8::Local<v8::Value> = match live {
+            Some((index, id)) => build_entity_ref(tc, index, id),
+            None => v8::null(tc).into(),
+        };
         obj.set(tc, key.into(), ent);
     }
     Some(vec![obj.into()])
@@ -14423,8 +14429,17 @@ mod frame_tests {
         HOOK_I32.lock().unwrap()[(idx - 1) as usize] = v;
         0
     }
-    /// No entity receiver — the common case for a detour `this` (a rules/services singleton).
-    extern "C" fn mock_hook_receiver(_v: *mut std::ffi::c_void, _out: *mut u32) -> c_int { -1 }
+    /// The receiver the shim would hand back: `-1` = "this `this` is not an entity" (the common
+    /// case — a rules/services singleton), otherwise a packed CEntityHandle. Settable, because BOTH
+    /// answers have to be exercised: the null one, and the one that actually mints an object.
+    static HOOK_RECEIVER: Mutex<i64> = Mutex::new(-1);
+    extern "C" fn mock_hook_receiver(v: *mut std::ffi::c_void, out: *mut u32) -> c_int {
+        if v as usize != HOOK_VIEW_TOKEN { return -1; }
+        let h = *HOOK_RECEIVER.lock().unwrap();
+        if h < 0 { return -1; }
+        unsafe { *out = h as u32 };
+        0
+    }
     extern "C" fn mock_hook_install(_id: c_int, _shape: c_int, _addr: i64, _r: *mut c_char, _c: c_int) -> c_int { 0 }
     extern "C" fn mock_hook_arm(id: c_int) { HOOK_ARMED.lock().unwrap().push(id); }
     extern "C" fn mock_hook_disarm(id: c_int) { HOOK_DISARMED.lock().unwrap().push(id); }
@@ -14623,6 +14638,79 @@ mod frame_tests {
         let st = crate::gamedata_hooks::status("hk4", "onY");
         assert!(st.contains("FINISHED dispatch") && st.contains("REFUSED"),
             "the refusal must be NAMED against the hook whose frame was aimed at, got: {st}");
+        shutdown();
+    }
+
+    /// A hook that SURFACES its receiver. `this_void` so nothing but the receiver is in play.
+    fn receiver_hook_gamedata() -> &'static str {
+        r#"{"signatures":{"Sig":{"linuxsteamrt64":{"module":"m.so","pattern":"55 48","resolve":"direct",
+                          "validate":{"prologue":"55"}}}},
+            "hooks":{"onR":{"target":{"kind":"signature","name":"Sig"},"shape":"this_void",
+                     "receiver":{"kind":"entity","as":"player"},"expose":{"ctx":"g"}}}}"#
+    }
+
+    /// A surfaced receiver is a REAL `EntityRef`, not an `[index, id]` array that merely holds the
+    /// same two numbers.
+    ///
+    /// The loud half of getting this wrong is `v.player.isValid()` throwing. The SILENT half is the
+    /// one that matters: `pack_entity_arg` — the packer every `EntityRef`-typed native argument goes
+    /// through — reads the NAMED `.index` and `.id`. On a bare array those live at numeric indices,
+    /// so both read `undefined`, the packer computes "no entity", and a live, just-respawned player
+    /// reaches an engine call looking absent with no error anywhere. Hence both assertions: the
+    /// prototype (methods exist) AND the property NAMES (the packer's actual dependency).
+    #[test]
+    fn a_surfaced_receiver_is_a_real_entity_ref() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        crate::loader::load_permissions_from_str(r#"{"engine:hooks":["hk6"]}"#).expect("parses");
+        // Seed the host's books, then hand back the handle that decodes to exactly that entity.
+        let id = crate::entity_live::on_created(42, 7);
+        *HOOK_RECEIVER.lock().unwrap() =
+            (((7u32) << crate::entity::HANDLE_ENTRY_BITS) | 42u32) as i64;
+        crate::gamedata_hooks::register_plugin("hk6", receiver_hook_gamedata());
+        let hook_id = crate::gamedata_hooks::plan("hk6", "onR").expect("onR ready").hook_id;
+        create_plugin_context("hk6");
+        eval_in_context("hk6", r#"
+            globalThis.__r = {};
+            __s2_hook_on("hk6", "onR", function (v) {
+                // The NAMED reads FIRST and a guarded call last, so a throwing method cannot
+                // mask the silent half: a bare array reads `undefined` here without throwing.
+                globalThis.__r = {
+                    index:     v.player.index,          // NAMED — what pack_entity_arg reads
+                    id:        String(v.player.id),     // NAMED
+                    isRef:     v.player instanceof __s2pkg_entity.EntityRef,
+                    hasMethod: typeof v.player.isValid === "function",
+                    callable:  false,
+                };
+                try { globalThis.__r.callable = typeof v.player.isValid() === "boolean"; }
+                catch (e) { globalThis.__r.callable = "threw: " + e.message; }
+            });
+        "#).unwrap();
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+
+        // The SILENT half first: these two are what `pack_entity_arg` reads, and a bare array
+        // reads `undefined` from both without throwing anything.
+        assert_eq!(eval_in_context_string("hk6", "String(globalThis.__r.index)"), "42",
+            "the NAMED .index is what every EntityRef-typed native argument is packed from");
+        assert_eq!(eval_in_context_string("hk6", "globalThis.__r.id"), id.to_string(),
+            "and the NAMED .id — a bare array reads `undefined` here and packs as NO_ENTITY");
+        // The loud half.
+        assert_eq!(eval_in_context_string("hk6", "String(globalThis.__r.isRef)"), "true",
+            "the receiver must BE an EntityRef, not an array shaped like one");
+        assert_eq!(eval_in_context_string("hk6", "String(globalThis.__r.hasMethod)"), "true");
+        assert_eq!(eval_in_context_string("hk6", "String(globalThis.__r.callable)"), "true",
+            "and its methods must actually run against the books");
+
+        // The other answer: the shim says "not an entity" and the receiver is a plain `null`, which
+        // is what `EntityRef | null` promises and what `?.` in a handler expects.
+        *HOOK_RECEIVER.lock().unwrap() = -1;
+        eval_in_context("hk6", r#"globalThis.__r = { isRef: "unset" };"#).unwrap();
+        eval_in_context("hk6", r#"
+            __s2_hook_on("hk6", "onR", function (v) { globalThis.__r = { isNull: v.player === null }; });
+        "#).unwrap();
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        assert_eq!(eval_in_context_string("hk6", "String(globalThis.__r.isNull)"), "true");
         shutdown();
     }
 
