@@ -316,17 +316,15 @@ pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
     catch_unwind(|| v8host::dispatch_usercmd(slot)).unwrap_or(0)
 }
 
-/// Shim → core: called by the `FireOutputInternal` detour (entity-I/O slice) with the firing entity's
-/// classname, the output name, packed activator/caller `CEntityHandle` ints (-1 = none), the output's
-/// value as a string, and the delay. Runs the matching `Entity.onOutput` subscribers SYNCHRONOUSLY and
-/// returns the collapsed `HookResult` (0 Continue .. 3 Stop) — the shim supersedes (suppresses) the
-/// original `FireOutputInternal` call when the result is >= Handled (2).
+/// Shim → core: a cvar's value changed. Called from the shim's ONE `ICvar` global change callback.
 ///
-/// `catch_unwind`-wrapped and FAIL-OPEN (-> 0 Continue on a panic or invalid UTF-8): a core bug must
-/// never suppress an output it didn't mean to, mirroring `s2script_core_ban_check`'s fail-open shape.
-/// Called from the shim's ONE `ICvar` global change callback. Notify-only — the engine has ALREADY
-/// applied the value, so a re-entrant dispatch returns `S2_DISPATCH_DEFERRED` and the shim replays
-/// it next frame from its own copies of the three strings.
+/// NOTIFY-ONLY — the engine has ALREADY applied the value, so there is nothing to veto: this entry
+/// returns `S2_DISPATCH_DEFERRED` on a re-entrant dispatch (never a `HookResult`), and the shim
+/// replays it next frame from its own copies of the three strings. Test the result EXACTLY against
+/// the sentinel; it is not a collapsed hook result and `-1000` is C-truthy.
+///
+/// `catch_unwind`-wrapped; a null pointer or invalid UTF-8 degrades to `0` (delivered/no-op) and is
+/// never deferrable — there would be nothing meaningful to replay.
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_cvar_change(
     name: *const c_char,
@@ -365,6 +363,17 @@ pub extern "C" fn s2script_core_replay_cvar_change(
     .unwrap_or(0)
 }
 
+/// Shim → core: called by the `FireOutputInternal` detour (entity-I/O slice) with the firing entity's
+/// classname, the output name, packed activator/caller `CEntityHandle` ints (-1 = none), the output's
+/// value as a string, and the delay. Runs the matching `Entity.onOutput` subscribers SYNCHRONOUSLY and
+/// returns the collapsed `HookResult` (0 Continue .. 3 Stop) — the shim supersedes (suppresses) the
+/// original `FireOutputInternal` call when the result is >= Handled (2).
+///
+/// NOT deferrable: the engine consumes this answer synchronously, so it never returns
+/// `S2_DISPATCH_DEFERRED` and a re-entrant dispatch keeps today's graceful skip (→ 0 Continue).
+///
+/// `catch_unwind`-wrapped and FAIL-OPEN (-> 0 Continue on a panic or invalid UTF-8): a core bug must
+/// never suppress an output it didn't mean to, mirroring `s2script_core_ban_check`'s fail-open shape.
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_output(
     classname: *const c_char,

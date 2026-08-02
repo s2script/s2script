@@ -94,10 +94,25 @@ rather than assuming `s_currentEvent` is null on entry.
 
 `DuplicateEvent` and `FreeEvent` are adjacent slots on `IGameEventManager2`, an interface the shim
 already sig-resolves and calls (`CreateEvent`/`FireEvent`). Per `docs/re-strategy.md` the hl2sdk
-header is a **hint, not a number**: both slots are validated at load (resolved pointer inside
-`libserver.so`'s `.text`) and the descriptors degrade by name if validation fails. If they cannot be
-resolved, event deferral degrades to today's drop with a named reason at boot — scalar dispatches
-still defer.
+header is a **hint, not a number**, and validation is **two-stage** — because a structural check
+alone is blind to the exact drift the doctrine is about:
+
+1. **At load, structurally.** The slot index comes from the compiler's own Itanium
+   pointer-to-member encoding (never a hand-counted slot), is read out of the *live* manager's
+   vtable, and both resolved pointers must land inside `libserver.so`'s `.text`.
+2. **On the first real duplication, behaviourally.** Stage 1 compares the header against itself
+   (`idxFree == idxDup + 1` is two header-derived numbers), so it catches an hl2sdk edit but *not*
+   Valve inserting a virtual ahead of the pair — on a real slot shift the neighbour is a valid
+   `.text` pointer and stage 1 passes. So the first duplicate we mint is checked against the event
+   it copied: pointer-shaped, mapped, **same vptr as the original** (a copy is another object of the
+   same concrete class), and the same `GetName()`. Only then is it queued. The probe is a real live
+   event, not a `CreateEvent`'d one at load — event descriptors are not loaded that early, and a
+   synthetic probe would false-negative the feature off on every boot.
+
+Either stage failing degrades **game-event deferral only**, by name, through `GamedataResult`;
+scalar dispatches still defer. A failed round-trip deliberately **leaks** the suspect pointer rather
+than `FreeEvent`-ing it. The knowingly accepted residual is that the round-trip calls a
+possibly-wrong slot once — bounded and one-shot, versus corruption on every deferral.
 
 ## 4. The queue
 
@@ -126,6 +141,26 @@ dropped" into "delivered one frame later".
 check covers that. An entity in a scalar payload may die; the existing books-gated resolve already
 degrades to `null`. Neither needs new machinery.
 
+**A replay can re-enter the queue, so the drain owns three re-entrancy rules.** A replay runs
+arbitrary JS, and JS reaches back into the shim — the map-start flush exists precisely because "a
+plugin-declared engine call that reaches a changelevel from JS" happens, which puts `StartupServer`'s
+flush *inside* the drain loop.
+
+1. **A flush during a drain never touches the batch being walked.** It empties the push queue and
+   sets an `abandoned` flag; the drain breaks at its next iteration and its own trailing clear does
+   the exactly-once free microseconds later. Clearing the batch under the walk collapses `end()`
+   onto `begin()` while the iterator sits at `begin()+k` — the loop then switches on destroyed
+   entries and frees whatever decodes as a duplicate.
+2. **The drain takes each entry off the batch before replaying it**, so the in-flight entry's
+   strings and its duplicate are drain-stack-owned for the whole call. An index loop alone is not
+   enough: a reference into the batch would still dangle for the rest of that iteration.
+3. **A drain re-entered from a replay is a no-op** — it must never swap the batch out from under
+   the loop already walking it.
+
+`shim/tests/defer_queue_test.cpp` pins all three against the shipped code. Core's in-isolate tests
+mock the shim's drain with a local `Vec` and cover core's half only; they are structurally incapable
+of failing on the queue's own shape, which is how (1) reached review.
+
 ## 5. Testing
 
 **The primary acceptance test already exists.** `reentrant_dispatch_is_currently_dropped`
@@ -138,6 +173,17 @@ Added:
 - **Overflow** — pushing past the cap logs a named drop and does not grow the queue.
 - **Ordering** — two dispatches deferred in one frame replay in push order.
 - **Pre-hook stays skipped** — a re-entrant pre-hook is not queued (it would have no one to answer).
+
+**The drain itself is tested in C++, against the shipped code** (`shim/tests/defer_queue_test.cpp`,
+run by `scripts/test-defer-queue.sh` from `ci-native.sh`). The queue policy lives in its own
+engine-free TU (`shim/src/defer_queue.cpp`) with every engine and core call injected through
+`S2DeferOps`, so the test drives the real globals, the real swap and the real free path with no SDK,
+no engine and no isolate. It covers push order, the double buffer, the bound, degraded duplication,
+a re-deferred replay, a throwing replay, a drain re-entered from a replay, and — the regression that
+motivated the extraction — **a flush called from inside a replay**, asserting the drain abandons the
+rest of the batch and every duplicate is freed exactly once. It compiles with `_GLIBCXX_DEBUG` (plus
+ASan/UBSan when available), which turns a walk over an invalidated buffer into a deterministic abort
+rather than whatever the heap happens to contain.
 
 **Live gate** (a shim-boundary change is not provable offline):
 1. A real `player_death` re-fired from a handler reaches a second plugin **with correct field
