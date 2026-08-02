@@ -341,5 +341,62 @@
       "argNames": ["weapon"],
       "returns": "bool"
     }
+  },
+
+  // THE INBOUND HALF (declarative-inbound-hooks slice, 2026-08-02). Where `calls` above lets a
+  // plugin REACH the engine, a `hooks` entry lets the engine REACH the plugin: `shape` picks one
+  // of the shim's compile-time thunk ABIs (core/src/gamedata_hooks.rs's closed vocabulary — the
+  // shim never sees a game function, only a shape id and a resolved address), `target` reuses a
+  // `signatures` entry ABOVE by name so its validator travels with it (flatten_decl's co-location
+  // rule, restated in this file's header comment), and `bypassWith` names a `calls` descriptor in
+  // THIS SAME file whose invocation arms the hook's own latch — SourceMod's
+  // `g_pIgnoreTerminateDetour`, ported and made per-hook: a PLUGIN-issued `terminateRound()` /
+  // `respawn()` does NOT fire the hook below it; only the ENGINE calling the function unprompted
+  // does.
+  //
+  // A VALIDATOR IS MANDATORY HERE — UNLIKE `calls` ABOVE, WHERE SIGNATURE UNIQUENESS ALONE IS
+  // ENOUGH. A wrong CALL address misbehaves: the wrong function runs, or a register comes back
+  // garbage. A wrong DETOUR address is categorically worse — `s2detour::Install` overwrites the
+  // PROLOGUE of whatever is actually sitting at that address with a jump to our thunk, so a
+  // unique-but-WRONG match (exactly the trap the `CCSGameRules_TerminateRound` comment above
+  // documents: the borrowed CSSharp pattern matches once, at the wrong function) doesn't just
+  // misbehave when called, it corrupts an unrelated function's entry bytes on load, unconditionally.
+  // `core/src/gamedata_hooks.rs`'s `prepare()` enforces this by refusing to register ANY hook whose
+  // flattened target has no non-empty `validate` — a named boot-time failure, not a silent
+  // uniqueness-only fallback. Both signatures below already carry the validator their own slices
+  // derived (`CCSGameRules_TerminateRound`'s `string-xref` on its telemetry-scope string;
+  // `CCSPlayerController_Respawn`'s `vtable-member` RTTI membership check), so neither hook
+  // descriptor repeats it: naming the signature is enough, and flatten_decl lifts the co-located
+  // validator onto the hook's target automatically.
+  "hooks": {
+    // ctx.gameRules.onTerminateRound(handler). The detour's `this` is the bare CCSGameRules*
+    // TerminateRound actually receives — NOT an entity (contrast the `terminateRound` CALL above,
+    // whose receiver is the CCSGameRulesProxy ENTITY that hops through `m_pGameRules` to reach this
+    // same object) — so no `receiver` is declared here and the default (`kind: "none"`, nothing
+    // surfaced) is correct, not an oversight. `params` mirrors the call's DELAY-FIRST arg order
+    // above for the same reason it's written down twice there: getting it backwards is silent.
+    // `_unused3`/`_unused4` stay out of `mutable` — their semantics are unknown in every framework
+    // (pawn.js's own call always passes 0, 0), so a handler may read but never rewrite them.
+    "onTerminateRound": {
+      "target": { "kind": "signature", "name": "CCSGameRules_TerminateRound" },
+      "shape": "this_f32_i32_i32_i32",
+      "params": ["delay", "reason", "_unused3", "_unused4"],
+      "mutable": ["delay", "reason"],
+      "bypassWith": "terminateRound",
+      "expose": { "ctx": "gameRules" }
+    },
+
+    // ctx.players.onRespawn(handler). The detour's `this` IS the entity here — Respawn's receiver
+    // is the CCSPlayerController itself, exactly like the `respawn` CALL above (also a bare
+    // `receiver: {kind: entity}`, no `via` hop) — so it IS surfaced, under `player`, as a
+    // books-gated EntityRef; the raw pointer the detour receives never crosses into JS. Nullary
+    // shape: no `params`/`mutable` because `this_void` carries nothing past `self`.
+    "onRespawn": {
+      "target": { "kind": "signature", "name": "CCSPlayerController_Respawn" },
+      "shape": "this_void",
+      "receiver": { "kind": "entity", "as": "player" },
+      "bypassWith": "respawn",
+      "expose": { "ctx": "players" }
+    }
   }
 }
