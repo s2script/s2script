@@ -3,12 +3,20 @@
  * The typed field accessors are GENERATED (schema.generated.d.ts) from the schema catalog by
  * `s2script gen-schema`; the typed nav wrappers are GENERATED (nav.generated.d.ts) from
  * nav-targets.json by `s2script gen-nav`; the typed event interfaces are GENERATED (events.generated.d.ts)
- * from the event catalog by `s2script gen-events`; this file adds the hand-written entry points on top.
+ * from the event catalog by `s2script gen-events`; the `ctx` hook augmentation + its view interfaces
+ * are GENERATED (hooks.generated.d.ts) from gamedata/cs2/game.cs2.jsonc's `hooks` by
+ * `s2script gen-hooks`; this file adds the hand-written entry points on top.
  */
 import type { EntityRef } from "@s2script/sdk/entity";
 import type { Vector, QAngle } from "@s2script/sdk/math";
 import type { TraceHit } from "@s2script/sdk/trace";
 export * from "./schema.generated";
+// `export *` (not a named list): the hooks.generated PluginContext augmentation takes effect the
+// moment this file is part of the program, regardless of which names are re-exported — but a
+// plugin author who wants to name a view type explicitly (e.g. `OnTerminateRoundView`) needs it
+// re-exported from here too, exactly like every other generated cs2 artifact. A new hook's view/ctx
+// interfaces surface automatically; no index.d.ts edit needed.
+export * from "./hooks.generated";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
 export type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
 import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";

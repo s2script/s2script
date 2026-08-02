@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fails if a shipped `calls` descriptor is not WELL-FORMED against the declared-engine-call grammar.
+# Fails if a shipped `calls` OR `hooks` descriptor is not WELL-FORMED against its grammar.
 #
 # WHY THIS GATE EXISTS. A descriptor is data, and the runtime's answer to bad data is — correctly —
 # to degrade THAT descriptor with a named reason and keep the server up. That is the right runtime
@@ -8,6 +8,18 @@
 # 5-arg descriptor for a 4-arg function all produce a server that boots green and a feature that is
 # quietly gone. Nobody reads the boot log for a WARN they are not expecting.
 #
+# `hooks` (declarative-inbound-hooks slice, 2026-08-02) is folded into THIS gate rather than a
+# sibling script: it is the INBOUND twin of `calls` — same per-directory scoping (a `bypassWith`
+# resolves against the same scope's `calls` exactly as a `target.name` resolves against the same
+# scope's `signatures`), same target-kind/validator grammar (`check_validate`, `TARGET_KINDS`,
+# `RECEIVER_KINDS` are reused verbatim) — so a second copy of that machinery would be exactly the
+# "third place for a closed set to drift" the vocabulary rule below already warns against. The one
+# rule a hook has that a call does not — a validator is MANDATORY, never optional, because a wrong
+# DETOUR address overwrites the prologue of whatever is actually there — is checked in its own
+# block. (Task 5's review folded this gap into Task 6 as item ii: before this, a `hooks` typo — an
+# unknown shape, a dangling `bypassWith`, a `mutable` entry absent from `params`, a missing
+# `expose.ctx`, an absent `validate` — surfaced only as a boot-time WARN, never a CI failure.)
+#
 # Everything here is decidable WITHOUT the game binary, so it is decidable in CI. What needs the
 # binary (does the pattern match? is it unique? does the validator pass?) stays at load, where it
 # belongs — this gate exists so that by the time the loader runs, the only remaining question is
@@ -15,9 +27,9 @@
 #
 # THE VOCABULARY IS NOT HARDCODED HERE. Every closed set below is read out of the source that
 # actually enforces it — the arg/return/receiver/target vocabularies and the SysV arity budget from
-# core/src/gamedata_calls.rs, the validator vocabulary from shim/src/call_validate.cpp. A gate with
-# its own copy of a closed set is a third place for the set to drift; this one fails loudly if it
-# cannot find the real one.
+# core/src/gamedata_calls.rs, the hook shape vocabulary from core/src/gamedata_hooks.rs, the
+# validator vocabulary from shim/src/call_validate.cpp. A gate with its own copy of a closed set is
+# a third place for the set to drift; this one fails loudly if it cannot find the real one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -86,6 +98,16 @@ if not VALIDATORS:
     bad.append('no kVocabulary[] table found in shim/src/call_validate.cpp — this gate cannot tell '
                'which validators exist')
 
+# The hook shape vocabulary — core/src/gamedata_hooks.rs's `SHAPES`, the closed set a `hooks.<name>.
+# shape` value must belong to. Mirrors the shim's `kShapes` (scripts/check-hook-shapes.sh owns THAT
+# cross-language diff); this gate only needs core's names to validate gamedata authoring.
+HOOK_SRC = pathlib.Path('core/src/gamedata_hooks.rs').read_text()
+m = re.search(r'pub\(crate\) const SHAPES: &\[\(&str, i32\)\] =\s*&\[(.*?)\];', HOOK_SRC, re.S)
+HOOK_SHAPES = set(re.findall(r'\("([A-Za-z0-9_]+)"', m.group(1))) if m else set()
+if not HOOK_SHAPES:
+    bad.append('no SHAPES[] table found in core/src/gamedata_hooks.rs — this gate cannot derive the '
+               'hook shape vocabulary')
+
 # `expect`'s byte cap, read from the validator that enforces it.
 m = re.search(r'kMaxExpect\s*=\s*(\d+)', VALIDATE_SRC)
 MAX_EXPECT = int(m.group(1)) if m else 256
@@ -115,7 +137,7 @@ if bad:
 def is_custom(p):
     return 'custom' in p.parts[:-1]
 
-scopes = {}   # dir -> {"calls": {(file, name): decl}, "signatures": {name: (file, spec)}}
+scopes = {}   # dir -> {"calls": {(file, name): decl}, "signatures": {name: (file, spec)}, "hooks": {(file, name): decl}}
 for root in (pathlib.Path('gamedata'), pathlib.Path('examples'), pathlib.Path('plugins')):
     if not root.is_dir():
         continue
@@ -125,18 +147,20 @@ for root in (pathlib.Path('gamedata'), pathlib.Path('examples'), pathlib.Path('p
         try:
             data = json.loads(strip_jsonc_comments(p.read_text()))
         except Exception as e:
-            # A file this gate cannot read is only its business if it declares calls — and it
+            # A file this gate cannot read is only its business if it declares calls/hooks — and it
             # cannot know that without reading it. Report, don't guess.
-            if '"calls"' in p.read_text():
-                bad.append(f'{p}: declares `calls` but is not valid JSON — {e}')
+            if '"calls"' in p.read_text() or '"hooks"' in p.read_text():
+                bad.append(f'{p}: declares `calls`/`hooks` but is not valid JSON — {e}')
             continue
-        if not isinstance(data, dict) or not ({'calls', 'signatures'} & set(data)):
+        if not isinstance(data, dict) or not ({'calls', 'signatures', 'hooks'} & set(data)):
             continue
-        sc = scopes.setdefault(p.parent, {'calls': {}, 'signatures': {}})
+        sc = scopes.setdefault(p.parent, {'calls': {}, 'signatures': {}, 'hooks': {}})
         for name, spec in (data.get('signatures') or {}).items():
             sc['signatures'][name] = (p, spec)
         for name, decl in (data.get('calls') or {}).items():
             sc['calls'][(p, name)] = decl
+        for name, decl in (data.get('hooks') or {}).items():
+            sc['hooks'][(p, name)] = decl
 
 # ---------------------------------------------------------------------------------------------
 # 3. The grammar.
@@ -341,6 +365,148 @@ for scope, sc in sorted(scopes.items()):
                            f'that lands on an in-range thunk passes every other gate')
             check_validate(f'{where}.target', v)
 
+# ---------------------------------------------------------------------------------------------
+# 3b. `hooks` — the INBOUND sibling of `calls`. Reuses TARGET_KINDS/RECEIVER_KINDS/check_validate
+# (the closed sets a hook's grammar shares with a call's) rather than a second copy; the one rule a
+# hook has that a call does not — a validator is MANDATORY, never optional (spec §5) — is its own
+# check below, mirroring the vtable-target `validate.prologue` requirement just above.
+# ---------------------------------------------------------------------------------------------
+for scope, sc in sorted(scopes.items()):
+    call_names_in_scope = {name for (_p, name) in sc['calls']}
+    for (path, name), decl in sorted(sc['hooks'].items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
+        checked += 1
+        where = f'{path}: hooks.{name}'
+        if not isinstance(decl, dict):
+            bad.append(f'{where}: descriptor must be an object')
+            continue
+
+        # --- expose.ctx (mandatory: nothing could subscribe to a hook with none) -----------
+        expose = decl.get('expose')
+        ctx_ns = (expose or {}).get('ctx') if isinstance(expose, dict) else None
+        if not isinstance(ctx_ns, str) or not ctx_ns:
+            bad.append(f'{where}: missing `expose.ctx` — nothing could subscribe to this hook')
+        elif not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', ctx_ns):
+            bad.append(f'{where}: `expose.ctx` = {ctx_ns!r} is not a plain identifier')
+
+        # --- shape: the closed thunk-ABI vocabulary the shim compiles for -------------------
+        shape = decl.get('shape')
+        if not isinstance(shape, str) or shape not in HOOK_SHAPES:
+            bad.append(f'{where}: unknown hook shape {shape!r} — expected one of '
+                       f'{", ".join(sorted(HOOK_SHAPES))}')
+
+        # --- params / mutable: params are POSITIONAL identifiers; mutable must be a subset --
+        params = decl.get('params', [])
+        if not isinstance(params, list):
+            bad.append(f'{where}: `params` must be an array')
+            params = []
+        seen_params = set()
+        for i, p in enumerate(params):
+            if not isinstance(p, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', p):
+                bad.append(f'{where}: params[{i}] = {p!r} is not a plain identifier')
+            elif p in seen_params:
+                bad.append(f'{where}: param name {p!r} is declared more than once')
+            if isinstance(p, str):
+                seen_params.add(p)
+        mutable = decl.get('mutable', [])
+        if not isinstance(mutable, list):
+            bad.append(f'{where}: `mutable` must be an array')
+            mutable = []
+        for mname in mutable:
+            if not isinstance(mname, str) or mname not in params:
+                bad.append(f"{where}: `mutable` names {mname!r}, which is not one of this hook's params")
+
+        # --- receiver: {kind: none|entity}, "entity" needs a plain-identifier `as` ----------
+        recv = decl.get('receiver')
+        if recv is not None and not isinstance(recv, dict):
+            bad.append(f'{where}: `receiver` must be an object')
+            recv = None
+        rkind = (recv or {}).get('kind', 'none')
+        if rkind not in RECEIVER_KINDS:
+            bad.append(f'{where}: unsupported receiver kind {rkind!r} — expected one of '
+                       f'{", ".join(sorted(RECEIVER_KINDS))}')
+        elif rkind == 'entity':
+            as_name = (recv or {}).get('as')
+            if not isinstance(as_name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', as_name):
+                bad.append(f'{where}: receiver.kind "entity" needs a plain-identifier `as` name')
+            elif as_name in params:
+                bad.append(f'{where}: receiver `as` name {as_name!r} collides with a param name')
+
+        # --- bypassWith: must name a `calls` descriptor in THIS SAME scope ------------------
+        bypass = decl.get('bypassWith')
+        if bypass is not None:
+            if not isinstance(bypass, str) or not bypass:
+                bad.append(f'{where}: `bypassWith` must be a non-empty call name')
+            elif bypass not in call_names_in_scope:
+                bad.append(f'{where}: `bypassWith` names {bypass!r}, which no `calls` descriptor in '
+                           f'{scope}/ declares — the hook would degrade at every boot')
+
+        # --- target + THE MANDATORY VALIDATOR (spec §5) -------------------------------------
+        # Unlike a `calls` signature target, uniqueness alone is never enough for a hook: a wrong
+        # CALL address misbehaves, a wrong DETOUR address overwrites the prologue of whatever is
+        # actually there. flatten_decl (core/src/gamedata_calls.rs) LIFTS a named signature's own
+        # co-located validator onto the hook's target when the hook declares no inline one of its
+        # own, so the EFFECTIVE validator is the hook's inline one if present, else the signature's
+        # — either being absent/empty must fail here exactly as prepare() fails it at load: named,
+        # not silent.
+        target = decl.get('target')
+        if not isinstance(target, dict):
+            bad.append(f'{where}: descriptor has no `target` object')
+            continue
+        tkind = target.get('kind')
+        if tkind not in TARGET_KINDS:
+            bad.append(f'{where}: unknown target kind {tkind!r} — expected one of '
+                       f'{", ".join(sorted(TARGET_KINDS))}')
+            continue
+
+        if tkind == 'signature':
+            if isinstance(target.get('pattern'), str) and target['pattern']:
+                check_validate(f'{where}.target', target.get('validate'), target)
+                validate_sources = [target.get('validate')]
+            else:
+                sname = target.get('name')
+                if not isinstance(sname, str) or not sname:
+                    bad.append(f'{where}: signature target has no `name`')
+                    continue
+                if sname not in sc['signatures']:
+                    bad.append(f'{where}: names signature "{sname}", which no file in {scope}/ '
+                               f'declares — the descriptor would degrade at every boot')
+                    continue
+                spath, plats = sc['signatures'][sname]
+                if not isinstance(plats, dict) or PLATFORM not in plats:
+                    bad.append(f'{where}: signature "{sname}" ({spath}) has no "{PLATFORM}" entry')
+                    continue
+                spec = plats[PLATFORM]
+                if not isinstance(spec, dict) or not isinstance(spec.get('pattern'), str) \
+                        or not spec['pattern'].strip():
+                    bad.append(f'{where}: signature "{sname}" ({spath}) has no byte pattern')
+                    continue
+                if 'validate' in target:
+                    check_validate(f'{where}.target', target['validate'], spec)
+                validate_sources = [target.get('validate'), spec.get('validate')]
+
+            if not any(isinstance(v, dict) and len(v) > 0 for v in validate_sources):
+                bad.append(f'{where}: a hook target MUST carry a non-empty `validate` (inline, or '
+                           f"inherited from its named signature) — a wrong DETOUR address overwrites "
+                           f'the prologue of whatever is actually there')
+
+        elif tkind == 'vtable':
+            plat = target.get(PLATFORM)
+            if not isinstance(plat, dict):
+                bad.append(f'{where}: vtable target has no "{PLATFORM}" object')
+                continue
+            idx = plat.get('index')
+            if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0:
+                bad.append(f'{where}: vtable target needs a non-negative integer `index`')
+            if not isinstance(target.get('class'), str) or not target['class']:
+                bad.append(f'{where}: vtable target needs a `class` name to walk')
+            v = plat.get('validate')
+            # Already mandatory for a CALL's vtable target (the block above) — a hook inherits the
+            # same requirement, so no separate hook-only rule is needed here.
+            if not isinstance(v, dict) or not v.get('prologue'):
+                bad.append(f'{where}: a vtable target REQUIRES validate.prologue — a borrowed index '
+                           f'that lands on an in-range thunk passes every other gate')
+            check_validate(f'{where}.target', v)
+
 # Every signature's validator is checked even when no descriptor targets it yet: an unshipped
 # validator is still a live treadmill recipe, and a typo in one is invisible until the day it runs.
 for scope, sc in sorted(scopes.items()):
@@ -359,5 +525,6 @@ if bad:
 
 print(f'check-call-descriptors: {checked} descriptor(s) well-formed '
       f'(args {"/".join(sorted(ARG_KINDS))}; returns {"/".join(sorted(RET_KINDS))}; '
-      f'validators {"/".join(sorted(VALIDATORS))}; budget {MAX_GP_ARGS} GP + {MAX_FP_ARGS} FP)')
+      f'validators {"/".join(sorted(VALIDATORS))}; budget {MAX_GP_ARGS} GP + {MAX_FP_ARGS} FP; '
+      f'hook shapes {"/".join(sorted(HOOK_SHAPES))})')
 PY

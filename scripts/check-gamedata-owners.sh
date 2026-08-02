@@ -47,7 +47,13 @@ blob = ''.join(blob)
 # and a gate that exists to prove "the shim no longer names these" would silently skip every one of
 # them if the section were absent. `keys` is deliberately NOT a fact section — it is checked
 # separately (forbidden under core, unowned by definition elsewhere).
-FACT_SECTIONS = ('interfaces', 'offsets', 'signatures', 'calls')
+#
+# `hooks` (declarative-inbound-hooks slice, 2026-08-02) is the INBOUND sibling of `calls`: gamedata/
+# cs2/game.cs2.jsonc's `onTerminateRound`/`onRespawn` name the shim's `shape` vocabulary and a
+# `signatures` target, never a game function — the same boundary `calls` holds, so it needs the same
+# gate. Folded in from Task 5's review (task-6-brief.md item i): omitting it here left the ownership
+# boundary UNENFORCED for every hook — no violation existed, but nothing would have caught one.
+FACT_SECTIONS = ('interfaces', 'offsets', 'signatures', 'calls', 'hooks')
 bad = []
 
 # The owners the LOADER knows about, read out of the shim rather than hardcoded: the owner list is

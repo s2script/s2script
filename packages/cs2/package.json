@@ -13,6 +13,7 @@
     "csitem.generated.d.ts",
     "econ.d.ts",
     "events.generated.d.ts",
+    "hooks.generated.d.ts",
     "index.d.ts",
     "nav.generated.d.ts",
     "schema.generated.d.ts",

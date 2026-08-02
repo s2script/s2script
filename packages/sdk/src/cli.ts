@@ -23,6 +23,7 @@ function usage(): void {
       "  s2s gen-schema [--check]\n" +
       "  s2s gen-events [--check]\n" +
       "  s2s gen-nav [--check]\n" +
+      "  s2s gen-hooks [--check]\n" +
       "\n" +
       "Env: S2SCRIPT_REGISTRY_URL  S2SCRIPT_TOKEN (CI deploy)",
   );
