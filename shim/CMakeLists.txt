@@ -57,6 +57,14 @@ add_library(s2script SHARED
     # deferred-dispatch slice: the queue/drain POLICY, engine-free (every engine + core call is
     # injected through S2DeferOps), so shim/tests/defer_queue_test.cpp drives the SHIPPED drain.
     src/defer_queue.cpp
+    # declarative inbound hooks: the engine-free POLICY half (shape vocabulary, bypass latch,
+    # collapse contract) — also built standalone into hook_dispatch_selftest below, so the gate
+    # drives exactly the code that ships...
+    src/hook_dispatch.cpp
+    # ...and the ENGINE half: one compile-time thunk per (shape, hook slot), lazy detour install,
+    # and the block-scoped arg view. Cannot be unit-tested outside the game (it marshals a receiver
+    # through the entity system), which is precisely why the policy lives in the TU above.
+    src/engine_hooks.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier1/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete

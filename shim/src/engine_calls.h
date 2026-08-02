@@ -44,4 +44,12 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
                         const char* const* strs, const float* vecs,
                         int retKind, uint64_t* retOut);
 
+// Pack a raw engine pointer into a CEntityHandle, BOOKS-FIRST: membership in the entity system's own
+// identity chunks is decided without reading a single byte of `p`, so a pointer that is not an entity
+// at all (a rules/services singleton, a wrong `returns: "entity"` declaration) degrades instead of
+// being dereferenced. Returns 0xFFFFFFFF ("no entity") on any miss — NOT 0, which is a legal handle
+// (index 0, serial 0). Exported from this TU because engine_hooks.cpp needs the identical walk to
+// surface a detour receiver, and two copies of a books-first rule is one copy too many.
+uint32_t S2_EntityHandleFromPtr(void* p);
+
 }

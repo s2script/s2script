@@ -275,6 +275,13 @@ using FnF32 = float    (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
 
 }  // namespace
 
+// The books-first pointer -> handle pack, exposed for engine_hooks.cpp's receiver surfacing (a
+// detour's `this` is the same question as an entity RETURN: is this pointer an entity the host's
+// books currently vouch for?). Thin wrapper, so there is exactly ONE implementation of the rule.
+uint32_t S2_EntityHandleFromPtr(void* p) {
+    return static_cast<uint32_t>(EntityHandleFromPtr(p));   // kInvalidEntityHandle -> 0xFFFFFFFF
+}
+
 // ---------------------------------------------------------------------------
 // Resolve. Returns a call id >= 0, or -1 with a named reason (spec §12 "Load" row) — every failure
 // here degrades exactly ONE descriptor; the core logs the reason once and Engine.call() yields null.

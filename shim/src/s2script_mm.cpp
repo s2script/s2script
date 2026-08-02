@@ -66,6 +66,8 @@
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
 #include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
+#include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
+#include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -4843,12 +4845,30 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Always wired; the op itself refuses unless S2_DEFER_SELFTEST is set, and core does not install
     // the native that reaches it without the same variable. Two independent gates on one env fact.
     ops.defer_selftest = &s2_defer_selftest;
+    // --- declarative inbound hooks (APPENDED after defer_selftest; order is the ABI) ---
+    // Both live in engine_hooks.cpp: the lazy detour install (one compiled thunk per hook slot per
+    // shape) and the bypass latch core arms around its own outbound `bypassWith` call.
+    ops.hook_install    = &S2_HookInstall;
+    ops.hook_arm_bypass = &S2_HookArmBypass;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
+    }
+
+    // Declarative inbound hooks: hand the engine-free policy TU its ONE outside contact — core's
+    // inbound dispatch entry. After core init deliberately: nothing can reach a thunk before then
+    // (a hook is only detoured when core calls hook_install, which needs a loaded plugin), and a
+    // failed init returns above, leaving dispatch unset so any stale detour degrades to Continue.
+    {
+        S2HookOps hookOps{};
+        hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
+        S2Hook_SetOps(hookOps);
+        if (!hookOps.dispatch)
+            META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
+                           "declarative inbound hooks are OFF (shim/core version mismatch)\n");
     }
 
     // --- Crash reporter: identity + spool-dir push (fail-off: any miss degrades to "") ---
