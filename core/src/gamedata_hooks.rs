@@ -711,7 +711,7 @@ mod tests {
                                 "pattern":"55 48","resolve":"direct","validate":{"prologue":"55"}},
                                 "shape":"this_void","expose":{"ctx":"g"}}}}"#;
 
-    /// Count of `install_via_engine` stand-in calls — what proves the lazy-install rule.
+    // Count of `install_via_engine` stand-in calls — what proves the lazy-install rule.
     thread_local! {
         static INSTALLS: Cell<usize> = const { Cell::new(0) };
     }

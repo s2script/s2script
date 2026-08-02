@@ -1020,6 +1020,12 @@ thread_local! {
     /// pointer's own contents.
     static ACTIVE_HOOK: std::cell::RefCell<Option<ActiveHook>>
         = const { std::cell::RefCell::new(None) };
+
+    /// Monotonic dispatch counter — the source of `ActiveHook::epoch`. Never reset, including at
+    /// shutdown: a view object rooted in a plugin context that survives a re-init must not have its
+    /// epoch collide with a fresh dispatch's. At one dispatch per tick it would take ~9 billion
+    /// years to wrap.
+    static HOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A registered TopMenu item. `on_select` is invoked in `owner`'s context (liveness-gated by `generation`).
@@ -6096,7 +6102,18 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
             (None, None) // the overwhelmingly common case: no hook names this call
         } else {
             let o = engine_ops();
-            (o.and_then(|o| o.hook_arm_bypass), o.and_then(|o| o.hook_disarm_bypass))
+            match (o.and_then(|o| o.hook_arm_bypass), o.and_then(|o| o.hook_disarm_bypass)) {
+                (Some(a), Some(d)) => (Some(a), Some(d)),
+                // ARM ONLY IF WE CAN DISARM. An ops table with one and not the other (an older
+                // shim) would otherwise arm a latch nothing ever clears — precisely the leak this
+                // pairing exists to prevent, and worse than the thing it was meant to fix: losing
+                // the SM "our own call does not fire our own hook" semantic costs one spurious
+                // dispatch, while a stuck latch silently swallows a genuine engine-driven one.
+                _ => {
+                    warn_once_bypass_unpairable();
+                    (None, None)
+                }
+            }
         };
         for id in &bypass_ids {
             if let Some(arm) = arm_fn { arm(*id); }
@@ -6757,6 +6774,17 @@ pub(crate) struct ActiveHook {
     /// THIS hook rather than as a silent zero.
     owner: String,
     name: String,
+    /// THE BINDING TOKEN: a monotonic id for THIS dispatch, minted in `dispatch_hook` and stamped
+    /// into every accessor the view's properties carry.
+    ///
+    /// Without it, a view object is bound to nothing. Its accessors would carry only a param index
+    /// and read whichever dispatch happened to be active, so a view stashed out of one hook's
+    /// handler would silently REBIND to the next hook's live frame: on a shape both hooks share, the
+    /// shim's bounds-and-class check passes, and a `mutable` param of the FIRST hook becomes a write
+    /// primitive into the SECOND hook's args — past that hook's own `mutable` allow-list, with no
+    /// degrade. An epoch rather than the hook id, because the same trap exists between two dispatches
+    /// of the SAME hook, where a hook id would match.
+    epoch: u64,
 }
 
 /// The `HOOK_MUX` channel key for a declared hook.
@@ -6787,10 +6815,80 @@ fn hook_owner_id(arg: &str) -> String {
     arg.to_string()
 }
 
-/// The live dispatch's `(view, owner, name)`, or `None` outside one. Copied out so the `ACTIVE_HOOK`
-/// borrow is released before anything else runs.
-fn active_hook() -> Option<(*mut std::ffi::c_void, String, String)> {
-    ACTIVE_HOOK.with(|a| a.borrow().as_ref().map(|h| (h.view, h.owner.clone(), h.name.clone())))
+/// The live dispatch's `(view, owner, name, epoch)`, or `None` outside one. Copied out so the
+/// `ACTIVE_HOOK` borrow is released before anything else runs.
+fn active_hook() -> Option<(*mut std::ffi::c_void, String, String, u64)> {
+    ACTIVE_HOOK
+        .with(|a| a.borrow().as_ref().map(|h| (h.view, h.owner.clone(), h.name.clone(), h.epoch)))
+}
+
+/// What an accessor is allowed to do, decided BEFORE the frame is touched.
+enum HookAccess {
+    /// Bound to the live dispatch: proceed.
+    Live { view: *mut std::ffi::c_void, owner: String, name: String, idx: i32 },
+    /// No dispatch is running at all — the view outlived its thunk. Self-evident to the caller (a
+    /// read yields `undefined`), and the descriptor is fine, so this is not a degrade.
+    Dead,
+    /// A DIFFERENT dispatch is running: this view belongs to a finished one and must not touch the
+    /// frame that is live now. Carries the CURRENT hook, because that is the frame that was nearly
+    /// read or written and the one an operator needs named.
+    Rebound { owner: String, name: String, idx: i32 },
+}
+
+/// Decode an accessor's `data` — `[paramIndex, epoch]` — and check it against the live dispatch.
+///
+/// The epoch comparison is the whole point: it is what BINDS a view object to the one dispatch that
+/// built it. See `ActiveHook::epoch`.
+fn hook_access(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> HookAccess {
+    let (idx, epoch) = match v8::Local::<v8::Array>::try_from(args.data()) {
+        Ok(a) => (
+            a.get_index(scope, 0).and_then(|v| v.int32_value(scope)).unwrap_or(-1),
+            a.get_index(scope, 1).and_then(|v| v.number_value(scope)).unwrap_or(-1.0) as u64,
+        ),
+        // Unreachable — `build_hook_view` is the only thing that builds these — but a malformed
+        // `data` must fail closed rather than default to param 0 of the live frame.
+        Err(_) => (-1, u64::MAX),
+    };
+    match active_hook() {
+        None => HookAccess::Dead,
+        Some((view, owner, name, live_epoch)) => {
+            if live_epoch == epoch {
+                HookAccess::Live { view, owner, name, idx }
+            } else {
+                HookAccess::Rebound { owner, name, idx }
+            }
+        }
+    }
+}
+
+/// WARN once per process that the bypass latch cannot be used because the ops table has an arm
+/// without a disarm. Once, because the alternative is a line per `Engine.call` on a hooked function.
+fn warn_once_bypass_unpairable() {
+    thread_local! {
+        static WARNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    WARNED.with(|w| {
+        if !w.get() {
+            w.set(true);
+            log_warn(
+                "WARN: [engine-hooks] this shim exposes hook_arm_bypass without hook_disarm_bypass, \
+                 so the bypass latch is DISABLED: a plugin-issued call will fire that call's own \
+                 hook (SourceMod suppresses it). Arming without a disarm would be worse — the latch \
+                 would stay set and swallow the next engine-driven invocation.",
+            );
+        }
+    });
+}
+
+/// The named reason a rebound access is refused. One wording, used by both accessors, because the
+/// two failures are the same failure.
+fn rebound_reason(idx: i32, what: &str) -> String {
+    format!(
+        "a hook view from a FINISHED dispatch tried to {} param #{} of this one — the view is \
+         block-scoped and the access was REFUSED (holding one past its handler would read or write \
+         another hook's live arguments, past its own 'mutable' list)",
+        what, idx
+    )
 }
 
 /// Read positional param `idx` out of the live arg view. Returns `(value, is_float)`, or `None` when
@@ -6826,10 +6924,16 @@ fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<(f64, bool)>
 fn s2_hook_param_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_undefined();
-        let idx = args.data().int32_value(scope).unwrap_or(-1);
-        // Outside a dispatch there is no frame to read: the view a handler stashed died with the
-        // thunk. `undefined` with no degrade — the descriptor is fine, the caller's timing is not.
-        let Some((view, owner, name)) = active_hook() else { return };
+        let (view, owner, name, idx) = match hook_access(scope, &args) {
+            // Outside a dispatch there is no frame to read: the view a handler stashed died with
+            // the thunk. `undefined` with no degrade — the descriptor is fine, the timing is not.
+            HookAccess::Dead => return,
+            HookAccess::Rebound { owner, name, idx } => {
+                crate::gamedata_hooks::note_miss(&owner, &name, Some(rebound_reason(idx, "read")));
+                return;
+            }
+            HookAccess::Live { view, owner, name, idx } => (view, owner, name, idx),
+        };
         match hook_param_read(view, idx) {
             Some((v, _)) => rv.set_double(v),
             None => crate::gamedata_hooks::note_miss(
@@ -6852,23 +6956,34 @@ fn s2_hook_param_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
 /// through the accessor that matches the shape's actual class or not at all.
 fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let idx = args.data().int32_value(scope).unwrap_or(-1);
-        let value = args.get(0).number_value(scope).unwrap_or(0.0);
-        // Outside a dispatch there is no frame to write. Worth a line even though the hook cannot be
-        // named from here (the view is gone, and with it the hook it belonged to): a LOST WRITE is
-        // not self-evident to the caller the way a read of `undefined` is.
-        let Some((view, owner, name)) = active_hook() else {
-            log_warn(&format!(
-                "WARN: a hook view was written (param #{}) outside its dispatch — the view is \
-                 block-scoped and the write is IGNORED",
-                idx
-            ));
-            return;
+        let value = args.get(0).number_value(scope).unwrap_or(f64::NAN);
+        let (view, owner, name, idx) = match hook_access(scope, &args) {
+            // Outside a dispatch there is no frame to write. Worth a line even though the hook
+            // cannot be named from here (the view is gone, and with it the hook it belonged to): a
+            // LOST WRITE is not self-evident to the caller the way a read of `undefined` is.
+            HookAccess::Dead => {
+                log_warn(
+                    "WARN: a hook view was written outside its dispatch — the view is block-scoped \
+                     and the write is IGNORED",
+                );
+                return;
+            }
+            HookAccess::Rebound { owner, name, idx } => {
+                crate::gamedata_hooks::note_miss(&owner, &name, Some(rebound_reason(idx, "write")));
+                return;
+            }
+            HookAccess::Live { view, owner, name, idx } => (view, owner, name, idx),
         };
         // No `else { return }` on the ops lookup: an absent op is a LOST WRITE like any other and
         // must reach the named degrade below rather than vanish.
         let ops = ENGINE_OPS.with(|o| o.get());
         let ok = match hook_param_read(view, idx) {
+            // A value that cannot be represented in the param's class is REFUSED, not coerced. The
+            // getter's rule, applied to writes: `v.reason = "abc"` is NaN, and `NaN as i32`
+            // saturates to 0 — the engine would receive a plausible-looking zero and the handler
+            // would never learn its write was nonsense. Same for a magnitude outside i32.
+            Some((_, true)) if !value.is_finite() => None,
+            Some((_, false)) if !(value >= i32::MIN as f64 && value <= i32::MAX as f64) => None,
             Some((_, true)) => ops.and_then(|o| o.hook_write_f32).map(|f| f(view, idx, value as f32)),
             Some((_, false)) => ops.and_then(|o| o.hook_write_i32).map(|f| f(view, idx, value as i32)),
             None => None,
@@ -6878,8 +6993,9 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
                 &owner,
                 &name,
                 Some(format!(
-                    "param #{} could not be written back to the arg view — the engine will see the \
-                     ORIGINAL value",
+                    "param #{} could not be written back to the arg view (a stale binding, or a \
+                     value the param's class cannot represent — which is REFUSED, never coerced) — \
+                     the engine will see the ORIGINAL value",
                     idx
                 )),
             );
@@ -6898,11 +7014,19 @@ fn build_hook_view<'s>(
     tc: &mut v8::PinScope<'s, '_>,
     plan: &crate::gamedata_hooks::HookPlan,
     view: *mut std::ffi::c_void,
+    epoch: u64,
 ) -> Option<Vec<v8::Local<'s, v8::Value>>> {
     let obj = v8::Object::new(tc);
     for (i, pname) in plan.params.iter().enumerate() {
         let key = v8::String::new(tc, pname)?;
-        let data: v8::Local<v8::Value> = v8::Integer::new(tc, i as i32).into();
+        // `[paramIndex, epoch]` — the index alone would let this accessor operate on WHATEVER
+        // dispatch is live when it is called. The epoch binds it to this one. See `ActiveHook`.
+        let data_arr = v8::Array::new(tc, 2);
+        let iv = v8::Integer::new(tc, i as i32);
+        let ev = v8::Number::new(tc, epoch as f64);
+        data_arr.set_index(tc, 0, iv.into());
+        data_arr.set_index(tc, 1, ev.into());
+        let data: v8::Local<v8::Value> = data_arr.into();
         let getter: v8::Local<v8::Value> =
             v8::Function::builder(s2_hook_param_get).data(data).build(tc)?.into();
         // No setter at all for a read-only param — `undefined` is how V8 spells "accessor with no
@@ -6997,13 +7121,24 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
 
     // Publish the frame for exactly the duration of the fan-out. SAVE/RESTORE rather than
     // set/clear: a handler can make the engine call another hooked function, and the inner dispatch
-    // must hand the outer one its view back.
+    // must hand the outer one its view back — including its epoch, so the outer frame's accessors
+    // still bind after the inner dispatch has come and gone.
+    let epoch = HOOK_EPOCH.with(|e| {
+        let next = e.get().wrapping_add(1);
+        e.set(next);
+        next
+    });
     let prev = ACTIVE_HOOK.with(|a| {
-        a.borrow_mut().replace(ActiveHook { view: arg_view, owner: owner.clone(), name: name.clone() })
+        a.borrow_mut().replace(ActiveHook {
+            view: arg_view,
+            owner: owner.clone(),
+            name: name.clone(),
+            epoch,
+        })
     });
     let label = format!("dispatch_hook('{}.{}')", owner, name);
     let result = fan_out_collapsing(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
-        build_hook_view(tc, &plan, arg_view)
+        build_hook_view(tc, &plan, arg_view, epoch)
     });
     ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
     result as i32
@@ -14354,7 +14489,14 @@ mod frame_tests {
             });
         "#).unwrap();
 
-        let r = dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        // Through the C-ABI entry, not `dispatch_hook` directly: the invariant that matters is what
+        // crosses BACK to the thunk. It must be a plain collapsed HookResult and never the
+        // deferred-dispatch sentinel — `argView` is a stack frame, so a replayed dispatch would hand
+        // JS a dead one. This assertion is what would catch a future refactor swapping
+        // `fan_out_collapsing` (which discards `Delivery`) for a deferrable fan-out.
+        let r = crate::ffi::s2script_core_dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        assert_ne!(r, crate::ffi::S2_DISPATCH_DEFERRED, "a hook dispatch is NEVER deferrable");
+        assert!((0..=3).contains(&r), "the thunk only understands a collapsed HookResult, got {r}");
         assert_eq!(r, 2, "Handled collapses to 2 — the thunk suppresses the original call");
         assert_eq!(eval_in_context_string("hk1", "JSON.stringify(globalThis.__seen)"),
             "[1.5,7,8,9]", "every declared param reads through the arg view, by name and by class");
@@ -14393,6 +14535,90 @@ mod frame_tests {
         shutdown();
     }
 
+    /// A SECOND hook on the same shape, so a view stashed out of one dispatch has somewhere to be
+    /// misused. `onY` declares NO `mutable` params at all — every one of its args is read-only.
+    fn two_hook_gamedata() -> &'static str {
+        r#"{"signatures":{"Sig":{"linuxsteamrt64":{"module":"m.so","pattern":"55 48","resolve":"direct",
+                          "validate":{"prologue":"55"}}},
+                          "Sig2":{"linuxsteamrt64":{"module":"m.so","pattern":"55 49","resolve":"direct",
+                          "validate":{"prologue":"55"}}}},
+            "hooks":{"onX":{"target":{"kind":"signature","name":"Sig"},
+                     "shape":"this_f32_i32_i32_i32",
+                     "params":["delay","reason","u3","u4"],"mutable":["delay","reason"],
+                     "expose":{"ctx":"g"}},
+                     "onY":{"target":{"kind":"signature","name":"Sig2"},
+                     "shape":"this_f32_i32_i32_i32",
+                     "params":["delay","reason","u3","u4"],
+                     "expose":{"ctx":"g"}}}}"#
+    }
+
+    /// THE VIEW IS BOUND TO ITS DISPATCH, not merely to "some dispatch".
+    ///
+    /// A plugin subscribes to two hooks on the same shape and stashes the view its FIRST handler
+    /// received. During the SECOND hook's dispatch it writes through that stale view. Without the
+    /// per-dispatch epoch the write passes the shim's bounds-and-class check against the second
+    /// hook's live frame — `onY` declares no `mutable` params at all, so it would be a write past
+    /// that hook's own allow-list, with no degrade and no warning. Reads confuse the same way.
+    #[test]
+    fn a_view_stashed_from_one_dispatch_cannot_touch_another() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        crate::loader::load_permissions_from_str(r#"{"engine:hooks":["hk4"]}"#).expect("parses");
+        *HOOK_F32.lock().unwrap() = [1.5];
+        *HOOK_I32.lock().unwrap() = [7, 8, 9];
+        crate::gamedata_hooks::register_plugin("hk4", two_hook_gamedata());
+        let x_id = crate::gamedata_hooks::plan("hk4", "onX").expect("onX ready").hook_id;
+        let y_id = crate::gamedata_hooks::plan("hk4", "onY").expect("onY ready").hook_id;
+        assert_ne!(x_id, y_id, "two hooks, two slots");
+
+        create_plugin_context("hk4");
+        eval_in_context("hk4", r#"
+            globalThis.__stash = null;
+            globalThis.__crossRead = "unset";
+            __s2_hook_on("hk4", "onX", function (v) { globalThis.__stash = v; });
+            __s2_hook_on("hk4", "onY", function () {
+                // The stashed view belongs to onX's FINISHED dispatch. onY's frame is the live one.
+                globalThis.__crossRead = String(globalThis.__stash.delay);
+                globalThis.__stash.reason = 5;
+            });
+        "#).unwrap();
+
+        dispatch_hook(x_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        assert!(eval_in_context_bool("hk4", "globalThis.__stash !== null"), "onX ran and stashed");
+
+        // A value onY's frame carries, distinct from anything onX saw.
+        *HOOK_I32.lock().unwrap() = [77, 8, 9];
+        dispatch_hook(y_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+
+        assert_eq!(HOOK_I32.lock().unwrap()[0], 77,
+            "a view from a finished dispatch must NOT write the live frame — that is a write past \
+             onY's own 'mutable' list");
+        assert_eq!(eval_in_context_string("hk4", "globalThis.__crossRead"), "undefined",
+            "and it must not read it either");
+        let st = crate::gamedata_hooks::status("hk4", "onY");
+        assert!(st.contains("FINISHED dispatch") && st.contains("REFUSED"),
+            "the refusal must be NAMED against the hook whose frame was aimed at, got: {st}");
+        shutdown();
+    }
+
+    /// A value the param's class cannot represent is REFUSED, not coerced: `NaN as i32` saturates to
+    /// 0, so a coerced write would hand the engine a plausible-looking zero and report success.
+    #[test]
+    fn a_non_representable_write_is_refused_and_named() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk5");
+        create_plugin_context("hk5");
+        eval_in_context("hk5", r#"
+            __s2_hook_on("hk5", "onX", function (v) { v.reason = "abc"; });
+        "#).unwrap();
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        assert_eq!(HOOK_I32.lock().unwrap()[0], 7, "NaN must not become 0 in the engine's args");
+        assert!(crate::gamedata_hooks::status("hk5", "onX").contains("REFUSED, never coerced"),
+            "{}", crate::gamedata_hooks::status("hk5", "onX"));
+        shutdown();
+    }
+
     /// The bypass latch brackets the outbound invoke and is DISARMED even when that invoke never
     /// reaches the hooked function — the leak that would otherwise swallow the next genuine
     /// engine-driven call (spec §10).
@@ -14413,6 +14639,15 @@ mod frame_tests {
         assert_eq!(*HOOK_ARMED.lock().unwrap(), vec![hook_id], "our own call arms its hook's latch");
         assert_eq!(*HOOK_DISARMED.lock().unwrap(), vec![hook_id],
             "and disarms it even though the invoke DEGRADED — the thunk never ran to take it");
+
+        // An ops table with arm but NO disarm (an older shim) must not arm at all. Arming without a
+        // disarm is strictly worse than not arming: losing the "our own call does not fire our own
+        // hook" semantic costs one spurious dispatch, a stuck latch silently swallows a genuine one.
+        set_engine_ops(Some(S2EngineOps { hook_disarm_bypass: None, ..hook_test_ops() }));
+        HOOK_ARMED.lock().unwrap().clear();
+        eval_in_context("hk3", r#"__s2_engine_call_invoke("doThing", -1, 0, []);"#).unwrap();
+        assert!(HOOK_ARMED.lock().unwrap().is_empty(),
+            "with no way to disarm, the latch must not be armed");
         shutdown();
     }
 
