@@ -1774,6 +1774,24 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var ctx = makeSubjects(null, ctxReg);
     ctx.id = __s2_current_plugin();
     ctx.previous = __s2_handoff_take();
+    // Game packages contribute their own ctx namespaces (e.g. ctx.gameRules) by setting
+    // __s2pkg_game_ctx before this runs — the package prelude is evaluated ahead of ctx
+    // construction (v8host.rs runs the engine prelude, then @s2script/<game>, then the plugin).
+    // ENGINE-GENERIC: core names no game concept here; it merges whatever the package declares,
+    // and each factory receives the same ledger registrar every built-in namespace uses, so a
+    // game-package subscription is torn down at unload exactly like ctx.events.on.
+    var gameCtx = globalThis.__s2pkg_game_ctx;
+    if (gameCtx) {
+      // Same shape as makeSubjects' own viaId, specialised to ctx's own (null) track: ctx-level
+      // subscriptions aren't per-id tracked for early disposal (that's what createScope() is
+      // for), so this just calls through and drops the sub id.
+      var viaId = function (call) { return function () { call.apply(null, arguments); }; };
+      for (var ns in gameCtx) {
+        if (Object.prototype.hasOwnProperty.call(gameCtx, ns) && typeof gameCtx[ns] === "function") {
+          ctx[ns] = gameCtx[ns](ctxReg, viaId);
+        }
+      }
+    }
     ctx.commands = {
       register:       function (n, h)    { ctxReg(function () { __s2pkg_commands.Commands.register(n, h); }); },
       registerServer: function (n, h)    { ctxReg(function () { __s2pkg_commands.Commands.registerServer(n, h); }); },
