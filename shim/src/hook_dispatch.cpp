@@ -8,7 +8,21 @@ const ShapeEntry kShapes[] = {
     { S2_HOOK_SHAPE_THIS_F32_I32_I32_I32, "this_f32_i32_i32_i32" },
 };
 S2HookOps g_ops{};
-bool      g_bypass[S2_HOOK_MAX] = { false };
+
+// The latch storage, sentinel-guarded on both sides. A removed/broken bounds check used to be
+// invisible without a sanitizer: g_bypass was a bare array sitting next to the SEPARATE g_ops
+// global, and two independent globals have unspecified relative address order, so an off-the-end
+// access could land anywhere in .bss (or nowhere observable at all) depending on how the linker
+// happened to place them. C++ guarantees struct MEMBERS keep declaration order, and an all-bool
+// struct introduces no padding between them, so slots[-1] and slots[S2_HOOK_MAX] are GUARANTEED to
+// alias guardLo/guardHi exactly and nothing else — a plain CHECK on those two bytes now proves the
+// guard, no sanitizer required.
+struct BypassState {
+    bool guardLo = false;
+    bool slots[S2_HOOK_MAX] = { false };
+    bool guardHi = false;
+};
+BypassState g_bypass;
 }  // namespace
 
 int S2Hook_ShapeFromName(const char* name) {
@@ -32,14 +46,18 @@ int S2Hook_Dispatch(int hookId, void* argView) {
 }
 
 void S2Hook_BypassArm(int hookId) {
-    if (hookId >= 0 && hookId < S2_HOOK_MAX) g_bypass[hookId] = true;
+    if (hookId >= 0 && hookId < S2_HOOK_MAX) g_bypass.slots[hookId] = true;
 }
 
 bool S2Hook_BypassTake(int hookId) {
     if (hookId < 0 || hookId >= S2_HOOK_MAX) return false;
-    const bool was = g_bypass[hookId];
-    g_bypass[hookId] = false;                      // one-shot: a stuck latch kills the hook silently
+    const bool was = g_bypass.slots[hookId];
+    g_bypass.slots[hookId] = false;                // one-shot: a stuck latch kills the hook silently
     return was;
 }
+
+void S2Hook_DebugSetSentinels(bool lo, bool hi) { g_bypass.guardLo = lo; g_bypass.guardHi = hi; }
+bool S2Hook_DebugGuardLo() { return g_bypass.guardLo; }
+bool S2Hook_DebugGuardHi() { return g_bypass.guardHi; }
 
 bool S2Hook_Suppresses(int hookResult) { return hookResult == 2 || hookResult == 3; }

@@ -46,20 +46,36 @@ static void test_bypass_latch_rejects_out_of_range_ids() {
     // input this code cannot assume is in range. S2_HOOK_MAX exists so the latch array is a FIXED
     // size; only the bounds guard in each function keeps an out-of-range id from reading or writing
     // past the end of it. Drive negative, exactly-at-the-boundary, and well-past-the-boundary ids
-    // through BOTH functions so deleting either guard is a provable regression, not a hope.
-    CHECK(!S2Hook_BypassTake(-1), "BypassTake rejects a negative hook id");
-    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX), "BypassTake rejects hook id == S2_HOOK_MAX (one past the last valid slot)");
-    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX + 1000), "BypassTake rejects a hook id far past S2_HOOK_MAX");
+    // through BOTH functions so deleting either guard is a provable regression — deterministically,
+    // via the sentinel bytes that flank the latch storage, NOT via a sanitizer (a plain array next
+    // to another global cannot be proven this way: two separate globals have unspecified relative
+    // address order, so an off-the-end access might land anywhere, including nowhere observable).
 
-    // Arming an out-of-range id must be a pure no-op: it must not corrupt a NEIGHBOURING valid slot.
-    // Slot 0 and the last valid slot (S2_HOOK_MAX - 1) are both known-clear at this point (the
-    // previous test left hook 0 taken and never touched any other slot) — confirm they are still
-    // clear after arming several out-of-range ids that bracket them.
+    // --- BypassArm: a removed/broken guard WRITES past the array, flipping a sentinel it must
+    // never touch. Start both sentinels clear; if the guard holds, they stay clear. ---
+    S2Hook_DebugSetSentinels(false, false);
     S2Hook_BypassArm(-1);
     S2Hook_BypassArm(S2_HOOK_MAX);
     S2Hook_BypassArm(S2_HOOK_MAX + 1000);
-    CHECK(!S2Hook_BypassTake(0), "an out-of-range BypassArm left slot 0 undisturbed");
-    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX - 1), "an out-of-range BypassArm left the last valid slot undisturbed");
+    CHECK(!S2Hook_DebugGuardLo(), "an out-of-range BypassArm(-1) left the low sentinel clear");
+    CHECK(!S2Hook_DebugGuardHi(),
+          "an out-of-range BypassArm(S2_HOOK_MAX) left the high sentinel clear");
+
+    // --- BypassTake: a removed/broken guard READS (and then clears) past the array. A "sentinel
+    // stays clear" check can't distinguish this from a correct guard, since neither one ever writes
+    // a clear sentinel back to anything but clear — so PLANT both sentinels SET first. A correct
+    // guard rejects by id alone and never looks at the sentinel; a broken one reads SET, wrongly
+    // reports the hook as armed, and clears it on the way out. Both effects are observable with a
+    // plain CHECK. ---
+    S2Hook_DebugSetSentinels(true, true);
+    CHECK(!S2Hook_BypassTake(-1),
+          "BypassTake rejects a negative hook id even though the sentinel it would alias is SET");
+    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX),
+          "BypassTake rejects hook id == S2_HOOK_MAX even though the sentinel it would alias is SET");
+    CHECK(!S2Hook_BypassTake(S2_HOOK_MAX + 1000), "BypassTake rejects a hook id far past S2_HOOK_MAX");
+    CHECK(S2Hook_DebugGuardLo(), "and left the low sentinel UNTOUCHED — a guarded take never reads it");
+    CHECK(S2Hook_DebugGuardHi(), "and left the high sentinel UNTOUCHED — a guarded take never reads it");
+    S2Hook_DebugSetSentinels(false, false);  // leave the debug state clean for anything run after
 }
 
 static void test_collapse_contract() {

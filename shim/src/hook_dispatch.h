@@ -47,6 +47,19 @@ int S2Hook_Dispatch(int hookId, void* argView);
 void S2Hook_BypassArm(int hookId);
 bool S2Hook_BypassTake(int hookId);   // true AND clears, iff it was armed
 
+// TEST-ONLY. BypassArm/BypassTake's bounds guard is proven in shim/tests/hook_dispatch_test.cpp
+// against two sentinel bytes that flank the latch storage on purpose (see the BypassState comment
+// in hook_dispatch.cpp), instead of against a sanitizer: two SEPARATE globals have unspecified
+// relative address order, so an off-the-end access on a bare array sitting next to another global
+// can land anywhere — including nowhere observable, which is exactly what let a removed guard slip
+// through the first version of this test undetected with sanitizers off. Struct members, unlike
+// separate globals, keep declaration order, so an off-by-one on either side of the array is
+// GUARANTEED to land on one of these two bytes and nothing else. Not part of the production
+// contract; no shipped caller uses these.
+void S2Hook_DebugSetSentinels(bool lo, bool hi);
+bool S2Hook_DebugGuardLo();
+bool S2Hook_DebugGuardHi();
+
 // The collapse contract: Handled(2) or Stop(3) suppresses the original call; Continue(0) and
 // Changed(1) do not. An out-of-range value does NOT suppress — garbage from a handler must never
 // silently cancel engine behaviour (ARCHITECTURE.md maps out-of-range to Continue).
