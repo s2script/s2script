@@ -30,6 +30,23 @@ struct GameConfig {
     // scripts/check-gamedata-owners.sh fails a `keys` section under gamedata/core/.
     std::map<std::string, std::string> keys;
 
+    // `calls` — declared engine-call descriptors, kept as each entry's RAW JSON TEXT rather than a
+    // parsed shape. The descriptor grammar (target kinds, validators, arg/return vocabulary) is
+    // CORE's, and a second implementation of it here is exactly the two-implementations-that-
+    // disagree bug this loader already hit twice with its JSONC strippers. The shim's whole job is
+    // the merge; replacement is still at the named-entry level, like every other section.
+    std::map<std::string, std::string> calls;
+
+    // The merged view re-serialised as JSON text, for core (spec §9.1b). The tree / master /
+    // condition / custom merge stays HERE, in one place; core consumes the result through the
+    // gamedata_calls path it already has for a plugin's packed gamedata.json.
+    //
+    // Carries `signatures` and `calls` — exactly the two sections that path reads. `signatures` is
+    // re-nested under the platform key it was lifted from, because core's flatten step looks up
+    // `signatures[name][platform]`; an operator's custom/ override therefore reaches a descriptor
+    // the same way it reaches the shim's own resolves. Empty when neither section merged.
+    std::string mergedJson;
+
     // Entry names whose final value came from a custom/ override, for the boot banner and the
     // crash fingerprint — an operator's patched signature must never be silently attributed
     // to a shipped one.

@@ -5860,14 +5860,39 @@ fn pack_entity_arg(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
 // an argument would let any plugin drive the engine calls the operator allow-listed for a
 // DIFFERENT plugin. A context with no plugin identity (the shared HOST context) fails closed.
 
+/// The GAME PACKAGE's descriptor owner, for the `__s2_game_call_*` natives (A5b, spec §9.1b).
+///
+/// Same discipline as `current_plugin` above, one tier over: the owner id is core's own reserved id
+/// for the registered game package, never anything JS supplied. The game package's prelude
+/// (`pawn.js`) runs in the raw context scope of EVERY plugin context, so these natives are reachable
+/// from any plugin — by design, and not a widening: they replace natives that are unconditionally
+/// callable from any plugin today, and they can only INVOKE what the shim registered, never declare.
+fn game_call_owner() -> Option<String> {
+    crate::gamedata_calls::game_package_owner()
+}
+
+/// The named reason reported when no game package has registered gamedata at all — a distinct
+/// answer from "that owner declared no such call", because the fixes differ.
+const NO_GAME_PACKAGE: &str = "no game package has registered gamedata with this host";
+
 /// Native `__s2_engine_call_ready(callName) -> boolean`. True iff the descriptor passed
 /// every LOAD-time gate (allow-list + op + resolve/validate). This is what `Engine.call()` keys
 /// callable-or-null on, so it deliberately ignores a pending `via` hop (spec §11).
-fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    let owner = current_plugin(scope);
+    engine_call_ready_for(scope, args, rv, owner);
+}
+
+/// `__s2_game_call_ready(callName)` — the game-package-scoped sibling (see `game_call_owner`).
+fn s2_game_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    engine_call_ready_for(scope, args, rv, game_call_owner());
+}
+
+fn engine_call_ready_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue, owner: Option<String>) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
         if args.length() < 1 { return; }
-        let Some(pid) = current_plugin(scope) else { return };
+        let Some(pid) = owner else { return };
         let name = args.get(0).to_rust_string_lossy(scope);
         rv.set_bool(crate::gamedata_calls::is_ready(&pid, &name));
     }));
@@ -5875,11 +5900,21 @@ fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 
 /// Native `__s2_engine_call_receiverless(callName) -> boolean`. True for a descriptor
 /// declaring `receiver.kind: "none"` — the generated callable then takes no leading `self`.
-fn s2_engine_call_receiverless(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_engine_call_receiverless(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    let owner = current_plugin(scope);
+    engine_call_receiverless_for(scope, args, rv, owner);
+}
+
+/// `__s2_game_call_receiverless(callName)` — the game-package-scoped sibling.
+fn s2_game_call_receiverless(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    engine_call_receiverless_for(scope, args, rv, game_call_owner());
+}
+
+fn engine_call_receiverless_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue, owner: Option<String>) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_bool(false);
         if args.length() < 1 { return; }
-        let Some(pid) = current_plugin(scope) else { return };
+        let Some(pid) = owner else { return };
         let name = args.get(0).to_rust_string_lossy(scope);
         rv.set_bool(crate::gamedata_calls::is_receiverless(&pid, &name));
     }));
@@ -5887,13 +5922,25 @@ fn s2_engine_call_receiverless(scope: &mut v8::PinScope, args: v8::FunctionCallb
 
 /// Native `__s2_engine_call_status(callName) -> string`. `"available"`, or the named reason
 /// the descriptor is not (spec §12) — for diagnostics and operator reports.
-fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    let owner = current_plugin(scope);
+    // No plugin identity = the shared HOST context: unchanged behaviour, a bare "unavailable".
+    engine_call_status_for(scope, args, rv, owner, "unavailable");
+}
+
+/// `__s2_game_call_status(callName)` — the game-package-scoped sibling.
+fn s2_game_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    engine_call_status_for(scope, args, rv, game_call_owner(), NO_GAME_PACKAGE);
+}
+
+fn engine_call_status_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue, owner: Option<String>, no_owner_reason: &str) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // Default to a NAMED reason up front: a panic below then still yields a sentence an operator
-        // can act on, never JS `undefined`.
-        if let Some(s) = v8::String::new(scope, "unavailable") { rv.set(s.into()); }
+        // can act on, never JS `undefined`. With no owner it is also the ANSWER — for the
+        // game-scoped native, "no game package registered" is a different fix from "not declared".
+        if let Some(s) = v8::String::new(scope, no_owner_reason) { rv.set(s.into()); }
         if args.length() < 1 { return; }
-        let Some(pid) = current_plugin(scope) else { return };
+        let Some(pid) = owner else { return };
         let name = args.get(0).to_rust_string_lossy(scope);
         let status = crate::gamedata_calls::status(&pid, &name);
         if let Some(s) = v8::String::new(scope, &status) { rv.set(s.into()); }
@@ -5909,11 +5956,22 @@ fn s2_engine_call_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 /// temporaries that live exactly as long as this call (spec §4's documented author's risk), and a
 /// `returns: "entity"` result is a packed handle run through the books-gated adopt path — a raw
 /// pointer can never mint a ref.
-fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_engine_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    let owner = current_plugin(scope);
+    engine_call_invoke_for(scope, args, rv, owner);
+}
+
+/// `__s2_game_call_invoke(callName, selfIndex, selfId, argsArray)` — the game-package-scoped
+/// sibling (see `game_call_owner`). Identical marshalling; only the owner id differs.
+fn s2_game_call_invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    engine_call_invoke_for(scope, args, rv, game_call_owner());
+}
+
+fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue, owner: Option<String>) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
         if args.length() < 3 { return; }
-        let Some(pid) = current_plugin(scope) else { return };
+        let Some(pid) = owner else { return };
         let name = args.get(0).to_rust_string_lossy(scope);
         // The registry borrow is released HERE (the plan is cloned): the engine call below may
         // synchronously fire an output/event that dispatches into JS and calls Engine.call again.
@@ -7196,6 +7254,14 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_engine_call_receiverless", s2_engine_call_receiverless);
     set_native(scope, global_obj, "__s2_engine_call_status", s2_engine_call_status);
     set_native(scope, global_obj, "__s2_engine_call_invoke", s2_engine_call_invoke);
+    // The GAME-PACKAGE-scoped four (A5b): same natives, keyed on core's reserved owner id for the
+    // registered game package instead of the calling context's plugin id. The game package's
+    // prelude runs in the raw context scope and has no plugin identity of its own, so it cannot use
+    // the four above; and an owner id is never taken from JS, so these cannot be aimed elsewhere.
+    set_native(scope, global_obj, "__s2_game_call_ready", s2_game_call_ready);
+    set_native(scope, global_obj, "__s2_game_call_receiverless", s2_game_call_receiverless);
+    set_native(scope, global_obj, "__s2_game_call_status", s2_game_call_status);
+    set_native(scope, global_obj, "__s2_game_call_invoke", s2_game_call_invoke);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -11621,6 +11687,63 @@ mod frame_tests {
         let (call_id, fp0) = LAST_ENGINE_CALL.with(|c| c.get());
         assert_eq!(call_id, 7, "the resolved call id must reach the engine op");
         assert_eq!(fp0, 2.5, "the declared float arg must survive the dropped pluginId slot");
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    /// A5b: the GAME PACKAGE's descriptor path, end to end through the natives pawn.js uses.
+    ///
+    /// The shim hands core the merged gamedata for the `cs2` owner (here: the same JSON text
+    /// `GameConfig::mergedJson` produces, in the shape `gamedata/cs2/game.cs2.jsonc` will carry);
+    /// core registers it under the reserved owner id; and every plugin context's
+    /// `__s2_game_call_*` natives report `ready` / `status` for it — WITHOUT the calling plugin
+    /// appearing in the `engine:calls` allow-list, and without the plugin's own registry being
+    /// touched.
+    #[test]
+    fn game_package_declared_calls_are_ready_through_the_game_scoped_natives() {
+        let _ = init(dummy_logger());
+        // Nobody is allow-listed. The game package is runtime, not a plugin — it must not need one.
+        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(fake_call_invoke),
+            ..mock_event_ops()
+        }));
+        crate::gamedata_calls::register_game_package(
+            "@demo/gamepkg",
+            r#"{"signatures":{"DoThing":{"linuxsteamrt64":{"module":"libserver.so",
+                 "pattern":"55 48","resolve":"direct"}}},
+                "calls":{"doThing":{"receiver":{"kind":"none"},
+                 "target":{"kind":"signature","name":"DoThing"},
+                 "args":["float"],"returns":"void"}}}"#,
+        );
+        create_plugin_context("gd_consumer");
+        assert!(
+            eval_in_context_bool("gd_consumer", r#"__s2_game_call_ready("doThing") === true"#),
+            "a game-package descriptor must be ready in any plugin context"
+        );
+        assert_eq!(
+            eval_in_context_string("gd_consumer", r#"__s2_game_call_status("doThing")"#),
+            "available",
+            "and report its status through the game-scoped native"
+        );
+        // The owner really is separate: the SAME name asked through the plugin-scoped native is
+        // not declared, so the game package's descriptors never merge into a plugin's namespace.
+        assert_eq!(
+            eval_in_context_string("gd_consumer", r#"__s2_engine_call_status("doThing")"#),
+            "not declared in this plugin's gamedata",
+            "the game package's descriptors are its own, not the calling plugin's"
+        );
+        // And the call actually reaches the engine op through the game-scoped invoke.
+        LAST_ENGINE_CALL.with(|c| c.set((-1, 0.0)));
+        assert!(eval_in_context_bool(
+            "gd_consumer",
+            r#"(__s2_game_call_invoke("doThing", 0, 0, [1.5]), true)"#
+        ));
+        let (call_id, fp0) = LAST_ENGINE_CALL.with(|c| c.get());
+        assert_eq!(call_id, 7, "the resolved call id must reach the engine op");
+        assert_eq!(fp0, 1.5, "the declared float arg must survive the game-scoped marshaller");
+        crate::gamedata_calls::drop_plugin(&crate::gamedata_calls::reserved_owner_id("@demo/gamepkg"));
         set_engine_ops(None);
         shutdown();
     }

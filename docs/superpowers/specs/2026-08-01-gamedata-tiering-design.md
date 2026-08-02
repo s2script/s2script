@@ -314,6 +314,36 @@ npm-style plugin id can be spelled with a leading `@s2script/` scope the loader 
 third party. **This is not a privilege change:** the eight natives are unconditionally callable
 from any plugin today.
 
+**Correction, found while BUILDING the channel: the owner id above was claimable, and registering
+under `@s2script/cs2` would have been a privilege escalation.** Two things the paragraph asserts are
+false against the code:
+
+1. *"no npm-style plugin id can be spelled with a leading `@s2script/` scope the loader would accept
+   as a third party"* — first-party plugins already load under exactly that scope (`@s2script/zones`
+   is a plugin id, `loader.rs`), so the scope is not reserved; and
+2. more fundamentally, **nothing validates a plugin id at all**. `manifest.id` is an arbitrary JSON
+   string read out of the `.s2sp`'s own `manifest.json` (`read_s2sp`) — there is no npm-name grammar
+   check anywhere, so *any* id is spellable, `@s2script/cs2` included.
+
+A `.s2sp` claiming that id would therefore have inherited the permission exemption (arbitrary
+declared engine calls with no operator allow-list — precisely what `engine:calls` gates) and, because
+`drop_plugin` is keyed by the same id, would have torn the game package's descriptors down on its own
+unload. The exemption argument holds only for the eight specific natives; it does not extend to
+"register whatever descriptors you like".
+
+The owner id is consequently **not** the package name. It is `game-package:<package name>`
+(`gamedata_calls::RESERVED_OWNER_PREFIX`), and four independent things hold it shut:
+
+- `:` is not legal in an npm package name, so no legitimate id collides;
+- `read_s2sp` REFUSES any manifest id in that namespace, at the single door every load/reload path
+  goes through;
+- `register_plugin` refuses one too, in case a future load path skips that door; and
+- the exemption is a **parameter of the registration entry point**, never derived from the id string,
+  so even a spoofed id would not carry it.
+
+Everything else in this section stands: the merged JSON crosses as text, core registers it through
+the existing path, and there is still exactly one loader.
+
 ### 9.2 Blocker — the next-frame drains
 
 `Respawn` and `TerminateRound` are drained at the frame boundary in the shim today

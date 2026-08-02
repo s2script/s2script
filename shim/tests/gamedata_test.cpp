@@ -1,6 +1,9 @@
 // Unit test for the owner-scoped gamedata loader (A5a Task 1-2).
 // Self-contained: builds fixture trees under a temp dir, no repo data, no SDK.
 #include "../src/gamedata.h"
+// Only to READ BACK the merged view the loader hands core (GameConfig::mergedJson) — the header
+// itself stays nlohmann-free on purpose.
+#include "../third_party/json.hpp"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -152,6 +155,95 @@ static void test_keys_section_is_parsed() {
     GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
                                    "linuxsteamrt64", err);
     CHECK(gc.keys["SpriteBeam"] == "sprites/laserbeam.vmt", "keys section is parsed");
+}
+
+// --- A5b: the merged view core consumes (GameConfig::mergedJson, spec §9.1b) ---------------
+// The shim owns the ONE loader; core registers the game package's `calls` from this string. What
+// these assert is the CONTRACT between the two: the sections core reads, in the nesting core's
+// flatten step expects, with custom/ overrides already applied.
+
+static void test_merged_json_carries_calls_and_platform_nested_signatures() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc", "game": "csgo" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "signatures": {
+        "DoThing": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "55 48", "resolve": "direct" } }
+      },
+      "calls": {
+        "doThing": { "receiver": { "kind": "entity" },
+                     "target": { "kind": "signature", "name": "DoThing" },
+                     "args": ["int"], "returns": "void" }
+      }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(err.empty(), "a calls section parses without error");
+    CHECK(gc.calls.count("doThing") == 1, "calls entry is merged");
+    CHECK(!gc.mergedJson.empty(), "the merged view is serialised for core");
+
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded(), "the merged view is valid JSON");
+    // Re-NESTED under the platform key: core's flatten step reads signatures[name][platform], so a
+    // flat (already-lifted) shape here would degrade every signature-targeted descriptor.
+    CHECK(doc["signatures"]["DoThing"]["linuxsteamrt64"]["pattern"] == "55 48",
+          "signatures are re-nested under the platform key core flattens against");
+    CHECK(doc["calls"]["doThing"]["target"]["name"] == "DoThing",
+          "the descriptor crosses to core verbatim");
+    CHECK(doc["calls"]["doThing"]["args"][0] == "int", "the arg vocabulary is untouched");
+}
+
+static void test_merged_json_reflects_a_custom_override() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "signatures": { "DoThing": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "AA", "resolve": "direct" } } },
+      "calls": { "doThing": { "target": { "kind": "signature", "name": "DoThing" }, "returns": "void" } }
+    })");
+    // The operator's after-a-CS2-update hot-fix: one entry, replacing the shipped pattern.
+    put(root.path / "cs2" / "custom" / "fix.jsonc",
+        R"({ "signatures": { "DoThing": { "linuxsteamrt64": { "module": "libserver.so", "pattern": "BB", "resolve": "direct" } } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    auto doc = nlohmann::json::parse(gc.mergedJson, nullptr, false);
+    CHECK(!doc.is_discarded() && doc["signatures"]["DoThing"]["linuxsteamrt64"]["pattern"] == "BB",
+          "a custom/ override reaches the descriptor core resolves");
+    CHECK(gc.overridden.count("DoThing") == 1, "and is still reported as operator-supplied");
+}
+
+static void test_calls_entry_of_the_wrong_type_degrades_only_that_entry() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc", R"({
+      "calls": { "good": { "returns": "void" }, "bad": 7 }
+    })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.calls.count("good") == 1, "the well-formed descriptor still merges");
+    CHECK(gc.calls.count("bad") == 0, "a scalar descriptor is left out, not crashed on");
+    CHECK(!err.empty() && err.find("bad") != std::string::npos, "the error names the entry");
+}
+
+static void test_merged_json_is_empty_when_nothing_declares_one() {
+    TempRoot root;
+    put(root.path / "cs2" / "master.gamedata.jsonc",
+        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+    put(root.path / "cs2" / "game.cs2.jsonc",
+        R"({ "offsets": { "Some": { "linuxsteamrt64": 4 } } })");
+
+    std::string err;
+    GameConfig gc = LoadGameConfig(root.path.string(), "cs2", "source2", "csgo",
+                                   "linuxsteamrt64", err);
+    CHECK(gc.mergedJson.empty(),
+          "an owner with neither signatures nor calls hands core nothing to register");
 }
 
 static void test_missing_master_is_a_named_error() {
@@ -584,6 +676,10 @@ int main() {
     test_override_is_per_named_entry();
     test_other_platform_is_ignored();
     test_keys_section_is_parsed();
+    test_merged_json_carries_calls_and_platform_nested_signatures();
+    test_merged_json_reflects_a_custom_override();
+    test_calls_entry_of_the_wrong_type_degrades_only_that_entry();
+    test_merged_json_is_empty_when_nothing_declares_one();
     test_missing_master_is_a_named_error();
     test_missing_listed_file_is_a_named_error();
     test_owners_do_not_share_a_namespace();

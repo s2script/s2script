@@ -111,7 +111,48 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
             else error = "gamedata keys." + k + " has the wrong type (expected a string)";
         }
 
+    // `calls` is NOT platform-keyed at the entry level: a descriptor's platform-specific details
+    // sit one level down (`target[platform]` for a vtable slot; the signature it names for a byte
+    // pattern), and core's flatten step lifts them. The entry crosses this loader verbatim — the
+    // only thing checked here is that it IS an object, because a scalar could never be a
+    // descriptor and would otherwise reach core as an unexplained "malformed descriptor".
+    if (j.contains("calls"))
+        for (auto& [k, v] : j.at("calls").items()) {
+            if (v.is_object()) { gc.calls[k] = v.dump(); mark(k); }
+            else error = "gamedata calls." + k + " has the wrong type (expected an object)";
+        }
+
     return applied;
+}
+
+// Re-serialise the merged view into the JSON text core consumes (GameConfig::mergedJson).
+//
+// `signatures` is re-NESTED under the platform key its details were lifted from: core's
+// `flatten_decl` reads `signatures[name][platform]`, and that platform id is core's own constant.
+// If the two ever diverge, every signature-targeted descriptor degrades with core's named
+// "no '<platform>' entry" reason — loud, per-descriptor, never a silent wrong resolve.
+std::string SerializeMerged(const GameConfig& gc, const std::string& platform) {
+    if (gc.signatures.empty() && gc.calls.empty()) return std::string();
+    nlohmann::json doc = nlohmann::json::object();
+    if (!gc.signatures.empty()) {
+        nlohmann::json sigs = nlohmann::json::object();
+        for (const auto& [name, s] : gc.signatures)
+            sigs[name][platform] = nlohmann::json{
+                {"module", s.module}, {"pattern", s.pattern}, {"resolve", s.resolve}};
+        doc["signatures"] = std::move(sigs);
+    }
+    if (!gc.calls.empty()) {
+        nlohmann::json calls = nlohmann::json::object();
+        for (const auto& [name, text] : gc.calls) {
+            // Text this file dumped from an already-parsed object, so a re-parse cannot fail —
+            // but degrade THAT ENTRY rather than throw out of the loader if it ever did.
+            auto v = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
+            if (v.is_discarded()) continue;
+            calls[name] = std::move(v);
+        }
+        doc["calls"] = std::move(calls);
+    }
+    return doc.dump();
 }
 
 // Parse one JSONC file. Returns false and sets `error` on read/parse failure.
@@ -127,14 +168,15 @@ bool ParseFile(const std::filesystem::path& p, nlohmann::json& out, std::string&
     return true;
 }
 
-}  // namespace
-
-GameConfig LoadGameConfig(const std::string& gamedataRoot,
-                          const std::string& owner,
-                          const std::string& engine,
-                          const std::string& game,
-                          const std::string& platform,
-                          std::string& error) {
+// The merge itself. Wrapped by LoadGameConfig below, which serialises the result exactly once —
+// this function has five early returns and a per-return `mergedJson` build is a missed one waiting
+// to happen (a degraded owner would hand core an EMPTY string that reads as "no descriptors").
+GameConfig MergeOwner(const std::string& gamedataRoot,
+                      const std::string& owner,
+                      const std::string& engine,
+                      const std::string& game,
+                      const std::string& platform,
+                      std::string& error) {
     namespace fs = std::filesystem;
     GameConfig gc;
     error.clear();
@@ -225,5 +267,21 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
         }
     }
 
+    return gc;
+}
+
+}  // namespace
+
+GameConfig LoadGameConfig(const std::string& gamedataRoot,
+                          const std::string& owner,
+                          const std::string& engine,
+                          const std::string& game,
+                          const std::string& platform,
+                          std::string& error) {
+    GameConfig gc = MergeOwner(gamedataRoot, owner, engine, game, platform, error);
+    // Serialised on EVERY path, including a degraded one: whatever merged before the failure is
+    // what the owner's consumers get, and a partially-merged view must degrade per-descriptor
+    // downstream rather than silently arrive as "this owner declared nothing".
+    gc.mergedJson = SerializeMerged(gc, platform);
     return gc;
 }

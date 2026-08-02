@@ -707,6 +707,14 @@ void s2script_core_load_cs2(const char* path);
  * plugin context at runtime without baking game JS into the core binary.
  * name and js must be null-terminated UTF-8.  Null pointers degrade to a no-op. */
 void s2script_core_register_package(const char* name, const char* js);
+/* Hand core the same game package's own GAMEDATA (A5b): the merged `signatures` + `calls` the
+ * shim's one loader already produced for that owner (GameConfig::mergedJson), as JSON text.
+ * `name` is the SAME string passed to s2script_core_register_package. Core registers the `calls`
+ * descriptors under a reserved owner id derived from it — an identity no .s2sp can claim — and
+ * exempts them from the engine:calls operator allow-list (first-party runtime, not a plugin).
+ * Both pointers must be null-terminated UTF-8; null degrades to a no-op, and an empty json is the
+ * normal "this owner declares no calls" state, not an error. */
+void s2script_core_register_package_gamedata(const char* name, const char* gamedata_json);
 /* Set the plugins directory for the .s2sp watcher.  Called once by the shim at
  * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
  * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */

@@ -5357,6 +5357,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         }
     }
 
+    // The gamedata sibling of the registration above (A5b, spec §9.1b): the game package's OWN
+    // merged gamedata — its `calls` descriptors and the `signatures` they target — handed to core
+    // under the same identity. Core registers them against a reserved owner id derived from that
+    // name, so an engine call the game package declares is a gamedata entry with ZERO core diff.
+    //
+    // Deliberately NOT a second loader: the tree/master/condition/custom merge already ran once,
+    // above, in gamedata.cpp. This passes the RESULT. A degraded owner still registers whatever
+    // merged — each descriptor then degrades on its own named reason rather than the whole set
+    // vanishing silently. Independent of the pawn.js block: JS missing must not take the
+    // descriptors with it, and vice versa.
+    {
+        const std::string& gdJson = s_gdGame.mergedJson;
+        s2script_core_register_package_gamedata("@s2script/cs2", gdJson.c_str());
+        META_CONPRINTF("[s2script] @s2script/cs2 gamedata registered (%zu declared call(s), "
+                       "%zu byte(s))\n", s_gdGame.calls.size(), gdJson.size());
+    }
+
     // Set the plugins directory so the per-frame .s2sp watcher knows where to look.
     // Real plugins are loaded from .s2sp archives placed under addons/s2script/plugins/.
     s2script_core_set_plugins_dir(PluginsDir().c_str());

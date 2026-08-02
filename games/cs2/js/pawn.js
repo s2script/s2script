@@ -10,6 +10,46 @@
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
   var Weapon = globalThis.__s2pkg_cs2.Weapon;   // set by weapon.js (concatenated before this file)
 
+  // --- A5b: engine calls this game package DECLARES (gamedata/cs2/game.cs2.jsonc `calls`) ---
+  // The descriptors are registered by the HOST at Load — the shim hands core gamedata/cs2's merged
+  // view — under the game package's own reserved owner id. This file never declares one and a
+  // plugin cannot: the natives below take a call NAME only, exactly like @s2script/sdk/unsafe's
+  // Engine.call, and core supplies the owner. `engineCall(name)` therefore guards ONCE and hands
+  // back a plain callable or null, so a descriptor that failed a load-time gate degrades to a
+  // no-op the caller can test for, with engineCallStatus(name) naming why.
+  //
+  // Older core: the natives are absent, every call reports unavailable, and nothing throws.
+  function engineCallStatus(name) {
+    return typeof __s2_game_call_status === "function"
+      ? __s2_game_call_status(name)
+      : "this host is too old to declare game-package engine calls";
+  }
+  function engineCall(name) {
+    if (typeof __s2_game_call_ready !== "function" || !__s2_game_call_ready(name)) return null;
+    // A receiverless descriptor (a static engine function) takes NO leading `self` — shifting one
+    // off would silently eat the first real argument.
+    if (__s2_game_call_receiverless(name)) {
+      return function () {
+        return __s2_game_call_invoke(name, 0, 0, Array.prototype.slice.call(arguments));
+      };
+    }
+    return function () {
+      var args = Array.prototype.slice.call(arguments);
+      var self = args.shift();
+      // The receiver is an EntityRef, or anything backed by one (Pawn / Player / Weapon all carry
+      // `.ref`). Nothing else is accepted: the (index, id) pair is what core gates against the
+      // host's books, and a raw pointer never crosses.
+      var ref = self && (self.ref || self);
+      if (!ref || typeof ref.index !== "number") return null;   // no receiver -> no-op
+      return __s2_game_call_invoke(name, ref.index, ref.id, args);
+    };
+  }
+  // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
+  // @s2script/cs2 public surface. The typed methods A5b builds on these descriptors call
+  // engineCall() directly; this exists so an operator can ask a live server WHY a game call is
+  // unavailable without one being wired up yet.
+  globalThis.__s2pkg_cs2_calls = { call: engineCall, status: engineCallStatus };
+
   function Pawn(ref) { this.ref = ref; }
   if (schema) schema.applyAccessors(Pawn.prototype, "CCSPlayerPawn");   // health, friction, controller, ...
   var nav = globalThis.__s2pkg_cs2_nav;   // set by nav.generated.js (concatenated ahead of pawn.js)
