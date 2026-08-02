@@ -32,6 +32,13 @@ use std::os::raw::c_char;
 
 /// The capability the DECLARING owner must have in its manifest AND be operator-allow-listed for
 /// (spec §7). Separate from `gamedata_calls::PERMISSION` on purpose — see rule 2 above.
+///
+/// V1 SCOPE: the game package is the only declarer that can exist today — it is exempt as
+/// first-party runtime, and `s2s build` refuses both a `hooks` gamedata section and this permission,
+/// so no `.s2sp` can carry one (see the scope note in the spec). The non-exempt branch below is
+/// therefore reachable only from `cargo test` for now, and is KEPT rather than narrowed to match:
+/// the check is correct for the design, the plugin path is a planned follow-up slice, and a
+/// default-deny gate relaxed to fit a temporary scope stops being a gate.
 pub(crate) const PERMISSION: &str = "engine:hooks";
 
 /// The shim's hook-slot budget (`S2_HOOK_MAX` in `shim/src/hook_dispatch.h`). MUST match it: the
@@ -545,6 +552,9 @@ fn allocate_slot(owner: &str, name: &str, shape: i32, addr: i64) -> Result<i32, 
 /// at Unload restores every prologue.
 pub(crate) fn drop_owner(owner_id: &str) {
     REGISTRY.with(|r| r.borrow_mut().drop_owner(owner_id));
+    // A reload is a new situation, not a continuation of the old one: let the re-entrancy report
+    // fire again for this owner rather than inheriting the previous load's once-per-hook silence.
+    REENTRANT_REPORTED.with(|r| r.borrow_mut().retain(|(o, _)| o != owner_id));
 }
 
 /// `"available"`, or the named reason this hook is not.
@@ -657,6 +667,54 @@ pub(crate) fn note_miss(owner_id: &str, name: &str, reason: Option<String>) {
     }
 }
 
+/// Hooks that have already reported a re-entrant skip. See `note_reentrant_skip`.
+thread_local! {
+    static REENTRANT_REPORTED: RefCell<std::collections::HashSet<(String, String)>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Report a dispatch that was SKIPPED because the detour fired while core already held the isolate
+/// borrow — AT MOST ONCE per (owner, hook).
+///
+/// WHY THIS EXISTS. The bypass latch (`bypassWith`) makes "the latch was not armed, therefore the
+/// call came from the engine, therefore core is not borrowed" true for the hook's OWN declared
+/// outbound descriptor — and only for that one. `bypass_ids_for_call` is scoped to (owner, call
+/// name), where SourceMod's `g_pIgnoreTerminateDetour` is global, so any OTHER JS→engine path to
+/// the same address (a plugin's own `calls` descriptor, which `engine:calls` permits) arms nothing.
+/// The thunk then fires re-entrantly, `fan_out_inner` cannot take the borrow, and the fan-out does
+/// not run. Skipping is the SAFE direction and stays — the engine action proceeds unhooked — but
+/// before this it also vanished: no log, no `note_miss`, no `status()` change.
+///
+/// WHY ONCE PER HOOK, and not a counter or a time window. This fires on an ENGINE CALL, so an
+/// unbounded report is its own defect — a hooked function the engine drives every tick would write
+/// a line per tick. The cap is therefore on the only axis that is bounded by construction: the
+/// number of declared hooks (`MAX_HOOKS`), not the call rate. It costs nothing diagnostically,
+/// because the condition is STRUCTURAL rather than statistical — some JS→engine path reaches this
+/// address without the latch — so the first occurrence carries the whole finding and the
+/// thousandth adds nothing. `note_miss` already WARNs only when the reason CHANGES, which would
+/// almost do it on its own; the explicit set is what additionally stops a FLIP-FLOP (this reason
+/// alternating with an accessor miss on the same hook) from logging once per engine call after all.
+/// The set is cleared by `drop_owner`/`reset_all`, so a plugin reload — a genuinely new situation —
+/// re-arms the report rather than inheriting a previous load's silence.
+pub(crate) fn note_reentrant_skip(owner_id: &str, name: &str) {
+    let first = REENTRANT_REPORTED
+        .with(|r| r.borrow_mut().insert((owner_id.to_string(), name.to_string())));
+    if !first {
+        return;
+    }
+    note_miss(
+        owner_id,
+        name,
+        Some(
+            "a dispatch was SKIPPED because the detour fired re-entrantly — core already held the \
+             isolate borrow, so no handler could run and the engine call proceeded UNHOOKED. Some \
+             JS→engine path reaches this function without arming its bypass latch (only the hook's \
+             own 'bypassWith' descriptor arms it). Reported once per hook."
+                .to_string(),
+        ),
+    );
+}
+
 /// The hook slots in `owner` whose `bypassWith` names `call_name` — the latches an outbound
 /// invocation of that call must arm.
 ///
@@ -694,6 +752,7 @@ pub(crate) fn bypass_ids_for_call(owner_id: &str, call_name: &str) -> Vec<i32> {
 pub(crate) fn reset_all() {
     REGISTRY.with(|r| *r.borrow_mut() = HookRegistry::new());
     SLOTS.with(|s| s.borrow_mut().clear());
+    REENTRANT_REPORTED.with(|r| r.borrow_mut().clear());
 }
 
 // ---------------------------------------------------------------------------

@@ -6982,7 +6982,12 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
             // getter's rule, applied to writes: `v.reason = "abc"` is NaN, and `NaN as i32`
             // saturates to 0 — the engine would receive a plausible-looking zero and the handler
             // would never learn its write was nonsense. Same for a magnitude outside i32.
-            Some((_, true)) if !value.is_finite() => None,
+            //
+            // The float arm needs BOTH halves. `!is_finite()` catches NaN and an f64 infinity, but
+            // 1e300 is a perfectly finite f64 whose `as f32` is `f32::INFINITY` — so finiteness
+            // alone would let `view.delay = scale * base` overflow into `+inf`, hand that to the
+            // engine, and report a SUCCESSFUL write. A silently wrong value is worse than a refusal.
+            Some((_, true)) if !value.is_finite() || value.abs() > f32::MAX as f64 => None,
             Some((_, false)) if !(value >= i32::MIN as f64 && value <= i32::MAX as f64) => None,
             Some((_, true)) => ops.and_then(|o| o.hook_write_f32).map(|f| f(view, idx, value as f32)),
             Some((_, false)) => ops.and_then(|o| o.hook_write_i32).map(|f| f(view, idx, value as i32)),
@@ -7112,9 +7117,16 @@ fn s2_hook_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut
 /// at the thunk's own STACK FRAME: it is valid for exactly the duration of this call and dies when
 /// the thunk returns. A replayed dispatch a frame later would hand JS a dead frame, every accessor
 /// would fail (the shim's liveness gate refuses a view that is not the one being dispatched), and
-/// every param would read as a degrade. `fan_out_collapsing` is what guarantees it — it discards
-/// `Delivery` by construction, so a re-entrant dispatch returns `Continue` and is never queued.
-/// `s2script_core_dispatch_hook` therefore never returns `S2_DISPATCH_DEFERRED`.
+/// every param would read as a degrade. So a re-entrant dispatch is SKIPPED — the engine action
+/// proceeds unhooked, which is the safe direction — and `s2script_core_dispatch_hook` never returns
+/// `S2_DISPATCH_DEFERRED`.
+///
+/// It goes through `fan_out_inner` rather than `fan_out_collapsing` for exactly one reason: to SEE
+/// that skip. `fan_out_collapsing` discards `Delivery` by construction, which is right for every
+/// other pre-hook but made this one vanish — the bypass latch does not cover every JS→engine path
+/// to a hooked address (see `gamedata_hooks::note_reentrant_skip`), so the case is reachable, and an
+/// unnamed degrade is the failure mode this whole module is built to refuse. The collapsed
+/// `HookResult` is used identically; only the `Delivery` is newly inspected.
 pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i32 {
     // An id core never handed out — a detour installed by a PREVIOUS core (Metamod reload) — has no
     // descriptor. Continue, so the engine proceeds unhooked.
@@ -7143,10 +7155,17 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
         })
     });
     let label = format!("dispatch_hook('{}.{}')", owner, name);
-    let result = fan_out_collapsing(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
-        build_hook_view(tc, &plan, arg_view, epoch)
-    });
+    let (result, delivery) =
+        fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
+            build_hook_view(tc, &plan, arg_view, epoch)
+        });
     ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
+    // Nothing ran. The `Continue` above is still the right answer for the thunk (never a replay —
+    // the frame is gone), but the skip is now NAMED instead of silent, and rate-limited to once per
+    // hook because this can fire on every engine call.
+    if delivery == Delivery::Deferred {
+        crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
+    }
     result as i32
 }
 
@@ -14729,6 +14748,185 @@ mod frame_tests {
         assert_eq!(HOOK_I32.lock().unwrap()[0], 7, "NaN must not become 0 in the engine's args");
         assert!(crate::gamedata_hooks::status("hk5", "onX").contains("REFUSED, never coerced"),
             "{}", crate::gamedata_hooks::status("hk5", "onX"));
+        shutdown();
+    }
+
+    /// The FLOAT half of the same rule, and the one that bites hardest because it looks like it
+    /// worked. `1e300 as f32` is not a saturation, it is `f32::INFINITY`: the write "succeeds", the
+    /// shim returns 0, no degrade is recorded, and the engine is handed `+inf` as a round-restart
+    /// delay. A handler computing `view.delay = scale * base` and overflowing gets a silently wrong
+    /// value REPORTED AS A SUCCESSFUL WRITE, which is the one failure mode this project ranks below
+    /// a crash. Finiteness alone does not cover it — 1e300 is perfectly finite as an f64.
+    #[test]
+    fn a_float_write_outside_f32_range_is_refused_not_silently_infinite() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk7");
+        create_plugin_context("hk7");
+        eval_in_context("hk7", r#"
+            __s2_hook_on("hk7", "onX", function (v) { v.delay = 1e300; });
+        "#).unwrap();
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+
+        let got = HOOK_F32.lock().unwrap()[0];
+        assert!(got.is_finite(), "an out-of-f32-range write reached the engine as {got}");
+        assert!((got - 1.5).abs() < 1e-6, "the engine must still see the ORIGINAL delay, got {got}");
+        assert!(crate::gamedata_hooks::status("hk7", "onX").contains("REFUSED, never coerced"),
+            "and the refusal must be NAMED: {}", crate::gamedata_hooks::status("hk7", "onX"));
+        shutdown();
+    }
+
+    /// A write through a view that belongs to NO dispatch is a LOST WRITE, and a lost write must be
+    /// loud. It cannot be a `note_miss` — the view is dead, so the hook it belonged to cannot be
+    /// named from here — which is exactly why the WARN is the only signal there is. Without this
+    /// test, deleting that `log_warn` leaves the suite green and makes the write silent: unlike a
+    /// read (which returns a visible `undefined`), an assignment that goes nowhere looks identical
+    /// to one that worked.
+    #[test]
+    fn a_write_through_a_view_outside_any_dispatch_is_ignored_and_warns() {
+        LOG.lock().unwrap().clear();
+        let _ = init(logger);
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk8");
+        create_plugin_context("hk8");
+        eval_in_context("hk8", r#"
+            globalThis.__stash = null;
+            __s2_hook_on("hk8", "onX", function (v) { globalThis.__stash = v; });
+        "#).unwrap();
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+
+        LOG.lock().unwrap().clear();
+        // Outside the dispatch entirely: no ACTIVE_HOOK at all, which is the `Dead` arm (the
+        // `Rebound` arm — a stale view during ANOTHER dispatch — is a different test).
+        eval_in_context("hk8", r#"globalThis.__stash.delay = 9.5;"#).unwrap();
+
+        assert!((HOOK_F32.lock().unwrap()[0] - 1.5).abs() < 1e-6,
+            "a dead view must not write the frame it used to point at");
+        let got = LOG.lock().unwrap().clone();
+        assert!(got.iter().any(|m| m.contains("written outside its dispatch")),
+            "the lost write must be reported — it is the only signal a caller gets: {:?}", got);
+        shutdown();
+    }
+
+    /// THE CASE THE WHOLE EPOCH ARGUMENT RESTS ON: two invocations of the *same* hook.
+    ///
+    /// `a_view_stashed_from_one_dispatch_cannot_touch_another` proves the CROSS-hook case, which a
+    /// hook id alone would also catch. This one cannot be caught by a hook id — it matches — so it
+    /// is the case that says the binding token has to be per-DISPATCH. A view stashed from
+    /// invocation #1 is aimed at invocation #2's live frame; both are `onX`, both are `mutable`
+    /// `delay`/`reason`, and the shim's bounds-and-class check passes. Only the epoch refuses it.
+    #[test]
+    fn a_view_stashed_from_an_earlier_invocation_of_the_same_hook_cannot_touch_this_one() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk9");
+        create_plugin_context("hk9");
+        eval_in_context("hk9", r#"
+            globalThis.__n = 0;
+            globalThis.__stash = null;
+            globalThis.__crossRead = "unset";
+            __s2_hook_on("hk9", "onX", function (v) {
+                globalThis.__n++;
+                if (globalThis.__n === 1) { globalThis.__stash = v; return; }
+                // Invocation #2. The stashed view is the SAME hook's — same slot id, same shape,
+                // same `mutable` list — just a dispatch that has already finished.
+                globalThis.__crossRead = String(globalThis.__stash.delay);
+                globalThis.__stash.reason = 5;
+            });
+        "#).unwrap();
+
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        assert!(eval_in_context_bool("hk9", "globalThis.__stash !== null"), "invocation #1 stashed");
+
+        // A value only invocation #2's frame carries.
+        *HOOK_I32.lock().unwrap() = [77, 8, 9];
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+
+        assert_eq!(eval_in_context_string("hk9", "String(globalThis.__n)"), "2", "it ran twice");
+        assert_eq!(HOOK_I32.lock().unwrap()[0], 77,
+            "a view from invocation #1 must NOT write invocation #2's frame — a hook id would match");
+        assert_eq!(eval_in_context_string("hk9", "globalThis.__crossRead"), "undefined",
+            "and it must not read it either");
+        let st = crate::gamedata_hooks::status("hk9", "onX");
+        assert!(st.contains("FINISHED dispatch") && st.contains("REFUSED"),
+            "the refusal must be NAMED: {st}");
+        shutdown();
+    }
+
+    /// A `calls` descriptor and a hook on the SAME address with NO `bypassWith` between them — the
+    /// case the bypass latch does NOT cover, because `bypass_ids_for_call` is scoped to (owner,
+    /// call name) while SourceMod's `g_pIgnoreTerminateDetour` is global.
+    fn unlatched_reentrancy_gamedata() -> &'static str {
+        r#"{"signatures":{"Sig":{"linuxsteamrt64":{"module":"m.so","pattern":"55 48","resolve":"direct",
+                          "validate":{"prologue":"55"}}}},
+            "calls":{"aCallNoHookNames":{"receiver":{"kind":"none"},
+                     "target":{"kind":"signature","name":"Sig"},"args":[],"returns":"void"}},
+            "hooks":{"onX":{"target":{"kind":"signature","name":"Sig"},
+                     "shape":"this_f32_i32_i32_i32",
+                     "params":["delay","reason","u3","u4"],"mutable":["delay","reason"],
+                     "expose":{"ctx":"g"}}}}"#
+    }
+
+    /// The hook id an invoke should re-enter, or -1. Set only for the window of one test.
+    static REENTER_HOOK_ID: Mutex<i32> = Mutex::new(-1);
+
+    /// An invoke that actually REACHES the hooked function, so the detour fires from inside JS —
+    /// i.e. while core holds the isolate borrow. `mock_call_invoke_degrades` cannot model this: it
+    /// returns without calling anything.
+    #[allow(clippy::too_many_arguments)]
+    extern "C" fn mock_call_invoke_reenters_a_hook(
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _gp: *const u64, _gk: *const u8, _gc: c_int,
+        _fp: *const f64, _fc: c_int,
+        _s: *const *const c_char, _v: *const f32,
+        _rk: c_int, _ro: *mut u64,
+    ) -> c_int {
+        let id = *REENTER_HOOK_ID.lock().unwrap();
+        if id >= 0 {
+            dispatch_hook(id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        }
+        1
+    }
+
+    /// A hook that fires RE-ENTRANTLY is skipped — and says so.
+    ///
+    /// The bypass latch makes "unlatched ⇒ engine-originated" true for the hook's OWN declared
+    /// `bypassWith` path only. Any other JS→engine path to the same address (a plugin's own `calls`
+    /// descriptor, which `engine:calls` permits) arms nothing, so the thunk fires with `HOST`
+    /// already borrowed. Skipping is the safe direction and stays; VANISHING is not. Before this,
+    /// `fan_out_collapsing` discarded the `Deferred` and the hook did not fire with no log, no
+    /// `note_miss` and no `status()` change.
+    #[test]
+    fn a_reentrant_hook_dispatch_is_skipped_and_named() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_invoke: Some(mock_call_invoke_reenters_a_hook),
+            ..hook_test_ops()
+        }));
+        crate::loader::load_permissions_from_str(
+            r#"{"engine:calls":["hk10"],"engine:hooks":["hk10"]}"#).expect("parses");
+        *HOOK_F32.lock().unwrap() = [1.5];
+        *HOOK_I32.lock().unwrap() = [7, 8, 9];
+        crate::gamedata_calls::register_plugin("hk10", unlatched_reentrancy_gamedata());
+        crate::gamedata_hooks::register_plugin("hk10", unlatched_reentrancy_gamedata());
+        let hook_id = crate::gamedata_hooks::plan("hk10", "onX").expect("ready").hook_id;
+        create_plugin_context("hk10");
+        eval_in_context("hk10", r#"
+            globalThis.__ran = 0;
+            __s2_hook_on("hk10", "onX", function () { globalThis.__ran++; });
+        "#).unwrap();
+        assert_eq!(crate::gamedata_hooks::status("hk10", "onX"), "available",
+            "nothing has gone wrong yet");
+
+        *REENTER_HOOK_ID.lock().unwrap() = hook_id;
+        eval_in_context("hk10", r#"__s2_engine_call_invoke("aCallNoHookNames", -1, 0, []);"#).unwrap();
+        *REENTER_HOOK_ID.lock().unwrap() = -1;
+
+        assert_eq!(eval_in_context_string("hk10", "String(globalThis.__ran)"), "0",
+            "the handler cannot run — core already holds the isolate borrow");
+        let st = crate::gamedata_hooks::status("hk10", "onX");
+        assert!(st.contains("re-entrant") && st.contains("UNHOOKED"),
+            "a skipped dispatch must be NAMED, not silent: {st}");
         shutdown();
     }
 
