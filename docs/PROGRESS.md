@@ -58,9 +58,11 @@ its 46 entries split 44/2 by the mechanical ownership rule (*a key belongs to wh
 source*), the two unnamed ones being the parked `CCSPlayer_ItemServices_*` offsets, which seeded
 the new `cs2` owner. Verified byte-identical offline: the merged tree equals the pre-split file
 entry for entry, 0 mismatches, and every one of the original 369 comment lines is still present.
-Verified live, on a real CS2 server: `gamedata core: 10 interfaces, 5 offsets, 29 signatures from 3
-file(s)` and `=== GAMEDATA VALIDATION: 35 ok, 0 FAILED ===`, with a per-entry diff against the
-pre-switchover baseline that is empty.
+Verified live, on a real CS2 server: `gamedata core: 10 interfaces, 5 offsets, 29 signatures, 0 keys
+from 3 file(s)` and `gamedata cs2: 0 interfaces, 2 offsets, 0 signatures, 0 keys from 1 file(s)` —
+the second line is the proof that the `cs2` owner tier is actually exercised by the loader at boot,
+not merely shipped on disk — plus `=== GAMEDATA VALIDATION: 35 ok, 0 FAILED ===`, with a per-entry
+diff against the pre-switchover baseline that is empty.
 
 Master is an **array**, not an object, because plain `nlohmann::json` is `std::map` and sorts
 object keys — an object master's apply order would be decided by filename spelling.

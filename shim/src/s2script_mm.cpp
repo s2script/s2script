@@ -2775,6 +2775,12 @@ static std::string s_gdErrorCore, s_gdErrorGame, s_gdModDir;
 // source of truth: Load(), GamedataBanner() and the crash fingerprint all walk this array, and
 // scripts/check-gamedata-owners.sh PARSES it — a gamedata/<owner>/ directory missing from here
 // fails that gate, because a tree nothing loads is data that can never take effect.
+//
+// PARSER WARNING: that script derives its owner list with a regex that pulls every quoted string
+// out from between the braces below, blind to whether it's an initializer or a comment. A stray
+// string literal ANYWHERE in there — including inside a `//` or `/* */` comment on one of the rows
+// — becomes a phantom owner and fails the gate with a confusing "<phantom>: owner directory
+// missing". Keep the braces free of quoted text other than the real owner-name initializers.
 struct GamedataOwner { const char* name; GameConfig* cfg; std::string* error; };
 static const GamedataOwner kGamedataOwners[] = {
     { "core", &s_gdCore, &s_gdErrorCore },
@@ -4582,16 +4588,23 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         }
         // Sound slice: install the precache hook (a CGameRulesGameSystem class-vtable swap resolved by
         // RTTI, like the trace block above). The class vtable is static data present at module load, so
-        // this installs ONCE here — no lazy StartupServer retry. Before GamedataBanner so its warn (if
-        // the RTTI vtable is missing) prints alongside the rest of the gamedata report.
+        // this installs ONCE here — no lazy StartupServer retry.
         InstallPrecacheHook();
-        GamedataBanner();   // Slice 6.9: loud pass/fail summary — a version mismatch screams here, not later.
 
         // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
         // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
         META_CONPRINTF("[s2script] EKV self-test: %s\n", S2EKV_SelfTest() ? "OK" : "FAILED (kv-spawn degraded)");
     }
     // --- end interface acquisition ---
+    // Slice 6.9 (residual fix, review round 2): hoisted OUT of the `else` above so it always runs.
+    // The gate that skips interface acquisition (filesLoaded.empty() || !filesFailed.empty()) is
+    // exactly the catastrophic case the "=== GAMEDATA LOAD ERROR (owner): ... ===" line exists to
+    // surface — a banner reachable only from the success branch could never print it, leaving just
+    // the mid-boot WARNs. Safe to call unconditionally: s_gdOk/s_gdFail are reset once per Load and
+    // only incremented by GamedataResult() inside the (skipped, in that case) acquisition block, so
+    // they correctly read 0/0 there; the per-owner error/overridden state GamedataBanner() also
+    // reports is populated by loadOwner() above, before this gate, on both paths.
+    GamedataBanner();
 
     META_CONPRINTF("[s2script] Load(): initializing V8 core\n");
 

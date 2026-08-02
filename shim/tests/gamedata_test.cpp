@@ -523,25 +523,44 @@ static void test_custom_overrides_a_shipped_entry() {
 }
 
 static void test_custom_files_apply_in_sorted_order() {
-    TempRoot root;
-    put(root.path / "core" / "master.gamedata.jsonc",
-        R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
-    put(root.path / "core" / "game.cs2.jsonc",
-        R"({ "offsets": { "Val": { "linuxsteamrt64": 0 } } })");
-    // Created in REVERSE of sorted order deliberately: if the loader ever stops sorting and takes
-    // directory order, the filesystem is free to hand back creation order and "20-second" would
-    // apply first, so the assertion below fails. Creating them in sorted order would make this
-    // test pass on an unsorted loader whenever the FS happens to iterate in creation order.
-    put(root.path / "core" / "custom" / "20-second.jsonc",
-        R"({ "offsets": { "Val": { "linuxsteamrt64": 2 } } })");
-    put(root.path / "core" / "custom" / "10-first.jsonc",
-        R"({ "offsets": { "Val": { "linuxsteamrt64": 1 } } })");
+    // No single creation order is a safe fixture: std::filesystem::directory_iterator's order is
+    // unspecified and filesystem-dependent, so "created out of sorted order" is not the same thing
+    // as "iterated out of sorted order". On this machine /tmp is tmpfs, where the iterator happens
+    // to yield REVERSE creation order — meaning creating "20-second" before "10-first" makes the
+    // iterator hand back "10-first, 20-second", i.e. sorted order BY ACCIDENT, and an unsorted
+    // loader would pass this test. There is no creation order that is safe on every filesystem.
+    // So: build the same two-file fixture in BOTH creation orders, each in its own TempRoot, and
+    // assert the sorted-last file wins in both. Whichever way a given filesystem's iterator runs,
+    // at least one of the two orderings hands an unsorted loader the files in already-sorted order
+    // and the other hands it the reverse — so one of the two always catches a missing sort.
+    auto run = [](bool createSortedFirstFirst) {
+        TempRoot root;
+        put(root.path / "core" / "master.gamedata.jsonc",
+            R"({ "files": [ { "file": "game.cs2.jsonc" } ] })");
+        put(root.path / "core" / "game.cs2.jsonc",
+            R"({ "offsets": { "Val": { "linuxsteamrt64": 0 } } })");
+        if (createSortedFirstFirst) {
+            put(root.path / "core" / "custom" / "10-first.jsonc",
+                R"({ "offsets": { "Val": { "linuxsteamrt64": 1 } } })");
+            put(root.path / "core" / "custom" / "20-second.jsonc",
+                R"({ "offsets": { "Val": { "linuxsteamrt64": 2 } } })");
+        } else {
+            put(root.path / "core" / "custom" / "20-second.jsonc",
+                R"({ "offsets": { "Val": { "linuxsteamrt64": 2 } } })");
+            put(root.path / "core" / "custom" / "10-first.jsonc",
+                R"({ "offsets": { "Val": { "linuxsteamrt64": 1 } } })");
+        }
 
-    std::string err;
-    GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
-                                   "linuxsteamrt64", err);
-    CHECK(gc.offsets["Val"] == 2, "later custom/ filename wins");
-    CHECK(gc.filesLoaded.size() == 3, "every applied file is recorded");
+        std::string err;
+        GameConfig gc = LoadGameConfig(root.path.string(), "core", "source2", "csgo",
+                                       "linuxsteamrt64", err);
+        const std::string order = createSortedFirstFirst ? "created 10-first then 20-second"
+                                                           : "created 20-second then 10-first";
+        CHECK(gc.offsets["Val"] == 2, "later custom/ filename wins (" + order + ")");
+        CHECK(gc.filesLoaded.size() == 3, "every applied file is recorded (" + order + ")");
+    };
+    run(true);
+    run(false);
 }
 
 static void test_absent_custom_dir_is_not_an_error() {
