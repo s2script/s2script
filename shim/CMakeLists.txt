@@ -136,6 +136,10 @@ add_executable(call_validate_selftest
     src/call_validate.cpp src/sigscan.cpp tests/call_validate_test.cpp)
 target_include_directories(call_validate_selftest PRIVATE src third_party)
 
+# Engine-free half of declarative inbound hooks (not shipped; run by scripts/ci-native.sh).
+add_executable(hook_dispatch_selftest src/hook_dispatch.cpp tests/hook_dispatch_test.cpp)
+target_include_directories(hook_dispatch_selftest PRIVATE src)
+
 
 # The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).
 add_executable(crash_selftest src/crash_selftest.cpp src/crash_handler.cpp)
