@@ -6150,6 +6150,35 @@ fn s2_entity_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+/// Native `__s2_entity_target(index, id) -> string | null`. Reads `CBaseEntity::m_target` (a
+/// `CUtlSymbolLarge`) directly from the entity's OWN instance memory — unlike `m_name`, which lives on
+/// the identity and is read through the shim's dedicated `entity_name` op, `m_target` has no such op,
+/// so this resolves its offset via the SAME live `__s2_schema_offset` cache the plugin-declared-call
+/// `receiver.via` hop and `DamageInfo` use (schema-resolved, never baked — spec §10), then follows the
+/// already books/serial-gated entity pointer itself. A `CUtlSymbolLarge` is a single pointer-sized
+/// field (`const char* m_pString`); its own `String()` accessor falls back to `""` when that pointer
+/// is null, which is exactly the convention followed here. null = stale/invalid ref, unresolved
+/// offset, or no ops (mirrors `s2_entity_name`'s null = stale/invalid/no-ops contract); "" = the
+/// entity has no target.
+fn s2_entity_target(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
+        let ent = entity_resolve_ptr(index, id);
+        if ent.is_null() { return; }               // invalid → null (already set)
+        let off = schema_offset_cached("CBaseEntity", "m_target");
+        if off < 0 { return; }                      // unresolved offset → null (already set)
+        let sym_ptr = crate::entity::read_u64(ent as *const u8, off) as usize as *const std::os::raw::c_char;
+        if sym_ptr.is_null() {
+            if let Some(js) = v8::String::new(scope, "") { rv.set(js.into()); }
+            return;
+        }
+        let s = unsafe { std::ffi::CStr::from_ptr(sym_ptr) }.to_string_lossy().into_owned();
+        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
 /// Native `__s2_ent_identity_flags(index, id) -> number | null`. CEntityIdentity::m_flags
 /// read from the identity SLOT via the ent_identity_flags op (books-translated id →
 /// engine serial; chunk-validated shim-side) — NEVER via instance+0x10. The E1
@@ -6939,6 +6968,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // entity_name slice: EntityRef.name reads CEntityIdentity::m_name (sibling of entity_find_by_class's
     // m_designerName read on the same identity).
     set_native(scope, global_obj, "__s2_entity_name", s2_entity_name);
+    // entity_target slice: EntityRef.target reads CBaseEntity::m_target via the schema-offset cache
+    // (the field lives on the instance itself, not the identity — see s2_entity_target's doc comment).
+    set_native(scope, global_obj, "__s2_entity_target", s2_entity_target);
     // E1 entity-liveness slice: identity-slot flags (books-gated) for pawn.isValid's staging check.
     set_native(scope, global_obj, "__s2_ent_identity_flags", s2_ent_identity_flags);
     set_native(scope, global_obj, "__s2_ent_identity_flags_clear", s2_ent_identity_flags_clear);
@@ -13065,6 +13097,22 @@ mod frame_tests {
             var EntityRef = globalThis.__s2pkg_entity.EntityRef;
             var direct = __s2_entity_name(5, 7);
             var viaRef = new EntityRef(5, 7).name;
+            JSON.stringify({ direct: direct, viaRef: viaRef });
+        "#);
+        assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);
+        shutdown();
+    }
+
+    /// entity_target slice: `EntityRef.target` (and the raw `__s2_entity_target` native) degrade to
+    /// `null` with no ops (e.g. every in-isolate test) — never a crash.
+    #[test]
+    fn entity_target_degrades_to_null_without_ops() {
+        init(dummy_logger()).unwrap();
+        // No ENGINE_OPS are installed in-isolate -> entity_resolve_ptr is null -> both paths return null.
+        let out = eval_std("et1", r#"
+            var EntityRef = globalThis.__s2pkg_entity.EntityRef;
+            var direct = __s2_entity_target(5, 7);
+            var viaRef = new EntityRef(5, 7).target;
             JSON.stringify({ direct: direct, viaRef: viaRef });
         "#);
         assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);

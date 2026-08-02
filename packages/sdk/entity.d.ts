@@ -23,6 +23,9 @@ export declare class EntityRef {
   /** This entity's targetname (`CEntityIdentity::m_name`) — e.g. a map trigger's `"map_start"`. `""` if
    *  the entity has no targetname; `null` if the ref is stale/invalid. */
   readonly name: string | null;
+  /** This entity's target (`CBaseEntity::m_target`) — the targetname of the entity it acts on, e.g. a
+   *  `func_button`'s target entity. `""` if the entity has no target; `null` if the ref is stale/invalid. */
+  readonly target: string | null;
   /** @internal The host mints refs; this is not part of the public API surface. */
   private constructor();
   /** True iff the host's books say live AND the identity slot still matches. */
