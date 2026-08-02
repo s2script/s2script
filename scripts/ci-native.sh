@@ -24,6 +24,9 @@ bash scripts/test-sigscan.sh
 echo "== test-gamedata.sh =="
 bash scripts/test-gamedata.sh
 
+echo "== check-deferred-sentinel.sh (S2_DISPATCH_DEFERRED: core == shim header) =="
+bash scripts/check-deferred-sentinel.sh
+
 echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
 bash scripts/test-defer-queue.sh
 

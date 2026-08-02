@@ -610,9 +610,12 @@ static std::set<std::string> s_subscribedNames;
 // ---------------------------------------------------------------------------
 
 // Game-event deferral needs IGameEventManager2::DuplicateEvent, whose vtable slot is a fact about
-// OUR binary and is validated at Load (ArmDeferredEventDuplication). False = game-event deferral is
-// degraded to today's drop, by name, at boot; SCALAR deferral is unaffected.
-static bool s_deferEventOk = false;
+// OUR binary. It is validated in two stages: STRUCTURALLY at Load (ArmDeferredEventDuplication —
+// the Itanium pointer-to-member index, read out of the live vtable, both slots inside libserver's
+// .text) and then BEHAVIOURALLY on the first real duplication (S2Defer_DuplicateEventOp). Either
+// failing degrades game-event deferral to today's drop, by name; SCALAR deferral is unaffected.
+static bool s_deferEventOk   = false;   // stage 1 passed (Load)
+static bool s_deferDupProven = false;   // stage 2 passed (first duplication)
 
 // --- push helpers: the five call sites keep their engine types --------------------------------
 static void S2_DeferClientEvent(const char* name, int slot) {
@@ -3056,11 +3059,27 @@ static bool IsAddressInServerText(void* fn) {
 // that header is a HINT, NOT A NUMBER: the vtable INDEX is a fact about the binary WE are loaded
 // into, and the vendored SDK lags Valve by design.
 //
-// So: derive the index the compiler itself will emit for the call (below), read that slot out of the
-// LIVE manager's vtable, and require both resolved pointers to land inside libserver.so's own .text
-// before either is ever called. Header drift then surfaces at BOOT as a slot pointing outside .text
-// (or as a member that is no longer a plain virtual), and it degrades GAME-EVENT deferral by name —
-// scalar deferral (client / entity / map / cvar) is untouched, because it needs neither function.
+// STAGE 1 (here, at Load — structural): derive the index the compiler itself will emit for the call
+// (below), read that slot out of the LIVE manager's vtable, and require both resolved pointers to
+// land inside libserver.so's own .text before either is ever called. A header edit then surfaces at
+// BOOT as a member that is no longer a plain virtual, or as a non-adjacent pair, or as a slot
+// pointing outside .text.
+//
+// STAGE 1 IS STRUCTURALLY BLIND TO THE DRIFT IT EXISTS TO CATCH, which is why stage 2 exists.
+// `idxDup` and `idxFree` BOTH come from the vendored header, so `idxFree != idxDup + 1` compares
+// the header against itself: it catches an hl2sdk edit, but not the case this block's own premise
+// names — Valve inserting a virtual ahead of these two, which shifts the real slots while our index
+// stays put. The only binary-facing check left is IsAddressInServerText, and on a real slot shift
+// the neighbouring slot holds a perfectly valid libserver .text pointer, so it passes. We would
+// then call the wrong virtual and FreeEvent whatever landed in rax a frame later.
+//
+// STAGE 2 (S2Defer_DuplicateEventOp, on the FIRST real duplication — behavioural): call it once and
+// CHECK THE ANSWER against the live event it copied. See that function for the checks, for why the
+// probe is a real event rather than a CreateEvent()'d one at Load, and for the residual we
+// knowingly accept.
+//
+// Either stage failing degrades GAME-EVENT deferral by name — scalar deferral (client / entity /
+// map / cvar) is untouched, because it needs neither function.
 //
 // FreeEvent is already exercised in production by s2_event_fire_to_client; it is validated here all
 // the same, because the drain's free path is new and must not be the thing that discovers a moved
@@ -3088,7 +3107,8 @@ static int VTableSlotOfPmf(Pmf pmf) {
 }
 
 static void ArmDeferredEventDuplication() {
-    s_deferEventOk = false;
+    s_deferEventOk   = false;
+    s_deferDupProven = false;   // stage 2 re-runs on the first duplication after every Load
     // A null manager means the GameEventManager descriptor already recorded its OWN failure; do not
     // count a second one for the same root cause (the s_precacheVtblIdx precedent).
     if (!s_pGameEventManager) return;
@@ -3116,18 +3136,92 @@ static void ArmDeferredEventDuplication() {
     if (ok) {
         s_deferEventOk = true;
         META_CONPRINTF("[s2script] deferred-dispatch: DuplicateEvent = vtable slot %d (%p), FreeEvent = slot %d (%p)"
-                       " — game-event deferral armed\n", idxDup, fnDup, idxFree, fnFree);
+                       " — armed (pending the first-duplication round-trip)\n", idxDup, fnDup, idxFree, fnFree);
     } else {
         META_CONPRINTF("[s2script] deferred-dispatch: DuplicateEvent/FreeEvent slot validation failed — "
                        "game-event deferral disabled (scalar deferral active)\n");
     }
 }
 
-// The queue's duplicate_event op: mint the shim-owned copy the drain will replay under
-// s_currentEvent and free exactly once.
+// Fault-free "is this address readable" probe: mincore() reports ENOMEM iff the range is unmapped,
+// so it answers the question without a signal handler and without a /proc/self/maps walk. The
+// caller has already required 8-alignment, and a page size is a multiple of 8, so the one aligned
+// word read below cannot straddle into an unprobed page.
+static bool IsPointerReadable(const void* p) {
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) return false;
+    const uintptr_t page = reinterpret_cast<uintptr_t>(p) & ~static_cast<uintptr_t>(pageSize - 1);
+    unsigned char vec = 0;
+    return mincore(reinterpret_cast<void*>(page), static_cast<size_t>(pageSize), &vec) == 0;
+}
+
+// Stage 2 of the DuplicateEvent validation: does the slot we resolved BEHAVE like DuplicateEvent?
+// Returns nullptr on success, else the named reason.
+//
+// Checked in escalating order of how much they trust the returned value, so nothing is dereferenced
+// before it has been shown to be dereferenceable:
+//   1. non-null, and not the ORIGINAL (a copy is a different object)
+//   2. pointer-shaped: 8-aligned and above the null page — rules out a bool/int/enum in rax
+//   3. mapped — rules out a garbage-but-plausible pointer before we read through it
+//   4. SAME VPTR as the original. DuplicateEvent returns another object of the original's concrete
+//      class, so its vtable pointer must match. This is the check the header-vs-header adjacency
+//      comparison structurally cannot make, and it is what actually catches a Valve slot shift.
+//   5. only then, with the vptr proven to be the original's, is calling GetName() safe — and the
+//      copy must name the same event.
+//
+// If CS2 ever returns a copy of a DIFFERENT concrete class, (4) fails and game-event deferral turns
+// itself off LOUDLY with that exact reason, rather than staying quietly at risk — a visible,
+// scalar-deferral-preserving degrade, and a live-gate log line that tells us to relax the check.
+static const char* DeferDupRoundTripFailure(IGameEvent* ev, IGameEvent* dup) {
+    if (!dup)      return "DuplicateEvent returned null for a live event";
+    if (dup == ev) return "DuplicateEvent returned the ORIGINAL event, not a copy";
+    const uintptr_t p = reinterpret_cast<uintptr_t>(dup);
+    if (p < 0x10000 || (p & (sizeof(void*) - 1)) != 0)
+        return "DuplicateEvent returned a value that is not a pointer (wrong vtable slot)";
+    if (!IsPointerReadable(dup))
+        return "DuplicateEvent returned an unmapped pointer (wrong vtable slot)";
+    if (*reinterpret_cast<void* const*>(dup) != *reinterpret_cast<void* const*>(ev))
+        return "the copy's vtable differs from the original's (wrong vtable slot)";
+    const char* dn = dup->GetName();
+    const char* on = ev->GetName();
+    if (!dn || !on || strcmp(dn, on) != 0)
+        return "the copy does not name the same event as the original";
+    return nullptr;
+}
+
+// The queue's duplicate_event op. Stage 1 (Load) proved the slot HOLDS a libserver function; this
+// proves it holds DUPLICATEEVENT, once, the first time we would really use it.
+//
+// Why here and not at Load: a boot-time round-trip needs an IGameEvent to copy, and the only way to
+// mint one is CreateEvent(name, force) — which needs a game-specific event NAME (a game fact in an
+// engine-generic shim) and an event descriptor that is not loaded yet at Metamod Load. It would
+// false-negative the feature OFF on every boot. The first real deferral hands us a live event for
+// free, so the probe costs no extra engine call at all: the duplicate we validate IS the duplicate
+// we queue.
+//
+// KNOWINGLY ACCEPTED RESIDUAL: the round-trip itself calls a possibly-wrong slot ONCE. That is
+// bounded and one-shot — versus memory corruption on every deferral, mis-attributed by the crash
+// reporter. On failure we do NOT FreeEvent the suspect pointer: leaking one object beats handing
+// garbage to the engine's allocator.
 static void* S2Defer_DuplicateEventOp(void* evRaw) {
     if (!s_deferEventOk || !s_pGameEventManager || !evRaw) return nullptr;
-    return s_pGameEventManager->DuplicateEvent(reinterpret_cast<IGameEvent*>(evRaw));
+    IGameEvent* ev  = reinterpret_cast<IGameEvent*>(evRaw);
+    IGameEvent* dup = s_pGameEventManager->DuplicateEvent(ev);
+    if (s_deferDupProven) return dup;
+
+    const char* why = DeferDupRoundTripFailure(ev, dup);
+    if (why) {
+        s_deferEventOk = false;   // degrade THIS descriptor only; scalar deferral keeps working
+        GamedataResult("IGameEventManager2_DuplicateEvent+FreeEvent", false, why);
+        META_CONPRINTF("[s2script] deferred-dispatch: DuplicateEvent round-trip FAILED (%s) — game-event "
+                       "deferral disabled (scalar deferral active); the suspect pointer %p is deliberately "
+                       "LEAKED, never freed. See docs/re-strategy.md.\n", why, (void*)dup);
+        return nullptr;           // the caller drops this game_event BY NAME
+    }
+    s_deferDupProven = true;
+    META_CONPRINTF("[s2script] deferred-dispatch: DuplicateEvent round-trip verified on the live binary "
+                   "(event '%s') — game-event deferral confirmed\n", ev->GetName() ? ev->GetName() : "?");
+    return dup;
 }
 
 // create: className -> packed CEntityHandle (ToInt). The raw ptr NEVER leaves the shim.
