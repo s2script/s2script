@@ -44,10 +44,24 @@
   // weapon.remove() — the complete "take this weapon away" atom: unequip from the owner (RemovePlayerItem)
   // then destroy the entity (UTIL_Remove via EntityRef.remove). Unowned -> just destroy. Serial-gated: a
   // stale weapon is a no-op false. Returns true iff the entity was removed.
+  //
+  // BOTH refs must resolve or there is NO unequip call at all. That was a `!pawn || !w` guard in the
+  // shim op; here it has to be explicit, because a declared `entity` argument that fails to resolve
+  // does NOT abort the call — it marshals to nullptr and the engine still runs, which would be
+  // RemovePlayerItem(pawn, nullptr). The engine's bool return is available now (the descriptor
+  // declares it) but stays ignored: this function's boolean has always meant "the entity was
+  // removed", which is the destroy step below, not the unequip.
+  //
+  // The descriptor is resolved by pawn.js, which is concatenated AFTER this file — hence the lazy
+  // read at call time rather than a capture at evaluation time.
   Weapon.prototype.remove = function () {
     if (!this.ref.isValid()) return false;
     var owner = this.owner;
-    if (owner) __s2_remove_player_item(owner.ref.index, owner.ref.id, this.ref.index, this.ref.id);
+    var calls = globalThis.__s2pkg_cs2_calls;
+    var call = calls && calls.removePlayerItem;
+    // Receiver = the owning pawn (the callable unwraps `.ref` for you); the `entity` ARG must be the
+    // EntityRef itself — that asymmetry is deliberate and documented at engineCall() in pawn.js.
+    if (call && owner && owner.ref.isValid()) call(owner, this.ref);
     return this.ref.remove();
   };
 

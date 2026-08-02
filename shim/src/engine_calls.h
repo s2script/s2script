@@ -19,12 +19,18 @@ extern "C" {
 // truncated to `reasonCap`) — the core stores that reason verbatim as the descriptor's named
 // degrade reason (spec §12). `kind` is "signature" or "vtable"; `module` defaults to the engine
 // server module when null/empty; `resolve` accepts the existing gamedata resolver vocabulary
-// ("direct" / "ctor-body-xref" / "lea-disp"); `className` + `vtableIndex` + `prologue` are the
-// vtable path (a vtable target with an empty `prologue` is REJECTED — see the .cpp header comment
-// for why a bare index is never trusted).
+// ("direct" / "ctor-body-xref" / "lea-disp"); `className` + `vtableIndex` are the vtable path.
+//
+// `validateJson` is the descriptor's WHOLE `validate` object, serialized (""/"null"/"{}" all mean
+// "no validators"). It crosses as one opaque JSON string rather than one C-string parameter per
+// validator for two reasons: the closed vocabulary then lives in the shim, which is what actually
+// dispatches on it — the same place "unknown resolve strategy" is decided — so an unknown key can
+// fail BY NAME instead of being silently dropped; and adding a validator stops being an ABI change.
+// A vtable target that declares no `prologue` is REJECTED (see the .cpp header comment for why a
+// bare index is never trusted).
 int S2_EngineCallResolve(const char* kind, const char* module, const char* pattern,
                          const char* resolve, const char* className, int vtableIndex,
-                         const char* prologue, char* reasonOut, int reasonCap);
+                         const char* validateJson, char* reasonOut, int reasonCap);
 
 // Invoke a resolved descriptor on a serial-gated entity receiver.
 // gpKind[i]: 0=scalar, 1=entity((uint64)index<<32|serial), 2=string(index into strs),

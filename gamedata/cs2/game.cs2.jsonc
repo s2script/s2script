@@ -4,13 +4,38 @@
 // entries, needs no rebuild, and survives upgrades. See docs/INSTALL.md ("Hot-fixing a
 // broken signature").
 //
+// ONE EXCEPTION TO "REPLACES WHOLE NAMED ENTRIES": a signature's `validate` block. If your
+// custom/ entry supplies a pattern but no `validate`, the SHIPPED validator is CARRIED FORWARD
+// onto it and the boot banner says so — because omitting it is almost always "I only re-derived
+// the pattern", not "disarm the semantic gate". That gate is what separates a real match from a
+// unique-but-WRONG one, and the CCSGameRules_TerminateRound comment below is the worked example:
+// the borrowed CSSharp signature matches EXACTLY ONCE on this build, at the wrong function, so
+// uniqueness and the .text-range check both wave it through and only the `string-xref` validator
+// catches it. If your new pattern moved the instruction a carried validator reads, re-derive its
+// offsets and ship them in the same entry. If you genuinely want the entry checked by nothing but
+// uniqueness and .text-range, say so explicitly with `"validate": {}` — that is honoured, and is
+// its own WARN at boot.
+//
 // Owner: cs2 — the @s2script/cs2 game package. Nothing in shim/src or core/src may name a key in
 // this file (scripts/check-gamedata-owners.sh enforces it).
 // Target: CS2 — "game": "csgo".
 //
-// Today: the two parked CCSPlayer_ItemServices_* vtable indices from the deferred
-// dropActiveWeapon work — the only two of the original 46 entries named nowhere in source.
-// A5b adds the eight CS2-API signatures here as `calls` descriptors.
+// WHAT LIVES HERE (A5b). The eight CS2-specific engine calls that used to be hand-wired as core
+// `S2EngineOps` fields plus a bespoke block in shim/src/s2script_mm.cpp are declared here instead:
+// each is a `signatures` entry (the byte pattern + its semantic validator) plus a `calls`
+// descriptor (the receiver / arg / return marshalling contract). Core registers them at Load under
+// the game package's reserved owner id and `games/cs2/js/pawn.js` calls them through the SAME
+// plugin-declared-engine-call path a third-party plugin uses. Adding a ninth CS2 engine call is
+// now an entry in this file and a wrapper in pawn.js — ZERO core diff, zero shim diff.
+//
+// SIGNATURE NAMES ARE CLASS-QUALIFIED (`CCSPlayerController_Respawn`, not `Respawn`). Two reasons:
+// the ownership gate forbids a key here from being named in shim/src or core/src, and a bare
+// `Respawn` is not unique across a Source 2 game's class hierarchy — the qualified form is the
+// same convention examples/engine-call-demo already ships (`CBaseModelEntity_Ignite`).
+//
+// Every comment below moved VERBATIM from gamedata/core/game.cs2.jsonc. They are the treadmill
+// re-resolution recipes — which borrowed constant was wrong and why, and how the shipped address
+// was self-derived — and they are the most valuable thing in this file. Do not compress them.
 {
   "offsets": {
     // Item slice (Task 2): CCSPlayer_ItemServices::RemoveWeapons / DropActivePlayerWeapon vtable
@@ -32,5 +57,289 @@
     // unconfirmed, not wired). Values kept as given for now; Task 4/5 own the go/no-go call.
     "CCSPlayer_ItemServices_RemoveWeapons":          { "linuxsteamrt64": 25 },
     "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 }
+  },
+  "signatures": {
+    // CBasePlayerPawn::CommitSuicide(bool bExplode, bool bForce) — the lethal-kill entry the failed
+    // Slice-6.8 sm_slay branch (a085d5a) reached by the ModSharp vtable INDEX 400. That index is DEAD
+    // WRONG on our pinned build (index 400 is a m_flDeathTime float getter) — CommitSuicide is vtable
+    // index 819 here — which is why the borrowed-index call broke live. Per the RE doctrine we ship a
+    // by-ADDRESS prologue signature instead, self-resolved on OUR libserver.so, NOT a borrowed index.
+    // Identity (self-resolved, triple-confirmed at vaddr 0x1694d70 / file 0x1693d70):
+    //   (1) BODY: the canonical suicide rate-limiter — reads m_fNextSuicideTime (GameTime_t @0xE50,
+    //       from schema-catalog), `comiss` vs curtime, `test bForce; je ret`, then writes it back;
+    //       preceded by a virtual IsAlive() call, followed by a stack CTakeDamageInfo build + TakeDamage
+    //       + dtor, with bExplode driving the DMG_ damagetype bits (`movzbl r13b; shl $6`, `sbb/and $0x20`).
+    //   (2) VTABLE: the sole implementation inherited (never overridden) across the CBasePlayerPawn /
+    //       CCSPlayerPawnBase / CCSPlayerPawn pawn-family vtables (RTTI-walked).
+    //   (3) CALLER: a devirtualized `xor edx,edx; xor esi,esi; mov rbx,rdi; call 0x1694d70` proves the
+    //       ABI is (this /*rdi*/, bool bExplode /*esi*/, bool bForce /*edx*/) — two bools after `this`.
+    // A DIRECT prologue pattern (match offset == function start). Masks the rip-relative `lea` disp and
+    // the volatile stack-frame immediate. Validated UNIQUE (exactly 1 match) in the pinned libserver.so
+    // PF_X range by two independent scans. Per-update the prologue/offset move each patch (the treadmill).
+    "CBasePlayerPawn_CommitSuicide": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 89 F5 41 54 41 89 D4 53 48 8D 15 ? ? ? ? 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct"
+      }
+    },
+    // CCSPlayerController::ChangeTeam(int team) — the standard team-change (incl. Spectator=1); moves the
+    // player immediately (the poor-sharptimer/CSSharp `!spec` path). Backs Player.changeTeam / .spectate.
+    // SELF-RESOLVED against OUR libserver.so, NOT a borrowed constant: the live gate proved CSSharp's
+    // SwitchTeam SIGNATURE is the WRONG function (it queues a deferred m_bSwitchTeamsOnNextRoundReset,
+    // no immediate move) AND CSSharp's ChangeTeam vtable OFFSET (linux 101) is version-WRONG here (slot 101
+    // is a `ret` stub; ChangeTeam is slot 102 on this build — the CommitSuicide-index drift again). The
+    // real function was located by xref'ing the unique log format string `"...ChangeTeam() CTMDBG , team
+    // %d, req team %d willSwitch %d..."` (@0x986f28) to its sole referencing function (@vaddr 0x1524770 =
+    // CCSPlayerController vtable slot 102, RTTI-walk-confirmed). A DIRECT prologue pattern that MASKS the
+    // volatile frame size + the m_iTeamNum field offset (`movzx r14d,[rdi+?]`) and keeps the stable
+    // `cmp esi, r14d` (req-team vs current-team) — which also confirms the ABI `(this /*rdi*/, int team
+    // /*esi*/)`. Validated UNIQUE (exactly 1 match) in the pinned libserver.so PF_X range; the boot gate
+    // re-validates it and SCREAMS if the prologue moves on the update treadmill.
+    "CCSPlayerController_ChangeTeam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 83 EC ? 44 0F B6 B7 ? ? ? ? 44 39 F6",
+        "resolve": "direct"
+      }
+    },
+    // CCSPlayerController::SwitchTeam(unsigned int team) — the NON-LETHAL team move (player stays alive,
+    // keeps weapons; the pawn MAY be respawned by the engine). Backs Player.switchTeam (T/CT native;
+    // team 0/1 dispatches to ChangeTeam shim-side, CSSharp/SwiftlyS2 parity). HISTORY: the FIRST
+    // "SwitchTeam" sig we tried (borrowed from CSSharp during the changeteam slice) resolved to the
+    // WRONG function on our build — the deferred m_bSwitchTeamsOnNextRoundReset (halftime-swap) setter,
+    // live-gate-proven no-move (see the ChangeTeam comment above). THIS pattern is the real per-player
+    // function: corroborated by SwiftlyS2 + current CSSharp shipping the identical bytes, RE-VALIDATED
+    // against OUR binary — resolves UNIQUE @va 0x1525f40 on 2000875, adjacent to ChangeTeam (@0x1524770;
+    // vtable siblings). Prologue saves `this` into r12 (49 89 FC) and moves team esi->edi (89 F7),
+    // confirming the (this /*rdi*/, unsigned int team /*esi*/) ABI. DIRECT: the unique match IS the
+    // function entry. The boot gate re-validates uniqueness every load and SCREAMS if the prologue
+    // moves on the update treadmill.
+    "CCSPlayerController_SwitchTeam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 FC 89 F7",
+        "resolve": "direct"
+      }
+    },
+    // CCSGameRules::TerminateRound(float delay /*xmm0*/, uint32 reason /*esi*/, void* unk3=0 /*rdx*/,
+    // uint32 unk4=0 /*ecx*/) — force the current round to end with a RoundEndReason. Backs
+    // GameRules.terminateRound. SELF-DERIVED against OUR libserver.so (build 2000875) — do NOT ship the
+    // borrowed CSSharp/Swiftly sig ("55 48 89 E5 41 57 41 56 49 89 FE 41 55 41 54 53 48 81 EC ? ? ? ?
+    // 48 8D 05 ? ? ? ? F3 0F 11 85"): on this build it matches UNIQUELY yet at the WRONG function
+    // (va 0xc75ec0 — treats esi as a POINTER; a uniqueness gate alone would green-light a corrupting
+    // call). The real function (va 0x1384e80 on 2000875) is anchored by: (a) a unique
+    // `lea rsi,[rip+disp]` to the literal "TerminateRound" telemetry-scope string at fn+0xb (exactly 1
+    // xref binary-wide), (b) the sole xref to "TerminateRound: unknown round end ID %i" inside its own
+    // cold branch after `cmp $0x16,%r15d` (the reason-enum bound = 22 = SurvivalDraw), (c) the
+    // CS:GO-inherited reason -> "#SFUI_Notice_*" switch in the body (16 direct callers in the gamerules
+    // TU). This pattern masks the volatile string disp + frame size and keeps the stable `41 89 F7`
+    // reason capture. The boot gate re-validates UNIQUE, and a SECOND semantic descriptor
+    // (TerminateRound.scope-string) verifies the fn+0xb lea really targets "TerminateRound" — the exact
+    // check that separates the real function from the borrowed-sig false positive. Treadmill
+    // re-resolution recipe: xref the two unique strings above. NOT virtual on this build (zero
+    // data-segment refs) — direct call only. TTT/CSSharp's reason-first Linux arg order is a managed-
+    // marshaller artifact; the direct C call is DELAY-FIRST. args 3/4 semantics unknown in every
+    // framework (all pass 0,0) — hardcoded 0, never exposed; revisit if a future build uses them.
+    "CCSGameRules_TerminateRound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 89 F7 41 56 48 8D 35 ? ? ? ? 41 55 41 54 53 48 89 FB 48 81 EC ? ? ? ?",
+        "resolve": "direct",
+        "validate": {
+          "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7, "expect": "TerminateRound" }
+        }
+      }
+    },
+    // CCSPlayerController::Respawn(this /*rdi*/) — re-activate a (dead) player's pawn; backs
+    // Player.respawn. SELF-RESOLVED against OUR libserver.so (build 2000875), NOT a borrowed constant:
+    // CSSharp ships this as a BARE vtable offset ({windows:272, linux:274}, no signature) — the exact
+    // borrowed-index class that bit sm_slay (400 = a getter) and ChangeTeam (101 = a ret stub; real 102).
+    // The index was used ONLY OFFLINE as a finding aid: RTTI-walk the primary CCSPlayerController vtable
+    // (typeinfo name "19CCSPlayerController" -> typeinfo -> offset-to-top-0 vtable, slot pointers from
+    // .rela.dyn RELATIVE addends), read slot 274 (= va 0x14f0ce0 on 2000875 — the LAST fn slot of the
+    // primary vtable), disassemble, mask the volatile bytes. The body is a clean nullary controller
+    // method: fetch an object off the controller, early-branch on a bool virtual (+0xC98, alive-check
+    // shape), re-fetch, dispatch — no unique log string exists, so the semantic boot gate is RTTI
+    // VTABLE MEMBERSHIP (Respawn.vtable-member): the sig-resolved address must appear among the
+    // RTTI-derived primary-vtable fn slots, else the descriptor is disabled (the unique-but-WRONG trap
+    // the round-control slice proved real). Masks: call rel32, jz disp, virtual-call vtable disp.
+    // Validated UNIQUE (exactly 1 match) in the pinned libserver.so PF_X range; the boot gate
+    // re-validates both and SCREAMS if either moves on the update treadmill. Treadmill recipe: re-run
+    // the offline RTTI walk (docs/superpowers/specs/2026-07-16-player-respawn-design.md §2.1) and
+    // re-derive the mask from the new slot's prologue; CSSharp's slot number is a hint, never a number.
+    // NOTE: CSSharp additionally calls CBasePlayerController::SetPawn first — its sig has 0 hits on
+    // 2000875 (stale); Respawn-alone is Plan A, measured at the live gate (spec §2.3).
+    "CCSPlayerController_Respawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 53 48 89 FB E8 ? ? ? ? 48 85 C0 74 ? 48 89 C7 48 8B 00 FF 90 ? ? ? ? 84 C0",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CCSPlayerController" }
+      }
+    },
+    // CBasePlayerController::SetPawn(pawn, b1, b2) — re-activate a dead player's pawn BEFORE Respawn (a dead
+    // controller's active m_hPawn points at the observer pawn; SetPawn re-points it + tears down observer mode
+    // + sets dirty flags — the setup Respawn-alone can't do, live-gate proven on 2000875: Respawn alone / a raw
+    // m_hPawn write both clear the death screen but never spawn). A 4-ARG function (void*,void*,bool,bool)
+    // called SetPawn(controller, playerPawn, true, false) — verbatim what SwiftlyS2 (player.cpp:345) and CSSharp
+    // both declare; SwiftlyS2's shipped gamedata sig is BYTE-IDENTICAL to ours below. NON-VIRTUAL on 2000875
+    // (direct call, resolved by signature — NOT a vtable member; validated by unique-match + .text guard, no
+    // vtable-member gate). Self-derived masked prologue, validated UNIQUE at va 0x15ef580 (SysV: rdi=this
+    // rsi=pawn edx=b1 ecx=b2; the mask covers the lea rdi+0x7c0 m_hPawn disp). CSSharp's borrowed sig
+    // (…41 57 41 89 CF) has 0 hits — 2000875 inserted a push r14, moved ecx-save to r14d.
+    // Treadmill: re-derive the prologue if it moves (register-alloc-sensitive; the .text + unique gates fail LOUD).
+    "CBasePlayerController_SetPawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 8D 87 ? ? ? ? 48 89 E5 41 57 41 56 41 89 CE 41 55 45 89 CD",
+        "resolve": "direct"
+      }
+    },
+    // Item slice (Task 2): CCSPlayer_ItemServices::GiveNamedItem(void* iSubType, const char* name,
+    // int, void*, int, void*) -> CBaseEntity*. A DIRECT prologue pattern. Validated UNIQUE @
+    // 2026-07-09 in the pinned libserver.so (@0x152c560); ABI independently re-confirmed by disasm
+    // (spike, Task 2): saves rdi/edx/rcx/r8d/r9 to the frame, then a null/empty-string early-out
+    // on rsi (the name), then a strcmp-style scan against a static known-item-name table —
+    // consistent with (itemServices, name, iSubType, pScriptItem, a5, a6).
+    "CCSPlayer_ItemServices_GiveNamedItem": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 81 EC ? ? ? ? 48 89 BD ? ? ? ? 89 95 ? ? ? ? 48 89 8D ? ? ? ? 44 89 85",
+        "resolve": "direct"
+      }
+    },
+    // Item slice (Task 2): CBasePlayerPawn::RemovePlayerItem(CBasePlayerWeapon* weapon) -> bool —
+    // a proper unequip (used by pawn.removeWeapon). A DIRECT prologue pattern. Validated UNIQUE @
+    // 2026-07-09 in the pinned libserver.so (@0x1580110); ABI re-confirmed by disasm (spike, Task
+    // 2): `this`(rdi)->r12, weapon(rsi)->rbx, then a call whose result is compared against rbx
+    // (the weapon) — consistent with (pawn, weapon) -> bool.
+    "CBasePlayerPawn_RemovePlayerItem": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 FC 53 48 89 F3 E8 ? ? ? ? 48 39 C3",
+        "resolve": "direct"
+      }
+    }  },
+  // The declarative half. Each entry is the MARSHALLING CONTRACT for one of the signatures above:
+  // what supplies `this`, the SysV arg kinds in author order, and the return kind. `argNames` is
+  // documentary only (the runtime never reads it) — it is what makes the generated call site
+  // legible, since `terminateRound(rules, 5.0, 8, 0, 0)` says nothing on its own.
+  //
+  // WHAT IS **NOT** HERE, AND WHY. A descriptor cannot express a precondition, a default, an
+  // argument the caller must never supply, a bound, a fallback to a different descriptor, or a
+  // deferral. Every one of those is BEHAVIOUR, and behaviour lives in reviewed code — the charter
+  // rule ("layout is data, semantics are code"). They are all in `games/cs2/js/pawn.js`, in the
+  // typed wrapper that owns each call, and each one is commented there with the live-gate finding
+  // that produced it. Do not try to move them back into this file.
+  //
+  // WHERE EACH HALF IS PINNED. The entries below are checked against the grammar — arg/return/
+  // receiver/target vocabularies, the SysV arity budget, the validator vocabulary and its shapes,
+  // and that a named signature actually exists — by `scripts/check-call-descriptors.sh`, which
+  // derives every closed set from the code that enforces it. The BEHAVIOUR in pawn.js/weapon.js is
+  // pinned by `packages/sdk/test/cs2-engine-calls.test.mjs`, which drives the real shipped bundle
+  // over recording fakes. Editing a descriptor here without editing its wrapper there is how a
+  // precondition gets lost; both gates run in `make ci`.
+  "calls": {
+    // pawn.slay(). bExplode/bForce are NOT caller-supplied: pawn.js always passes (false, true),
+    // and `bForce = true` is load-bearing — the body is an m_fNextSuicideTime rate limiter with a
+    // `test bForce; je ret`, so passing false makes slay() a silent no-op inside the cooldown.
+    "commitSuicide": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CBasePlayerPawn_CommitSuicide" },
+      "args": ["bool", "bool"],
+      "argNames": ["bExplode", "bForce"],
+      "returns": "void"
+    },
+
+    // player.changeTeam() / player.spectate(). The 0..3 bound (Unassigned/Spectator/T/CT) is in
+    // pawn.js — a `calls` descriptor has no way to say "reject this argument".
+    "changeTeam": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSPlayerController_ChangeTeam" },
+      "args": ["int"],
+      "argNames": ["team"],
+      "returns": "void"
+    },
+
+    // player.switchTeam(). The engine SwitchTeam is CS:GO-lineage T/CT-only, so team <= 1 must
+    // route to `changeTeam` instead — a dispatch rule BETWEEN two descriptors, which no descriptor
+    // can express. pawn.js owns it, and deliberately routes BEFORE testing this descriptor's
+    // readiness so switchTeam(1) still works when only SwitchTeam is degraded.
+    "switchTeam": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSPlayerController_SwitchTeam" },
+      "args": ["int"],
+      "argNames": ["team"],
+      "returns": "void"
+    },
+
+    // GameRules.terminateRound(). The receiver is the cs_gamerules PROXY entity and the `via` hop
+    // is its m_pGameRules pointer — live-resolved through the cached schema resolver at each
+    // invoke, so a map change re-resolves it and a miss degrades that invocation by name rather
+    // than dereferencing a stale offset.
+    //
+    // ARG ORDER IS DELAY-FIRST. TTT/CSSharp's reason-first Linux order is a managed-marshaller
+    // artifact; the direct C call takes `delay` in xmm0 and `reason` in esi. Getting this backwards
+    // is silent (`delay` lands in the reason register), which is why it is written down twice.
+    // This is also the project's FIRST shipped float-arg descriptor — see check-invoke-abi.sh.
+    //
+    // unk3/unk4 are declared but never exposed: their semantics are unknown in every framework
+    // (all pass 0/0) and pawn.js always passes 0, 0. The 0..22 reason bound and the 5.0s default
+    // delay are in pawn.js.
+    "terminateRound": {
+      "receiver": { "kind": "entity", "via": { "class": "CCSGameRulesProxy", "field": "m_pGameRules" } },
+      "target": { "kind": "signature", "name": "CCSGameRules_TerminateRound" },
+      "args": ["float", "int", "int", "int"],
+      "argNames": ["delay", "reason", "unk3", "unk4"],
+      "returns": "void"
+    },
+
+    // player.respawn(), step 2 of 2. Nullary; the whole precondition set (alive-check, the
+    // SetPawn-must-also-be-ready rule, the same-frame ordering, the pending-set dedupe and the
+    // next-frame deferral) is in pawn.js. `returns: "void"` is the ENGINE's return — pawn.js's
+    // boolean is "was this queued", which is a different question.
+    "respawn": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSPlayerController_Respawn" },
+      "args": [],
+      "returns": "void"
+    },
+
+    // player.respawn(), step 1 of 2 — never called on its own. EXACTLY three args after `this`:
+    // (playerPawn, true, false). Passing a fourth feeds the function a different reset flag, so the
+    // arity is a correctness fact, not a convenience. pawn.js re-reads the pawn from m_hPlayerPawn
+    // at drain time and SKIPS this call entirely when it is stale/absent (a `null` entity arg would
+    // otherwise marshal to nullptr and the call would still run).
+    "setPawn": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CBasePlayerController_SetPawn" },
+      "args": ["entity", "bool", "bool"],
+      "argNames": ["pawn", "b1", "b2"],
+      "returns": "void"
+    },
+
+    // pawn.giveNamedItem(). The receiver hops through the pawn's m_pItemServices sub-object, so
+    // pawn.js no longer resolves that offset itself. The four trailing args are hardcoded 0 by
+    // pawn.js and never exposed. `returns: "entity"` runs the created weapon's handle back through
+    // the books-gated adopt path, so a raw pointer can never mint an EntityRef.
+    "giveNamedItem": {
+      "receiver": { "kind": "entity", "via": { "class": "CBasePlayerPawn", "field": "m_pItemServices" } },
+      "target": { "kind": "signature", "name": "CCSPlayer_ItemServices_GiveNamedItem" },
+      "args": ["string", "int", "int", "int", "int"],
+      "argNames": ["name", "iSubType", "pScriptItem", "a5", "a6"],
+      "returns": "entity"
+    },
+
+    // weapon.remove() / pawn.removeWeapon(). BOTH the pawn (receiver) and the weapon (arg) must
+    // resolve or there must be NO call: a stale `entity` arg marshals to nullptr and the call still
+    // runs, which would be RemovePlayerItem(pawn, nullptr). weapon.js guards for that explicitly.
+    "removePlayerItem": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CBasePlayerPawn_RemovePlayerItem" },
+      "args": ["entity"],
+      "argNames": ["weapon"],
+      "returns": "bool"
+    }
   }
 }

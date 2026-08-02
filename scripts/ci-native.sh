@@ -33,8 +33,14 @@ bash scripts/test-defer-queue.sh
 echo "== check-defer-selftest-gate.sh (S2_DEFER_SELFTEST: core == shim, registration-gated) =="
 bash scripts/check-defer-selftest-gate.sh
 
+echo "== test-call-validate.sh (the descriptor validators: both gates must REJECT) =="
+bash scripts/test-call-validate.sh
+
 echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
 bash scripts/check-gamedata-owners.sh
+
+echo '== check-call-descriptors.sh (every shipped `calls` descriptor is well-formed) =='
+bash scripts/check-call-descriptors.sh
 
 echo "== check-licenses-generated.sh =="
 bash scripts/check-licenses-generated.sh
