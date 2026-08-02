@@ -49,6 +49,9 @@ add_library(s2script SHARED
     # Plugin-gamedata slice: plugin-declared engine calls — descriptor resolution (byte signature /
     # RTTI vtable slot + prologue validation + .text range) and the fixed-max-arity SysV invoke.
     src/engine_calls.cpp
+    # deferred-dispatch slice: the queue/drain POLICY, engine-free (every engine + core call is
+    # injected through S2DeferOps), so shim/tests/defer_queue_test.cpp drives the SHIPPED drain.
+    src/defer_queue.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier1/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
@@ -114,6 +117,12 @@ target_include_directories(ccommand_selftest PRIVATE src)
 # Owner-scoped gamedata loader unit test (not shipped; run by scripts/ci-native.sh).
 add_executable(gamedata_selftest src/gamedata.cpp tests/gamedata_test.cpp)
 target_include_directories(gamedata_selftest PRIVATE src third_party)
+
+# Deferred-dispatch queue unit test (not shipped; run by scripts/ci-native.sh via
+# scripts/test-defer-queue.sh, which adds _GLIBCXX_DEBUG + the sanitizers). This target exists so
+# the test also builds under the ordinary cmake configuration.
+add_executable(defer_queue_selftest src/defer_queue.cpp tests/defer_queue_test.cpp)
+target_include_directories(defer_queue_selftest PRIVATE src include)
 
 
 # The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).

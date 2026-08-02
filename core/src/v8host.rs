@@ -12266,6 +12266,14 @@ mod frame_tests {
     /// `mem::take` IS the spec's double buffer: a dispatch deferred BY a deferred handler lands in
     /// the NEXT drain rather than extending the current one, so a handler that re-fires its own
     /// event cannot spin the frame forever.
+    ///
+    /// **This mock covers CORE'S half of the contract only** — that a re-entrant dispatch reports
+    /// `Deferred` and that its replay delivers. It is NOT coverage of the shipped drain, and must
+    /// not be read as such: the real one lives in `shim/src/defer_queue.cpp` over two file-scope
+    /// buffers plus a `swap`, and a `mem::take` into a local `Vec` is structurally incapable of
+    /// reproducing that shape (a flush re-entered from inside a replay clearing the buffer being
+    /// walked shipped past this file for exactly that reason). The drain itself is tested by
+    /// `shim/tests/defer_queue_test.cpp` — `scripts/test-defer-queue.sh` in `ci-native.sh`.
     fn drain_deferred() -> usize {
         let batch: Vec<String> = DEFERRED_Q.with(|q| std::mem::take(&mut *q.borrow_mut()));
         for name in &batch {

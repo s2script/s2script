@@ -24,6 +24,9 @@ bash scripts/test-sigscan.sh
 echo "== test-gamedata.sh =="
 bash scripts/test-gamedata.sh
 
+echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
+bash scripts/test-defer-queue.sh
+
 echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
 bash scripts/check-gamedata-owners.sh
 
