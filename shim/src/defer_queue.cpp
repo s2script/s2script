@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-// Mirrors kRespawnPendingMax's shape.
+// A fixed cap, like the hand-rolled per-op pending sets this queue replaced.
 static const int kDeferredQueueMax = 256;
 
 // DOUBLE BUFFERED. The drain swaps buffers BEFORE replaying, so a dispatch deferred *by* a deferred

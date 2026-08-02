@@ -126,6 +126,49 @@ named entries. Never edit the shipped files — an upgrade overwrites them. Over
 at boot and recorded in any crash report, so a patched signature is never mistaken for a shipped
 one.
 
+#### The one thing an override does *not* replace: `validate`
+
+Some shipped signatures carry a `validate` block — a **semantic** check on whatever address the
+pattern resolved to (does the function reference the log string it should? is it really a member of
+that class's vtable?). It exists because a *unique* match can still be the *wrong* function: the
+borrowed CS# `TerminateRound` signature matches exactly once on our pinned build, at a function that
+treats its second argument as a pointer. Uniqueness and the "is it in `.text`" check both pass it;
+only the validator catches it.
+
+So if your `custom/` entry supplies a pattern and **omits** `validate`, the shipped validator is
+**carried forward** onto your pattern rather than deleted, and boot says so:
+
+```
+[s2script] WARN: gamedata OVERRIDE CCSGameRules_TerminateRound (cs2/custom/) supplied a pattern
+but NO "validate" — the SHIPPED validator was CARRIED FORWARD and is now checked against YOUR
+pattern.
+```
+
+Two follow-ups from there:
+
+- **The descriptor is disabled with the validator's reason.** Your pattern moved the instruction the
+  validator reads. Re-derive the validator's offsets for the new match and ship them in the same
+  entry — pattern and validator belong together, which is why they live in one entry.
+- **You want no semantic gate at all** (you are certain, or you are debugging). Say it explicitly
+  with `"validate": {}`. That is honoured, and gets its own boot `WARN` — the entry is then accepted
+  on uniqueness and a `.text`-range check alone.
+
+```jsonc
+{
+  "signatures": {
+    "CCSGameRules_TerminateRound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 ...",
+        "resolve": "direct",
+        // re-derived for the pattern above; or `{}` to run with no semantic gate
+        "validate": { "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7, "expect": "TerminateRound" } }
+      }
+    }
+  }
+}
+```
+
 ## Publishing a release (maintainers)
 
 There are **two independent release trains**. Do not couple them — plugin-only updates need a zip tag; package-only updates need a changeset.

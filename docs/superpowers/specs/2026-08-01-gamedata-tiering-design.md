@@ -314,6 +314,36 @@ npm-style plugin id can be spelled with a leading `@s2script/` scope the loader 
 third party. **This is not a privilege change:** the eight natives are unconditionally callable
 from any plugin today.
 
+**Correction, found while BUILDING the channel: the owner id above was claimable, and registering
+under `@s2script/cs2` would have been a privilege escalation.** Two things the paragraph asserts are
+false against the code:
+
+1. *"no npm-style plugin id can be spelled with a leading `@s2script/` scope the loader would accept
+   as a third party"* — first-party plugins already load under exactly that scope (`@s2script/zones`
+   is a plugin id, `loader.rs`), so the scope is not reserved; and
+2. more fundamentally, **nothing validates a plugin id at all**. `manifest.id` is an arbitrary JSON
+   string read out of the `.s2sp`'s own `manifest.json` (`read_s2sp`) — there is no npm-name grammar
+   check anywhere, so *any* id is spellable, `@s2script/cs2` included.
+
+A `.s2sp` claiming that id would therefore have inherited the permission exemption (arbitrary
+declared engine calls with no operator allow-list — precisely what `engine:calls` gates) and, because
+`drop_plugin` is keyed by the same id, would have torn the game package's descriptors down on its own
+unload. The exemption argument holds only for the eight specific natives; it does not extend to
+"register whatever descriptors you like".
+
+The owner id is consequently **not** the package name. It is `game-package:<package name>`
+(`gamedata_calls::RESERVED_OWNER_PREFIX`), and four independent things hold it shut:
+
+- `:` is not legal in an npm package name, so no legitimate id collides;
+- `read_s2sp` REFUSES any manifest id in that namespace, at the single door every load/reload path
+  goes through;
+- `register_plugin` refuses one too, in case a future load path skips that door; and
+- the exemption is a **parameter of the registration entry point**, never derived from the id string,
+  so even a spoofed id would not carry it.
+
+Everything else in this section stands: the merged JSON crosses as text, core registers it through
+the existing path, and there is still exactly one loader.
+
 ### 9.2 Blocker — the next-frame drains
 
 `Respawn` and `TerminateRound` are drained at the frame boundary in the shim today
@@ -330,6 +360,39 @@ wrapper **must** reproduce both properties. A `Set` of pending refs cleared befo
 is the direct translation. Losing either is a regression of live-gated behaviour, so both get an
 explicit live-gate check.
 
+#### 9.2a Confirmed consequence: `Events.onPre` no longer runs for these two calls
+
+Moving the drain from C++ into `nextFrame` **loses the pre-hook**, permanently, and this is written
+down rather than implied.
+
+The mechanism: `nextFrame`'s resolver fires inside `frame_async_drain`, which takes
+`HOST.borrow_mut()` for its whole body and holds it across the microtask checkpoint
+(`core/src/v8host.rs`). The drain therefore runs *inside* the isolate borrow, so the `player_spawn`
+/ `round_end` the engine fires synchronously inside `Respawn` / `TerminateRound` re-enters core
+under that borrow.
+
+- `Events.on` (post/notify) subscribers are **fine** — the deferred-dispatch queue takes the
+  re-entrant dispatch and replays it a frame later. That is exactly what `#63` built.
+- `Events.onPre` subscribers are **silently skipped**, and any suppression they would have applied
+  is lost. A pre-hook is not deferrable by construction: its contract is to answer *before* the
+  engine proceeds, and there is no "before" left a frame later.
+
+The old shim drains ran in their own `GameFrame` SourceHook, **outside** the borrow, so pre-hooks
+did run. **This is not fixable by relocating the drain** — all JS runs under the borrow; only
+removing the deferral (which `#63` ruled out) or making pre-dispatch borrow-free would change it.
+
+Blast radius **today is zero**: no shipped plugin subscribes `Events.onPre` to `player_spawn` or
+`round_end`. It is a real regression regardless, and stays true for exactly as long as that remains
+the case. Stated outright in `packages/cs2/index.d.ts` on both `Player.respawn` and
+`GameRulesView.terminateRound`, and at both drains in `games/cs2/js/pawn.js`.
+
+A second, smaller scope change from the same move: the shim's `s_pendingRespawn` /
+`s_pendingTerminate` were **host-global** statics, while `pawn.js` is evaluated **once per plugin
+context**, so both dedupes are now per-plugin. Two plugins calling `terminateRound()` in the same
+frame produce two engine calls; the shim's "a round ends once" property does not survive the move.
+Whether to restore cross-plugin dedupe, and where, is **open** — the docs state the per-context
+scope factually and promise nothing further.
+
 ### 9.3 Mechanical remainder
 
 - `SetPawn` + `Respawn` become two sequenced calls in `pawn.js`. No chain primitive is needed —
@@ -341,8 +404,16 @@ explicit live-gate check.
   **Which one is RE work owned by the plan**, not settled here.
 - The game package needs a descriptor owner. `core/src/gamedata_calls.rs` keys its registry by
   plugin id; A5b registers `gamedata/cs2/`'s `calls` under a reserved owner key that no npm-style
-  plugin id can spell, with the `engine:calls` permission gate bypassed for it. **This is not a
-  privilege change:** these eight natives are unconditionally callable from any plugin today.
+  plugin id can spell, with the `engine:calls` permission gate bypassed for it. **This is almost
+  not a privilege change:** **seven** of the eight are unconditionally callable from any plugin
+  today, as `__s2_*` natives on the plugin global.
+  **`SetPawn` is the exception and is new JS-reachable surface.** It had no `__s2_*` native on
+  `main` — it ran only inside the shim's C++ respawn drain, with the pawn read from the controller's
+  own `m_hPlayerPawn`, so no caller ever chose it. As a descriptor it is name-addressable with a
+  **caller-chosen entity argument**. Judged not a blocker on review: `__s2_entity_subobj_vcall`
+  already sits on every plugin global taking an arbitrary sub-object offset and vtable index, so a
+  plugin that could abuse `setPawn` can already do strictly worse. That primitive's reach is
+  flagged as its own question and is **not** in this slice's scope.
 - `S2EngineOps` loses 8 fields. The struct's per-field comments declare it append-only; A5b
   renumbers and amends that convention to *"append-only across a release boundary, not within
   one"* — core and shim ship in the same zip and nothing external links the table.
