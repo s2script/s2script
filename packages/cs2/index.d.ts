@@ -342,10 +342,15 @@ export interface GameRulesView {
    *  replaces the first. The pending slot is per plugin CONTEXT, so two plugins calling in the same
    *  frame each queue their own request.
    *
-   *  `Events.onPre("round_end")` does NOT run for this call, and cannot suppress it. The engine
+   *  `Events.onPre("round_end")` does NOT run for this call, and cannot suppress it — the engine
    *  fires round_end synchronously inside the next-frame drain, i.e. inside the isolate borrow, and
-   *  only `Events.on` (post/notify) subscribers survive that — they are replayed a frame later off
-   *  the deferred-dispatch queue. A pre-hook is not deferrable by construction, so it is skipped.
+   *  a pre-hook is not deferrable by construction. To intervene in a round ending, subscribe to
+   *  `ctx.gameRules.onTerminateRound` instead: it fires on the ENGINE's own call to
+   *  `CCSGameRules::TerminateRound`, outside the isolate borrow, where a pre-hook can actually run —
+   *  a handler can mutate `delay`/`reason` or return `HookResult.Handled`/`Stop` to cancel the
+   *  termination outright. Note the bypass: calling this method (or `GameRules.terminateRound`)
+   *  does NOT fire `onTerminateRound` — the hook only ever sees engine-originated terminations,
+   *  never a plugin's own JS-issued call (SourceMod's exact `CS_OnTerminateRound` semantic).
    *
    *  delay (default 5s) is the engine's pre-restart delay. Returns true if queued; false when
    *  degraded (unresolved signature, stale proxy, or reason outside 0..22). */

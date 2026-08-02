@@ -74,6 +74,99 @@ The ownership rule is mechanical — **a key belongs to whoever names it in sour
 after a CS2 update without waiting for a release. Overridden entries are named in the boot banner
 and marked in the crash-report fingerprint.
 
+### 2.0.7 Declarative inbound hooks — a gamedata-declared engine detour
+
+A5b closed the declarative **outbound** half: an engine *call* is a `calls` gamedata entry with zero
+core diff. The **inbound** half — every engine→JS notification — was still a hand-rolled vertical
+slice, 7–9 coordinated core edit sites per hook (the core-stabilization audit's headline finding).
+`hooks`, authored beside `calls` in the same gamedata file, closes it for the case a `calls` entry
+cannot express: the engine calling *into* a plugin, not a plugin calling *into* the engine.
+
+**Two axes, and only one of them is data.** *Location* — which function, at what address, in this
+game's binary — is a gamedata fact, resolved through the same `S2_EngineCallResolve` path and the
+same validators `calls` uses (no second resolver). *Shape* — the callee's exact C ABI — is **not**
+data: you cannot detour an arbitrary signature without knowing its register/stack layout, so the
+shim ships a small, closed vocabulary of compile-time thunks (`S2HookShape` in
+`shim/src/hook_dispatch.h`: `this_void`, `this_f32_i32_i32_i32`), each hand-written once and reused
+by every hook that shares a signature. SourceMod solves the identical problem with per-arity
+`DETOUR_DECL_MEMBER*` macros, for the same reason.
+
+Stated honestly rather than optimistically: **adding a hook on an existing shape is zero-core-diff**
+— a `hooks` entry in a game package's gamedata plus a codegen run. **Adding a new shape is a core
+change** — a new thunk in `shim/src/hook_dispatch.h`/`shim/src/engine_hooks.cpp` plus a table row in
+`core/src/gamedata_hooks.rs`'s `SHAPES`, kept in sync with the shim's mirror by
+`scripts/check-hook-shapes.sh` — the same cost class as adding a `fan_out` channel, not "purely
+data." Two shapes ship today; a third is deferred until an actual consumer needs one.
+
+**A validator is mandatory for every `hooks` entry**, unlike `calls`, where signature uniqueness
+alone suffices for a signature target. A wrong *call* address just misbehaves; a wrong *detour*
+address overwrites the prologue of whatever function is actually sitting there. `s2detour::Install`
+refuses an unrelocatable prologue, but that's a decode check, not an identity check — so a `hooks`
+entry without `validate` on its target fails the **build**, in `scripts/check-call-descriptors.sh`'s
+`hooks` grammar pass, not the load.
+
+**The descriptor**, e.g. `gamedata/cs2/game.cs2.jsonc`'s `hooks.onTerminateRound`:
+
+```jsonc
+"hooks": {
+  "onTerminateRound": {
+    "target": { "kind": "signature", "name": "CCSGameRules_TerminateRound" },
+    "shape":   "this_f32_i32_i32_i32",
+    "params":  ["delay", "reason", "_unused3", "_unused4"],
+    "mutable": ["delay", "reason"],
+    "bypassWith": "terminateRound",
+    "expose": { "ctx": "gameRules" }
+  }
+}
+```
+
+`params` names the shape's positional args for the generated view type; `mutable` marks which of
+them a handler may write back — everything else is read-only in the view. `expose.ctx` picks the
+`ctx` namespace the generated binding hangs off (`ctx.gameRules`, `ctx.players`); a game-package
+namespace that would clobber a built-in `ctx` member is refused, by name, rather than silently
+overwritten. `packages/cs2/hooks.generated.d.ts` — the typed view interfaces plus the `PluginContext`
+augmentation — is generated from this section by `s2s gen-hooks`, and
+`scripts/check-hooks-generated.sh` fails the build if the committed file drifts from a fresh run.
+
+**The bypass latch — stated plainly, because it will surprise someone:**
+`ctx.gameRules.onTerminateRound` does **not** fire when a plugin calls `GameRules.terminateRound()`.
+It fires only when the *engine* ends a round on its own. Mechanically, `bypassWith` names a `calls`
+descriptor in the *same owner* whose invocation arms a per-hook latch immediately before calling the
+engine function; the thunk takes the latch and passes straight through to the original **without
+firing the hook**. Two independent reasons this is the right behaviour, not an accident: it is
+SourceMod's exact semantic (`g_pIgnoreTerminateDetour`,
+`extensions/cstrike/forwards.cpp`) — a plugin's own call should not be reported back to it, or to
+anyone else, as if the engine had independently decided to do it — and it is also what keeps a hook
+from ever firing while core holds the V8 isolate borrow. The outbound descriptor invoke is the
+*only* path that arms the latch, so the remaining path — a genuine engine-originated call — is by
+construction the one case where core is not borrowed, which is exactly where a pre-hook is
+deliverable. This is why `Events.onPre("round_end")` cannot observe a JS-issued `terminateRound`
+(see that method's own doc comment in `packages/cs2/index.d.ts`) while `onTerminateRound` can: they
+run on opposite sides of the same borrow.
+
+**Lifecycle** reuses three existing precedents rather than inventing a fourth. Resolution reuses
+`calls`' path unchanged. Install is lazy, on first subscribe — the same idempotent
+install-on-first-subscribe pattern `UserCmd.onRun` already uses in `shim/src/s2script_mm.cpp` — so
+no subscribers means no patched bytes. Dispatch goes through `fan_out_collapsing` (§2.2): priority,
+per-handler `TryCatch` isolation, and the standard collapse all apply unchanged — `Handled` or
+`Stop` suppresses the original call, `Changed` writes the mutated params back and still calls it.
+There is **no** uninstall on last-unsubscribe: `s2detour::RemoveAll()` at Unload is the only removal
+path, because unpatching a live detour races the engine calling through it (SourceMod doesn't do it
+either) — an installed hook slot outlives that plugin's own reload and is reused for the same
+address on the next subscribe. Mutation is a block-scoped view over the thunk's stack args, exactly
+like `Damage.onPre`'s `info` — no pointer crosses into JS, and the view cannot outlive the dispatch
+(`s2script_core_dispatch_hook` in `core/src/ffi.rs`).
+
+**`engine:hooks` is a separate permission from `engine:calls`.** A hook is strictly more dangerous
+than a call — it patches bytes and can suppress engine behaviour — so an operator who granted a
+plugin the ability to *call* engine functions has not thereby granted it the ability to *detour*
+them.
+
+Two hooks ship today, both declared in `gamedata/cs2/game.cs2.jsonc` — nothing named in `shim/src`
+or `core/src`: `ctx.gameRules.onTerminateRound` (shape `this_f32_i32_i32_i32`, mutable
+`delay`/`reason`) and `ctx.players.onRespawn` (shape `this_void`, surfaced `player` receiver as a
+books-gated `EntityRef`).
+
 ### 2.1 Runtime model
 
 - **Execution:** one embedded **V8 isolate** on the game's main thread, shared with the engine. Native calls into the engine are synchronous and cheap (no marshaling boundary). Chosen over QuickJS for mature Promise/microtask integration.
