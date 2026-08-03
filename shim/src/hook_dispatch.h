@@ -18,7 +18,27 @@
 enum S2HookShape {
     S2_HOOK_SHAPE_THIS_VOID            = 0,  // void(void* self)
     S2_HOOK_SHAPE_THIS_F32_I32_I32_I32 = 1,  // void(void* self, float, int, int, int)
+    S2_HOOK_SHAPE_THIS_F32_I32_I64_I64 = 2,  // void(void* self, float, int, int64, int64)
 };
+
+// WIDTH IS NOT A DETAIL — IT IS THE WHOLE CONTRACT (learned from a live SEGV).
+//
+// An INBOUND hook must hand the original function back exactly what the engine passed it. A trailing
+// parameter we do not understand is therefore NOT free to declare `int`: `int` does not mean "we do
+// not care about this arg", it means "truncate whatever the engine put in that register to 32 bits".
+//
+// `CCSGameRules::TerminateRound` was declared `this_f32_i32_i32_i32`. Its third parameter arrives in
+// rdx and the engine stores it with `mov %rdx,-0xe0(%rbp)` — a full 64-bit store, i.e. a POINTER. The
+// thunk read `edx`, called the original with `edx` (zero-extending), the engine banked half a pointer,
+// and something else dereferenced it much later: SIGSEGV at a stack address with its top 32 bits gone,
+// ~374KB away from TerminateRound, which is why it looked like it came from nowhere.
+//
+// So: when in doubt about a parameter, relay it 64-bit and do not surface it to JS. Widening an
+// opaque pass-through is always safe (SysV leaves the upper half of a 32-bit arg undefined, so
+// copying the whole register back preserves whatever was actually there); narrowing never is.
+//
+// This is the opposite of an OUTBOUND `calls` descriptor, where WE choose the value and `0` is an
+// honest null — which is exactly why the shipping `terminateRound()` call never broke.
 
 // Shape name <-> id. An unknown name returns -1 and an out-of-range id returns nullptr: a typo must
 // fail BY NAME, never default to shape 0, whose wrong ABI would corrupt the stack on first call.

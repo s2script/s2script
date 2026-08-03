@@ -682,8 +682,7 @@ thread_local! {
     /// survives to the frame_async_drain flush is reported. Cleared on shutdown.
     static PENDING_REJECTS: std::cell::RefCell<std::collections::HashMap<i32, (String, String)>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// Monotonic async-id allocator (1-based; 0 is reserved as "none").
-    static NEXT_ASYNC_ID: std::cell::Cell<u64> = std::cell::Cell::new(1);
+
     /// Count of in-flight async-FFI jobs (Task 5 populates this); feeds the combined detour predicate.
     static PENDING_JOBS: std::cell::Cell<usize> = std::cell::Cell::new(0);
     /// Cached view of "is the OnGameFrame detour currently installed?" — the source of truth the
@@ -1242,12 +1241,27 @@ pub fn register_injected_package(name: &str, js: &str) {
 }
 
 /// Allocate the next async id (timers + Task-5 jobs share this space).
+/// Monotonic async-id allocator (1-based; 0 is reserved as "none").
+///
+/// PROCESS-GLOBAL, not thread_local — and that is the whole point. These ids key `RESOLVERS`, but
+/// they are ALSO handed to engines that live for the process: the threadpool, http/fetch, and the
+/// ws/net registries. A per-thread counter feeding process-wide registries means two threads mint
+/// the SAME id for unrelated work.
+///
+/// That is not theoretical. libtest runs every `#[test]` on its own thread, so a thread_local counter
+/// restarted at 1 for each test while the threadpool's completion channel carried on across all of
+/// them. A completion from an earlier test arriving during a later one found the later test's
+/// resolver under the same id, removed it, and resolved it with `undefined` — so
+/// `WebSocket.connect(...).then(id => ...)` handed JS `undefined`, the socket wrapper was built with
+/// `id = 0`, and every subsequent native refused it as "does not own ws conn 0". Silent, and only
+/// under load, because it needs a stale completion to land inside another test's poll window.
+///
+/// The comment at the threadpool completion loop ("a stale id from a prior isolate has no entry and
+/// skips this") states the intended rule; a resettable counter is what made it false.
+static NEXT_ASYNC_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn next_async_id() -> u64 {
-    NEXT_ASYNC_ID.with(|c| {
-        let v = c.get();
-        c.set(v + 1);
-        v
-    })
+    NEXT_ASYNC_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Total in-flight async work: pending timers + pending jobs.  Reads TIMERS (brief borrow).
@@ -18860,7 +18874,12 @@ mod frame_tests {
 
     #[test]
     fn ws_module_self_close_fires_on_close() {
-        init(dummy_logger()).unwrap();
+        // The CAPTURING logger, not dummy_logger(). This test has failed in CI and never locally,
+        // and the natives on its path (__s2_ws_on / _send / _close) report a refused ownership gate
+        // by WARN — which dummy_log_fn silently threw away, so the one diagnostic that would explain
+        // the failure was guaranteed to be invisible in the only place it mattered.
+        LOG.lock().unwrap().clear();
+        init(logger as LogFn).unwrap();
         let port = spawn_local_ws_echo_server();
         load_body(
             "wsclose",
@@ -18898,10 +18917,15 @@ mod frame_tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        // Dump what core actually SAID. "reached stage 'sent'" narrowed this to "the subscribe never
+        // took", but not why; a refused ownership gate WARNs, and that line is the difference between
+        // "the conn was gone" and "the socket went quiet".
+        let logged = LOG.lock().unwrap().clone();
         assert!(
             resolved,
-            "onClose never fired for a self-initiated close (reached stage '{}')",
-            read_global_string("wsclose", "__stage")
+            "onClose never fired for a self-initiated close (reached stage '{}')\n  core log:\n{}",
+            read_global_string("wsclose", "__stage"),
+            logged.iter().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
         );
         assert_eq!(read_global_string("wsclose", "__out"), "closed:1000:");
         shutdown();

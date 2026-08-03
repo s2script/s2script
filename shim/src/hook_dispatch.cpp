@@ -7,6 +7,7 @@ struct ShapeEntry { int id; const char* name; };
 const ShapeEntry kShapes[] = {
     { S2_HOOK_SHAPE_THIS_VOID,            "this_void" },
     { S2_HOOK_SHAPE_THIS_F32_I32_I32_I32, "this_f32_i32_i32_i32" },
+    { S2_HOOK_SHAPE_THIS_F32_I32_I64_I64, "this_f32_i32_i64_i64" },
 };
 S2HookOps g_ops{};
 
