@@ -1,6 +1,11 @@
 # Detour relocation — a near-allocated short jump, and relocating what we steal
 
-**Status:** Draft — ready for review.
+**Status:** Implemented — this document describes what shipped. Three things changed during
+implementation and are marked in place: the near allocator probes with `MAP_FIXED_NOREPLACE` instead
+of parsing `/proc/self/maps` (§4, which also retires a risk in §9); the near tier jumps to an
+**island** in the trampoline page rather than to the handler (§4 — the handler is in our `.so` and
+need not be within 2GB of the game's, which the first draft missed); and the test plan gained
+end-to-end coverage of `Install` itself on both tiers (§8.5).
 **Audience:** shim maintainers; anyone adding a detour target.
 **Builds on:** `s2detour::Install` (`shim/src/detour.{h,cpp}`, Slice 6.6); the vendored HDE64 length
 disassembler (`third_party/hde`); `S2_HookInstall`'s patch-site guard
@@ -109,17 +114,37 @@ unreachable and leaves us guessing again on the next one.
 `jmp rel32` reaches ±2GB. The trampoline must land in that window or the tier fails and we fall
 through to tier 2.
 
-- Read `/proc/self/maps` once per `Install`, collect the gaps between consecutive mappings, and keep
-  those intersecting `[target − 2GB + slack, target + 2GB − slack]`.
-- `mmap` a single page in the nearest such gap with `MAP_FIXED_NOREPLACE` (Linux ≥ 4.17; the flag is
-  in glibc ≥ 2.28, so it is present on the Steam Runtime 3 target). If it fails, try the next gap.
-  If `MAP_FIXED_NOREPLACE` is unavailable at runtime (`EINVAL`), fall back to a plain hinted `mmap`
-  and **verify the returned address is in range**, `munmap`ping and retrying if not — never trust the
-  hint.
-- Sub-allocate trampolines out of that page; a page holds many, and every detour target in the same
-  module shares one.
-- On exhaustion of all gaps: **not an error** — return "no near page" and let tier 2 run. Tier 1 can
-  only ever *add* successes.
+- **Probe candidate addresses outward from the target**, stepping 1MB at a time, alternating below
+  and above, out to just under 2GB. `mmap` each with `MAP_FIXED_NOREPLACE` (Linux ≥ 4.17; in glibc
+  headers since 2.28, so present on the Steam Runtime 3 target), which maps *exactly there or not at
+  all*. Inter-library gaps are far larger than the step, so this lands on the first or second try.
+- If `MAP_FIXED_NOREPLACE` is unavailable at runtime (`EINVAL`) or silently honoured as a plain hint,
+  latch that once and fall back to a hinted `mmap`, **verifying the returned address is in range** —
+  never trust the hint. A far result on that path means the kernel is placing mappings where it likes
+  and will keep doing so, so stop probing rather than spin.
+- One page per install. A page holds many trampolines and sub-allocating them was the original plan,
+  but with at most a handful of detours in the process it buys nothing and adds a free-list.
+- On exhaustion: **not an error** — return "no near page" and let tier 2 run. Tier 1 can only ever
+  *add* successes.
+
+Probing beats the `/proc/self/maps` parse this spec originally called for: the kernel is the
+authority on what is free, the answer cannot go stale between the read and the map, and there is no
+parser to get wrong. It also makes the race in §9 disappear rather than merely survivable.
+
+**The near tier's jump must target an island, not the handler.** `E9 rel32` reaches ±2GB of the
+*target*, but the handler lives in **our** `.so`, which the loader need not place within 2GB of the
+game's. So the trampoline page carries a third component and the `E9` lands on that:
+
+```
+  +0              relocated prologue        <- *origTrampoline: the "call original" entry
+  +emitted        FF 25 <target+steal>      <- ...falls through to here and returns
+  +emitted+14     FF 25 <handler>           <- the E9 lands HERE (unused by the far tier)
+```
+
+The near page is within 2GB of the target by construction, and the island reaches the handler
+absolutely. Pointing the `E9` straight at the handler instead yields a hook that works only when the
+loader happens to place the two modules close together — i.e. one that passes every test and then
+fails on someone else's machine.
 
 This is safetyhook's `Allocator::allocate_near` reduced to what one process on one platform needs.
 We are not vendoring safetyhook: it requires Zydis (a full decoder, a large vendored dependency and a
@@ -190,7 +215,9 @@ callers.
 namespace s2detour {
 struct InstallResult { bool ok; const char* reason; int stolen; bool usedNearJump; };
 InstallResult Install(void* target, void* handler, void** origTrampoline,
-                      bool (*isExecutable)(const void*));
+                      int (*isExecutable)(const void*));   // int, to be `S2_AddressIsExecutable`
+void RemoveAll();
+void SetForceFarTierForTest(bool on);   // see §8.5
 }
 ```
 
@@ -219,8 +246,16 @@ Off-server (`scripts/test-detour-reloc.sh`, new, wired into `ci-native.sh`):
    Each asserted on the reason string, not just on `ok == false`.
 4. **The executability probe is consulted for every stolen instruction**, proven by a probe that
    returns false on the second instruction and asserting the install refuses and touches nothing.
-5. **Tier selection.** With a stub allocator that always fails near-allocation, assert the fallback
-   is taken and the patch is 14 bytes; with one that succeeds, assert 5.
+5. **Tier selection, and BOTH tiers end-to-end.** Install a real detour on a hand-written-asm function
+   in the test binary (hand-written so its prologue is known, rather than whatever the compiler
+   emitted at this optimisation level), call it, and assert the handler ran *and* that the handler's
+   call through the trampoline reached the original body. Then force the far tier via
+   `SetForceFarTierForTest` and assert the same. On a normally-loaded process the near tier always
+   wins, so without that switch the 14-byte fallback — the path that runs precisely when address
+   space is tight — would ship never having been executed once.
+
+   This is the test that covers `Install` itself: the patch, the page layout, the jump back, and the
+   island. Everything else here covers `BuildTrampolineBody`, which is bytes-to-bytes.
 6. **Prologue corpus.** All seven prologues in §3 as byte literals, asserting the tier-1 steal length
    and, for the four already-working targets, that tier 1 steals a strict prefix of what tier 2
    steals today — the concrete statement of "this cannot regress an existing detour".
@@ -245,8 +280,8 @@ On-server (the live gate — the human runs it):
   reason not to move installs off the main thread later.
 - **A jump into the middle of a stolen prologue** is undetectable at patch time and breaks silently.
   safetyhook does not detect it either. Accepted, recorded here so it is not rediscovered.
-- **`/proc/self/maps` is a snapshot.** Another thread can `mmap` into a gap between our read and our
-  `MAP_FIXED_NOREPLACE`. That flag makes the race fail loudly rather than clobber, and we retry.
+- ~~**`/proc/self/maps` is a snapshot.**~~ Resolved by dropping the parse: probing with
+  `MAP_FIXED_NOREPLACE` asks the kernel and acts atomically, so there is no window to race in.
 - **A near page raises the odds a stale-gamedata address is "mapped but wrong".** Unchanged in kind —
   §6's per-instruction probe tightens the existing guard rather than loosening it.
 
