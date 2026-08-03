@@ -1,6 +1,6 @@
 # The arg-width validator — checking a declared shape against the callee's actual machine code
 
-**Status:** Draft — ready for review.
+**Status:** Implemented, with three corrections from review recorded in §10.
 **Audience:** shim maintainers; anyone declaring an inbound hook.
 **Builds on:** the closed validator vocabulary (`shim/src/call_validate.{h,cpp}` — `prologue`,
 `string-xref`, `vtable-member`); the hook shape vocabulary (`shim/src/hook_dispatch.h`); the
@@ -49,7 +49,8 @@ Concretely, from the bug that motivated this:
 
 ## 3. Scope: narrow on purpose
 
-**Only opcode `0x89` (`MOV r/m, r`) with a memory destination**, i.e. "the callee stashed an incoming
+**Only opcode `0x89` (`MOV r/m, r`) with a memory destination**, and only within the callee's own
+flow — the scan stops at the first `ret`/`jmp`/`jcc`/`call` (see §10.2), i.e. "the callee stashed an incoming
 argument register somewhere". That is the pattern that produced the bug, it is overwhelmingly how a
 prologue spills its arguments, and it is unambiguous to decode.
 
@@ -157,3 +158,44 @@ Named here so a pass is not over-read:
   same way, per-descriptor and by name.
 - **It can only ever be a smoke detector.** The honest failure mode is a future truncation bug that
   this does not see. That is an argument for it catching the known class, not against building it.
+
+## 10. Corrections from review
+
+Three reviewers ran against the implementation. Two findings changed the design; one was a bug in
+this document.
+
+**10.1 — `kVocabulary[]` was wrong in §5.** The spec said "a fourth entry in `kVocabulary[]`" while
+also saying it takes no gamedata. Those contradict: anything in that array becomes *authorable* in a
+descriptor's `validate` block. It ships beside the three declared validators but deliberately outside
+the vocabulary, which still reports three.
+
+**10.2 — the scan must stop at the end of the callee's own flow.** §3/§4 bounded the walk by byte and
+instruction count only, so it marched into the *next* function and blamed its argument spills on our
+shape. A corpus scan over the real `libserver.so` attributed **490 of 3,497 refusals** to stores past
+the symbol's own size — every one a false refusal of a correct hook. `call` is a terminator for the
+same reason and one more: it clobbers every SysV integer argument register, so a 64-bit spill after
+one describes a return value. `CCSPlayerController_Respawn`'s real prologue calls out at +0xa; it
+survived only because `this_void` leaves nothing checkable.
+
+**10.3 — the width array must come from the shape's ABI, not its addressable params.** An opaque
+`kParamI64` has no `ParamSlot` entry by design, so deriving widths from that table omitted it
+entirely — the `kParamI64` branch was dead code, and the shipping shape only checked out because its
+opaque slots are *trailing*. A shape with a non-trailing opaque i64 would declare the pointer narrow
+(refusing a correct hook) and push the genuinely narrow slot out of range (never checking it). There
+is now an explicit per-shape ABI table with a `static_assert` tying it to the param table.
+
+**Also fixed:** a genuine out-of-bounds read in the function whose comment promised bounding —
+HDE64's prefix loop runs *sixteen* iterations before the opcode, so a window sized to the longest
+legal instruction (15) is one byte short of what the disassembler can touch. Fifteen `0x66` prefixes
+walked off the end, ASan-confirmed.
+
+**On refuse-vs-warn.** Both reviewers argued a false FAIL is the worse outcome, since a false pass
+merely restores the status quo ante while a false fail removes a working hook and is un-bypassable.
+That measurement was taken *before* §10.2, which eliminates the two demonstrated false-fail classes.
+Refusal is kept, because warning-and-installing would not have prevented the segfault this exists to
+stop — but the residual risk is real, and the escape hatch is deliberately cheap: a refusal names the
+integer slot and the byte offset, and the fix is to declare that parameter 64-bit opaque, which is a
+gamedata edit whenever the wider shape already exists.
+
+**Known-untested guards**, recorded rather than papered over: slot 0 and slot 5 decoding, the full
+`0xB8..0xBF` MOV-imm range, and `REX.B` on the MOV-imm destination. Each survived a mutation.
