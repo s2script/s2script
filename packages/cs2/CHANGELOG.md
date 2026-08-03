@@ -1,5 +1,45 @@
 # @s2script/cs2
 
+## 0.12.0
+
+### Minor Changes
+
+- 952c41c: `ctx.gameRules.onTerminateRound`'s event view no longer carries `_unused3` / `_unused4`.
+
+  Those two were typed `readonly number` and were never readable — the underlying parameters are not
+  32-bit integers. The engine's third argument to `CCSGameRules::TerminateRound` is a **pointer**
+  (`mov %rdx,-0xe0(%rbp)`, a full 64-bit store), so declaring it `int` truncated whatever the engine
+  passed: the hook handed the original function half a pointer, and a later dereference segfaulted a
+  live server.
+
+  The descriptor now uses a shape that relays both trailing arguments at full register width as opaque
+  pass-through — they reach the original bit-for-bit and are deliberately not exposed to plugins, since
+  there is nothing a plugin could correctly do with them. `delay` and `reason` are unchanged and remain
+  writable.
+
+  Marked `minor` rather than `patch` because the two properties disappear from the emitted type. Any
+  plugin that referenced them was reading `undefined` behind a `number`, so nothing that worked stops
+  working — but it is a compile-visible change and should not arrive silently in a patch.
+
+- f0cb022: Generate the `ctx` hook augmentation from gamedata `hooks` descriptors (`s2s gen-hooks`), and gate
+  its freshness.
+
+  `packages/cs2/hooks.generated.d.ts` is new: for every gamedata-declared hook (currently
+  `onTerminateRound`/`onRespawn`), it emits a typed view interface (mutable params writable,
+  everything else — including a books-gated `EntityRef` receiver — readonly) and augments
+  `PluginContext` with one readonly member per `expose.ctx` namespace (`ctx.gameRules`,
+  `ctx.players`), so a plugin subscribing to a hook that does not exist, or one that has drifted, is a
+  `tsc` build failure rather than a silent no-op. `@s2script/sdk` gains the `s2s gen-hooks [--check]`
+  CLI command that produces it, plus a fix to the typecheck gate so a CS2 plugin sees
+  `@s2script/cs2`'s `ctx` augmentation even when its own source never imports a name from
+  `@s2script/cs2` directly (mirrors the existing fix for `@s2script/sdk/unsafe`'s plugin-declared
+  `EngineCalls`).
+
+### Patch Changes
+
+- Updated dependencies [f0cb022]
+  - @s2script/sdk@0.20.0
+
 ## 0.11.9
 
 ### Patch Changes
