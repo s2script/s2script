@@ -1724,7 +1724,8 @@ fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let id = next_async_id();
         // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
         let owner = resolver_owner_tag(scope);
-        let owner_string = current_plugin(scope).unwrap_or_default();
+        // The SAME derivation send/close/on use to CHECK this owner — see `ws_owner`.
+        let owner_string = ws_owner(scope);
         // Ledger this async job (as a Job, for RESOLVERS/PENDING_JOBS cleanup) AND the connection
         // itself (as a WsConn, so an unclosed connection is closed at teardown) against the CALLING
         // plugin — a non-plugin/unknown owner is a safe no-op; no borrow held across a JS call.
@@ -1789,13 +1790,31 @@ fn resolve_ws_connect(host: &mut Host, entry: &ResolverEntry, id: u64, result: R
 /// Native `__s2_ws_send(id, text)`.  Owner-scoped (a no-op for a conn this plugin doesn't own, or an
 /// absent conn); hands off to `crate::ws::send` (a non-blocking unbounded-channel send — never
 /// blocks the calling thread). No return value.
+/// The owner string every ws native uses — connect to REGISTER it, send/close/on to CHECK it.
+///
+/// One function because four copies of `current_plugin(scope).unwrap_or_*()` are four chances to
+/// disagree, and they did: `__s2_ws_on` fell back to `"legacy"` where the others fell back to `""`,
+/// so whenever `current_plugin` could not name a plugin the socket went half-mute — `send` matched
+/// the registered owner and reached the wire, `is_owner` did not and dropped the subscription on the
+/// floor. A test can assert these agree; only a single definition makes disagreeing impossible.
+fn ws_owner(scope: &mut v8::PinScope) -> String {
+    current_plugin(scope).unwrap_or_default()
+}
+
 fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let text = args.get(1).to_rust_string_lossy(scope);
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::ws::send(id, &owner, text);
+        let owner = ws_owner(scope);
+        // `send` reports whether the command reached the connection's task; discarding that made a
+        // send to a dead or unowned conn indistinguishable from a delivered one.
+        if !crate::ws::send(id, &owner, text) {
+            log_warn(&format!(
+                "WARN: __s2_ws_send: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — the message was NOT sent"
+            ));
+        }
     }));
 }
 
@@ -1805,8 +1824,13 @@ fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _r
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::ws::close(id, &owner);
+        let owner = ws_owner(scope);
+        if !crate::ws::close(id, &owner) {
+            log_warn(&format!(
+                "WARN: __s2_ws_close: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — no close was sent"
+            ));
+        }
     }));
 }
 
@@ -1825,8 +1849,22 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
         let event = args.get(1).to_rust_string_lossy(scope);
         // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
         // owns. Resolved here rather than inside the helper because refusal must store no row.
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        if !crate::ws::is_owner(id, &owner) { return; }
+        // MUST match the fallback `__s2_ws_connect` used when it registered the owner, and the one
+        // `__s2_ws_send`/`__s2_ws_close` use to check it — all four are `unwrap_or_default()`, i.e.
+        // "". This used to be `unwrap_or_else(|| "legacy")` here alone, which meant that whenever
+        // `current_plugin` could not name a plugin, `send` matched the stored owner and `on` did NOT:
+        // the socket worked and the subscription was silently discarded, so the handler never fired
+        // and nothing anywhere said why.
+        let owner = ws_owner(scope);
+        if !crate::ws::is_owner(id, &owner) {
+            // NAMED, not silent. A refused subscribe means this handler will never fire; leaving it
+            // quiet turns a wrong owner into "the network is broken", which is a much longer walk.
+            log_warn(&format!(
+                "WARN: __s2_ws_on: '{owner}' does not own ws conn {id} — '{event}' handler NOT \
+                 subscribed and will never fire"
+            ));
+            return;
+        }
         let key = format!("{id}:{event}");
         let _ = subscribe_into(scope, &args, &WS_EVENT_MUX, &key, 2);
     }));
@@ -9339,6 +9377,16 @@ pub(crate) fn frame_async_drain() {
         // continuation — which subscribes onMessage — runs THIS frame); Message/Errored/Closed are
         // queued into WS_EVENT_PENDING and fanned out separately, AFTER this whole drain returns
         // (dispatch_pending_ws_events, called from ffi.rs, HOST free) — never before the checkpoint.
+        // Deregistering a conn is DEFERRED past the microtask checkpoint below, and that ordering is
+        // load-bearing. `Connected` resolves the connect Promise here, but the plugin's `.then` — the
+        // continuation that calls onMessage/onClose/send — does not run until the checkpoint. If a
+        // terminal signal for the SAME conn is in this batch (a server that dies right after the
+        // handshake sends Connected then Closed(1006)), dropping it here removes it from `conns`
+        // before that continuation runs, so its subscribe fails the ownership gate and its close
+        // event fans out to nobody. The plugin is then left with a Promise that resolved onto a
+        // connection it can neither use nor be told about.
+        let mut deferred_ws_drops: Vec<u64> = Vec::new();
+        let mut deferred_net_drops: Vec<u64> = Vec::new();
         while let Some(sig) = crate::ws::try_recv_signal() {
             match sig.kind {
                 crate::ws::WsSignalKind::Connected => {
@@ -9352,7 +9400,7 @@ pub(crate) fn frame_async_drain() {
                         PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
                         resolve_ws_connect(host, &entry, sig.conn_id, Err(e));
                     }
-                    crate::ws::drop_conn(sig.conn_id);
+                    deferred_ws_drops.push(sig.conn_id);
                 }
                 crate::ws::WsSignalKind::Message(t) => {
                     WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "message".into(), t, 0)));
@@ -9362,7 +9410,7 @@ pub(crate) fn frame_async_drain() {
                 }
                 crate::ws::WsSignalKind::Closed(code, reason) => {
                     WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "close".into(), reason, code as i32)));
-                    crate::ws::drop_conn(sig.conn_id);
+                    deferred_ws_drops.push(sig.conn_id);
                     // (mux subscribers for this conn are cleaned up when the plugin unloads; a closed
                     // conn's stale subscribers simply never fire again — acceptable.)
                 }
@@ -9388,7 +9436,7 @@ pub(crate) fn frame_async_drain() {
                         PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
                         resolve_net_connect(host, &entry, sig.conn_id, Err(e));
                     }
-                    crate::net::drop_conn(sig.conn_id);
+                    deferred_net_drops.push(sig.conn_id);
                 }
                 crate::net::NetSignalKind::Data(b) => {
                     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Data(b))));
@@ -9401,7 +9449,7 @@ pub(crate) fn frame_async_drain() {
                 }
                 crate::net::NetSignalKind::Closed => {
                     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Closed)));
-                    crate::net::drop_conn(sig.conn_id);
+                    deferred_net_drops.push(sig.conn_id);
                 }
             }
         }
@@ -9417,6 +9465,13 @@ pub(crate) fn frame_async_drain() {
         let ctx_local = v8::Local::new(hs, &host.context);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
         scope.perform_microtask_checkpoint();
+
+        // NOW deregister the conns whose terminal signal arrived above. Every continuation queued by
+        // this drain has run, so a `.then` that subscribes to the connection it was just handed has
+        // already been able to do so. Dropping earlier is what made a server dying right after the
+        // handshake look like a connection that simply never spoke.
+        for id in deferred_ws_drops { crate::ws::drop_conn(id); }
+        for id in deferred_net_drops { crate::net::drop_conn(id); }
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
@@ -10264,6 +10319,24 @@ mod frame_tests {
     use std::os::raw::{c_char, c_int};
     use std::sync::Mutex;
 
+    /// How many poll iterations an async test drives before declaring the work never completed.
+    ///
+    /// Every one of these loops does real V8 work per iteration (`frame_async_drain` enters the
+    /// isolate), then sleeps 2-10ms, so the loop COMPETES FOR CPU with the very tokio runtime it is
+    /// waiting on. That is fine on a dev box — the round trips here complete in ~40ms — but on a
+    /// 2-vCPU CI runner also carrying 4 tokio workers, the db actors' dedicated OS threads and a V8
+    /// isolate, a multi-second scheduling stall is reachable, and the old budget of 500 ticks was as
+    /// little as 1s (the 2ms loops).
+    ///
+    /// That is what made the `ws_module_*` tests fail intermittently in CI and never locally, on a
+    /// DIFFERENT test each run — whichever async test happened to hit the stall. Three consecutive
+    /// runs failed across two branches, including a re-run of a previously-green branch with no code
+    /// change, which is what ruled out any particular slice as the cause.
+    ///
+    /// A passing test breaks out on the first iteration that observes its condition, so a large
+    /// bound costs nothing when things work — it only buys headroom when the box is contended.
+    const ASYNC_POLL_TICKS: usize = 3000;
+
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
     extern "C" fn logger(_l: c_int, m: *const c_char) {
         LOG.lock().unwrap().push(unsafe { CStr::from_ptr(m) }.to_string_lossy().into_owned());
@@ -10805,7 +10878,7 @@ mod frame_tests {
             "threadSleep should request detour install"
         );
         // Drive the drain until the job completes and the remove fires.
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0) {
                 break;
@@ -10864,7 +10937,7 @@ mod frame_tests {
         eval_std("p", "globalThis.__t = false; threadSleep(20).then(() => { globalThis.__t = true; });");
         // Drive frames until the worker completes (bounded).
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_bool_global_in("p", "__t") { resolved = true; break; }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -16831,7 +16904,7 @@ mod frame_tests {
             }});
         "#, name = name), "{}");
         let mut out = "pending".to_string();
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             out = read_global_string("dbp", "__out");
             if out != "pending" { break; }
@@ -16860,7 +16933,7 @@ mod frame_tests {
             }});
         "#, name = name), "{}");
         let mut out = "pending".to_string();
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             out = read_global_string("dbp2", "__out");
             if out != "pending" { break; }
@@ -16936,7 +17009,7 @@ mod frame_tests {
             }});
         "#, name = name), "{}");
         let mut out = "pending".to_string();
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             out = read_global_string("dbmod", "__out");
             if out != "pending" { break; }
@@ -17055,7 +17128,7 @@ mod frame_tests {
         // The response arrives async (a real background thread) — poll the drain up to ~500
         // times (bounded) rather than assuming it lands on the very next drain.
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("fetchp", "__out") != "pending" {
                 resolved = true;
@@ -17090,7 +17163,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("fetch404", "__out") != "pending" {
                 resolved = true;
@@ -17121,7 +17194,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("fetchbad", "__out") != "pending" {
                 resolved = true;
@@ -17183,7 +17256,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("httpmod", "__out") != "pending" {
                 resolved = true;
@@ -17208,6 +17281,30 @@ mod frame_tests {
     /// `ws::tests::echo_server_port` (that helper is private to `ws`'s own test module) so this
     /// module can drive `__s2_ws_connect`/`__s2_ws_send`/`__s2_ws_on` end to end without any
     /// real-network egress.
+    /// Completes the WebSocket handshake and then immediately drops the connection.
+    ///
+    /// The client sees `Connected` and `Closed` land in the SAME drain batch, which is the ordering
+    /// that used to be unrecoverable: the connect Promise resolved, but the conn was deregistered
+    /// before the `.then` continuation ran, so the continuation's `onClose` subscribe failed the
+    /// ownership gate and the close event fanned out to nobody. The plugin got a Promise that
+    /// resolved onto a connection it could neither use nor be told about — indistinguishable, from
+    /// JS, from a connection that simply never spoke again.
+    fn spawn_local_ws_instant_close_server() -> u16 {
+        crate::http::init();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        crate::http::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            if let Ok((stream, _)) = listener.accept().await {
+                if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
+                    drop(ws);   // handshake done, then gone
+                }
+            }
+        });
+        port
+    }
+
     fn spawn_local_ws_echo_server() -> u16 {
         use futures_util::{SinkExt, StreamExt};
         crate::http::init();
@@ -17301,7 +17398,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsh", "__out") != "pending" {
@@ -17335,7 +17432,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsr", "__out") != "pending" {
@@ -17380,7 +17477,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsp", "__out") != "pending" {
@@ -17414,7 +17511,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsbad", "__out") != "pending" {
@@ -17452,7 +17549,7 @@ mod frame_tests {
             "{}",
         );
         let mut a_id = -1;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             a_id = read_i32_global_in("wsOwnerA", "__connId");
@@ -17538,7 +17635,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsmod", "__out") != "pending" {
@@ -17557,6 +17654,49 @@ mod frame_tests {
     /// fire. A self-initiated close used to be a silent `write.send(Close) + break` with NO
     /// `WsSignal` emitted, so `onClose` (and the ledger's `ws::drop_conn` registry cleanup, which
     /// is driven off that same `Closed` signal in the drain) never ran.
+    /// A connection that dies the instant it is established must still reach the plugin's onClose.
+    ///
+    /// This pins the drain's ordering: `Connected` resolves the connect Promise, but the `.then` that
+    /// subscribes does not run until the microtask checkpoint, so the conn must NOT be deregistered
+    /// until after it. Dropping it inside the signal loop — as this did — silently refused the
+    /// subscribe and dropped the close event, leaving `__out` "pending" forever with the plugin
+    /// holding a resolved Promise and no way to learn anything had happened.
+    #[test]
+    fn a_connection_that_dies_at_once_still_reaches_on_close() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_instant_close_server();
+        load_body(
+            "wsdead",
+            &format!(
+                r#"
+            var {{ WebSocket }} = require("@s2script/ws");
+            globalThis.__out = "pending";
+            WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
+                ws.onClose(function (code, reason) {{ globalThis.__out = "closed:" + code; }});
+            }}).catch(function (e) {{ globalThis.__out = "rejected"; }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut settled = false;
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsdead", "__out") != "pending" { settled = true; break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Either outcome is legitimate — the handshake may lose the race and reject — but SILENCE is
+        // not: a resolved connect whose close nobody hears is the bug.
+        assert!(settled, "neither onClose nor catch ever ran: the close was delivered to nobody");
+        let out = read_global_string("wsdead", "__out");
+        assert!(
+            out.starts_with("closed:") || out == "rejected",
+            "expected a close code or a rejection, got {out:?}"
+        );
+        shutdown();
+    }
+
     #[test]
     fn ws_module_self_close_fires_on_close() {
         init(dummy_logger()).unwrap();
@@ -17567,11 +17707,19 @@ mod frame_tests {
                 r#"
             var {{ WebSocket }} = require("@s2script/ws");
             globalThis.__out = "pending";
+            // __stage records how far the chain got. "onClose never fired" is true of a connect that
+            // never settled, an echo that never came back, and a close that produced no signal — three
+            // different bugs. This test has failed in CI and passed locally, where the difference
+            // between those three was the entire question.
+            globalThis.__stage = "loaded";
             WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
-                ws.onMessage(function (m) {{ ws.close(); }});
+                globalThis.__stage = "connected";
+                ws.onMessage(function (m) {{ globalThis.__stage = "echoed"; ws.close(); }});
                 ws.onClose(function (code, reason) {{ globalThis.__out = "closed:" + code + ":" + reason; }});
                 ws.send("hi");
+                globalThis.__stage = "sent";
             }}).catch(function (e) {{
+                globalThis.__stage = "rejected";
                 globalThis.__out = "ERROR:" + String(e);
             }});
         "#,
@@ -17580,7 +17728,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsclose", "__out") != "pending" {
@@ -17589,7 +17737,11 @@ mod frame_tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(resolved, "onClose never fired for a self-initiated close");
+        assert!(
+            resolved,
+            "onClose never fired for a self-initiated close (reached stage '{}')",
+            read_global_string("wsclose", "__stage")
+        );
         assert_eq!(read_global_string("wsclose", "__out"), "closed:1000:");
         shutdown();
     }
@@ -17650,7 +17802,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_net_events();
             if read_global_string("netp", "__out") != "pending" {
@@ -17685,7 +17837,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_net_events();
             if read_global_string("netbad", "__out") != "pending" {
@@ -17743,7 +17895,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_net_events();
             if read_global_string("netudp", "__out") != "pending" {
