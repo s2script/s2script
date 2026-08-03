@@ -17585,11 +17585,19 @@ mod frame_tests {
                 r#"
             var {{ WebSocket }} = require("@s2script/ws");
             globalThis.__out = "pending";
+            // __stage records how far the chain got. "onClose never fired" is true of a connect that
+            // never settled, an echo that never came back, and a close that produced no signal — three
+            // different bugs. This test has failed in CI and passed locally, where the difference
+            // between those three was the entire question.
+            globalThis.__stage = "loaded";
             WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
-                ws.onMessage(function (m) {{ ws.close(); }});
+                globalThis.__stage = "connected";
+                ws.onMessage(function (m) {{ globalThis.__stage = "echoed"; ws.close(); }});
                 ws.onClose(function (code, reason) {{ globalThis.__out = "closed:" + code + ":" + reason; }});
                 ws.send("hi");
+                globalThis.__stage = "sent";
             }}).catch(function (e) {{
+                globalThis.__stage = "rejected";
                 globalThis.__out = "ERROR:" + String(e);
             }});
         "#,
@@ -17607,7 +17615,11 @@ mod frame_tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(resolved, "onClose never fired for a self-initiated close");
+        assert!(
+            resolved,
+            "onClose never fired for a self-initiated close (reached stage '{}')",
+            read_global_string("wsclose", "__stage")
+        );
         assert_eq!(read_global_string("wsclose", "__out"), "closed:1000:");
         shutdown();
     }
