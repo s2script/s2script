@@ -315,11 +315,24 @@ mod tests {
         port
     }
 
-    fn drain_for(kinds: usize) -> Vec<WsSignal> {
+    /// Collect at least `kinds` signals FOR `conn_id`, discarding everyone else's.
+    ///
+    /// The signal channel is process-global and these tests share it, so the old conn-agnostic
+    /// version returned whatever happened to be queued — a leftover `Connected` from an earlier test
+    /// satisfied `out.len() >= kinds` immediately and the caller then asserted against a signal that
+    /// had nothing to do with it. That is not hypothetical: it is a failure this suite produced in
+    /// CI, and it is timing-dependent (hence CI-only) because it depends on whether the earlier
+    /// test's handshake finished before this one started draining.
+    ///
+    /// Filtering here rather than asking every test to clean up perfectly: a test that forgets is
+    /// then its own problem, not the next test's.
+    fn drain_for_conn(conn_id: u64, kinds: usize) -> Vec<WsSignal> {
         let mut out = Vec::new();
         for _ in 0..500 {
             while let Some(s) = try_recv_signal() {
-                out.push(s);
+                if s.conn_id == conn_id {
+                    out.push(s);
+                }
             }
             if out.len() >= kinds {
                 break;
@@ -375,7 +388,7 @@ mod tests {
     fn connect_bad_port_fails() {
         crate::http::init();
         connect(2, "ws://127.0.0.1:1/".into(), "p".into(), Vec::new());
-        let sigs = drain_for(1);
+        let sigs = drain_for_conn(2, 1);
         assert!(sigs.iter().any(|s| matches!(s.kind, WsSignalKind::ConnectFailed(_))));
     }
 
@@ -407,6 +420,18 @@ mod tests {
             send(920, "legacy", "hi".into()),
             "is_owner and send must agree for a non-owner too"
         );
+        // Consume what this test put on the PROCESS-GLOBAL signal channel (a Connected, and possibly
+        // a Message from the echo) BEFORE dropping the conn. Leaving them is not a tidiness point:
+        // the next test to drain sees them first, and one that waits for "at least one signal" then
+        // asserts against a signal from somewhere else entirely. drain_for_conn now filters, so this
+        // is belt-and-braces — but a test should not hand the suite its litter.
+        //
+        // Bounded by time, not by an expected count: whether the echo comes back is a race, and
+        // waiting for a signal that may never arrive would cost this test the full 5s budget.
+        for _ in 0..20 {
+            while try_recv_signal().is_some() {}
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         drop_conn(920);
     }
 
@@ -520,7 +545,7 @@ mod tests {
             "p".into(),
             vec![("Host".into(), "evil.example".into())],
         );
-        let sigs = drain_for(1);
+        let sigs = drain_for_conn(42, 1);
         assert!(sigs.iter().any(|s| match &s.kind {
             WsSignalKind::ConnectFailed(reason) => reason.contains("reserved"),
             _ => false,
