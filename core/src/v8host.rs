@@ -9377,6 +9377,16 @@ pub(crate) fn frame_async_drain() {
         // continuation — which subscribes onMessage — runs THIS frame); Message/Errored/Closed are
         // queued into WS_EVENT_PENDING and fanned out separately, AFTER this whole drain returns
         // (dispatch_pending_ws_events, called from ffi.rs, HOST free) — never before the checkpoint.
+        // Deregistering a conn is DEFERRED past the microtask checkpoint below, and that ordering is
+        // load-bearing. `Connected` resolves the connect Promise here, but the plugin's `.then` — the
+        // continuation that calls onMessage/onClose/send — does not run until the checkpoint. If a
+        // terminal signal for the SAME conn is in this batch (a server that dies right after the
+        // handshake sends Connected then Closed(1006)), dropping it here removes it from `conns`
+        // before that continuation runs, so its subscribe fails the ownership gate and its close
+        // event fans out to nobody. The plugin is then left with a Promise that resolved onto a
+        // connection it can neither use nor be told about.
+        let mut deferred_ws_drops: Vec<u64> = Vec::new();
+        let mut deferred_net_drops: Vec<u64> = Vec::new();
         while let Some(sig) = crate::ws::try_recv_signal() {
             match sig.kind {
                 crate::ws::WsSignalKind::Connected => {
@@ -9390,7 +9400,7 @@ pub(crate) fn frame_async_drain() {
                         PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
                         resolve_ws_connect(host, &entry, sig.conn_id, Err(e));
                     }
-                    crate::ws::drop_conn(sig.conn_id);
+                    deferred_ws_drops.push(sig.conn_id);
                 }
                 crate::ws::WsSignalKind::Message(t) => {
                     WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "message".into(), t, 0)));
@@ -9400,7 +9410,7 @@ pub(crate) fn frame_async_drain() {
                 }
                 crate::ws::WsSignalKind::Closed(code, reason) => {
                     WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "close".into(), reason, code as i32)));
-                    crate::ws::drop_conn(sig.conn_id);
+                    deferred_ws_drops.push(sig.conn_id);
                     // (mux subscribers for this conn are cleaned up when the plugin unloads; a closed
                     // conn's stale subscribers simply never fire again — acceptable.)
                 }
@@ -9426,7 +9436,7 @@ pub(crate) fn frame_async_drain() {
                         PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
                         resolve_net_connect(host, &entry, sig.conn_id, Err(e));
                     }
-                    crate::net::drop_conn(sig.conn_id);
+                    deferred_net_drops.push(sig.conn_id);
                 }
                 crate::net::NetSignalKind::Data(b) => {
                     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Data(b))));
@@ -9439,7 +9449,7 @@ pub(crate) fn frame_async_drain() {
                 }
                 crate::net::NetSignalKind::Closed => {
                     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Closed)));
-                    crate::net::drop_conn(sig.conn_id);
+                    deferred_net_drops.push(sig.conn_id);
                 }
             }
         }
@@ -9455,6 +9465,13 @@ pub(crate) fn frame_async_drain() {
         let ctx_local = v8::Local::new(hs, &host.context);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
         scope.perform_microtask_checkpoint();
+
+        // NOW deregister the conns whose terminal signal arrived above. Every continuation queued by
+        // this drain has run, so a `.then` that subscribes to the connection it was just handed has
+        // already been able to do so. Dropping earlier is what made a server dying right after the
+        // handshake look like a connection that simply never spoke.
+        for id in deferred_ws_drops { crate::ws::drop_conn(id); }
+        for id in deferred_net_drops { crate::net::drop_conn(id); }
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
@@ -17264,6 +17281,30 @@ mod frame_tests {
     /// `ws::tests::echo_server_port` (that helper is private to `ws`'s own test module) so this
     /// module can drive `__s2_ws_connect`/`__s2_ws_send`/`__s2_ws_on` end to end without any
     /// real-network egress.
+    /// Completes the WebSocket handshake and then immediately drops the connection.
+    ///
+    /// The client sees `Connected` and `Closed` land in the SAME drain batch, which is the ordering
+    /// that used to be unrecoverable: the connect Promise resolved, but the conn was deregistered
+    /// before the `.then` continuation ran, so the continuation's `onClose` subscribe failed the
+    /// ownership gate and the close event fanned out to nobody. The plugin got a Promise that
+    /// resolved onto a connection it could neither use nor be told about — indistinguishable, from
+    /// JS, from a connection that simply never spoke again.
+    fn spawn_local_ws_instant_close_server() -> u16 {
+        crate::http::init();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        crate::http::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            if let Ok((stream, _)) = listener.accept().await {
+                if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
+                    drop(ws);   // handshake done, then gone
+                }
+            }
+        });
+        port
+    }
+
     fn spawn_local_ws_echo_server() -> u16 {
         use futures_util::{SinkExt, StreamExt};
         crate::http::init();
@@ -17613,6 +17654,49 @@ mod frame_tests {
     /// fire. A self-initiated close used to be a silent `write.send(Close) + break` with NO
     /// `WsSignal` emitted, so `onClose` (and the ledger's `ws::drop_conn` registry cleanup, which
     /// is driven off that same `Closed` signal in the drain) never ran.
+    /// A connection that dies the instant it is established must still reach the plugin's onClose.
+    ///
+    /// This pins the drain's ordering: `Connected` resolves the connect Promise, but the `.then` that
+    /// subscribes does not run until the microtask checkpoint, so the conn must NOT be deregistered
+    /// until after it. Dropping it inside the signal loop — as this did — silently refused the
+    /// subscribe and dropped the close event, leaving `__out` "pending" forever with the plugin
+    /// holding a resolved Promise and no way to learn anything had happened.
+    #[test]
+    fn a_connection_that_dies_at_once_still_reaches_on_close() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_instant_close_server();
+        load_body(
+            "wsdead",
+            &format!(
+                r#"
+            var {{ WebSocket }} = require("@s2script/ws");
+            globalThis.__out = "pending";
+            WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
+                ws.onClose(function (code, reason) {{ globalThis.__out = "closed:" + code; }});
+            }}).catch(function (e) {{ globalThis.__out = "rejected"; }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        let mut settled = false;
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            dispatch_pending_ws_events();
+            if read_global_string("wsdead", "__out") != "pending" { settled = true; break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Either outcome is legitimate — the handshake may lose the race and reject — but SILENCE is
+        // not: a resolved connect whose close nobody hears is the bug.
+        assert!(settled, "neither onClose nor catch ever ran: the close was delivered to nobody");
+        let out = read_global_string("wsdead", "__out");
+        assert!(
+            out.starts_with("closed:") || out == "rejected",
+            "expected a close code or a rejection, got {out:?}"
+        );
+        shutdown();
+    }
+
     #[test]
     fn ws_module_self_close_fires_on_close() {
         init(dummy_logger()).unwrap();
