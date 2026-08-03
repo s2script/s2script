@@ -379,6 +379,37 @@ mod tests {
         assert!(sigs.iter().any(|s| matches!(s.kind, WsSignalKind::ConnectFailed(_))));
     }
 
+    /// `send`/`close`/`is_owner` must agree about who owns a conn registered under the SAME string
+    /// `connect` was given — including the empty one.
+    ///
+    /// `__s2_ws_on` used to fall back to `"legacy"` where `__s2_ws_connect`/`__s2_ws_send` fell back
+    /// to `""`. Whenever `current_plugin` could not name a plugin, that split the socket in half:
+    /// `send` matched the stored owner and went out on the wire, `is_owner` did not, so the
+    /// subscription was silently discarded and the handler could never fire. Nothing logged, nothing
+    /// failed — the connection simply went mute one way.
+    #[test]
+    fn ownership_is_decided_by_the_string_connect_registered_including_the_empty_one() {
+        crate::http::init();
+        let port = echo_server_port();
+        connect(920, format!("ws://127.0.0.1:{port}/"), String::new(), Vec::new());
+
+        assert!(is_owner(920, ""), "the empty owner connect registered must own the conn");
+        assert!(!is_owner(920, "legacy"), "and a DIFFERENT fallback string must not");
+        // The half that used to disagree: whatever `is_owner` says, `send` must say the same, or a
+        // socket can be writable and unsubscribable at once.
+        assert_eq!(
+            is_owner(920, ""),
+            send(920, "", "hi".into()),
+            "is_owner and send must agree for the owner"
+        );
+        assert_eq!(
+            is_owner(920, "legacy"),
+            send(920, "legacy", "hi".into()),
+            "is_owner and send must agree for a non-owner too"
+        );
+        drop_conn(920);
+    }
+
     /// A peer that accepts the socket and then goes silent must REJECT, not hang.
     ///
     /// Before the timeout this case produced no signal at all — ever — so the connect Promise never

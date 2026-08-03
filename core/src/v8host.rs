@@ -1724,7 +1724,8 @@ fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let id = next_async_id();
         // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
         let owner = resolver_owner_tag(scope);
-        let owner_string = current_plugin(scope).unwrap_or_default();
+        // The SAME derivation send/close/on use to CHECK this owner — see `ws_owner`.
+        let owner_string = ws_owner(scope);
         // Ledger this async job (as a Job, for RESOLVERS/PENDING_JOBS cleanup) AND the connection
         // itself (as a WsConn, so an unclosed connection is closed at teardown) against the CALLING
         // plugin — a non-plugin/unknown owner is a safe no-op; no borrow held across a JS call.
@@ -1789,13 +1790,31 @@ fn resolve_ws_connect(host: &mut Host, entry: &ResolverEntry, id: u64, result: R
 /// Native `__s2_ws_send(id, text)`.  Owner-scoped (a no-op for a conn this plugin doesn't own, or an
 /// absent conn); hands off to `crate::ws::send` (a non-blocking unbounded-channel send — never
 /// blocks the calling thread). No return value.
+/// The owner string every ws native uses — connect to REGISTER it, send/close/on to CHECK it.
+///
+/// One function because four copies of `current_plugin(scope).unwrap_or_*()` are four chances to
+/// disagree, and they did: `__s2_ws_on` fell back to `"legacy"` where the others fell back to `""`,
+/// so whenever `current_plugin` could not name a plugin the socket went half-mute — `send` matched
+/// the registered owner and reached the wire, `is_owner` did not and dropped the subscription on the
+/// floor. A test can assert these agree; only a single definition makes disagreeing impossible.
+fn ws_owner(scope: &mut v8::PinScope) -> String {
+    current_plugin(scope).unwrap_or_default()
+}
+
 fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let text = args.get(1).to_rust_string_lossy(scope);
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::ws::send(id, &owner, text);
+        let owner = ws_owner(scope);
+        // `send` reports whether the command reached the connection's task; discarding that made a
+        // send to a dead or unowned conn indistinguishable from a delivered one.
+        if !crate::ws::send(id, &owner, text) {
+            log_warn(&format!(
+                "WARN: __s2_ws_send: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — the message was NOT sent"
+            ));
+        }
     }));
 }
 
@@ -1805,8 +1824,13 @@ fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _r
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::ws::close(id, &owner);
+        let owner = ws_owner(scope);
+        if !crate::ws::close(id, &owner) {
+            log_warn(&format!(
+                "WARN: __s2_ws_close: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — no close was sent"
+            ));
+        }
     }));
 }
 
@@ -1825,8 +1849,22 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
         let event = args.get(1).to_rust_string_lossy(scope);
         // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
         // owns. Resolved here rather than inside the helper because refusal must store no row.
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        if !crate::ws::is_owner(id, &owner) { return; }
+        // MUST match the fallback `__s2_ws_connect` used when it registered the owner, and the one
+        // `__s2_ws_send`/`__s2_ws_close` use to check it — all four are `unwrap_or_default()`, i.e.
+        // "". This used to be `unwrap_or_else(|| "legacy")` here alone, which meant that whenever
+        // `current_plugin` could not name a plugin, `send` matched the stored owner and `on` did NOT:
+        // the socket worked and the subscription was silently discarded, so the handler never fired
+        // and nothing anywhere said why.
+        let owner = ws_owner(scope);
+        if !crate::ws::is_owner(id, &owner) {
+            // NAMED, not silent. A refused subscribe means this handler will never fire; leaving it
+            // quiet turns a wrong owner into "the network is broken", which is a much longer walk.
+            log_warn(&format!(
+                "WARN: __s2_ws_on: '{owner}' does not own ws conn {id} — '{event}' handler NOT \
+                 subscribed and will never fire"
+            ));
+            return;
+        }
         let key = format!("{id}:{event}");
         let _ = subscribe_into(scope, &args, &WS_EVENT_MUX, &key, 2);
     }));
