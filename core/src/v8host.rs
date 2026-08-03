@@ -10264,6 +10264,24 @@ mod frame_tests {
     use std::os::raw::{c_char, c_int};
     use std::sync::Mutex;
 
+    /// How many poll iterations an async test drives before declaring the work never completed.
+    ///
+    /// Every one of these loops does real V8 work per iteration (`frame_async_drain` enters the
+    /// isolate), then sleeps 2-10ms, so the loop COMPETES FOR CPU with the very tokio runtime it is
+    /// waiting on. That is fine on a dev box — the round trips here complete in ~40ms — but on a
+    /// 2-vCPU CI runner also carrying 4 tokio workers, the db actors' dedicated OS threads and a V8
+    /// isolate, a multi-second scheduling stall is reachable, and the old budget of 500 ticks was as
+    /// little as 1s (the 2ms loops).
+    ///
+    /// That is what made the `ws_module_*` tests fail intermittently in CI and never locally, on a
+    /// DIFFERENT test each run — whichever async test happened to hit the stall. Three consecutive
+    /// runs failed across two branches, including a re-run of a previously-green branch with no code
+    /// change, which is what ruled out any particular slice as the cause.
+    ///
+    /// A passing test breaks out on the first iteration that observes its condition, so a large
+    /// bound costs nothing when things work — it only buys headroom when the box is contended.
+    const ASYNC_POLL_TICKS: usize = 3000;
+
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
     extern "C" fn logger(_l: c_int, m: *const c_char) {
         LOG.lock().unwrap().push(unsafe { CStr::from_ptr(m) }.to_string_lossy().into_owned());
@@ -10805,7 +10823,7 @@ mod frame_tests {
             "threadSleep should request detour install"
         );
         // Drive the drain until the job completes and the remove fires.
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0) {
                 break;
@@ -10864,7 +10882,7 @@ mod frame_tests {
         eval_std("p", "globalThis.__t = false; threadSleep(20).then(() => { globalThis.__t = true; });");
         // Drive frames until the worker completes (bounded).
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_bool_global_in("p", "__t") { resolved = true; break; }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -16831,7 +16849,7 @@ mod frame_tests {
             }});
         "#, name = name), "{}");
         let mut out = "pending".to_string();
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             out = read_global_string("dbp", "__out");
             if out != "pending" { break; }
@@ -16860,7 +16878,7 @@ mod frame_tests {
             }});
         "#, name = name), "{}");
         let mut out = "pending".to_string();
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             out = read_global_string("dbp2", "__out");
             if out != "pending" { break; }
@@ -16936,7 +16954,7 @@ mod frame_tests {
             }});
         "#, name = name), "{}");
         let mut out = "pending".to_string();
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             out = read_global_string("dbmod", "__out");
             if out != "pending" { break; }
@@ -17055,7 +17073,7 @@ mod frame_tests {
         // The response arrives async (a real background thread) — poll the drain up to ~500
         // times (bounded) rather than assuming it lands on the very next drain.
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("fetchp", "__out") != "pending" {
                 resolved = true;
@@ -17090,7 +17108,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("fetch404", "__out") != "pending" {
                 resolved = true;
@@ -17121,7 +17139,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("fetchbad", "__out") != "pending" {
                 resolved = true;
@@ -17183,7 +17201,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             if read_global_string("httpmod", "__out") != "pending" {
                 resolved = true;
@@ -17301,7 +17319,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsh", "__out") != "pending" {
@@ -17335,7 +17353,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsr", "__out") != "pending" {
@@ -17380,7 +17398,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsp", "__out") != "pending" {
@@ -17414,7 +17432,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsbad", "__out") != "pending" {
@@ -17452,7 +17470,7 @@ mod frame_tests {
             "{}",
         );
         let mut a_id = -1;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             a_id = read_i32_global_in("wsOwnerA", "__connId");
@@ -17538,7 +17556,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsmod", "__out") != "pending" {
@@ -17580,7 +17598,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_ws_events();
             if read_global_string("wsclose", "__out") != "pending" {
@@ -17650,7 +17668,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_net_events();
             if read_global_string("netp", "__out") != "pending" {
@@ -17685,7 +17703,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_net_events();
             if read_global_string("netbad", "__out") != "pending" {
@@ -17743,7 +17761,7 @@ mod frame_tests {
             "{}",
         );
         let mut resolved = false;
-        for _ in 0..500 {
+        for _ in 0..ASYNC_POLL_TICKS {
             frame_async_drain();
             dispatch_pending_net_events();
             if read_global_string("netudp", "__out") != "pending" {
