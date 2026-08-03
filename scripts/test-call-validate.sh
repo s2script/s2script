@@ -20,12 +20,18 @@ flags=(-std=c++17 -O1 -g -Wall -Wextra)
 
 # Probe for the sanitizer runtime rather than assuming it: a missing libasan must not fail the gate.
 if echo 'int main(){return 0;}' | g++ -x c++ -fsanitize=address,undefined -o /dev/null - 2>/dev/null; then
-  flags+=(-fsanitize=address,undefined -fno-sanitize-recover=all)
+  # -fno-sanitize=alignment: the vendored HDE64 reads immediates straight out of instruction bytes
+  # at whatever offset the encoding puts them — UB by the letter of the standard, architectural on
+  # x86-64. Third-party code we ship as-is; every other UBSan check stays live on our own arithmetic.
+  flags+=(-fsanitize=address,undefined -fno-sanitize=alignment -fno-sanitize-recover=all)
   echo "   (with -fsanitize=address,undefined)"
 else
   echo "   (no sanitizer runtime)"
 fi
 
-g++ "${flags[@]}" -I shim/src \
-    -o "$out" shim/src/call_validate.cpp shim/src/sigscan.cpp shim/tests/call_validate_test.cpp
+# hde64 is linked in now: the arg-width validator decodes the callee's prologue to check a declared
+# shape against the machine code (see call_validate.h).
+g++ "${flags[@]}" -I shim/src -I third_party/hde \
+    -o "$out" shim/src/call_validate.cpp shim/src/sigscan.cpp third_party/hde/hde64.c \
+    shim/tests/call_validate_test.cpp
 "$out"

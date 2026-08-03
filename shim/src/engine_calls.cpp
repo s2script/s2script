@@ -305,6 +305,43 @@ int S2_AddressIsExecutable(const void* addr) {
     return ctx.hit ? 1 : 0;
 }
 
+// The module views behind an address: the PF_X segment that CONTAINS it, plus the module's full
+// LOAD extent (lo..hi). Both are needed because a validator's reads legitimately reach outside .text
+// — .rodata precedes it in the mapping — while the code it decodes must not.
+int S2_ModuleViewForAddress(const void* addr, const unsigned char** outText, std::size_t* outSize,
+                            const unsigned char** outLo, const unsigned char** outHi) {
+    if (!addr || !outText || !outSize || !outLo || !outHi) return 0;
+    struct Ctx {
+        uintptr_t a; bool hit;
+        uintptr_t text, textEnd, lo, hi;
+    } ctx{ reinterpret_cast<uintptr_t>(addr), false, 0, 0, 0, 0 };
+
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        uintptr_t lo = 0, hi = 0, text = 0, textEnd = 0;
+        bool contains = false;
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type != PT_LOAD) continue;
+            const uintptr_t s = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
+            const uintptr_t e = s + ph.p_memsz;
+            if (lo == 0 || s < lo) lo = s;
+            if (e > hi) hi = e;
+            if ((ph.p_flags & PF_X) && c->a >= s && c->a < e) { contains = true; text = s; textEnd = e; }
+        }
+        if (!contains) return 0;               // not this module — keep walking
+        c->hit = true; c->text = text; c->textEnd = textEnd; c->lo = lo; c->hi = hi;
+        return 1;                              // found it — stop
+    }, &ctx);
+
+    if (!ctx.hit) return 0;
+    *outText = reinterpret_cast<const unsigned char*>(ctx.text);
+    *outSize = static_cast<std::size_t>(ctx.textEnd - ctx.text);
+    *outLo   = reinterpret_cast<const unsigned char*>(ctx.lo);
+    *outHi   = reinterpret_cast<const unsigned char*>(ctx.hi);
+    return 1;
+}
+
 // The address behind a call id, for the ONE caller that needs bytes rather than a callable: the
 // declarative-inbound-hook install (see the header for why this exists at all). An unknown id
 // returns 0, which S2_HookInstall already refuses by name ("hook target address is null") — so a

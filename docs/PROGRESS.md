@@ -160,3 +160,37 @@ relocate the two instruction classes it refuses (adjust a rip-relative `disp32` 
 target→trampoline delta; rewrite a stolen `call rel32` as an absolute call through the trampoline),
 which is provable off-server against byte buffers the way `defer_queue.cpp`/`call_validate.cpp` are,
 and whose gate must re-prove the three existing detours still fire.
+
+**The arg-width validator** (spec `docs/superpowers/specs/2026-08-03-arg-width-validator-design.md`)
+closes the gap the two-tier detour slice's live gate found: a hook descriptor names a *shape* — the
+callee's exact C signature — and nothing checked that name against the function it was about to
+detour. `check-hook-shapes.sh` proves core and the shim agree with *each other*; on
+`CCSGameRules::TerminateRound` both were confidently wrong together, the third argument (a pointer,
+stored by the engine with a full 64-bit `mov %rdx,-0xe0(%rbp)`) was declared `int32_t`, the thunk
+truncated it, and the SIGSEGV landed ~374KB away in an unrelated function.
+
+`s2validate::ArgWidths` decodes the callee's prologue at install and refuses a shape that declares a
+parameter **narrower** than the callee uses. One-directional on purpose: narrowing truncates a
+pointer, widening is harmless (SysV leaves the upper half of a 32-bit argument undefined), so there
+is exactly one direction to police. It takes **no gamedata** — the expectation is derived from the
+shape already declared, because checking a hand-written ABI claim with a second hand-written ABI
+claim would be the same mistake with more steps. It lives in `shim/src/call_validate.cpp` beside the
+three declared validators but is deliberately *not* in `kVocabulary[]`, since nothing authors it.
+
+Indexed by SysV **integer argument slot**, not by declared param: a float rides in xmm0 and consumes
+no integer register, so `void(this, float, int, int, int)` occupies slots `[this, arg1, arg2, arg3]`.
+Mapping param→slot by position silently misattributes the moment a float precedes the offender —
+which is exactly the shape that motivated the check, and is a bug the regression test caught during
+implementation.
+
+**What it does NOT close**, so a pass is not over-read: an argument the callee never spills in the
+64-byte / 24-instruction window is unchecked; register-to-register uses are not counted as evidence;
+argument *count* is still unchecked (a shape with too few params silently ignores the rest); and
+nothing here helps outbound `calls`, where we choose the values and a `0` is an honest null.
+
+Tests (`shim/tests/call_validate_test.cpp`, 21 checks under ASan/UBSan): `TerminateRound`'s real
+prologue as a byte literal — REFUSED under `this_f32_i32_i32_i32`, ACCEPTED under
+`this_f32_i32_i64_i64` — plus per-slot attribution, redefinition tracking (`mov $1,%edx` then
+`mov %rdx,mem` is not evidence about the argument), pass-on-no-evidence, and a view ending
+mid-instruction. Three mutations driven: dropping redefinition tracking, ignoring `REX.W`, and
+shifting the register table each break exactly the tests that should catch them.

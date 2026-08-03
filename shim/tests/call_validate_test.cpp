@@ -372,6 +372,139 @@ void test_an_out_of_text_address_never_reaches_a_validator() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// arg-width — the shape-vs-machine-code check.
+// ---------------------------------------------------------------------------
+
+// Build a ModuleView over a caller-owned buffer treated as .text.
+static s2validate::ModuleView ViewOver(const uint8_t* buf, std::size_t n) {
+    s2validate::ModuleView mv;
+    mv.text = buf; mv.textSize = n; mv.lo = buf; mv.hi = buf + n;
+    return mv;
+}
+
+// THE REGRESSION. CCSGameRules::TerminateRound's REAL prologue, byte for byte:
+//   push rbp; mov rbp,rsp; push r15; mov r15d,esi; push r14; lea rsi,[rip+d];
+//   push r13; push r12; push rbx; mov rbx,rdi; sub rsp,0xc8;
+//   lea rax,[rip+d]; movss %xmm0,-0xd8(%rbp); mov %rdx,-0xe0(%rbp)   <-- 64-BIT store of arg2
+// Declared this_f32_i32_i32_i32 this truncated a pointer and segfaulted a live server.
+static const uint8_t kTerminateRound[] = {
+    0x55, 0x48,0x89,0xE5, 0x41,0x57, 0x41,0x89,0xF7, 0x41,0x56,
+    0x48,0x8D,0x35,0x5D,0x91,0x56,0xFF, 0x41,0x55, 0x41,0x54, 0x53,
+    0x48,0x89,0xFB, 0x48,0x81,0xEC,0xC8,0x00,0x00,0x00,
+    0x48,0x8D,0x05,0x60,0x34,0x4E,0x01,
+    0xF3,0x0F,0x11,0x85,0x28,0xFF,0xFF,0xFF,
+    0x48,0x89,0x95,0x20,0xFF,0xFF,0xFF,
+};
+
+static void test_arg_width_catches_the_terminate_round_truncation() {
+    char r[256];
+    auto mv = ViewOver(kTerminateRound, sizeof kTerminateRound);
+    // this_f32_i32_i32_i32 flattened to INTEGER slots: [this, reason, _unused3, _unused4] — the
+    // float delay rides in xmm0 and consumes no integer register. _unused3 is slot 2 = rdx, which
+    // the callee stores 64-bit -> REFUSE.
+    const uint8_t narrow[4] = { 1, 0, 0, 0 };
+    CHECK(s2validate::ArgWidths(narrow, 4, mv, kTerminateRound, r, sizeof r) == -1,
+          "TerminateRound's real prologue is REFUSED under this_f32_i32_i32_i32");
+    CHECK(std::strstr(r, "slot 2") != nullptr,
+          "and the reason names the offending integer arg slot");
+
+    // this_f32_i32_i64_i64: the trailing pair relayed at full width -> accepted.
+    const uint8_t wide[4] = { 1, 0, 1, 1 };
+    CHECK(s2validate::ArgWidths(wide, 4, mv, kTerminateRound, r, sizeof r) == 0,
+          "and ACCEPTED under this_f32_i32_i64_i64 — the shape that actually shipped");
+}
+
+static void test_arg_width_passes_a_clean_32_bit_prologue() {
+    // push rbp; mov rbp,rsp; mov %esi,-0x4(%rbp); mov %edx,-0x8(%rbp)   (both 32-bit stores)
+    static const uint8_t code[] = {
+        0x55, 0x48,0x89,0xE5, 0x89,0x75,0xFC, 0x89,0x55,0xF8, 0xC3 };
+    char r[256];
+    auto mv = ViewOver(code, sizeof code);
+    const uint8_t narrow[3] = { 1, 0, 0 };
+    CHECK(s2validate::ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
+          "a prologue that stores its args 32-bit agrees with a 32-bit shape");
+    CHECK(std::strstr(r, "no narrowing") != nullptr, "and says what it checked");
+}
+
+static void test_arg_width_ignores_a_redefined_register() {
+    // push rbp; mov rbp,rsp; mov $1,%edx; mov %rdx,-0x8(%rbp)
+    // The 64-bit store is of a value the FUNCTION put in rdx, not of the incoming argument. Without
+    // redefinition tracking this is a false FAIL — which is how a gate gets switched off.
+    static const uint8_t code[] = {
+        0x55, 0x48,0x89,0xE5, 0xBA,0x01,0x00,0x00,0x00, 0x48,0x89,0x55,0xF8, 0xC3 };
+    char r[256];
+    auto mv = ViewOver(code, sizeof code);
+    const uint8_t narrow[3] = { 1, 0, 0 };
+    CHECK(s2validate::ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
+          "a 64-bit store of a REDEFINED register is not evidence about the argument");
+}
+
+static void test_arg_width_passes_when_it_sees_nothing() {
+    static const uint8_t code[] = { 0x55, 0x48,0x89,0xE5, 0x5D, 0xC3 };   // push;mov;pop;ret
+    char r[256];
+    auto mv = ViewOver(code, sizeof code);
+    const uint8_t narrow[3] = { 1, 0, 0 };
+    CHECK(s2validate::ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
+          "a prologue that spills nothing PASSES — absence of evidence is not a failure");
+    CHECK(std::strstr(r, "not proof") != nullptr,
+          "and the reason refuses to be read as a proof");
+}
+
+static void test_arg_width_checks_every_param_position() {
+    // 64-bit stores of rsi(param0), rdx(param1), rcx(param2), r8(param3) in turn — each must be
+    // caught at its OWN index, so a table shifted by one cannot pass.
+    struct C { const char* name; std::vector<uint8_t> code; int param; };
+    const std::vector<C> cases = {
+        { "rsi", { 0x48,0x89,0x75,0xF8, 0xC3 }, 1 },
+        { "rdx", { 0x48,0x89,0x55,0xF8, 0xC3 }, 2 },
+        { "rcx", { 0x48,0x89,0x4D,0xF8, 0xC3 }, 3 },
+        { "r8",  { 0x4C,0x89,0x45,0xF8, 0xC3 }, 4 },
+    };
+    for (const auto& c : cases) {
+        char r[256];
+        auto mv = ViewOver(c.code.data(), c.code.size());
+        const uint8_t narrow[5] = { 1, 0, 0, 0, 0 };
+        CHECK(s2validate::ArgWidths(narrow, 5, mv, c.code.data(), r, sizeof r) == -1,
+              std::string("a 64-bit store of ") + c.name + " is refused");
+        CHECK(std::strstr(r, ("slot " + std::to_string(c.param)).c_str()) != nullptr,
+              std::string("and is attributed to integer arg slot ") + std::to_string(c.param));
+    }
+}
+
+static void test_arg_width_never_reads_past_the_view() {
+    // The view ENDS mid-instruction: the last store is truncated to 2 of its 7 bytes. ASan is the
+    // arbiter here — the decoder must bound its own read rather than trust hde64 to stop.
+    char r[256];
+    const std::size_t cut = sizeof kTerminateRound - 5;
+    auto mv = ViewOver(kTerminateRound, cut);
+    const uint8_t narrow[4] = { 1, 0, 0, 0 };
+    const int rc = s2validate::ArgWidths(narrow, 4, mv, kTerminateRound, r, sizeof r);
+    CHECK(rc == 0, "a view ending mid-instruction stops cleanly instead of reading past it");
+}
+
+static void test_arg_width_decoder_reports_redefinitions_and_stores() {
+    using s2validate::DecodeArgUse;
+    { const uint8_t b[] = {0x48,0x89,0x55,0xF8};             // mov %rdx,-0x8(%rbp)
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.argIndex == 2 && u.wide && u.length == 4, "decodes a 64-bit store of rdx as arg 2"); }
+    { const uint8_t b[] = {0x89,0x55,0xF8};                   // mov %edx,-0x8(%rbp)
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.argIndex == 2 && !u.wide, "decodes a 32-bit store of edx as arg 2, not wide"); }
+    { const uint8_t b[] = {0x48,0x89,0x5D,0xF8};              // mov %rbx,-0x8(%rbp)  (not an arg reg)
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.argIndex == -1, "a store of a non-argument register is not an observation"); }
+    { const uint8_t b[] = {0x48,0x8B,0xD1};                   // mov %rcx,%rdx -> rdx redefined
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.redefines == 2, "MOV r,r/m records the destination as redefined"); }
+    { const uint8_t b[] = {0x48,0x89,0xC2};                   // mov %rax,%rdx -> rdx redefined
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.redefines == 2, "MOV r/m,r with a REGISTER destination redefines it"); }
+    { const uint8_t b[] = {0x48,0x89};                        // truncated
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.length == 0, "a truncated instruction decodes to length 0 and stops the walk"); }
+}
+
 int main() {
     std::cout << std::unitbuf;
     BuildImage();
@@ -400,6 +533,14 @@ int main() {
 
     test_validators_are_anded_and_ordered();
     test_an_out_of_text_address_never_reaches_a_validator();
+
+    test_arg_width_decoder_reports_redefinitions_and_stores();
+    test_arg_width_catches_the_terminate_round_truncation();
+    test_arg_width_passes_a_clean_32_bit_prologue();
+    test_arg_width_ignores_a_redefined_register();
+    test_arg_width_passes_when_it_sees_nothing();
+    test_arg_width_checks_every_param_position();
+    test_arg_width_never_reads_past_the_view();
 
     if (g_fail) { std::cerr << "call_validate_test: " << g_fail << " FAILURE(S)\n"; return 1; }
     std::cout << "call_validate_test: all checks passed\n";

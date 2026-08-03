@@ -45,6 +45,7 @@
 
 #include "detour.h"
 #include "engine_calls.h"   // S2_EntityHandleFromPtr — the books-first receiver -> CEntityHandle pack
+#include "call_validate.h"   // the arg-width check: does the SHAPE match the callee's machine code?
 #include "hook_dispatch.h"
 
 #include <array>
@@ -358,6 +359,36 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
     for (int i = 0; i < S2_HOOK_MAX; i++) {
         if (g_hooks[i].used && g_hooks[i].addr == addr)
             return Fail(reasonOut, reasonCap, "another hook id is already installed at this address");
+    }
+
+    // ARG-WIDTH: does the SHAPE agree with the machine code we are about to detour? A shape that
+    // declares a parameter narrower than the callee uses truncates it — on TerminateRound that was a
+    // pointer, and the resulting SIGSEGV landed ~374KB away in an unrelated function. Checked HERE,
+    // at the moment we commit to patching, and refused by name like every other install failure.
+    //
+    // Flattened to SysV INTEGER slots, not declared params: a float rides in xmm0 and consumes no
+    // integer register, so `void(this, float, int, int, int)` occupies integer slots
+    // [this, arg1, arg2, arg3]. Slot 0 is `this` — always a pointer, never narrowed.
+    {
+        const ShapeInfo si = InfoFor(shape);
+        uint8_t wide[8] = { 1 };            // slot 0 = this
+        int slots = 1;
+        for (int k = 0; k < si.count && slots < 8; k++) {
+            if (si.params[k].cls == kParamF32) continue;   // no integer slot consumed
+            wide[slots++] = (si.params[k].cls == kParamI64) ? 1 : 0;
+        }
+        const unsigned char *text = nullptr, *lo = nullptr, *hi = nullptr;
+        std::size_t textSize = 0;
+        if (S2_ModuleViewForAddress(reinterpret_cast<const void*>(target), &text, &textSize, &lo, &hi)) {
+            s2validate::ModuleView mv;
+            mv.text = text; mv.textSize = textSize; mv.lo = lo; mv.hi = hi;
+            char why[256];
+            if (s2validate::ArgWidths(wide, slots, mv, reinterpret_cast<const void*>(target),
+                                      why, static_cast<int>(sizeof why)) != 0)
+                return Fail(reasonOut, reasonCap, why);
+        }
+        // No module view: the range check above already passed, so this is a defensive miss, not a
+        // reason to refuse. Degrade to unchecked rather than blocking a hook on a phdr-walk quirk.
     }
 
     void* thunk = ThunkFor(shape, hookId);
