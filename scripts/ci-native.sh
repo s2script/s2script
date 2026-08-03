@@ -27,8 +27,17 @@ bash scripts/test-gamedata.sh
 echo "== check-deferred-sentinel.sh (S2_DISPATCH_DEFERRED: core == shim header) =="
 bash scripts/check-deferred-sentinel.sh
 
+echo "== check-engine-ops-order.sh (S2EngineOps field order: core == shim header) =="
+bash scripts/check-engine-ops-order.sh
+
 echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
 bash scripts/test-defer-queue.sh
+
+echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
+bash scripts/test-hook-dispatch.sh
+
+echo "== check-hook-shapes.sh (inbound hook shape name/id table: core == shim) =="
+bash scripts/check-hook-shapes.sh
 
 echo "== check-defer-selftest-gate.sh (S2_DEFER_SELFTEST: core == shim, registration-gated) =="
 bash scripts/check-defer-selftest-gate.sh
@@ -39,7 +48,7 @@ bash scripts/test-call-validate.sh
 echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
 bash scripts/check-gamedata-owners.sh
 
-echo '== check-call-descriptors.sh (every shipped `calls` descriptor is well-formed) =='
+echo '== check-call-descriptors.sh (every shipped `calls`/`hooks` descriptor is well-formed) =='
 bash scripts/check-call-descriptors.sh
 
 echo "== check-licenses-generated.sh =="
@@ -83,7 +92,7 @@ echo "== ccommand_selftest (our CCommand tokenizer) =="
 cmake --build build/shim --target ccommand_selftest -j >/dev/null
 ./build/shim/ccommand_selftest
 
-echo "== check-shim-symbols.sh (no unresolvable engine symbols) =="
+echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
 bash scripts/check-shim-symbols.sh
 
 echo "ci-native: all native gates passed"

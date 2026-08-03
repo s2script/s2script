@@ -7,6 +7,11 @@ import { typecheckPlugin } from "../src/typecheck/typecheck.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures", "typecheck");
 const fakePkgs = join(fixtures, "fake-packages");
+// A SEPARATE, isolated packagesDir for the gamePackageDeclarationFiles regression test below: its
+// sdk/plugin.d.ts is a deliberately minimal PluginContext (just `id`), and adding that to the
+// SHARED fake-packages/sdk/ would shadow the real PluginContext members (e.g. `tryUse`) for every
+// other fixture that resolves it — see fake-packages-hooks/sdk/globals.d.ts for the full story.
+const fakePkgsHooks = join(fixtures, "fake-packages-hooks");
 
 test("clean plugin type-checks (resolves @s2script/*, global console, inter-plugin dep)", () => {
   const r = typecheckPlugin(join(fixtures, "clean"), { packagesDir: fakePkgs });
@@ -48,6 +53,19 @@ test("narrowed filter: a declared @s2script/sdk/* typo still yields TS2307 (neve
   assert.equal(r.ok, false);
   assert.ok(r.diagnostics.some((d) => d.code === 2307),
     "@s2script/sdk/* must resolve-or-error, never stub: " + JSON.stringify(r.diagnostics));
+});
+
+test("a plugin declaring @s2script/cs2 sees the game package's ctx augmentation with NO explicit import from it (gamePackageDeclarationFiles)", () => {
+  // Regression guard for a real bug found while building the declarative-inbound-hooks ctx codegen:
+  // hooks.generated.d.ts's `declare module "@s2script/sdk/plugin" { interface PluginContext {...} }`
+  // is invisible to the program unless something reaches the file via an import chain — exactly the
+  // reachability problem `.s2script/gamedata.d.ts` (generatedDeclarationFiles) already exists for.
+  // Every REAL cs2 plugin in this repo also imports Player/Pawn/etc., which happens to reach the
+  // file anyway — so this fixture, which imports NOTHING by name from "@s2script/cs2", is the only
+  // thing that would catch gamePackageDeclarationFiles regressing.
+  const r = typecheckPlugin(join(fixtures, "game-ctx-only"), { packagesDir: fakePkgsHooks });
+  assert.deepEqual(r.diagnostics, [], "no diagnostics: " + JSON.stringify(r.diagnostics));
+  assert.equal(r.ok, true);
 });
 
 test("acceptance: an unfetched interface typo stays any (correctly indistinguishable)", () => {

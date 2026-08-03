@@ -30,6 +30,25 @@ function generatedDeclarationFiles(pluginDir: string): string[] {
   return existsSync(gd) ? [gd] : [];
 }
 
+/**
+ * The game package's OWN generated ctx augmentation (e.g. `packages/cs2/hooks.generated.d.ts`,
+ * `declare module "@s2script/sdk/plugin" { interface PluginContext { readonly gameRules: … } }`).
+ *
+ * Exactly the same reachability problem `generatedDeclarationFiles` exists for: a module
+ * augmentation nothing imports is invisible to the program. A CS2 plugin whose source never
+ * happens to import a NAME from `@s2script/cs2` (it may use only `ctx.gameRules`/`ctx.players` and
+ * nothing else the package exports) would otherwise see no `ctx.gameRules` at all — `PluginContext`
+ * would typecheck as if the game package had never loaded. Forced in whenever the plugin declares
+ * `@s2script/cs2` as a (dev)dependency, matching the same declared-dependency signal `s2script`
+ * itself uses to decide whether a plugin is a CS2 plugin; a no-op for a purely engine-generic
+ * plugin, and a no-op today for any future `@s2script/<game>` that ships no such file yet. */
+function gamePackageDeclarationFiles(pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }, packagesDir: string): string[] {
+  const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+  if (!("@s2script/cs2" in deps)) return [];
+  const hooks = join(packagesDir, "cs2", "hooks.generated.d.ts");
+  return existsSync(hooks) ? [hooks] : [];
+}
+
 /** Module specifiers the plugin declares itself, e.g. `declare module "@demo/greeter" { … }`.
  *  Deliberately a scan, not a parse: we only need to know whether to skip generating a
  *  conflicting shorthand stub, and a false negative merely restores the old behaviour. */
@@ -172,6 +191,7 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   // Globals live at the consolidated path (the legacy packages/globals/ dir is deleted).
   const rootNames = [
     entry, join(packagesDir, "sdk", "globals.d.ts"), ...localDts, ...generatedDeclarationFiles(absDir),
+    ...gamePackageDeclarationFiles(pkg, packagesDir),
   ];
   const tmp = mkdtempSync(join(tmpdir(), "s2tc-"));
   try {

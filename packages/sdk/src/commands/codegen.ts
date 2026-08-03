@@ -3,8 +3,9 @@ import { fileURLToPath } from "node:url";
 import { runGenSchema } from "../schemagen/gen.ts";
 import { runGenEvents } from "../eventgen/gen.ts";
 import { runGenNav } from "../navgen/gen.ts";
+import { runGenHooks } from "../hookgen/gen.ts";
 
-export type CodegenKind = "schema" | "events" | "nav";
+export type CodegenKind = "schema" | "events" | "nav" | "hooks";
 
 function repoRoot(): string {
   // Bundled, import.meta.url is always dist/cli.js: packages/sdk/dist → packages/sdk → packages → repo.
@@ -32,13 +33,21 @@ export async function run(kind: CodegenKind, argv: string[]): Promise<void> {
     } else {
       console.log(`gen-events: wrote ${r.events} events`);
     }
-  } else {
+  } else if (kind === "nav") {
     const r = runGenNav(root, { check });
     if (check) {
       if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-nav\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
       console.log(`nav codegen up to date (${r.wrappers} wrappers, ${r.fields} fields)`);
     } else {
       console.log(`gen-nav: wrote ${r.wrappers} wrappers, ${r.fields} fields`);
+    }
+  } else {
+    const r = runGenHooks(root, { check });
+    if (check) {
+      if (r.drift.length) { console.error(`FAIL: generated files out of date — run \`s2s gen-hooks\`:\n  ${r.drift.join("\n  ")}`); process.exit(1); }
+      console.log(`hook codegen up to date (${r.hooks} hooks)`);
+    } else {
+      console.log(`gen-hooks: wrote ${r.hooks} hooks`);
     }
   }
 }

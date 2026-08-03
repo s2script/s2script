@@ -1209,6 +1209,29 @@
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
   globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
 
+  // The ctx namespaces this game package contributes (core's generic extension point in
+  // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger
+  // registrar, so ctx.gameRules.onTerminateRound is torn down at unload like any other
+  // subscription. The hook NAMES here must match the `hooks` keys declared for "@s2script/cs2"
+  // in gamedata/cs2/game.cs2.jsonc — degrade is graceful (a WARN, never a crash) if they drift,
+  // but the handler simply never fires.
+  globalThis.__s2pkg_game_ctx = {
+    gameRules: function (reg, viaId) {
+      return {
+        onTerminateRound: function (h) {
+          reg(viaId(function () { return __s2_hook_on("@s2script/cs2", "onTerminateRound", h); }));
+        },
+      };
+    },
+    players: function (reg, viaId) {
+      return {
+        onRespawn: function (h) {
+          reg(viaId(function () { return __s2_hook_on("@s2script/cs2", "onRespawn", h); }));
+        },
+      };
+    },
+  };
+
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
   // game package supplies the value IN; core never knows the game). Best-effort: absent natives
   // (an older core) degrade silently.

@@ -85,3 +85,78 @@ Next: **A5b** retires the 8 CS2-API ops into `gamedata/cs2/` as `calls` descript
 `vtable-member` validator (`Respawn`'s RTTI gate has no equivalent in the `calls` format) and moves
 the `Respawn`/`TerminateRound` next-frame drains into `pawn.js`, preserving dedupe and
 consume-before-call.
+
+**A5b shipped** (`gamedata: retire the eight CS2 engine calls into descriptors — zero core diff`),
+retiring all eight CS2-API ops into `gamedata/cs2/` `calls` descriptors with the `vtable-member`
+validator `Respawn` needed and the `Respawn`/`TerminateRound` next-frame drains reimplemented in
+`pawn.js`, preserving dedupe and consume-before-call. That completed the declarative *outbound* half
+of the core-stabilization audit's headline finding and set up its sequel.
+
+**Declarative inbound hooks complete** (spec `docs/superpowers/specs/2026-08-02-declarative-inbound-hooks-design.md`,
+a 7-task plan), closing the *inbound* side of that same headline finding — every engine→JS
+notification used to be a hand-rolled vertical slice costing 7–9 coordinated core edit sites; a
+`hooks` gamedata section, authored beside `calls` in the same file, now covers it for any signature
+target the shim already has a thunk shape for. Two axes, deliberately not symmetric: *location*
+(target address + a now-MANDATORY validator, resolved through the same `S2_EngineCallResolve` path
+`calls` uses) is data; *shape* (the callee's exact C ABI — `S2HookShape` in
+`shim/src/hook_dispatch.h`: `this_void` / `this_f32_i32_i32_i32`) is a small, closed, compile-time
+vocabulary, so a hook on an *existing* shape is zero-core-diff and a *new* shape is a real core
+change (a thunk in `shim/src/hook_dispatch.h`/`engine_hooks.cpp` plus a `SHAPES` row in
+`core/src/gamedata_hooks.rs`) — stated as such rather than oversold. A per-hook bypass latch
+(`bypassWith`, naming a `calls` descriptor in the same owner — SourceMod's `g_pIgnoreTerminateDetour`
+made per-hook) means a hook never fires for a plugin-issued call through its own named outbound
+descriptor: `ctx.gameRules.onTerminateRound` does NOT fire when a plugin calls
+`GameRules.terminateRound()`, only when the engine ends a round on its own — SM's exact semantic,
+adopted for SM's own reason, which as a side effect also guarantees a hook can only ever fire
+outside the V8 isolate borrow, closing the pre-hook-undeliverable hole `nextFrame`'s resolver hit.
+Two hooks ship, both declared in `gamedata/cs2/game.cs2.jsonc` with nothing named in `shim/src` or
+`core/src`: `ctx.gameRules.onTerminateRound` (shape `this_f32_i32_i32_i32`, mutable
+`delay`/`reason`) and `ctx.players.onRespawn` (shape `this_void`, surfacing the detour's `this` as a
+books-gated `EntityRef` under `player`). `packages/cs2/hooks.generated.d.ts` — the typed view
+interfaces plus the `PluginContext` augmentation (`ctx.gameRules`, `ctx.players`) — is generated from
+the descriptor by the new `s2s gen-hooks` CLI command.
+
+538 core tests green. New gates: `scripts/test-hook-dispatch.sh` (the engine-free shim half — shape
+vocabulary, bypass latch, the collapse contract, hardened with a sentinel-guarded bypass-latch bounds
+test), `scripts/check-engine-ops-order.sh` (`S2EngineOps`'s field order stays identical across its
+two independently hand-written C and Rust declarations — nothing else catches a silent divergence),
+`scripts/check-hook-shapes.sh` (diffs the shape name↔id table between `core/src/gamedata_hooks.rs`
+and `shim/src/hook_dispatch.cpp` — a disagreement installs the wrong-ABI thunk on a real function),
+and `scripts/check-hooks-generated.sh` (codegen freshness for `hooks.generated.d.ts`); plus `hooks`
+coverage folded into the existing `scripts/check-gamedata-owners.sh` and a full `hooks` grammar pass
+(unknown shape, missing `validate`, unknown `bypassWith` all fail the build) added to
+`scripts/check-call-descriptors.sh`.
+
+**Live gate RUN, and it found a real blocker one layer below this slice.** Everything up to the
+patch instruction works on the live binary and was observed in the boot transcript: both descriptors
+resolve and arm (`armed 'onRespawn' (slot 0, shape 'this_void', ctx.players)`, `armed
+'onTerminateRound' (slot 1, shape 'this_f32_i32_i32_i32', ctx.gameRules)`), the merged gamedata
+carries them (`@s2script/cs2 gamedata registered (8 declared call(s), 2 declared hook(s), 3712
+byte(s))`), lazy install holds (with no subscriber the boot log shows no install — live-gate check
+5, the one check that passed outright), and `tools/hookgate/hookgate-a` typechecks and builds
+against the generated `ctx` augmentation through `s2s build`, proving the codegen→`.d.ts`→`ctx`
+chain end to end. Then **both installs were refused, by design, with a named reason**:
+
+```
+WARN: [engine-hooks] ... hook 'onTerminateRound' degraded:
+      detour install refused this prologue (relative/rip-relative or undecodable)
+```
+
+`s2detour::Install` (`shim/src/detour.cpp:47,54`) copies the stolen prologue into the trampoline
+*blindly*, so it bails on any relative or rip-relative instruction inside its 14-byte steal window
+rather than relocate it. Both targets have one:
+
+| target | prologue | the instruction that lands inside the window |
+| --- | --- | --- |
+| `CCSGameRules::TerminateRound` | `55 48 89 E5 41 57 41 89 F7 41 56` (11 B) | `48 8D 35 disp32` — `lea rsi,[rip+disp32]` |
+| `CCSPlayerController::Respawn` | `55 48 89 E5 41 54 53 48 89 FB` (10 B) | `E8 rel32` — `call rel32` |
+
+The three existing detours (`DispatchTraceAttack`, `Host_Say`, `ProcessUsercmds`) work only because
+their prologues happen to be relocatable — the limitation was always there and no target had hit it
+before. So live-gate checks 1–4 and 6 (fire / bypass / suppress / mutate / receiver `EntityRef`) are
+**not yet proven on a server**; they hold offline, and the mechanism reaching a named refusal is the
+per-descriptor degrade doctrine working rather than failing. Next slice: teach `s2detour` to
+relocate the two instruction classes it refuses (adjust a rip-relative `disp32` by the
+target→trampoline delta; rewrite a stolen `call rel32` as an absolute call through the trampoline),
+which is provable off-server against byte buffers the way `defer_queue.cpp`/`call_validate.cpp` are,
+and whose gate must re-prove the three existing detours still fire.

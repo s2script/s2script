@@ -1832,6 +1832,41 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       sealed = true;
     };
     globalThis.__s2_ctx_seal = function () { sealed = true; pending = []; };
+
+    // Game packages contribute their own ctx namespaces (e.g. ctx.gameRules) by setting
+    // __s2pkg_game_ctx before this runs — the package prelude is evaluated ahead of ctx
+    // construction (v8host.rs runs the engine prelude, then @s2script/<game>, then the plugin).
+    // ENGINE-GENERIC: core names no game concept here; it merges whatever the package declares,
+    // and each factory receives the same ledger registrar every built-in namespace uses, so a
+    // game-package subscription is torn down at unload exactly like ctx.events.on.
+    //
+    // Deliberately LAST — after every built-in ctx member above is attached — so `ns in ctx` is a
+    // complete collision test. A hand-maintained name list would only protect whichever built-ins
+    // happen to be assigned before the check; running last means there is nothing left to add to a
+    // list, and no accident of source order standing in for a guard.
+    var gameCtx = globalThis.__s2pkg_game_ctx;
+    if (gameCtx) {
+      // Same shape as makeSubjects' own viaId, specialised to ctx's own (null) track: ctx-level
+      // subscriptions aren't per-id tracked for early disposal (that's what createScope() is
+      // for), so this just calls through and drops the sub id.
+      var viaId = function (call) { return function () { call.apply(null, arguments); }; };
+      for (var ns in gameCtx) {
+        if (!Object.prototype.hasOwnProperty.call(gameCtx, ns)) continue;
+        if (ns === "__proto__") {
+          console.log("[s2script] WARN: game package ctx namespace '__proto__' refused");
+          continue;
+        }
+        if (ns in ctx) {
+          console.log("[s2script] WARN: game package ctx namespace '" + ns + "' collides with an existing ctx member — refused");
+          continue;
+        }
+        if (typeof gameCtx[ns] !== "function") {
+          console.log("[s2script] WARN: game package ctx namespace '" + ns + "' is not a factory function — skipped");
+          continue;
+        }
+        ctx[ns] = gameCtx[ns](ctxReg, viaId);
+      }
+    }
     return ctx;
   }
 

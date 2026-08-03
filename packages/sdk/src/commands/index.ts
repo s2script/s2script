@@ -27,6 +27,7 @@ export const COMMANDS: Command[] = [
   { name: "gen-schema", summary: "Regenerate schema accessors", run: (a) => codegen.run("schema", a) },
   { name: "gen-events", summary: "Regenerate the event catalog", run: (a) => codegen.run("events", a) },
   { name: "gen-nav", summary: "Regenerate nav accessors", run: (a) => codegen.run("nav", a) },
+  { name: "gen-hooks", summary: "Regenerate the ctx hook augmentation", run: (a) => codegen.run("hooks", a) },
 ];
 
 /** Resolve a command by name, honoring the `publish` alias for `deploy`. */

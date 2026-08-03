@@ -370,7 +370,11 @@ fn prepare(
 /// shim's own named reason (signature miss / ambiguous pattern / prologue mismatch / slot outside
 /// `.text` / …) verbatim — core never re-words it, so the log and `Engine.status()` say exactly what
 /// the resolver decided.
-fn resolve_target(target: &serde_json::Value) -> Result<i32, String> {
+///
+/// `pub(crate)` for `gamedata_hooks`: a declarative inbound hook resolves its target through THIS
+/// path and no other (spec §6, "No second resolver"). Both validators, the `.text` range check and
+/// the uniqueness rule are therefore identical for a detour and for a call.
+pub(crate) fn resolve_target(target: &serde_json::Value) -> Result<i32, String> {
     let Some(func) = crate::v8host::engine_ops().and_then(|o| o.engine_call_resolve) else {
         return Err("engine op unavailable".to_string());
     };
@@ -430,7 +434,11 @@ fn reason_string(buf: &[u8]) -> String {
 ///   An inline `pattern` on the target wins (keeps this idempotent and accepts a hand-written
 ///   flattened descriptor).
 /// - `vtable`: `target[PLATFORM]` supplies `index` and `validate`.
-fn flatten_decl(
+///
+/// `pub(crate)` for `gamedata_hooks`: a hook's `target` is the SAME grammar (it references the same
+/// `signatures` section, by name, with the same `validate` co-location rule), so it is flattened by
+/// the same function rather than by a second copy that could drift on the next platform key.
+pub(crate) fn flatten_decl(
     decl: &serde_json::Value,
     signatures: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Result<String, String> {

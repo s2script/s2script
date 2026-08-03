@@ -3,6 +3,15 @@ import {
   type ArgKind, type PluginGamedata,
 } from "./types.ts";
 
+/**
+ * `hooks` is deliberately ABSENT (declarative-inbound-hooks slice, v1). Core's hook registry is
+ * owner-generic and its `engine:hooks` check is enforced, but a plugin-declared hook needs three
+ * things this package does not have yet: this section, a typed subscribe surface (`__s2_hook_on` is
+ * not in `globals.d.ts` and `__s2pkg_game_ctx` is a game-package-only extension point), and a
+ * `gen-hooks` codegen that is not hardcoded to one game's gamedata file. Adding the section alone
+ * would let a plugin ship a `.s2sp` whose hooks nothing can subscribe to — a build that succeeds and
+ * a feature that is silently absent. Opening the path is its own slice; see ARCHITECTURE.md §2.0.7.
+ */
 const ALLOWED_SECTIONS = new Set(["signatures", "calls"]);
 
 /**
@@ -25,7 +34,12 @@ const RESERVED_CALL_NAMES = new Set(["constructor", "prototype", "__proto__"]);
  */
 const RESOLVE_KINDS = ["direct", "ctor-body-xref", "lea-disp"] as const;
 
-/** Permissions the runtime understands. Closed for the same reason as RESOLVE_KINDS. */
+/**
+ * Permissions the runtime understands. Closed for the same reason as RESOLVE_KINDS.
+ *
+ * `engine:hooks` is absent for the same reason `hooks` is absent from ALLOWED_SECTIONS above — it
+ * would grant a capability no plugin can currently express. The runtime enforces it regardless.
+ */
 const KNOWN_PERMISSIONS = ["engine:calls"] as const;
 
 /** Validate a plugin's gamedata. Returns [] when valid; every string is a build-blocking error. */

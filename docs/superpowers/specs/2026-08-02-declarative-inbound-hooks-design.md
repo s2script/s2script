@@ -54,15 +54,33 @@ The detour itself is compile-time C++ per signature (`DETOUR_DECL_MEMBER2/3/4`);
 only the *address*. **SM's hooks are not declarative in shape, only in location.** That is the key
 constraint and this design keeps it (§4).
 
+> **v1 SCOPE NOTE (added after the whole-branch review).** This spec is written as "a game package
+> *or a plugin* declares a hook" (§5, §7). **As shipped, only a game package can.** Core's registry
+> and its `engine:hooks` permission check are owner-generic and tested, but `s2s build` refuses both
+> a `hooks` gamedata section and an `engine:hooks` permission, so no `.s2sp` can carry one — and the
+> validator is not the only gap: a plugin-declared hook would also need a typed subscribe surface
+> (`__s2_hook_on` is absent from `packages/sdk/globals.d.ts`, and `__s2pkg_game_ctx` is a
+> game-package-only extension point) and a `gen-hooks` codegen that is not hardcoded to
+> `gamedata/cs2/game.cs2.jsonc`. Opening that path is its own slice. The runtime checks were
+> deliberately left as-is rather than narrowed to match: they are the correct checks for the design,
+> and weakening a default-deny gate to fit a temporary scope is how a gate stops being one.
+
 ## 3. The bypass latch is also what makes this safe
 
 Our constraint SM does not have: core holds `HOST.borrow_mut()` across all JS. A detour firing
 while core is borrowed would hit the same wall A5b's D3 did — pre-hooks are not deferrable, so the
-hook would be silently skipped.
+hook would be skipped.
 
-The bypass removes the case entirely. A hook fires **only** for engine-originated calls, where core
-is not borrowed, because our own outbound descriptor invocation sets the latch. Adopting SM's
-semantic for SM's reasons happens to close our re-entrancy hole for free.
+The bypass removes the case **on the path it covers**. A hook does not fire for our own outbound
+descriptor invocation, because that invocation sets the latch — so adopting SM's semantic for SM's
+reasons also closes the re-entrancy hole for the JS→engine path a hook actually names.
+
+**It does not close the case in general, and the implementation does not assume it does.** Our latch
+is scoped to *(owner, call name)* where SM's `g_pIgnoreTerminateDetour` was global, so any other
+JS→engine path to the same address — a plugin's own `calls` descriptor under `engine:calls` — arms
+nothing. The backstop for that is the fan-out's existing re-entrancy guard: nothing runs, the engine
+call proceeds unhooked (the safe direction), and `dispatch_hook` records the skip as a **named**
+degrade on that hook, rate-limited to once per hook because it can fire on every engine call.
 
 **Stated plainly, because it will surprise someone:** `GameRules.onTerminateRound` does **not** fire
 when a plugin calls `GameRules.terminateRound()`. It fires when the *engine* ends a round. This
@@ -93,7 +111,8 @@ is a core change, and the spec says so rather than implying otherwise.
 
 ## 5. The descriptor
 
-Authored in the game package's (or a plugin's) gamedata, beside `calls`:
+Authored in the game package's gamedata, beside `calls` (a plugin's own gamedata is the design's
+intent but is not buildable in v1 — see the scope note above):
 
 ```jsonc
 "hooks": {
@@ -154,6 +173,11 @@ A hook is strictly more dangerous than a call — it patches bytes and can suppr
 — so the permission is **separate** from `engine:calls`. An operator granting a plugin the ability
 to call engine functions has not thereby granted it the ability to detour them.
 
+In v1 the game package is the only declarer, so `engine:hooks` has no plugin that can request it
+(see the scope note above). The permission ships anyway, enforced, because the alternative — adding
+the gate later, once plugins are already declaring hooks — is the retrofit this project's
+default-deny posture exists to avoid.
+
 ## 8. Scope
 
 **In:** the `hooks` grammar, two shapes, resolution + mandatory validation, lazy install, the bypass
@@ -164,7 +188,8 @@ and `Player.onRespawn` as the two shipped consumers.
 a vtable detour has different failure modes and no consumer needs it); return-value interception
 (both shapes are `void`; a non-void shape is additive); plugin-authored hooks reaching *engine-*
 generic functions (the boundary is unchanged — a hook lives in the owner whose gamedata declares
-it).
+it); and — per the scope note above — plugin-**declared** hooks end to end (the SDK validator
+sections, a plugin-side typed subscribe surface, and a non-game-hardcoded `gen-hooks`).
 
 ## 9. Testing
 

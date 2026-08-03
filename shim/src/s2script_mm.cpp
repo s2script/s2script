@@ -66,6 +66,8 @@
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
 #include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
+#include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
+#include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -3927,6 +3929,15 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             META_CONPRINTF("[s2script] WARN: gamedata %s/%s was SELECTED but could not be "
                            "applied — this owner's data is INCOMPLETE\n", owner, name.c_str());
         }
+        // A top-level section this build's merge has no branch for. It contributed NOTHING and
+        // nothing downstream will ever see it — which is indistinguishable from working, and is
+        // exactly how a whole `hooks` section once shipped inert. A WARN and not a failure: an
+        // older shim reading a newer gamedata tree is a legitimate downgrade.
+        for (const auto& what : out.sectionsIgnored) {
+            META_CONPRINTF("[s2script] WARN: gamedata %s/%s is a section this build does NOT "
+                           "consume — every entry in it was DROPPED (a typo, or a gamedata tree "
+                           "newer than this shim)\n", owner, what.c_str());
+        }
         // A file that parses but contributes nothing looks identical to a working one. For a
         // custom/ file that is the operator's most likely mistake (wrong section name, wrong
         // platform key, flat non-platform-keyed shape) and gets a WARN; a shipped placeholder
@@ -4843,12 +4854,43 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Always wired; the op itself refuses unless S2_DEFER_SELFTEST is set, and core does not install
     // the native that reaches it without the same variable. Two independent gates on one env fact.
     ops.defer_selftest = &s2_defer_selftest;
+    // --- declarative inbound hooks (APPENDED after defer_selftest; order is the ABI) ---
+    // Both live in engine_hooks.cpp: the lazy detour install (one compiled thunk per hook slot per
+    // shape) and the bypass latch core arms around its own outbound `bypassWith` call.
+    ops.hook_install    = &S2_HookInstall;
+    ops.hook_arm_bypass = &S2_HookArmBypass;
+    // The core half of the same slice: the latch DISARM (core arms around its own outbound
+    // `bypassWith` invoke and must be able to clear it when that invoke never reached the hooked
+    // function), and the id -> address hop a hook install needs but a call invoke does not.
+    ops.hook_disarm_bypass  = &S2_HookDisarmBypass;
+    // The block-scoped arg view. Every one of these is liveness-gated shim-side against the view the
+    // thunk is CURRENTLY dispatching, so a pointer core retained past a dispatch fails by -1 instead
+    // of reading (or writing) a stack frame that has since been reused.
+    ops.hook_read_f32        = &S2_HookReadF32;
+    ops.hook_read_i32        = &S2_HookReadI32;
+    ops.hook_write_f32       = &S2_HookWriteF32;
+    ops.hook_write_i32       = &S2_HookWriteI32;
+    ops.hook_receiver_handle = &S2_HookReceiverHandle;
+    ops.engine_call_address  = &S2_EngineCallAddress;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
+    }
+
+    // Declarative inbound hooks: hand the engine-free policy TU its ONE outside contact — core's
+    // inbound dispatch entry. After core init deliberately: nothing can reach a thunk before then
+    // (a hook is only detoured when core calls hook_install, which needs a loaded plugin), and a
+    // failed init returns above, leaving dispatch unset so any stale detour degrades to Continue.
+    {
+        S2HookOps hookOps{};
+        hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
+        S2Hook_SetOps(hookOps);
+        if (!hookOps.dispatch)
+            META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
+                           "declarative inbound hooks are OFF (shim/core version mismatch)\n");
     }
 
     // --- Crash reporter: identity + spool-dir push (fail-off: any miss degrades to "") ---
@@ -4970,8 +5012,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     {
         const std::string& gdJson = s_gdGame.mergedJson;
         s2script_core_register_package_gamedata("@s2script/cs2", gdJson.c_str());
+        // The hook count is on this line for the same reason the call count is: it is the one place
+        // a boot log says how many descriptors actually crossed to core. It reading 0 while the
+        // gamedata file plainly declares two is the symptom that would have caught the dropped
+        // `hooks` section without a live server.
         META_CONPRINTF("[s2script] @s2script/cs2 gamedata registered (%zu declared call(s), "
-                       "%zu byte(s))\n", s_gdGame.calls.size(), gdJson.size());
+                       "%zu declared hook(s), %zu byte(s))\n",
+                       s_gdGame.calls.size(), s_gdGame.hooks.size(), gdJson.size());
     }
 
     // Set the plugins directory so the per-frame .s2sp watcher knows where to look.
@@ -5124,6 +5171,13 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
     // ALSO restores the ProcessUsercmds detour (usercmd primitive) if it was ever lazily installed —
     // no usercmd-specific teardown code is needed here.
     s2detour::RemoveAll();
+    // ...INCLUDING every declarative inbound hook. RemoveAll() restores their prologues but knows
+    // nothing about engine_hooks.cpp's slot table, so the two MUST be called together: a slot left
+    // `used` would make a later install take the idempotent "already installed" path and return
+    // success without re-patching (every hook silently dead), with `orig` pointing at an munmap'd
+    // trampoline. Metamod dlclose's us right after this today, which hides the coupling rather than
+    // removing it.
+    S2_HookResetAll();
 
     // Unregister the game-event listener before core shutdown (Slice 5D.1).
     // RemoveListener is an all-names call per the SDK — one call removes the listener

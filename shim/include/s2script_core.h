@@ -353,6 +353,43 @@ typedef int (*s2_usermsg_hook_has_field_fn)(const char* path);
 typedef int (*s2_usermsg_hook_recipients_fn)(unsigned long long* outMask);
 typedef int (*s2_usermsg_hook_debug_fn)(char* buf, int buflen);
 
+/* Declarative inbound hooks — APPENDED after defer_selftest; order is the ABI. Implemented in
+ * shim/src/engine_hooks.{h,cpp}; these MUST stay signature-identical to the declarations there.
+ * Engine-generic: the address arrives already RESOLVED (through engine_call_resolve, off the
+ * plugin's own gamedata) and the shape arrives as an id from the closed vocabulary in
+ * shim/src/hook_dispatch.h, so no game identifier reaches the core.
+ * hook_install: lazily detour `addr` with hook `hookId`'s own compiled thunk for `shape`. 0 = the
+ *   hook is (now, or already) installed; -1 with a NAMED reason in reasonOut, which the core stores
+ *   verbatim as that hook's degrade reason. Idempotent per id — core calls it on every subscribe.
+ * hook_arm_bypass: arm the hook's one-shot bypass latch immediately BEFORE core invokes the
+ *   `bypassWith` call descriptor, so our own outbound call does not fire our own hook (SourceMod's
+ *   g_pIgnoreTerminateDetour semantic, and what keeps a hook from firing while core holds the
+ *   isolate borrow). Out-of-range ids are a silent no-op.
+ * hook_disarm_bypass: clear it again, immediately AFTER that invoke. Not redundant with the thunk's
+ *   take: an invoke that never reaches the hooked function (degraded descriptor, stale receiver)
+ *   would otherwise leave the latch armed and swallow the next GENUINE engine-driven call. Core
+ *   cannot clear it any other way — the latch lives in the shim.
+ * the hook_read/hook_write pairs and hook_receiver_handle: the BLOCK-SCOPED arg view (engine_hooks.h).
+ *   (Spelled out rather than globbed: a `hook_read_<star>` in a C comment would close it here.) `idx`
+ *   is the descriptor's positional param index; every accessor is liveness-, bounds- and
+ *   class-checked shim-side and returns -1 rather than reinterpreting bits, which core surfaces as a
+ *   NAMED degrade of that hook — a handler reading a param must never get a plausible-looking 0 when
+ *   the read actually failed. `argView` is opaque to core: it is a THUNK'S STACK FRAME and core only
+ *   ever hands it back here.
+ * engine_call_address: the resolved absolute address behind an engine_call_resolve id (0 = unknown
+ *   id). A hook resolves through the SAME descriptor path as a call, but then has to patch bytes,
+ *   and S2_HookInstall takes an address rather than an id. Core treats it as an opaque token and
+ *   never dereferences it; hook_install re-proves the whole patch window is executable. */
+typedef int  (*s2_hook_install_fn)(int hookId, int shape, int64_t addr, char* reasonOut, int reasonCap);
+typedef void (*s2_hook_arm_bypass_fn)(int hookId);
+typedef void (*s2_hook_disarm_bypass_fn)(int hookId);
+typedef int  (*s2_hook_read_f32_fn)(void* argView, int idx, float* out);
+typedef int  (*s2_hook_read_i32_fn)(void* argView, int idx, int32_t* out);
+typedef int  (*s2_hook_write_f32_fn)(void* argView, int idx, float value);
+typedef int  (*s2_hook_write_i32_fn)(void* argView, int idx, int32_t value);
+typedef int  (*s2_hook_receiver_handle_fn)(void* argView, uint32_t* outHandle);
+typedef int64_t (*s2_engine_call_address_fn)(int callId);
+
 /* The C-ABI engine-ops table. Field ORDER is the ABI: this struct and `S2EngineOps` in
  * core/src/v8host.rs must stay index-for-index identical and must change in the SAME commit.
  *
@@ -510,6 +547,21 @@ typedef struct {
     /* deferred-dispatch selftest (DEV-ONLY) — APPENDED after ent_identity_flags_clear; order is
      * the ABI; do not reorder above. */
     s2_defer_selftest_fn defer_selftest;
+    /* declarative inbound hooks — APPENDED after defer_selftest; order is the ABI; do not reorder
+     * above. Implemented in shim/src/engine_hooks.cpp. */
+    s2_hook_install_fn    hook_install;
+    s2_hook_arm_bypass_fn hook_arm_bypass;
+    /* declarative inbound hooks, core half — APPENDED after hook_arm_bypass; order is the ABI; do
+     * not reorder above. hook_disarm_bypass closes the latch-leak window (spec §10); the five
+     * accessors are how the block-scoped arg view reaches JS at all; engine_call_address is what
+     * turns a resolved descriptor into an installable address. */
+    s2_hook_disarm_bypass_fn   hook_disarm_bypass;
+    s2_hook_read_f32_fn        hook_read_f32;
+    s2_hook_read_i32_fn        hook_read_i32;
+    s2_hook_write_f32_fn       hook_write_f32;
+    s2_hook_write_i32_fn       hook_write_i32;
+    s2_hook_receiver_handle_fn hook_receiver_handle;
+    s2_engine_call_address_fn  engine_call_address;
 } S2EngineOps;
 
 /* Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant
@@ -663,6 +715,20 @@ int s2script_core_dispatch_usercmd(int slot);
  * the caller MRES_SUPERCEDEs the send when >= Handled (2). catch_unwind -> 0 (fail-open: a core bug
  * must never suppress a message it didn't mean to). */
 int s2script_core_dispatch_usermsg(const char* name, int id);
+/* Shim -> core: an installed DECLARATIVE INBOUND HOOK fired. Called from the hook's compiled thunk
+ * (shim/src/engine_hooks.cpp) with the hook id the thunk carries as a compile-time constant and an
+ * OPAQUE pointer to the thunk's own stack-frame arg view — core reads and writes it only through the
+ * S2_HookRead/S2_HookWrite accessors in engine_hooks.h, and it dies with the frame, so nothing it
+ * points at can outlive the dispatch. Returns the collapsed HookResult (0 Continue .. 3 Stop); the
+ * thunk suppresses the original engine call entirely when >= Handled (2).
+ *
+ * DECLARED WEAK ON PURPOSE. The shim and the core are two separate .so files. A non-weak reference to
+ * a core entry the resident libs2script_core.so does not define is an undefined symbol at dlopen,
+ * which takes down the WHOLE addon — every plugin, on a live server — and that is the one failure mode
+ * this project refuses (degrade per-descriptor, never crash globally). Weak makes a mismatched pair
+ * resolve to null instead; S2Hook_SetOps then receives a null dispatch, S2Hook_Dispatch returns
+ * Continue, and Load logs the miss BY NAME. */
+int s2script_core_dispatch_hook(int hookId, void* argView) __attribute__((weak));
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);

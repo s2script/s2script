@@ -82,11 +82,9 @@ constexpr int kMaxFpArgs = 8;
 // index degrades instead of reading out of bounds (the Shim_EntitySubobjVcall precedent).
 constexpr int kMaxVtableIndex = 512;
 
-// The "no entity" value for `returns: "entity"`. MUST NOT be 0: zero is a legal CEntityHandle
-// encoding (index 0, serial 0), so using it as the absent marker would make "the call returned no
-// entity" indistinguishable from "a live handle to entity slot 0" once the core decodes it. This is
-// the engine's own INVALID_EHANDLE_INDEX convention; core skips decoding when it sees it.
-constexpr uint64_t kInvalidEntityHandle = 0xFFFFFFFFull;
+// The "no entity" value for `returns: "entity"` — see the S2_ENTITY_HANDLE_NONE comment in
+// engine_calls.h for why it is not 0. Core skips decoding when it sees it.
+constexpr uint64_t kInvalidEntityHandle = S2_ENTITY_HANDLE_NONE;
 
 // Descriptor-table cap. Resolution is idempotent per resolved address (see the dedupe in
 // S2_EngineCallResolve), so a plugin reload loop re-uses ids rather than growing the table; the cap
@@ -274,6 +272,47 @@ using FnF32 = float    (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                            float, float, float, float, float, float, float, float);
 
 }  // namespace
+
+// The books-first pointer -> handle pack, exposed for engine_hooks.cpp's receiver surfacing (a
+// detour's `this` is the same question as an entity RETURN: is this pointer an entity the host's
+// books currently vouch for?). Thin wrapper, so there is exactly ONE implementation of the rule.
+uint32_t S2_EntityHandleFromPtr(void* p) {
+    return static_cast<uint32_t>(EntityHandleFromPtr(p));   // kInvalidEntityHandle -> the none marker
+}
+
+// InModuleText's rule, re-asked WITHOUT a module name, for a caller that holds only a resolved
+// address (engine_hooks.cpp, which must never patch bytes it cannot prove are code). Module-agnostic
+// on purpose: a hook target may live in whichever module its descriptor named, and this TU is the
+// one that already owns the phdr walk — a second copy of it in engine_hooks.cpp would also drag the
+// question of "which module?" somewhere that has no answer to it.
+//
+// Note this walks EVERY module's every PF_X PT_LOAD segment, rather than FindModuleText's
+// largest-PF_X-of-one-soname: the question here is containment, not identification, so the
+// metamod-proxy tie-break that rule exists for does not apply.
+int S2_AddressIsExecutable(const void* addr) {
+    if (!addr) return 0;
+    struct Ctx { uintptr_t a; bool hit; } ctx{ reinterpret_cast<uintptr_t>(addr), false };
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
+        auto* c = static_cast<Ctx*>(data);
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+            if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X)) continue;
+            const uintptr_t lo = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
+            if (c->a >= lo && c->a < lo + ph.p_memsz) { c->hit = true; return 1; }   // stop the walk
+        }
+        return 0;
+    }, &ctx);
+    return ctx.hit ? 1 : 0;
+}
+
+// The address behind a call id, for the ONE caller that needs bytes rather than a callable: the
+// declarative-inbound-hook install (see the header for why this exists at all). An unknown id
+// returns 0, which S2_HookInstall already refuses by name ("hook target address is null") — so a
+// stale id degrades that hook instead of patching address 0.
+int64_t S2_EngineCallAddress(int callId) {
+    if (callId < 0 || static_cast<size_t>(callId) >= g_calls.size()) return 0;
+    return static_cast<int64_t>(reinterpret_cast<uintptr_t>(g_calls[static_cast<size_t>(callId)].fn));
+}
 
 // ---------------------------------------------------------------------------
 // Resolve. Returns a call id >= 0, or -1 with a named reason (spec §12 "Load" row) — every failure

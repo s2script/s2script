@@ -68,7 +68,7 @@ bool DeclaresValidator(const std::string& dumped) {
 // failure mode (a stale value reading garbage while reporting success) on the one surface a
 // server admin hand-edits under time pressure. Reject a non-object by NAME instead.
 size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOverride,
-                 GameConfig& gc, std::string& error) {
+                 const std::string& fileLabel, GameConfig& gc, std::string& error) {
     size_t applied = 0;
     auto mark = [&](const std::string& name) { applied++; if (isOverride) gc.overridden.insert(name); };
 
@@ -158,6 +158,34 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
             else error = "gamedata calls." + k + " has the wrong type (expected an object)";
         }
 
+    // `hooks` — an INBOUND descriptor (a declared engine detour). Carried verbatim, exactly like
+    // `calls`: same reason (the grammar is core's), same entry-level replacement, same is-it-an-
+    // object check and nothing more.
+    if (j.contains("hooks"))
+        for (auto& [k, v] : j.at("hooks").items()) {
+            if (v.is_object()) { gc.hooks[k] = v.dump(); mark(k); }
+            else error = "gamedata hooks." + k + " has the wrong type (expected an object)";
+        }
+
+    // WHAT THIS MERGE DID NOT READ. Everything above is opt-in by name, so a section this loader
+    // has no branch for simply evaporates — which is how `hooks` shipped inert: authored, validated
+    // on disk, consumed by core, and dropped here without a word. Naming the leftovers turns the
+    // next such omission into a boot line instead of a live-server mystery.
+    //
+    // Deliberately a report, not an error: an older shim reading a newer tree is a legitimate
+    // downgrade, and it must degrade loudly rather than refuse to boot.
+    // `is_object()` guarded: `it.key()` THROWS on a non-object root, and a gamedata file whose top
+    // level is an array or a scalar is a legal parse. Every section branch above already no-ops on
+    // one (`contains` is false), so this must too.
+    if (j.is_object())
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            const std::string& k = it.key();
+            if (k == "interfaces" || k == "offsets" || k == "signatures" || k == "keys" ||
+                k == "calls" || k == "hooks")
+                continue;
+            gc.sectionsIgnored.push_back(fileLabel + ": " + k);
+        }
+
     return applied;
 }
 
@@ -168,7 +196,11 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
 // If the two ever diverge, every signature-targeted descriptor degrades with core's named
 // "no '<platform>' entry" reason — loud, per-descriptor, never a silent wrong resolve.
 std::string SerializeMerged(const GameConfig& gc, const std::string& platform) {
-    if (gc.signatures.empty() && gc.calls.empty()) return std::string();
+    // Widened for `hooks`: an owner declaring ONLY hooks (no signatures, no calls) is a legitimate
+    // shape — an inbound-only game package — and returning an empty string for it would hand core
+    // "this owner declared nothing", which is the same silent nothing the missing `hooks` member
+    // itself produced.
+    if (gc.signatures.empty() && gc.calls.empty() && gc.hooks.empty()) return std::string();
     nlohmann::json doc = nlohmann::json::object();
     if (!gc.signatures.empty()) {
         nlohmann::json sigs = nlohmann::json::object();
@@ -197,6 +229,19 @@ std::string SerializeMerged(const GameConfig& gc, const std::string& platform) {
             calls[name] = std::move(v);
         }
         doc["calls"] = std::move(calls);
+    }
+    // `hooks`, on the same terms as `calls`: verbatim, entry by entry, degrading one entry rather
+    // than throwing out of the loader. Core's `gamedata_hooks::register_owner` reads this key; a
+    // build that emits everything BUT this one registers no detours at all and says so only on a
+    // live server, which is exactly what happened before this block existed.
+    if (!gc.hooks.empty()) {
+        nlohmann::json hooks = nlohmann::json::object();
+        for (const auto& [name, text] : gc.hooks) {
+            auto v = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
+            if (v.is_discarded()) continue;
+            hooks[name] = std::move(v);
+        }
+        doc["hooks"] = std::move(hooks);
     }
     return doc.dump();
 }
@@ -268,7 +313,7 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
             gc.filesFailed.push_back(name);
             return gc;
         }
-        if (MergeFile(j, platform, /*isOverride=*/false, gc, error) == 0)
+        if (MergeFile(j, platform, /*isOverride=*/false, name, gc, error) == 0)
             gc.filesEmpty.push_back(name);
         gc.filesLoaded.push_back(name);
     }
@@ -307,7 +352,7 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
             // an operator's hot-fix must not disable the engine surface. It is a named `error`,
             // which the boot banner reports.
             if (!ParseFile(p, j, error)) return gc;
-            if (MergeFile(j, platform, /*isOverride=*/true, gc, error) == 0)
+            if (MergeFile(j, platform, /*isOverride=*/true, label, gc, error) == 0)
                 gc.filesEmpty.push_back(label);
             gc.filesLoaded.push_back(label);
         }

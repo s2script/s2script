@@ -33,6 +33,64 @@ if [ ${#SHIMS[@]} -eq 0 ]; then
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Part 1: every WEAK-UNDEFINED s2script_core_* the shim references must be defined by the core it
+# ships with. Runs whether or not a game install is present — it needs neither.
+#
+# WHY THIS EXISTS, and why the check above does not cover it. Core entry points the shim calls are
+# `extern "C"`, so they never match the `^_Z` filter above; and some are declared
+# `__attribute__((weak))` ON PURPOSE, so that a shim paired with an OLDER core degrades (null
+# pointer, named WARN at Load) instead of failing dlopen and taking the whole addon down —
+# s2script_core_dispatch_hook is the first. Weakness buys that at one cost: a MISSPELLING on the core
+# side no longer fails the link either. It compiles, it links, it loads, and the feature is simply
+# never delivered, with a WARN that reads exactly like a version mismatch. This is the gate that
+# turns that back into a build failure.
+#
+# Pairs are explicit rather than a union of every core .so lying around: a stale `target/release`
+# next to a fresh `target/debug` would otherwise vouch for a symbol the artifact under test does not
+# have. build/shim is paired with the profile CMake actually linked (from its own cache); dist/ is
+# paired with the core .so sitting beside it.
+core_rc=0
+core_pair() {  # $1 = shim artifact, $2 = its core .so
+  local so="$1" core="$2"
+  [ -f "$so" ] || return 0
+  if [ ! -f "$core" ]; then
+    echo "check-shim-symbols: SKIP core-symbol check for $so — no $core."
+    return 0
+  fi
+  local weak defined missing
+  # Weak-undefined (nm type 'w') AND plain-undefined ('U') core entry points. Both are checked: 'U'
+  # would fail at dlopen rather than silently, but naming it here beats discovering it on a server.
+  weak=$(nm -D --undefined-only "$so" | awk '$1 ~ /^[wU]$/ || $2 ~ /^[wU]$/ {print $NF}' \
+         | grep -E '^s2script_core_' | sort -u || true)
+  [ -n "$weak" ] || { echo "check-shim-symbols: ok — $so references no s2script_core_* entry points"; return 0; }
+  defined=$(nm -D --defined-only "$core" | awk '{print $NF}' | sort -u)
+  missing=$(comm -23 <(printf '%s\n' "$weak") <(printf '%s\n' "$defined") || true)
+  if [ -n "$missing" ]; then
+    echo "check-shim-symbols: FAIL — $so references core entry points $core does not define." >&2
+    printf '%s\n' "$missing" | sed 's/^/    /' >&2
+    echo >&2
+    echo "  A WEAK reference resolves to null instead of failing the load, so this would ship as a" >&2
+    echo "  silently dead feature. Check the spelling of the #[no_mangle] fn in core/src/ffi.rs" >&2
+    echo "  against the declaration in shim/include/s2script_core.h." >&2
+    core_rc=1
+  else
+    echo "check-shim-symbols: ok — $so's $(printf '%s\n' "$weak" | grep -c .) s2script_core_* entry point(s) all defined in $core"
+  fi
+}
+
+CORE_PROFILE=release
+if [ -f build/shim/CMakeCache.txt ]; then
+  CORE_PROFILE=$(sed -n 's/^S2_CORE_LIB_DIR:STRING=//p' build/shim/CMakeCache.txt | head -1)
+  [ -n "$CORE_PROFILE" ] || CORE_PROFILE=release
+fi
+core_pair build/shim/s2script.so "target/$CORE_PROFILE/libs2script_core.so"
+core_pair dist/addons/s2script/bin/linuxsteamrt64/s2script.so \
+          dist/addons/s2script/bin/linuxsteamrt64/libs2script_core.so
+[ "$core_rc" -eq 0 ] || exit 1
+
+# ---------------------------------------------------------------------------
+# Part 2: the engine-symbol check (needs the game install).
 GAME="${S2SCRIPT_GAME_DIR:-docker/cs2-data/game}"
 if [ ! -d "$GAME" ]; then
   echo "check-shim-symbols: SKIP — no game install at $GAME (set S2SCRIPT_GAME_DIR to enable)."
