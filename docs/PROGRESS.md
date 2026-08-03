@@ -116,7 +116,7 @@ books-gated `EntityRef` under `player`). `packages/cs2/hooks.generated.d.ts` —
 interfaces plus the `PluginContext` augmentation (`ctx.gameRules`, `ctx.players`) — is generated from
 the descriptor by the new `s2s gen-hooks` CLI command.
 
-526 core tests green. New gates: `scripts/test-hook-dispatch.sh` (the engine-free shim half — shape
+538 core tests green. New gates: `scripts/test-hook-dispatch.sh` (the engine-free shim half — shape
 vocabulary, bypass latch, the collapse contract, hardened with a sentinel-guarded bypass-latch bounds
 test), `scripts/check-engine-ops-order.sh` (`S2EngineOps`'s field order stays identical across its
 two independently hand-written C and Rust declarations — nothing else catches a silent divergence),
@@ -127,11 +127,36 @@ coverage folded into the existing `scripts/check-gamedata-owners.sh` and a full 
 (unknown shape, missing `validate`, unknown `bypassWith` all fail the build) added to
 `scripts/check-call-descriptors.sh`.
 
-**Live gate PENDING — not yet run.** Offline tests cannot prove a detour diverts execution on the
-live binary. Fixtures go in `tools/hookgate/` (modelled on `tools/a5bgate/`) and have not been built
-yet. The six things only a real server proves: a natural round end fires `onTerminateRound` with a
-plausible `reason`; `GameRules.terminateRound()` from JS does NOT fire it (the bypass); a handler
-returning `HookResult.Handled` actually prevents the round from ending; a mutated `reason` reaches
-the engine (the round ends with the substituted reason); with no subscriber, the boot log shows the
-detour was never installed; and `ctx.players.onRespawn` fires on an engine round-start respawn but
-not on `player.respawn()`.
+**Live gate RUN, and it found a real blocker one layer below this slice.** Everything up to the
+patch instruction works on the live binary and was observed in the boot transcript: both descriptors
+resolve and arm (`armed 'onRespawn' (slot 0, shape 'this_void', ctx.players)`, `armed
+'onTerminateRound' (slot 1, shape 'this_f32_i32_i32_i32', ctx.gameRules)`), the merged gamedata
+carries them (`@s2script/cs2 gamedata registered (8 declared call(s), 2 declared hook(s), 3712
+byte(s))`), lazy install holds (with no subscriber the boot log shows no install — live-gate check
+5, the one check that passed outright), and `tools/hookgate/hookgate-a` typechecks and builds
+against the generated `ctx` augmentation through `s2s build`, proving the codegen→`.d.ts`→`ctx`
+chain end to end. Then **both installs were refused, by design, with a named reason**:
+
+```
+WARN: [engine-hooks] ... hook 'onTerminateRound' degraded:
+      detour install refused this prologue (relative/rip-relative or undecodable)
+```
+
+`s2detour::Install` (`shim/src/detour.cpp:47,54`) copies the stolen prologue into the trampoline
+*blindly*, so it bails on any relative or rip-relative instruction inside its 14-byte steal window
+rather than relocate it. Both targets have one:
+
+| target | prologue | the instruction that lands inside the window |
+| --- | --- | --- |
+| `CCSGameRules::TerminateRound` | `55 48 89 E5 41 57 41 89 F7 41 56` (11 B) | `48 8D 35 disp32` — `lea rsi,[rip+disp32]` |
+| `CCSPlayerController::Respawn` | `55 48 89 E5 41 54 53 48 89 FB` (10 B) | `E8 rel32` — `call rel32` |
+
+The three existing detours (`DispatchTraceAttack`, `Host_Say`, `ProcessUsercmds`) work only because
+their prologues happen to be relocatable — the limitation was always there and no target had hit it
+before. So live-gate checks 1–4 and 6 (fire / bypass / suppress / mutate / receiver `EntityRef`) are
+**not yet proven on a server**; they hold offline, and the mechanism reaching a named refusal is the
+per-descriptor degrade doctrine working rather than failing. Next slice: teach `s2detour` to
+relocate the two instruction classes it refuses (adjust a rip-relative `disp32` by the
+target→trampoline delta; rewrite a stolen `call rel32` as an absolute call through the trampoline),
+which is provable off-server against byte buffers the way `defer_queue.cpp`/`call_validate.cpp` are,
+and whose gate must re-prove the three existing detours still fire.
