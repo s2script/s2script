@@ -108,6 +108,7 @@ struct ArgUse {
     int          argIndex  = -1;     ///< SysV integer arg STORED to memory (0=this/rdi), else -1
     bool         wide      = false;  ///< REX.W — a 64-bit store
     int          redefines = -1;     ///< SysV integer arg this instruction OVERWRITES, else -1
+    bool         terminator = false; ///< ret/jmp/jcc/call — the caller must stop scanning here
     unsigned     length    = 0;      ///< 0 = undecodable; the caller must stop
 };
 

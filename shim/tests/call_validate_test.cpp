@@ -473,14 +473,92 @@ static void test_arg_width_checks_every_param_position() {
 }
 
 static void test_arg_width_never_reads_past_the_view() {
-    // The view ENDS mid-instruction: the last store is truncated to 2 of its 7 bytes. ASan is the
-    // arbiter here — the decoder must bound its own read rather than trust hde64 to stop.
+    // The view ENDS mid-instruction: the last store is truncated to 2 of its 7 bytes.
+    //
+    // The buffer is EXACTLY the size of the view, and that is the whole test. An earlier version cut
+    // the view logically while handing in the full 55-byte array, so "past the view" was still
+    // inside the allocation and ASan had nothing to report — the test passed with the bounded-window
+    // copy REMOVED. Past-the-view must be past-the-allocation or this proves nothing.
     char r[256];
     const std::size_t cut = sizeof kTerminateRound - 5;
-    auto mv = ViewOver(kTerminateRound, cut);
+    std::vector<uint8_t> exact(kTerminateRound, kTerminateRound + cut);
+    auto mv = ViewOver(exact.data(), exact.size());
     const uint8_t narrow[4] = { 1, 0, 0, 0 };
-    const int rc = s2validate::ArgWidths(narrow, 4, mv, kTerminateRound, r, sizeof r);
+    const int rc = s2validate::ArgWidths(narrow, 4, mv, exact.data(), r, sizeof r);
     CHECK(rc == 0, "a view ending mid-instruction stops cleanly instead of reading past it");
+    CHECK(std::strstr(r, "arg-width") != nullptr, "and still renders a verdict rather than garbage");
+}
+
+// A maximal run of legacy prefixes: hde64's prefix loop runs SIXTEEN iterations before the opcode,
+// so a window sized to the longest legal instruction (15) is one byte short of what the DISASSEMBLER
+// can touch. This exact input walked off the end of the stack buffer (ASan-confirmed) in the
+// function whose comment promised it could not.
+static void test_arg_width_survives_a_maximal_prefix_run() {
+    std::vector<uint8_t> prefixes(15, 0x66);
+    prefixes.push_back(0x90);
+    char r[256];
+    auto mv = ViewOver(prefixes.data(), prefixes.size());
+    const uint8_t narrow[3] = { 1, 0, 0 };
+    CHECK(s2validate::ArgWidths(narrow, 3, mv, prefixes.data(), r, sizeof r) == 0,
+          "a maximal legacy-prefix run decodes without reading past the decode window");
+}
+
+// The bound that keeps ArgWidths from reading past the CALLER's array. A 2-slot shape on a callee
+// that spills r8 (slot 4) must not index wide[4]. Nothing exercised this before, so the guard was
+// load-bearing and untested — ASan is the arbiter.
+static void test_arg_width_never_indexes_past_the_declared_slots() {
+    // mov %r8,-0x8(%rbp) ; ret     -> a 64-bit store of slot 4
+    static const uint8_t code[] = { 0x4C,0x89,0x45,0xF8, 0xC3 };
+    char r[256];
+    auto mv = ViewOver(code, sizeof code);
+    const uint8_t twoSlots[2] = { 1, 0 };          // this + one param; slot 4 is OUT of range
+    CHECK(s2validate::ArgWidths(twoSlots, 2, mv, code, r, sizeof r) == 0,
+          "a store in a slot beyond the declared arity is ignored, not read out of bounds");
+}
+
+// The scan must stop at the end of the callee's own flow. Without this it marches into the NEXT
+// function and blames its spills on our shape — 490 of 3497 refusals in a libserver.so corpus scan.
+static void test_arg_width_stops_at_the_end_of_the_function() {
+    // ret, then (as the linker would lay out) another function that spills rdx 64-bit.
+    static const uint8_t code[] = { 0xC3, 0x48,0x89,0x55,0xF8, 0xC3 };
+    char r[256];
+    auto mv = ViewOver(code, sizeof code);
+    const uint8_t narrow[4] = { 1, 0, 0, 0 };
+    CHECK(s2validate::ArgWidths(narrow, 4, mv, code, r, sizeof r) == 0,
+          "a store past the callee's own `ret` is NOT evidence about its arguments");
+}
+
+// A `call` clobbers every SysV integer argument register, so a 64-bit spill after one describes a
+// return value, not an incoming argument. CCSPlayerController_Respawn's real prologue calls at +0xa.
+static void test_arg_width_stops_at_a_call() {
+    // call rel32 ; mov %rdx,-0x8(%rbp) ; ret
+    static const uint8_t code[] = { 0xE8,0x00,0x00,0x00,0x00, 0x48,0x89,0x55,0xF8, 0xC3 };
+    char r[256];
+    auto mv = ViewOver(code, sizeof code);
+    const uint8_t narrow[4] = { 1, 0, 0, 0 };
+    CHECK(s2validate::ArgWidths(narrow, 4, mv, code, r, sizeof r) == 0,
+          "a 64-bit spill AFTER a call is a return value, not an argument");
+}
+
+// movslq is the canonical encoding of "a 32-bit int argument widened for use as an index" — the
+// shape is CORRECT and the hook was being refused. mov $imm,%rdx (0xC7) is the sibling of the
+// 0xB8 form that was already tracked: same semantics, opposite verdict, purely by encoding.
+static void test_arg_width_tracks_the_wider_redefinition_set() {
+    struct C { const char* name; std::vector<uint8_t> code; };
+    const std::vector<C> cases = {
+        { "movslq %edx,%rdx",  { 0x48,0x63,0xD2, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "mov $1,%rdx",       { 0x48,0xC7,0xC2,0x01,0x00,0x00,0x00, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "lea -0x8(%rbp),%rdx",{0x48,0x8D,0x55,0xF8, 0x48,0x89,0x55,0xF0, 0xC3 } },
+        { "pop %rdx",          { 0x5A, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "xor %edx,%edx",     { 0x31,0xD2, 0x48,0x89,0x55,0xF8, 0xC3 } },
+    };
+    for (const auto& c : cases) {
+        char r[256];
+        auto mv = ViewOver(c.code.data(), c.code.size());
+        const uint8_t narrow[4] = { 1, 0, 0, 0 };
+        CHECK(s2validate::ArgWidths(narrow, 4, mv, c.code.data(), r, sizeof r) == 0,
+              std::string("a spill after `") + c.name + "` is not evidence about the argument");
+    }
 }
 
 static void test_arg_width_decoder_reports_redefinitions_and_stores() {
@@ -541,6 +619,11 @@ int main() {
     test_arg_width_passes_when_it_sees_nothing();
     test_arg_width_checks_every_param_position();
     test_arg_width_never_reads_past_the_view();
+    test_arg_width_survives_a_maximal_prefix_run();
+    test_arg_width_never_indexes_past_the_declared_slots();
+    test_arg_width_stops_at_the_end_of_the_function();
+    test_arg_width_stops_at_a_call();
+    test_arg_width_tracks_the_wider_redefinition_set();
 
     if (g_fail) { std::cerr << "call_validate_test: " << g_fail << " FAILURE(S)\n"; return 1; }
     std::cout << "call_validate_test: all checks passed\n";

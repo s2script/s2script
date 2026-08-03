@@ -304,7 +304,12 @@ namespace {
 // prologue evidence, and a long scan is where a redefinition gets missed and a false FAIL is born.
 constexpr int         kScanBytes = 64;
 constexpr int         kScanInsns = 24;
-constexpr std::size_t kMaxInsn   = 15;   // longest x86-64 instruction; the decoder may read this far
+constexpr std::size_t kMaxInsn   = 15;   // longest x86-64 instruction
+// hde64's prefix loop runs 16 iterations BEFORE the opcode, so a maximal run of legacy prefixes can
+// push its reads 16 bytes past where the instruction "should" start. A kMaxInsn-sized window is
+// therefore one short of its worst case — 15 x 0x66 walks off the end (ASan-confirmed). Size the
+// window for what the DISASSEMBLER can touch, not for what an instruction can legally be.
+constexpr std::size_t kWindow    = 16 + kMaxInsn;
 
 // x86-64 register number -> SysV INTEGER argument slot, or -1.
 // A table, not a switch: the register numbers are not in argument order (rdi=7 is arg0, rsi=6 is
@@ -324,7 +329,7 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
     // hde64_disasm reads up to kMaxInsn bytes regardless of what is actually there, so a decode at
     // the very end of the view would read past it. Copy into a zero-padded window instead of
     // trusting the disassembler to stop — the same reason every other validator here bounds first.
-    uint8_t win[kMaxInsn] = {};
+    uint8_t win[kWindow] = {};
     const std::size_t n = avail < kMaxInsn ? avail : kMaxInsn;
     std::memcpy(win, p, n);
 
@@ -336,6 +341,24 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
     const int reg = hs.modrm_reg | (hs.rex_r ? 8 : 0);
     const int rm  = hs.modrm_rm  | (hs.rex_b ? 8 : 0);
 
+    // TERMINATORS. The scan must stop at the end of the callee's own flow, and this is the single
+    // highest-value rule in the file: without it the walk marches into the NEXT function and blames
+    // its argument spills on our shape (a corpus scan over libserver.so attributed 490 of 3497
+    // refusals to stores past the symbol's own size — every one a false refusal of a good hook).
+    //
+    // `call` is a terminator for the same reason and one more: it CLOBBERS every SysV integer
+    // argument register, so a 64-bit spill after it is evidence about a return value, not about an
+    // incoming argument. CCSPlayerController_Respawn's real prologue calls out at +0xa.
+    if (hs.opcode == 0xC3 || hs.opcode == 0xC2 ||                       // ret
+        hs.opcode == 0xE9 || hs.opcode == 0xEB ||                       // jmp rel
+        hs.opcode == 0xE8 ||                                            // call rel
+        (hs.opcode >= 0x70 && hs.opcode <= 0x7F) ||                     // jcc rel8
+        (hs.opcode == 0x0F && hs.opcode2 >= 0x80 && hs.opcode2 <= 0x8F) // jcc rel32
+       ) { u.terminator = true; return u; }
+    if (hs.opcode == 0xFF && (hs.modrm_reg == 2 || hs.modrm_reg == 4)) { // call/jmp r/m
+        u.terminator = true; return u;
+    }
+
     if (hs.opcode == 0x89) {                 // MOV r/m, r
         if (hs.modrm_mod != 3) {             // ...to MEMORY: the callee is spilling an argument
             u.argIndex = ArgOfReg(reg);
@@ -345,8 +368,22 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
         }
     } else if (hs.opcode == 0x8B) {          // MOV r, r/m  -> reg is redefined
         u.redefines = ArgOfReg(reg);
-    } else if (hs.opcode >= 0xB8 && hs.opcode <= 0xBF) {   // MOV imm -> reg
-        u.redefines = ArgOfReg((hs.opcode - 0xB8) | (hs.rex_b ? 8 : 0));
+    } else if (hs.opcode >= 0xB8 && hs.opcode <= 0xBF) {   // MOV imm32/64 -> reg
+        u.redefines = ArgOfReg(static_cast<int>(hs.opcode - 0xB8) | (hs.rex_b ? 8 : 0));
+    } else if (hs.opcode == 0xC7 && hs.modrm_mod == 3) {   // MOV imm32 -> r/m (sign-extended)
+        // The SIBLING of the 0xB8 form above. `mov $1,%edx` (0xBA) was tracked and `mov $1,%rdx`
+        // (0x48 C7 C2) was not — same semantics, opposite verdict, purely by encoding.
+        u.redefines = ArgOfReg(rm);
+    } else if (hs.opcode == 0x63 || hs.opcode == 0x8D ||   // movslq / lea  -> reg
+               hs.opcode == 0x01 || hs.opcode == 0x09 ||   // add / or
+               hs.opcode == 0x21 || hs.opcode == 0x29 ||   // and / sub
+               hs.opcode == 0x31 || hs.opcode == 0x33) {   // xor
+        // movslq is the CANONICAL encoding of "a 32-bit int argument widened for use as an index" —
+        // the shape is right and the hook was being refused. lea/ALU forms are the rest of the
+        // common "compute into an argument register then spill it" shapes.
+        u.redefines = ArgOfReg(reg);
+    } else if (hs.opcode >= 0x58 && hs.opcode <= 0x5F) {   // pop -> reg
+        u.redefines = ArgOfReg(static_cast<int>(hs.opcode - 0x58) | (hs.rex_b ? 8 : 0));
     }
     // Anything else records no redefinition. That is UNSOUND IN THE SAFE DIRECTION: a missed
     // redefinition can only produce a false FAIL (we mistake a later value for the argument), never
@@ -381,6 +418,7 @@ int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* 
         if (avail == 0) break;
         const ArgUse u = DecodeArgUse(code + off, avail);
         if (u.length == 0) break;   // undecodable: stop, do NOT guess
+        if (u.terminator) break;    // end of the callee's own flow (or a call that clobbers args)
 
         if (u.argIndex >= 0 && u.argIndex < 8 && !redefined[u.argIndex]) {
             observed++;
