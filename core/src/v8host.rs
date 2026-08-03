@@ -18860,7 +18860,12 @@ mod frame_tests {
 
     #[test]
     fn ws_module_self_close_fires_on_close() {
-        init(dummy_logger()).unwrap();
+        // The CAPTURING logger, not dummy_logger(). This test has failed in CI and never locally,
+        // and the natives on its path (__s2_ws_on / _send / _close) report a refused ownership gate
+        // by WARN — which dummy_log_fn silently threw away, so the one diagnostic that would explain
+        // the failure was guaranteed to be invisible in the only place it mattered.
+        LOG.lock().unwrap().clear();
+        init(logger as LogFn).unwrap();
         let port = spawn_local_ws_echo_server();
         load_body(
             "wsclose",
@@ -18898,10 +18903,15 @@ mod frame_tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        // Dump what core actually SAID. "reached stage 'sent'" narrowed this to "the subscribe never
+        // took", but not why; a refused ownership gate WARNs, and that line is the difference between
+        // "the conn was gone" and "the socket went quiet".
+        let logged = LOG.lock().unwrap().clone();
         assert!(
             resolved,
-            "onClose never fired for a self-initiated close (reached stage '{}')",
-            read_global_string("wsclose", "__stage")
+            "onClose never fired for a self-initiated close (reached stage '{}')\n  core log:\n{}",
+            read_global_string("wsclose", "__stage"),
+            logged.iter().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
         );
         assert_eq!(read_global_string("wsclose", "__out"), "closed:1000:");
         shutdown();
