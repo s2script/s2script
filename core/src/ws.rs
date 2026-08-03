@@ -33,6 +33,23 @@ enum WsCommand {
     Shutdown,
 }
 
+/// How long the WebSocket handshake may take before `connect` rejects.
+///
+/// There is no such thing as "no timeout" here — there is only a timeout the plugin cannot see. A
+/// peer that accepts the TCP connection and then never speaks HTTP leaves `connect_async` parked
+/// forever, so the choice is between a named rejection and a Promise that never settles.
+///
+/// 10s is generous for a handshake (the TCP connect and one HTTP round trip) while still being far
+/// inside any human's patience for "did this work?".
+///
+/// Mutable ONLY so the timeout path itself can be tested in reasonable time — an untested timeout is
+/// a timeout that fires wrong the first time it matters. Never changed in a shipped process.
+static CONNECT_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10_000);
+
+fn connect_timeout() -> std::time::Duration {
+    std::time::Duration::from_millis(CONNECT_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 struct Conn {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<WsCommand>,
     owner: String,
@@ -124,12 +141,36 @@ pub fn connect(conn_id: u64, url: String, owner: String, headers: Vec<(String, S
                 return;
             }
         };
-        let stream = match tokio_tungstenite::connect_async(request).await {
-            Ok((s, _resp)) => s,
-            Err(err) => {
+        // BOUNDED. `connect_async` waits forever if the peer completes the TCP handshake and then
+        // never finishes the WebSocket one — it accepts the socket and goes quiet. Unbounded, that is
+        // not a slow connect, it is a permanent one: the connect Promise NEVER settles (neither
+        // `.then` nor `.catch` runs), `PENDING_JOBS` never decrements so the frame detour stays armed
+        // forever, and the plugin has no way to recover or even observe it.
+        //
+        // This was found the hard way: it is what made the ws tests hang in CI. A test that should
+        // finish in ~40ms burned a 30s poll budget and still reported its result as literally
+        // "pending", which is only reachable if the promise never settled at all.
+        //
+        // A timeout does not paper over the underlying stall — it converts an invisible hang into the
+        // named rejection the plugin already knows how to handle, through the SAME ConnectFailed path
+        // a bad URL takes.
+        let budget = connect_timeout();
+        let stream = match tokio::time::timeout(budget, tokio_tungstenite::connect_async(request)).await {
+            Ok(Ok((s, _resp))) => s,
+            Ok(Err(err)) => {
                 let _ = sig_tx.send(WsSignal {
                     conn_id,
                     kind: WsSignalKind::ConnectFailed(err.to_string()),
+                });
+                return;
+            }
+            Err(_elapsed) => {
+                let _ = sig_tx.send(WsSignal {
+                    conn_id,
+                    kind: WsSignalKind::ConnectFailed(format!(
+                        "handshake did not complete within {}ms",
+                        budget.as_millis()
+                    )),
                 });
                 return;
             }
@@ -255,6 +296,25 @@ mod tests {
         });
         port
     }
+    /// A listener that ACCEPTS the TCP connection and then says nothing, ever. This is the shape
+    /// that hung forever before there was a timeout: the socket is up, so there is no connect error
+    /// to report, and the WebSocket handshake simply never completes.
+    fn silent_server_port() -> u16 {
+        crate::http::init();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        crate::http::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            // Hold every accepted connection open and never write a byte.
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        port
+    }
+
     fn drain_for(kinds: usize) -> Vec<WsSignal> {
         let mut out = Vec::new();
         for _ in 0..500 {
@@ -317,6 +377,44 @@ mod tests {
         connect(2, "ws://127.0.0.1:1/".into(), "p".into(), Vec::new());
         let sigs = drain_for(1);
         assert!(sigs.iter().any(|s| matches!(s.kind, WsSignalKind::ConnectFailed(_))));
+    }
+
+    /// A peer that accepts the socket and then goes silent must REJECT, not hang.
+    ///
+    /// Before the timeout this case produced no signal at all — ever — so the connect Promise never
+    /// settled, `PENDING_JOBS` never decremented, and the caller had nothing to catch. That is the
+    /// failure that made the ws tests hang in CI, and it is a plugin-visible bug in its own right:
+    /// any host that accepts TCP and stalls would wedge a plugin permanently.
+    #[test]
+    fn a_silent_peer_times_out_instead_of_hanging_forever() {
+        use std::sync::atomic::Ordering;
+        let port = silent_server_port();
+        let prev = CONNECT_TIMEOUT_MS.swap(300, Ordering::Relaxed);
+
+        connect(910, format!("ws://127.0.0.1:{port}/"), "p".into(), Vec::new());
+
+        // Generous relative to the 300ms budget: this asserts the timeout FIRES, not how promptly.
+        let mut failed = None;
+        for _ in 0..600 {
+            if let Some(s) = try_recv_signal() {
+                if s.conn_id == 910 {
+                    if let WsSignalKind::ConnectFailed(e) = s.kind {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        CONNECT_TIMEOUT_MS.store(prev, Ordering::Relaxed);
+
+        let reason = failed.expect("a silent peer must produce ConnectFailed, not silence");
+        assert!(
+            reason.contains("did not complete"),
+            "the rejection must name the timeout so an operator can tell it from a refused \
+             connection; got: {reason}"
+        );
+        drop_conn(910);
     }
     #[test]
     fn send_wrong_owner_denied() {
