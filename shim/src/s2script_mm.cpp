@@ -2269,13 +2269,17 @@ static int Detour_ProcessUsercmds(void* thisptr, void* cmds, int numcmds, bool p
 static int Shim_UsercmdHookInstall() {
     if (s_usercmdHookInstalled) return 1;
     if (!s_pProcessUsercmdsAddr) return 0;   // ProcessUsercmds signature unresolved on this build
-    if (s2detour::Install(s_pProcessUsercmdsAddr, reinterpret_cast<void*>(&Detour_ProcessUsercmds),
-                          reinterpret_cast<void**>(&g_origProcessUsercmds))) {
+    const s2detour::InstallResult r =
+        s2detour::Install(s_pProcessUsercmdsAddr, reinterpret_cast<void*>(&Detour_ProcessUsercmds),
+                          reinterpret_cast<void**>(&g_origProcessUsercmds), &S2_AddressIsExecutable);
+    if (r.ok) {
         s_usercmdHookInstalled = true;
-        META_CONPRINTF("[s2script] ProcessUsercmds hooked @%p (UserCmd.onRun, lazy-installed)\n", s_pProcessUsercmdsAddr);
+        META_CONPRINTF("[s2script] ProcessUsercmds hooked @%p (UserCmd.onRun, lazy-installed; %s, stole %d)\n",
+                       s_pProcessUsercmdsAddr, r.usedNearJump ? "near E9" : "far FF25", r.stolen);
         return 1;
     }
-    META_CONPRINTF("[s2script] WARN: ProcessUsercmds detour install failed — UserCmd.onRun off\n");
+    META_CONPRINTF("[s2script] WARN: ProcessUsercmds detour install failed (%s) — UserCmd.onRun off\n",
+                   r.reason ? r.reason : "no reason");
     return 0;
 }
 
@@ -4295,9 +4299,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ModText dmt = FindModuleText(dit->second.module.c_str());
                 if (dOff != s2sig::kFail && dmt.text) {  // resolve=="direct": the (unique) match IS the function start
                     void* dtaAddr = const_cast<uint8_t*>(dmt.text) + dOff;
-                    if (s2detour::Install(dtaAddr, reinterpret_cast<void*>(&Detour_DispatchTraceAttack),
-                                          reinterpret_cast<void**>(&g_origDTA))) {
-                        META_CONPRINTF("[s2script] DispatchTraceAttack hooked @%p (read-only)\n", dtaAddr);
+                    const s2detour::InstallResult dr =
+                        s2detour::Install(dtaAddr, reinterpret_cast<void*>(&Detour_DispatchTraceAttack),
+                                          reinterpret_cast<void**>(&g_origDTA), &S2_AddressIsExecutable);
+                    if (dr.ok) {
+                        META_CONPRINTF("[s2script] DispatchTraceAttack hooked @%p (read-only; %s, stole %d)\n",
+                                       dtaAddr, dr.usedNearJump ? "near E9" : "far FF25", dr.stolen);
                         // Self-test: call the now-patched function with the sentinel `this` — the handler
                         // short-circuits (never runs the original), proving the detour diverts on the live binary.
                         reinterpret_cast<DispatchTraceAttack_t>(dtaAddr)(
@@ -4318,11 +4325,15 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ModText hmt = FindModuleText(hsit->second.module.c_str());
                 if (hOff != s2sig::kFail && hmt.text) {  // resolve=="direct": the unique match IS the function start
                     void* hsAddr = const_cast<uint8_t*>(hmt.text) + hOff;
-                    if (s2detour::Install(hsAddr, reinterpret_cast<void*>(&Detour_HostSay),
-                                          reinterpret_cast<void**>(&g_origHostSay))) {
-                        META_CONPRINTF("[s2script] HostSay hooked @%p (chat triggers !cmd / /cmd)\n", hsAddr);
+                    const s2detour::InstallResult hr =
+                        s2detour::Install(hsAddr, reinterpret_cast<void*>(&Detour_HostSay),
+                                          reinterpret_cast<void**>(&g_origHostSay), &S2_AddressIsExecutable);
+                    if (hr.ok) {
+                        META_CONPRINTF("[s2script] HostSay hooked @%p (chat triggers !cmd / /cmd; %s, stole %d)\n",
+                                       hsAddr, hr.usedNearJump ? "near E9" : "far FF25", hr.stolen);
                     } else {
-                        META_CONPRINTF("[s2script] WARN: HostSay detour install failed — chat triggers off\n");
+                        META_CONPRINTF("[s2script] WARN: HostSay detour install failed (%s) — chat triggers off\n",
+                                       hr.reason ? hr.reason : "no reason");
                     }
                 }   // hOff == kFail: ResolveSigValidated already recorded the reason
             }
@@ -4556,11 +4567,16 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ModText foimt = FindModuleText(foiit->second.module.c_str());
                 if (foiOff != s2sig::kFail && foimt.text) {  // resolve=="direct": the unique match IS the function start
                     void* foiAddr = const_cast<uint8_t*>(foimt.text) + foiOff;
-                    if (s2detour::Install(foiAddr, reinterpret_cast<void*>(&Hook_FireOutputInternal),
-                                          reinterpret_cast<void**>(&s_origFireOutputInternal))) {
-                        META_CONPRINTF("[s2script] FireOutputInternal hooked @%p (Entity.onOutput)\n", foiAddr);
+                    const s2detour::InstallResult fr =
+                        s2detour::Install(foiAddr, reinterpret_cast<void*>(&Hook_FireOutputInternal),
+                                          reinterpret_cast<void**>(&s_origFireOutputInternal),
+                                          &S2_AddressIsExecutable);
+                    if (fr.ok) {
+                        META_CONPRINTF("[s2script] FireOutputInternal hooked @%p (Entity.onOutput; %s, stole %d)\n",
+                                       foiAddr, fr.usedNearJump ? "near E9" : "far FF25", fr.stolen);
                     } else {
-                        META_CONPRINTF("[s2script] WARN: FireOutputInternal detour install failed — Entity.onOutput off\n");
+                        META_CONPRINTF("[s2script] WARN: FireOutputInternal detour install failed (%s) — Entity.onOutput off\n",
+                                       fr.reason ? fr.reason : "no reason");
                     }
                 }   // foiOff == kFail: ResolveSigValidated already recorded the reason
             }

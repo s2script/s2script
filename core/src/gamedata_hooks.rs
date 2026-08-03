@@ -220,6 +220,17 @@ fn install_via_engine(hook_id: i32, shape: i32, addr: i64) -> Result<(), String>
     let mut reason = vec![0u8; REASON_CAP];
     let rc = func(hook_id, shape, addr, reason.as_mut_ptr() as *mut c_char, REASON_CAP as i32);
     if rc == 0 {
+        // The shim fills the same buffer with an informational note on success — which patch tier it
+        // took and how many bytes it stole. Worth one audit line beside the "armed" one: a near E9
+        // and a far FF25 have different blast radii, and after the fact only the log can say which
+        // a given server used.
+        let note = reason_string(&reason);
+        if !note.is_empty() {
+            crate::v8host::log_warn(&format!(
+                "[engine-hooks] installed hook {} ({})",
+                hook_id, note
+            ));
+        }
         return Ok(());
     }
     let text = reason_string(&reason);

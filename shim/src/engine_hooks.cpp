@@ -237,11 +237,14 @@ int Fail(char* out, int cap, const char* reason) {
     return -1;
 }
 
-// s2detour overwrites the prologue with a 14-byte absolute jump (FF 25 <disp32> <8-byte target>;
-// shim/src/detour.cpp's kAbsJmp). Both ends of that window must be provably executable before we let
-// hde64_disasm read a single byte at the target — an unmapped address SEGVs inside the disassembler,
-// and a mapped-but-wrong one decodes fine and gets patched.
-constexpr int kPatchWindow = 14;
+// The patch window used to be duplicated here as a constant (14) and checked at both ends before
+// calling s2detour. That under-covered the read: s2detour steals WHOLE INSTRUCTIONS until it has
+// enough bytes, so it routinely disassembles past 14 — 18 bytes for TerminateRound — which is
+// exactly the read-into-unmapped-memory the guard existed to prevent.
+//
+// The probe is now passed INTO s2detour, which consults it for every instruction before decoding it.
+// The guard is exact instead of approximate, there is no width constant to keep in sync with
+// detour.cpp, and because it is injected it is drivable from shim/tests/detour_reloc_test.cpp.
 
 ArgView* ViewOf(void* argView) { return static_cast<ArgView*>(argView); }
 
@@ -276,13 +279,14 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
     // core's bookkeeping; this validates the bytes. `addr` arrives already resolved and .text-range
     // checked by S2_EngineCallResolve — but a hook is installed LATER, from a table that outlives the
     // resolve, and a stale offset after a CS2 update can resolve to a wrong-but-mapped address:
-    // hde64_disasm decodes it happily, Install returns true, and 14 bytes of unrelated engine code
-    // become a jump into our thunk. Engine corruption reported as success. An UNMAPPED address is
-    // worse still — the SEGV happens inside hde64_disasm, before any of our own guards run. So the
-    // whole patch window is proven executable HERE, at the patch site, before s2detour reads a byte.
+    // hde64_disasm decodes it happily, the install succeeds, and a stretch of unrelated engine code
+    // becomes a jump into our thunk. Engine corruption reported as success.
+    //
+    // The cheap entry-point check stays here so a plainly bogus address is refused with THIS
+    // function's vocabulary; the per-instruction coverage of everything s2detour goes on to read is
+    // the probe handed to Install below.
     const uintptr_t target = static_cast<uintptr_t>(addr);
-    if (!S2_AddressIsExecutable(reinterpret_cast<const void*>(target)) ||
-        !S2_AddressIsExecutable(reinterpret_cast<const void*>(target + kPatchWindow - 1)))
+    if (!S2_AddressIsExecutable(reinterpret_cast<const void*>(target)))
         return Fail(reasonOut, reasonCap,
                     "hook target is outside any loaded module's executable range (stale gamedata?)");
 
@@ -309,12 +313,23 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
         return Fail(reasonOut, reasonCap, buf);
     }
 
-    // s2detour refuses a relative/rip-relative or undecodable prologue and returns false WITHOUT
-    // touching memory, so a failure here is always a clean degrade.
+    // s2detour touches NO memory on failure, so a refusal here is always a clean degrade. Its reason
+    // is surfaced verbatim rather than flattened into one message: "short branch in stolen prologue"
+    // and "prologue leaves the target's executable range (stale gamedata?)" call for completely
+    // different responses from whoever reads the log, and the old single string said neither.
     void* orig = nullptr;
-    if (!s2detour::Install(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), thunk, &orig))
-        return Fail(reasonOut, reasonCap,
-                    "detour install refused this prologue (relative/rip-relative or undecodable)");
+    const s2detour::InstallResult inst =
+        s2detour::Install(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), thunk, &orig,
+                          &S2_AddressIsExecutable);
+    if (!inst.ok) return Fail(reasonOut, reasonCap, inst.reason ? inst.reason : "detour install refused");
+
+    // On SUCCESS the reason buffer carries an informational note instead of staying empty: which
+    // tier ran is the difference between a 5-byte and a 14-byte patch, and nobody should have to
+    // guess which one a live server took when reading a crash dump. Core logs it. This TU has no
+    // logger of its own on purpose — it returns strings and lets core decide what to do with them.
+    if (reasonOut && reasonCap > 0)
+        std::snprintf(reasonOut, static_cast<size_t>(reasonCap), "%s jump, stole %d byte(s)",
+                      inst.usedNearJump ? "near E9" : "far FF25", inst.stolen);
 
     g_hooks[hookId].shape = shape;
     g_hooks[hookId].addr  = addr;

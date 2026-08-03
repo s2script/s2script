@@ -34,6 +34,10 @@ add_library(s2script SHARED
     # Slice 6.6: a minimal self-contained x86-64 inline detour (the damage hook) + the vendored HDE
     # length disassembler (pure, no OS deps). No third-party detour library / no dlopen cascade.
     src/detour.cpp
+    # ...and its engine-free half: prologue decode, relocation, and the named refusals. Split out so
+    # shim/tests/detour_reloc_test.cpp drives the SHIPPED relocator against byte buffers at pretend
+    # addresses — a relocator proven only by "the server did not crash" is not proven.
+    src/detour_reloc.cpp
     ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
     # Ray-trace slice: RTTI vtable-by-name resolution (ported DynLibUtils algorithm) + the
     # CNavPhysicsInterface::TraceShape structs/call. Engine-generic (Source-2 physics).
@@ -147,6 +151,15 @@ target_include_directories(call_validate_selftest PRIVATE src third_party)
 # Engine-free half of declarative inbound hooks (not shipped; run by scripts/ci-native.sh).
 add_executable(hook_dispatch_selftest src/hook_dispatch.cpp tests/hook_dispatch_test.cpp)
 target_include_directories(hook_dispatch_selftest PRIVATE src)
+
+# Detour prologue relocation (not shipped; run by scripts/ci-native.sh via
+# scripts/test-detour-reloc.sh, which adds the sanitizers). This target exists so the test also
+# builds under the ordinary cmake configuration.
+add_executable(detour_reloc_selftest
+    src/detour_reloc.cpp src/detour.cpp
+    ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c tests/detour_reloc_test.cpp)
+target_include_directories(detour_reloc_selftest
+    PRIVATE src ${CMAKE_SOURCE_DIR}/../third_party/hde)
 
 
 # The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).
