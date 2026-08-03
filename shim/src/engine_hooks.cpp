@@ -73,13 +73,18 @@ Installed g_hooks[S2_HOOK_MAX];
 // params exist and what CLASS each one is, so a stale generated binding asking for an i32 where the
 // shape has an f32 fails by -1 instead of reinterpreting the bits.
 // ---------------------------------------------------------------------------
-enum ParamClass : unsigned char { kParamF32 = 0, kParamI32 = 1 };
+// kParamI64 is the OPAQUE PASS-THROUGH class: a parameter carried at full register width because we
+// do not know what it is. It has no accessor and no `params` entry, so JS can neither read nor write
+// it — its only job is to be handed back to the original function unchanged (see hook_dispatch.h on
+// why narrowing one of these segfaulted a live server).
+enum ParamClass : unsigned char { kParamF32 = 0, kParamI32 = 1, kParamI64 = 2 };
 struct ParamSlot { ParamClass cls; unsigned char slot; };
 
 // Sized to the WIDEST shape in the vocabulary; each shape's table is static_asserted to fit, so
 // adding a shape that needs more storage fails to COMPILE rather than writing past the view.
 constexpr int kViewF32Slots = 1;
 constexpr int kViewI32Slots = 3;
+constexpr int kViewI64Slots = 2;
 
 struct ArgView {
     int     hookId = -1;
@@ -87,6 +92,7 @@ struct ArgView {
     void*   self   = nullptr;
     float   f[kViewF32Slots] = {};
     int32_t i[kViewI32Slots] = {};
+    int64_t q[kViewI64Slots] = {};   // opaque pass-through; never surfaced to JS
 };
 
 // THE LIVENESS TOKEN. The one view a thunk is currently dispatching, or null between dispatches. An
@@ -109,6 +115,14 @@ constexpr ParamSlot kParamsThisF32I32I32I32[] = {
     { kParamI32, 2 },
 };
 
+// S2_HOOK_SHAPE_THIS_F32_I32_I64_I64 — void(void* self, float, int, int64_t, int64_t).
+// Only the first TWO are addressable params; the trailing pair are opaque pass-through and are
+// deliberately absent from this table, so no accessor index can ever reach them.
+constexpr ParamSlot kParamsThisF32I32I64I64[] = {
+    { kParamF32, 0 },
+    { kParamI32, 0 },
+};
+
 struct ShapeInfo { const ParamSlot* params; int count; };
 
 // An unknown shape yields count 0, so every accessor index fails: an out-of-vocabulary shape can
@@ -118,6 +132,7 @@ constexpr ShapeInfo InfoFor(int shape) {
     switch (shape) {
         case S2_HOOK_SHAPE_THIS_VOID:            return { kParamsThisVoid, 0 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kParamsThisF32I32I32I32, 4 };
+        case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kParamsThisF32I32I64I64, 2 };
         default:                                 return { nullptr, 0 };
     }
 }
@@ -130,7 +145,9 @@ constexpr ShapeInfo InfoFor(int shape) {
 constexpr bool ShapeFitsView(int shape) {
     const ShapeInfo si = InfoFor(shape);
     for (int k = 0; k < si.count; k++) {
-        const int limit = (si.params[k].cls == kParamF32) ? kViewF32Slots : kViewI32Slots;
+        const int limit = (si.params[k].cls == kParamF32)   ? kViewF32Slots
+                          : (si.params[k].cls == kParamI64) ? kViewI64Slots
+                                                            : kViewI32Slots;
         if (static_cast<int>(si.params[k].slot) >= limit) return false;
     }
     return true;
@@ -150,6 +167,7 @@ static_assert(AllShapesFitView(255),
 // ---------------------------------------------------------------------------
 using ThisVoidFn           = void (*)(void*);
 using ThisF32I32I32I32Fn   = void (*)(void*, float, int32_t, int32_t, int32_t);
+using ThisF32I32I64I64Fn   = void (*)(void*, float, int32_t, int64_t, int64_t);
 
 // `orig` is null only in the window between s2detour patching the prologue and publishing the
 // trampoline — unreachable on the single-threaded game thread, but guarded rather than assumed.
@@ -196,6 +214,32 @@ void Thunk_ThisF32I32I32I32(void* self, float a0, int32_t a1, int32_t a2, int32_
     if (orig) orig(self, v.f[0], v.i[0], v.i[1], v.i[2]);
 }
 
+template <int Id>
+void Thunk_ThisF32I32I64I64(void* self, float a0, int32_t a1, int64_t a2, int64_t a3) {
+    const ThisF32I32I64I64Fn orig = reinterpret_cast<ThisF32I32I64I64Fn>(g_hooks[Id].orig);
+    if (S2Hook_BypassTake(Id)) { if (orig) orig(self, a0, a1, a2, a3); return; }
+
+    ArgView v;
+    v.hookId = Id;
+    v.shape  = S2_HOOK_SHAPE_THIS_F32_I32_I64_I64;
+    v.self   = self;
+    v.f[0]   = a0;
+    v.i[0]   = a1;
+    // FULL WIDTH, straight through. No accessor reaches q[], so these cannot be read or written from
+    // JS — they exist only to be returned to the engine bit-for-bit. Truncating one of these to 32
+    // bits is what segfaulted a live server; see hook_dispatch.h.
+    v.q[0]   = a2;
+    v.q[1]   = a3;
+
+    const void* const prevView = g_activeView;
+    g_activeView = &v;
+    const int r = S2Hook_Dispatch(Id, &v);
+    g_activeView = prevView;   // the view dies with this frame; nothing may reach it after here
+
+    if (S2Hook_Suppresses(r)) return;
+    if (orig) orig(self, v.f[0], v.i[0], v.q[0], v.q[1]);
+}
+
 // The tables. One entry per hook slot, materialised at COMPILE time by expanding an index_sequence
 // over the templates above — so every slot's thunk address is a link-time constant and the id it
 // carries is an immediate, not a lookup. (A template template parameter cannot bind a FUNCTION
@@ -212,7 +256,15 @@ MakeThisF32I32I32I32Table(std::index_sequence<Is...>) {
     return {{ &Thunk_ThisF32I32I32I32<static_cast<int>(Is)>... }};
 }
 
+template <std::size_t... Is>
+constexpr std::array<ThisF32I32I64I64Fn, sizeof...(Is)>
+MakeThisF32I32I64I64Table(std::index_sequence<Is...>) {
+    return {{ &Thunk_ThisF32I32I64I64<static_cast<int>(Is)>... }};
+}
+
 constexpr auto kThisVoidThunks = MakeThisVoidTable(std::make_index_sequence<kHookSlots>{});
+constexpr auto kThisF32I32I64I64Thunks =
+    MakeThisF32I32I64I64Table(std::make_index_sequence<kHookSlots>{});
 constexpr auto kThisF32I32I32I32Thunks =
     MakeThisF32I32I32I32Table(std::make_index_sequence<kHookSlots>{});
 static_assert(kThisVoidThunks.size() == kHookSlots, "thunk table must cover every hook slot");
@@ -227,6 +279,8 @@ void* ThunkFor(int shape, int hookId) {
             return reinterpret_cast<void*>(kThisVoidThunks[static_cast<std::size_t>(hookId)]);
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32:
             return reinterpret_cast<void*>(kThisF32I32I32I32Thunks[static_cast<std::size_t>(hookId)]);
+        case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64:
+            return reinterpret_cast<void*>(kThisF32I32I64I64Thunks[static_cast<std::size_t>(hookId)]);
         default:
             return nullptr;
     }

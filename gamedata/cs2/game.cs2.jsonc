@@ -379,8 +379,14 @@
     // (pawn.js's own call always passes 0, 0), so a handler may read but never rewrite them.
     "onTerminateRound": {
       "target": { "kind": "signature", "name": "CCSGameRules_TerminateRound" },
-      "shape": "this_f32_i32_i32_i32",
-      "params": ["delay", "reason", "_unused3", "_unused4"],
+      // this_f32_i32_i64_i64, NOT ..._i32_i32. The engine's 3rd argument arrives in rdx and
+      // TerminateRound stores it with `mov %rdx,-0xe0(%rbp)` — a full 64-bit store, i.e. a POINTER.
+      // Declaring it `int` truncated it, the engine banked half a pointer, and something else
+      // dereferenced it later: a live-server SIGSEGV ~374KB away from this function. The trailing
+      // pair are now opaque pass-through and are deliberately absent from `params`, so JS never
+      // sees them and they reach the original bit-for-bit.
+      "shape": "this_f32_i32_i64_i64",
+      "params": ["delay", "reason"],
       "mutable": ["delay", "reason"],
       "bypassWith": "terminateRound",
       "expose": { "ctx": "gameRules" }

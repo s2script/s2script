@@ -61,8 +61,16 @@ const REASON_CAP: usize = 256;
 /// An unknown NAME is rejected here, by name; an unknown ID (i.e. this table drifting ahead of the
 /// shim's) is rejected at install by the shim's own "unknown hook shape id" reason. Both are named
 /// degrades, never a silent default to shape 0.
-pub(crate) const SHAPES: &[(&str, i32)] =
-    &[("this_void", 0), ("this_f32_i32_i32_i32", 1)];
+pub(crate) const SHAPES: &[(&str, i32)] = &[
+    ("this_void", 0),
+    ("this_f32_i32_i32_i32", 1),
+    // Same call as shape 1, but the trailing pair are relayed at FULL 64-BIT WIDTH and are NOT
+    // addressable params — the shim's view has no accessor for them. Use this whenever a trailing
+    // argument's type is unknown: `int` does not mean "we do not care about this arg", it means
+    // "truncate whatever the engine put in that register", which is a live-server SEGV when the
+    // thing being truncated is a pointer. See shim/src/hook_dispatch.h.
+    ("this_f32_i32_i64_i64", 2),
+];
 
 /// The shape id for a vocabulary name, or `None` for anything outside it.
 fn shape_id(name: &str) -> Option<i32> {

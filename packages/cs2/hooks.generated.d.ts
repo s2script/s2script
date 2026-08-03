@@ -5,8 +5,6 @@ import type { EntityRef } from "@s2script/sdk/entity";
 export interface OnTerminateRoundView {
   delay: number;
   reason: number;
-  readonly _unused3: number;
-  readonly _unused4: number;
 }
 
 export interface OnRespawnView {

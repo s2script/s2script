@@ -27,6 +27,18 @@ static void test_shape_vocabulary_is_closed() {
                        "this_f32_i32_i32_i32") == 0,
           "the second shape id round-trips back to its own name, not the first shape's");
     CHECK(S2Hook_ShapeName(99) == nullptr, "an out-of-range shape id has no name");
+
+    // The wide shape. It exists because declaring an unknown trailing param `int` truncates whatever
+    // the engine passed — a live-server SEGV when that thing is a pointer (hook_dispatch.h).
+    CHECK(S2Hook_ShapeFromName("this_f32_i32_i64_i64") == S2_HOOK_SHAPE_THIS_F32_I32_I64_I64,
+          "this_f32_i32_i64_i64 resolves");
+    CHECK(std::strcmp(S2Hook_ShapeName(S2_HOOK_SHAPE_THIS_F32_I32_I64_I64),
+                      "this_f32_i32_i64_i64") == 0,
+          "the wide shape round-trips to its own name");
+    // The narrow and wide forms are DIFFERENT ids. If these ever collapse, a descriptor asking for
+    // the wide one silently gets the truncating thunk back — the exact bug, reintroduced invisibly.
+    CHECK(S2_HOOK_SHAPE_THIS_F32_I32_I32_I32 != S2_HOOK_SHAPE_THIS_F32_I32_I64_I64,
+          "the narrow and wide 4-arg shapes are distinct ids");
 }
 
 static void test_bypass_latch_is_one_shot_and_per_hook() {
