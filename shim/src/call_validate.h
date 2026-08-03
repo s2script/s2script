@@ -76,6 +76,65 @@ bool DeclaresPrologue(const char* validateJson);
 bool Run(const char* validateJson, const ModuleView& mv, const char* module, const void* fn,
          const Ops& ops, char* reasonOut, int reasonCap);
 
+// ---------------------------------------------------------------------------
+// ARG-WIDTH — is a declared inbound-hook SHAPE consistent with the callee's machine code?
+//
+// NOT part of the `validate` vocabulary above, and deliberately so: it takes no gamedata. The
+// expectation comes from the SHAPE the hook descriptor already declares. The bug this exists to
+// prevent was a hand-written ABI claim drifting from the binary; checking it with a SECOND
+// hand-written ABI claim would be the same mistake with more steps. Nothing an author can typo,
+// forget, or opt out of.
+//
+// THE RULE IS ONE-DIRECTIONAL. Declaring a parameter NARROWER than the engine's truncates it — the
+// thunk reads 32 bits of a 64-bit register and zero-extends on the way back, so a pointer reaches
+// the original with its top half gone and something dereferences it later, far from the hook. That
+// is the live-server SIGSEGV on CCSGameRules::TerminateRound. Declaring it WIDER is harmless: SysV
+// leaves the upper half of a 32-bit argument undefined, so relaying the whole register preserves
+// whatever was actually there. So only narrowing is refused.
+//
+// A callee tells you how wide an argument is by how it STORES it:
+//     mov %esi,%r15d          32-bit — an int
+//     mov %rdx,-0xe0(%rbp)    64-bit — only a 64-bit value needs that
+//
+// SMOKE DETECTOR, NOT FIRE INSPECTION. Absence of evidence is a PASS: a function that never spills
+// an argument in the scanned window yields no observation and must succeed. A validator that failed
+// on "I could not tell" would refuse most functions and be switched off within a week, which is
+// worse than not having it. It catches the class that burned us and is silent about the rest —
+// do not read a pass as a proof of the signature.
+// ---------------------------------------------------------------------------
+
+/// One decoded observation about the instruction at `p`. Exposed for testing.
+struct ArgUse {
+    int          argIndex  = -1;     ///< SysV integer arg STORED to memory (0=this/rdi), else -1
+    bool         wide      = false;  ///< REX.W — a 64-bit store
+    int          redefines = -1;     ///< SysV integer arg this instruction OVERWRITES, else -1
+    bool         terminator = false; ///< ret/jmp/jcc/call — the caller must stop scanning here
+    unsigned     length    = 0;      ///< 0 = undecodable; the caller must stop
+};
+
+/// Decode one instruction, reading at most `avail` bytes and never past them.
+ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail);
+
+/// Walk `fn`'s prologue and refuse a shape that declares a parameter narrower than the callee uses.
+///
+/// `wide[i]` describes SysV INTEGER ARGUMENT SLOT i — NOT declared param i. Slot 0 is `this`.
+/// 0 = the shape relays this slot 32-bit, 1 = 64-bit (or it is a pointer we never narrow, like
+/// `this`).
+///
+/// Indexed by slot rather than by param BECAUSE FLOAT PARAMS CONSUME NO INTEGER REGISTER. For
+/// `void(this, float, int, int, int)` the integer slots are [this, arg1, arg2, arg3] and the float
+/// rides in xmm0 — so declared param 2 lives in slot 2, not slot 3. Mapping param->slot by position
+/// silently reports the wrong parameter the moment a float appears before it, which is exactly the
+/// shape that motivated this validator. Let the caller, which knows the shape, do the flattening.
+///
+/// The widths arrive as an array rather than a shape id so this TU stays engine-free and the test can
+/// drive it with hand-written widths and no shape enum at all.
+///
+/// Returns 0 on pass (INCLUDING "nothing observed" — `reasonOut` says which), -1 on a narrowing
+/// mismatch with a named reason.
+int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* fn,
+              char* reasonOut, int reasonCap);
+
 }  // namespace s2validate
 
 #endif  // S2SCRIPT_CALL_VALIDATE_H

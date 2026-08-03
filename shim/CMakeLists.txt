@@ -145,8 +145,11 @@ target_include_directories(defer_queue_selftest PRIVATE src include)
 # scripts/test-call-validate.sh, which adds the sanitizers). This target exists so the test also
 # builds under the ordinary cmake configuration.
 add_executable(call_validate_selftest
-    src/call_validate.cpp src/sigscan.cpp tests/call_validate_test.cpp)
-target_include_directories(call_validate_selftest PRIVATE src third_party)
+    src/call_validate.cpp src/sigscan.cpp
+    ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
+    tests/call_validate_test.cpp)
+target_include_directories(call_validate_selftest
+    PRIVATE src third_party ${CMAKE_SOURCE_DIR}/../third_party/hde)
 
 # Engine-free half of declarative inbound hooks (not shipped; run by scripts/ci-native.sh).
 add_executable(hook_dispatch_selftest src/hook_dispatch.cpp tests/hook_dispatch_test.cpp)

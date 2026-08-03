@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 // The "no entity" marker for every pointer -> CEntityHandle conversion in the shim. MUST NOT be 0:
@@ -65,6 +66,17 @@ uint32_t S2_EntityHandleFromPtr(void* p);
 // resolved address can still refuse to touch it. Module-agnostic on purpose: a hook target may
 // legitimately live in any module the descriptor named. 1 = yes, 0 = no (or null).
 int S2_AddressIsExecutable(const void* addr);
+
+// Fill `outText`/`outSize`/`outLo`/`outHi` with the containing module's executable segment and its
+// full mapped extent — the two views the engine-free validator TU needs (s2validate::ModuleView).
+//
+// Same phdr walk, same reason it lives HERE rather than in the caller: this TU already owns it, and
+// a second copy in engine_hooks.cpp would drag "which module?" somewhere with no answer. Raw
+// out-params rather than the struct so this header stays free of call_validate.h.
+//
+// 1 = found, 0 = the address is in no loaded module (the caller degrades).
+int S2_ModuleViewForAddress(const void* addr, const unsigned char** outText, std::size_t* outSize,
+                            const unsigned char** outLo, const unsigned char** outHi);
 
 // The resolved absolute address behind a call id from S2_EngineCallResolve, or 0 for an unknown id.
 //

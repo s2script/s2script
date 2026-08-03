@@ -3,6 +3,10 @@
 #include "sigscan.h"
 #include "../third_party/json.hpp"
 
+extern "C" {
+#include "hde64.h"
+}
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -289,6 +293,154 @@ bool Run(const char* validateJson, const ModuleView& mv, const char* module, con
         if (!ok) return false;
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// arg-width. See call_validate.h for why this is NOT in kVocabulary and why only narrowing fails.
+// ---------------------------------------------------------------------------
+namespace {
+
+// How far into the prologue to look. Short ON PURPOSE: an argument spilled far from entry is not
+// prologue evidence, and a long scan is where a redefinition gets missed and a false FAIL is born.
+constexpr int         kScanBytes = 64;
+constexpr int         kScanInsns = 24;
+constexpr std::size_t kMaxInsn   = 15;   // longest x86-64 instruction
+// hde64's prefix loop runs 16 iterations BEFORE the opcode, so a maximal run of legacy prefixes can
+// push its reads 16 bytes past where the instruction "should" start. A kMaxInsn-sized window is
+// therefore one short of its worst case — 15 x 0x66 walks off the end (ASan-confirmed). Size the
+// window for what the DISASSEMBLER can touch, not for what an instruction can legally be.
+constexpr std::size_t kWindow    = 16 + kMaxInsn;
+
+// x86-64 register number -> SysV INTEGER argument slot, or -1.
+// A table, not a switch: the register numbers are not in argument order (rdi=7 is arg0, rsi=6 is
+// arg1, rdx=2 is arg2...), and a hand-written switch over them is exactly where an off-by-one lives.
+//            rax rcx rdx rbx rsp rbp rsi rdi  r8  r9 r10 r11 r12 r13 r14 r15
+constexpr int kArgOf[16] = {
+             -1,  3,  2, -1, -1, -1,  1,  0,  4,  5, -1, -1, -1, -1, -1, -1 };
+
+int ArgOfReg(int reg) { return (reg >= 0 && reg < 16) ? kArgOf[reg] : -1; }
+
+}  // namespace
+
+ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
+    ArgUse u;
+    if (!p || avail == 0) return u;
+
+    // hde64_disasm reads up to kMaxInsn bytes regardless of what is actually there, so a decode at
+    // the very end of the view would read past it. Copy into a zero-padded window instead of
+    // trusting the disassembler to stop — the same reason every other validator here bounds first.
+    uint8_t win[kWindow] = {};
+    const std::size_t n = avail < kMaxInsn ? avail : kMaxInsn;
+    std::memcpy(win, p, n);
+
+    hde64s hs;
+    const unsigned len = hde64_disasm(win, &hs);
+    if (len == 0 || (hs.flags & F_ERROR) || len > n) return u;   // len > n: it decoded padding
+    u.length = len;
+
+    const int reg = hs.modrm_reg | (hs.rex_r ? 8 : 0);
+    const int rm  = hs.modrm_rm  | (hs.rex_b ? 8 : 0);
+
+    // TERMINATORS. The scan must stop at the end of the callee's own flow, and this is the single
+    // highest-value rule in the file: without it the walk marches into the NEXT function and blames
+    // its argument spills on our shape (a corpus scan over libserver.so attributed 490 of 3497
+    // refusals to stores past the symbol's own size — every one a false refusal of a good hook).
+    //
+    // `call` is a terminator for the same reason and one more: it CLOBBERS every SysV integer
+    // argument register, so a 64-bit spill after it is evidence about a return value, not about an
+    // incoming argument. CCSPlayerController_Respawn's real prologue calls out at +0xa.
+    if (hs.opcode == 0xC3 || hs.opcode == 0xC2 ||                       // ret
+        hs.opcode == 0xE9 || hs.opcode == 0xEB ||                       // jmp rel
+        hs.opcode == 0xE8 ||                                            // call rel
+        (hs.opcode >= 0x70 && hs.opcode <= 0x7F) ||                     // jcc rel8
+        (hs.opcode == 0x0F && hs.opcode2 >= 0x80 && hs.opcode2 <= 0x8F) // jcc rel32
+       ) { u.terminator = true; return u; }
+    if (hs.opcode == 0xFF && (hs.modrm_reg == 2 || hs.modrm_reg == 4)) { // call/jmp r/m
+        u.terminator = true; return u;
+    }
+
+    if (hs.opcode == 0x89) {                 // MOV r/m, r
+        if (hs.modrm_mod != 3) {             // ...to MEMORY: the callee is spilling an argument
+            u.argIndex = ArgOfReg(reg);
+            u.wide     = hs.rex_w != 0;
+        } else {                             // ...to a REGISTER: that register is now redefined
+            u.redefines = ArgOfReg(rm);
+        }
+    } else if (hs.opcode == 0x8B) {          // MOV r, r/m  -> reg is redefined
+        u.redefines = ArgOfReg(reg);
+    } else if (hs.opcode >= 0xB8 && hs.opcode <= 0xBF) {   // MOV imm32/64 -> reg
+        u.redefines = ArgOfReg(static_cast<int>(hs.opcode - 0xB8) | (hs.rex_b ? 8 : 0));
+    } else if (hs.opcode == 0xC7 && hs.modrm_mod == 3) {   // MOV imm32 -> r/m (sign-extended)
+        // The SIBLING of the 0xB8 form above. `mov $1,%edx` (0xBA) was tracked and `mov $1,%rdx`
+        // (0x48 C7 C2) was not — same semantics, opposite verdict, purely by encoding.
+        u.redefines = ArgOfReg(rm);
+    } else if (hs.opcode == 0x63 || hs.opcode == 0x8D ||   // movslq / lea  -> reg
+               hs.opcode == 0x01 || hs.opcode == 0x09 ||   // add / or
+               hs.opcode == 0x21 || hs.opcode == 0x29 ||   // and / sub
+               hs.opcode == 0x31 || hs.opcode == 0x33) {   // xor
+        // movslq is the CANONICAL encoding of "a 32-bit int argument widened for use as an index" —
+        // the shape is right and the hook was being refused. lea/ALU forms are the rest of the
+        // common "compute into an argument register then spill it" shapes.
+        u.redefines = ArgOfReg(reg);
+    } else if (hs.opcode >= 0x58 && hs.opcode <= 0x5F) {   // pop -> reg
+        u.redefines = ArgOfReg(static_cast<int>(hs.opcode - 0x58) | (hs.rex_b ? 8 : 0));
+    }
+    // Anything else records no redefinition. That is UNSOUND IN THE SAFE DIRECTION: a missed
+    // redefinition can only produce a false FAIL (we mistake a later value for the argument), never
+    // a false pass. kScanBytes bounds how much rope that has.
+    return u;
+}
+
+int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* fn,
+              char* reasonOut, int reasonCap) {
+    if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
+    if (!wide || count <= 0 || !fn || !mv.text) {
+        if (reasonOut && reasonCap > 0)
+            std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap), "arg-width: nothing to check");
+        return 0;
+    }
+
+    const uint8_t* const code = static_cast<const uint8_t*>(fn);
+    const uint8_t* const end  = mv.text + mv.textSize;
+    if (code < mv.text || code >= end) {
+        if (reasonOut && reasonCap > 0)
+            std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap),
+                          "arg-width: address outside .text (not checked)");
+        return 0;   // the caller's own range check owns this failure; do not double-report it
+    }
+
+    bool redefined[8] = { false };
+    int  observed     = 0;
+    std::size_t off   = 0;
+
+    for (int i = 0; i < kScanInsns && off < static_cast<std::size_t>(kScanBytes); i++) {
+        const std::size_t avail = static_cast<std::size_t>(end - (code + off));
+        if (avail == 0) break;
+        const ArgUse u = DecodeArgUse(code + off, avail);
+        if (u.length == 0) break;   // undecodable: stop, do NOT guess
+        if (u.terminator) break;    // end of the callee's own flow (or a call that clobbers args)
+
+        if (u.argIndex >= 0 && u.argIndex < 8 && !redefined[u.argIndex]) {
+            observed++;
+            if (u.wide && u.argIndex < count && wide[u.argIndex] == 0) {
+                if (reasonOut && reasonCap > 0)
+                    std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap),
+                                  "shape relays integer arg slot %d 32-bit, but the callee stores it "
+                                  "64-bit at +0x%zx — a pointer relayed through a 32-bit slot is "
+                                  "truncated", u.argIndex, off);
+                return -1;
+            }
+        }
+        if (u.redefines >= 0 && u.redefines < 8) redefined[u.redefines] = true;
+        off += u.length;
+    }
+
+    if (reasonOut && reasonCap > 0)
+        std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap),
+                      observed ? "arg-width: %d argument store(s) checked, no narrowing found"
+                               : "arg-width: no argument stores in the prologue window (not proof)",
+                      observed);
+    return 0;
 }
 
 }  // namespace s2validate

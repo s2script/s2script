@@ -45,6 +45,7 @@
 
 #include "detour.h"
 #include "engine_calls.h"   // S2_EntityHandleFromPtr — the books-first receiver -> CEntityHandle pack
+#include "call_validate.h"   // the arg-width check: does the SHAPE match the callee's machine code?
 #include "hook_dispatch.h"
 
 #include <array>
@@ -125,6 +126,9 @@ constexpr ParamSlot kParamsThisF32I32I64I64[] = {
 
 struct ShapeInfo { const ParamSlot* params; int count; };
 
+
+
+
 // An unknown shape yields count 0, so every accessor index fails: an out-of-vocabulary shape can
 // never be read as if it were shape 0, whose wrong ABI is exactly what hook_dispatch.h warns about.
 // constexpr so the fits-the-view proof below can be structural rather than hand-maintained.
@@ -161,6 +165,51 @@ constexpr bool AllShapesFitView(int upTo) {
 // and passes trivially, so the bound costs nothing and cannot be outgrown by a new enumerator.
 static_assert(AllShapesFitView(255),
               "a shape's params do not fit the ArgView — widen kViewF32Slots/kViewI32Slots");
+
+// THE SHAPE'S TRUE INTEGER-ARGUMENT WIDTHS, slot by slot (slot 0 = `this`, always a pointer).
+//
+// SEPARATE from the ParamSlot tables above, and that separation is the point: those describe what JS
+// can ADDRESS, not what the ABI passes. An opaque kParamI64 has NO ParamSlot entry by design, so
+// deriving widths from them omitted it entirely — the arg-width validator's `kParamI64` branch was
+// dead code, and the shipped shape only checked out because its opaque slots happen to be TRAILING.
+// A shape with a non-trailing opaque i64 would shift every later slot, declaring the pointer narrow
+// (refusing a correct hook) and pushing the genuinely narrow slot out of range (never checking it).
+//
+// A float consumes NO integer slot — it rides in xmm0 — which is why this cannot be positional over
+// the declared params either. Written out per shape so it says exactly what the ABI does.
+struct ShapeAbi { const uint8_t* wide; int slots; };
+
+constexpr uint8_t kAbiThisVoid[]         = { 1 };             // (this)
+constexpr uint8_t kAbiThisF32I32I32I32[] = { 1, 0, 0, 0 };    // (this, [f32], i32, i32, i32)
+constexpr uint8_t kAbiThisF32I32I64I64[] = { 1, 0, 1, 1 };    // (this, [f32], i32, i64, i64)
+
+constexpr ShapeAbi AbiFor(int shape) {
+    switch (shape) {
+        case S2_HOOK_SHAPE_THIS_VOID:            return { kAbiThisVoid,         1 };
+        case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kAbiThisF32I32I32I32, 4 };
+        case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kAbiThisF32I32I64I64, 4 };
+        default:                                 return { nullptr, 0 };
+    }
+}
+
+// A shape's ABI table must cover at least every ADDRESSABLE non-float param plus `this`. It may
+// cover MORE (the opaque slots InfoFor deliberately omits) — that asymmetry is the whole reason both
+// tables exist, so the assert is one-sided on purpose. A new shape that forgets its ABI row fails to
+// COMPILE rather than being silently checked against a shorter array.
+constexpr int AddressableIntSlots(int shape) {
+    const ShapeInfo si = InfoFor(shape);
+    int n = 1;
+    for (int k = 0; k < si.count; k++)
+        if (si.params[k].cls != kParamF32) n++;
+    return n;
+}
+constexpr bool AbiCoversShape(int shape) {
+    return AbiFor(shape).slots == 0 || AbiFor(shape).slots >= AddressableIntSlots(shape);
+}
+static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_VOID),            "this_void: ABI row too short");
+static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I32_I32), "narrow 4-arg: ABI row too short");
+static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I64_I64), "wide 4-arg: ABI row too short");
+
 
 // ---------------------------------------------------------------------------
 // The thunks: one instantiation per (shape, hook slot).
@@ -360,6 +409,31 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
             return Fail(reasonOut, reasonCap, "another hook id is already installed at this address");
     }
 
+    // ARG-WIDTH: does the SHAPE agree with the machine code we are about to detour? A shape that
+    // declares a parameter narrower than the callee uses truncates it — on TerminateRound that was a
+    // pointer, and the resulting SIGSEGV landed ~374KB away in an unrelated function. Checked HERE,
+    // at the moment we commit to patching, and refused by name like every other install failure.
+    //
+    // Flattened to SysV INTEGER slots, not declared params: a float rides in xmm0 and consumes no
+    // integer register, so `void(this, float, int, int, int)` occupies integer slots
+    // [this, arg1, arg2, arg3]. Slot 0 is `this` — always a pointer, never narrowed.
+    char argWidthNote[160] = "arg-width: not run";
+    {
+        const ShapeAbi abi = AbiFor(shape);
+        const unsigned char *text = nullptr, *lo = nullptr, *hi = nullptr;
+        std::size_t textSize = 0;
+        if (abi.wide &&
+            S2_ModuleViewForAddress(reinterpret_cast<const void*>(target), &text, &textSize, &lo, &hi)) {
+            s2validate::ModuleView mv;
+            mv.text = text; mv.textSize = textSize; mv.lo = lo; mv.hi = hi;
+            if (s2validate::ArgWidths(abi.wide, abi.slots, mv, reinterpret_cast<const void*>(target),
+                                      argWidthNote, static_cast<int>(sizeof argWidthNote)) != 0)
+                return Fail(reasonOut, reasonCap, argWidthNote);
+        }
+        // No ABI row or no module view: degrade to UNCHECKED rather than refuse. The caller's own
+        // range check already passed, so this is a defensive miss, not evidence of a bad target.
+    }
+
     void* thunk = ThunkFor(shape, hookId);
     if (!thunk) {
         char buf[128];
@@ -382,8 +456,8 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
     // guess which one a live server took when reading a crash dump. Core logs it. This TU has no
     // logger of its own on purpose — it returns strings and lets core decide what to do with them.
     if (reasonOut && reasonCap > 0)
-        std::snprintf(reasonOut, static_cast<size_t>(reasonCap), "%s jump, stole %d byte(s)",
-                      inst.usedNearJump ? "near E9" : "far FF25", inst.stolen);
+        std::snprintf(reasonOut, static_cast<size_t>(reasonCap), "%s jump, stole %d byte(s); %s",
+                      inst.usedNearJump ? "near E9" : "far FF25", inst.stolen, argWidthNote);
 
     g_hooks[hookId].shape = shape;
     g_hooks[hookId].addr  = addr;

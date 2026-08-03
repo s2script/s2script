@@ -115,6 +115,26 @@ refuses an unrelocatable prologue, but that's a decode check, not an identity ch
 entry without `validate` on its target fails the **build**, in `scripts/check-call-descriptors.sh`'s
 `hooks` grammar pass, not the load.
 
+**The shape is checked against the machine code at install** (`s2validate::ArgWidths`). A validator
+proves the address is the *right function*; nothing proved the *shape* matched it, and
+`check-hook-shapes.sh` only proves core and the shim agree with each other — on `TerminateRound`
+both were confidently wrong together and a live server segfaulted. A callee tells you how wide an
+argument is by how it stores it (`mov %rdx,-0xe0(%rbp)` is 64-bit; `mov %esi,%r15d` is not), so the
+prologue is decoded and compared against the shape's declared widths.
+
+The rule is **one-directional**: declaring a parameter *narrower* than the engine's truncates it —
+the thunk relays half a pointer and something dereferences it later, far from the hook — while
+declaring it *wider* is harmless, because SysV leaves the upper half of a 32-bit argument undefined.
+So only narrowing is refused, by name, as one more per-descriptor degrade. When in doubt about a
+trailing argument, declare it 64-bit opaque (`this_f32_i32_i64_i64`): it is relayed bit-for-bit and
+never surfaced to JS.
+
+This is a **smoke detector, not a fire inspection** — an argument the callee never spills in the
+scanned window is unchecked, and absence of evidence passes. Do not read a clean install as proof
+that a signature is right. It takes no gamedata: the expectation comes from the shape the descriptor
+already declares, because checking a hand-written ABI claim with a second hand-written ABI claim
+would be the same mistake with more steps.
+
 **The descriptor**, e.g. `gamedata/cs2/game.cs2.jsonc`'s `hooks.onTerminateRound`:
 
 ```jsonc
