@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "  linting core/js/ (globals derived from core/src/v8host.rs)"
+echo "  linting core/js/ (globals derived from core/src/*.rs)"
 # ESLint resolves its flat config from the working directory, and the config reads ../src/v8host.rs
 # relative to itself — so run it from core/js/ rather than passing -c, which would leave the config's
 # own relative reads resolving against the repo root.

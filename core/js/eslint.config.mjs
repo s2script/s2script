@@ -6,16 +6,27 @@
 // globals list here is DERIVED from core's own source rather than hand-maintained — rename a native
 // in Rust without updating the JS and `no-undef` fails, which is the whole point of this gate. A
 // checked-in literal list would drift silently and turn the gate into decoration.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
-const v8host = readFileSync(new URL("../src/v8host.rs", import.meta.url), "utf8");
+// Scans ALL of core/src, not just v8host.rs. Natives used to live in exactly one file; the
+// core-stabilization program is moving them into per-feature modules (`usermsg.rs` first), and a
+// config pinned to v8host.rs would silently lose a native's global the moment its feature moved out
+// — turning this gate from "catches a rename" into "fails on a refactor". Directory-scoped is the
+// property that actually holds: wherever a native is registered in core, the prelude may name it.
+const rustSources = (dir) =>
+  readdirSync(dir, { withFileTypes: true, recursive: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".rs"))
+    .map((e) => readFileSync(new URL(`${e.parentPath ?? e.path}/${e.name}`, import.meta.url), "utf8"))
+    .join("\n");
+
+const coreSrc = rustSources(new URL("../src/", import.meta.url));
 const prelude = readFileSync(new URL("./prelude.js", import.meta.url), "utf8");
 
 const readonlyGlobals = (names) =>
   Object.fromEntries([...new Set(names)].sort().map((n) => [n, "readonly"]));
 
 // 1. Every native registered onto the context's global object.
-const natives = [...v8host.matchAll(/set_native\(scope, global_obj, "([^"]+)"/g)].map((m) => m[1]);
+const natives = [...coreSrc.matchAll(/set_native\(scope, global_obj, "([^"]+)"/g)].map((m) => m[1]);
 
 // 2. Globals core installs by a path other than `set_native` (each needs a citation, so that a
 //    stale entry is findable). `console` is built in Rust and set directly on the global object.
@@ -30,7 +41,7 @@ const selfPublished = [...prelude.matchAll(/globalThis\.(__s2pkg_\w+|HookResult|
 if (natives.length === 0) {
   // A regex that silently matches nothing would turn `no-undef` into a wall of false failures and
   // tempt whoever hits it to disable the rule. Fail loudly instead.
-  throw new Error("core/js/eslint.config.mjs: found no set_native globals in v8host.rs — the regex is stale");
+  throw new Error("core/js/eslint.config.mjs: found no set_native globals in core/src — the regex is stale");
 }
 
 export default [

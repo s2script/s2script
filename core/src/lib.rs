@@ -24,5 +24,6 @@ pub(crate) mod crash;
 mod schema;
 mod schema_catalog;
 mod sqldb;
+mod usermsg;
 mod v8host;
 mod ws;

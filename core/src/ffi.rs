@@ -439,7 +439,7 @@ pub extern "C" fn s2script_core_dispatch_usermsg(name: *const c_char, id: c_int)
     catch_unwind(|| {
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0; };
-        v8host::dispatch_usermsg(name_str, id as i32)
+        crate::usermsg::dispatch(name_str, id as i32)
     })
     .unwrap_or(0)
 }
