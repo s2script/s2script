@@ -158,6 +158,38 @@ export declare class EntityRef {
    *  `trigger_multiple` needs a model to build the physics volume that fires touch. Returns false
    *  if the op is unavailable or the ref is stale. */
   setModel(name: string): boolean;
+  /** Set this entity's gravity multiplier (`CBaseEntity::SetGravityScale`). 1 is normal, 0 is
+   *  weightless.
+   *
+   *  Use this rather than writing `m_flGravityScale`: the engine setter early-returns when the value
+   *  is unchanged and maintains a second field (`m_flActualGravityScale`), so a raw field write
+   *  appears to succeed and does nothing. Returns false if the op is unavailable, the ref is stale,
+   *  or `scale` is not finite. */
+  setGravityScale(scale: number): boolean;
+  /** Add to this entity's velocity, physics-aware (`CBaseEntity::ApplyAbsVelocityImpulse`) — for
+   *  knockback, boosts, explosions.
+   *
+   *  Additive, unlike `teleport(null, null, velocity)` which sets velocity absolutely; and unlike a
+   *  direct `m_vecAbsVelocity` write, which skips the partition/physics update. `impulse` is an
+   *  [x,y,z] triple. A zero impulse is a legal no-op. Returns false if the op is unavailable, the ref
+   *  is stale, or any component is not finite. */
+  applyAbsVelocityImpulse(impulse: number[]): boolean;
+  /** Stop a sound playing on this entity (`CBaseEntity::StopSound`) — the counterpart to
+   *  `Sound.emit`. Returns false if the op is unavailable or the ref is stale. */
+  stopSound(name: string): boolean;
+  /** Set a model body group by name (`CBaseModelEntity::SetBodyGroupByName`).
+   *
+   *  There is no schema equivalent — `m_bodyGroupChoices` is a `CUtlOrderedMap`, not a writable
+   *  scalar. `group` is 32-bit engine-side. Returns false if the op is unavailable, the ref is stale,
+   *  or `group` is out of 32-bit range. */
+  setBodyGroupByName(name: string, group: number): boolean;
+  /** Set this entity's model scale (`CBaseModelEntity::SetModelScale`).
+   *
+   *  The argument shape is confirmed against the pinned build; the function's NAME is a catalogue
+   *  attribution its body does not itself prove, so verify the effect before relying on this in a
+   *  shipped plugin — see the gamedata comment. Calling it is safe either way. Returns false if the
+   *  op is unavailable, the ref is stale, or `scale` is not finite. */
+  setModelScale(scale: number): boolean;
   /** Read a CUtlVector<CHandle> at (ptrOffs chain -> vectorOff) as live liveness-gated EntityRefs.
    *  Follows the pointer chain, reads count@+0 / elements@+8, caps at maxCount. [] if stale/unresolved. */
   readHandleVector(ptrOffs: number[], vectorOff: number, maxCount?: number): EntityRef[];

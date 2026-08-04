@@ -876,6 +876,103 @@ fn s2_ent_set_model(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
     }));
 }
 
+/// Native `__s2_ent_set_gravity_scale(index, serial, scale) -> boolean`. Serial-gated; over the
+/// `entity_set_gravity_scale` op (`CBaseEntity::SetGravityScale`, sig-resolved shim-side).
+///
+/// This exists INSTEAD of a schema write and that is the point: the engine setter early-returns when
+/// the value is unchanged and maintains a second field (`m_flActualGravityScale`), so a plugin that
+/// writes `m_flGravityScale` directly observes no effect. A non-finite scale is rejected here rather
+/// than passed on. Degrades to `false` with no op / a stale ref. Never throws.
+fn s2_ent_set_gravity_scale(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let scale = args.get(2).number_value(scope).unwrap_or(f64::NAN);
+        if !scale.is_finite() { return }
+        let ops = engine_ops();
+        if let Some(func) = ops.and_then(|o| o.entity_set_gravity_scale) {
+            rv.set_bool(func(index, serial, scale as f32) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_ent_apply_abs_velocity_impulse(index, serial, [x,y,z]) -> boolean`. Serial-gated;
+/// over the `entity_apply_abs_velocity_impulse` op (`CBaseEntity::ApplyAbsVelocityImpulse`).
+///
+/// Additive and physics-aware, unlike writing `m_vecAbsVelocity` (which skips the partition/physics
+/// update). A non-array or non-finite component is rejected here — the engine reads all three floats
+/// through the pointer, so a NaN would reach it. A zero impulse is a legal no-op the callee
+/// early-outs on. Degrades to `false` with no op / a stale ref. Never throws.
+fn s2_ent_apply_abs_velocity_impulse(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let Some(v) = read_vec3_opt(scope, args.get(2)) else { return };
+        if !v.iter().all(|c| c.is_finite()) { return }
+        let ops = engine_ops();
+        if let Some(func) = ops.and_then(|o| o.entity_apply_abs_velocity_impulse) {
+            rv.set_bool(func(index, serial, v.as_ptr()) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_ent_stop_sound(index, serial, soundName) -> boolean`. Serial-gated; over the
+/// `entity_stop_sound` op (`CBaseEntity::StopSound`). The counterpart to `sound_emit`. A NUL in the
+/// name degrades to `false` rather than truncating. Never throws.
+fn s2_ent_stop_sound(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let name = args.get(2).to_rust_string_lossy(scope);
+        let Ok(cname) = std::ffi::CString::new(name) else { return };
+        let ops = engine_ops();
+        if let Some(func) = ops.and_then(|o| o.entity_stop_sound) {
+            rv.set_bool(func(index, serial, cname.as_ptr()) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_ent_set_body_group_by_name(index, serial, name, group) -> boolean`. Serial-gated;
+/// over the `entity_set_body_group_by_name` op (`CBaseModelEntity::SetBodyGroupByName`).
+///
+/// The schema route is unavailable: `m_bodyGroupChoices` is a `CUtlOrderedMap`, not a scalar. `group`
+/// is 32-bit callee-side, so it is range-checked here rather than silently truncated. Degrades to
+/// `false` with no op / a stale ref / a NUL in the name. Never throws.
+fn s2_ent_set_body_group_by_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let name = args.get(2).to_rust_string_lossy(scope);
+        let Ok(cname) = std::ffi::CString::new(name) else { return };
+        let group = args.get(3).integer_value(scope).unwrap_or(0);
+        let Ok(group) = i32::try_from(group) else { return };
+        let ops = engine_ops();
+        if let Some(func) = ops.and_then(|o| o.entity_set_body_group_by_name) {
+            rv.set_bool(func(index, serial, cname.as_ptr(), group) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_ent_set_model_scale(index, serial, scale) -> boolean`. Serial-gated; over the
+/// `entity_set_model_scale` op (`CBaseModelEntity::SetModelScale`).
+///
+/// The argument shape is confirmed by disassembly (float in xmm0); the NAME is a catalogue
+/// attribution the function body does not by itself prove — see the gamedata comment. Calling it is
+/// memory-safe either way. A non-finite scale is rejected. Degrades to `false` with no op / a stale
+/// ref. Never throws.
+fn s2_ent_set_model_scale(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let scale = args.get(2).number_value(scope).unwrap_or(f64::NAN);
+        if !scale.is_finite() { return }
+        let ops = engine_ops();
+        if let Some(func) = ops.and_then(|o| o.entity_set_model_scale) {
+            rv.set_bool(func(index, serial, scale as f32) != 0);
+        }
+    }));
+}
+
 /// Native `__s2_entity_teleport(index, serial, originArr|null, anglesArr|null, velArr|null) -> boolean`.
 /// Each array arg is independently optional (a non-3-element/non-array value degrades to a null pointer
 /// for that component, matching the shim's nullable `Vector*`/`QAngle*`/`Vector*` ABI). Degrades to
@@ -1157,6 +1254,12 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_entity_find_by_class", s2_entity_find_by_class);
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_ent_set_model", s2_ent_set_model);
+    // Entity-property slice: five engine setters with no usable schema-write equivalent.
+    set_native(scope, global_obj, "__s2_ent_set_gravity_scale", s2_ent_set_gravity_scale);
+    set_native(scope, global_obj, "__s2_ent_apply_abs_velocity_impulse", s2_ent_apply_abs_velocity_impulse);
+    set_native(scope, global_obj, "__s2_ent_stop_sound", s2_ent_stop_sound);
+    set_native(scope, global_obj, "__s2_ent_set_body_group_by_name", s2_ent_set_body_group_by_name);
+    set_native(scope, global_obj, "__s2_ent_set_model_scale", s2_ent_set_model_scale);
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
     set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);

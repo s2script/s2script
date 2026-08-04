@@ -67,6 +67,13 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly buttons: number;
   /** Kill this pawn via the sig-resolved CommitSuicide engine op (liveness-gated; no-op if stale). */
   slay(): void;
+  /** The pawn's current movement speed cap (`CCSPlayerPawn::GetPlayerMaxSpeed`).
+   *
+   *  A getter rather than a field because the engine computes it — there is no `m_flMaxSpeed` on
+   *  `CCSPlayerPawn` in the schema, so there is nothing to read. `null` (never 0) when the descriptor
+   *  is unavailable or the ref is stale: 0 is a legitimate speed for a frozen player, so it must not
+   *  double as "unavailable". */
+  readonly maxSpeed: number | null;
   /** Give this pawn a named item/weapon (e.g. CsItem.AK47 or a raw "weapon_*" string). Returns the created
    *  Weapon, or null if unresolved/failed/stale. */
   giveNamedItem(name: string): Weapon | null;

@@ -3261,6 +3261,79 @@ static int Shim_EntitySetModel(int index, int serial, const char* modelName) {
 }
 
 // ---------------------------------------------------------------------------
+// Entity-property slice — five engine-generic CBaseEntity/CBaseModelEntity setters that have no
+// usable schema-write equivalent. Every prototype below was confirmed by disassembly on the pinned
+// build; the per-function evidence lives beside each signature in gamedata/core/game.cs2.jsonc.
+// All five follow the house pattern: unresolved -> the fn ptr stays null -> the op returns 0 -> the
+// JS accessor degrades to false. Never a crash (CLAUDE.md: degrade per-descriptor).
+// ---------------------------------------------------------------------------
+
+// CBaseEntity::SetGravityScale(float). Deliberately NOT a schema write: the setter early-returns on
+// an unchanged value and maintains m_flActualGravityScale, which a raw m_flGravityScale write does not.
+using SetGravityScaleFn = void (*)(CEntityInstance* self, float scale);
+static SetGravityScaleFn s_pSetGravityScale = nullptr;
+
+static int Shim_EntitySetGravityScale(int index, int serial, float scale) {
+    if (!s_pSetGravityScale) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pSetGravityScale(ent, scale);
+    return 1;
+}
+
+// CBaseEntity::ApplyAbsVelocityImpulse(const Vector*). The impulse travels BY ADDRESS in an integer
+// register. The callee zero-checks all three components and early-outs, so a zero impulse is free.
+using ApplyAbsVelocityImpulseFn = void (*)(CEntityInstance* self, const Vector* impulse);
+static ApplyAbsVelocityImpulseFn s_pApplyAbsVelocityImpulse = nullptr;
+
+static int Shim_EntityApplyAbsVelocityImpulse(int index, int serial, const float* impulse) {
+    if (!s_pApplyAbsVelocityImpulse || !impulse) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pApplyAbsVelocityImpulse(ent, reinterpret_cast<const Vector*>(impulse));
+    return 1;
+}
+
+// CBaseEntity::StopSound(const char*). The callee already null- and empty-string-checks the name;
+// the null guard here is the house convention (a null would still be a NUL deref on some future build).
+using EntityStopSoundFn = void (*)(CEntityInstance* self, const char* soundName);
+static EntityStopSoundFn s_pEntityStopSound = nullptr;
+
+static int Shim_EntityStopSound(int index, int serial, const char* soundName) {
+    if (!s_pEntityStopSound || !soundName) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pEntityStopSound(ent, soundName);
+    return 1;
+}
+
+// CBaseModelEntity::SetBodyGroupByName(const char*, int). The group is a 32-BIT int in edx — the
+// `int` here is load-bearing, not incidental width.
+using SetBodyGroupByNameFn = void (*)(CEntityInstance* self, const char* name, int group);
+static SetBodyGroupByNameFn s_pSetBodyGroupByName = nullptr;
+
+static int Shim_EntitySetBodyGroupByName(int index, int serial, const char* name, int group) {
+    if (!s_pSetBodyGroupByName || !name) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pSetBodyGroupByName(ent, name, group);
+    return 1;
+}
+
+// CBaseModelEntity::SetModelScale(float). See the gamedata comment: the ARG SHAPE is confirmed, the
+// NAME is a catalogue attribution the body does not by itself prove. Safe to call either way.
+using SetModelScaleFn = void (*)(CEntityInstance* self, float scale);
+static SetModelScaleFn s_pSetModelScale = nullptr;
+
+static int Shim_EntitySetModelScale(int index, int serial, float scale) {
+    if (!s_pSetModelScale) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    s_pSetModelScale(ent, scale);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Sound slice — emit (see docs/superpowers/specs/2026-07-13-sound-emitsound-precache-design.md).
 // A minimal modern recipient filter over the SDK's 4-method IRecipientFilter
 // (public/irecipientfilter.h), ported from CSSharp's recipientfilters.h: a slot-indexed
@@ -4421,6 +4494,37 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pSetModel));
                 }
             }
+            // Entity-property slice: five engine-generic setters with no usable schema-write route.
+            // Each pattern was re-resolved and re-verified UNIQUE on OUR pinned libserver.so, and each
+            // prototype confirmed by disassembly — see the gamedata comments. Absent/unresolved -> the
+            // fn ptr stays null -> that op alone no-ops, per-descriptor (CLAUDE.md degrade rule).
+            {
+                struct EntityPropSig {
+                    const char* name;      // gamedata key
+                    void**      slot;      // where to store the resolved pointer
+                    const char* api;       // the JS accessor it backs, for the console line
+                };
+                const EntityPropSig kEntityProps[] = {
+                    { "SetGravityScale",         reinterpret_cast<void**>(&s_pSetGravityScale),         "EntityRef.setGravityScale" },
+                    { "ApplyAbsVelocityImpulse", reinterpret_cast<void**>(&s_pApplyAbsVelocityImpulse), "EntityRef.applyAbsVelocityImpulse" },
+                    { "StopSound",               reinterpret_cast<void**>(&s_pEntityStopSound),         "EntityRef.stopSound" },
+                    { "SetBodyGroupByName",      reinterpret_cast<void**>(&s_pSetBodyGroupByName),      "EntityRef.setBodyGroupByName" },
+                    { "SetModelScale",           reinterpret_cast<void**>(&s_pSetModelScale),           "EntityRef.setModelScale" },
+                };
+                for (const EntityPropSig& ep : kEntityProps) {
+                    auto it = sigs.find(ep.name);
+                    if (it == sigs.end()) {
+                        GamedataResult(ep.name, false, "signature absent from gamedata");
+                        continue;
+                    }
+                    int64_t off = ResolveSigValidated(ep.name, it->second);
+                    ModText mt = FindModuleText(it->second.module.c_str());
+                    if (off != s2sig::kFail && mt.text) {  // resolve=="direct": the unique match IS the function start
+                        *ep.slot = const_cast<uint8_t*>(mt.text) + off;
+                        META_CONPRINTF("[s2script] %s resolved @%p (%s)\n", ep.name, *ep.slot, ep.api);
+                    }   // off == kFail: ResolveSigValidated already recorded the reason
+                }
+            }
             // Sound slice: resolve CBaseEntity::EmitSound (soundevent emit; Sound.emit /
             // pawn.emitSound). A DIRECT prologue signature self-validated UNIQUE on OUR libserver.so
             // (the Task-2 offline RE step disproved the ModSharp member prototype — volume is by-value,
@@ -4888,6 +4992,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.hook_write_i32       = &S2_HookWriteI32;
     ops.hook_receiver_handle = &S2_HookReceiverHandle;
     ops.engine_call_address  = &S2_EngineCallAddress;
+    // Entity-property slice — APPENDED after engine_call_address; order MUST match S2EngineOps.
+    ops.entity_set_gravity_scale          = &Shim_EntitySetGravityScale;
+    ops.entity_apply_abs_velocity_impulse = &Shim_EntityApplyAbsVelocityImpulse;
+    ops.entity_stop_sound                 = &Shim_EntityStopSound;
+    ops.entity_set_body_group_by_name     = &Shim_EntitySetBodyGroupByName;
+    ops.entity_set_model_scale            = &Shim_EntitySetModelScale;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
