@@ -546,6 +546,24 @@ static void test_arg_width_stops_at_the_end_of_the_function() {
           "a store past the callee's own `ret` is NOT evidence about its arguments");
 }
 
+// The operand-direction case in ISOLATION, asserted on the DECODER rather than through the scan, so
+// a regression names the bug instead of surfacing as a distant false refusal.
+static void test_arg_width_decoder_gets_alu_operand_direction_right() {
+    using s2validate::DecodeArgUse;
+    { const uint8_t b[] = {0x48,0x01,0xC2};     // add %rax,%rdx  -> r/m<-r, destination is rdx
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.redefines == 2, "ADD r/m,r redefines the r/m operand (rdx), not the source"); }
+    { const uint8_t b[] = {0x48,0x01,0xD0};     // add %rdx,%rax  -> destination is rax, NOT an arg
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.redefines == -1, "and when the destination is not an argument register, nothing is"); }
+    { const uint8_t b[] = {0x48,0x0B,0xD1};     // or %rcx,%rdx   -> r<-r/m, destination is rdx
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.redefines == 2, "OR r,r/m redefines the reg operand — the mirror direction"); }
+    { const uint8_t b[] = {0x48,0x01,0x57,0x08}; // add %rdx,0x8(%rdi) -> memory dest kills no reg
+      auto u = DecodeArgUse(b, sizeof b);
+      CHECK(u.redefines == -1, "an ALU write to MEMORY redefines no register at all"); }
+}
+
 // A `call` clobbers every SysV integer argument register, so a 64-bit spill after one describes a
 // return value, not an incoming argument. CCSPlayerController_Respawn's real prologue calls at +0xa.
 static void test_arg_width_stops_at_a_call() {
@@ -568,7 +586,17 @@ static void test_arg_width_tracks_the_wider_redefinition_set() {
         { "mov $1,%rdx",       { 0x48,0xC7,0xC2,0x01,0x00,0x00,0x00, 0x48,0x89,0x55,0xF8, 0xC3 } },
         { "lea -0x8(%rbp),%rdx",{0x48,0x8D,0x55,0xF8, 0x48,0x89,0x55,0xF0, 0xC3 } },
         { "pop %rdx",          { 0x5A, 0x48,0x89,0x55,0xF8, 0xC3 } },
-        { "xor %edx,%edx",     { 0x31,0xD2, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        // NON-DEGENERATE on purpose. `xor %edx,%edx` (31 D2) has reg == rm, so it passes whether the
+        // decoder credits the source or the destination — it is the one encoding that CANNOT expose
+        // an operand-direction bug, and using it here is what hid exactly that bug.
+        { "xor %eax,%edx (r/m<-r)", { 0x31,0xC2, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "add %rax,%rdx (r/m<-r)", { 0x48,0x01,0xC2, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "or  %rcx,%rdx (r<-r/m)", { 0x48,0x0B,0xD1, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "movzbl (%rax),%edx",     { 0x0F,0xB6,0x10, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "movswl (%rax),%edx",     { 0x0F,0xBF,0x10, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "cqto (kills rdx)",       { 0x48,0x99, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "divq %rcx (kills rdx)",  { 0x48,0xF7,0xF1, 0x48,0x89,0x55,0xF8, 0xC3 } },
+        { "movq %xmm0,%rdx",        { 0x66,0x48,0x0F,0x7E,0xC2, 0x48,0x89,0x55,0xF8, 0xC3 } },
     };
     for (const auto& c : cases) {
         char r[256];
@@ -641,6 +669,7 @@ int main() {
     test_arg_width_refuses_a_shape_that_declares_too_few_args();
     test_arg_width_allows_a_shape_that_declares_more_args_than_the_callee_reads();
     test_arg_width_stops_at_the_end_of_the_function();
+    test_arg_width_decoder_gets_alu_operand_direction_right();
     test_arg_width_stops_at_a_call();
     test_arg_width_tracks_the_wider_redefinition_set();
 
