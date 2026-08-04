@@ -81,6 +81,17 @@ python3 - "$RS" "$H" <<'PYEOF'
 import re, sys
 rs_src, h_src = open(sys.argv[1]).read(), open(sys.argv[2]).read()
 
+def balanced(rest):
+    """Take chars up to the paren that closes the one just consumed."""
+    depth, out = 1, ""
+    for ch in rest:
+        if ch == "(": depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0: return out
+        out += ch
+    return out
+
 def split_top(params):
     """Split a C/Rust parameter list on TOP-LEVEL commas — a function-pointer parameter has its own."""
     out, depth, cur = [], 0, ""
@@ -96,8 +107,13 @@ def split_top(params):
 
 # Rust: pub type FooFn = extern "C" fn(<params>) [-> ret];
 rs_arity = {}
-for m in re.finditer(r'pub type (\w+)\s*=\s*(?:unsafe\s+)?extern "C" fn\((.*?)\)\s*(?:->|;)', rs_src, re.S):
-    rs_arity[m.group(1)] = len(split_top(m.group(2)))
+# NOT line-anchored and NOT non-greedy: a parameter list may span lines (EngineCallInvokeFn does),
+# and a function-pointer parameter carries its own parens. Match the opening paren, then balance.
+for m in re.finditer(r'^(?:pub )?type (\w+)\s*=\s*(?:unsafe\s+)?extern "C" fn\(', rs_src, re.M):
+    # Balance the parens ourselves instead of a non-greedy `(.*?)\)`: a function-pointer PARAMETER
+    # has its own parens, and a lazy match stops at the inner one — truncating the list and
+    # reporting an arity that is wrong in BOTH directions.
+    rs_arity[m.group(1)] = len(split_top(balanced(rs_src[m.end():])))
 
 # Rust struct field -> alias
 fields = []
@@ -107,14 +123,16 @@ for m in re.finditer(r'^\s*pub (\w+)\s*:\s*Option<(\w+)>', mstruct.group(1), re.
 
 # C: typedef <ret> (*s2_foo_fn)(<params>);
 h_arity = {}
-for m in re.finditer(r'typedef\s+[\w\s*]+\(\s*\*\s*(s2_\w+_fn)\s*\)\s*\((.*?)\)\s*;', h_src, re.S):
-    h_arity[m.group(1)] = len(split_top(m.group(2)))
+for m in re.finditer(r'typedef\s+[\w\s*]+\(\s*\*\s*(s2_\w+_fn)\s*\)\s*\(', h_src):
+    h_arity[m.group(1)] = len(split_top(balanced(h_src[m.end():])))
 
-bad, checked = [], 0
+bad, checked, unresolved = [], 0, []
 for field, alias in fields:
     ctype = "s2_" + field + "_fn"
     if alias not in rs_arity or ctype not in h_arity:
-        continue                      # a field whose alias/typedef this gate cannot see: skip, don't guess
+        missing = "core alias " + alias if alias not in rs_arity else "shim typedef " + ctype
+        unresolved.append(f"  {field}: cannot resolve {missing}")
+        continue
     checked += 1
     if rs_arity[alias] != h_arity[ctype]:
         bad.append(f"  {field}: core {alias} takes {rs_arity[alias]} arg(s), shim {ctype} takes {h_arity[ctype]}")
@@ -127,10 +145,17 @@ if bad:
           "  never set. Names and order agreeing does not make two declarations the same function.",
           file=sys.stderr)
     sys.exit(1)
-if checked < 5:
-    print(f"check-engine-ops-order: FAIL — arity check matched only {checked} field(s); the alias or "
-          f"typedef regex is stale and this check has stopped looking at anything.", file=sys.stderr)
+# A field the gate cannot see is a field it is not checking. Reporting OK while any go unexamined is
+# how this same gate reported "OK — 70 field signature(s) agree on arity" with a live 1-vs-3 ABI
+# divergence sitting in one of the 44 it silently skipped.
+if unresolved:
+    print(f"check-engine-ops-order: FAIL — {len(unresolved)} S2EngineOps field(s) could not be "
+          f"resolved, so their arity is UNCHECKED:", file=sys.stderr)
+    print("\n".join(unresolved), file=sys.stderr)
+    print("\n  Either the alias/typedef regex is stale or a declaration changed shape. An unchecked\n"
+          "  field is not a passing field — fix the parse or the declaration, do not lower the bar.",
+          file=sys.stderr)
     sys.exit(1)
-print(f"check-engine-ops-order: OK — {checked} field signature(s) agree on arity")
+print(f"check-engine-ops-order: OK — all {checked} S2EngineOps field signature(s) agree on arity")
 PYEOF
 

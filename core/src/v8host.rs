@@ -14473,8 +14473,11 @@ mod frame_tests {
     struct ResetOnDrop<'a, T: Copy>(&'a Mutex<T>, T);
     impl<T: Copy> Drop for ResetOnDrop<'_, T> {
         fn drop(&mut self) {
-            // A poisoned lock means some other test already panicked holding it; there is nothing
-            // useful to restore and panicking again inside Drop would abort the process.
+            // On a POISONED lock this declines to act — it does not restore, and every later reader
+            // here `.unwrap()`s, so they will panic on the PoisonError. That is deliberate but it is
+            // NOT "surviving" poisoning: re-panicking inside Drop aborts the process, so declining
+            // is the only safe option, and a poisoned lock already means a test panicked while
+            // holding it. Not reachable from current code — nothing holds these across an assertion.
             if let Ok(mut g) = self.0.lock() { *g = self.1; }
         }
     }
