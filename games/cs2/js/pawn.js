@@ -1153,8 +1153,13 @@
 
   // CS2 user-message sugar over the generic @s2script/usermessages builder.
   // The engine's fade-flag vocabulary, complete. An object rather than five loose consts so the
-  // unused members are still documentation instead of dead bindings a linter has to be told to
-  // ignore — `opts.flags` is a raw number, and this is where a caller finds out what to pass.
+  // unused members are documentation instead of dead bindings a linter has to be told to ignore —
+  // `opts.flags` is a raw number, and this is where a caller finds out what to pass.
+  //
+  // HONEST TRADE-OFF: this costs typo detection. `no-undef` catches `FFADE_OUTT` on a loose const
+  // and CANNOT catch `FFADE.OUTT` on a property. Accepted because the alternative — deleting the
+  // three unused names — leaves a partial flag list that is worse documentation than no list, and
+  // the object is used exactly twice, both here, where a typo fails visibly at the first fade.
   var FFADE = { IN: 1, OUT: 2, MODULATE: 4, STAYOUT: 8, PURGE: 16 };
   function _um(name) { return new (globalThis.__s2pkg_usermessages.UserMessage)(name); }
   var Fade = {
