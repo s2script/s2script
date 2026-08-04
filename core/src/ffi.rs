@@ -251,7 +251,7 @@ pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class
                 _ => {}
             }
         }
-        let delivery = v8host::dispatch_entity_event(kind_str, class_str, handle as i32);
+        let delivery = crate::entity::dispatch_entity_event(kind_str, class_str, handle as i32);
         // Delete is booked AFTER the dispatch: an onDelete handler may still resolve
         // the dying entity (slot-validated stage 2 stays the guard); the moment this
         // FFI entry returns, the books say dead — fail-closed for any stashed ref.
@@ -277,7 +277,7 @@ pub extern "C" fn s2script_core_replay_entity_event(kind: *const c_char, class_n
         if kind.is_null() || class_name.is_null() { return 0; }
         let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return 0 };
         let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return 0 };
-        deferral_code(v8host::replay_entity_event(kind_str, class_str, handle as i32))
+        deferral_code(crate::entity::replay_entity_event(kind_str, class_str, handle as i32))
     })
     .unwrap_or(0)
 }
