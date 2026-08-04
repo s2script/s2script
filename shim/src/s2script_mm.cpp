@@ -5720,6 +5720,15 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
             int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
             int slot = s_transmitClientIsEntIndex ? (v - 1) : v;
             if (slot < 0 || slot >= 64) continue;
+            // Only filter for a client that is FULLY SIGNED ON.
+            //
+            // The reference stack never filters an info without a valid, connected player: the C#
+            // plugin skips `player == null || !player.IsValid` before touching the bitvec. This
+            // applied rules to any info whose client int parsed into slot range, which also catches a
+            // client mid-signon assembling its first full frame, and any HLTV/replay info that
+            // happens to carry an in-range slot. Clearing bits for a client that has no entity table
+            // yet is the one behavioural difference between the two transmit paths.
+            if (slot < kMaxClientSlots && s_trackedSignon[slot] != kSignonFull) continue;
             if ((mask >> slot) & 1ull) continue;    // visible to this viewer — leave the bit alone
             CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
             if (bv && bv->IsBitSet(entIndex)) { bv->Clear(entIndex); s_transmitBitsCleared++; }
