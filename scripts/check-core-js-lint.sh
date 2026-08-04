@@ -16,4 +16,11 @@ echo "  linting core/js/ (globals derived from core/src/v8host.rs)"
 # own relative reads resolving against the repo root.
 (cd core/js && npx --no-install eslint .)
 
-echo "PASS: core/js lints clean"
+# games/cs2/js/ TOO. pawn.js runs in the RAW context scope, not the plugin CJS wrapper, so it reaches
+# core's natives as bare globals exactly like the core prelude — and a native renamed in Rust breaks
+# it just as silently. This gate was cited during review as covering pawn.js when it did not; the
+# first run over that directory found five dead bindings.
+echo "  linting games/cs2/js/ (same derivation, the CS2 game-package prelude)"
+(cd games/cs2/js && npx --no-install eslint .)
+
+echo "PASS: core/js + games/cs2/js lint clean"

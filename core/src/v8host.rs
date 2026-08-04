@@ -14466,6 +14466,19 @@ mod frame_tests {
     /// case — a rules/services singleton), otherwise a packed CEntityHandle. Settable, because BOTH
     /// answers have to be exercised: the null one, and the one that actually mints an object.
     static HOOK_RECEIVER: Mutex<i64> = Mutex::new(-1);
+
+    /// RAII reset for a process-global test static. Restores the sentinel on Drop, so a panicking
+    /// assertion between set and clear cannot leave the value armed for the NEXT test — the suite is
+    /// forced single-threaded, so a leaked value is inherited, not merely untidy.
+    struct ResetOnDrop<'a, T: Copy>(&'a Mutex<T>, T);
+    impl<T: Copy> Drop for ResetOnDrop<'_, T> {
+        fn drop(&mut self) {
+            // A poisoned lock means some other test already panicked holding it; there is nothing
+            // useful to restore and panicking again inside Drop would abort the process.
+            if let Ok(mut g) = self.0.lock() { *g = self.1; }
+        }
+    }
+
     extern "C" fn mock_hook_receiver(v: *mut std::ffi::c_void, out: *mut u32) -> c_int {
         if v as usize != HOOK_VIEW_TOKEN { return -1; }
         let h = *HOOK_RECEIVER.lock().unwrap();
@@ -14699,6 +14712,7 @@ mod frame_tests {
         crate::loader::load_permissions_from_str(r#"{"engine:hooks":["hk6"]}"#).expect("parses");
         // Seed the host's books, then hand back the handle that decodes to exactly that entity.
         let id = crate::entity_live::on_created(42, 7);
+        let _receiver_reset = ResetOnDrop(&HOOK_RECEIVER, -1);
         *HOOK_RECEIVER.lock().unwrap() =
             (((7u32) << crate::entity::HANDLE_ENTRY_BITS) | 42u32) as i64;
         crate::gamedata_hooks::register_plugin("hk6", receiver_hook_gamedata());
@@ -14932,6 +14946,7 @@ mod frame_tests {
         assert_eq!(crate::gamedata_hooks::status("hk10", "onX"), "available",
             "nothing has gone wrong yet");
 
+        let _reenter_reset = ResetOnDrop(&REENTER_HOOK_ID, -1);
         *REENTER_HOOK_ID.lock().unwrap() = hook_id;
         eval_in_context("hk10", r#"__s2_engine_call_invoke("aCallNoHookNames", -1, 0, []);"#).unwrap();
         *REENTER_HOOK_ID.lock().unwrap() = -1;
