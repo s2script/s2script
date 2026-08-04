@@ -5,9 +5,17 @@ name: ci-js
 # docker/** is here because test-gate.sh asserts on docker/pre.sh, docker/docker-compose.yml
 # and docker/docker-compose.gate.yml. scripts/** is deliberately broad and overlaps
 # ci-native.yml's filter; overlap just means both run, which is correct.
+#
+# core/** is here for a NON-OBVIOUS reason: check-core-js-lint.sh runs in THIS suite, and it derives
+# the prelude's legal globals by scanning core/src/*.rs for `set_native` registrations. So a Rust-only
+# change that renames or MOVES a native breaks the prelude's `no-undef` gate — and before this filter
+# existed, a core-only PR ran ci-native (which does not lint JS) and nothing else, so CI went green on
+# a broken gate. The core-stabilization work that moves natives into per-feature modules is exactly
+# that shape. ci-native.yml already lists core/**; both suites need it, for different reasons.
 on:
   pull_request:
     paths:
+      - 'core/**'
       - 'plugins/**'
       - 'packages/**'
       - 'examples/**'
@@ -24,6 +32,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'core/**'
       - 'plugins/**'
       - 'packages/**'
       - 'examples/**'
