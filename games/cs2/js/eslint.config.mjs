@@ -8,10 +8,18 @@
 //
 // The globals are DERIVED from core's own source, never hand-listed: a checked-in literal list
 // drifts and turns the gate into decoration.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 const root = new URL("../../../", import.meta.url);
-const v8host = readFileSync(new URL("core/src/v8host.rs", root), "utf8");
+
+// Scans ALL of core/src, not just v8host.rs — see the same note in core/js/eslint.config.mjs. Natives
+// are moving into per-feature modules under the core-stabilization program, and a config pinned to one
+// file would lose a native's global the moment its feature moved out.
+const coreSrcDir = new URL("core/src/", root);
+const coreSrc = readdirSync(coreSrcDir, { withFileTypes: true, recursive: true })
+  .filter((e) => e.isFile() && e.name.endsWith(".rs"))
+  .map((e) => readFileSync(new URL(`${e.parentPath ?? e.path}/${e.name}`, coreSrcDir), "utf8"))
+  .join("\n");
 
 // The shipped prelude is a CONCATENATION — separate files on disk, one script at runtime — which is
 // why a global published by one file and read bare by another is legitimate here and invisible to a
@@ -38,7 +46,7 @@ const sources = shipped
 const readonlyGlobals = (names) =>
   Object.fromEntries([...new Set(names)].sort().map((n) => [n, "readonly"]));
 
-const natives = [...v8host.matchAll(/set_native\(scope, global_obj, "([^"]+)"/g)].map((m) => m[1]);
+const natives = [...coreSrc.matchAll(/set_native\(scope, global_obj, "([^"]+)"/g)].map((m) => m[1]);
 const extraFromRust = ["console"];   // v8host.rs — set directly on the global object
 // The globals these files publish and then read back bare later in the concatenated script.
 //
@@ -52,7 +60,7 @@ const extraFromRust = ["console"];   // v8host.rs — set directly on the global
 const selfPublished = [...sources.matchAll(/globalThis\.(__s2pkg_\w+)\s*=/g)].map((m) => m[1]);
 
 if (natives.length === 0) {
-  throw new Error("games/cs2/js/eslint.config.mjs: found no set_native globals in v8host.rs — the regex is stale");
+  throw new Error("games/cs2/js/eslint.config.mjs: found no set_native globals in core/src — the regex is stale");
 }
 
 export default [
