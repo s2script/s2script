@@ -155,7 +155,7 @@ pub extern "C" fn s2script_core_dispatch_client_event(name: *const c_char, slot:
     catch_unwind(|| {
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
-        deferral_code(v8host::dispatch_client_event(name_str, slot as i32))
+        deferral_code(crate::client::dispatch_client_event(name_str, slot as i32))
     })
     .unwrap_or(0)
 }
@@ -168,7 +168,7 @@ pub extern "C" fn s2script_core_replay_client_event(name: *const c_char, slot: c
     catch_unwind(|| {
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
-        deferral_code(v8host::replay_client_event(name_str, slot as i32))
+        deferral_code(crate::client::replay_client_event(name_str, slot as i32))
     })
     .unwrap_or(0)
 }
