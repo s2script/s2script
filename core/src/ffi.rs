@@ -122,7 +122,7 @@ pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) -> c_in
     catch_unwind(|| {
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
-        deferral_code(v8host::dispatch_game_event(name_str))
+        deferral_code(crate::events::dispatch_game_event(name_str))
     })
     .unwrap_or(0)
 }
@@ -139,7 +139,7 @@ pub extern "C" fn s2script_core_replay_game_event(name: *const c_char) -> c_int 
     catch_unwind(|| {
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
-        deferral_code(v8host::replay_game_event(name_str))
+        deferral_code(crate::events::replay_game_event(name_str))
     })
     .unwrap_or(0)
 }
@@ -292,7 +292,7 @@ pub extern "C" fn s2script_core_replay_entity_event(kind: *const c_char, class_n
 pub extern "C" fn s2script_core_dispatch_game_event_pre(name: *const c_char) -> c_int {
     if name.is_null() { return 0; }
     let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0; };
-    std::panic::catch_unwind(|| v8host::dispatch_game_event_pre(name_str)).unwrap_or(0)
+    std::panic::catch_unwind(|| crate::events::dispatch_game_event_pre(name_str)).unwrap_or(0)
 }
 
 /// Slice 6.6 Stage 2: run the Damage.onPre subscribers over the current damage info. The shim has already
@@ -1048,7 +1048,7 @@ mod tests {
 pub extern "C" fn s2script_core_take_event_recipients(out_mask: *mut u64) -> c_int {
     catch_unwind(|| {
         if out_mask.is_null() { return 0; }
-        match v8host::take_event_recipients() {
+        match crate::events::take_event_recipients() {
             Some(m) => { unsafe { *out_mask = m }; 1 }
             None => 0,
         }

@@ -35,6 +35,7 @@ pub(crate) mod liveness;
 pub(crate) mod entity_live;
 mod channels;
 mod client;
+mod events;
 mod ffi;
 mod gamedata_calls;
 mod gamedata_hooks;
