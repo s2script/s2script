@@ -1,7 +1,9 @@
 //! s2script engine-generic core. Embeds V8 and exposes a tiny C ABI.
 //! MUST NOT depend on any game package (enforced by scripts/check-core-boundary.sh).
 
+mod admin;
 mod async_rt;
+mod bans;
 pub mod config;
 mod cookies;
 mod db;

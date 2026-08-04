@@ -91,7 +91,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
         let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
         if phase == Phase::Post {
             v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
-            v8host::dispatch_pending_cookie_cached(); // Post, HOST free: fan out queued Cookies.onCached
+            crate::cookies::dispatch_pending_cached(); // Post, HOST free: fan out queued Cookies.onCached
             v8host::dispatch_pending_ws_events(); // Post, HOST free: fan out queued WebSocket on* events
             v8host::dispatch_pending_net_events(); // Post, HOST free: fan out queued net (TCP/UDP) events
             v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
@@ -526,7 +526,7 @@ pub extern "C" fn s2script_core_dispatch_command_listeners(slot: c_int, name: *c
 #[no_mangle]
 pub extern "C" fn s2script_core_ban_check(xuid: u64, now: i64, out_reason: *mut c_char, cap: c_int) -> c_int {
     std::panic::catch_unwind(|| {
-        match v8host::ban_check(xuid, now) {
+        match crate::bans::ban_check(xuid, now) {
             Some(reason) => {
                 if !out_reason.is_null() && cap > 1 {
                     let bytes = reason.as_bytes();
