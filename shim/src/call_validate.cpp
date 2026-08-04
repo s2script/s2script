@@ -422,7 +422,30 @@ int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* 
 
         if (u.argIndex >= 0 && u.argIndex < 8 && !redefined[u.argIndex]) {
             observed++;
-            if (u.wide && u.argIndex < count && wide[u.argIndex] == 0) {
+
+            // TOO FEW ARGUMENTS — the same failure as a narrowed one, by a different route.
+            //
+            // The callee is spilling an incoming argument in a slot this shape does not declare. It
+            // cannot be scratch: using a register as scratch means WRITING it first, which is a
+            // redefinition, and the guard above already excludes those. A compiler does not spill a
+            // register it never defined unless the caller supplied it.
+            //
+            // Why it crashes: our thunk names only the registers the shape declares, but dispatching
+            // into JS clobbers the rest. We then call the original, which reads them as if the engine
+            // had set them — garbage in a register the callee may treat as a pointer. Identical
+            // outcome to the truncation, and the same one-sided rule: declaring FEWER arguments than
+            // the callee takes is dangerous, declaring more is harmless (the callee ignores extras).
+            if (u.argIndex >= count) {
+                if (reasonOut && reasonCap > 0)
+                    std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap),
+                                  "shape declares %d integer arg slot(s), but the callee reads slot %d "
+                                  "at +0x%zx — an argument the thunk never relays is read by the "
+                                  "original from a register our dispatch has already clobbered",
+                                  count, u.argIndex, off);
+                return -1;
+            }
+
+            if (u.wide && wide[u.argIndex] == 0) {
                 if (reasonOut && reasonCap > 0)
                     std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap),
                                   "shape relays integer arg slot %d 32-bit, but the callee stores it "

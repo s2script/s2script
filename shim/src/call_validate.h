@@ -130,8 +130,14 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail);
 /// The widths arrive as an array rather than a shape id so this TU stays engine-free and the test can
 /// drive it with hand-written widths and no shape enum at all.
 ///
-/// Returns 0 on pass (INCLUDING "nothing observed" — `reasonOut` says which), -1 on a narrowing
-/// mismatch with a named reason.
+/// Refuses TWO shapes of the same failure, both one-directional:
+///   - a slot declared 32-bit that the callee stores 64-bit (truncation — a pointer cut in half);
+///   - an argument the callee reads that the shape does not declare at all (the thunk never relays
+///     it, and dispatching into JS clobbers the register the original then reads).
+/// Declaring a slot WIDER, or declaring MORE arguments than the callee takes, is harmless and passes.
+///
+/// Returns 0 on pass (INCLUDING "nothing observed" — `reasonOut` says which), -1 on a mismatch with
+/// a named reason.
 int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* fn,
               char* reasonOut, int reasonCap);
 

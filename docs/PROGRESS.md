@@ -185,8 +185,20 @@ implementation.
 
 **What it does NOT close**, so a pass is not over-read: an argument the callee never spills in the
 64-byte / 24-instruction window is unchecked; register-to-register uses are not counted as evidence;
-argument *count* is still unchecked (a shape with too few params silently ignores the rest); and
-nothing here helps outbound `calls`, where we choose the values and a `0` is an honest null.
+and nothing here helps outbound `calls`, where we choose the values and a `0` is an honest null.
+
+**Argument COUNT is checked too**, and calling it a separate slice was wrong. It is the same scan,
+the same evidence, and the same one-sided rule. A callee spilling an argument slot the shape does not
+declare cannot be scratch — using a register as scratch means writing it first, which the
+redefinition guard already excludes — so it is direct evidence the shape is too short. That crashes
+for a different reason than truncation and with the same result: our thunk names only the registers
+the shape declares, dispatching into JS clobbers the rest, and the original then reads them as if the
+engine had set them. Declaring MORE arguments than the callee takes stays harmless and passes.
+
+Two charter lines made this not-optional rather than nice-to-have: `CLAUDE.md`'s "degrade
+per-descriptor, never crash globally" (a wrong count crashes the server, which is exactly the outcome
+that bullet forbids) and `re-strategy.md` Rule 2, "validate every gamedata entry against the loaded
+binary, and FAIL LOUD" — a hook shape IS a gamedata entry, and it was the one not being validated.
 
 Tests (`shim/tests/call_validate_test.cpp`, 21 checks under ASan/UBSan): `TerminateRound`'s real
 prologue as a byte literal — REFUSED under `this_f32_i32_i32_i32`, ACCEPTED under
