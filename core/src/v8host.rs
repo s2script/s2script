@@ -872,13 +872,7 @@ thread_local! {
     // UserMessage interception: USERMSG_MUX / _IDS / _RESOLVE moved to `crate::usermsg`, which owns
     // this feature's state, natives, dispatch and teardown together.
 
-    /// Entity lifecycle listeners slice: `Entity.onCreate/onSpawn/onDelete(className, handler)` mux,
-    /// keyed `"<kind>\0<className>"` (kind = "create"/"spawn"/"delete"; className "*" = all). Notify-only,
-    /// dispatched SYNCHRONOUSLY from the shim's IEntityListener callback (it fires from the engine's entity
-    /// path, not under our own borrow; the try_borrow_mut guard covers a handler that synchronously
-    /// creates/removes an entity). `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
-    static ENTITY_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
+    // ENTITY_MUX moved to `crate::entity`.
 
     /// Slice 5E.3: reload state-handoff blobs (id → the JSON string produced by `iface_to_json` in the
     /// OLD context during `onUnload`). Consumed by `load_plugin_js` on the next load of that id (a
@@ -2329,7 +2323,7 @@ fn s2_schema_offset(
 /// found) and WARNs at most once per key. `class`/`field` are OPAQUE strings — no game identifier
 /// appears in core. Extracted so the plugin-declared-call `receiver.via` hop resolves through the
 /// SAME cache as JS rather than a second, drifting one (spec §5: "live-resolved, never baked").
-fn schema_offset_cached(class: &str, field: &str) -> i32 {
+pub(crate) fn schema_offset_cached(class: &str, field: &str) -> i32 {
     // Live resolver: marshal to C strings and call the shim's engine-op (recon Q1 lives shim
     // side).  Degrades to `-1` if no ops table, a null `schema_offset`, or interior NULs.
     let live_raw = |c: &str, f: &str| -> i32 {
@@ -2360,332 +2354,27 @@ fn schema_offset_cached(class: &str, field: &str) -> i32 {
 // (north-star §3.1, Candidate D).
 // ---------------------------------------------------------------------------
 
-/// Resolve (index, host-id) to a live entity pointer, or null. Resolution order
-/// (north-star §3.1 — cheapest & safest first):
-///   1. THE BOOKS: `engine_serial_for(index, id)` (LIVE[index].id == id), else null.
-///      No engine memory touched.
-///   2. Defense-in-depth: the shim validates the stored engine serial in the
-///      system-owned identity CHUNK (`ent_resolve`, the s2_deref_handle idiom) and
-///      returns m_pInstance — instance memory is never read to decide liveness.
-///   3. Only the CALLER derefs the instance, block-scoped within one native.
-/// The raw pointer stays in Rust — it never crosses to JS. Errors fall toward null,
-/// never toward a deref.
-fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
-    let Some(engine_serial) = crate::entity_live::engine_serial_for(index, id) else {
-        return std::ptr::null_mut();
-    };
-    let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return std::ptr::null_mut() };
-    let Some(resolve) = ops.ent_resolve else { return std::ptr::null_mut() };
-    resolve(index, engine_serial) as *mut u8
-}
 
 /// (index-arg, id-arg) → (index, stored engine serial), for shim ops that serial-gate
 /// internally. None = the books say not-live — the op is never called (fail-closed).
-fn ent_op_serial(scope: &mut v8::PinScope, idx_arg: v8::Local<v8::Value>, id_arg: v8::Local<v8::Value>) -> Option<(i32, i32)> {
+pub(crate) fn ent_op_serial(scope: &mut v8::PinScope, idx_arg: v8::Local<v8::Value>, id_arg: v8::Local<v8::Value>) -> Option<(i32, i32)> {
     let index = idx_arg.integer_value(scope).unwrap_or(-1) as i32;
     let id = js_ent_id(scope, id_arg);
     let serial = crate::entity_live::engine_serial_for(index, id)?;
     Some((index, serial))
 }
 
-/// Native `__s2_ent_ref_valid(index, id) -> boolean`.
-/// True iff the books say (index, id) is live (and the slot re-validates in the identity chunk).
-fn s2_ent_ref_valid(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        rv.set_bool(!entity_resolve_ptr(index, id).is_null());
-    }));
-}
 
-// Field-type kind codes — a JS<->core contract, mirrored in INJECTED_STD_PRELUDE's `K`. Keep in lockstep.
-const KIND_I32: i64 = 1;
-const KIND_F32: i64 = 2;
-const KIND_BOOL: i64 = 3;
-const KIND_I8: i64 = 4;
-const KIND_I16: i64 = 5;
-const KIND_U8: i64 = 6;
-const KIND_U16: i64 = 7;
-const KIND_U32: i64 = 8;
-const KIND_U64: i64 = 9;
-const KIND_I64: i64 = 10;
-const KIND_F64: i64 = 11;
+// Field-type kind codes moved to `crate::entity` with the natives that match on them.
 
-/// Native `__s2_ent_ref_read(index, serial, offset, kind) -> number|boolean|null`. Serial-gated typed read.
-fn s2_ent_ref_read(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::crash::breadcrumb::note_engine_op("ent_ref_read");
-        rv.set_null();
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let kind = args.get(3).integer_value(scope).unwrap_or(0);
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }               // invalid → null (already set)
-        let p = ent as *const u8;
-        match kind {
-            KIND_I32  => rv.set_int32(crate::entity::read_i32(p, off)),
-            KIND_F32  => rv.set_double(crate::entity::read_f32(p, off) as f64),
-            KIND_BOOL => rv.set_bool(crate::entity::read_bool(p, off)),
-            KIND_I8   => rv.set_int32(crate::entity::read_i8(p, off)),
-            KIND_I16  => rv.set_int32(crate::entity::read_i16(p, off)),
-            KIND_U8   => rv.set_double(crate::entity::read_u8(p, off) as f64),
-            KIND_U16  => rv.set_double(crate::entity::read_u16(p, off) as f64),
-            KIND_U32  => rv.set_double(crate::entity::read_u32(p, off) as f64),
-            KIND_U64  => { let bi = v8::BigInt::new_from_u64(scope, crate::entity::read_u64(p, off)); rv.set(bi.into()); }
-            KIND_I64  => { let bi = v8::BigInt::new_from_i64(scope, crate::entity::read_i64(p, off)); rv.set(bi.into()); }
-            KIND_F64  => rv.set_double(crate::entity::read_f64(p, off)),
-            _         => { /* unknown kind → leave null */ }
-        }
-    }));
-}
 
-/// Native `__s2_ent_ref_write(index, serial, offset, kind, value) -> boolean`. Serial-gated typed write
-/// (I32/F32/BOOL + narrow ints I8/I16/U8/U16/U32; 64-bit writes deferred → false).
-fn s2_ent_ref_write(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::crash::breadcrumb::note_engine_op("ent_ref_write");
-        rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let kind = args.get(3).integer_value(scope).unwrap_or(0);
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }               // invalid → false (already set)
-        match kind {
-            KIND_I32  => crate::entity::write_i32(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
-            KIND_F32  => crate::entity::write_f32(ent, off, args.get(4).number_value(scope).unwrap_or(0.0) as f32),
-            KIND_BOOL => crate::entity::write_bool(ent, off, args.get(4).boolean_value(scope)),
-            KIND_I8   => crate::entity::write_i8(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
-            KIND_I16  => crate::entity::write_i16(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
-            KIND_U8   => crate::entity::write_u8(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
-            KIND_U16  => crate::entity::write_u16(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as i32),
-            KIND_U32  => crate::entity::write_u32(ent, off, args.get(4).integer_value(scope).unwrap_or(0) as u32),
-            _         => return,                   // unknown / deferred write kind (64-bit) → false
-        }
-        rv.set_bool(true);
-    }));
-}
 
-/// Native `__s2_ent_ref_read_string(index, serial, offset, maxLen) -> string|null`. Serial-gated;
-/// returns a COPIED string (the pointer never crosses to JS). null on a stale ref.
-fn s2_ent_ref_read_string(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let max_len = args.get(3).integer_value(scope).unwrap_or(0) as i32;
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }                 // invalid → null (already set)
-        let s = crate::entity::read_string(ent as *const u8, off, max_len);
-        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
-    }));
-}
 
-/// Native `__s2_ent_ref_write_string(index, serial, offset, maxLen, str) -> boolean`. Serial-gated
-/// mirror of `read_string`: writes a bounded, NUL-terminated string into an inline `char[maxLen]` field
-/// (truncated to `maxLen-1` bytes + always NUL-terminated; never past the bound). The raw pointer is
-/// resolved + used entirely in core and never crosses to JS. false on a stale/invalid ref.
-fn s2_ent_ref_write_string(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let max_len = args.get(3).integer_value(scope).unwrap_or(0) as i32;
-        let s = args.get(4).to_rust_string_lossy(scope);
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }                 // invalid → false (already set)
-        crate::entity::write_string(ent, off, max_len, s.as_bytes());
-        rv.set_bool(true);
-    }));
-}
 
-/// Native `__s2_ent_ref_read_floats(index, serial, offset, count) -> number[] | null`. Serial-gated;
-/// reads `count` (1..=4) contiguous f32s into a JS array (a COPY; the pointer never crosses to JS).
-/// null on a stale/invalid ref or an out-of-range count.
-fn s2_ent_ref_read_floats(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let count = args.get(3).integer_value(scope).unwrap_or(0) as i32;
-        if count <= 0 || count > 4 { return; }          // only small fixed vectors (Vector..Vector4D)
-        if off < 0 { return; }                           // schema-miss sentinel (-1) → null (not a partial read)
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }                     // stale/invalid → null (already set)
-        let p = ent as *const u8;
-        let arr = v8::Array::new(scope, count);
-        for i in 0..count {
-            let v = crate::entity::read_f32(p, off + i * 4) as f64;
-            let num = v8::Number::new(scope, v);
-            arr.set_index(scope, i as u32, num.into());
-        }
-        rv.set(arr.into());
-    }));
-}
 
-/// Native `__s2_ent_ref_read_floats_chain(index, serial, ptrOffs, finalOff, count) -> number[] | null`.
-/// Follows a chain of pointer derefs (each i32 offset in the `ptrOffs` JS array), then reads `count` (1..=4)
-/// contiguous f32s at `finalOff` into a COPIED JS array. Serial-gated at the root entity; each hop null-checked;
-/// the raw intermediate pointers never cross to JS. null on a stale root / a null hop / a bad chain/offset/count.
-fn s2_ent_ref_read_floats_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
-        let count = args.get(4).integer_value(scope).unwrap_or(0) as i32;
-        if count <= 0 || count > 4 || final_off < 0 { return; }
-        // args[2] must be an array of pointer offsets:
-        let Ok(chain) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }                     // stale/invalid root → null (already set)
-        let mut p = ent as *const u8;
-        for i in 0..chain.length() {
-            let off = chain.get_index(scope, i).and_then(|v| v.integer_value(scope)).unwrap_or(-1) as i32;
-            if off < 0 { return; }                       // bad offset in the chain → null
-            p = crate::entity::read_ptr(p, off);
-            if p.is_null() { return; }                   // a null hop (broken chain) → null
-        }
-        let out = v8::Array::new(scope, count);
-        for i in 0..count {
-            let v = crate::entity::read_f32(p, final_off + i * 4) as f64;
-            let num = v8::Number::new(scope, v);
-            out.set_index(scope, i as u32, num.into());
-        }
-        rv.set(out.into());
-    }));
-}
 
-/// Native `__s2_ent_ref_read_chain(index, serial, pathOffs, finalOff, kind) -> value | null`. Follows a chain
-/// of pointer derefs (each i32 offset in `pathOffs`), then reads a SCALAR of `kind` at `finalOff`. Serial-gated
-/// at the root; each hop null-checked; the raw intermediate pointers never cross to JS. Vectors use
-/// __s2_ent_ref_read_floats_chain; handles = read KIND_U32 here then __s2_handle_decode in JS.
-fn s2_ent_ref_read_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::crash::breadcrumb::note_engine_op("ent_ref_read_chain");
-        rv.set_null();
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
-        let kind = args.get(4).integer_value(scope).unwrap_or(0);
-        if final_off < 0 { return; }
-        let Ok(path) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }
-        let mut p = ent as *const u8;
-        for i in 0..path.length() {
-            let off = path.get_index(scope, i).and_then(|v| v.integer_value(scope)).unwrap_or(-1) as i32;
-            if off < 0 { return; }
-            p = crate::entity::read_ptr(p, off);
-            if p.is_null() { return; }
-        }
-        let off = final_off;
-        match kind {
-            KIND_I32  => rv.set_int32(crate::entity::read_i32(p, off)),
-            KIND_F32  => rv.set_double(crate::entity::read_f32(p, off) as f64),
-            KIND_BOOL => rv.set_bool(crate::entity::read_bool(p, off)),
-            KIND_I8   => rv.set_int32(crate::entity::read_i8(p, off)),
-            KIND_I16  => rv.set_int32(crate::entity::read_i16(p, off)),
-            KIND_U8   => rv.set_double(crate::entity::read_u8(p, off) as f64),
-            KIND_U16  => rv.set_double(crate::entity::read_u16(p, off) as f64),
-            KIND_U32  => rv.set_double(crate::entity::read_u32(p, off) as f64),
-            KIND_U64  => { let bi = v8::BigInt::new_from_u64(scope, crate::entity::read_u64(p, off)); rv.set(bi.into()); }
-            KIND_I64  => { let bi = v8::BigInt::new_from_i64(scope, crate::entity::read_i64(p, off)); rv.set(bi.into()); }
-            KIND_F64  => rv.set_double(crate::entity::read_f64(p, off)),
-            _ => { }   // unknown kind → leave null
-        }
-    }));
-}
 
-/// Native `__s2_ent_ref_write_chain(index, serial, pathOffs, finalOff, kind, value) -> boolean`.
-/// Write mirror of `s2_ent_ref_read_chain`: serial-gates the root, derefs each i32 offset in `pathOffs`
-/// (each hop null-checked; raw intermediate pointers never cross to JS), then writes a SCALAR of `kind`
-/// at `finalOff`. Returns false on a stale ref, an unresolved hop, a bad `finalOff`, or an unknown/64-bit
-/// kind. Does NOT call notifyStateChanged (the caller decides). The final ptr is only ever written in-core.
-/// Callers: the CS2 fire gate (m_flNextAttack, F32) + flag-clearing on a pointer sub-object (i32/u32/u8).
-fn s2_ent_ref_write_chain(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::crash::breadcrumb::note_engine_op("ent_ref_write_chain");
-        rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let final_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
-        let kind = args.get(4).integer_value(scope).unwrap_or(0);
-        if final_off < 0 { return; }
-        let Ok(path) = v8::Local::<v8::Array>::try_from(args.get(2)) else { return; };
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }
-        let mut p = ent as *const u8;
-        for i in 0..path.length() {
-            let off = path.get_index(scope, i).and_then(|v| v.integer_value(scope)).unwrap_or(-1) as i32;
-            if off < 0 { return; }
-            p = crate::entity::read_ptr(p, off);
-            if p.is_null() { return; }
-        }
-        let dst = p as *mut u8;
-        let off = final_off;
-        match kind {
-            KIND_I32  => crate::entity::write_i32(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
-            KIND_F32  => crate::entity::write_f32(dst, off, args.get(5).number_value(scope).unwrap_or(0.0) as f32),
-            KIND_BOOL => crate::entity::write_bool(dst, off, args.get(5).boolean_value(scope)),
-            KIND_I8   => crate::entity::write_i8(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
-            KIND_I16  => crate::entity::write_i16(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
-            KIND_U8   => crate::entity::write_u8(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
-            KIND_U16  => crate::entity::write_u16(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as i32),
-            KIND_U32  => crate::entity::write_u32(dst, off, args.get(5).integer_value(scope).unwrap_or(0) as u32),
-            _ => return,   // unknown / 64-bit kind → false (already set)
-        }
-        rv.set_bool(true);
-    }));
-}
 
-/// Native `__s2_ent_ref_state_changed(index, serial, offset)`.
-/// Resolves (index, serial) then calls `ent_state_changed` engine-op. No-op on stale ref / no ops.
-fn s2_ent_ref_state_changed(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as c_int;
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }               // invalid → no-op
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.ent_state_changed else { return };
-        func(ent as *mut c_void, off);
-    }));
-}
 
 /// Native `__s2_handle_decode(handleValue) -> [index, serial]`.
 /// Pure bit-math (no engine ops): decodes a CEntityHandle uint32 into a [index, serial] array.
@@ -2711,22 +2400,12 @@ fn s2_handle_decode(
 
 /// Parse a JS EntityRef id (f64 on the wire; host-minted u64). 0 = invalid/never-live.
 /// Integral, ≥1, ≤2^53 (exact-f64 range) — anything else fails closed.
-fn js_ent_id(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
+pub(crate) fn js_ent_id(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
     let n = v.number_value(scope).unwrap_or(0.0);
     if !n.is_finite() || n < 1.0 || n > 9_007_199_254_740_992.0 || n.fract() != 0.0 { return 0; }
     n as u64
 }
 
-/// Native `__s2_ent_id_for_index(index) -> number`. The books id for a slot-derived
-/// index (Player.fromSlot / Pawn.forSlot), or 0 when the books say not-live. Books
-/// only — no engine memory. Replaces the retired `__s2_ent_current_serial` idiom.
-fn s2_ent_id_for_index(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        if let Some((id, _)) = crate::entity_live::lookup(index) { rv.set_double(id as f64); }
-    }));
-}
 
 /// Native `__s2_handle_adopt(handleU32) -> [index, id] | null`. THE raw-handle minting
 /// path: decode (pure bit-math) then adopt from the books — engine-serial match yields
@@ -3323,57 +3002,7 @@ pub(crate) fn dispatch_precache() {
     let _ = fan_out(&snap, "dispatch_precache", Instrument::none(), |_tc| Some(vec![]));
 }
 
-/// Deliver an entity lifecycle event to the `Entity.on{Create,Spawn,Delete}` subscribers. Called from
-/// ffi.rs's `s2script_core_dispatch_entity_event` (the shim's IEntityListener callback). `kind` is
-/// "create"/"spawn"/"delete"; the mux is keyed `"<kind>\0<className>"` with a `"<kind>\0*"` wildcard.
-/// Notify-only. Mirrors `dispatch_client_event`: snapshot (release the mux borrow), `try_borrow_mut`
-/// re-entrancy guard, per-sub `is_live` + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw.
-/// The entity crosses as a packed handle → a serial-gated EntityRef (null if stale/free — the exact-(-1)
-/// + resolve-null discipline of `dispatch_output`); className is passed as a 2nd arg (always valid).
-///
-/// `dispatch_entity_event` = **bookkeeping** (`entity_live::on_created`/`on_spawned`/`on_deleted`,
-/// in `ffi.rs`) + this JS fan-out. A replayed `"create"` would RESURRECT a since-deleted entity in
-/// the books (`on_created` is an unconditional insert), which is why the shim queues
-/// `replay_entity_event` and never the dispatch entry (contract §6.1).
-pub(crate) fn dispatch_entity_event(kind: &str, class_name: &str, handle: i32) -> Delivery {
-    replay_entity_event(kind, class_name, handle)
-}
 
-/// The JS half of `dispatch_entity_event`, and NOTHING else — no books feed, safe to run a frame
-/// late.
-///
-/// A deferred `"delete"` delivers a `null` EntityRef: `ffi.rs` books the delete immediately after
-/// the (skipped) dispatch, so by drain time `entity_live::adopt` fails. Accepted — it is the same
-/// books-gated degrade any stale ref already gets, the className still identifies what died, and it
-/// is strictly more than today's total drop. Documented in the entity `.d.ts`.
-pub(crate) fn replay_entity_event(kind: &str, class_name: &str, handle: i32) -> Delivery {
-    // Snapshot the exact-class key + the "<kind>\0*" wildcard (skip the wild when class == "*", else
-    // the same key would be snapshotted twice). Both taken before any JS runs.
-    let exact = format!("{}\0{}", kind, class_name);
-    let mut snap = ENTITY_MUX.with(|m| m.borrow().snapshot(&exact));
-    if class_name != "*" {
-        let wild = format!("{}\0*", kind);
-        snap.extend(ENTITY_MUX.with(|m| m.borrow().snapshot(&wild)));
-    }
-    let label = format!("dispatch_entity_event('{}','{}')", kind, class_name);
-    fan_out(&snap, &label, Instrument::none(), |tc| {
-        let entity_val: v8::Local<v8::Value> = if handle == -1 {
-            v8::null(tc).into()
-        } else {
-            let (idx, ser) = crate::entity::decode_handle(handle as u32);
-            // Books-adopt (delete dispatches still adopt — the ffi entry removes AFTER dispatch).
-            match crate::entity_live::adopt(idx, ser) {
-                Some(id) => build_entity_ref(tc, idx, id),
-                None => v8::null(tc).into(),
-            }
-        };
-        let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
-            Some(s) => s.into(),
-            None => v8::undefined(tc).into(),
-        };
-        Some(vec![entity_val, class_val])
-    })
-}
 
 /// Slice 6.11c: dispatch a player's CONSOLE command (from the ClientCommand hook). Unlike chat, the
 /// command name is raw (`sm_say`, not `!sm_say`), so match the EXACT registered name only — never an
@@ -4864,7 +4493,7 @@ fn build_vector<'s>(scope: &mut v8::PinScope<'s, '_>, x: f32, y: f32, z: f32) ->
 /// `id` is the HOST-MINTED books id (an f64 on the wire), never a raw engine serial. The framework
 /// mints refs by adopting a decoded handle / slot into the books (a raw handle/serial never crosses
 /// to JS). Falls back to `null` if `@s2script/entity` isn't installed on this context.
-fn build_entity_ref<'s>(scope: &mut v8::PinScope<'s, '_>, index: i32, id: u64) -> v8::Local<'s, v8::Value> {
+pub(crate) fn build_entity_ref<'s>(scope: &mut v8::PinScope<'s, '_>, index: i32, id: u64) -> v8::Local<'s, v8::Value> {
     let val: Option<v8::Local<'s, v8::Value>> = (|| {
         let global = scope.get_current_context().global(scope);
         let pkg_key = v8::String::new(scope, "__s2pkg_entity")?;
@@ -4968,87 +4597,9 @@ fn s2_trace(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
     }));
 }
 
-/// Like `read_vec3` but returns `None` when the arg isn't a 3-number array (for nullable teleport args —
-/// `origin`/`angles`/`velocity` are each independently optional).
-fn read_vec3_opt(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Option<[f32; 3]> {
-    let arr = v8::Local::<v8::Array>::try_from(v).ok()?;
-    if arr.length() != 3 { return None; }
-    let mut out = [0.0f32; 3];
-    for i in 0..3 {
-        out[i as usize] = arr.get_index(scope, i)?.number_value(scope).unwrap_or(0.0) as f32;
-    }
-    Some(out)
-}
 
-/// Read a JS array of numbers into a `Vec<i32>`. Returns `[]` if `v` isn't an array (or on any
-/// per-element read failure the remaining elements are skipped) — never panics on bad input.
-fn read_int_array(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Vec<i32> {
-    let Ok(arr) = v8::Local::<v8::Array>::try_from(v) else { return Vec::new() };
-    let len = arr.length();
-    let mut out = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        let Some(el) = arr.get_index(scope, i) else { break };
-        out.push(el.integer_value(scope).unwrap_or(0) as i32);
-    }
-    out
-}
 
-/// Native `__s2_entity_create(className) -> EntityRef | null`. Over the `entity_create` op
-/// (`UTIL_CreateEntityByName`, sig-resolved shim-side). The op returns a packed `CEntityHandle`
-/// (`ToInt()`); the raw `CBaseEntity*` never crosses to JS — the handle is decoded (pure bit-math)
-/// and re-validated live (`entity_resolve_ptr`) before building a serial-gated `EntityRef`, mirroring
-/// the `s2_trace` hit-entity pattern. Degrades to `null` with no op / a 0 handle / a same-frame stale
-/// decode (every in-isolate test hits this path).
-fn s2_entity_create(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let name = args.get(0).to_rust_string_lossy(scope);
-        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_create) {
-            let handle = func(cname.as_ptr());
-            if handle != 0 {
-                let (index, serial) = crate::entity::decode_handle(handle as u32);
-                // The create listener fed the books synchronously via the ffi entry — adoption is the proof.
-                if let Some(id) = crate::entity_live::adopt(index, serial) {
-                    rv.set(build_entity_ref(scope, index, id));
-                }
-            }
-        }
-    }));
-}
 
-/// Native `__s2_entity_find_by_class(className) -> EntityRef[]`. Over the `entity_find_by_class` op
-/// (the shim iterates the entity-identity list, comparing each `CEntityIdentity::m_designerName`).
-/// Returns serial-gated EntityRefs — each (index, serial) is re-validated via `entity_resolve_ptr`
-/// (like `s2_entity_create`) before building the ref; the raw pointer never crosses to JS.
-/// Degrades to an empty array with no op / a null className. The out-buffer is bounded at 1024.
-fn s2_entity_find_by_class(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let empty = v8::Array::new(scope, 0);
-        rv.set(empty.into());
-        let name = args.get(0).to_rust_string_lossy(scope);
-        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        let Some(func) = ops.and_then(|o| o.entity_find_by_class) else { return };
-        const CAP: usize = 1024;
-        let mut idxs = vec![0i32; CAP];
-        let mut sers = vec![0i32; CAP];
-        let total = func(cname.as_ptr(), idxs.as_mut_ptr(), sers.as_mut_ptr(), CAP as i32);
-        let n = (total.max(0) as usize).min(CAP);
-        let arr = v8::Array::new(scope, 0);
-        let mut w: u32 = 0;
-        for i in 0..n {
-            let (index, serial) = (idxs[i], sers[i]);
-            if let Some(id) = crate::entity_live::adopt(index, serial) {
-                let r = build_entity_ref(scope, index, id);
-                arr.set_index(scope, w, r);
-                w += 1;
-            }
-        }
-        rv.set(arr.into());
-    }));
-}
 
 /// Native `__s2_user_message_create(name) -> int` (1 ok / 0 fail). Over the `user_message_create` op
 /// (FindNetworkMessagePartial + AllocateMessage into the shim's single-target). Degrades to 0 with no
@@ -5157,16 +4708,6 @@ fn s2_user_message_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 // UserMessage interception (usermsg-hook slice): the 8 `__s2_usermsg_*` natives moved to
 // `crate::usermsg`, alongside their mux, dispatch and teardown.
 
-/// Native `__s2_entity_spawn(index, serial) -> boolean`. Serial-gated `DispatchSpawn`. Degrades to
-/// `false` with no op / a stale ref.
-fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_spawn) { rv.set_bool(func(index, serial) != 0); }
-    }));
-}
 
 /// Native `__s2_collision_activate(index, serial) -> boolean`. Serial-gated; over the
 /// `collision_activate` op (CCollisionProperty partition registration). Degrades to `false` with no
@@ -5180,22 +4721,6 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
-/// Native `__s2_ent_set_model(index, serial, modelName) -> boolean`. Serial-gated; over the
-/// `entity_set_model` op (`CBaseEntity::SetModel`, sig-resolved shim-side). Gives a runtime entity a
-/// model + its collision — a runtime `trigger_multiple` needs this for a physics volume that fires
-/// touch. Degrades to `false` with no op / a stale ref / a NUL in the name. Never throws.
-fn s2_ent_set_model(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let name = args.get(2).to_rust_string_lossy(scope);
-        let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_set_model) {
-            rv.set_bool(func(index, serial, cname.as_ptr()) != 0);
-        }
-    }));
-}
 
 /// Native `__s2_sound_emit(soundName, entIndex, entSerial, slotsArray, volume) -> number`. Over the
 /// `sound_emit` op. Reads the JS slot array into a `Vec<i32>` (mirrors `__s2_user_message_send`); a
@@ -5256,104 +4781,9 @@ fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
-/// Native `__s2_entity_teleport(index, serial, originArr|null, anglesArr|null, velArr|null) -> boolean`.
-/// Each array arg is independently optional (a non-3-element/non-array value degrades to a null pointer
-/// for that component, matching the shim's nullable `Vector*`/`QAngle*`/`Vector*` ABI). Degrades to
-/// `false` with no op / a stale ref.
-fn s2_entity_teleport(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let origin = read_vec3_opt(scope, args.get(2));
-        let angles = read_vec3_opt(scope, args.get(3));
-        let vel    = read_vec3_opt(scope, args.get(4));
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_teleport) {
-            let op = origin.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
-            let ap = angles.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
-            let vp = vel.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
-            rv.set_bool(func(index, serial, op, ap, vp) != 0);
-        }
-    }));
-}
 
-/// Native `__s2_entity_remove(index, serial) -> boolean`. Serial-gated `UTIL_Remove`. Degrades to
-/// `false` with no op / a stale ref.
-fn s2_entity_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_remove) { rv.set_bool(func(index, serial) != 0); }
-    }));
-}
 
-/// Native `__s2_entity_fire_input(index, serial, input, value, actIdx, actSerial, callerIdx,
-/// callerSerial, delay) -> boolean`. Over the `entity_fire_input` engine op (`AddEntityIOEvent`, the
-/// game's own input-firing path, sig-resolved shim-side). `actIdx`/`callerIdx` < 0 = no
-/// activator/caller (the shim passes null). Degrades to `false` with no op / a stale target ref.
-fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let input = args.get(2).to_rust_string_lossy(scope);
-        let value = args.get(3).to_rust_string_lossy(scope);
-        // E1: optional activator/caller (args 4/5, 6/7) — a JS -1 / id-0 / translation miss all
-        // collapse to (-1, -1) = "no activator/caller" (the shim passes null).
-        let (act_idx, act_serial) = ent_op_serial(scope, args.get(4), args.get(5)).unwrap_or((-1, -1));
-        let (caller_idx, caller_serial) = ent_op_serial(scope, args.get(6), args.get(7)).unwrap_or((-1, -1));
-        let delay = args.get(8).number_value(scope).unwrap_or(0.0) as f32;
-        let Ok(input_c) = std::ffi::CString::new(input) else { return };
-        let Ok(value_c) = std::ffi::CString::new(value) else { return };
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_fire_input) {
-            rv.set_bool(func(
-                index, serial, input_c.as_ptr(), value_c.as_ptr(),
-                act_idx, act_serial, caller_idx, caller_serial, delay,
-            ) != 0);
-        }
-    }));
-}
 
-/// Native `__s2_entity_spawn_kv(index, serial, keys[], types[], values[]) -> boolean`. Over the
-/// `entity_spawn_kv` op (DispatchSpawn with a shim-built CEntityKeyValues). All three arrays must be
-/// same-length; keys/values are strings (interior NUL -> false), types are ints. Degrades to false
-/// with no op / stale serial / malformed args (every in-isolate test).
-fn s2_entity_spawn_kv(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let keys_arr = match v8::Local::<v8::Array>::try_from(args.get(2)) { Ok(a) => a, Err(_) => return };
-        let types_arr = match v8::Local::<v8::Array>::try_from(args.get(3)) { Ok(a) => a, Err(_) => return };
-        let vals_arr = match v8::Local::<v8::Array>::try_from(args.get(4)) { Ok(a) => a, Err(_) => return };
-        let n = keys_arr.length();
-        if types_arr.length() != n || vals_arr.length() != n { return; }
-        let mut keys_c: Vec<std::ffi::CString> = Vec::with_capacity(n as usize);
-        let mut vals_c: Vec<std::ffi::CString> = Vec::with_capacity(n as usize);
-        let mut types_v: Vec<c_int> = Vec::with_capacity(n as usize);
-        for i in 0..n {
-            let k = match keys_arr.get_index(scope, i) { Some(v) => v.to_rust_string_lossy(scope), None => return };
-            let val = match vals_arr.get_index(scope, i) { Some(v) => v.to_rust_string_lossy(scope), None => return };
-            let t = match types_arr.get_index(scope, i) { Some(v) => v.integer_value(scope).unwrap_or(-1) as i32, None => return };
-            if !(0..=3).contains(&t) { return; }
-            let kc = match std::ffi::CString::new(k) { Ok(c) => c, Err(_) => return };
-            let vc = match std::ffi::CString::new(val) { Ok(c) => c, Err(_) => return };
-            // BYTE-length guard (the true choke point): the JS prelude caps UTF-16 .length at 1024,
-            // but CKV3Arena's AddPage() aborts the WHOLE process on a string whose UTF-8 BYTE length
-            // exceeds ~2KB — and a BMP char (CJK, U+0800..U+FFFF) is 3 UTF-8 bytes/code-unit, so 1024
-            // code units can be ~3KB. Re-check the exact UTF-8 byte length here (free — the CString is
-            // built) and fail the WHOLE map closed (no partial spawn) BEFORE any engine call.
-            if kc.as_bytes().len() > 1024 || vc.as_bytes().len() > 1024 { return; }
-            keys_c.push(kc); vals_c.push(vc); types_v.push(t);
-        }
-        let key_ptrs: Vec<*const std::os::raw::c_char> = keys_c.iter().map(|c| c.as_ptr()).collect();
-        let val_ptrs: Vec<*const std::os::raw::c_char> = vals_c.iter().map(|c| c.as_ptr()).collect();
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_spawn_kv) {
-            rv.set_bool(func(index, serial, n as c_int, key_ptrs.as_ptr(), types_v.as_ptr(), val_ptrs.as_ptr()) != 0);
-        }
-    }));
-}
 
 /// Native `__s2_output_subscribe(classname, output, handler)`. Subscribes a JS fn to `Entity.onOutput`
 /// (entity-I/O slice); owner-tracked in `OUTPUT_MUX` keyed `"<classname>\0<output>"`. The
@@ -5409,64 +4839,8 @@ fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
-/// Native `__s2_entity_listener_on(kind, className, handler)`. Subscribes a JS fn to the entity
-/// lifecycle mux (entity-listeners slice), keyed `"<kind>\0<className>"`. On the FIRST-EVER subscribe
-/// (the mux was empty), calls the `entity_listener_install` engine op so the shim lazily registers its
-/// IEntityListener (zero cost when no plugin subscribes). Degrade-never-crash: no op → the subscribe
-/// still records, the engine just never delivers.
-fn s2_entity_listener_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let kind = args.get(0).to_rust_string_lossy(scope);
-        let class_name = args.get(1).to_rust_string_lossy(scope);
-        let key = format!("{}\0{}", kind, class_name);
-        // WHOLE-STORE emptiness, not per-channel: the IEntityListener is registered once for the
-        // process. Sampled BEFORE subscribing.
-        let first_ever = ENTITY_MUX.with(|m| m.borrow().is_empty());
-        let Some((sub_id, _)) = subscribe_into(scope, &args, &ENTITY_MUX, &key, 2) else { return };
-        if first_ever {
-            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.entity_listener_install) {
-                let _ = func();
-            }
-        }
-        rv.set(v8::Number::new(scope, sub_id as f64).into());
-    }));
-}
 
-/// Native `__s2_entity_listener_off(kind, className)`. Drops the CURRENT plugin's subs for the exact
-/// `"<kind>\0<className>"` key (best-effort, mirrors `s2_output_unsubscribe`). The IEntityListener stays
-/// installed (unload/reload cleanup runs via `remove_by_owner`); this is available as a primitive.
-fn s2_entity_listener_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let kind = args.get(0).to_rust_string_lossy(scope);
-        let class_name = args.get(1).to_rust_string_lossy(scope);
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let key = format!("{}\0{}", kind, class_name);
-        ENTITY_MUX.with(|m| { m.borrow_mut().remove_by_owner_on(&key, &owner); });
-    }));
-}
 
-/// Native `__s2_entity_subobj_vcall(index, serial, subObjOffset, vtableIndex, argIndex, argSerial)
-/// -> boolean`. Calls a `.text`-validated vtable slot on the sub-object at `subObjOffset` (e.g.
-/// ItemServices' `RemoveWeapons`/`DropActivePlayerWeapon`), optionally passing a second
-/// serial-gated entity arg (`argIndex < 0` = no arg, e.g. no active weapon to pass). Degrades to
-/// `false` with no op / a stale root or arg ref / an unresolved sub-object / an out-of-`.text`
-/// vtable slot (shim-side guard).
-fn s2_entity_subobj_vcall(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let off = args.get(2).integer_value(scope).unwrap_or(-1) as i32;
-        let vtable_index = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
-        // E1: optional second entity arg (args 4/5) — a JS -1 / id-0 / translation miss → (-1, -1) = "no arg".
-        let (arg_idx, arg_serial) = ent_op_serial(scope, args.get(4), args.get(5)).unwrap_or((-1, -1));
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_subobj_vcall) {
-            rv.set_bool(func(index, serial, off, vtable_index, arg_idx, arg_serial) != 0);
-        }
-    }));
-}
 
 // ---------------------------------------------------------------------------
 // Plugin-declared engine calls (`@s2script/sdk/unsafe`). THREE natives and no registration native:
@@ -5791,36 +5165,6 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
-/// Native `__s2_entity_read_handle_vector(index, serial, ptrOffs, vectorOff, maxCount) ->
-/// EntityRef[]`. Follows the `ptrOffs` pointer-deref chain from the root entity (e.g. to a
-/// WeaponServices sub-object), then reads a `CUtlVector<CHandle>` at `vectorOff` (size@+0,
-/// elements@+8, shim-side) — each packed handle is decoded and `entity_resolve_ptr`-validated
-/// before becoming a serial-gated `EntityRef` (raw pointers never cross to JS; `maxCount`-capped,
-/// itself clamped to `[0, 256]`). Degrades to `[]` with no op / a stale root / an unresolved chain.
-fn s2_entity_read_handle_vector(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let arr = v8::Array::new(scope, 0);
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { rv.set(arr.into()); return };
-        let ptr_offs = read_int_array(scope, args.get(2));      // Vec<i32>, [] if not an array
-        let vector_off = args.get(3).integer_value(scope).unwrap_or(-1) as i32;
-        let max_count = (args.get(4).integer_value(scope).unwrap_or(0) as i32).clamp(0, 256);
-        let ops = ENGINE_OPS.with(|o| o.get());
-        if let Some(func) = ops.and_then(|o| o.entity_read_handle_vector) {
-            let mut out = vec![0i32; max_count as usize];
-            let n = func(index, serial, ptr_offs.as_ptr(), ptr_offs.len() as i32, vector_off, max_count, out.as_mut_ptr());
-            let mut w = 0u32;
-            for k in 0..(n.max(0) as usize).min(max_count as usize) {
-                let (i, s) = crate::entity::decode_handle(out[k] as u32);
-                if let Some(id) = crate::entity_live::adopt(i, s) {
-                    let er = build_entity_ref(scope, i, id);
-                    arr.set_index(scope, w, er);
-                    w += 1;
-                }
-            }
-        }
-        rv.set(arr.into());
-    }));
-}
 
 /// `__s2_plugin_unload(id) -> bool` — enqueue an unload (runs on the next frame drain). False if not loaded.
 fn s2_plugin_unload(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -5931,80 +5275,9 @@ fn s2_event_get_player_slot(
 
 
 
-/// Native `__s2_entity_name(index, serial) -> string | null`. Reads CEntityIdentity::m_name via the
-/// `entity_name` op; copies the C string now. null = stale/invalid/no-ops; "" = entity has no targetname.
-fn s2_entity_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.entity_name else { return };
-        let ptr = func(index, serial);
-        if ptr.is_null() { return; }
-        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
-        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
-    }));
-}
 
-/// Native `__s2_entity_target(index, id) -> string | null`. Reads `CBaseEntity::m_target` (a
-/// `CUtlSymbolLarge`) directly from the entity's OWN instance memory — unlike `m_name`, which lives on
-/// the identity and is read through the shim's dedicated `entity_name` op, `m_target` has no such op,
-/// so this resolves its offset via the SAME live `__s2_schema_offset` cache the plugin-declared-call
-/// `receiver.via` hop and `DamageInfo` use (schema-resolved, never baked — spec §10), then follows the
-/// already books/serial-gated entity pointer itself. A `CUtlSymbolLarge` is a single pointer-sized
-/// field (`const char* m_pString`); its own `String()` accessor falls back to `""` when that pointer
-/// is null, which is exactly the convention followed here. null = stale/invalid ref, unresolved
-/// offset, or no ops (mirrors `s2_entity_name`'s null = stale/invalid/no-ops contract); "" = the
-/// entity has no target.
-fn s2_entity_target(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        let ent = entity_resolve_ptr(index, id);
-        if ent.is_null() { return; }               // invalid → null (already set)
-        let off = schema_offset_cached("CBaseEntity", "m_target");
-        if off < 0 { return; }                      // unresolved offset → null (already set)
-        let sym_ptr = crate::entity::read_u64(ent as *const u8, off) as usize as *const std::os::raw::c_char;
-        if sym_ptr.is_null() {
-            if let Some(js) = v8::String::new(scope, "") { rv.set(js.into()); }
-            return;
-        }
-        let s = unsafe { std::ffi::CStr::from_ptr(sym_ptr) }.to_string_lossy().into_owned();
-        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
-    }));
-}
 
-/// Native `__s2_ent_identity_flags(index, id) -> number | null`. CEntityIdentity::m_flags
-/// read from the identity SLOT via the ent_identity_flags op (books-translated id →
-/// engine serial; chunk-validated shim-side) — NEVER via instance+0x10. The E1
-/// replacement for the retired readInt32Via([16], 48) staging-flag chain.
-fn s2_ent_identity_flags(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.ent_identity_flags else { return };
-        let flags = func(index, serial);
-        if flags >= 0 { rv.set_double(flags as f64); }
-    }));
-}
 
-/// Native `__s2_ent_identity_flags_clear(index, id, mask) -> number | null`. Drops `mask`'s bits from
-/// CEntityIdentity::m_flags and returns the result. CLEAR-ONLY, and EF_IS_INVALID_EHANDLE is refused
-/// shim-side — a plugin must never be able to present a dead slot as live.
-fn s2_ent_identity_flags_clear(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_null();
-        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
-        let mask = args.get(2).uint32_value(scope).unwrap_or(0);
-        if mask == 0 { return; }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.ent_identity_flags_clear else { return };
-        let flags = func(index, serial, mask);
-        if flags >= 0 { rv.set_double(flags as f64); }
-    }));
-}
 
 
 /// Native `__s2_translations_read(lang, name) -> string | null`. Mirrors `s2_client_name`'s
@@ -6977,18 +6250,8 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // The five Slice-3 raw-pointer natives (entity-by-index, deref-handle, ent-read/write-i32,
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.
     // __s2_ent_ref_read_i32/__s2_ent_ref_write_i32 (introduced in Slice 5A) were retired in 5B.2 → generic __s2_ent_ref_read/write.
-    set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
-    set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
-    set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
-    set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
-    set_native(scope, global_obj, "__s2_ent_ref_write_string", s2_ent_ref_write_string);
-    set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
-    set_native(scope, global_obj, "__s2_ent_ref_read_floats_chain", s2_ent_ref_read_floats_chain);
-    set_native(scope, global_obj, "__s2_ent_ref_read_chain", s2_ent_ref_read_chain);
-    set_native(scope, global_obj, "__s2_ent_ref_write_chain", s2_ent_ref_write_chain);
-    set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
+    crate::entity::install_natives(scope, global_obj);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
-    set_native(scope, global_obj, "__s2_ent_id_for_index", s2_ent_id_for_index);
     set_native(scope, global_obj, "__s2_handle_adopt", s2_handle_adopt);
     // ConCommand registration.
     set_native(scope, global_obj, "__s2_concommand", s2_concommand);
@@ -7134,47 +6397,31 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Ray-trace slice: the sole native over the trace_shape engine op (engine-generic, no CS2 names).
     set_native(scope, global_obj, "__s2_trace", s2_trace);
     // Entity-creation lifecycle slice: createEntity + EntityRef.spawn/teleport/remove natives.
-    set_native(scope, global_obj, "__s2_entity_create", s2_entity_create);
-    set_native(scope, global_obj, "__s2_entity_find_by_class", s2_entity_find_by_class);
     set_native(scope, global_obj, "__s2_user_message_create", s2_user_message_create);
     set_native(scope, global_obj, "__s2_user_message_set_int", s2_user_message_set_int);
     set_native(scope, global_obj, "__s2_user_message_set_float", s2_user_message_set_float);
     set_native(scope, global_obj, "__s2_user_message_set_string", s2_user_message_set_string);
     set_native(scope, global_obj, "__s2_user_message_set_bool", s2_user_message_set_bool);
     set_native(scope, global_obj, "__s2_user_message_send", s2_user_message_send);
-    set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_collision_activate", s2_collision_activate);
-    set_native(scope, global_obj, "__s2_ent_set_model", s2_ent_set_model);
     set_native(scope, global_obj, "__s2_sound_emit", s2_sound_emit);
     set_native(scope, global_obj, "__s2_sound_precache_add", s2_sound_precache_add);
-    set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
-    set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
     // Item slice: the sub-object vcall native + the readHandleVector native (wrapped as an
     // EntityRef prototype method in the prelude, below). A5b retired give/remove-item to
     // gamedata/cs2 `calls` descriptors.
-    set_native(scope, global_obj, "__s2_entity_subobj_vcall", s2_entity_subobj_vcall);
-    set_native(scope, global_obj, "__s2_entity_read_handle_vector", s2_entity_read_handle_vector);
     // Entity-I/O slice: fire inputs (AddEntityIOEvent) + Entity.onOutput subscribe/unsubscribe
     // (FireOutputInternal detour dispatch — installed at shim Load, see dispatch_output).
-    set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);
-    set_native(scope, global_obj, "__s2_entity_spawn_kv", s2_entity_spawn_kv);
     set_native(scope, global_obj, "__s2_output_subscribe", s2_output_subscribe);
     set_native(scope, global_obj, "__s2_cvar_on_change", s2_cvar_on_change);
     set_native(scope, global_obj, "__s2_cvar_off_change", s2_cvar_off_change);
     set_native(scope, global_obj, "__s2_output_unsubscribe", s2_output_unsubscribe);
     // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete subscribe/unsubscribe (the
     // IEntityListener is lazily installed shim-side on the first subscribe via entity_listener_install).
-    set_native(scope, global_obj, "__s2_entity_listener_on", s2_entity_listener_on);
-    set_native(scope, global_obj, "__s2_entity_listener_off", s2_entity_listener_off);
     // entity_name slice: EntityRef.name reads CEntityIdentity::m_name (sibling of entity_find_by_class's
     // m_designerName read on the same identity).
-    set_native(scope, global_obj, "__s2_entity_name", s2_entity_name);
     // entity_target slice: EntityRef.target reads CBaseEntity::m_target via the schema-offset cache
     // (the field lives on the instance itself, not the identity — see s2_entity_target's doc comment).
-    set_native(scope, global_obj, "__s2_entity_target", s2_entity_target);
     // E1 entity-liveness slice: identity-slot flags (books-gated) for pawn.isValid's staging check.
-    set_native(scope, global_obj, "__s2_ent_identity_flags", s2_ent_identity_flags);
-    set_native(scope, global_obj, "__s2_ent_identity_flags_clear", s2_ent_identity_flags_clear);
     // checktransmit slice: declarative per-client entity visibility rules (@s2script/transmit).
     set_native(scope, global_obj, "__s2_transmit_set", s2_transmit_set);
     set_native(scope, global_obj, "__s2_transmit_reset", s2_transmit_reset);
@@ -9268,15 +8515,8 @@ pub(crate) fn register_builtin_stores() {
         }),
     );
 
-    // ENTITY_MUX: the IEntityListener stays registered for the process lifetime — no follow-up.
-    crate::owner_stores::register(
-        "ENTITY_MUX",
-        Box::new(|owner| { ENTITY_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { ENTITY_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            ENTITY_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    // ENTITY_MUX: registered by the feature module, which owns the mux the callbacks close over.
+    crate::entity::register_store();
 
     // USERCMD_MUX: the input-processing detour stays installed for the process lifetime — no follow-up.
     crate::owner_stores::register(
@@ -10071,7 +9311,7 @@ pub(crate) mod frame_tests {
     // `eval_in_context_string`) so callers can assert on a computed value (e.g. `JSON.stringify(...)`);
     // callers that only care about side effects may simply discard the return. Panics loudly (with the
     // JS exception message) on a compile or runtime error, same as the previous void-returning behavior.
-    fn eval_std(id: &str, src: &str) -> String {
+    pub(crate) fn eval_std(id: &str, src: &str) -> String {
         create_plugin_context(id);
         let full = format!(
             "const {{ OnGameFrame }} = __s2require(\"@s2script/frame\");\nconst {{ delay, nextTick, nextFrame, threadSleep }} = __s2require(\"@s2script/timers\");\n{}",
@@ -11855,25 +11095,6 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// Slice 5A Task 3: the six (index, serial) natives degrade safely when no engine-ops table
-    /// is wired (no crash, no UB — they return -1/false/null/no-op as documented).
-    /// `__s2_handle_decode` is pure bit-math and works without ops.
-    #[test]
-    fn ent_ref_natives_degrade_without_engine_ops() {
-        crate::entity_live::reset_for_tests();
-        let _ = init(dummy_logger());
-        set_engine_ops(None);                 // no ops table → every entity op is a safe miss
-        create_plugin_context("p");
-        // id_for_index → 0 (empty books) ; valid → false ; read → null ; write → false ; state_changed → no-op/undefined
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_id_for_index(1))"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_valid(1, 7))"), "false");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_read(1, 7, 8, 1))"), "null");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write(1, 7, 8, 1, 5))"), "false");
-        // handle_decode is PURE (no ops needed). BITS-agnostic assertion: 64 < 2^7 <= 2^HANDLE_ENTRY_BITS,
-        // so index==64, serial==0 for any real bit-split (the exact split is validated live in the gate).
-        assert_eq!(eval_in_context_string("p", "var d=__s2_handle_decode(64); d[0]+','+d[1]"), "64,0");
-        shutdown();
-    }
 
     /// E1: the two minting natives — index-minting via the books id, handle-minting via
     /// adoption. A dangling/mismatched handle can never mint; an absent index mints 0.
@@ -12454,111 +11675,8 @@ pub(crate) mod frame_tests {
     // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete
     // ---------------------------------------------------------------------------
 
-    thread_local! { static ENTITY_INSTALL_CALLS: std::cell::Cell<i32> = std::cell::Cell::new(0); }
-    extern "C" fn capture_entity_install() -> c_int { ENTITY_INSTALL_CALLS.with(|c| c.set(c.get() + 1)); 1 }
 
-    // --- E1 fake slot-side plumbing: a fake `ent_resolve` op + a books seed. Replaces the retired
-    // FakeEnt/FakeIdent instance-identity fakes (nothing reads instance identity anymore — resolution
-    // is books + slot op). The fake resolver answers for exactly one armed (index, engine_serial). ---
-    thread_local! {
-        static FAKE_RESOLVE_KEY: std::cell::Cell<(i32, i32)> = std::cell::Cell::new((-1, -1));
-        static FAKE_RESOLVE_PTR: std::cell::Cell<*mut std::os::raw::c_void> =
-            std::cell::Cell::new(std::ptr::null_mut());
-    }
-    extern "C" fn fake_ent_resolve(idx: c_int, serial: c_int) -> *mut std::os::raw::c_void {
-        if (idx, serial) == FAKE_RESOLVE_KEY.with(|c| c.get()) { FAKE_RESOLVE_PTR.with(|c| c.get()) }
-        else { std::ptr::null_mut() }
-    }
-    /// Seed the books + arm the fake slot resolver for (index, serial). Returns the minted host id.
-    /// The backing buffer is a leaked 4KB zeroed block (writable, long-lived).
-    fn arm_fake_entity(index: i32, serial: i32) -> u64 {
-        let id = crate::entity_live::on_created(index, serial);
-        let buf: &'static mut [u8; 4096] = Box::leak(Box::new([0u8; 4096]));
-        FAKE_RESOLVE_KEY.with(|c| c.set((index, serial)));
-        FAKE_RESOLVE_PTR.with(|c| c.set(buf.as_mut_ptr() as *mut std::os::raw::c_void));
-        id
-    }
 
-    /// E1 ACCEPTANCE (unit form of the changelevel repro): a ref held across a map start
-    /// resolves null/false/dead — even though the ENGINE-side slot still reads live (the
-    /// fake resolver still answers). Stage 1 (the books) wins; the old design green-lit
-    /// exactly this case into a UAF.
-    #[test]
-    fn stale_ref_after_map_start_is_null_not_uaf() {
-        crate::entity_live::reset_for_tests();
-        let _ = init(dummy_logger());
-        let _id = arm_fake_entity(42, 7);
-        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
-        create_plugin_context("cl");
-        eval_in_context_string("cl", r#"
-            var E = __s2require("@s2script/sdk/entity").EntityRef;
-            globalThis.__ref = new E(42, __s2_ent_id_for_index(42));
-            globalThis.__before = __ref.isValid() + ":" + (__ref.readInt32(8) !== null);
-            "ok"
-        "#);
-        assert_eq!(eval_in_context_string("cl", "globalThis.__before"), "true:true",
-                   "live before the transition (books + fake slot agree)");
-        // The implicit entity epoch — exactly what `s2script_core_dispatch_map_start` does to the
-        // books UNCONDITIONALLY before the JS dispatch (Task 4). The fake engine slot STILL resolves
-        // (simulating freed-but-unchanged memory) — the books alone must kill the ref.
-        crate::entity_live::clear_for_map_transition();
-        assert_eq!(eval_in_context_string("cl", "String(__ref.isValid())"), "false");
-        assert_eq!(eval_in_context_string("cl", "String(__ref.readInt32(8))"), "null");
-        assert_eq!(eval_in_context_string("cl", "String(__ref.writeInt32(8, 5))"), "false");
-        shutdown();
-    }
-
-    /// E1 ACCEPTANCE: cross-map (index, serial) aliasing is impossible — the SAME engine
-    /// pair re-created after a clear gets a FRESH host id; a ref captured before the
-    /// transition stays dead (Candidate D's win over the bare (index,serial) table).
-    #[test]
-    fn same_index_serial_on_new_map_does_not_revive_old_refs() {
-        crate::entity_live::reset_for_tests();
-        let _ = init(dummy_logger());
-        let old_id = arm_fake_entity(64, 3);
-        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
-        crate::entity_live::clear_for_map_transition();          // the epoch (map start)
-        let new_id = crate::entity_live::on_created(64, 3);      // same pair, new map
-        assert!(new_id > old_id);
-        create_plugin_context("alias");
-        eval_in_context_string("alias", &format!(r#"
-            var E = __s2require("@s2script/sdk/entity").EntityRef;
-            globalThis.__old = String(new E(64, {old_id}).isValid());
-            globalThis.__new = String(new E(64, {new_id}).isValid());
-            "ok"
-        "#));
-        assert_eq!(eval_in_context_string("alias", "__old"), "false", "old id never revives");
-        assert_eq!(eval_in_context_string("alias", "__new"), "true");
-        shutdown();
-    }
-
-    thread_local! { static FAKE_FLAGS: std::cell::Cell<i64> = std::cell::Cell::new(-1); }
-    extern "C" fn fake_ent_identity_flags(idx: c_int, serial: c_int) -> i64 {
-        if (idx, serial) == FAKE_RESOLVE_KEY.with(|c| c.get()) { FAKE_FLAGS.with(|c| c.get()) } else { -1 }
-    }
-
-    /// E1: identityFlags reads the SLOT (books-translated) — live flags cross; a stale ref
-    /// or missing op degrades to null. This is the primitive pawn.isValid's staging check
-    /// rides on, with the [16]->48 instance chain gone.
-    #[test]
-    fn identity_flags_is_slot_side_and_books_gated() {
-        crate::entity_live::reset_for_tests();
-        let _ = init(dummy_logger());
-        let id = arm_fake_entity(9, 4);
-        FAKE_FLAGS.with(|c| c.set(0x104));            // arbitrary flags incl. bit 2 (staging)
-        set_engine_ops(Some(S2EngineOps {
-            ent_identity_flags: Some(fake_ent_identity_flags), ..mock_event_ops() }));
-        create_plugin_context("fl");
-        eval_in_context_string("fl", &format!(r#"
-            var E = __s2require("@s2script/sdk/entity").EntityRef;
-            globalThis.__live  = String(new E(9, {id}).identityFlags());
-            globalThis.__stale = String(new E(9, {id} + 1).identityFlags());
-            "ok"
-        "#));
-        assert_eq!(eval_in_context_string("fl", "__live"), "260");
-        assert_eq!(eval_in_context_string("fl", "__stale"), "null", "books gate the flags read");
-        shutdown();
-    }
 
     thread_local! { static SNAPSHOT_PAIRS: std::cell::RefCell<Vec<(i32, i32)>> = std::cell::RefCell::new(Vec::new()); }
     extern "C" fn fake_ent_snapshot(oi: *mut c_int, os: *mut c_int, cap: c_int) -> c_int {
@@ -12590,109 +11708,10 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// dispatch_entity_event delivers to the matching kind+class subscriber AND the "*" wildcard, with
-    /// (entity, className). With no engine ops entity_resolve_ptr degrades to null, so the entity arg is
-    /// null (also forced by handle=-1) and we assert on the className arg. Mirrors map_start_dispatch.
-    #[test]
-    fn entity_event_dispatch_delivers_class_to_matching_subscriber() {
-        let _ = init(dummy_logger());
-        set_engine_ops(None);
-        create_plugin_context("pel");
-        eval_in_context_string("pel", r#"
-            globalThis.__hits = [];
-            var E = __s2pkg_entity.Entity;
-            E.onSpawn("weapon_ak47", function (e, cls) { globalThis.__hits.push("exact:" + cls + ":" + (e === null)); });
-            E.onSpawn("*",           function (e, cls) { globalThis.__hits.push("star:"  + cls + ":" + (e === null)); });
-            E.onCreate("weapon_ak47", function (e, cls) { globalThis.__hits.push("create:" + cls); });
-            "ok"
-        "#);
-        let _ = dispatch_entity_event("spawn", "weapon_ak47", -1);   // hits the exact + the "*" spawn subs, NOT the create sub
-        assert_eq!(eval_in_context_string("pel", "globalThis.__hits.slice().sort().join('|')"),
-                   "exact:weapon_ak47:true|star:weapon_ak47:true");
-        shutdown();
-    }
 
-    /// kind separation: a "spawn" subscriber does NOT fire on a "delete"/"create" dispatch.
-    #[test]
-    fn entity_event_dispatch_respects_kind() {
-        let _ = init(dummy_logger());
-        set_engine_ops(None);
-        create_plugin_context("pel2");
-        eval_in_context_string("pel2", r#"
-            globalThis.__n = 0;
-            __s2pkg_entity.Entity.onSpawn("*", function () { globalThis.__n++; });
-            "ok"
-        "#);
-        let _ = dispatch_entity_event("delete", "prop_physics", -1);
-        let _ = dispatch_entity_event("create", "prop_physics", -1);
-        assert_eq!(eval_in_context_string("pel2", "String(globalThis.__n)"), "0", "spawn sub must not fire on delete/create");
-        let _ = dispatch_entity_event("spawn", "prop_physics", -1);
-        assert_eq!(eval_in_context_string("pel2", "String(globalThis.__n)"), "1");
-        shutdown();
-    }
 
-    /// First-ever subscribe calls entity_listener_install exactly once; a second subscribe does not.
-    #[test]
-    fn entity_listener_install_called_once_on_first_subscribe() {
-        let _ = init(dummy_logger());
-        set_engine_ops(Some(S2EngineOps { entity_listener_install: Some(capture_entity_install), ..mock_event_ops() }));
-        ENTITY_INSTALL_CALLS.with(|c| c.set(0));
-        create_plugin_context("pel3");
-        eval_in_context_string("pel3", r#"__s2pkg_entity.Entity.onSpawn("a", function(){}); "ok""#);
-        assert_eq!(ENTITY_INSTALL_CALLS.with(|c| c.get()), 1, "install on first subscribe");
-        eval_in_context_string("pel3", r#"__s2pkg_entity.Entity.onDelete("b", function(){}); "ok""#);
-        assert_eq!(ENTITY_INSTALL_CALLS.with(|c| c.get()), 1, "no second install");
-        shutdown();
-    }
 
-    /// dispatch_entity_event delivers a LIVE (non-null, books-adopted) EntityRef when the handle
-    /// adopts: with the books seeded (via arm_fake_entity) and the fake `ent_resolve` slot op wired,
-    /// the mint site adopts the decoded handle and the handler receives an EntityRef whose
-    /// `isValid()===true` and whose `index`/`id` match the books. Exercises the non-null branch the
-    /// other three tests (handle=-1) never hit; complements the live gate (which observed `valid=true`).
-    #[test]
-    fn entity_event_dispatch_delivers_live_entityref() {
-        crate::entity_live::reset_for_tests();
-        let _ = init(dummy_logger());
-        let handle: u32 = 0x0001_8005;                       // decodes to a live (idx>0, serial>0)
-        let (idx, serial) = crate::entity::decode_handle(handle);
-        assert!(idx > 0 && serial > 0, "chosen handle must decode to a live (idx>0, serial>0), got ({idx},{serial})");
-        let id = arm_fake_entity(idx, serial);               // seed the books + arm the fake slot resolver
-        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
-        create_plugin_context("pel4");
-        eval_in_context_string("pel4", r#"
-            globalThis.__got = "none";
-            __s2pkg_entity.Entity.onSpawn("weapon_ak47", function (e, cls) {
-                globalThis.__got = (e === null) ? "null"
-                    : ("live:" + cls + ":" + e.isValid() + ":" + e.index + ":" + e.id);
-            });
-            "ok"
-        "#);
-        let _ = dispatch_entity_event("spawn", "weapon_ak47", handle as i32);
-        assert_eq!(eval_in_context_string("pel4", "globalThis.__got"),
-                   format!("live:weapon_ak47:true:{idx}:{id}"));
-        shutdown();
-    }
 
-    /// Slice 5A Task 4: `EntityRef` from `@s2script/entity` degrades safely when no engine-ops table
-    /// is wired — `isValid` returns false, `readInt32` returns null, `writeInt32` returns false.
-    /// This is the failing test: EntityRef must be exported by the prelude (Step 3 makes it pass).
-    #[test]
-    fn entity_ref_degrades_without_ops() {
-        let _ = init(dummy_logger());
-        set_engine_ops(None);
-        load_body("er", r#"
-            const { EntityRef } = require("@s2script/entity");
-            const ref = new EntityRef(1, 7);
-            globalThis.__valid = String(ref.isValid());       // "false"
-            globalThis.__read  = String(ref.readInt32(8));    // "null"
-            globalThis.__write = String(ref.writeInt32(8, 5));// "false"
-        "#, "{}");
-        assert_eq!(read_global_string("er", "__valid"), "false");
-        assert_eq!(read_global_string("er", "__read"), "null");
-        assert_eq!(read_global_string("er", "__write"), "false");
-        shutdown();
-    }
 
     /// Slice 5B.2: kind-dispatched `__s2_ent_ref_read` / `__s2_ent_ref_write` natives degrade safely
     /// when no engine-ops table is wired. Also verifies `EntityRef` typed methods route through the
@@ -12802,24 +11821,6 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// The write-chain native degrades safely on every bad input (no live entity in the test isolate).
-    #[test]
-    fn ent_ref_write_chain_degrades_safely() {
-        let _ = init(dummy_logger());
-        set_engine_ops(None);
-        create_plugin_context("p");
-        // stale/absent root ref (index 1, serial 7) → false
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, [0], 8, 2, 1.5))"), "false");
-        // finalOff < 0 → false
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, [0], -1, 2, 1.5))"), "false");
-        // non-array path arg → false
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, 5, 8, 2, 1.5))"), "false");
-        // unknown kind (99) → false
-        assert_eq!(eval_in_context_string("p", "String(__s2_ent_ref_write_chain(1, 7, [0], 8, 99, 1.5))"), "false");
-        // the prelude wrapper forwards + degrades to false on a stale ref
-        assert_eq!(eval_in_context_string("p", r#"var {EntityRef}=__s2require("@s2script/entity"); String(new EntityRef(1, 7).writeFloat32Via([0], 8, 1.5))"#), "false");
-        shutdown();
-    }
 
     /// Slice 5A Task 5: a game-package prelude (registered via `register_injected_package`)
     /// runs in the RAW context scope where the CJS `require` is NOT defined — it must use
@@ -13231,20 +12232,6 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// Entity-creation lifecycle slice: `createEntity` degrades to `null` with no `entity_create`
-    /// op (e.g. every in-isolate test) — never a crash.
-    #[test]
-    fn entity_create_native_degrades_to_null_without_op() {
-        let _ = init(dummy_logger());
-        set_engine_ops(None);
-        create_plugin_context("p");
-        let out = eval_in_context_string("p", r#"
-            const { createEntity } = __s2pkg_entity;
-            String(createEntity("env_beam"))
-        "#);
-        assert_eq!(out, "null");
-        shutdown();
-    }
 
     /// Game-rules slice: `Entity.findByClass` degrades to an empty array with no `entity_find_by_class`
     /// op (e.g. every in-isolate test) — never a crash.
@@ -13261,37 +12248,7 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// entity_name slice: `EntityRef.name` (and the raw `__s2_entity_name` native) degrade to `null`
-    /// with no `entity_name` op (e.g. every in-isolate test) — never a crash.
-    #[test]
-    fn entity_name_degrades_to_null_without_ops() {
-        init(dummy_logger()).unwrap();
-        // No ENGINE_OPS are installed in-isolate -> the op is absent -> both paths return null.
-        let out = eval_std("en1", r#"
-            var EntityRef = globalThis.__s2pkg_entity.EntityRef;
-            var direct = __s2_entity_name(5, 7);
-            var viaRef = new EntityRef(5, 7).name;
-            JSON.stringify({ direct: direct, viaRef: viaRef });
-        "#);
-        assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);
-        shutdown();
-    }
 
-    /// entity_target slice: `EntityRef.target` (and the raw `__s2_entity_target` native) degrade to
-    /// `null` with no ops (e.g. every in-isolate test) — never a crash.
-    #[test]
-    fn entity_target_degrades_to_null_without_ops() {
-        init(dummy_logger()).unwrap();
-        // No ENGINE_OPS are installed in-isolate -> entity_resolve_ptr is null -> both paths return null.
-        let out = eval_std("et1", r#"
-            var EntityRef = globalThis.__s2pkg_entity.EntityRef;
-            var direct = __s2_entity_target(5, 7);
-            var viaRef = new EntityRef(5, 7).target;
-            JSON.stringify({ direct: direct, viaRef: viaRef });
-        "#);
-        assert_eq!(out, r#"{"direct":null,"viaRef":null}"#);
-        shutdown();
-    }
 
     /// entity_origin slice: `EntityRef.origin` (`CGameSceneNode::m_vecAbsOrigin`, reached via the
     /// `CBaseEntity::m_CBodyComponent` -> `CBodyComponent::m_pSceneNode` chain) degrades to `null` with
