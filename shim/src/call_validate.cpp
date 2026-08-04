@@ -374,14 +374,35 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
         // The SIBLING of the 0xB8 form above. `mov $1,%edx` (0xBA) was tracked and `mov $1,%rdx`
         // (0x48 C7 C2) was not — same semantics, opposite verdict, purely by encoding.
         u.redefines = ArgOfReg(rm);
-    } else if (hs.opcode == 0x63 || hs.opcode == 0x8D ||   // movslq / lea  -> reg
-               hs.opcode == 0x01 || hs.opcode == 0x09 ||   // add / or
-               hs.opcode == 0x21 || hs.opcode == 0x29 ||   // and / sub
-               hs.opcode == 0x31 || hs.opcode == 0x33) {   // xor
+    } else if (hs.opcode == 0x63 || hs.opcode == 0x8D ||   // movslq / lea      -> reg
+               hs.opcode == 0x03 || hs.opcode == 0x0B ||   // add / or   (r <- r/m)
+               hs.opcode == 0x23 || hs.opcode == 0x2B ||   // and / sub  (r <- r/m)
+               hs.opcode == 0x33) {                        // xor        (r <- r/m)
         // movslq is the CANONICAL encoding of "a 32-bit int argument widened for use as an index" —
-        // the shape is right and the hook was being refused. lea/ALU forms are the rest of the
-        // common "compute into an argument register then spill it" shapes.
+        // the shape is right and the hook was being refused. lea and the r<-r/m ALU forms are the
+        // rest of the common "compute into an argument register then spill it" shapes.
         u.redefines = ArgOfReg(reg);
+    } else if (hs.opcode == 0x01 || hs.opcode == 0x09 ||   // add / or   (r/m <- r)
+               hs.opcode == 0x21 || hs.opcode == 0x29 ||   // and / sub  (r/m <- r)
+               hs.opcode == 0x31) {                        // xor        (r/m <- r)
+        // DIRECTION MATTERS. These write r/m and READ reg — the mirror of the group above. Crediting
+        // `reg` here (as this did) marks the SOURCE as redefined and leaves the real destination
+        // live, which silently weakens every later observation. It hid in the suite because the one
+        // test covering it used `xor %edx,%edx`, the degenerate encoding where reg == rm and the
+        // direction cannot show.
+        if (hs.modrm_mod == 3) u.redefines = ArgOfReg(rm);   // memory destination kills no register
+    } else if ((hs.opcode == 0x0F && (hs.opcode2 == 0xB6 || hs.opcode2 == 0xB7 ||
+                                      hs.opcode2 == 0xBE || hs.opcode2 == 0xBF))) {
+        // movzx/movsx — a PURE KILL: it fully defines `reg` without reading it. Untracked, a later
+        // spill of that register was counted as an incoming argument and refused a correct shape.
+        // This is the only confirmed false-refusal source found on the real binary (~0.03%).
+        u.redefines = ArgOfReg(reg);
+    } else if (hs.opcode == 0x99) {                        // cqo/cdq — sign-extends rax INTO rdx
+        u.redefines = ArgOfReg(2);                         // rdx
+    } else if (hs.opcode == 0xF7 && (hs.modrm_reg == 4 || hs.modrm_reg == 6 || hs.modrm_reg == 7)) {
+        u.redefines = ArgOfReg(2);                         // mul/div/idiv clobber rdx:rax
+    } else if (hs.opcode == 0x0F && hs.opcode2 == 0x7E && hs.rex_w) {
+        u.redefines = ArgOfReg(rm);                        // movq %xmm,%r64 — dest is r/m
     } else if (hs.opcode >= 0x58 && hs.opcode <= 0x5F) {   // pop -> reg
         u.redefines = ArgOfReg(static_cast<int>(hs.opcode - 0x58) | (hs.rex_b ? 8 : 0));
     }
@@ -445,7 +466,11 @@ int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* 
                 return -1;
             }
 
-            if (u.wide && wide[u.argIndex] == 0) {
+            // `u.argIndex < count` is redundant while the refusal above returns — and that is
+            // exactly why it is written out. The bound must not depend on an unrelated policy rule
+            // staying a hard refusal: downgrade that to a warning and this read goes out of bounds
+            // (ASan-confirmed). One comparison to make the memory safety independent of the policy.
+            if (u.argIndex < count && u.wide && wide[u.argIndex] == 0) {
                 if (reasonOut && reasonCap > 0)
                     std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap),
                                   "shape relays integer arg slot %d 32-bit, but the callee stores it "
