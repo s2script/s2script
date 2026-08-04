@@ -5,8 +5,6 @@
 // Offsets are resolved live (Slice 3) and cached by the core OffsetCache; nothing is baked.
 (function () {
   var EntityRef = __s2require("@s2script/sdk/entity").EntityRef;
-  var math = __s2require("@s2script/sdk/math");
-  var Vector = math.Vector, QAngle = math.QAngle;
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
   var Weapon = globalThis.__s2pkg_cs2.Weapon;   // set by weapon.js (concatenated before this file)
 
@@ -1154,7 +1152,10 @@
   var WinPanelFinalEvent = { CTsWin: 2, TerroristsWin: 3 };
 
   // CS2 user-message sugar over the generic @s2script/usermessages builder.
-  var FFADE_IN = 1, FFADE_OUT = 2, FFADE_MODULATE = 4, FFADE_STAYOUT = 8, FFADE_PURGE = 16;
+  // The engine's fade-flag vocabulary, complete. An object rather than five loose consts so the
+  // unused members are still documentation instead of dead bindings a linter has to be told to
+  // ignore — `opts.flags` is a raw number, and this is where a caller finds out what to pass.
+  var FFADE = { IN: 1, OUT: 2, MODULATE: 4, STAYOUT: 8, PURGE: 16 };
   function _um(name) { return new (globalThis.__s2pkg_usermessages.UserMessage)(name); }
   var Fade = {
     // opts: { duration, holdTime?, color?, flags? }. duration/holdTime are engine fade units
@@ -1164,13 +1165,13 @@
       return _um("CUserMessageFade")
         .setInt("duration",  opts.duration  != null ? opts.duration  : 1024)
         .setInt("hold_time", opts.holdTime  != null ? opts.holdTime  : 0)
-        .setInt("flags",     opts.flags     != null ? opts.flags     : (FFADE_OUT | FFADE_PURGE))
+        .setInt("flags",     opts.flags     != null ? opts.flags     : (FFADE.OUT | FFADE.PURGE))
         .setInt("color",     opts.color     != null ? opts.color     : 0xFF000000)
         .send(slot);
     },
     blind: function (slot, duration) {
       var d = duration != null ? duration : 2000;
-      return Fade.to(slot, { duration: d, holdTime: d, flags: FFADE_OUT | FFADE_PURGE, color: 0xFF000000 });
+      return Fade.to(slot, { duration: d, holdTime: d, flags: FFADE.OUT | FFADE.PURGE, color: 0xFF000000 });
     }
   };
   var Shake = {

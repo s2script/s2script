@@ -184,7 +184,7 @@ guarantee the latch gives is SourceMod's *semantic*, not the absence of the re-e
 **Lifecycle** reuses three existing precedents rather than inventing a fourth. Resolution reuses
 `calls`' path unchanged. Install is lazy, on first subscribe — the same idempotent
 install-on-first-subscribe pattern `UserCmd.onRun` already uses in `shim/src/s2script_mm.cpp` — so
-no subscribers means no patched bytes. Dispatch goes through `fan_out_collapsing` (§2.2): priority,
+no subscribers means no patched bytes. Dispatch goes through `fan_out_inner` (§2.2): priority,
 per-handler `TryCatch` isolation, and the standard collapse all apply unchanged — `Handled` or
 `Stop` suppresses the original call, `Changed` writes the mutated params back and still calls it.
 There is **no** uninstall on last-unsubscribe: `s2detour::RemoveAll()` at Unload is the only removal
