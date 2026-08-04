@@ -503,17 +503,35 @@ static void test_arg_width_survives_a_maximal_prefix_run() {
           "a maximal legacy-prefix run decodes without reading past the decode window");
 }
 
-// The bound that keeps ArgWidths from reading past the CALLER's array. A 2-slot shape on a callee
-// that spills r8 (slot 4) must not index wide[4]. Nothing exercised this before, so the guard was
-// load-bearing and untested — ASan is the arbiter.
-static void test_arg_width_never_indexes_past_the_declared_slots() {
-    // mov %r8,-0x8(%rbp) ; ret     -> a 64-bit store of slot 4
+// TOO FEW ARGUMENTS. A callee that reads slot 4 when the shape declares two is a shape that will
+// make the thunk hand the original a register our JS dispatch has already clobbered — the same crash
+// as a truncated pointer, by a different route.
+//
+// This also carries the ASan property the earlier version of this test was written for: the refusal
+// must happen BEFORE `wide[u.argIndex]` is indexed, so an out-of-range slot can never read past the
+// caller's array. Both facts are asserted here because they share one code path.
+static void test_arg_width_refuses_a_shape_that_declares_too_few_args() {
+    // mov %r8,-0x8(%rbp) ; ret     -> the callee reads slot 4
     static const uint8_t code[] = { 0x4C,0x89,0x45,0xF8, 0xC3 };
     char r[256];
     auto mv = ViewOver(code, sizeof code);
-    const uint8_t twoSlots[2] = { 1, 0 };          // this + one param; slot 4 is OUT of range
-    CHECK(s2validate::ArgWidths(twoSlots, 2, mv, code, r, sizeof r) == 0,
-          "a store in a slot beyond the declared arity is ignored, not read out of bounds");
+    const uint8_t twoSlots[2] = { 1, 0 };          // this + one param; slot 4 is NOT declared
+    CHECK(s2validate::ArgWidths(twoSlots, 2, mv, code, r, sizeof r) == -1,
+          "a callee reading an argument the shape does not declare is REFUSED");
+    CHECK(std::strstr(r, "slot 4") != nullptr && std::strstr(r, "2 integer arg slot") != nullptr,
+          "and the reason names both the missing slot and what the shape declared");
+}
+
+// The other direction is harmless and must PASS: the callee simply ignores arguments we relay that
+// it does not take. Only declaring too FEW is dangerous — the same asymmetry as width.
+static void test_arg_width_allows_a_shape_that_declares_more_args_than_the_callee_reads() {
+    // mov %esi,-0x8(%rbp) ; ret    -> the callee reads only slot 1
+    static const uint8_t code[] = { 0x89,0x75,0xF8, 0xC3 };
+    char r[256];
+    auto mv = ViewOver(code, sizeof code);
+    const uint8_t sixSlots[6] = { 1, 0, 0, 0, 0, 0 };
+    CHECK(s2validate::ArgWidths(sixSlots, 6, mv, code, r, sizeof r) == 0,
+          "declaring MORE arguments than the callee reads is harmless and passes");
 }
 
 // The scan must stop at the end of the callee's own flow. Without this it marches into the NEXT
@@ -620,7 +638,8 @@ int main() {
     test_arg_width_checks_every_param_position();
     test_arg_width_never_reads_past_the_view();
     test_arg_width_survives_a_maximal_prefix_run();
-    test_arg_width_never_indexes_past_the_declared_slots();
+    test_arg_width_refuses_a_shape_that_declares_too_few_args();
+    test_arg_width_allows_a_shape_that_declares_more_args_than_the_callee_reads();
     test_arg_width_stops_at_the_end_of_the_function();
     test_arg_width_stops_at_a_call();
     test_arg_width_tracks_the_wider_redefinition_set();
