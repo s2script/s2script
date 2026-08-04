@@ -820,20 +820,10 @@ thread_local! {
     static PRECACHE_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
 
-    /// clientprefs Task 4: `Cookies.onCached` subscriber mux, keyed by the constant "" (no name
-    /// dimension — a single un-keyed list, like `CHAT_MSG_SUBS`). Fanned out post-frame by
-    /// `dispatch_pending_cookie_cached` (called from `ffi.rs` AFTER `frame_async_drain()` returns, so
-    /// HOST is free — no re-entrancy risk from the plugin's own async cookie-load work).
-    /// `remove_by_owner` on unload; reset on shutdown.
-    static COOKIE_CACHED_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
-    /// clientprefs Task 4: slots queued by `__s2_cookie_dispatch_cached` (called from inside the
-    /// plugin's `loadCookies` async continuation, i.e. possibly mid-async-drain) for the NEXT
-    /// `dispatch_pending_cookie_cached()` post-drain fan-out. Draining + clearing happens with HOST free.
-    static COOKIE_CACHED_PENDING: std::cell::RefCell<Vec<i32>> = std::cell::RefCell::new(Vec::new());
+    // COOKIE_CACHED_MUX / _PENDING moved to `crate::cookies`.
 
     /// WebSocket Task 2: `WebSocket.on*` subscriber mux, keyed `"<conn_id>:<event>"` (event =
-    /// "message"/"close"/"error"). Same EventMux shape/discipline as COOKIE_CACHED_MUX; fanned out
+    /// "message"/"close"/"error"). Same EventMux shape/discipline as cookies::COOKIE_CACHED_MUX; fanned out
     /// post-frame by `dispatch_pending_ws_events` (called from `ffi.rs` AFTER `frame_async_drain()`
     /// returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
     static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
@@ -920,40 +910,7 @@ thread_local! {
     static MANIFEST_VERSIONS: std::cell::RefCell<std::collections::HashMap<String, String>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
 
-    /// Slice 6.2: the host-global admin cache — two tiers (file admins.json ⊕ runtime Admin.add), each
-    /// SteamID64 → a u64 flag bitmask. Shared across all plugin contexts (V8 contexts are isolated, so a
-    /// runtime add in one plugin must be visible to another's gating — hence host-global, not per-context).
-    static ADMIN_FILE:    std::cell::RefCell<std::collections::HashMap<String, u64>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    static ADMIN_RUNTIME: std::cell::RefCell<std::collections::HashMap<String, u64>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// One-shot guard so admins.json loads once (the first plugin CONTEXT created — the admin prelude is
-    /// always injected, like every @s2script/* module — not per plugin).
-    static ADMIN_FILE_LOADED: std::cell::Cell<bool> = std::cell::Cell::new(false);
-
-    /// Slice admin-groups: per-tier immunity levels (mirrors ADMIN_FILE/ADMIN_RUNTIME). get = max(file, runtime).
-    static ADMIN_FILE_IMMUNITY:    std::cell::RefCell<std::collections::HashMap<String, i32>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    static ADMIN_RUNTIME_IMMUNITY: std::cell::RefCell<std::collections::HashMap<String, i32>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// Per-admin command overrides (file tier only — the resolver merges an admin's groups' override
-    /// blocks). sid -> cmd -> (required_mask, is_public). is_public true => anyone (flag "").
-    static ADMIN_OVERRIDES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String, (u64, bool)>>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// Global command overrides (admin_overrides.json). cmd -> (required_mask, is_public).
-    static ADMIN_GLOBAL_OVERRIDES: std::cell::RefCell<std::collections::HashMap<String, (u64, bool)>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-
-    /// Slice 6.18: the host-global ban cache — SteamID64 → (until_unix, reason). `until == 0` = permanent;
-    /// else the unix-second expiry. Host-global in core (not plugin-local JS) so it is visible across all
-    /// plugin contexts (like the admin cache). Populated by JS via the `__s2_ban_*` natives (loaded from
-    /// bans.json through the config bridge). Enforcement is JS-driven (sub-project 3): a ban plugin's
-    /// `Clients.onConnect` handler reads it via `__s2_ban_get` and shows-then-kicks a banned player. The
-    /// `ban_check` ffi export below is retained as an available synchronous primitive but is no longer called.
-    static BAN_CACHE: std::cell::RefCell<std::collections::HashMap<String, (i64, String)>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// One-shot guard so bans.json loads once (mirrors `ADMIN_FILE_LOADED`).
-    static BAN_LOADED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    // Admin cache state moved to `crate::admin`; ban cache state to `crate::bans`.
 
     /// TopMenu registry (adminmenu framework). Ordered category names (deduped) + items owned by a
     /// plugin. Item `onSelect` is a Global<Function> held like a command handler (NOT marshalled;
@@ -963,7 +920,7 @@ thread_local! {
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Slots+ids queued by __s2_topmenu_select (called under the isolate borrow from a menu onSelect);
     /// fanned out post-frame by dispatch_pending_topmenu_select (ffi.rs, HOST free). Same discipline as
-    /// COOKIE_CACHED_PENDING — sidesteps the re-entrant double-borrow.
+    /// cookies::COOKIE_CACHED_PENDING — sidesteps the re-entrant double-borrow.
     static TOPMENU_PENDING: std::cell::RefCell<Vec<(String, i32)>> = std::cell::RefCell::new(Vec::new());
     /// Monotonic insertion counter → each item's `seq`, so `snapshot` renders items in REGISTRATION order
     /// (a HashMap iterates in random per-instance order that would shuffle across restarts; the spec commits
@@ -1755,7 +1712,7 @@ fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
 // ---------------------------------------------------------------------------
 // WebSocket (client) Task 2: __s2_ws_* natives + signal routing + teardown.
 // Mirrors s2_fetch (the connect native)/resolve_fetch (-> resolve_ws_connect)/
-// s2_cookie_on_cached (the subscribe)/dispatch_pending_cookie_cached (-> dispatch_pending_ws_events).
+// cookies::s2_cookie_on_cached (the subscribe)/cookies::dispatch_pending_cached (-> dispatch_pending_ws_events).
 // ---------------------------------------------------------------------------
 
 /// Native `__s2_ws_connect(url) -> Promise<connId>`.  MIRRORS `s2_fetch`'s resolver/ledger/pending
@@ -1948,7 +1905,7 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
 /// Drain `WS_EVENT_PENDING` and fan each queued `(conn_id, event, s, n)` out to the `WS_EVENT_MUX`
 /// subscribers keyed `"<conn_id>:<event>"` (WebSocket Task 2). Called from `ffi.rs`'s Post-frame
 /// branch AFTER `frame_async_drain()` returns (HOST is free). Mirrors
-/// `dispatch_pending_cookie_cached` verbatim (snapshot, `try_borrow_mut` re-entrancy guard,
+/// `cookies::dispatch_pending_cached` verbatim (snapshot, `try_borrow_mut` re-entrancy guard,
 /// per-subscriber liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw),
 /// except the payload carries the event data: for "message"/"error" a single String arg `s`; for
 /// "close" two args `(Number code, String reason)` built from `(s, n)` = `(reason, code)`.
@@ -1965,7 +1922,7 @@ pub(crate) fn dispatch_pending_ws_events() {
         // Skipped when this (conn,event) key has no subscriber — but the terminal-close
         // prune in Phase 3 still runs, so an onMessage-only conn is pruned on close.
         if !snap.is_empty() { HOST.with(|h| {
-            // Re-entrancy guard (mirrors dispatch_pending_cookie_cached): expected free here (called
+            // Re-entrancy guard (mirrors cookies::dispatch_pending_cached): expected free here (called
             // after frame_async_drain returns), but guarded anyway per the shared discipline.
             let Ok(mut borrow) = h.try_borrow_mut() else { return };
             let Some(host) = borrow.as_mut() else { return };
@@ -3462,60 +3419,6 @@ pub(crate) fn replay_entity_event(kind: &str, class_name: &str, handle: i32) -> 
     })
 }
 
-/// Drain `COOKIE_CACHED_PENDING` and fan each queued slot out to the `Cookies.onCached` subscribers
-/// (clientprefs Task 4). Called from `ffi.rs`'s Post-frame branch AFTER `frame_async_drain()` returns
-/// (HOST is free — no re-entrancy risk from the plugin's own async cookie-load work). Mirrors
-/// `dispatch_client_event` verbatim: snapshot (release the mux borrow), `try_borrow_mut` re-entrancy
-/// guard, per-subscriber liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw.
-/// Notify-only — each handler is called with the single Integer `slot` and its return is ignored.
-pub(crate) fn dispatch_pending_cookie_cached() {
-    let slots: Vec<i32> = COOKIE_CACHED_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if slots.is_empty() { return; }
-
-    // Phase 1: snapshot — release COOKIE_CACHED_MUX borrow before entering any context. Fixed key "".
-    let snap = COOKIE_CACHED_MUX.with(|m| m.borrow().snapshot(""));
-    if snap.is_empty() { return; }
-
-    for slot in slots {
-        // Phase 2: enter each subscriber's context and invoke handler(slot).
-        HOST.with(|h| {
-            // Re-entrancy guard (mirrors dispatch_client_event): expected free here (called after
-            // frame_async_drain returns), but guarded anyway per the shared discipline.
-            let Ok(mut borrow) = h.try_borrow_mut() else { return };
-            let Some(host) = borrow.as_mut() else { return };
-
-            for (owner, generation, handler_g) in &snap {
-                // Liveness check (release REGISTRY borrow before entering context).
-                if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-                // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-                // Per-subscriber HandleScope+ContextScope — mirrors dispatch_client_event.
-                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-                let hs = &mut hs;
-                let ctx_local = v8::Local::new(hs, &g_ctx);
-                let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-                // Per-handler TryCatch isolates a throwing handler from the rest.
-                let mut tc_storage = v8::TryCatch::new(scope);
-                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-                let tc = &mut tc;
-
-                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                let slot_val: v8::Local<v8::Value> = v8::Integer::new(tc, slot).into();
-                let func = v8::Local::new(tc, handler_g);
-                if func.call(tc, recv, &[slot_val]).is_none() {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_pending_cookie_cached: handler '{}': {}", owner, msg));
-                }
-            }
-        });
-    }
-}
-
 /// Slice 6.11c: dispatch a player's CONSOLE command (from the ClientCommand hook). Unlike chat, the
 /// command name is raw (`sm_say`, not `!sm_say`), so match the EXACT registered name only — never an
 /// `sm_` fallback (that would hijack a real engine command like `say`). Returns true iff a registered
@@ -4560,28 +4463,7 @@ fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     }));
 }
 
-/// `__s2_cookie_on_cached(handler)` — subscribe a JS fn to `Cookies.onCached` (clientprefs Task 4).
-/// Owner-tracked (mirrors `__s2_client_subscribe`); fixed mux key "" (cookies-cached has no name
-/// dimension, like `Chat.onMessage`). The handler receives the raw `slot` at dispatch; the
-/// `@s2script/cookies` prelude wraps it into a `Client` via `Clients.fromSlot`.
-fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        let Some((sub_id, _first)) = subscribe_into(scope, &args, &COOKIE_CACHED_MUX, "", 0) else { return };
-        rv.set(v8::Number::new(scope, sub_id as f64).into());
-    }));
-}
-
-/// `__s2_cookie_dispatch_cached(slot)` — enqueue `slot` for the next post-frame
-/// `dispatch_pending_cookie_cached()` fan-out (clientprefs Task 4). No HOST access here (safe to call
-/// from inside the plugin's own async `loadCookies` continuation, which may run mid-async-drain); the
-/// actual `onCached` handler invocation happens later, once HOST is free.
-fn s2_cookie_dispatch_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
-        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push(slot));
-    }));
-}
+// `__s2_cookie_on_cached` / `__s2_cookie_dispatch_cached` moved to `crate::cookies`.
 
 /// `__s2_damage_read_float(offset) -> f32` — read a float from the current CTakeDamageInfo. 0 if no op.
 fn s2_damage_read_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -4965,7 +4847,7 @@ fn s2_topmenu_select(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
 }
 
 /// Fan out queued TopMenu selects to each item's owner context. Called from ffi.rs AFTER
-/// frame_async_drain() (HOST free). Mirrors dispatch_pending_cookie_cached / dispatch_concommand.
+/// frame_async_drain() (HOST free). Mirrors cookies::dispatch_pending_cached / dispatch_concommand.
 pub(crate) fn dispatch_pending_topmenu_select() {
     let pending: Vec<(String, i32)> = TOPMENU_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
     if pending.is_empty() { return; }
@@ -7315,35 +7197,11 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Precache subscriber (Sound slice): register a Sound.onPrecache handler.
     set_native(scope, global_obj, "__s2_precache_subscribe", s2_precache_subscribe);
 
-    set_native(scope, global_obj, "__s2_admin_set", s2_admin_set);
-    set_native(scope, global_obj, "__s2_admin_get", s2_admin_get);
-    set_native(scope, global_obj, "__s2_admin_get_immunity", s2_admin_get_immunity);
-    set_native(scope, global_obj, "__s2_admin_add_override", s2_admin_add_override);
-    set_native(scope, global_obj, "__s2_admin_set_global_override", s2_admin_set_global_override);
-    set_native(scope, global_obj, "__s2_admin_override", s2_admin_override);
-    set_native(scope, global_obj, "__s2_admin_remove", s2_admin_remove);
-    set_native(scope, global_obj, "__s2_admin_clear_file", s2_admin_clear_file);
-    set_native(scope, global_obj, "__s2_admin_mark_loaded", s2_admin_mark_loaded);
+    crate::admin::install_natives(scope, global_obj);
     // Slice 6.18: ban cache natives (engine-generic — a SteamID/ban map, like the admin cache).
-    set_native(scope, global_obj, "__s2_ban_set", s2_ban_set);
-    set_native(scope, global_obj, "__s2_ban_get", s2_ban_get);
-    set_native(scope, global_obj, "__s2_ban_remove", s2_ban_remove);
-    set_native(scope, global_obj, "__s2_ban_clear", s2_ban_clear);
-    set_native(scope, global_obj, "__s2_ban_list", s2_ban_list);
-    set_native(scope, global_obj, "__s2_ban_mark_loaded", s2_ban_mark_loaded);
+    crate::bans::install_natives(scope, global_obj);
     // clientprefs: cookie cache natives (engine-generic — a SteamID/string-KV map, like admin/ban).
-    set_native(scope, global_obj, "__s2_cookie_get", s2_cookie_get);
-    set_native(scope, global_obj, "__s2_cookie_set", s2_cookie_set);
-    set_native(scope, global_obj, "__s2_cookie_load", s2_cookie_load);
-    set_native(scope, global_obj, "__s2_cookie_get_time", s2_cookie_get_time);
-    set_native(scope, global_obj, "__s2_cookie_get_dirty", s2_cookie_get_dirty);
-    set_native(scope, global_obj, "__s2_cookie_clear", s2_cookie_clear);
-    set_native(scope, global_obj, "__s2_cookie_mark_cached", s2_cookie_mark_cached);
-    set_native(scope, global_obj, "__s2_cookie_is_cached", s2_cookie_is_cached);
-    set_native(scope, global_obj, "__s2_cookie_set_authid", s2_cookie_set_authid);
-    set_native(scope, global_obj, "__s2_cookie_take_offline_writes", s2_cookie_take_offline_writes);
-    set_native(scope, global_obj, "__s2_cookie_on_cached", s2_cookie_on_cached);
-    set_native(scope, global_obj, "__s2_cookie_dispatch_cached", s2_cookie_dispatch_cached);
+    crate::cookies::install_natives(scope, global_obj);
     set_native(scope, global_obj, "__s2_client_steamid", s2_client_steamid);
     set_native(scope, global_obj, "__s2_client_kick", s2_client_kick);
     // Voice-control slice: per-slot voice mute set/get (shim-side flag consulted by the
@@ -7969,329 +7827,12 @@ fn s2_client_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
     }));
 }
 
-// --- Slice 6.2: admin cache natives + client_steamid ---
+// Admin cache natives moved to `crate::admin`; ban cache natives + `ban_check` to `crate::bans`.
 
-/// `__s2_admin_set(steamid, flags, immunity, runtime)` — set/overwrite a SteamID's flags + immunity in
-/// the file(false)/runtime(true) tier.
-fn s2_admin_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 4 { return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let flags = args.get(1).number_value(scope).unwrap_or(0.0) as u64;
-        let immunity = args.get(2).number_value(scope).unwrap_or(0.0) as i32;
-        let runtime = args.get(3).boolean_value(scope);
-        if runtime {
-            ADMIN_RUNTIME.with(|m| { m.borrow_mut().insert(sid.clone(), flags); });
-            ADMIN_RUNTIME_IMMUNITY.with(|m| { m.borrow_mut().insert(sid, immunity); });
-        } else {
-            ADMIN_FILE.with(|m| { m.borrow_mut().insert(sid.clone(), flags); });
-            ADMIN_FILE_IMMUNITY.with(|m| { m.borrow_mut().insert(sid, immunity); });
-        }
-    }));
-}
 
-/// `__s2_admin_get(steamid) -> number` — the UNION of both tiers (0 = not an admin).
-fn s2_admin_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { rv.set_double(0.0); return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let f = ADMIN_FILE.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
-        let r = ADMIN_RUNTIME.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
-        rv.set_double((f | r) as f64);
-    }));
-}
+// Cookie cache natives moved to `crate::cookies`, which already owned the store — the feature is
+// now whole in one module (state, natives, dispatch, teardown).
 
-/// `__s2_admin_get_immunity(steamid) -> number` — max immunity across both tiers (0 = none).
-fn s2_admin_get_immunity(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { rv.set_double(0.0); return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let f = ADMIN_FILE_IMMUNITY.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
-        let r = ADMIN_RUNTIME_IMMUNITY.with(|m| m.borrow().get(&sid).copied().unwrap_or(0));
-        rv.set_double(f.max(r) as f64);
-    }));
-}
-
-/// `__s2_admin_add_override(steamid, cmd, mask, isPublic)` — a per-admin (file-tier) command override.
-fn s2_admin_add_override(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 4 { return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let cmd = args.get(1).to_rust_string_lossy(scope);
-        let mask = args.get(2).number_value(scope).unwrap_or(0.0) as u64;
-        let is_public = args.get(3).boolean_value(scope);
-        ADMIN_OVERRIDES.with(|m| {
-            m.borrow_mut().entry(sid).or_default().insert(cmd, (mask, is_public));
-        });
-    }));
-}
-
-/// `__s2_admin_set_global_override(cmd, mask, isPublic)` — a global (file-tier) command override.
-fn s2_admin_set_global_override(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let cmd = args.get(0).to_rust_string_lossy(scope);
-        let mask = args.get(1).number_value(scope).unwrap_or(0.0) as u64;
-        let is_public = args.get(2).boolean_value(scope);
-        ADMIN_GLOBAL_OVERRIDES.with(|m| { m.borrow_mut().insert(cmd, (mask, is_public)); });
-    }));
-}
-
-/// `__s2_admin_override(steamid, cmd) -> string` — "" (none) / "public" / decimal mask. Per-admin beats global.
-fn s2_admin_override(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { let s = v8::String::new(scope, "").unwrap(); rv.set(s.into()); return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let cmd = args.get(1).to_rust_string_lossy(scope);
-        let hit = ADMIN_OVERRIDES.with(|m| m.borrow().get(&sid).and_then(|c| c.get(&cmd).copied()))
-            .or_else(|| ADMIN_GLOBAL_OVERRIDES.with(|m| m.borrow().get(&cmd).copied()));
-        let out = match hit {
-            None => String::new(),
-            Some((_, true)) => "public".to_string(),
-            Some((mask, false)) => mask.to_string(),
-        };
-        let s = v8::String::new(scope, &out).unwrap();
-        rv.set(s.into());
-    }));
-}
-
-/// `__s2_admin_remove(steamid, runtime)` — remove from a tier.
-fn s2_admin_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let runtime = args.get(1).boolean_value(scope);
-        if runtime {
-            ADMIN_RUNTIME.with(|m| { m.borrow_mut().remove(&sid); });
-            ADMIN_RUNTIME_IMMUNITY.with(|m| { m.borrow_mut().remove(&sid); });
-        } else {
-            ADMIN_FILE.with(|m| { m.borrow_mut().remove(&sid); });
-            ADMIN_FILE_IMMUNITY.with(|m| { m.borrow_mut().remove(&sid); });
-        }
-    }));
-}
-
-/// `__s2_admin_clear_file()` — wipe the file tier (Admin.reload re-reads into it), plus the file-tier
-/// immunity map, per-admin overrides, and global overrides (all file-tier-sourced).
-fn s2_admin_clear_file(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ADMIN_FILE.with(|m| m.borrow_mut().clear());
-        ADMIN_FILE_IMMUNITY.with(|m| m.borrow_mut().clear());
-        ADMIN_OVERRIDES.with(|m| m.borrow_mut().clear());
-        ADMIN_GLOBAL_OVERRIDES.with(|m| m.borrow_mut().clear());
-    }));
-}
-
-/// `__s2_admin_mark_loaded() -> boolean` — returns the PRIOR loaded state, then sets it true (one-shot load guard).
-fn s2_admin_mark_loaded(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let prev = ADMIN_FILE_LOADED.with(|c| { let p = c.get(); c.set(true); p });
-        rv.set_bool(prev);
-    }));
-}
-
-// --- Slice 6.18: ban cache natives + ban_check ---
-
-/// `__s2_ban_set(steamid, until, reason)` — insert/overwrite a ban. `until == 0` = permanent, else unix-sec expiry.
-fn s2_ban_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let until = args.get(1).number_value(scope).unwrap_or(0.0) as i64;
-        let reason = args.get(2).to_rust_string_lossy(scope);
-        BAN_CACHE.with(|m| { m.borrow_mut().insert(sid, (until, reason)); });
-    }));
-}
-
-/// `__s2_ban_get(steamid) -> string | null` — JSON `{"until":N,"reason":"..."}` if present, else null.
-fn s2_ban_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let entry = BAN_CACHE.with(|m| m.borrow().get(&sid).cloned());
-        match entry {
-            Some((until, reason)) => {
-                let json = serde_json::json!({ "until": until, "reason": reason }).to_string();
-                if let Some(js) = v8::String::new(scope, &json) { rv.set(js.into()); }
-            }
-            None => rv.set_null(),
-        }
-    }));
-}
-
-/// `__s2_ban_remove(steamid) -> boolean` — remove; returns whether the key was present.
-fn s2_ban_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        if args.length() < 1 { return; }
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let removed = BAN_CACHE.with(|m| m.borrow_mut().remove(&sid).is_some());
-        rv.set_bool(removed);
-    }));
-}
-
-/// `__s2_ban_clear()` — wipe the cache (Bans.reload re-parses the file into it).
-fn s2_ban_clear(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        BAN_CACHE.with(|m| m.borrow_mut().clear());
-    }));
-}
-
-/// `__s2_ban_list() -> string` — JSON array `[{"steamid":"..","until":N,"reason":".."}]`.
-fn s2_ban_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let items: Vec<serde_json::Value> = BAN_CACHE.with(|m| {
-            m.borrow().iter()
-                .map(|(sid, (until, reason))| serde_json::json!({
-                    "steamid": sid, "until": until, "reason": reason,
-                }))
-                .collect()
-        });
-        let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
-        if let Some(js) = v8::String::new(scope, &json) { rv.set(js.into()); }
-    }));
-}
-
-/// `__s2_ban_mark_loaded() -> boolean` — returns the PRIOR loaded state, then sets it true (one-shot guard).
-fn s2_ban_mark_loaded(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let prev = BAN_LOADED.with(|c| { let p = c.get(); c.set(true); p });
-        rv.set_bool(prev);
-    }));
-}
-
-/// Returns `Some(reason)` if `xuid` is currently banned (perm or unexpired), else `None`.
-/// Retained as an available synchronous ban-check primitive (via the `s2script_core_ban_check` ffi
-/// export); no longer called by the shim since sub-project 3 moved enforcement to the JS onConnect path.
-pub fn ban_check(xuid: u64, now: i64) -> Option<String> {
-    let key = xuid.to_string();
-    BAN_CACHE.with(|m| {
-        m.borrow().get(&key).and_then(|(until, reason)| {
-            if *until == 0 || *until > now { Some(reason.clone()) } else { None }
-        })
-    })
-}
-
-// --- clientprefs: cookie cache natives over crate::cookies (host-global, mirrors admin/ban). ---
-
-/// `__s2_cookie_get(steamid, name) -> string | undefined` — `undefined` on a true miss (distinct
-/// from a stored `""`); the module layer decides the default fallback.
-fn s2_cookie_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
-        match crate::cookies::get(&sid, &name) {
-            Some(v) => { if let Some(s) = v8::String::new(scope, &v) { rv.set(s.into()); } }
-            None => { rv.set(v8::undefined(scope).into()); }
-        }
-    }));
-}
-
-/// `__s2_cookie_set(steamid, name, value, updated)` — write via the API; marks the entry dirty.
-fn s2_cookie_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
-        let val = args.get(2).to_rust_string_lossy(scope);
-        let updated = args.get(3).integer_value(scope).unwrap_or(0);
-        crate::cookies::set(&sid, &name, &val, updated);
-    }));
-}
-
-/// `__s2_cookie_load(steamid, name, value, updated)` — write from the DB load; NOT dirty.
-fn s2_cookie_load(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
-        let val = args.get(2).to_rust_string_lossy(scope);
-        let updated = args.get(3).integer_value(scope).unwrap_or(0);
-        crate::cookies::load(&sid, &name, &val, updated);
-    }));
-}
-
-/// `__s2_cookie_get_time(steamid, name) -> number` — the stored `updated` timestamp, or 0 if absent.
-fn s2_cookie_get_time(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
-        let t = crate::cookies::get_time(&sid, &name);
-        rv.set(v8::Number::new(scope, t as f64).into());
-    }));
-}
-
-/// `__s2_cookie_get_dirty(steamid) -> { [name]: value }` — the dirty (disconnect flush) set as a JS object.
-fn s2_cookie_get_dirty(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let pairs = crate::cookies::get_dirty(&sid);
-        let obj = v8::Object::new(scope);
-        for (name, value) in pairs.iter() {
-            let k = v8::String::new(scope, name).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            let v = v8::String::new(scope, value).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            obj.set(scope, k.into(), v.into());
-        }
-        rv.set(obj.into());
-    }));
-}
-
-/// `__s2_cookie_clear(steamid)` — drop a client's entries (on disconnect, after the flush captures the dirty set).
-fn s2_cookie_clear(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        crate::cookies::clear(&sid);
-    }));
-}
-
-/// `__s2_cookie_mark_cached(steamid)` — mark a client's cookies loaded (a zero-cookie client is still "cached").
-fn s2_cookie_mark_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        crate::cookies::mark_cached(&sid);
-    }));
-}
-
-/// `__s2_cookie_is_cached(steamid) -> boolean`.
-fn s2_cookie_is_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        rv.set(v8::Boolean::new(scope, crate::cookies::is_cached(&sid)).into());
-    }));
-}
-
-/// `__s2_cookie_set_authid(steamid, name, value, updated)` — `SetAuthIdCookie` parity: write for a
-/// SteamID that may not currently be connected (cache write + queue for offline persistence).
-fn s2_cookie_set_authid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sid = args.get(0).to_rust_string_lossy(scope);
-        let name = args.get(1).to_rust_string_lossy(scope);
-        let val = args.get(2).to_rust_string_lossy(scope);
-        let updated = args.get(3).integer_value(scope).unwrap_or(0);
-        crate::cookies::set_authid(&sid, &name, &val, updated);
-    }));
-}
-
-/// `__s2_cookie_take_offline_writes() -> Array<[steamid, name, value, updated]>` — drain + clear the
-/// queued offline writes for the plugin to persist directly (an offline SteamID never fires the
-/// disconnect flush).
-fn s2_cookie_take_offline_writes(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let writes = crate::cookies::take_offline_writes();
-        let out = v8::Array::new(scope, writes.len() as i32);
-        for (i, (sid, name, val, updated)) in writes.iter().enumerate() {
-            let row = v8::Array::new(scope, 4);
-            let sid_s = v8::String::new(scope, sid).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            let name_s = v8::String::new(scope, name).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            let val_s = v8::String::new(scope, val).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            let updated_n = v8::Number::new(scope, *updated as f64);
-            row.set_index(scope, 0, sid_s.into());
-            row.set_index(scope, 1, name_s.into());
-            row.set_index(scope, 2, val_s.into());
-            row.set_index(scope, 3, updated_n.into());
-            out.set_index(scope, i as u32, row.into());
-        }
-        rv.set(out.into());
-    }));
-}
 
 /// `__s2_client_steamid(slot) -> string` — the client's SteamID64 as a decimal string; "0" if no op / bot / invalid.
 fn s2_client_steamid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -9934,14 +9475,7 @@ pub(crate) fn register_builtin_stores() {
     );
 
     // COOKIE_CACHED_MUX: pure post-frame JS dispatch — no engine hook to remove.
-    crate::owner_stores::register(
-        "COOKIE_CACHED_MUX",
-        Box::new(|owner| { COOKIE_CACHED_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    crate::cookies::register_store();
 
     // WS_EVENT_MUX: pure post-frame JS dispatch — the conns themselves close via the ledger.
     crate::owner_stores::register(
@@ -10160,7 +9694,7 @@ pub(crate) fn register_process_singletons() {
 
     reg("FRAME_COUNTER", AfterIsolateDrop, || FRAME_COUNTER.with(|c| c.set(0)));
     // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
-    reg("COOKIE_CACHED_PENDING", AfterIsolateDrop, || COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().clear()));
+    crate::cookies::register_singletons();
     reg("WS_EVENT_PENDING", AfterIsolateDrop, || WS_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
     reg("NET_EVENT_PENDING", AfterIsolateDrop, || NET_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
     // usermsg name→id resolution caches (the MUX itself is an owner-scoped store). Registered by the
@@ -10173,13 +9707,11 @@ pub(crate) fn register_process_singletons() {
     reg("MANIFEST_VERSIONS", AfterIsolateDrop, || MANIFEST_VERSIONS.with(|m| m.borrow_mut().clear()));
     // A `-1` cached before the schema was live must not persist across an init cycle.
     reg("SCHEMA_OFFSETS", AfterIsolateDrop, || SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new()));
-    // Host-global caches — deliberately NOT owner-scoped (see this fn's doc comment).
-    reg("ADMIN_FILE", AfterIsolateDrop, || ADMIN_FILE.with(|m| m.borrow_mut().clear()));
-    reg("ADMIN_RUNTIME", AfterIsolateDrop, || ADMIN_RUNTIME.with(|m| m.borrow_mut().clear()));
-    reg("ADMIN_FILE_LOADED", AfterIsolateDrop, || ADMIN_FILE_LOADED.with(|c| c.set(false)));
-    reg("BAN_CACHE", AfterIsolateDrop, || BAN_CACHE.with(|m| m.borrow_mut().clear()));
-    reg("BAN_LOADED", AfterIsolateDrop, || BAN_LOADED.with(|c| c.set(false)));
-    reg("COOKIES", AfterIsolateDrop, || crate::cookies::reset());
+    // Host-global caches — deliberately NOT owner-scoped (see this fn's doc comment). Each feature
+    // module registers its OWN slots, which is how the admin gap got closed: seven admin statics
+    // existed here and only three were ever registered.
+    crate::admin::register_singletons();
+    crate::bans::register_singletons();
     reg("CRASH_BREADCRUMB", AfterIsolateDrop, || crate::crash::breadcrumb::clear_plugins());
 }
 
@@ -10658,8 +10190,8 @@ pub(crate) mod frame_tests {
     /// bound costs nothing when things work — it only buys headroom when the box is contended.
     const ASYNC_POLL_TICKS: usize = 3000;
 
-    static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    extern "C" fn logger(_l: c_int, m: *const c_char) {
+    pub(crate) static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    pub(crate) extern "C" fn logger(_l: c_int, m: *const c_char) {
         LOG.lock().unwrap().push(unsafe { CStr::from_ptr(m) }.to_string_lossy().into_owned());
     }
 
@@ -10678,7 +10210,7 @@ pub(crate) mod frame_tests {
 
     /// Load a plugin whose factory body is `body` (the common test path — a synchronous factory that
     /// reaches Active within the single `load_plugin_js` call via the sync fast-path).
-    fn load_body(id: &str, body: &str, cfg: &str) {
+    pub(crate) fn load_body(id: &str, body: &str, cfg: &str) {
         load_plugin_js(id, &def_js(body), cfg);
     }
 
@@ -16491,94 +16023,7 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// Slice 6.2 Task 1: two-tier admin cache (file + runtime) UNION, per-tier remove, clear_file,
-    /// one-shot load guard, and `client_steamid` degrades to "0" without the op.
-    #[test]
-    fn admin_cache_two_tier_union_and_guard() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        // set file + runtime tiers; get unions them.
-        eval_in_context("p", "__s2_admin_set('111', 4, 0, false); __s2_admin_set('111', 1, 0, true);").unwrap(); // file KICK(4) + runtime RESERVATION(1)
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "5"); // 4|1
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('999'))"), "0"); // absent
-        // remove runtime tier only → file remains.
-        eval_in_context("p", "__s2_admin_remove('111', true);").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "4");
-        // clear_file wipes file tier.
-        eval_in_context("p", "__s2_admin_clear_file();").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('111'))"), "0");
-        // load guard: the prelude already called __s2_admin_mark_loaded() in create_plugin_context,
-        // so subsequent calls return true (already-loaded state).
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "true");
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_mark_loaded())"), "true");
-        // client_steamid degrades to "0" without the op.
-        assert_eq!(eval_in_context_string("p", "__s2_client_steamid(0)"), "0");
-        // client_kick degrades to a no-op (undefined) without the op.
-        assert_eq!(eval_in_context_string("p", "String(__s2_client_kick(0, 'x'))"), "undefined");
-        // server_command degrades to a no-op (undefined); server_map_valid to 0; the module wires them.
-        assert_eq!(eval_in_context_string("p", "String(__s2_server_command('x'))"), "undefined");
-        assert_eq!(eval_in_context_string("p", "String(__s2_server_map_valid('x'))"), "0");
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.command"), "function");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.isMapValid('x'))"), "false");
-        // Slice 6.6: the damage natives degrade without ops (read->0, victim->-1, write no-op) and the
-        // @s2script/damage module wires (Damage.onPre a function; DamageInfo reads degrade to 0/null).
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_float(68))"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_int(60))"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_victim())"), "-1");
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_write_float(68, 5))"), "undefined");
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_damage.Damage.onPre"), "function");
-        assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().damage)"), "0");
-        assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().victim)"), "null");
-        // Slice 6.7: cvar_get degrades to "" without the op; Server.getCvar/setCvar wired.
-        assert_eq!(eval_in_context_string("p", "String(__s2_cvar_get('sv_gravity'))"), "");
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.getCvar"), "function");
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.setCvar"), "function");
-        // reservedslots+basetriggers: server-info natives degrade (max_clients->0, map_name->"", game_time->0)
-        // and the @s2script/server module exposes maxPlayers/mapName/gameTime getters that pass them through.
-        assert_eq!(eval_in_context_string("p", "String(__s2_server_max_clients())"), "0");
-        assert_eq!(eval_in_context_string("p", "__s2_server_map_name()"), "");
-        assert_eq!(eval_in_context_string("p", "typeof __s2_server_map_name()"), "string");
-        assert_eq!(eval_in_context_string("p", "String(__s2_server_game_time())"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.maxPlayers)"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.mapName)"), "");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.gameTime)"), "0");
-        // Slice 6.12: plugin natives degrade (no file-watch in-isolate → empty list, ops false) + module wires.
-        assert_eq!(eval_in_context_string("p", "__s2_plugins_list()"), "[]");
-        assert_eq!(eval_in_context_string("p", "String(__s2_plugin_unload('x'))"), "false");
-        assert_eq!(eval_in_context_string("p", "String(__s2_plugin_reload('x'))"), "false");
-        assert_eq!(eval_in_context_string("p", "String(__s2_plugin_load('x'))"), "false");
-        assert_eq!(eval_in_context_string("p", "JSON.stringify(__s2pkg_plugins.Plugins.list())"), "[]");
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_plugins.Plugins.reload"), "function");
-        shutdown();
-    }
 
-    /// Admin-groups slice Task 1: per-tier immunity (max across tiers) + command overrides (per-admin
-    /// beats global; "public" sentinel) + clear_file wiping file immunity/overrides while runtime survives.
-    #[test]
-    fn admin_immunity_and_overrides() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        // immunity: max across tiers
-        eval_in_context("p", "__s2_admin_set('222', 4, 30, false); __s2_admin_set('222', 8, 70, true);").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get('222'))"), "12");        // 4|8
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get_immunity('222'))"), "70"); // max(30,70)
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get_immunity('999'))"), "0");  // absent
-        // overrides: per-admin beats global; public sentinel
-        eval_in_context("p", "__s2_admin_set_global_override('sm_x', 2, false); __s2_admin_add_override('222','sm_x',4,false);").unwrap();
-        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','sm_x')"), "4");    // per-admin wins
-        assert_eq!(eval_in_context_string("p", "__s2_admin_override('other','sm_x')"), "2");  // falls to global
-        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','nope')"), "");     // no override
-        eval_in_context("p", "__s2_admin_set_global_override('sm_pub', 0, true);").unwrap();
-        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','sm_pub')"), "public");
-        // clear_file wipes file immunity + overrides + global overrides; runtime immunity survives
-        eval_in_context("p", "__s2_admin_clear_file();").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_get_immunity('222'))"), "70"); // runtime kept
-        assert_eq!(eval_in_context_string("p", "__s2_admin_override('222','sm_x')"), "");
-        assert_eq!(eval_in_context_string("p", "__s2_admin_override('other','sm_x')"), "");
-        shutdown();
-    }
 
     /// FakeConVar slice: Server.registerCvar degrades to false without the convar_register op, and an
     /// unknown type string is rejected false JS-side (never reaches the op).
@@ -16803,316 +16248,18 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// Slice 6.2 Task 2: `@s2script/admin` prelude module — ADMFLAG constants, Admin.add/get/hasFlags,
-    /// root-implies-all, non-admin→null, __s2_admin_check hook, parseAdmins name→bit mapping.
-    #[test]
-    fn admin_module_flags_api_and_hook() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        // ADMFLAG bit values (SM-exact).
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.ADMFLAG.KICK)"), "4");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.ADMFLAG.ROOT)"), String::from("16384"));
-        // Admin.add (runtime) + get + hasFlags (exact-subset + root=all).
-        eval_in_context("p", "__s2pkg_admin.Admin.add('555', __s2pkg_admin.ADMFLAG.KICK | __s2pkg_admin.ADMFLAG.CHAT);").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('555').hasFlags(__s2pkg_admin.ADMFLAG.CHAT))"), "true");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('555').hasFlags(__s2pkg_admin.ADMFLAG.BAN))"), "false");
-        eval_in_context("p", "__s2pkg_admin.Admin.add('777', __s2pkg_admin.ADMFLAG.ROOT);").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('777').hasFlags(__s2pkg_admin.ADMFLAG.BAN))"), "true"); // root ⇒ all
-        // Non-admin → null.
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('000'))"), "null");
-        // The check hook is installed + honours the cache (bot slot → steamid "0" → not admin → false).
-        assert_eq!(eval_in_context_string("p", "String(typeof globalThis.__s2_admin_check)"), "function");
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false");
-        // Hardening: even a misconfigured "0" admin entry must NOT grant a bot/unauth (steamid "0") — forSlot guards it.
-        eval_in_context("p", "__s2_admin_set('0', __s2pkg_admin.ADMFLAG.ROOT, 0, true);").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__s2_admin_check(0, __s2pkg_admin.ADMFLAG.CHAT))"), "false"); // "0" never an admin
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.forSlot(0))"), "null");
-        // parseAdmins (renamed from parseFile in the admin-groups slice): name→bit mapping (file-tier path).
-        eval_in_context("p", r#"__s2_admin_parseAdmins('{"888":["kick"]}', true);"#).unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('888').hasFlags(__s2pkg_admin.ADMFLAG.KICK))"), "true");
-        shutdown();
-    }
 
-    /// Admin-groups slice Task 2: the flag-token parser — a compact SM letter-string, an array of names,
-    /// a whole-string name, and the 'z'→ROOT letter.
-    #[test]
-    fn admin_flag_parser() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('bcdefg'))"), "126"); // bits 1..6
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags(['kick','ban']))"), "12"); // KICK|BAN
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('kick'))"), "4");   // whole string = a name
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('z'))"), "16384");  // ROOT
-        // SM custom flags: letters o..t are Custom1..Custom6 at bits 15..20 (ROOT holds bit 14).
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('o'))"), "32768");   // CUSTOM1
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('t'))"), "1048576"); // CUSTOM6
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('op'))"), "98304");  // CUSTOM1|CUSTOM2
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('bo'))"), "32770");  // GENERIC|CUSTOM1
-        // ...and by name, through the same table lookup the other flags use.
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('custom1'))"), "32768");
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags(['custom1','custom6']))"), "1081344");
-        // 'u'..'y' remain unmapped — SM defines no flag there.
-        assert_eq!(eval_in_context_string("p", "String(__s2_admin_parseFlags('u'))"), "0");
-        shutdown();
-    }
 
-    /// Admin-groups slice Task 2: group resolution — an admin's own flags/immunity merge with their
-    /// groups' (group flags OR'd in, immunity MAX'd), an unknown group is skipped+WARNed but the admin's
-    /// own flags survive, and the full parseGroups→parseAdmins(pushCore) pipeline lands in the core cache.
-    #[test]
-    fn admin_group_resolution() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        eval_in_context("p", "__s2_admin_parseGroups('{\"G\":{\"flags\":\"cd\",\"immunity\":50}}');").unwrap();
-        // own immunity 10 loses to group 50; flags = own(none) ∪ group(KICK|BAN)=12; groups=['G']
-        assert_eq!(eval_in_context_string("p",
-            "(function(){var r=__s2_admin_resolveEntry({groups:['G'],immunity:10}); return r.mask+'/'+r.immunity+'/'+r.groups.join(',');})()"),
-            "12/50/G");
-        // unknown group skipped, own flags kept
-        assert_eq!(eval_in_context_string("p",
-            "(function(){var r=__s2_admin_resolveEntry({groups:['Nope'],flags:['slay']}); return r.mask+'/'+r.groups.length;})()"),
-            "32/0");
-        // full push: parseGroups then parseAdmins(pushCore) -> Admin.get reads immunity + groups from core+registry
-        eval_in_context("p", "__s2_admin_parseAdmins('{\"111\":{\"groups\":[\"G\"],\"immunity\":5}}', true);").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('111').immunity)"), "50");
-        assert_eq!(eval_in_context_string("p", "__s2pkg_admin.Admin.get('111').groups.join(',')"), "G");
-        assert_eq!(eval_in_context_string("p", "String(__s2pkg_admin.Admin.get('nobody'))"), "null");
-        // an override with an unknown flag token is SKIPPED (not installed as a weakening mask-0)
-        // 'v' is deliberately a letter SM maps to no flag; 'q' used to serve here, but q..t became
-        // CUSTOM3..CUSTOM6 when custom flags landed.
-        eval_in_context("p", "__s2_admin_parseGroups('{\"H\":{\"flags\":\"c\",\"overrides\":{\"sm_x\":\"v\",\"sm_y\":\"d\"}}}');").unwrap();
-        assert_eq!(eval_in_context_string("p",
-            "Object.keys(__s2_admin_resolveEntry({groups:['H']}).overrides).sort().join(',')"), "sm_y");
-        shutdown();
-    }
 
-    /// Admin-groups slice Task 2: the pure immunity-comparison hook consumed by Player.target's filter —
-    /// console is infinite, a non-immune target is always fair game, and equal immunity can target.
-    #[test]
-    fn admin_can_target_immunity() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(-1, 0, 100))"), "true");  // console infinite
-        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 0, 0))"), "true");      // non-immune target
-        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 50, 100))"), "false");  // punch up blocked
-        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 100, 50))"), "true");   // punch down
-        assert_eq!(eval_in_context_string("p", "String(__s2_canTargetImm(0, 50, 50))"), "true");    // equal can target
-        shutdown();
-    }
 
-    /// Slice 6.18 Task 1: `__s2_ban_*` natives round-trip through `BAN_CACHE`; the `@s2script/bans`
-    /// prelude parses a `{steamid:{until,reason}}` blob (skipping `_help`), degrades on malformed JSON,
-    /// and exposes `Bans.add/remove/get/list/reload`.
-    #[test]
-    fn bans_natives_and_prelude() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        // set two SteamIDs (one perm, one timed) → get returns the right JSON, list has 2 entries.
-        eval_in_context("p", "__s2_ban_set('111', 0, 'grief'); __s2_ban_set('222', 5000000000, 'cheat');").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(JSON.parse(__s2_ban_get('111')).until)"), "0");
-        assert_eq!(eval_in_context_string("p", "JSON.parse(__s2_ban_get('111')).reason"), "grief");
-        assert_eq!(eval_in_context_string("p", "String(JSON.parse(__s2_ban_get('222')).until)"), "5000000000");
-        assert_eq!(eval_in_context_string("p", "String(JSON.parse(__s2_ban_list()).length)"), "2");
-        // absent → get is null.
-        assert_eq!(eval_in_context_string("p", "String(__s2_ban_get('999'))"), "null");
-        // remove returns true (was present); a second remove is false; the get is then null.
-        assert_eq!(eval_in_context_string("p", "String(__s2_ban_remove('111'))"), "true");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ban_remove('111'))"), "false");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ban_get('111'))"), "null");
-        // clear empties the list.
-        eval_in_context("p", "__s2_ban_clear();").unwrap();
-        assert_eq!(eval_in_context_string("p", "String(JSON.parse(__s2_ban_list()).length)"), "0");
-        // mark_loaded: the prelude already called it in create_plugin_context, so it now returns true.
-        assert_eq!(eval_in_context_string("p", "String(__s2_ban_mark_loaded())"), "true");
-        // the @s2script/bans module is wired.
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_bans.Bans.add"), "function");
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_bans.Bans.reload"), "function");
-        // prelude parseFile: a {steamid:{until,reason}} blob populates via the natives (skips _help).
-        eval_in_context("p", r#"__s2_ban_parseFile('{"_help":"ignore me","333":{"until":0,"reason":"x"}}');"#).unwrap();
-        assert_eq!(eval_in_context_string("p", "JSON.parse(__s2_ban_get('333')).reason"), "x");
-        assert_eq!(eval_in_context_string("p", "String(__s2_ban_get('_help'))"), "null");
-        // malformed JSON degrades without throwing.
-        eval_in_context("p", "__s2_ban_parseFile('not json');").unwrap();
-        shutdown();
-    }
 
-    /// Slice 6.18 Task 1: `ban_check` — banned iff present AND (`until == 0` perm OR `until > now`).
-    /// An expired entry and an absent SteamID both read as not-banned.
-    #[test]
-    fn ban_check_expiry_semantics() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        let now: i64 = 1_000_000;
-        // perm (until=0) → banned; the reason is returned.
-        eval_in_context("p", "__s2_ban_set('111', 0, 'perm-reason');").unwrap();
-        assert_eq!(ban_check(111, now), Some("perm-reason".to_string()));
-        // future expiry → banned.
-        eval_in_context("p", "__s2_ban_set('222', 1000100, 'timed');").unwrap();
-        assert_eq!(ban_check(222, now), Some("timed".to_string()));
-        // past expiry → not banned.
-        eval_in_context("p", "__s2_ban_set('333', 999900, 'expired');").unwrap();
-        assert_eq!(ban_check(333, now), None);
-        // absent → not banned.
-        assert_eq!(ban_check(444, now), None);
-        shutdown();
-    }
 
-    /// clientprefs Task 2: `__s2_cookie_*` natives round-trip through `crate::cookies` — a loaded
-    /// value is NOT dirty, a set value IS, `get_dirty` returns only the dirty entries, and
-    /// `is_cached` reflects `mark_cached`.
-    #[test]
-    fn cookie_natives_round_trip() {
-        let _ = init(dummy_logger());
-        load_body("ck", r#"
-            __s2_cookie_load("S1", "a", "1", 111);    // loaded, not dirty
-            __s2_cookie_set("S1", "b", "2", 222);     // set, dirty
-            __s2_cookie_mark_cached("S1");
-            var dirty = __s2_cookie_get_dirty("S1");
-            globalThis.__out = __s2_cookie_get("S1","a") + "," + __s2_cookie_get("S1","b")
-                + "," + __s2_cookie_is_cached("S1") + "," + Object.keys(dirty).join("|") + "=" + dirty.b;
-        "#, "{}");
-        assert_eq!(read_global_string("ck", "__out"), "1,2,true,b=2"); // only b is dirty
-        shutdown();
-    }
 
-    /// clientprefs Task 2: `__s2_cookie_get` returns `undefined` (not `""`) on a true miss, so a
-    /// stored `""` reads back as a real hit distinct from an absent name; `__s2_cookie_get_time`
-    /// reads back the `updated` passed to `set`/`load`, and is 0 when absent.
-    #[test]
-    fn cookie_natives_empty_string_and_get_time() {
-        let _ = init(dummy_logger());
-        load_body("ck2", r#"
-            __s2_cookie_set("S2", "empty", "", 12345);
-            var missing = __s2_cookie_get("S2", "nope");
-            var empty = __s2_cookie_get("S2", "empty");
-            globalThis.__out = (missing === undefined) + "," + (empty === "") + ","
-                + __s2_cookie_get_time("S2", "empty") + "," + __s2_cookie_get_time("S2", "nope");
-        "#, "{}");
-        assert_eq!(read_global_string("ck2", "__out"), "true,true,12345,0");
-        shutdown();
-    }
 
-    /// clientprefs Task 3: the `@s2script/cookies` module — `Cookies.register` is idempotent,
-    /// `get`/`set` route through the cache with a default fallback, and bots (`steamId === "0"`)
-    /// are skipped entirely by both `get` (returns the default) and `set` (a no-op — the raw
-    /// native cache stays empty for that steamid).
-    #[test]
-    fn clientprefs_module_get_set_default_and_bot_skip() {
-        let _ = init(dummy_logger());
-        load_body("cp", r#"
-            var { Cookies } = require("@s2script/cookies");
-            var c = Cookies.register("hud", { default: "white" });
-            var real = { steamId: "S9" };
-            var bot  = { steamId: "0" };
-            globalThis.__out = Cookies.get(real, c)                 // default (empty cache) -> "white"
-                + "," + (function(){ Cookies.set(real, c, "red"); return Cookies.get(real, c); })()  // "red"
-                + "," + Cookies.get(bot, c)                          // bot -> default "white"
-                + "," + (function(){ Cookies.set(bot, c, "x"); return __s2_cookie_get("0","hud"); })(); // bot set is a no-op -> undefined
-        "#, "{}");
-        assert_eq!(read_global_string("cp", "__out"), "white,red,white,undefined");
-        shutdown();
-    }
 
-    /// clientprefs Task 2 (module layer): a `Cookies.set(client, cookie, "")` followed by
-    /// `Cookies.get` returns `""` — NOT the cookie's default — the empty-string-vs-miss fix; and
-    /// `Cookies.getTime` reads back a nonzero timestamp after a set, 0 before any set, and 0 for a bot.
-    #[test]
-    fn clientprefs_module_empty_string_and_get_time() {
-        let _ = init(dummy_logger());
-        load_body("cp2", r#"
-            var { Cookies } = require("@s2script/cookies");
-            var c = Cookies.register("nickname", { default: "Anonymous" });
-            var real = { steamId: "S10" };
-            var bot  = { steamId: "0" };
-            var beforeSetTime = Cookies.getTime(real, c);      // 0 — never set
-            Cookies.set(real, c, "");
-            var afterEmptySet = Cookies.get(real, c);          // "" not "Anonymous"
-            var afterSetTime = Cookies.getTime(real, c);       // nonzero now
-            var botTime = Cookies.getTime(bot, c);             // 0 — bots skipped
-            globalThis.__out = beforeSetTime + "," + (afterEmptySet === "") + "," + (afterSetTime > 0) + "," + botTime;
-        "#, "{}");
-        assert_eq!(read_global_string("cp2", "__out"), "0,true,true,0");
-        shutdown();
-    }
 
-    /// clientprefs Task 3: `__s2_cookie_set_authid` writes the cache (a subsequent `__s2_cookie_get`
-    /// sees it immediately) AND queues the write, drained via `__s2_cookie_take_offline_writes` as a
-    /// `[steamid,name,value,updated]` row; a second take is empty.
-    #[test]
-    fn cookie_set_authid_native_writes_cache_and_queues_offline_write() {
-        let _ = init(dummy_logger());
-        load_body("ck3", r#"
-            __s2_cookie_set_authid("S11", "k", "v", 999);
-            var cached = __s2_cookie_get("S11", "k");
-            var writes = __s2_cookie_take_offline_writes();
-            var again = __s2_cookie_take_offline_writes();
-            globalThis.__out = cached + "," + writes.length + "," + writes[0].join("|") + "," + again.length;
-        "#, "{}");
-        assert_eq!(read_global_string("ck3", "__out"), "v,1,S11|k|v|999,0");
-        shutdown();
-    }
 
-    /// clientprefs Task 3 (module layer): `Cookies.setAuthId` writes for a SteamID not passed as a
-    /// `Client` at all (offline parity) — a subsequent `Cookies.get` on that steamid sees the value,
-    /// and it is a no-op for "0" (bot/unset).
-    #[test]
-    fn clientprefs_module_set_authid_offline_and_bot_skip() {
-        let _ = init(dummy_logger());
-        load_body("cp3", r#"
-            var { Cookies } = require("@s2script/cookies");
-            var c = Cookies.register("hud", { default: "white" });
-            Cookies.setAuthId("S12", c, "blue");
-            var real = { steamId: "S12" };
-            var seenByClient = Cookies.get(real, c);           // "blue" — the offline write is visible
-            Cookies.setAuthId("0", c, "x");                    // bot steamid — no-op
-            var botRaw = __s2_cookie_get("0", "hud");
-            globalThis.__out = seenByClient + "," + botRaw;
-        "#, "{}");
-        assert_eq!(read_global_string("cp3", "__out"), "blue,undefined");
-        shutdown();
-    }
 
-    /// clientprefs Task 4: `Cookies.onCached` (post-drain fan-out). Subscribing via the raw native
-    /// `__s2_cookie_on_cached` and enqueuing a slot via `__s2_cookie_dispatch_cached` does NOT run the
-    /// handler immediately (only `dispatch_pending_cookie_cached()` — the ffi.rs post-`frame_async_drain`
-    /// call site — does); calling it fans the queued slot out to the handler exactly once, and a second
-    /// call (now-empty queue) does not re-run it. After `unload_plugin` (remove_by_owner teardown), a
-    /// further enqueue+dispatch is a safe no-op.
-    #[test]
-    fn cookie_cached_dispatch_fans_out_queued_slots() {
-        let _ = init(dummy_logger());
-        load_body("ck4", r#"
-            __s2_cookie_on_cached(function (slot) {
-                globalThis.__ck_ran = (globalThis.__ck_ran || 0) + 1;
-                globalThis.__ck_slot = slot;
-            });
-            __s2_cookie_dispatch_cached(5);
-        "#, "{}");
-
-        // Enqueuing alone must not have run the handler yet.
-        assert_eq!(read_i32_global_in("ck4", "__ck_ran"), 0, "enqueue must not itself dispatch");
-
-        dispatch_pending_cookie_cached();
-        assert_eq!(read_i32_global_in("ck4", "__ck_ran"), 1, "handler must run exactly once");
-        assert_eq!(read_i32_global_in("ck4", "__ck_slot"), 5, "handler must receive the queued slot");
-
-        // An empty queue: a further dispatch is a no-op (does not re-run the handler).
-        dispatch_pending_cookie_cached();
-        assert_eq!(read_i32_global_in("ck4", "__ck_ran"), 1, "an empty queue must not re-run the handler");
-
-        // Teardown: unload removes ck4's subscription; a later enqueue+dispatch is a safe no-op
-        // (must not crash even though the context is disposed).
-        unload_plugin("ck4");
-        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push(9));
-        dispatch_pending_cookie_cached();
-        shutdown();
-    }
 
     /// `Commands.register` builds a typed ctx (callerSlot/args/argString/reply); reply routes to
     /// console.log for slot<0, to Chat.toSlot for slot>=0.  Unload drops the command → later
