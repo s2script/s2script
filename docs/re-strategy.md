@@ -32,6 +32,52 @@ Not magic — discipline we skipped:
 We already do (1)/(3) for **schema** (regenerable dump) and **signatures** (regenerable scan). The two gaps:
 we hardcoded one borrowed index, and we have **no validation gate** to make a stale/mismatched entry loud.
 
+## The principle underneath: the weakest resolver, not the shortest
+
+The three rules below are usually carried as habits — "prefer sigs", "don't hardcode". They are
+consequences of a single principle, and naming it is what tells you what to do in a case the rules
+don't already cover.
+
+Michael Timothy Bennett, *The Optimal Choice of Hypothesis Is the Weakest, Not the Shortest*
+([arXiv:2301.12987](https://arxiv.org/abs/2301.12987), AGI-23): given a set of hypotheses that all
+fit what you have observed, the one most likely to generalise to what you have *not* observed is not
+the shortest — it is the **weakest**, the one whose extension (the set of situations it admits) is
+largest. Compression, he proves, is "neither necessary nor sufficient." The razor:
+
+> Explanations should be no more specific than necessary.
+
+That is our situation exactly. Every engine fact is inferred from a single observation — the build in
+front of us — and has to hold on builds nobody has seen yet. Many resolvers fit that one observation
+equally well; what separates them is how many *other* builds they also admit. That count is their
+weakness, and it is the whole of what "survives the treadmill" means.
+
+The ordering, weakest last:
+
+| Resolver | What it asserts about the binary | Extension — builds it still names correctly |
+|---|---|---|
+| baked struct offset / vtable index | this exact layout | **one**: the build it was derived from |
+| byte pattern with operands pinned | those bytes **and** those inter-address distances | ~one — a `lea rip+disp32` shifts on any recompile |
+| byte pattern, operands wildcarded, ties broken structurally | this instruction *shape* | every build where the codegen shape holds |
+| string-xref | this string still exists and is referenced here | every build carrying the string |
+| RTTI type-name → vtable, `ISchemaSystem` field-by-name, typed SDK virtual | this class/field is still **called** this | every build that keeps the name |
+
+Description length runs the **opposite** way down that table. `400` is the shortest possible
+description of `CommitSuicide`'s vtable slot; the RTTI walk that derives it honestly is thirty lines.
+That inversion is exactly why "just hardcode it" keeps feeling like the clean choice, and why it is
+reliably the one that breaks. Longer code, wider extension: take it.
+
+Two things this does **not** license:
+
+- **Weakness never excuses a resolver that doesn't fit.** In the paper you maximise weakness over the
+  *models* of the task — hypotheses that already explain the observation. A pattern matching zero
+  times, or matching uniquely at the wrong function, is not a candidate however weak it is. Rule 2
+  (validate, fail loud) is what establishes membership; weakness is the tiebreak among survivors.
+- **It is an argument, not a theorem about our domain.** Bennett's result holds under a specific
+  formalism of enactive cognition and assumes tasks are uniformly distributed; future CS2 builds are
+  not. We adopt the razor because it predicts our actual failure record, which is the same standard
+  this document applies to every other borrowed claim — another framework's number is a hint until it
+  is checked against our binary, and so is another field's proof.
+
 ## The doctrine (do this for every engine fact, no exceptions)
 
 **Rule 1 — Prefer self-resolving resolution; never ship a bare borrowed constant.**
@@ -62,13 +108,49 @@ Pin the exact CS2 build. Treat ModSharp/CSSharp/SM gamedata as pointers to *whic
 string/pattern to look for — then re-resolve the actual address/index/offset against **our** binary. On each
 CS2 update, re-run the treadmill: re-dump schema, re-scan signatures, re-derive indices/offsets, run the gate.
 
-## Consequences for open work
+**Rule 4 — a repair must be weaker than what it broke.**
+This is the rule for the other half of the loop: not how a fact is resolved the first time, but what
+you are allowed to replace it with once the treadmill has broken it. The reflex is to re-derive the
+same *kind* of thing with fresh numbers. That restores the feature and schedules the identical
+failure for the next patch, because the replacement has the same extension as the hypothesis that
+just proved too narrow. So the repair step has an acceptance criterion, asked out loud every time:
 
-- **`sm_slay`** (branch `slice-6.8-slay`, unmerged): its borrowed index `400` violates Rule 1. It must be
-  re-landed with `CommitSuicide` resolved on our binary — ideally its *address* (string-xref → direct call,
-  no index), or its index derived via the RTTI scan above. Do not merge the borrowed-index version.
-- The **validation gate** (Rule 2) is the highest-leverage missing piece — it is what makes the whole update
-  treadmill trustworthy, and it is what would have caught `sm_slay` at boot. Build it first.
+> **Is the replacement weaker than what it replaced — and if not, why not?**
+
+"Why not" has legitimate answers (no reflection exists for the client-list structs, so those offsets
+stay hardcoded under Rule 1). It just has to be *stated*, in the entry's comment, alongside the
+re-derivation recipe — an unexplained same-strength repair is the thing this rule exists to catch.
+
+Both repairs we have actually shipped pass it:
+
+- **The client list** broke on build `2000870`: six hand-committed engine-identity offsets moved. It
+  was not fixed with six new offsets — the whole path was replaced by typed SDK virtuals, resolved by
+  the compiler against the pinned hl2sdk. Extension widened from one build to every build the SDK
+  tracks, which is why it has not broken since.
+- **`SetModel`** shipped with `48 8D 05 3D ED 28 01` baked in to break a tie between two identical
+  candidates. The displacement went stale, the signature resolved to nothing, and `EntityRef.setModel`
+  became a silent no-op — invisible corpses downstream. The fix wildcards the operand and breaks the
+  tie **structurally**, and `scripts/check-gamedata-sigs.sh` now fails the build on any pinned
+  `call`/`jmp` rel32 or rip-relative displacement. That gate is this razor enforced mechanically, for
+  the one case where over-specificity is machine-detectable.
+
+The same razor governs **validators**, pointing the other way: a validator that asserts more than it
+needs starts refusing correct binaries. A carried-forward `validate` block whose new pattern moved the
+instruction it reads must be re-derived, not left to reject a good signature. Assert the semantic that
+identifies the function — not every byte you happened to observe next to it.
+
+## Consequences for open work — both closed, and both closed the Rule-4 way
+
+- **`sm_slay`** (was: branch `slice-6.8-slay`, borrowed index `400`, violating Rule 1). **Landed.** Not
+  by finding the *right* index — index 400 is a `m_flDeathTime` getter on our build and `CommitSuicide`
+  is really 819 — but by dropping the index entirely for a by-address prologue signature
+  (`CBasePlayerPawn_CommitSuicide` in `gamedata/cs2/game.cs2.jsonc`), self-resolved on our
+  `libserver.so`, with the rip-relative `lea` displacement and the stack-frame immediate masked out. A
+  correct index would have been the same-strength repair Rule 4 refuses; the signature is weaker on
+  both axes, and the entry carries the full identity derivation.
+- The **validation gate** (Rule 2). **Built** — boot-time resolution with a named per-descriptor
+  reason, plus `scripts/check-gamedata-sigs.sh` at build time.
 
 **One sentence:** *"Layout is data, semantics are code" — so every layout fact must be either self-resolving
-against our binary or validated against it at load; a bare borrowed constant is neither, and that is the bug.*
+against our binary or validated against it at load (a bare borrowed constant is neither, and that is the bug);
+and among the resolvers that clear that bar, take the weakest, never the shortest.*
