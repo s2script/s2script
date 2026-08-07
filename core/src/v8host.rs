@@ -13717,6 +13717,70 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    /// Task 2 wiring proof, chat side: `colour_tags_expand_on_chat_and_vanish_on_console` above
+    /// only proves `colors.js` is reachable — it calls `__s2_colors.chatLine`/`consoleLine`
+    /// directly, never the two functions Task 2 actually rewired (`__s2_chatLine`,
+    /// `__s2cmd_stripCtl`). This test drives the real production entry point,
+    /// `__s2pkg_chat.Chat.toSlot` (which calls `__s2_chatLine` internally), and observes what
+    /// `__s2_client_print` actually received — the same spy technique as
+    /// `chat_prepends_leading_zwsp_idempotently` above. A tag is put in BOTH `Chat.color` (the
+    /// `prefix` argument of `chatLine(prefix, msg)`) and the message body, so a transposed
+    /// argument order in the `__s2_chatLine` wrapper would produce a different byte sequence
+    /// than expected and fail this test — `colour_tags_expand_on_chat_and_vanish_on_console`
+    /// cannot catch that class of bug because it never calls the wrapper.
+    #[test]
+    fn colour_tags_expand_through_chat_to_slot() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_colors.setTable({ Green: '\\x04', White: '\\x01' });").unwrap();
+        let seen = eval_in_context_string(
+            "p",
+            r#"
+            var seen = [];
+            var orig = globalThis.__s2_client_print;
+            globalThis.__s2_client_print = function (slot, m) { seen.push(m); };
+            var C = __s2pkg_chat.Chat;
+            C.color = "{white}";        // the `prefix` argument of chatLine(prefix, msg)
+            C.toSlot(0, "{green}hi");   // the `msg` argument — a DIFFERENT tag, to catch transposition
+            globalThis.__s2_client_print = orig;
+            seen.map(function (s) {
+              return s.split("").map(function (c) { return c.charCodeAt(0); }).join(",");
+            }).join("|");
+            "#,
+        );
+        // ZWSP + white(\x01) + green(\x04) + "hi" — prefix expands before msg, in that order.
+        assert_eq!(seen, "8203,1,4,104,105");
+        shutdown();
+    }
+
+    /// Task 2 wiring proof, console side: same gap as above but for `__s2cmd_stripCtl`. Drives
+    /// the real production entry point — a registered command replying via
+    /// `ctx.replyToConsole` for a server caller (slot -1), which logs through `console.log` and
+    /// is captured in `LOG` (same technique as `ctx_replyt_localizes` above). The message mixes
+    /// a colour TAG with a raw C0 control byte in one string: the tag must be gone (proving
+    /// `__s2cmd_stripCtl` really calls the expander, not just the old regex) and the raw byte
+    /// must still be gone too (proving the pre-existing strip behaviour survived the rewrite).
+    #[test]
+    fn colour_tags_vanish_through_reply_to_console() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_colors.setTable({ Green: '\\x04' });").unwrap();
+        eval_in_context(
+            "p",
+            "__s2pkg_commands.Commands.register('sm_x', function (ctx) { ctx.replyToConsole('{green}hi\\x07there'); });",
+        )
+        .unwrap();
+        eval_in_context("p", "__s2pkg_commands.Commands.dispatch('sm_x', -1, '');").unwrap();
+        assert!(
+            LOG.lock().unwrap().iter().any(|l| l == "hithere"),
+            "replyToConsole should have logged the tag- and control-byte-stripped string, got: {:?}",
+            LOG.lock().unwrap()
+        );
+        shutdown();
+    }
+
     /// Translations slice: the pure formatting/lang-code test hooks (`__s2_tr_format`/`__s2_tr_langCode`).
     #[test]
     fn translations_format_and_langcode() {
