@@ -16,19 +16,20 @@ function parseTokens(s: string): string[] {
   return out;
 }
 
-// "Kick {name}?" is the vote QUESTION shown to every voter (broadcast by the core vote system,
-// not through this plugin's own Chat funnel), so — like the pass/fail lines below — it translates
-// at the server default language (-1), not the requesting admin's.
+// The vote QUESTION is shown to every voter (broadcast by the core vote system, not through this
+// plugin's own Chat funnel), so — like the pass/fail lines below — it translates at the server
+// default language (-1), not the requesting admin's.
 function startKickVote(userId: number, name: string): boolean {
   return Vote.start({
-    question: "Kick " + name + "?",
+    question: Translations.translate(-1, "Kick Vote Question", name),
     options: ["Yes", "No"],
     duration: config.getInt("vote_duration"),
     showLiveTally: config.getBool("show_live_tally"),
     onEnd: (r) => {
       if (r.winner === 0 && r.counts[0] > r.total / 2) {
         const cur = Player.fromUserId(userId);   // re-resolve at end (pick-time slot may be stale)
-        if (cur) cur.kick("Vote kicked");
+        // Player.kick's reason is the engine disconnect UI for the TARGET — translate for them.
+        if (cur) cur.kick(Translations.translate(cur.slot, "Kick Vote Reason"));
         Chat.toAll(Translations.translate(-1, "Kick Vote Success", name));
       } else {
         Chat.toAll(Translations.translate(-1, "Kick Vote Failed", name));
@@ -70,7 +71,10 @@ export default plugin((ctx) => {
     startKickVote(p.userId, p.playerName ?? "player");
   });
 
-  ctx.topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: "Vote Kick", flags: ADMFLAG.VOTE,
+  // `name` is a static field set once here, before any admin has opened the menu, so — same as
+  // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
+  // per-viewer.
+  ctx.topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: Translations.translate(-1, "Vote Kick Item"), flags: ADMFLAG.VOTE,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, Translations.translate(adminSlot, "Vote In Progress"));
     }) });
