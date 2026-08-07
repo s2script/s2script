@@ -1,6 +1,8 @@
 import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
 // item (two UIs over one action, never a re-implementation). Each returns whether it applied (a null
@@ -36,48 +38,53 @@ function pickLoop(adminSlot: number, action: (t: Player) => void): void {
 }
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("playercommands", phrases);
+  Translations.load("common");
+
   // Slice 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY).
   ctx.commands.registerAdmin("sm_slap", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.reply("Usage: sm_slap <target> [damage]"); return; }
+    if (!targetStr) { cmd.replyT("Usage Slap"); return; }
     const damage = Math.max(0, cmd.argInt(1, 0));
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
     let n = 0;
     for (const p of targets) if (slapPlayer(p, damage)) n++;
-    cmd.reply("[SM] Slapped " + n + " player" + (n === 1 ? "" : "s") + " for " + damage + " damage.");
+    cmd.replyT(n === 1 ? "Slapped Player" : "Slapped Players", n, damage);
   });
 
   // Slice 6.14 — sm_slay <target> (ADMFLAG.SLAY).
   ctx.commands.registerAdmin("sm_slay", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.reply("Usage: sm_slay <target>"); return; }
+    if (!targetStr) { cmd.replyT("Usage Slay"); return; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
     let n = 0;
     for (const p of targets) if (slayPlayer(p)) n++;
-    cmd.reply("[SM] Slayed " + n + " player" + (n === 1 ? "" : "s") + ".");
+    cmd.replyT(n === 1 ? "Slayed Player" : "Slayed Players", n);
   });
 
   // Slice 6.14 — sm_rename <target> <newname> (ADMFLAG.SLAY). Single-target only (reject ambiguous multi).
   ctx.commands.registerAdmin("sm_rename", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
     const rawName = cmd.argsFrom(1).trim();
-    if (!targetStr || !rawName) { cmd.reply("Usage: sm_rename <target> <newname>"); return; }
+    if (!targetStr || !rawName) { cmd.replyT("Usage Rename"); return; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
     if (targets.length > 1) {
-      cmd.reply("[SM] Ambiguous target — matched " + targets.length + " players. Use #userid or full name.");
+      cmd.replyT("Rename Ambiguous Target", targets.length);
       return;
     }
     const p = targets[0];
     const newname = rawName.replace(/[\x00-\x1F]/g, "").slice(0, 127);
-    if (!newname) { cmd.reply("[SM] Invalid name (empty after sanitization)."); return; }
+    if (!newname) { cmd.replyT("Invalid Rename"); return; }
     const oldname = p.playerName ?? "";
-    if (!p.setName(newname)) { cmd.reply("[SM] Rename failed (player became unavailable)."); return; }
+    if (!p.setName(newname)) { cmd.replyT("Rename Failed"); return; }
     Events.fire("player_changename", { userid: p.userId, oldname, newname });
     console.log("[playercommands] sm_rename slot=" + p.slot + " '" + oldname + "' -> '" + newname + "'");
-    cmd.reply("[SM] Renamed " + oldname + " to " + newname + ".");
+    cmd.replyT("Renamed", oldname, newname);
   });
 
   // adminmenu items — the SAME action functions the text commands use (no re-implementation). pickLoop
