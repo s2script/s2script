@@ -19,8 +19,11 @@
 //   - shadowed key: a seed key that ALSO exists in translations/common.phrases.json. Legal — own-set-
 //     first means the seed wins deterministically — but almost always unintended: an operator editing
 //     the shared file would see no effect for that key. Reported, never failed.
-// Only string-literal keys are recognised; a key built dynamically doesn't match the scan and is
-// silently skipped rather than guessed at — a miss here is preferable to a false positive.
+// Only string-literal keys are recognised (a ternary between two literals, e.g. the
+// `n === 1 ? "X" : "Y"` singular/plural idiom, is resolved to both branches — see
+// collectKeyLiterals); a key built some other dynamic way (a variable, a template with `${}`)
+// doesn't match the scan and is silently skipped rather than guessed at — a miss here is
+// preferable to a false positive.
 //
 // Run:  node --experimental-strip-types scripts/gen-phrases.mjs           # write
 //       node --experimental-strip-types scripts/gen-phrases.mjs --check   # exit 1 on drift, write nothing
@@ -101,11 +104,30 @@ function readCommonKeys() {
 // Only `<something>.replyT(...)` / `<something>.translate(...)` are recognised — the OBJECT is not
 // checked (so `someTestMock.replyT("key")` still counts as a usage; deliberately not filtered out,
 // since it is a real call to something named replyT and a text scan couldn't tell it apart from the
-// real thing either). The key argument must be a genuine string-literal node (`ts.isStringLiteralLike`,
-// which also covers a no-substitution template literal); anything else — a variable, a template
-// with `${}`, a ternary — is a dynamic key and is skipped rather than guessed at. Argument position
-// differs by call shape: replyT(key, ...) vs translate(slot, key, ...args).
+// real thing either). The key argument must resolve to one or more genuine string-literal nodes (see
+// collectKeyLiterals below); anything else — a variable, a template with `${}` — is a dynamic key and
+// is skipped rather than guessed at. Argument position differs by call shape: replyT(key, ...) vs
+// translate(slot, key, ...args).
 const KEY_ARG_INDEX = { replyT: 0, translate: 1 };
+
+// Resolve a key-argument expression to every string literal it could actually evaluate to.
+//   - a plain string literal (`ts.isStringLiteralLike`, which also covers a no-substitution template
+//     literal): itself, one literal.
+//   - a ternary (`cond ? "A" : "B"`), the `cmd.replyT(n === 1 ? "X" : "Y", n)` idiom used throughout
+//     these plugins for singular/plural phrase pairs: recurse into BOTH branches, so a nested/chained
+//     ternary (`a ? x : b ? y : z`, which parses as `a ? x : (b ? y : z)`) is walked all the way down.
+//   - parenthesized (`(cond ? "A" : "B")`): unwrap and recurse.
+//   - anything else (a variable, a function call, a template with `${}`): a genuinely dynamic key —
+//     returns no literals, same as before. A miss here is preferable to a false positive.
+function collectKeyLiterals(node) {
+  if (!node) return [];
+  if (ts.isStringLiteralLike(node)) return [node.text];
+  if (ts.isConditionalExpression(node)) {
+    return [...collectKeyLiterals(node.whenTrue), ...collectKeyLiterals(node.whenFalse)];
+  }
+  if (ts.isParenthesizedExpression(node)) return collectKeyLiterals(node.expression);
+  return [];
+}
 
 function findPhraseKeyUsages(srcDir) {
   const usages = [];
@@ -121,7 +143,7 @@ function findPhraseKeyUsages(srcDir) {
         const argIndex = KEY_ARG_INDEX[node.expression.name.text];
         if (argIndex !== undefined) {
           const arg = node.arguments[argIndex];
-          if (arg && ts.isStringLiteralLike(arg)) usages.push({ file, key: arg.text });
+          for (const key of collectKeyLiterals(arg)) usages.push({ file, key });
         }
       }
       ts.forEachChild(node, visit);
