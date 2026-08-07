@@ -674,12 +674,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // rule without shifting every line right by a visible space. Idempotent: a line that ALREADY starts with
   // the ZWSP or a (legacy) plain space is left untouched, so an existing prefix never doubles up. Chat-only
   // — the console.log / replyToConsole path never runs through here, so console output stays byte-clean.
-  var __s2_chatZWSP = "\u200B";
-  function __s2_chatLine(msg) {
-    var body = __s2_chat.color + String(msg);
-    var lead = body.charAt(0);
-    return (lead === __s2_chatZWSP || lead === " ") ? body : __s2_chatZWSP + body;
-  }
+  //
+  // Colour TAGS ({green}, {default}) are expanded here too — see core/js/colors.js. The table is
+  // supplied by the game package at runtime; core never knows a colour name.
+  function __s2_chatLine(msg) { return globalThis.__s2_colors.chatLine(__s2_chat.color, msg); }
   var __s2_chat = {
     color: "",
     toSlot: function (slot, msg) { __s2_client_print(slot | 0, __s2_chatLine(msg)); },
@@ -897,7 +895,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // stray whitespace). Strip the whole C0 range + DEL with NO \t/\n/\r exemption — those three
   // codepoints ARE colours. Engine-generic: "a console line carries no control bytes" holds on any
   // Source 2 game, so core learns nothing game-specific here.
-  function __s2cmd_stripCtl(s) { return String(s).replace(/[\x00-\x1F\x7F]/g, ""); }
+  // Expand colour tags, then drop every control byte. Expansion must come first: an unexpanded
+  // "{green}" is not a control byte and would survive the strip as literal text on an rcon reply.
+  function __s2cmd_stripCtl(s) { return globalThis.__s2_colors.consoleLine(s); }
   // ReplySource (core/src/v8host.rs) → the JS name. Index order is load-bearing: it matches the
   // enum's discriminants (Server = 0, Console = 1, Chat = 2).
   var __s2cmd_SRC = ["server", "console", "chat"];

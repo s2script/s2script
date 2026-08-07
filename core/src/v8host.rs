@@ -1235,9 +1235,14 @@ fn config_templates_prelude() -> String {
 /// reviewable as JS. It is ONE file because the whole body shares one IIFE scope (`(function () {`
 /// … `})();`) — splitting it per module would make concatenation order silently load-bearing.
 ///
-/// File line N is V8 line N: the file starts directly at `globalThis.HookResult`, where the old
+/// prelude.js's own file line N is no longer V8 line N now that colors.js is concatenated ahead
+/// of it below: V8 line = colors.js's line count + 1 (the joining "\n") + N. Historically file
+/// line N WAS V8 line N — the file starts directly at `globalThis.HookResult`, where the old
 /// `r#"` literal opened with a newline and shifted every reported line by one.
-const INJECTED_STD_PRELUDE: &str = include_str!("../js/prelude.js");
+// colors.js FIRST: it sets globalThis.__s2_colors, which prelude.js's chat and console
+// funnels call. Same ordering contract as games/cs2/js (activity.js before pawn.js).
+const INJECTED_STD_PRELUDE: &str =
+    concat!(include_str!("../js/colors.js"), "\n", include_str!("../js/prelude.js"));
 
 // @s2script/cs2 is NOT embedded here. It is provided externally at runtime by the shim via
 // `register_injected_package("@s2script/cs2", <js>)` (see `ffi.rs`).  Core contains zero cs2 JS.
@@ -13688,6 +13693,27 @@ pub(crate) mod frame_tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('', 'x'))"), "null");
         assert_eq!(eval_in_context_string("p", "String(__s2_translations_read('de', 'x'))"), "null");
         assert_eq!(eval_in_context_string("p", "String(__s2_client_language(0))"), "null");
+        shutdown();
+    }
+
+    /// Colour tags expand on the chat path and are deleted on the console path. The table is
+    /// supplied the way a game package supplies it — at runtime, from inside the context.
+    #[test]
+    fn colour_tags_expand_on_chat_and_vanish_on_console() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_colors.setTable({ Green: '\\x04', White: '\\x01' });").unwrap();
+        // chat: tag -> byte, and the ZWSP still leads. JSON.stringify escapes the C0
+        // control byte but leaves U+200B unescaped, so the ZWSP survives literally.
+        assert_eq!(
+            eval_in_context_string("p", "JSON.stringify(__s2_colors.chatLine('', '{green}hi'))"),
+            "\"\u{200b}\\u0004hi\""
+        );
+        // console: tag deleted entirely
+        assert_eq!(eval_in_context_string("p", "__s2_colors.consoleLine('{green}hi')"), "hi");
+        // unknown tag: deleted, never literal
+        assert_eq!(eval_in_context_string("p", "__s2_colors.consoleLine('{nope}hi')"), "hi");
         shutdown();
     }
 
