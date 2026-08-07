@@ -1,0 +1,14 @@
+{
+  "Disable Alltalk Question": "Disable AllTalk?",
+  "Disable Friendlyfire Question": "Disable Friendly Fire?",
+  "Enable Alltalk Question": "Enable AllTalk?",
+  "Enable Friendlyfire Question": "Enable Friendly Fire?",
+  "Set Gravity Question": "Set gravity to {1}?",
+  "Slay Question": "Slay {1}?",
+  "Usage Votegravity": "Usage: sm_votegravity <number>",
+  "Vote Already Running": "A vote is already running.",
+  "Vote Failed": "[Vote] Failed ({1} < {2} Yes): {3}",
+  "Vote Passed": "[Vote] Passed ({1} ≥ {2} Yes): {3}",
+  "Vote Started": "Vote started.",
+  "Voteslay Ambiguous Target": "Multiple players match — be specific"
+}
