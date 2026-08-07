@@ -14,6 +14,8 @@ import { CommandInvocation } from "@s2script/sdk/commands";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Pawn, Fade } from "@s2script/cs2";
 import { delay } from "@s2script/sdk/timers";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 // MoveType_t (const.h)
 const WALK = 2;
@@ -24,27 +26,44 @@ const NONE = 0;
 // defaults to the caller (self) — SM behavior — unless run from the console, which must name a target.
 // Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
 // caller); filterImmunity=false for a reversal/benign command (no filter — e.g. un-freezing).
-function forEachPawn(cmd: CommandInvocation, usage: string, verb: string, fn: (p: Player, pw: Pawn) => void, filterImmunity: boolean): void {
+//
+// usageKey/singularKey/pluralKey are typed `keyof typeof phrases`, not `string`, so a typo at one of
+// the five call sites below is a typecheck error — gen-phrases.mjs's AST scanner can only validate a
+// literal key argument to .replyT/.translate directly, and these arrive as arguments to this helper
+// instead, so they're invisible to that scan (same limitation as basecomm's forTargets, Task 7).
+function forEachPawn(
+  cmd: CommandInvocation,
+  usageKey: keyof typeof phrases,
+  singularKey: keyof typeof phrases,
+  pluralKey: keyof typeof phrases,
+  fn: (p: Player, pw: Pawn) => void,
+  filterImmunity: boolean,
+): void {
   let pattern = cmd.arg(0);
   if (!pattern) {
-    if (cmd.callerSlot < 0) { cmd.reply("[SM] Usage: " + usage); return; } // console must name a target
+    if (cmd.callerSlot < 0) { cmd.replyT(usageKey); return; } // console must name a target
     pattern = "@me"; // in-game with no arg → self
   }
   const targets = Player.target(pattern, cmd.callerSlot, filterImmunity);
-  if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+  if (targets.length === 0) { cmd.replyT("No matching players"); return; }
   let n = 0;
   for (const p of targets) {
     const pw = p.pawn;
     if (pw) { fn(p, pw); n++; }
   }
-  cmd.reply("[SM] " + verb + " " + n + " player" + (n === 1 ? "" : "s") + ".");
+  cmd.replyT(n === 1 ? singularKey : pluralKey, n);
 }
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("funcommands", phrases);
+  Translations.load("common");
+
   // sm_gravity <target> [factor] — factor multiplies the player's gravity (1 = normal, <1 floaty, >1 heavy).
   ctx.commands.registerAdmin("sm_gravity", ADMFLAG.SLAY, (cmd) => {
     const factor = cmd.argFloat(1, 1.0);
-    forEachPawn(cmd, "sm_gravity <target> [factor]", "Set gravity for", (_p, pw) => {
+    forEachPawn(cmd, "Usage Gravity", "Set Gravity For Player", "Set Gravity For Players", (_p, pw) => {
       pw.gravityScale = factor;
       pw.actualGravityScale = factor;
     }, true);
@@ -55,14 +74,14 @@ export default plugin((ctx) => {
   ctx.commands.registerAdmin("sm_blind", ADMFLAG.SLAY, (cmd) => {
     const secs = cmd.argFloat(1, 2);   // sm_blind <target> [seconds]: args[0]=target (forEachPawn), args[1]=seconds
     const durMs = (secs > 0 ? secs : 2) * 1000;
-    forEachPawn(cmd, "sm_blind <target> [seconds]", "Blinded", (p, _pw) => {
+    forEachPawn(cmd, "Usage Blind", "Blinded Player", "Blinded Players", (p, _pw) => {
       Fade.blind(p.slot, durMs);
     }, true);
   });
 
   // sm_noclip <target> — toggle noclip (WALK <-> NOCLIP).
   ctx.commands.registerAdmin("sm_noclip", ADMFLAG.SLAY, (cmd) => {
-    forEachPawn(cmd, "sm_noclip <target>", "Toggled noclip for", (_p, pw) => {
+    forEachPawn(cmd, "Usage Noclip", "Toggled Noclip For Player", "Toggled Noclip For Players", (_p, pw) => {
       pw.moveType = pw.moveType === NOCLIP ? WALK : NOCLIP;
     }, true);
   });
@@ -70,7 +89,7 @@ export default plugin((ctx) => {
   // sm_freeze <target> [seconds] — freeze in place; auto-unfreeze after [seconds] (0 = until sm_unfreeze).
   ctx.commands.registerAdmin("sm_freeze", ADMFLAG.SLAY, (cmd) => {
     const secs = cmd.argFloat(1, 0);
-    forEachPawn(cmd, "sm_freeze <target> [seconds]", "Froze", (p, pw) => {
+    forEachPawn(cmd, "Usage Freeze", "Froze Player", "Froze Players", (p, pw) => {
       pw.moveType = NONE;
       if (secs > 0) {
         const slot = p.slot;
@@ -84,7 +103,7 @@ export default plugin((ctx) => {
 
   // sm_unfreeze <target> — restore movement.
   ctx.commands.registerAdmin("sm_unfreeze", ADMFLAG.SLAY, (cmd) => {
-    forEachPawn(cmd, "sm_unfreeze <target>", "Unfroze", (_p, pw) => {
+    forEachPawn(cmd, "Usage Unfreeze", "Unfroze Player", "Unfroze Players", (_p, pw) => {
       pw.moveType = WALK;
     }, false);
   });
