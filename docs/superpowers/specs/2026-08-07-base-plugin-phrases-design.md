@@ -149,14 +149,24 @@ SourceMod ships `common.phrases.txt`; our plugins already duplicate `"No matchin
 `"Multiple players match"` verbatim across files. A `common` set holds the cross-plugin phrases:
 target-resolution failures, `"You do not have access to this command."`, usage scaffolding.
 
-**Its source of truth is one shared module**, `plugins/_shared/phrases.common.ts`, which every
-plugin imports and passes to a second `Translations.load("common", …)`. One edit changes the phrase
-everywhere.
+**Its source of truth is one shared library package**, `packages/phrases-common/`, which every plugin
+declares under `s2script.libraries` and passes to a second `Translations.load("common", …)`. One
+edit changes the phrase everywhere.
 
-*Resolved (was an open risk):* reaching above the plugin root works. `buildPlugin` runs esbuild with
-`bundle: true`, which follows relative paths across directories; plugin tsconfigs set no `rootDir`;
-and `plugins/basechat/tsconfig.json` already reaches above the plugin root today via
-`"include": ["src", "../../packages/sdk/globals.d.ts"]`. No per-plugin inlining fallback is needed.
+*Resolved, and not the way this spec first proposed.* The original plan put the shared module at
+`plugins/_shared/phrases.common.ts` behind a relative import. That is wrong: root `package.json`
+globs `plugins/*` as both an npm workspace **and** `s2script.workspace.plugins`, so a `_shared`
+directory there is discovered and built *as a plugin*.
+
+The repo already has the right mechanism (`packages/sdk/src/libraries.ts`): a workspace sibling
+declaring `"s2script": { "kind": "library" }` is resolved straight to its own `main`/`types` on disk
+— no vendored copy, no npm round-trip — and bundled into each consumer's `.s2sp` when that consumer
+lists it under `s2script.libraries`. `packages/*` is an npm workspace but is **not** in
+`s2script.workspace.plugins`, so a library there is a sibling and never a build target. Marked
+`private: true`, it is never published.
+
+This is also the first real consumer of the library mechanism inside the base-plugin tree, so the
+pilot task (Task 6) is where it gets proven.
 
 **Load order is load-bearing.** `translate` walks sets in insertion order and takes the first hit,
 so each plugin loads **its own set first, `common` second**. A plugin-specific phrase then shadows a
