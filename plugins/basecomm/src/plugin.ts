@@ -27,15 +27,18 @@ const muted = new Set<string>();  // SteamIDs — voice mute requested (best-eff
 // commands below, so the actual key used at the `Translations.translate` call sites inside here is a
 // variable, not a string literal. scripts/gen-phrases.mjs's unknown-key scan only recognises a
 // literal key argument (by design — a dynamic key is skipped, not guessed at), so it canNOT validate
-// these three call sites; the literal keys are only visible where each command passes them in below.
-// Double-check any edit here against plugins/basecomm/src/phrases.ts by hand.
+// those two `Translations.translate(callerSlot, usageKey)` / `(..., singularKey/pluralKey)` call
+// sites. Typed as `keyof typeof phrases` (not `string`) instead of relying on a comment: a typo or a
+// key that doesn't exist in this plugin's own seed at any of the six call sites below is now a
+// typecheck error, not a silent gap. (This only covers basecomm's own seed — a common-set key like
+// "No matching players" below is still a plain string literal, validated by the AST scanner as usual.)
 function forTargets(
   pat: string,
   callerSlot: number,
   reply: (m: string) => void,
-  usageKey: string,
-  singularKey: string,
-  pluralKey: string,
+  usageKey: keyof typeof phrases,
+  singularKey: keyof typeof phrases,
+  pluralKey: keyof typeof phrases,
   act: (p: Player) => void,
   filterImmunity: boolean,
 ): void {
