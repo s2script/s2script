@@ -35,4 +35,13 @@ export const phrases = {
   // adminmenu ban-menu bot/unauthenticated notice — sent via Client.chat directly (not Chat.toSlot
   // or cmd.reply), so this one is colour-free too.
   "Cannot Ban Bot": "Cannot ban {1} (bot / not authenticated)",
+
+  // adminmenu ban-duration sub-menu (Menu title + item labels). Also colour-free, for a different
+  // reason than the kick-reason phrases above: this menu is style=Center, and the Center renderer
+  // (games/cs2/js/pawn.js renderHtml) HTML-escapes title/item text and paints its OWN fixed
+  // <font color> styling — it never calls __s2_colors.expand, so a {tag} here would render as
+  // literal, escaped "{green}" text in the menu, not a colour.
+  "Ban Menu Title": "Ban {1} for",
+  "Ban Menu Permanent": "Permanent",
+  "Ban Menu Minutes": "{1} min",
 };

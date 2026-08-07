@@ -22,6 +22,16 @@ import { Menu, MenuStyle } from "@s2script/sdk/menu";
 import { Translations } from "@s2script/sdk/translations";
 import { phrases } from "./phrases";
 
+// Canonical (untranslated) placeholder for "the adminmenu Ban flow banned with no free-text reason"
+// — that flow has a duration sub-menu, never a text box, so it always supplies this exact literal.
+// It is what gets PERSISTED (Bans.add stores reasons canonically/untranslated, same as an admin's
+// typed sm_ban/sm_addban reason — see the "stored canonically" comment at the Bans.add call below),
+// and banMessage resolves it back to the "Ban Reason By Admin" phrase at DISPLAY time. That round
+// trip is what makes the immediate kick and a later reconnect enforcement (which only ever has the
+// STORED reason to work with) show the same translated text instead of a stray hard-coded English
+// literal reaching a player who reconnects after the admin's session (and language) is long gone.
+const BAN_REASON_BY_ADMIN = "Banned by admin";
+
 // The message a banned player sees (chat + console) — shared by the immediate sm_ban path and the
 // reconnect enforcement so the wording is identical. `slot` is the BANNED PLAYER (the recipient of
 // this message), translated in THEIR language — never the admin who issued the ban. No colour tags
@@ -32,7 +42,9 @@ function banMessage(slot: number, reason: string, until: number): string {
   const expiry = until === 0
     ? Translations.translate(slot, "Ban Expiry Permanent")
     : Translations.translate(slot, "Ban Expiry Minutes", Math.ceil((until - now) / 60));
-  const reasonText = reason || Translations.translate(slot, "Ban Reason Default");
+  const reasonText = reason === BAN_REASON_BY_ADMIN
+    ? Translations.translate(slot, "Ban Reason By Admin")
+    : reason || Translations.translate(slot, "Ban Reason Default");
   return Translations.translate(slot, "Ban Message", reasonText, expiry);
 }
 
@@ -154,25 +166,31 @@ export default plugin((ctx) => {
         if (admin) admin.chat(Translations.translate(adminSlot, "Cannot Ban Bot", name));
         return;
       }
-      const dm = new Menu("Ban " + name + " for");
+      // The Menu is displayed to exactly one slot (adminSlot below), so — unlike a broadcast — it's
+      // safe to resolve its text to THAT admin's language up front rather than per-recipient.
+      const dm = new Menu(Translations.translate(adminSlot, "Ban Menu Title", name));
       dm.style = MenuStyle.Center;
       dm.freezePlayer = true;   // WASD nav — keep the admin frozen through the duration sub-menu
       const mins = [0, 5, 30, 60];   // 0 = permanent
-      for (const m of mins) dm.addItem(String(m), m === 0 ? "Permanent" : (m + " min"));
+      for (const m of mins) {
+        dm.addItem(String(m), m === 0
+          ? Translations.translate(adminSlot, "Ban Menu Permanent")
+          : Translations.translate(adminSlot, "Ban Menu Minutes", m));
+      }
       dm.onSelect(e => {
         const minutes = parseInt(e.info, 10);
-        // The persisted ban record is always stored in canonical (untranslated) form — same as a
-        // custom reason typed to sm_ban/sm_addban — and only translated at display time.
-        Bans.add(sid, minutes, "Banned by admin");
+        // Stored canonically (untranslated) — same as a custom reason typed to sm_ban/sm_addban —
+        // via the BAN_REASON_BY_ADMIN sentinel, which banMessage resolves back to a phrase at
+        // display time (see the constant's comment above).
+        Bans.add(sid, minutes, BAN_REASON_BY_ADMIN);
         const b = Bans.get(sid);
         // Re-resolve by userId at kick time: the target may have left (and the slot been reused) between
         // the player pick and the duration pick — only kick if the SAME player is still connected.
         const cur = Player.fromUserId(uid);
         if (cur && cur.steamId === sid) {
           const c = Clients.fromSlot(cur.slot);
-          const reason = Translations.translate(cur.slot, "Ban Reason By Admin");
-          if (c) c.kickWithReason(banMessage(cur.slot, reason, b ? b.until : 0));
-          else cur.kick(reason);
+          if (c) c.kickWithReason(banMessage(cur.slot, BAN_REASON_BY_ADMIN, b ? b.until : 0));
+          else cur.kick(Translations.translate(cur.slot, "Ban Reason By Admin"));
         }
         // else: they left / the slot was reused — the persisted ban + reconnect enforcement handles it.
       });
