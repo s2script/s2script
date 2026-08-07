@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **Worktree:** `/home/gkh/projects/s2script/.claude/worktrees/base-plugin-phrases`, branch `i18n/base-plugin-phrases`, based on `origin/main`. All paths below are relative to that worktree root.
-- **Core is engine-generic.** `core/js/colors.js` and `core/js/prelude.js` must never name a color or a game. The `{name} → byte` table arrives at runtime from the game package. `scripts/check-core-boundary.sh` must stay green.
+- **Core is engine-generic.** The rule bans *depending on a specific game*: no game package paths (`games/cs2/js/pawn.js`), no game-specific identifiers (`ChatColors`), and no hardcoded byte values anywhere in `core/`. The `{name} → byte` table arrives at runtime from the game package. Generic tag-syntax examples in comments (`{green}`, `{default}`) are fine — they illustrate the format, and only the byte values are game-specific. `scripts/check-core-boundary.sh` must stay green.
 - **Degrade, never crash.** An unknown tag, an absent table, a malformed phrases file: each degrades to correct uncolored text. Nothing throws.
 - **One PR, atomic.** `make ci` must pass at the end. Individual task commits need not each be green, but the branch must be green before the PR.
 - **Gates live in `scripts/ci-js.sh`, never in workflow YAML.** `.github/workflows/ci-js.yml` runs that script and nothing else.
