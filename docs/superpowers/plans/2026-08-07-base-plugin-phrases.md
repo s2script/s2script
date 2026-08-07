@@ -20,7 +20,7 @@
 - **`scripts/check-*-generated.sh` is globbed** by `ci-js.sh:20-25` — a new freshness gate matching that name self-wires. A gate NOT matching that glob needs an explicit line added to `ci-js.sh`.
 - **Node tests run with `node --test`.** Core tests run serial (`RUST_TEST_THREADS=1`, already forced by `.cargo/config.toml` — do not pass `--test-threads`).
 - **Changesets:** a change under `packages/*` that is not `private: true` requires a changeset or `scripts/check-changeset.sh` fails. `packages/phrases-common` is `private: true` and does not. `packages/sdk` and `packages/cs2` do.
-- **Commit style:** imperative subject, no `Co-Authored-By`, no tool attribution.
+- **Commit style: Conventional Commits** — `<type>(<scope>): <subject>`, e.g. `feat(core):`, `fix(core):`, `feat(plugins):`. No `Co-Authored-By`, no tool attribution. Each task below gives its exact message; use it verbatim.
 
 ---
 
@@ -289,7 +289,7 @@ Expected: PASS
 ```bash
 git add core/js/colors.js core/js/colors.test.js core/js/eslint.config.mjs \
         scripts/check-colors-test.sh scripts/ci-js.sh
-git commit -m "core: a pure colour-tag expander, table supplied at runtime
+git commit -m "feat(core): add a pure colour-tag expander, table supplied at runtime
 
 Engine-generic: the {name} -> control-byte map is handed in by the game
 package, so core does a lookup and never names a colour. Unknown tags are
@@ -394,7 +394,7 @@ Expected: PASS. The existing chat tests (`__s2pkg_chat.Chat.toSlot` / `toAll`) a
 
 ```bash
 git add core/js/prelude.js core/src/v8host.rs
-git commit -m "core: expand colour tags at the chat and console funnels
+git commit -m "feat(core): expand colour tags at the chat and console funnels
 
 __s2_chatLine and __s2cmd_stripCtl become thin wrappers over colors.js, so
 every existing Chat.toSlot / Chat.toAll / ctx.reply* call site inherits tag
@@ -510,7 +510,7 @@ Expected: PASS. The existing translations test at ~13694 (single set, `de` injec
 
 ```bash
 git add core/js/prelude.js core/src/v8host.rs
-git commit -m "core: fix translate set-ordering and arg colour injection
+git commit -m "fix(core): correct translate set-ordering and arg colour injection
 
 translate checked one set's language map then that same set's English default
 before moving on, so with two loaded sets an earlier set's English beat a later
@@ -560,7 +560,7 @@ Expected: PASS — that suite loads the real shipped bundle, so it proves `pawn.
 
 ```bash
 git add games/cs2/js/pawn.js
-git commit -m "cs2: register ChatColors as the colour-tag table
+git commit -m "feat(cs2): register ChatColors as the colour-tag table
 
 The map crosses to core at runtime through the existing package injection, so
 {green} works in any phrase file while core still never names a colour."
@@ -713,7 +713,7 @@ Expected: the directory exists. It is empty until Task 6 generates files, which 
 
 ```bash
 git add scripts/gen-phrases.mjs scripts/check-phrases-generated.sh scripts/package-addon.sh
-git commit -m "build: generate phrases files from in-code seeds, and ship them
+git commit -m "feat(build): generate phrases files from in-code seeds, and ship them
 
 package-addon.sh never created translations/, so in a packaged install
 translations_read always returned null and every phrase fell back to its seed —
@@ -911,7 +911,7 @@ proof that `s2script.libraries` resolves the sibling from source.
 
 ```bash
 git add packages/phrases-common plugins/basechat translations package-lock.json
-git commit -m "plugins: the shared common phrase set, and basechat on it
+git commit -m "feat(plugins): add the shared common phrase set, and move basechat onto it
 
 The common set is a workspace library (s2script.kind: library) bundled into each
 consumer's .s2sp — plugins/_shared/ would not work, because plugins/* is globbed
@@ -945,7 +945,7 @@ Task 6 Step 5 exactly:
   - Move the `[SM] ` prefix into the phrase text; do not concatenate it in code.
   - Reuse a `common` key instead of adding a duplicate whenever the string already exists there.
   - Run: `node --experimental-strip-types --no-warnings scripts/gen-phrases.mjs && bash scripts/check-plugins-typecheck.sh`
-  - Commit: `git add plugins/basecommands translations && git commit -m "basecommands: move user-facing strings onto the translations SDK"`
+  - Commit: `git add plugins/basecommands translations && git commit -m "feat(basecommands): move user-facing strings onto the translations SDK"`
 
 - [ ] **Step 2: `basebans`** — same checklist (12 direct call sites, 46 literals).
 
@@ -997,7 +997,7 @@ Expected: all PASS, 18 `.s2sp` artifacts
 
 ```bash
 git add plugins translations
-git commit -m "plugins: move the remaining base plugins onto the translations SDK"
+git commit -m "feat(plugins): move the remaining base plugins onto the translations SDK"
 ```
 
 ---
@@ -1026,7 +1026,7 @@ Expected: PASS
 
 ```bash
 git add plugins/zones translations
-git commit -m "zones: move user-facing strings onto the translations SDK"
+git commit -m "feat(zones): move user-facing strings onto the translations SDK"
 ```
 
 ---
@@ -1104,7 +1104,7 @@ Expected: `ci-native` EXIT 0 and `ci-js` EXIT 0.
 
 ```bash
 git add translations/de examples/cookbook .changeset
-git commit -m "translations: ship the German fixture the cookbook documents
+git commit -m "feat(translations): ship the German fixture the cookbook documents
 
 The <code>/ language path has never been exercised by a real file — only by the
 __s2_tr_injectLang test hook. The cookbook described this fixture and shipped
