@@ -14,18 +14,36 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, pickPlayer } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
 import { Clients } from "@s2script/sdk/clients";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
 const muted = new Set<string>();  // SteamIDs — voice mute requested (best-effort)
 
 // Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
 // caller); filterImmunity=false for a reversal command (un-gag/un-mute/un-silence — no filter).
-function forTargets(pat: string, callerSlot: number, reply: (m: string) => void, verb: string, usage: string, act: (p: Player) => void, filterImmunity: boolean): void {
-  if (!pat) { reply("Usage: " + usage); return; }
+//
+// usageKey/singularKey/pluralKey are phrase KEYS, not raw text — this helper is shared by all six
+// commands below, so the actual key used at the `Translations.translate` call sites inside here is a
+// variable, not a string literal. scripts/gen-phrases.mjs's unknown-key scan only recognises a
+// literal key argument (by design — a dynamic key is skipped, not guessed at), so it canNOT validate
+// these three call sites; the literal keys are only visible where each command passes them in below.
+// Double-check any edit here against plugins/basecomm/src/phrases.ts by hand.
+function forTargets(
+  pat: string,
+  callerSlot: number,
+  reply: (m: string) => void,
+  usageKey: string,
+  singularKey: string,
+  pluralKey: string,
+  act: (p: Player) => void,
+  filterImmunity: boolean,
+): void {
+  if (!pat) { reply(Translations.translate(callerSlot, usageKey)); return; }
   const targets = Player.target(pat, callerSlot, filterImmunity);
-  if (targets.length === 0) { reply("[SM] No matching players."); return; }
+  if (targets.length === 0) { reply(Translations.translate(callerSlot, "No matching players")); return; }
   for (const p of targets) act(p);
-  reply("[SM] " + verb + " " + targets.length + " player" + (targets.length === 1 ? "" : "s") + ".");
+  reply(Translations.translate(callerSlot, targets.length === 1 ? singularKey : pluralKey, targets.length));
 }
 
 function setGag(p: Player, on: boolean): void {
@@ -44,6 +62,11 @@ function setMute(p: Player, on: boolean): void {
 }
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("basecomm", phrases);
+  Translations.load("common");
+
   // Suppress chat from a gagged speaker (both say and say_team route through Host_Say).
   ctx.clients.onSay((slot, _text, _teamonly) => {
     if (gagged.size === 0) return HookResult.Continue;
@@ -59,17 +82,17 @@ export default plugin((ctx) => {
   });
 
   ctx.commands.registerAdmin("sm_gag", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Gagged", "sm_gag <target>", (p) => setGag(p, true), true));
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Gag", "Gagged Player", "Gagged Players", (p) => setGag(p, true), true));
   ctx.commands.registerAdmin("sm_ungag", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Ungagged", "sm_ungag <target>", (p) => setGag(p, false), false));
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Ungag", "Ungagged Player", "Ungagged Players", (p) => setGag(p, false), false));
   ctx.commands.registerAdmin("sm_mute", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Muted", "sm_mute <target>", (p) => setMute(p, true), true));
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Mute", "Muted Player", "Muted Players", (p) => setMute(p, true), true));
   ctx.commands.registerAdmin("sm_unmute", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Unmuted", "sm_unmute <target>", (p) => setMute(p, false), false));
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unmute", "Unmuted Player", "Unmuted Players", (p) => setMute(p, false), false));
   ctx.commands.registerAdmin("sm_silence", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Silenced", "sm_silence <target>", (p) => { setGag(p, true); setMute(p, true); }, true));
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Silence", "Silenced Player", "Silenced Players", (p) => { setGag(p, true); setMute(p, true); }, true));
   ctx.commands.registerAdmin("sm_unsilence", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Unsilenced", "sm_unsilence <target>", (p) => { setGag(p, false); setMute(p, false); }, false));
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unsilence", "Unsilenced Player", "Unsilenced Players", (p) => { setGag(p, false); setMute(p, false); }, false));
 
   // adminmenu — Gag proof item, same ADMFLAG as sm_gag, via pickPlayer + the shared setGag routine.
   ctx.topmenu.addItem("Player Commands", { id: "basecomm:gag", name: "Gag", flags: ADMFLAG.CHAT,
