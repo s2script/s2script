@@ -51,6 +51,9 @@ bash scripts/check-examples-coverage.sh
 echo "== check-activity-test.sh =="
 bash scripts/check-activity-test.sh
 
+echo "== check-colors-test.sh (colour-tag expander) =="
+bash scripts/check-colors-test.sh
+
 echo "== check-antiflood-test.sh =="
 bash scripts/check-antiflood-test.sh
 
