@@ -19,7 +19,7 @@
 - **Gates live in `scripts/ci-js.sh`, never in workflow YAML.** `.github/workflows/ci-js.yml` runs that script and nothing else.
 - **`scripts/check-*-generated.sh` is globbed** by `ci-js.sh:20-25` — a new freshness gate matching that name self-wires. A gate NOT matching that glob needs an explicit line added to `ci-js.sh`.
 - **Node tests run with `node --test`.** Core tests run serial (`RUST_TEST_THREADS=1`, already forced by `.cargo/config.toml` — do not pass `--test-threads`).
-- **Changesets:** a change under `packages/*` that is not `private: true` requires a changeset or `scripts/check-changeset.sh` fails. `packages/phrases-common` is `private: true` and does not. `packages/sdk` and `packages/cs2` do.
+- **Changesets:** a change under `packages/*` that is not `private: true` requires a changeset or `scripts/check-changeset.sh` fails. No new `packages/*` member is added by this slice. `packages/sdk` and `packages/cs2` require one if changed.
 - **Commit style: Conventional Commits** — `<type>(<scope>): <subject>`, e.g. `feat(core):`, `fix(core):`, `feat(plugins):`. No `Co-Authored-By`, no tool attribution. Each task below gives its exact message; use it verbatim.
 
 ---
@@ -32,7 +32,7 @@
 - `scripts/check-colors-test.sh` — runs it. Needs an explicit `ci-js.sh` line (does not match the `check-*-generated.sh` glob).
 - `scripts/gen-phrases.mjs` — reads each plugin's `src/phrases.ts`, writes `translations/<dir>.phrases.json`.
 - `scripts/check-phrases-generated.sh` — freshness gate. Self-wires via the glob.
-- `packages/phrases-common/{package.json,index.ts}` — the shared `common` phrase set, `s2script.kind: "library"`, `private: true`.
+- `translations/common.phrases.json` — the shared phrase set. Hand-authored, checked in, ships in the addon. SourceMod's `common.phrases.txt`; loaded by any plugin via `Translations.load("common")`. NOT generated.
 - `plugins/<name>/src/phrases.ts` × 18 — each plugin's English seed.
 - `translations/<name>.phrases.json` × 19 (18 plugins + `common`) — generated, committed.
 - `translations/de/trdemo.phrases.json` — the cookbook fixture; first real language file in the repo.
@@ -45,7 +45,6 @@
 - `scripts/ci-js.sh` — one line for `check-colors-test.sh`.
 - `core/js/eslint.config.mjs` — a narrowly scoped CommonJS-globals override for `colors.js` / `colors.test.js`, mirroring `games/cs2/js/eslint.config.mjs:66-79`. Without it `check-core-js-lint.sh` fails on the dual-mode guard and the test's `require`.
 - `plugins/<name>/src/plugin.ts` × 18 — call sites become `Translations.translate` / `ctx.replyT`.
-- `plugins/<name>/package.json` × 18 — declare `s2script.libraries`.
 - `examples/cookbook/src/recipes/translations.ts` — comment corrected once the fixture is real.
 
 ---
@@ -576,7 +575,7 @@ The map crosses to core at runtime through the existing package injection, so
 
 **Interfaces:**
 - Consumes: each plugin's `src/phrases.ts` default export (Task 6 onward creates them).
-- Produces: `translations/<dir>.phrases.json` for every `plugins/*/src/phrases.ts` and `plugins/disabled/*/src/phrases.ts`, plus `translations/common.phrases.json` from `packages/phrases-common/index.ts`.
+- Produces: `translations/<dir>.phrases.json` for every `plugins/*/src/phrases.ts` and `plugins/disabled/*/src/phrases.ts`, The hand-authored `translations/common.phrases.json` has no seed and is never generated or deleted.
 - Contract: the JSON basename equals the plugin's **directory name**, which is also the string the plugin must pass to `Translations.load`.
 
 - [ ] **Step 1: Write the generator**
@@ -634,7 +633,6 @@ function render(seed) {
 }
 
 const targets = [
-  { name: "common", seed: join(ROOT, "packages", "phrases-common", "index.ts") },
   ...pluginDirs(),
 ];
 
@@ -725,65 +723,68 @@ for freshness, so the file an operator edits can never drift from the seed."
 
 ---
 
-## Task 6: The `common` library and the basechat pilot
+## Task 6: The shared `common` phrases file, and the basechat pilot
 
-This task proves the whole chain on one plugin before 17 more follow. It is the first consumer of
-the `s2script.kind: "library"` mechanism inside the base-plugin tree.
+This task proves the whole chain on one plugin before 17 more follow.
+
+It follows SourceMod's cadence exactly. SourceMod ships `addons/sourcemod/translations/` with the
+addon; `common.phrases.txt` lives there, any plugin calls `LoadTranslations("common.phrases")` to
+get its keys, and third-party authors drop their own file into the same folder. The shared strings
+are **a data file read by name**, not code to import. There is no package, no bundling, and no
+manifest change.
+
+s2script already supports this: `Translations.load(name, seed)` treats `seed` as optional. With no
+seed it starts empty and reads `translations/<name>.phrases.json` off disk (verified in
+`core/js/prelude.js` — `load` merges the root file over whatever the seed provided, and an absent
+seed is simply `{}`). So `Translations.load("common")` is the direct equivalent of
+`LoadTranslations("common.phrases")`.
 
 **Files:**
-- Create: `packages/phrases-common/package.json`, `packages/phrases-common/index.ts`
+- Create: `translations/common.phrases.json` — hand-authored, checked in, ships in the addon. Not generated; there is no seed for it.
 - Create: `plugins/basechat/src/phrases.ts`
-- Modify: `plugins/basechat/src/plugin.ts`, `plugins/basechat/package.json`
-- Generated: `translations/common.phrases.json`, `translations/basechat.phrases.json`
+- Modify: `plugins/basechat/src/plugin.ts`
+- Modify: `scripts/gen-phrases.mjs` — stop deleting files it did not generate (see Step 1)
+- Generated: `translations/basechat.phrases.json`
+
+`plugins/basechat/package.json` is **not** modified. No plugin manifest changes anywhere in this slice.
 
 **Interfaces:**
-- Produces: `import { phrases as commonPhrases } from "@s2script/phrases-common"` — a `Record<string, string>` of cross-plugin phrases.
-- Contract (applies to every plugin from here on): load **own set first, `common` second**, so a plugin-specific key shadows a common one.
+- Produces: `translations/common.phrases.json`, loadable by any plugin (including third-party) via `Translations.load("common")`.
+- Contract (applies to every plugin from here on): load **own set first, `common` second**, so a plugin-specific key shadows a shared one.
 
-- [ ] **Step 1: Create the shared library package**
+- [ ] **Step 1: Stop the generator deleting files it did not generate**
 
-Create `packages/phrases-common/package.json`:
+Task 5 added an orphan sweep that removes any top-level `translations/*.phrases.json` with no
+matching seed. `common.phrases.json` is hand-authored and has no seed, so the sweep would delete it.
+
+The sweep is wrong in general, not just for this file: `translations/` is a folder operators and
+third-party plugin authors are *meant* to drop files into, exactly as in SourceMod. A generator has
+no business removing files it did not create.
+
+In `scripts/gen-phrases.mjs`, remove the orphan-deletion behaviour and the zero-seed circuit breaker
+that guarded it (the breaker exists only to make deletion safe; with no deletion it has nothing to
+protect). Keep everything else: seed discovery, validation, sorted rendering, and `--check` drift
+detection for the files it *does* generate.
+
+Report a stale generated file as a warning rather than deleting it, so a genuinely orphaned file is
+still visible without the script taking destructive action. Do not fail `--check` on it — a
+third-party plugin's phrases file sitting in that folder is normal and must not break CI.
+
+- [ ] **Step 2: Write the shared phrases file**
+
+Create `translations/common.phrases.json` by hand (this file is the source of truth; it is never
+generated):
 
 ```json
 {
-  "name": "@s2script/phrases-common",
-  "version": "0.1.0",
-  "private": true,
-  "main": "index.ts",
-  "types": "index.ts",
-  "s2script": {
-    "kind": "library"
-  }
+  "More than one client matched": "{green}[SM]{default} More than one client matched \"{1}\"",
+  "No access": "{green}[SM]{default} You do not have access to this command",
+  "No matching players": "{green}[SM]{default} No matching players",
+  "Player no longer available": "{green}[SM]{default} That player is no longer available",
+  "Server console only": "{green}[SM]{default} This command can only be run from the server console",
+  "Unknown command": "{green}[SM]{default} Unknown command"
 }
 ```
-
-Create `packages/phrases-common/index.ts`:
-
-```ts
-/**
- * Cross-plugin phrases — the `common` set (SourceMod's common.phrases.txt).
- *
- * Every base plugin loads this SECOND, after its own set, so a plugin-specific key of the same
- * name shadows the shared one. Colour tags ({green}, {default}, …) are expanded at output by
- * core/js/colors.js; an operator recolours by editing translations/common.phrases.json.
- */
-export const phrases = {
-  "No matching players": "{green}[SM]{default} No matching players",
-  "More than one client matched": "{green}[SM]{default} More than one client matched \"{1}\"",
-  "Player no longer available": "{green}[SM]{default} That player is no longer available",
-  "No access": "{green}[SM]{default} You do not have access to this command",
-  "Server console only": "{green}[SM]{default} This command can only be run from the server console",
-  "Unknown command": "{green}[SM]{default} Unknown command",
-};
-```
-
-- [ ] **Step 2: Install the new workspace member**
-
-Run: `npm install --no-fund --no-audit`
-Expected: `packages/phrases-common` linked into `node_modules/@s2script/phrases-common`.
-
-> If this rewrites unrelated parts of `package-lock.json`, keep only the lines that add the new
-> workspace member: `git add -p package-lock.json`.
 
 - [ ] **Step 3: Write basechat's seed**
 
@@ -803,21 +804,8 @@ export const phrases = {
 };
 ```
 
-- [ ] **Step 4: Declare the library dependency**
-
-Replace `plugins/basechat/package.json` with:
-
-```json
-{
-  "name": "@s2script/basechat",
-  "version": "0.1.0",
-  "private": true,
-  "main": "src/plugin.ts",
-  "s2script": {
-    "libraries": ["@s2script/phrases-common"]
-  }
-}
-```
+Do not add `"No matching players"` or `"More than one client matched"` here — they live in the
+shared file.
 
 - [ ] **Step 5: Rewrite basechat's call sites**
 
@@ -827,7 +815,6 @@ Add to the imports:
 
 ```ts
 import { Translations } from "@s2script/sdk/translations";
-import { phrases as commonPhrases } from "@s2script/phrases-common";
 import { phrases } from "./phrases";
 ```
 
@@ -840,7 +827,7 @@ At the very top of the `plugin((ctx) => {` body, before any command registration
   // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
   // lets a plugin override a shared phrase.
   Translations.load("basechat", phrases);
-  Translations.load("common", commonPhrases);
+  Translations.load("common");   // shared file in translations/, SourceMod's LoadTranslations("common.phrases")
 ```
 
 Replace the three message helpers:
@@ -894,23 +881,28 @@ Replace each `cmd.reply("Usage: …")` with `cmd.replyT("Usage Say")` / `"Usage 
 - [ ] **Step 6: Generate the phrases files**
 
 Run: `node --experimental-strip-types --no-warnings scripts/gen-phrases.mjs`
-Expected: writes `translations/common.phrases.json` and `translations/basechat.phrases.json`
+Expected: writes `translations/basechat.phrases.json`. It must NOT write, alter, or delete
+`translations/common.phrases.json` — that file is hand-authored and has no seed. Verify its
+contents are byte-identical before and after.
 
 - [ ] **Step 7: Verify the freshness gate and the typecheck**
 
 Run: `bash scripts/check-phrases-generated.sh && bash scripts/check-plugins-typecheck.sh`
 Expected: both PASS
 
-- [ ] **Step 8: Verify basechat builds with its library bundled**
+- [ ] **Step 8: Verify basechat builds and the shared file survives**
 
 Run: `bash scripts/build-base-plugins.sh`
-Expected: `PASS: built N base plugin(s)` including `plugins/basechat/dist/*.s2sp`. This is the
-proof that `s2script.libraries` resolves the sibling from source.
+Expected: `PASS: built N base plugin(s)` including `plugins/basechat/dist/*.s2sp`.
+
+Then run the freshness gate once more and confirm `translations/common.phrases.json` is still
+present and unmodified. A generator that deletes the hand-authored shared file is the specific
+regression Step 1 exists to prevent, and this is where it would show.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/phrases-common plugins/basechat translations package-lock.json
+git add scripts/gen-phrases.mjs plugins/basechat translations
 git commit -m "feat(plugins): add the shared common phrase set, and move basechat onto it
 
 The common set is a workspace library (s2script.kind: library) bundled into each
@@ -932,14 +924,13 @@ key shadows a shared one. Its colours are now phrase text an operator can edit."
 - Generated: `translations/<name>.phrases.json`
 
 **Interfaces:**
-- Consumes: `@s2script/phrases-common` and the `Translations.load` ordering contract from Task 6.
+- Consumes: the shared `translations/common.phrases.json` and the `Translations.load` ordering contract from Task 6.
 
 Per-plugin checklist — repeat all of it for each of the four, following the basechat pattern in
 Task 6 Step 5 exactly:
 
 - [ ] **Step 1: `basecommands`**
   - Create `src/phrases.ts` with a key for every user-facing literal (~30 direct call sites, 95 literals — read the file and convert each).
-  - Add `"s2script": { "libraries": ["@s2script/phrases-common"] }` to `package.json`.
   - Add the two `Translations.load` calls at the top of the plugin body, own set first.
   - Convert every `cmd.reply("…")` to `cmd.replyT("<key>", …args)` and every `Chat.*` literal to `Translations.translate(slot, "<key>", …args)`.
   - Move the `[SM] ` prefix into the phrase text; do not concatenate it in code.
@@ -1074,7 +1065,7 @@ Expected: the file's contents print.
 
 - [ ] **Step 4: Add a changeset if a published package changed**
 
-Run: `git diff --name-only origin/main -- packages/ | grep -v phrases-common`
+Run: `git diff --name-only origin/main -- packages/`
 
 If that prints nothing, skip this step. If it prints files under `packages/sdk` or `packages/cs2`,
 create `.changeset/colour-tags.md`:
@@ -1195,7 +1186,7 @@ requires the later one's language hit to win.
 times; each names its own file paths, its own counts, and its own commit.
 
 **Type consistency.** `phrases` is the exported name in every seed module and in
-`packages/phrases-common/index.ts`; `gen-phrases.mjs` accepts `mod.phrases ?? mod.default`.
+every plugin seed; `gen-phrases.mjs` accepts `mod.phrases ?? mod.default`. The shared set is a hand-authored JSON file with no TypeScript seed.
 `Translations.load(name, seed)` / `Translations.translate(slot, key, ...args)` / `ctx.replyT(key,
 ...args)` match `packages/sdk/translations.d.ts` unchanged. `__s2_colors` exposes exactly
 `setTable` / `expand` / `chatLine` / `consoleLine` / `_resetWarnings` in Task 1, and Tasks 2 and 4
