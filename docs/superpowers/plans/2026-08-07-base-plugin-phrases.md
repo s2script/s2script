@@ -43,6 +43,7 @@
 - `games/cs2/js/pawn.js` — registers `ChatColors` (:610) as the color table.
 - `scripts/package-addon.sh:59` — create and populate `translations/`.
 - `scripts/ci-js.sh` — one line for `check-colors-test.sh`.
+- `core/js/eslint.config.mjs` — a narrowly scoped CommonJS-globals override for `colors.js` / `colors.test.js`, mirroring `games/cs2/js/eslint.config.mjs:66-79`. Without it `check-core-js-lint.sh` fails on the dual-mode guard and the test's `require`.
 - `plugins/<name>/src/plugin.ts` × 18 — call sites become `Translations.translate` / `ctx.replyT`.
 - `plugins/<name>/package.json` × 18 — declare `s2script.libraries`.
 - `examples/cookbook/src/recipes/translations.ts` — comment corrected once the fixture is real.
@@ -199,7 +200,62 @@ Create `core/js/colors.js`:
 Run: `node --test core/js/colors.test.js`
 Expected: PASS, 10 tests
 
-- [ ] **Step 5: Add the gate script**
+- [ ] **Step 5: Grant the two new files their CommonJS globals in the lint config**
+
+`scripts/check-core-js-lint.sh` lints `core/js/` with `no-undef` against globals derived from
+`core/src/*.rs`. `colors.js`'s dual-mode guard and `colors.test.js`'s `require` would both fail it.
+
+`games/cs2/js/eslint.config.mjs:66-79` already solves exactly this for `activity.js` — a narrowly
+scoped override rather than adding CommonJS globals to the prelude's own list, "where they would
+mask a real `require` creeping into raw-context code". Mirror it.
+
+In `core/js/eslint.config.mjs`, replace the single exported config object with:
+
+```js
+export default [
+  {
+    // colors.js is dual-use — it ships concatenated into the prelude AND is unit-tested under node
+    // (`scripts/check-colors-test.sh`), so its `typeof module !== "undefined"` guard and its test
+    // file legitimately reference CommonJS globals. Scoped narrowly rather than adding them to the
+    // prelude's own globals, where they would mask a real `require` creeping into raw-context code.
+    // Mirrors games/cs2/js/eslint.config.mjs's activity.js block.
+    files: ["colors.js", "colors.test.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "script",
+      globals: {
+        module: "readonly", require: "readonly", exports: "readonly",
+        globalThis: "readonly", console: "readonly",
+      },
+    },
+    rules: { "no-undef": "error", "no-unused-vars": ["error", { args: "none", caughtErrors: "none" }] },
+  },
+  {
+    files: ["**/*.js"],
+    ignores: ["colors.js", "colors.test.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "script",
+      globals: readonlyGlobals([...natives, ...extraFromRust, ...selfPublished]),
+    },
+    linterOptions: { reportUnusedDisableDirectives: true },
+    rules: {
+      "no-undef": "error",
+      "no-unused-vars": ["error", { args: "none", caughtErrors: "none" }],
+    },
+  },
+];
+```
+
+`console` is in the override list because `expand()` warns on an unknown tag; the cs2 `activity.js`
+block omits it only because `activity.js` never logs.
+
+- [ ] **Step 6: Verify the lint gate passes**
+
+Run: `bash scripts/check-core-js-lint.sh`
+Expected: `PASS: core/js + games/cs2/js lint clean`
+
+- [ ] **Step 7: Add the gate script**
 
 Create `scripts/check-colors-test.sh`:
 
@@ -214,7 +270,7 @@ echo "PASS: colors.test.js"
 
 Then `chmod +x scripts/check-colors-test.sh`.
 
-- [ ] **Step 6: Wire it into the JS suite**
+- [ ] **Step 8: Wire it into the JS suite**
 
 In `scripts/ci-js.sh`, immediately after the `check-activity-test.sh` block, add:
 
@@ -223,15 +279,16 @@ echo "== check-colors-test.sh (colour-tag expander) =="
 bash scripts/check-colors-test.sh
 ```
 
-- [ ] **Step 7: Verify the gate runs**
+- [ ] **Step 9: Verify the gate runs**
 
 Run: `bash scripts/check-colors-test.sh`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add core/js/colors.js core/js/colors.test.js scripts/check-colors-test.sh scripts/ci-js.sh
+git add core/js/colors.js core/js/colors.test.js core/js/eslint.config.mjs \
+        scripts/check-colors-test.sh scripts/ci-js.sh
 git commit -m "core: a pure colour-tag expander, table supplied at runtime
 
 Engine-generic: the {name} -> control-byte map is handed in by the game
