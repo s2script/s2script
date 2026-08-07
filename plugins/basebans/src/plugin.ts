@@ -19,29 +19,42 @@ import { Bans } from "@s2script/sdk/bans";
 import { Clients } from "@s2script/sdk/clients";
 import { Player, pickPlayer } from "@s2script/cs2";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 // The message a banned player sees (chat + console) — shared by the immediate sm_ban path and the
-// reconnect enforcement so the wording is identical.
-function banMessage(reason: string, until: number): string {
+// reconnect enforcement so the wording is identical. `slot` is the BANNED PLAYER (the recipient of
+// this message), translated in THEIR language — never the admin who issued the ban. No colour tags
+// anywhere in here: kickWithReason delivers via Client.chat/Client.print, which never run through
+// the colour-expanding chat/console funnels (see phrases.ts).
+function banMessage(slot: number, reason: string, until: number): string {
   const now = Date.now() / 1000;
-  const expiry = until === 0 ? "permanent" : "expires in " + Math.ceil((until - now) / 60) + " min";
-  return "[SM] You are banned: " + (reason || "No reason") + " (" + expiry + ")";
+  const expiry = until === 0
+    ? Translations.translate(slot, "Ban Expiry Permanent")
+    : Translations.translate(slot, "Ban Expiry Minutes", Math.ceil((until - now) / 60));
+  const reasonText = reason || Translations.translate(slot, "Ban Reason Default");
+  return Translations.translate(slot, "Ban Message", reasonText, expiry);
 }
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("basebans", phrases);
+  Translations.load("common");
+
   // sm_ban <target> <minutes> [reason] — ADMFLAG.BAN
   // Resolves the target live, validates the SteamID, adds the ban, and kicks the player.
   // NO_MULTI: banning is destructive — a single target only.
   ctx.commands.registerAdmin("sm_ban", ADMFLAG.BAN, (cmd) => {
     const target = cmd.arg(0);
     if (!target) {
-      cmd.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
+      cmd.replyT("Usage Ban");
       return;
     }
     if (!/^\d+$/.test(cmd.arg(1))) {
       // A missing OR non-numeric minutes arg must NOT silently become a permanent ban
       // (argInt falls back to 0 = permanent for NaN). Require explicit digits; "0" = permanent.
-      cmd.reply("[SM] Usage: sm_ban <#userid|name> <minutes> [reason]");
+      cmd.replyT("Usage Ban");
       return;
     }
     const minutes = cmd.argInt(1);
@@ -49,19 +62,19 @@ export default plugin((ctx) => {
 
     const targets = Player.target(target, cmd.callerSlot, true);
     if (targets.length === 0) {
-      cmd.reply("[SM] No matching players.");
+      cmd.replyT("No matching players");
       return;
     }
     // NO_MULTI: banning is destructive — single target only, do NOT allow @all or ambiguous names.
     if (targets.length > 1) {
-      cmd.reply("[SM] '" + target + "' matches multiple players; be more specific.");
+      cmd.replyT("Ban Ambiguous Target", target);
       return;
     }
 
     const p = targets[0];
     const sid = p.steamId;
     if (!sid || sid === "0") {
-      cmd.reply("[SM] Cannot ban " + p.playerName + " (no SteamID — bot or unauthenticated).");
+      cmd.replyT("Cannot Ban No Steamid", p.playerName ?? "");
       return;
     }
 
@@ -70,14 +83,14 @@ export default plugin((ctx) => {
     // kickWithReason delivers immediately. (A plain kick would disconnect them with no reason shown.)
     const b = Bans.get(sid);
     const c = Clients.fromSlot(p.slot);
-    if (c) c.kickWithReason(banMessage(reason, b ? b.until : 0));
-    else p.kick("Banned: " + (reason || "No reason"));   // fallback: no Client for the slot
+    if (c) c.kickWithReason(banMessage(p.slot, reason, b ? b.until : 0));
+    else p.kick(Translations.translate(p.slot, "Kick Ban Reason Fallback", reason || Translations.translate(p.slot, "Ban Reason Default")));   // fallback: no Client for the slot
 
-    const durStr = minutes > 0
-      ? " for " + minutes + " minute" + (minutes === 1 ? "" : "s")
-      : " permanently";
-    const reasonStr = reason ? " (" + reason + ")" : "";
-    cmd.reply("[SM] Banned " + p.playerName + durStr + reasonStr + ".");
+    const durText = minutes > 0
+      ? Translations.translate(cmd.callerSlot, minutes === 1 ? "Ban Duration Minute" : "Ban Duration Minutes", minutes)
+      : Translations.translate(cmd.callerSlot, "Ban Duration Permanently");
+    const reasonText = reason ? Translations.translate(cmd.callerSlot, "Ban Reason Suffix", reason) : "";
+    cmd.replyT("Ban Success", p.playerName ?? "", durText, reasonText);
   });
 
   // sm_unban <steamid> — ADMFLAG.UNBAN
@@ -85,11 +98,11 @@ export default plugin((ctx) => {
   ctx.commands.registerAdmin("sm_unban", ADMFLAG.UNBAN, (cmd) => {
     const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
-      cmd.reply("[SM] Usage: sm_unban <steamid64>");
+      cmd.replyT("Usage Unban");
       return;
     }
     const was = Bans.remove(sid);
-    cmd.reply(was ? "[SM] Unbanned " + sid + "." : "[SM] " + sid + " was not banned.");
+    cmd.replyT(was ? "Unban Success" : "Unban Not Banned", sid);
   });
 
   // sm_addban <steamid> <minutes> [reason] — ADMFLAG.BAN
@@ -97,12 +110,12 @@ export default plugin((ctx) => {
   ctx.commands.registerAdmin("sm_addban", ADMFLAG.BAN, (cmd) => {
     const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
-      cmd.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
+      cmd.replyT("Usage Addban");
       return;
     }
     if (!/^\d+$/.test(cmd.arg(1))) {
       // Missing or non-numeric minutes → usage, not a silent permanent ban (see sm_ban).
-      cmd.reply("[SM] Usage: sm_addban <steamid64> <minutes> [reason]");
+      cmd.replyT("Usage Addban");
       return;
     }
     const minutes = cmd.argInt(1);
@@ -110,9 +123,11 @@ export default plugin((ctx) => {
 
     Bans.add(sid, minutes, reason);
 
-    const durStr = minutes > 0 ? " (" + minutes + " min)" : " (permanent)";
-    const reasonStr = reason ? " " + reason : "";
-    cmd.reply("[SM] Added ban for " + sid + durStr + reasonStr + ".");
+    const durText = minutes > 0
+      ? Translations.translate(cmd.callerSlot, "Addban Duration Minutes", minutes)
+      : Translations.translate(cmd.callerSlot, "Addban Duration Permanent");
+    const reasonText = reason ? Translations.translate(cmd.callerSlot, "Addban Reason Suffix", reason) : "";
+    cmd.replyT("Addban Success", sid, durText, reasonText);
   });
 
   // Connect-time enforcement: admit -> show reason (chat + console) -> kick. Runs for every connecting
@@ -124,18 +139,19 @@ export default plugin((ctx) => {
     if (!b) return;
     const now = Date.now() / 1000;
     if (b.until !== 0 && b.until <= now) return;           // expired — let them in
-    c.kickWithReason(banMessage(b.reason, b.until));
+    c.kickWithReason(banMessage(c.slot, b.reason, b.until));
   });
 
   // adminmenu — Kick + Ban proof items, same ADMFLAG as their text commands, via pickPlayer.
   ctx.topmenu.addItem("Player Commands", { id: "basebans:kick", name: "Kick", flags: ADMFLAG.KICK,
-    onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick("Kicked by admin")) });
+    onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick(Translations.translate(t.slot, "Kick By Admin"))) });
   ctx.topmenu.addItem("Player Commands", { id: "basebans:ban", name: "Ban", flags: ADMFLAG.BAN,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       const sid = t.steamId, uid = t.userId, name = t.playerName || "player";
       if (!sid || sid === "0") {   // bot / unauthenticated — never ban (sm_ban parity: a "0" entry is shared)
         const admin = Clients.fromSlot(adminSlot);
-        if (admin) admin.chat("Cannot ban " + name + " (bot / not authenticated)");
+        // Client.chat is a raw pass-through (no colour funnel) — see "Cannot Ban Bot" in phrases.ts.
+        if (admin) admin.chat(Translations.translate(adminSlot, "Cannot Ban Bot", name));
         return;
       }
       const dm = new Menu("Ban " + name + " for");
@@ -145,15 +161,18 @@ export default plugin((ctx) => {
       for (const m of mins) dm.addItem(String(m), m === 0 ? "Permanent" : (m + " min"));
       dm.onSelect(e => {
         const minutes = parseInt(e.info, 10);
-        Bans.add(sid, minutes, "Banned by admin");   // ban record is keyed by SteamID — always correct
+        // The persisted ban record is always stored in canonical (untranslated) form — same as a
+        // custom reason typed to sm_ban/sm_addban — and only translated at display time.
+        Bans.add(sid, minutes, "Banned by admin");
         const b = Bans.get(sid);
         // Re-resolve by userId at kick time: the target may have left (and the slot been reused) between
         // the player pick and the duration pick — only kick if the SAME player is still connected.
         const cur = Player.fromUserId(uid);
         if (cur && cur.steamId === sid) {
           const c = Clients.fromSlot(cur.slot);
-          if (c) c.kickWithReason(banMessage("Banned by admin", b ? b.until : 0));
-          else cur.kick("Banned by admin");
+          const reason = Translations.translate(cur.slot, "Ban Reason By Admin");
+          if (c) c.kickWithReason(banMessage(cur.slot, reason, b ? b.until : 0));
+          else cur.kick(reason);
         }
         // else: they left / the slot was reused — the persisted ban + reconnect enforcement handles it.
       });
