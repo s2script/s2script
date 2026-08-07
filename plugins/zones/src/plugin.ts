@@ -441,6 +441,11 @@ export default plugin(async (ctx) => {
     if (filter) cmd.replyT("Zone List Header Tagged", currentMap, filter, list.length);
     else cmd.replyT("Zone List Header All", currentMap, list.length);
     for (const z of list)
+      // trigger=yes/pending is a diagnostic identifier, not prose — the "trigger=" label itself is
+      // hardcoded English in "Zone List Row" (never routed through Translations), so translating
+      // only the value would language-mix a single dump line ("trigger=oui") and break any operator
+      // tooling grepping server logs for "trigger=yes". Left untranslated, same treatment as the
+      // ADMFLAG letter ladder in adminhelp/basecommands.
       cmd.replyT(
         "Zone List Row",
         z.name,
@@ -448,7 +453,7 @@ export default plugin(async (ctx) => {
         `${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}`,
         z.tags.join(","),
         z.inside.size,
-        Translations.translate(cmd.callerSlot, z.trigger ? "Zone Trigger Yes" : "Zone Trigger Pending"),
+        z.trigger ? "yes" : "pending",
       );
   });
 

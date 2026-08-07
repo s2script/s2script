@@ -54,9 +54,11 @@ export const phrases = {
   "Zone List Header All": "Zones on {1}: {2}",
   // The leading "  " is significant — it's the list-row indent under the header above, same as
   // adminhelp's "Command Row". A translation that trims leading whitespace flattens that indent.
+  // trigger={6}'s value is "yes"/"pending", passed as a plain untranslated string — see the comment
+  // at the sm_zone_list call site in plugin.ts for why (identifier, not prose; the "trigger=" label
+  // itself is hardcoded English right here, so translating only the value would language-mix this
+  // diagnostic line and break log-grepping tooling).
   "Zone List Row": "  {1} ({2})-({3}) tags=[{4}] inside={5} trigger={6}",
-  "Zone Trigger Yes": "yes",
-  "Zone Trigger Pending": "pending",
 
   // --- sm_zone_export ---
   "Zone Export Done": "Exported {1} zone(s) to {2}.",

@@ -40,7 +40,5 @@
   "Zone Show One Timed": "Showing '{1}' for {2}s.",
   "Zone Tag Not Found": "No zone '{1}' on this map. Usage: sm_zone_tag <name> [tag...] (no tags = clear)",
   "Zone Tags Cleared": "Zone '{1}' tags cleared.",
-  "Zone Tags Set": "Zone '{1}' tags: {2}",
-  "Zone Trigger Pending": "pending",
-  "Zone Trigger Yes": "yes"
+  "Zone Tags Set": "Zone '{1}' tags: {2}"
 }
