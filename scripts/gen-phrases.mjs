@@ -7,6 +7,8 @@
 //
 // Run:  node --experimental-strip-types scripts/gen-phrases.mjs           # write
 //       node --experimental-strip-types scripts/gen-phrases.mjs --check   # exit 1 on drift, write nothing
+//       node --experimental-strip-types scripts/gen-phrases.mjs --force   # write, bypassing the
+//                                                                         # zero-seed-discovery circuit breaker below
 import { readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,6 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "translations");
 const check = process.argv.includes("--check");
+const force = process.argv.includes("--force");
 
 function pluginDirs() {
   const out = [];
@@ -88,9 +91,31 @@ for (const t of targets) {
 // readdirSync with withFileTypes + isFile() only sees direct children, never recurses, so a
 // subdirectory and its contents are structurally unreachable by this sweep.
 if (existsSync(OUT)) {
-  for (const entry of readdirSync(OUT, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".phrases.json")) continue;
-    if (producedNames.has(entry.name)) continue;
+  const existing = readdirSync(OUT, { withFileTypes: true }).filter(
+    (e) => e.isFile() && e.name.endsWith(".phrases.json"),
+  );
+  const orphans = existing.filter((e) => !producedNames.has(e.name));
+
+  // Circuit breaker, write path only: if seed discovery found NOTHING at all — not "this one
+  // plugin's seed is gone" but zero seeds, period — while generated files already sit on disk,
+  // that is far more likely a broken discovery (wrong cwd, plugins/ temporarily missing mid
+  // refactor, a partial checkout) than every seed being deliberately deleted in the same run.
+  // Deleting on that signal alone would wipe out everything with no way back. --check is exempt:
+  // it writes nothing, so staying informative there is free and keeps CI able to see a genuine
+  // mass-orphan state. --force bypasses this for the rare case of deliberately removing the last
+  // seed(s).
+  if (!check && producedNames.size === 0 && existing.length > 0 && !force) {
+    console.error(
+      `REFUSING TO DELETE: seed discovery found 0 seeds (no plugins/*/src/phrases.ts, no ` +
+        `packages/phrases-common/index.ts), but ${existing.length} generated phrases file(s) ` +
+        `already exist in ${OUT}. This looks like a discovery failure, not a deliberate removal ` +
+        `of every seed at once — nothing was deleted. If this removal really is intentional, ` +
+        `re-run with --force.`,
+    );
+    process.exit(1);
+  }
+
+  for (const entry of orphans) {
     const dest = join(OUT, entry.name);
     if (check) {
       console.error(`DRIFT: ${dest} is orphaned (seed no longer exists)`);
