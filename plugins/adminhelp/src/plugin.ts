@@ -5,22 +5,33 @@
 import { plugin } from "@s2script/sdk/plugin";
 import { Commands } from "@s2script/sdk/commands";
 import { ADMFLAG } from "@s2script/sdk/admin";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 const PER_PAGE = 10;
 
 // flags: 0 = anyone, < 0 = server-console-only, otherwise the ADMFLAG bit mask required.
-function flagsToLabel(flags: number): string {
-  if (flags === 0) return "anyone";
-  if (flags < 0) return "server console";
-  if ((flags & ADMFLAG.ROOT) === ADMFLAG.ROOT) return "root";
+// `slot` is the CALLER viewing sm_help's own output — translate for them, not any listed command's
+// owner (there isn't one).
+function flagsToLabel(flags: number, slot: number): string {
+  if (flags === 0) return Translations.translate(slot, "Flags Anyone");
+  if (flags < 0) return Translations.translate(slot, "Flags Server Console");
+  if ((flags & ADMFLAG.ROOT) === ADMFLAG.ROOT) return Translations.translate(slot, "Flags Root");
+  // The individual flag letters/names (e.g. "kick", "ban") are ADMFLAG identifiers, not prose —
+  // left as-is, same treatment as basecommands' flagString() letter ladder.
   const names: string[] = [];
   for (const [name, bit] of Object.entries(ADMFLAG)) {
     if (bit !== 0 && (flags & bit) === bit) names.push(name.toLowerCase());
   }
-  return names.length ? names.join("|") : "admin";
+  return names.length ? names.join("|") : Translations.translate(slot, "Flags Admin");
 }
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("adminhelp", phrases);
+  Translations.load("common");
+
   ctx.commands.registerAdmin("sm_help", ADMFLAG.GENERIC, (cmd) => {
     const cmds = Commands.list().slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const pages = Math.max(1, Math.ceil(cmds.length / PER_PAGE));
@@ -28,12 +39,12 @@ export default plugin((ctx) => {
     if (page < 1) page = 1;
     if (page > pages) page = pages;
 
-    cmd.reply("[SM] Commands (page " + page + "/" + pages + ", " + cmds.length + " total):");
+    cmd.replyT("Commands Header", page, pages, cmds.length);
     const start = (page - 1) * PER_PAGE;
     for (const c of cmds.slice(start, start + PER_PAGE)) {
-      cmd.reply("  " + c.name + " - " + flagsToLabel(c.flags));
+      cmd.replyT("Command Row", c.name, flagsToLabel(c.flags, cmd.callerSlot));
     }
-    if (page < pages) cmd.reply("[SM] Type sm_help " + (page + 1) + " for the next page.");
+    if (page < pages) cmd.replyT("Next Page", page + 1);
   });
 
   console.log("[adminhelp] onLoad - sm_help registered");
