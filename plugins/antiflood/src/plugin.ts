@@ -8,7 +8,8 @@ import { plugin } from "@s2script/sdk/plugin";
 import { Chat } from "@s2script/sdk/chat";
 import { config } from "@s2script/sdk/config";
 import { HookResult } from "@s2script/sdk/events";
-import { ChatColors } from "@s2script/cs2";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 import { floodStep } from "./flood";
 
 interface SlotState { tokens: number; lastTime: number; lastNotify: number; }
@@ -16,6 +17,11 @@ const state = new Map<number, SlotState>();
 const NOTIFY_INTERVAL = 2.0; // seconds — throttle the "slow down" notice so it isn't itself spammy
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("antiflood", phrases);
+  Translations.load("common");
+
   // Log tuning changes so an admin editing the config file sees them take effect (also opts this
   // plugin into the loader's live-reload watch, so getFloat/getInt below read fresh values).
   ctx.config.onChange(() => {
@@ -37,7 +43,7 @@ export default plugin((ctx) => {
     // sustained flood doesn't produce a wall of notices (they'd be the only lines the flooder sees).
     let lastNotify = prev.lastNotify;
     if (r.block && now - lastNotify >= NOTIFY_INTERVAL) {
-      Chat.toSlot(slot, ChatColors.Red + "[antiflood] You are sending messages too fast. Please slow down.");
+      Chat.toSlot(slot, Translations.translate(slot, "Flood Warning"));
       lastNotify = now;
     }
     state.set(slot, { tokens: r.tokens, lastTime: r.lastTime, lastNotify });
