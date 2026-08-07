@@ -608,7 +608,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function __s2_tr_format(text, args) {
     return String(text).replace(/\{(\d+)\}/g, function (_m, n) {
       var i = (parseInt(n, 10) | 0) - 1;
-      return (args && i >= 0 && i < args.length && args[i] != null) ? String(args[i]) : "";
+      if (!args || i < 0 || i >= args.length || args[i] == null) return "";
+      // Braces are stripped from SUBSTITUTED values so an argument cannot inject a colour tag
+      // (colors.js expands the finished string at output). A player name loses a brace; nobody
+      // recolours anyone else's chat.
+      return String(args[i]).replace(/[{}]/g, "");
     });
   }
   function __s2_tr_parse(text) { try { var o = JSON.parse(text); return (o && typeof o === "object") ? o : {}; } catch (e) { console.log("[s2script] WARN: translations file malformed — ignored"); return {}; } }
@@ -637,11 +641,20 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var args = [].slice.call(arguments, 2);
       key = String(key);
       var code = ((slot | 0) < 0) ? __s2_tr_default : __s2_tr_langCode(__s2_client_language(slot | 0));
-      // search EVERY loaded phrase set: the code's lang map (if not root) -> the default/seed -> the key.
-      for (var name in __s2_tr_reg) {
-        if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, name)) continue;
-        if (code) { var lm = __s2_tr_langMap(name, code); if (lm && lm[key] != null) return __s2_tr_format(lm[key], args); }
-        var d = __s2_tr_reg[name].def; if (d[key] != null) return __s2_tr_format(d[key], args);
+      // Sweep EVERY loaded set for the client's language FIRST, and only then sweep every set for
+      // an English default. The old single pass checked one set's language map and then that same
+      // set's default before moving on, so an earlier set's English beat a later set's translation.
+      if (code) {
+        for (var ln in __s2_tr_reg) {
+          if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, ln)) continue;
+          var lm = __s2_tr_langMap(ln, code);
+          if (lm && lm[key] != null) return __s2_tr_format(lm[key], args);
+        }
+      }
+      for (var dn in __s2_tr_reg) {
+        if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, dn)) continue;
+        var d = __s2_tr_reg[dn].def;
+        if (d[key] != null) return __s2_tr_format(d[key], args);
       }
       return key;                                            // ultimate fallback
     },

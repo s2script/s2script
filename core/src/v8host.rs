@@ -13819,6 +13819,44 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    /// D1: a translation in a LATER-loaded set must beat an English default in an earlier one.
+    /// Unreachable with a single set, which is why it survived; reachable the moment a plugin
+    /// loads its own set plus the shared `common` set.
+    #[test]
+    fn translate_prefers_any_language_hit_over_any_english_default() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "\
+            __s2pkg_translations.Translations.load('own',    { Greet: 'EN own' });\
+            __s2pkg_translations.Translations.load('common', { Greet: 'EN common' });\
+            __s2_tr_injectLang('common', 'de', { Greet: 'DE common' });\
+            __s2pkg_translations.Translations.setDefaultLanguage('de');\
+        ").unwrap();
+        assert_eq!(
+            eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Greet')"),
+            "DE common"
+        );
+        shutdown();
+    }
+
+    /// D2: a substituted argument must not be able to inject a colour tag. A player who renames
+    /// themselves "{red}x{default}" would otherwise recolour every message that names them.
+    #[test]
+    fn translate_strips_braces_from_substituted_args() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p",
+            "__s2pkg_translations.Translations.load('t', { Slain: '{1} was slain' });").unwrap();
+        assert_eq!(
+            eval_in_context_string("p",
+                "__s2pkg_translations.Translations.translate(-1,'Slain','{red}evil{default}')"),
+            "redevildefault was slain"
+        );
+        shutdown();
+    }
+
     /// Translations slice: `ctx.replyT` (in `@s2script/commands`) translates the key for the caller's
     /// language before replying. A console caller (slot -1) replies via `console.log`, captured in `LOG`.
     #[test]
