@@ -209,6 +209,15 @@ pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
 // takes the (index, serial) pair already used by every other serial-gated entity op.
 type CollisionActivateFn = extern "C" fn(c_int, c_int) -> c_int;
 type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
+// Entity-property slice: five engine-generic setters with no usable schema-write route. Each is
+// serial-gated shim-side and returns 1 on success / 0 if the signature was unresolved or the ref is
+// stale. `impulse` is a 3-float array (the Vector travels by address).
+type EntitySetGravityScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
+type EntityApplyAbsVelocityImpulseFn = extern "C" fn(c_int, c_int, *const f32) -> c_int;
+type EntityStopSoundFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
+type EntitySetBodyGroupByNameFn =
+    extern "C" fn(c_int, c_int, *const std::os::raw::c_char, c_int) -> c_int;
+type EntitySetModelScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
 
 // --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI).
 type EntityListenerInstallFn = extern "C" fn() -> c_int;
@@ -537,6 +546,12 @@ pub struct S2EngineOps {
     pub hook_write_i32: Option<HookWriteI32Fn>,
     pub hook_receiver_handle: Option<HookReceiverHandleFn>,
     pub engine_call_address: Option<EngineCallAddressFn>,
+    // --- Entity-property slice (APPENDED after engine_call_address; order is the ABI) ---
+    pub entity_set_gravity_scale: Option<EntitySetGravityScaleFn>,
+    pub entity_apply_abs_velocity_impulse: Option<EntityApplyAbsVelocityImpulseFn>,
+    pub entity_stop_sound: Option<EntityStopSoundFn>,
+    pub entity_set_body_group_by_name: Option<EntitySetBodyGroupByNameFn>,
+    pub entity_set_model_scale: Option<EntitySetModelScaleFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -11627,6 +11642,11 @@ pub(crate) mod frame_tests {
             hook_write_i32: None,
             hook_receiver_handle: None,
             engine_call_address: None,
+            entity_set_gravity_scale: None,
+            entity_apply_abs_velocity_impulse: None,
+            entity_stop_sound: None,
+            entity_set_body_group_by_name: None,
+            entity_set_model_scale: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -13402,6 +13422,11 @@ pub(crate) mod frame_tests {
             hook_write_i32: None,
             hook_receiver_handle: None,
             engine_call_address: None,
+            entity_set_gravity_scale: None,
+            entity_apply_abs_velocity_impulse: None,
+            entity_stop_sound: None,
+            entity_set_body_group_by_name: None,
+            entity_set_model_scale: None,
         }
     }
 

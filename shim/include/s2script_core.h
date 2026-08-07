@@ -223,6 +223,28 @@ typedef int (*s2_collision_activate_fn)(int index, int serial);
  * a runtime entity's model name is empty). Returns 1 on success, 0 if unresolved/stale. ENGINE-GENERIC. */
 typedef int (*s2_entity_set_model_fn)(int index, int serial, const char* modelName);
 
+/* Entity-property slice. Five engine-generic setters on a serial-gated entity; each returns 1 on
+ * success, 0 if the signature was unresolved or the ref is stale. ENGINE-GENERIC (CBaseEntity /
+ * CBaseModelEntity — no CS2 identifier appears in any of them).
+ *
+ * entity_set_gravity_scale: CBaseEntity::SetGravityScale(float). NOT equivalent to writing
+ *   m_flGravityScale — the setter early-returns on an unchanged value and maintains
+ *   m_flActualGravityScale, so a raw field write appears to do nothing.
+ * entity_apply_abs_velocity_impulse: CBaseEntity::ApplyAbsVelocityImpulse(const Vector*). The
+ *   impulse is three floats BY ADDRESS; `impulse` is a 3-float array. Additive and physics-aware,
+ *   unlike writing m_vecAbsVelocity (which skips the partition/physics update).
+ * entity_stop_sound: CBaseEntity::StopSound(const char*). Pairs with sound_emit.
+ * entity_set_body_group_by_name: CBaseModelEntity::SetBodyGroupByName(const char*, int). `group` is
+ *   32-bit callee-side; the width is load-bearing.
+ * entity_set_model_scale: CBaseModelEntity::SetModelScale(float). Arg shape confirmed by
+ *   disassembly; the NAME is a catalogue attribution the body does not itself prove — see the
+ *   gamedata comment. Safe to call regardless. */
+typedef int (*s2_entity_set_gravity_scale_fn)(int index, int serial, float scale);
+typedef int (*s2_entity_apply_abs_velocity_impulse_fn)(int index, int serial, const float* impulse);
+typedef int (*s2_entity_stop_sound_fn)(int index, int serial, const char* soundName);
+typedef int (*s2_entity_set_body_group_by_name_fn)(int index, int serial, const char* name, int group);
+typedef int (*s2_entity_set_model_scale_fn)(int index, int serial, float scale);
+
 /* Entity lifecycle listeners slice — APPENDED after entity_set_model; order is the ABI.
  * entity_listener_install: lazily register the IEntityListener on CGameEntitySystem on the
  * first-ever JS entity-lifecycle subscribe. Idempotent (AddListenerEntity guards Find) + re-asserted
@@ -562,6 +584,17 @@ typedef struct {
     s2_hook_write_i32_fn       hook_write_i32;
     s2_hook_receiver_handle_fn hook_receiver_handle;
     s2_engine_call_address_fn  engine_call_address;
+    /* Entity-property slice — APPENDED after engine_call_address; order is the ABI; do not reorder
+     * above. Five engine-generic CBaseEntity/CBaseModelEntity setters with no usable schema-write
+     * route (the gravity setter early-returns on an unchanged value and maintains a second field;
+     * writing m_vecAbsVelocity directly skips the physics/partition update; the body-group choices
+     * are a CUtlOrderedMap, not a scalar). All serial-gated, all return 1 on success / 0 if the
+     * signature was unresolved or the ref is stale. */
+    s2_entity_set_gravity_scale_fn          entity_set_gravity_scale;
+    s2_entity_apply_abs_velocity_impulse_fn entity_apply_abs_velocity_impulse;
+    s2_entity_stop_sound_fn                 entity_stop_sound;
+    s2_entity_set_body_group_by_name_fn     entity_set_body_group_by_name;
+    s2_entity_set_model_scale_fn            entity_set_model_scale;
 } S2EngineOps;
 
 /* Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant

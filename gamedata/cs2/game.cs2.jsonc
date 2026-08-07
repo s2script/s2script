@@ -178,6 +178,33 @@
         "validate": { "vtable-member": "CCSPlayerController" }
       }
     },
+    // CCSPlayerPawn::GetPlayerMaxSpeed() -> float. The pawn's CURRENT movement speed cap, which is
+    // computed rather than stored: there is no m_flMaxSpeed on CCSPlayerPawn in the schema, so a
+    // field read cannot answer this. Body @0x15437b0 on build 2000880: calls a predicate on `this`
+    // (`call 0xd2f7c0; test al,al`) and on the false branch loads a constant float through
+    // `lea rax,[rip+...]; movss xmm1,[rax]`, returning it via `movaps xmm0,xmm1` — i.e. no arguments,
+    // result in xmm0.
+    //
+    // Located by source2rosetta on its build 24442510, then RE-RESOLVED against OUR pinned
+    // libserver.so per re-strategy.md Rule 3: the pattern matches EXACTLY ONCE in the PF_X segment
+    // and the match address is preceded by int3 padding, so it is a real function ENTRY — which is
+    // what makes `resolve: "direct"` safe. The prototype above is from disassembly at that address,
+    // not from the deriver's declaration.
+    //
+    // CS2-SPECIFIC, so it lives here and NOT in gamedata/core: CCSPlayerPawn is a game class, and a
+    // core op naming it would fail scripts/check-core-names.sh. This is why it is a `calls`
+    // descriptor rather than a native op like the CBaseEntity/CBaseModelEntity setters.
+    //
+    // No `validate.vtable-member` yet: this is very likely a virtual, but that was NOT confirmed on
+    // this build, and an unverified validate clause is a claim rather than a check. Add one once the
+    // slot is proven.
+    "CCSPlayerPawn_GetPlayerMaxSpeed": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 54 53 48 89 FB 48 83 EC 18 E8 ? ? ? ? 84 C0 75 ?",
+        "resolve": "direct"
+      }
+    },
     // CBasePlayerController::SetPawn(pawn, b1, b2) — re-activate a dead player's pawn BEFORE Respawn (a dead
     // controller's active m_hPawn points at the observer pawn; SetPawn re-points it + tears down observer mode
     // + sets dirty flags — the setup Respawn-alone can't do, live-gate proven on 2000875: Respawn alone / a raw
@@ -304,6 +331,16 @@
       "target": { "kind": "signature", "name": "CCSPlayerController_Respawn" },
       "args": [],
       "returns": "void"
+    },
+
+    // pawn.maxSpeed — the pawn's current movement speed cap. Receiver is the PAWN (not the
+    // controller), no arguments, float result. There is no schema field behind this: the engine
+    // computes it, so a netvar read cannot substitute.
+    "getPlayerMaxSpeed": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSPlayerPawn_GetPlayerMaxSpeed" },
+      "args": [],
+      "returns": "float"
     },
 
     // player.respawn(), step 1 of 2 — never called on its own. EXACTLY three args after `this`:

@@ -67,6 +67,7 @@
   var callSetPawn          = engineCall("setPawn");
   var callGiveNamedItem    = engineCall("giveNamedItem");
   var callRemovePlayerItem = engineCall("removePlayerItem");
+  var callGetPlayerMaxSpeed = engineCall("getPlayerMaxSpeed");
 
   // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
   // @s2script/cs2 public surface. `status` is here so an operator can ask a live server WHY a game
@@ -395,6 +396,21 @@
     if (!callCommitSuicide) return;
     callCommitSuicide(this, /*bExplode=*/false, /*bForce=*/true);
   };
+
+  // pawn.maxSpeed — the pawn's CURRENT movement speed cap, via CCSPlayerPawn::GetPlayerMaxSpeed (the
+  // `getPlayerMaxSpeed` descriptor; the receiver is serial-gated, so a stale pawn reads null).
+  //
+  // A getter rather than a field because the engine COMPUTES this — there is no m_flMaxSpeed on
+  // CCSPlayerPawn in the schema, so there is nothing to read. `null` (not 0) when the descriptor
+  // failed its load-time gate or the ref is stale: 0 is a legitimate speed (a frozen player), so it
+  // must not double as "unavailable". engineCallStatus("getPlayerMaxSpeed") names the reason.
+  Object.defineProperty(Pawn.prototype, "maxSpeed", {
+    get: function () {
+      if (!callGetPlayerMaxSpeed) return null;
+      var v = callGetPlayerMaxSpeed(this);
+      return typeof v === "number" ? v : null;
+    }
+  });
 
   // pawn.setVelocity(x,y,z) — best-effort velocity write (serial-gated). Writes m_vecAbsVelocity's
   // 3 floats + one notifyStateChanged; returns false if the field is unresolved or the ref is stale.
