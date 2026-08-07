@@ -1,0 +1,7 @@
+{
+  "Changing To": "[nextmap] Changing to {1} in {2}s",
+  "Invalid Map": "'{1}' is not a valid map",
+  "Invalid Map Name": "Invalid map name",
+  "Next Map Set": "Next map set to {1}",
+  "Usage Setnextmap": "Usage: sm_setnextmap <map>"
+}
