@@ -55,6 +55,9 @@ export default plugin((ctx) => {
   Translations.load("basechat", phrases);
   Translations.load("common");   // shared file in translations/, SourceMod's LoadTranslations("common.phrases")
 
+  // cmd.replyT(key) below: we hold a `cmd` context, so let it pick chat vs console for the reply.
+  // Above and further down (resolveOne, the @@ trigger in onSay) there is only a raw slot — no
+  // `cmd` — so those call Translations.translate(slot, key) directly instead.
   ctx.commands.registerAdmin("sm_say", ADMFLAG.CHAT, (cmd) => {
     const msg = cmd.argString.trim();
     if (!msg) { cmd.replyT("Usage Say"); return; }

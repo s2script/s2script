@@ -11,15 +11,31 @@
 // no business deleting files it did not create, so this script only ever writes/checks the files it
 // can produce from a seed; anything else in the folder is none of its business.
 //
+// Two validation passes run over every plugin's src/**, in BOTH modes (not just --check), because a
+// bad key is a source-code defect, not generated-file drift:
+//   - unknown key:  Translations.translate(slot, "Key") / cmd.replyT("Key") where "Key" is a string
+//     literal that resolves in neither the plugin's own seed nor translations/common.phrases.json.
+//     That call would render the literal key text to a player, so this is a hard error.
+//   - shadowed key: a seed key that ALSO exists in translations/common.phrases.json. Legal — own-set-
+//     first means the seed wins deterministically — but almost always unintended: an operator editing
+//     the shared file would see no effect for that key. Reported, never failed.
+// Only string-literal keys are recognised; a key built dynamically doesn't match the scan and is
+// silently skipped rather than guessed at — a miss here is preferable to a false positive.
+//
 // Run:  node --experimental-strip-types scripts/gen-phrases.mjs           # write
 //       node --experimental-strip-types scripts/gen-phrases.mjs --check   # exit 1 on drift, write nothing
 import { readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "translations");
+const COMMON_FILE = join(OUT, "common.phrases.json");
 const check = process.argv.includes("--check");
+
+function rel(p) {
+  return relative(ROOT, p);
+}
 
 function pluginDirs() {
   const out = [];
@@ -60,9 +76,61 @@ function render(seed) {
   return JSON.stringify(sorted, null, 2) + "\n";
 }
 
+// translations/common.phrases.json is hand-authored (no seed, never generated — see Step 1/2 of
+// the base-plugin-phrases slice), but its keys are still half of "is this literal key valid".
+// Missing/malformed is degraded to "no shared keys" rather than a crash: a fresh checkout mid-work
+// or a stripped fixture tree should not make an unrelated plugin's key-usage scan explode.
+function readCommonKeys() {
+  if (!existsSync(COMMON_FILE)) return new Set();
+  try {
+    const obj = JSON.parse(readFileSync(COMMON_FILE, "utf8"));
+    return new Set(obj && typeof obj === "object" && !Array.isArray(obj) ? Object.keys(obj) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+// Only string literals: `Translations.translate(<slot-expr>, "Key", ...)` and `<x>.replyT("Key", ...)`.
+// <slot-expr> is restricted to "no comma, no paren" so a nested call or ternary in that position
+// simply fails to match (skipped, not guessed at) instead of mis-parsing. The key itself is
+// restricted to a single line — every real phrase key is a short literal, and disallowing `\n`
+// keeps a stray unbalanced quote from eating the rest of the file.
+const RE_TRANSLATE = /Translations\.translate\(\s*[^,()]+,\s*(["'])((?:\\.|(?!\1)[^\\\n])*)\1/g;
+const RE_REPLY_T = /\.replyT\(\s*(["'])((?:\\.|(?!\1)[^\\\n])*)\1/g;
+
+function findPhraseKeyUsages(srcDir) {
+  const usages = [];
+  if (!existsSync(srcDir)) return usages;
+  for (const e of readdirSync(srcDir, { recursive: true, withFileTypes: true })) {
+    if (!e.isFile() || !/\.(ts|tsx|mts|cts)$/.test(e.name)) continue;
+    const file = join(e.parentPath ?? e.path ?? srcDir, e.name);
+    const text = readFileSync(file, "utf8");
+    for (const m of text.matchAll(RE_TRANSLATE)) usages.push({ file, key: m[2] });
+    for (const m of text.matchAll(RE_REPLY_T)) usages.push({ file, key: m[2] });
+  }
+  return usages;
+}
+
 const targets = pluginDirs();
 
+// "common" is reserved: a plugin directory of that name would generate common.phrases.json and
+// silently overwrite the hand-authored shared file — the exact harm Step 1 removed the orphan
+// sweep to prevent, arriving through the other door (an overwrite, not a delete). Checked before
+// any write/check work starts, in both modes.
+const commonCollision = targets.find((t) => t.name === "common");
+if (commonCollision) {
+  console.error(
+    `ERROR: ${rel(dirname(dirname(commonCollision.seed)))} is a plugin directory named "common" — ` +
+      `generating it would overwrite the hand-authored ${rel(COMMON_FILE)}. "common" is reserved; ` +
+      `rename the plugin.`,
+  );
+  process.exit(1);
+}
+
+const commonKeys = readCommonKeys();
+
 let drift = 0;
+let keyErrors = 0;
 // --check must be read-only: only the write path is allowed to create translations/. Creating it
 // unconditionally would leave a directory behind on a --check run in a worktree that has none.
 if (!check) mkdirSync(OUT, { recursive: true });
@@ -71,16 +139,42 @@ const producedNames = new Set();
 for (const t of targets) {
   if (!existsSync(t.seed)) continue;
   producedNames.add(`${t.name}.phrases.json`);
-  const text = render(await loadSeed(t.seed));
+  const seed = await loadSeed(t.seed);
+  const ownKeys = new Set(Object.keys(seed));
+  const text = render(seed);
   const dest = join(OUT, `${t.name}.phrases.json`);
   const current = existsSync(dest) ? readFileSync(dest, "utf8") : null;
-  if (current === text) continue;
-  if (check) {
-    console.error(`DRIFT: ${dest} does not match ${t.seed}`);
-    drift++;
-  } else {
-    writeFileSync(dest, text);
-    console.log(`wrote ${dest}`);
+  if (current !== text) {
+    if (check) {
+      console.error(`DRIFT: ${dest} does not match ${t.seed}`);
+      drift++;
+    } else {
+      writeFileSync(dest, text);
+      console.log(`wrote ${dest}`);
+    }
+  }
+
+  // Unknown-key scan: every literal key this plugin's src/** passes to Translations.translate/
+  // .replyT must resolve in its own seed or the shared file. A miss ships raw key text to a
+  // player, so this fails the run — in both --check and write mode.
+  for (const usage of findPhraseKeyUsages(dirname(t.seed))) {
+    if (ownKeys.has(usage.key) || commonKeys.has(usage.key)) continue;
+    console.error(
+      `ERROR: ${rel(usage.file)}: unknown phrase key "${usage.key}" ` +
+        `(not in ${rel(t.seed)} or ${rel(COMMON_FILE)})`,
+    );
+    keyErrors++;
+  }
+
+  // Shadow report: a seed key that duplicates a common.phrases.json key is legal (own-set-first
+  // always resolves it locally) but almost always unintended — an operator editing the shared
+  // file would see no effect on this key with no diagnostic anywhere. Warn, never fail.
+  for (const k of ownKeys) {
+    if (!commonKeys.has(k)) continue;
+    console.log(
+      `NOTE: ${rel(t.seed)}: seed key "${k}" duplicates ${rel(COMMON_FILE)} — the shared phrase ` +
+        `is shadowed and can never be reached for this key`,
+    );
   }
 }
 
@@ -104,14 +198,20 @@ if (existsSync(OUT)) {
 
   for (const entry of stale) {
     const dest = join(OUT, entry.name);
-    console.log(`NOTE: ${dest} was not generated by this run (no matching seed) — left untouched`);
+    // Worded as steady-state-normal, not as a problem: this fires on every single run for
+    // common.phrases.json (permanently un-generated by design) and for any operator/third-party
+    // file dropped alongside it, so it must not read like something is wrong.
+    console.log(`NOTE: ${dest} not generated by this run (hand-authored or third-party) — left untouched`);
   }
 }
 
+if (keyErrors > 0) {
+  console.error(`\n${keyErrors} unknown phrase key reference(s) — see ERROR lines above.`);
+}
 if (check && drift > 0) {
   console.error(
     `\n${drift} phrases file(s) out of date — run: node --experimental-strip-types scripts/gen-phrases.mjs`,
   );
-  process.exit(1);
 }
+if (keyErrors > 0 || (check && drift > 0)) process.exit(1);
 if (check) console.log("PASS: phrases files are up to date");
