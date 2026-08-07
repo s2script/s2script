@@ -27,6 +27,7 @@
 import { readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "translations");
@@ -90,13 +91,21 @@ function readCommonKeys() {
   }
 }
 
-// Only string literals: `Translations.translate(<slot-expr>, "Key", ...)` and `<x>.replyT("Key", ...)`.
-// <slot-expr> is restricted to "no comma, no paren" so a nested call or ternary in that position
-// simply fails to match (skipped, not guessed at) instead of mis-parsing. The key itself is
-// restricted to a single line — every real phrase key is a short literal, and disallowing `\n`
-// keeps a stray unbalanced quote from eating the rest of the file.
-const RE_TRANSLATE = /Translations\.translate\(\s*[^,()]+,\s*(["'])((?:\\.|(?!\1)[^\\\n])*)\1/g;
-const RE_REPLY_T = /\.replyT\(\s*(["'])((?:\\.|(?!\1)[^\\\n])*)\1/g;
+// A real parse, not a regex: a text-level scan cannot tell a call from a comment or a string
+// literal that merely CONTAINS the text of a call, so it would false-positive on exactly the
+// artifact 17-plugin conversions produce most often — a commented-out old call sitting next to
+// its replacement. `ts.createSourceFile` (syntax-only; no type checker, no program, no disk I/O
+// beyond the read already done) gives every call expression as a real AST node, so a match here is
+// a genuine call, by construction, not by how well a pattern avoids matching too much.
+//
+// Only `<something>.replyT(...)` / `<something>.translate(...)` are recognised — the OBJECT is not
+// checked (so `someTestMock.replyT("key")` still counts as a usage; deliberately not filtered out,
+// since it is a real call to something named replyT and a text scan couldn't tell it apart from the
+// real thing either). The key argument must be a genuine string-literal node (`ts.isStringLiteralLike`,
+// which also covers a no-substitution template literal); anything else — a variable, a template
+// with `${}`, a ternary — is a dynamic key and is skipped rather than guessed at. Argument position
+// differs by call shape: replyT(key, ...) vs translate(slot, key, ...args).
+const KEY_ARG_INDEX = { replyT: 0, translate: 1 };
 
 function findPhraseKeyUsages(srcDir) {
   const usages = [];
@@ -105,8 +114,18 @@ function findPhraseKeyUsages(srcDir) {
     if (!e.isFile() || !/\.(ts|tsx|mts|cts)$/.test(e.name)) continue;
     const file = join(e.parentPath ?? e.path ?? srcDir, e.name);
     const text = readFileSync(file, "utf8");
-    for (const m of text.matchAll(RE_TRANSLATE)) usages.push({ file, key: m[2] });
-    for (const m of text.matchAll(RE_REPLY_T)) usages.push({ file, key: m[2] });
+    const scriptKind = /\.tsx$/.test(e.name) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    const sourceFile = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, scriptKind);
+    (function visit(node) {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const argIndex = KEY_ARG_INDEX[node.expression.name.text];
+        if (argIndex !== undefined) {
+          const arg = node.arguments[argIndex];
+          if (arg && ts.isStringLiteralLike(arg)) usages.push({ file, key: arg.text });
+        }
+      }
+      ts.forEachChild(node, visit);
+    })(sourceFile);
   }
   return usages;
 }
