@@ -1,0 +1,9 @@
+{
+  "Kick Vote Failed": "[Vote] Kick {1} failed.",
+  "Kick Vote Success": "[Vote] {1} was vote-kicked.",
+  "Usage Vote": "Usage: sm_vote \"Question\" \"Opt1\" \"Opt2\" ...",
+  "Usage Votekick": "Usage: sm_votekick <target>",
+  "Vote In Progress": "{green}[SM]{default} A vote is already in progress.",
+  "Vote No Decision": "[Vote] No decision.",
+  "Vote Result": "[Vote] Result: {1}"
+}
