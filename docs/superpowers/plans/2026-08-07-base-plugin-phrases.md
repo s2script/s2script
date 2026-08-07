@@ -920,7 +920,7 @@ key shadows a shared one. Its colours are now phrase text an operator can edit."
 
 **Files:** for each of `basecommands`, `basebans`, `playercommands`, `basecomm`:
 - Create: `plugins/<name>/src/phrases.ts`
-- Modify: `plugins/<name>/src/plugin.ts`, `plugins/<name>/package.json`
+- Modify: `plugins/<name>/src/plugin.ts` (no `package.json` change — no plugin manifest is touched in this slice)
 - Generated: `translations/<name>.phrases.json`
 
 **Interfaces:**
@@ -955,11 +955,11 @@ Expected: all PASS
 
 **Files:** for each of `basevotes`, `basetriggers`, `adminhelp`, `adminmenu`, `funcommands`, `antiflood`, `clientprefs`, `reservedslots`:
 - Create: `plugins/<name>/src/phrases.ts`
-- Modify: `plugins/<name>/src/plugin.ts`, `plugins/<name>/package.json`
+- Modify: `plugins/<name>/src/plugin.ts` (no `package.json` change — no plugin manifest is touched in this slice)
 
 and for each of `disabled/funvotes`, `disabled/nextmap`, `disabled/nominations`, `disabled/rockthevote`:
 - Create: `plugins/disabled/<name>/src/phrases.ts`
-- Modify: `plugins/disabled/<name>/src/plugin.ts`, `plugins/disabled/<name>/package.json`
+- Modify: `plugins/disabled/<name>/src/plugin.ts` (no `package.json` change)
 
 **Interfaces:**
 - Consumes: as Task 7.
