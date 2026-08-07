@@ -52,6 +52,10 @@ export const phrases = {
 
   // Live-tally HUD (show_survival_respawn_status HTML) — wording only; see the file-header note
   // above for why the hex colours around these stay in plugin.ts, untagged.
+  // WHITESPACE IS SIGNIFICANT on the next two keys: "Rtv Hud Hint" is immediately followed in
+  // plugin.ts by "{tally.secondsLeft}s" with no separator, and "Rtv Hud Left" immediately follows
+  // that "s" the same way — a translation that trims the trailing/leading space will visibly run
+  // the words together in the HUD ("chat5s left" / "5sleft"). Keep the space when translating.
   "Rtv Hud Title": "Rock The Vote",
   "Rtv Hud Hint": "type a number in chat · ",
   "Rtv Hud Left": " left",
