@@ -5,18 +5,21 @@
 // OPERATOR edits (the root file overrides the seed at load — see core/js/prelude.js's
 // Translations.load). Generating rather than hand-writing makes drift between the two impossible.
 //
+// translations/ is otherwise a drop-in folder, exactly like SourceMod's addons/sourcemod/translations/:
+// operators and third-party plugin authors put files there directly (translations/common.phrases.json
+// is one such hand-authored file — it has no seed and this script never touches it). A generator has
+// no business deleting files it did not create, so this script only ever writes/checks the files it
+// can produce from a seed; anything else in the folder is none of its business.
+//
 // Run:  node --experimental-strip-types scripts/gen-phrases.mjs           # write
 //       node --experimental-strip-types scripts/gen-phrases.mjs --check   # exit 1 on drift, write nothing
-//       node --experimental-strip-types scripts/gen-phrases.mjs --force   # write, bypassing the
-//                                                                         # zero-seed-discovery circuit breaker below
-import { readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "translations");
 const check = process.argv.includes("--check");
-const force = process.argv.includes("--force");
 
 function pluginDirs() {
   const out = [];
@@ -57,10 +60,7 @@ function render(seed) {
   return JSON.stringify(sorted, null, 2) + "\n";
 }
 
-const targets = [
-  { name: "common", seed: join(ROOT, "packages", "phrases-common", "index.ts") },
-  ...pluginDirs(),
-];
+const targets = pluginDirs();
 
 let drift = 0;
 // --check must be read-only: only the write path is allowed to create translations/. Creating it
@@ -84,46 +84,27 @@ for (const t of targets) {
   }
 }
 
-// Orphan sweep: a top-level translations/*.phrases.json with no corresponding seed anymore
-// (e.g. a plugin's src/phrases.ts was deleted) is drift too — otherwise the stale file would
-// ship forever. Only the top level is generated: translations/<lang>/... subdirectories are
-// hand-written by translators (arriving in a later task) and must never be touched here —
-// readdirSync with withFileTypes + isFile() only sees direct children, never recurses, so a
-// subdirectory and its contents are structurally unreachable by this sweep.
+// Stale-file report: a top-level translations/*.phrases.json with no corresponding seed is
+// EITHER a leftover from a deleted plugin seed OR a file this script never produced in the first
+// place (an operator override, a third-party plugin's own phrases file, the hand-authored
+// common.phrases.json). This script cannot tell those apart, so it only ever reports — never
+// deletes — anything it did not just write. translations/ is a drop-in folder, exactly like
+// SourceMod's addons/sourcemod/translations/: operators and third-party authors are meant to put
+// files there directly, and a generator has no business removing files it did not create. This is
+// therefore purely informational and never fails --check. Only the top level is inspected:
+// translations/<lang>/... subdirectories are hand-written by translators (arriving in a later
+// task) and must never be touched here — readdirSync with withFileTypes + isFile() only sees
+// direct children, never recurses, so a subdirectory and its contents are structurally
+// unreachable by this report.
 if (existsSync(OUT)) {
   const existing = readdirSync(OUT, { withFileTypes: true }).filter(
     (e) => e.isFile() && e.name.endsWith(".phrases.json"),
   );
-  const orphans = existing.filter((e) => !producedNames.has(e.name));
+  const stale = existing.filter((e) => !producedNames.has(e.name));
 
-  // Circuit breaker, write path only: if seed discovery found NOTHING at all — not "this one
-  // plugin's seed is gone" but zero seeds, period — while generated files already sit on disk,
-  // that is far more likely a broken discovery (wrong cwd, plugins/ temporarily missing mid
-  // refactor, a partial checkout) than every seed being deliberately deleted in the same run.
-  // Deleting on that signal alone would wipe out everything with no way back. --check is exempt:
-  // it writes nothing, so staying informative there is free and keeps CI able to see a genuine
-  // mass-orphan state. --force bypasses this for the rare case of deliberately removing the last
-  // seed(s).
-  if (!check && producedNames.size === 0 && existing.length > 0 && !force) {
-    console.error(
-      `REFUSING TO DELETE: seed discovery found 0 seeds (no plugins/*/src/phrases.ts, no ` +
-        `packages/phrases-common/index.ts), but ${existing.length} generated phrases file(s) ` +
-        `already exist in ${OUT}. This looks like a discovery failure, not a deliberate removal ` +
-        `of every seed at once — nothing was deleted. If this removal really is intentional, ` +
-        `re-run with --force.`,
-    );
-    process.exit(1);
-  }
-
-  for (const entry of orphans) {
+  for (const entry of stale) {
     const dest = join(OUT, entry.name);
-    if (check) {
-      console.error(`DRIFT: ${dest} is orphaned (seed no longer exists)`);
-      drift++;
-    } else {
-      rmSync(dest);
-      console.log(`removed ${dest} (orphaned)`);
-    }
+    console.log(`NOTE: ${dest} was not generated by this run (no matching seed) — left untouched`);
   }
 }
 

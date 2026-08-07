@@ -1,10 +1,10 @@
 import { plugin } from "@s2script/sdk/plugin";
 import { Chat } from "@s2script/sdk/chat";
 import { Admin, ADMFLAG } from "@s2script/sdk/admin";
-import { Player, ChatColors, Activity } from "@s2script/cs2";
+import { Player, Activity } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
-
-const GREEN = ChatColors.Green, WHITE = ChatColors.White;
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 function actorName(slot: number): string {
   if (slot < 0) return "Console";
@@ -15,7 +15,7 @@ function actorName(slot: number): string {
 function doSay(actorSlot: number, msg: string): void {
   for (const p of Player.allConnected()) {
     const src = Activity.formatSource(actorSlot, p.slot);
-    if (src.show) Chat.toSlot(p.slot, GREEN + "(ALL) " + src.name + ": " + WHITE + msg);
+    if (src.show) Chat.toSlot(p.slot, Translations.translate(p.slot, "Say All", src.name, msg));
   }
 }
 
@@ -23,47 +23,56 @@ function doAdminChat(actorSlot: number, msg: string): void {
   const name = actorName(actorSlot);
   for (const p of Player.allConnected()) {
     const a = Admin.forSlot(p.slot);
-    if (a && a.hasFlags(ADMFLAG.CHAT)) Chat.toSlot(p.slot, GREEN + "(ADMINS) " + name + ": " + WHITE + msg);
+    if (a && a.hasFlags(ADMFLAG.CHAT)) {
+      Chat.toSlot(p.slot, Translations.translate(p.slot, "Say Admins", name, msg));
+    }
   }
 }
 
 function doPsay(actorSlot: number, target: Player, msg: string): void {
   const name = actorName(actorSlot);
   const tn = target.playerName || "";
-  // Recipient sees who it was directed to + who sent it; sender gets a confirmation echo.
-  Chat.toSlot(target.slot, GREEN + "(private to " + tn + ") " + name + ": " + WHITE + msg);
+  Chat.toSlot(target.slot, Translations.translate(target.slot, "Say Private To", tn, name, msg));
   if (actorSlot >= 0 && actorSlot !== target.slot) {
-    Chat.toSlot(actorSlot, GREEN + "(private to " + tn + ") " + WHITE + msg);
+    Chat.toSlot(actorSlot, Translations.translate(actorSlot, "Say Private Echo", tn, msg));
   }
 }
 
 // resolve exactly one target from a name token; returns null and replies on none/ambiguous
 function resolveOne(pattern: string, callerSlot: number, reply: (m: string) => void): Player | null {
   const matches = Player.target(pattern, callerSlot);
-  if (matches.length === 0) { reply("No matching players"); return null; }
-  if (matches.length > 1) { reply("Multiple players match '" + pattern + "'"); return null; }
+  if (matches.length === 0) { reply(Translations.translate(callerSlot, "No matching players")); return null; }
+  if (matches.length > 1) {
+    reply(Translations.translate(callerSlot, "More than one client matched", pattern));
+    return null;
+  }
   return matches[0];
 }
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("basechat", phrases);
+  Translations.load("common");   // shared file in translations/, SourceMod's LoadTranslations("common.phrases")
+
   ctx.commands.registerAdmin("sm_say", ADMFLAG.CHAT, (cmd) => {
     const msg = cmd.argString.trim();
-    if (!msg) { cmd.reply("Usage: sm_say <message>"); return; }
+    if (!msg) { cmd.replyT("Usage Say"); return; }
     doSay(cmd.callerSlot, msg);
   });
 
   ctx.commands.registerAdmin("sm_chat", ADMFLAG.CHAT, (cmd) => {
     const msg = cmd.argString.trim();
-    if (!msg) { cmd.reply("Usage: sm_chat <message>"); return; }
+    if (!msg) { cmd.replyT("Usage Chat"); return; }
     doAdminChat(cmd.callerSlot, msg);
   });
 
   ctx.commands.registerAdmin("sm_psay", ADMFLAG.CHAT, (cmd) => {
     const s = cmd.argString.trim();
     const sp = s.indexOf(" ");
-    if (sp < 0) { cmd.reply("Usage: sm_psay <target> <message>"); return; }
+    if (sp < 0) { cmd.replyT("Usage Psay"); return; }
     const targetPat = s.slice(0, sp), msg = s.slice(sp + 1).trim();
-    if (!msg) { cmd.reply("Usage: sm_psay <target> <message>"); return; }
+    if (!msg) { cmd.replyT("Usage Psay"); return; }
     const t = resolveOne(targetPat, cmd.callerSlot, (m) => cmd.reply(m));
     if (t) doPsay(cmd.callerSlot, t, msg);
   });
@@ -76,7 +85,7 @@ export default plugin((ctx) => {
     if (text.startsWith("@@")) {
       const rest = text.slice(2).trim();
       const sp = rest.indexOf(" ");
-      if (sp < 0) { Chat.toSlot(slot, "Usage: @@<target> <message>"); return HookResult.Handled; }
+      if (sp < 0) { Chat.toSlot(slot, Translations.translate(slot, "Usage Psay Trigger")); return HookResult.Handled; }
       const t = resolveOne(rest.slice(0, sp), slot, (m) => Chat.toSlot(slot, m));
       if (t) doPsay(slot, t, rest.slice(sp + 1).trim());
       return HookResult.Handled;

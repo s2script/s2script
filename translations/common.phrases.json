@@ -1,0 +1,8 @@
+{
+  "More than one client matched": "{green}[SM]{default} More than one client matched \"{1}\"",
+  "No access": "{green}[SM]{default} You do not have access to this command",
+  "No matching players": "{green}[SM]{default} No matching players",
+  "Player no longer available": "{green}[SM]{default} That player is no longer available",
+  "Server console only": "{green}[SM]{default} This command can only be run from the server console",
+  "Unknown command": "{green}[SM]{default} Unknown command"
+}
