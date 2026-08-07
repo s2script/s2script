@@ -3,23 +3,11 @@ import { config } from "@s2script/sdk/config";
 import { Database } from "@s2script/sdk/db";
 import { Menu, MenuCancelReason, MenuStyle } from "@s2script/sdk/menu";
 import { Server } from "@s2script/sdk/server";
-import { ChatColors, Player } from "@s2script/cs2";
+import { Player } from "@s2script/cs2";
 import { Chat } from "@s2script/sdk/chat";
 import { HookResult } from "@s2script/sdk/events";
-
-// One palette for every line this plugin prints, matching @s2script/rockthevote so nominating and
-// voting read as the same feature. CS2 holds a colour byte until the next one, so each highlighted
-// span resets back to the body colour explicitly.
-const TAG = ChatColors.Green + "[Nominate] " + ChatColors.Grey;
-/** A map name, anywhere it is mentioned. */
-const MAP = ChatColors.Lime;
-/** Whoever nominated. */
-const WHO = ChatColors.Olive;
-/** A word the player is meant to type back. */
-const NUM = ChatColors.Yellow;
-/** A refusal. */
-const BAD = ChatColors.LightRed;
-const BODY = ChatColors.Grey;
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 interface MapEntry { name: string; workshopId: string | null; }
 
@@ -59,6 +47,11 @@ function resolveMap(input: string, pool: MapEntry[]): MapEntry[] {
 }
 
 export default plugin(async (ctx) => {
+  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
+  // lets a plugin override a shared phrase.
+  Translations.load("nominations", phrases);
+  Translations.load("common");
+
   let currentMap = "";     // the map we've claimed/recorded ("" until the DB is ready + first poll)
   let frameCounter = 0;    // throttles the map-change poll to ~once/sec
 
@@ -80,13 +73,16 @@ export default plugin(async (ctx) => {
   }
 
   async function nominate(slot: number, name: string): Promise<void> {
-    if (isCurrentMap(name)) { Chat.toSlot(slot, TAG + MAP + name + BODY + " is " + BAD + "the current map" + BODY + "."); return; }
-    if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, TAG + MAP + name + BODY + " was " + BAD + "played too recently" + BODY + "."); return; }
-    if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, TAG + MAP + name + BODY + " is " + BAD + "already nominated" + BODY + "."); return; }
+    if (isCurrentMap(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Is Current Map", name)); return; }
+    if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Played Too Recently", name)); return; }
+    if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Already Nominated", name)); return; }
     await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
     await db.execute("INSERT INTO nominations(map, nominator) VALUES(?, ?)", [name, slot]);
     const p = Player.fromSlot(slot);
-    Chat.toAll(TAG + WHO + ((p && p.playerName) ? p.playerName : "A player") + BODY + " nominated " + MAP + name + BODY + ".");
+    // Broadcast — everyone sees this, so it resolves at the server default language, not the
+    // nominator's own. "A player" (unresolvable name) is a literal fallback, not a phrase, same
+    // treatment as basechat's actorName() falling back to the literal "Console".
+    Chat.toAll(Translations.translate(-1, "Nominate Announced", (p && p.playerName) ? p.playerName : "A player", name));
   }
 
   /**
@@ -102,24 +98,25 @@ export default plugin(async (ctx) => {
    * `disabled` flag is what keeps them off the number keys, so the selectable maps below still
    * number contiguously and nothing can be nominated by accident.
    */
-  function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], title: string): void {
-    const m = new Menu(title);
+  function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], titleKey: keyof typeof phrases): void {
+    const m = new Menu(Translations.translate(slot, titleKey));
     m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
-    // The chat menu renderer prints each line through Chat.toSlot, so colour bytes in the DISPLAY
-    // string render exactly as they do in any other chat line.
+    // The chat menu renderer prints each line through Chat.toSlot, so colour tags in the DISPLAY
+    // string expand exactly as they do in any other chat line (unlike a MenuStyle.Center menu,
+    // whose HTML renderer never expands them — see basebans' ban-duration menu, Task 7).
     for (const e of recent) {
-      m.addItem(e.name, ChatColors.Grey + e.name + " " + BAD + "- (too recently played)", { disabled: true });
+      m.addItem(e.name, Translations.translate(slot, "Nominate Recent Item", e.name), { disabled: true });
     }
-    for (const e of available) m.addItem(e.name, MAP + e.name);
+    for (const e of available) m.addItem(e.name, Translations.translate(slot, "Nominate Available Item", e.name));
     m.onSelect(e => { nominate(e.slot, e.info).catch(logErr); });   // nominate re-validates
     // Closing without picking said nothing at all, which is indistinguishable from the menu having
     // broken. Only the closes the PLAYER caused are worth a line: `NewMenu` means they opened
     // something else and are looking at it, and `Disconnect` has nobody left to tell.
     m.onCancel(e => {
       if (e.reason === MenuCancelReason.Exit) {
-        Chat.toSlot(e.slot, TAG + "Closed — type " + NUM + "nominate" + BODY + " to open it again.");
+        Chat.toSlot(e.slot, Translations.translate(e.slot, "Nominate Menu Closed"));
       } else if (e.reason === MenuCancelReason.Timeout) {
-        Chat.toSlot(e.slot, TAG + "Timed out — type " + NUM + "nominate" + BODY + " to open it again.");
+        Chat.toSlot(e.slot, Translations.translate(e.slot, "Nominate Menu Timed Out"));
       }
     });
     m.display(slot, 30);
@@ -135,10 +132,10 @@ export default plugin(async (ctx) => {
     const available = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
     const recent = pool.filter(m => cd.has(m.name) && !isCurrentMap(m.name));
     if (available.length === 0 && recent.length === 0) {
-      Chat.toSlot(slot, TAG + BAD + "No maps available to nominate right now.");
+      Chat.toSlot(slot, Translations.translate(slot, "Nominate None Available"));
       return;
     }
-    mapMenu(slot, available, recent, "Nominate a map");
+    mapMenu(slot, available, recent, "Nominate Menu Title");
   }
 
   async function recordMapStart(map: string): Promise<void> {
@@ -173,15 +170,15 @@ export default plugin(async (ctx) => {
   // "nominate on a player's behalf / add off-pool map" need is proven.
   ctx.commands.register("sm_nominate", (cmd) => {
     const slot = cmd.callerSlot;
-    if (slot < 0) { cmd.reply("Nominate in-game."); return; }
+    if (slot < 0) { cmd.replyT("Must Be In Game"); return; }
     const arg = cmd.arg(0);
     if (!arg) { nominateMenu(slot).catch(logErr); return; }
     const matches = resolveMap(arg, loadPool());
-    if (matches.length === 0) cmd.reply("No map matching '" + arg + "'.");
+    if (matches.length === 0) cmd.replyT("No Map Matching", arg);
     else if (matches.length === 1) nominate(slot, matches[0].name).catch(logErr);
     // Disambiguation lists exactly what the player's text matched, so every entry stays selectable
     // and there is no cooldown section — `nominate` re-validates and explains a refusal itself.
-    else mapMenu(slot, matches, [], "Did you mean...");
+    else mapMenu(slot, matches, [], "Nominate Disambiguation Title");
   });
 
   /**
