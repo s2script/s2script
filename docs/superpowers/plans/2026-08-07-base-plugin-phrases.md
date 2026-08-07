@@ -453,7 +453,7 @@ fn translate_strips_braces_from_substituted_args() {
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `cargo test -p s2script-core translate_prefers_any_language translate_strips_braces`
+Run: `cargo test -p s2script-core -- translate_prefers_any_language translate_strips_braces`
 Expected: both FAIL — the first returns `"EN own"`, the second returns `"{red}evil{default} was slain"`
 
 - [ ] **Step 3: Fix D2 — strip braces from substituted args**
@@ -498,7 +498,7 @@ In `core/js/prelude.js`, replace the `translate` body's loop (lines 640-646) wit
 
 - [ ] **Step 5: Run both tests to verify they pass**
 
-Run: `cargo test -p s2script-core translate_prefers_any_language translate_strips_braces`
+Run: `cargo test -p s2script-core -- translate_prefers_any_language translate_strips_braces`
 Expected: PASS
 
 - [ ] **Step 6: Run the full core suite**
