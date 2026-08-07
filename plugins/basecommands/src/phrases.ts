@@ -50,4 +50,10 @@ export const phrases = {
   "Loading Plugin": "{green}[SM]{default} Loading '{1}'…",
   "Plugin Not Unloaded": "{green}[SM]{default} Plugin is not unloaded: {1}",
   "Sm Unknown Subcommand": "{green}[SM]{default} Unknown sub-command '{1}'. Try: sm plugins list",
+
+  // adminmenu topmenu item — MenuStyle.Center (both the item's own display name and the sub-menu
+  // title), which never expands colour tags, and neither carried one originally. Map names
+  // themselves (MAP_CHOICES) are proper nouns, not prose — left untranslated.
+  "Change Map Item": "Change Map",
+  "Change Map Title": "Change Map",
 };

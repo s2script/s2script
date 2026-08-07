@@ -1,5 +1,7 @@
 {
   "Admin Cache Reloaded": "{green}[SM]{default} Admin cache reloaded.",
+  "Change Map Item": "Change Map",
+  "Change Map Title": "Change Map",
   "Changing Map": "{green}[SM]{default} Changing map to {1}…",
   "Cvar Set": "{green}[SM]{default} {1} set to {2}",
   "Cvar Value": "{green}[SM]{default} {1} = {2}",

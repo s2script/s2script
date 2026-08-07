@@ -235,9 +235,16 @@ export default plugin((ctx) => {
     + " hasBan=" + (t ? String(t.hasFlags(ADMFLAG.BAN)) : "null"));
   console.log("[basecommands] admin diag: slot0=" + (Admin.forSlot(0) ? "admin" : "not-admin (bot/steamid=0)"));
 
-  ctx.topmenu.addItem("Server Commands", { id: "basecommands:map", name: "Change Map", flags: ADMFLAG.CHANGEMAP,
+  // The category string "Server Commands" is a cross-plugin matching key (adminmenu's itemsFor
+  // compares it by exact equality against every plugin's addItem category) — it stays untranslated,
+  // same reasoning as adminmenu's own category constants. `name` is a static field set once here,
+  // before any admin has opened the menu, so — unlike the sub-menu title below, which is built
+  // fresh per onSelect and can use the calling admin's own language — it can only ever resolve at
+  // the server default language (-1); still an operator-configurable string via
+  // translations/basecommands.phrases.json, just not a per-viewer one.
+  ctx.topmenu.addItem("Server Commands", { id: "basecommands:map", name: Translations.translate(-1, "Change Map Item"), flags: ADMFLAG.CHANGEMAP,
     onSelect: adminSlot => {
-      const m = new Menu("Change Map");
+      const m = new Menu(Translations.translate(adminSlot, "Change Map Title"));
       m.style = MenuStyle.Center;
       m.freezePlayer = true;   // WASD nav — keep the admin frozen through the sub-menu
       for (const map of MAP_CHOICES) if (Server.isMapValid(map)) m.addItem(map, map);
