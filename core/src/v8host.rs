@@ -13696,6 +13696,43 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    /// H3(b): `Translations.load` must warn loudly, exactly once, naming the set — but ONLY when
+    /// the caller supplied no usable seed (the `Translations.load("common")` convention) AND the
+    /// root-file read comes back null. With no ENGINE_OPS installed (as above), every root read is
+    /// null, so this isolates the branch on `hasSeed` alone: a SEEDLESS load with the file "missing"
+    /// must warn (every key in that set would silently render as its own key text — e.g. a missing
+    /// translations/common.phrases.json degrading "No matching players" to that literal, no [SM],
+    /// no colour, nothing in the console); a load WITH a seed and the identical missing-file read is
+    /// the normal, correct in-code-English-default degrade path and must stay silent.
+    #[test]
+    fn translations_load_warns_only_when_seedless_and_file_missing() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+
+        // Seedless — the "common" convention — with the backing file absent: must warn, naming the set.
+        eval_in_context("p", "__s2pkg_translations.Translations.load('common');").unwrap();
+        let after_seedless = LOG.lock().unwrap().clone();
+        assert!(
+            after_seedless.iter().any(|l| l.starts_with("[s2script] WARN") && l.contains("common")),
+            "a seedless Translations.load with no backing file should have logged one \
+             [s2script] WARN naming the set \"common\"; got: {:?}",
+            after_seedless
+        );
+
+        // Seeded — every other plugin's convention — with the identical missing-file read: must stay silent.
+        LOG.lock().unwrap().clear();
+        eval_in_context("p", "__s2pkg_translations.Translations.load('withseed', { Hi: 'Hi' });").unwrap();
+        let after_seeded = LOG.lock().unwrap().clone();
+        assert!(
+            after_seeded.iter().all(|l| !l.starts_with("[s2script] WARN")),
+            "a Translations.load WITH a seed degrades correctly to the in-code English default and \
+             must not warn just because the root file is also missing; got: {:?}",
+            after_seeded
+        );
+        shutdown();
+    }
+
     /// Colour tags expand on the chat path and are deleted on the console path. The table is
     /// supplied the way a game package supplies it — at runtime, from inside the context.
     #[test]

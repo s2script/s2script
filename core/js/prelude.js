@@ -611,7 +611,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       if (!args || i < 0 || i >= args.length || args[i] == null) return "";
       // Braces are stripped from SUBSTITUTED values so an argument cannot inject a colour tag
       // (colors.js expands the finished string at output). A player name loses a brace; nobody
-      // recolours anyone else's chat.
+      // recolours anyone else's chat. This is blunt, not name-aware: admin free text (a cvar value,
+      // a chosen new name) goes through the same strip as collateral damage, so a caller who echoes
+      // a free-text argument back to confirm it is echoing the STRIPPED value, not the one actually
+      // stored/set — a call site that cares must sanitize braces out of its own input up front so
+      // the two match (see basecommands' sm_cvar and playercommands' sm_rename).
       return String(args[i]).replace(/[{}]/g, "");
     });
   }
@@ -631,10 +635,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_translations = {
     load: function (name, seed) {
       name = String(name);
-      var def = __s2_tr_merge({}, (seed && typeof seed === "object") ? seed : {});   // fresh copy, not the caller's ref
+      var hasSeed = !!(seed && typeof seed === "object");
+      var def = __s2_tr_merge({}, hasSeed ? seed : {});   // fresh copy, not the caller's ref
       __s2_tr_reg[name] = { def: def, langs: {} };
       var root = __s2_translations_read("", name);           // OPTIONAL root override of the seed
-      if (root != null) __s2_tr_merge(def, __s2_tr_parse(root));                     // root file overrides seed keys
+      if (root != null) {
+        __s2_tr_merge(def, __s2_tr_parse(root));                                     // root file overrides seed keys
+      } else if (!hasSeed) {
+        // A plugin with a seed and a missing root file is the normal, correct case (degrades to the
+        // in-code English default) and must stay silent. A SEEDLESS load (the "common" convention —
+        // no second argument) has nothing to degrade TO: if translations/<name>.phrases.json is also
+        // missing, this set is now empty, and every key resolved against it falls all the way through
+        // to translate's ultimate fallback — the bare key text, rendered to players with no [SM]
+        // prefix, no colour, and nothing in the console to explain why.
+        console.log("[s2script] WARN: translations set \"" + name + "\" has no seed and translations/"
+          + name + ".phrases.json is missing — every key in it will render as its own key text");
+      }
     },
     setDefaultLanguage: function (code) { __s2_tr_default = String(code || ""); },
     translate: function (slot, key) {

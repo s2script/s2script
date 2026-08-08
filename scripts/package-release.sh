@@ -79,7 +79,8 @@ cp -a "$DIST_ADDONS/s2script" "$STAGE/addons/s2script"
 mkdir -p \
     "$STAGE/addons/s2script/plugins" \
     "$STAGE/addons/s2script/configs" \
-    "$STAGE/addons/s2script/data"
+    "$STAGE/addons/s2script/data" \
+    "$STAGE/addons/s2script/translations"
 
 # Gamedata override channel. Two jobs, in order:
 #  1. Drop any <owner>/custom/ that a stale dist/ carried in — a maintainer's local hot-fix must
