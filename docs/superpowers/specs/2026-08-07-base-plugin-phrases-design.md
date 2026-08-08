@@ -149,29 +149,35 @@ SourceMod ships `common.phrases.txt`; our plugins already duplicate `"No matchin
 `"Multiple players match"` verbatim across files. A `common` set holds the cross-plugin phrases:
 target-resolution failures, `"You do not have access to this command."`, usage scaffolding.
 
-**Its source of truth is one shared library package**, `packages/phrases-common/`, which every plugin
-declares under `s2script.libraries` and passes to a second `Translations.load("common", …)`. One
-edit changes the phrase everywhere.
+**Its source of truth is one hand-authored drop-in file**, `translations/common.phrases.json`. It has
+no `src/phrases.ts` seed — nothing generates it, and `scripts/gen-phrases.mjs` never touches it. Every
+plugin calls a *seedless* `Translations.load("common")` (no second argument) after loading its own
+set; that call reads only the root file — SourceMod's `LoadTranslations("common.phrases")` cadence,
+exactly. `translations/` stays a plain drop-in folder, exactly like SourceMod's
+`addons/sourcemod/translations/`: operators and third-party plugin authors add files to it directly,
+and `gen-phrases.mjs` reserves the plugin-directory name `"common"` (`gen-phrases.mjs:157-169`) so a
+future plugin can never generate a file that collides with — and silently overwrites — the
+hand-authored one.
 
-*Resolved, and not the way this spec first proposed.* The original plan put the shared module at
-`plugins/_shared/phrases.common.ts` behind a relative import. That is wrong: root `package.json`
-globs `plugins/*` as both an npm workspace **and** `s2script.workspace.plugins`, so a `_shared`
-directory there is discovered and built *as a plugin*.
+**Rejected: a shared library package.** An earlier iteration put the shared set at
+`packages/phrases-common/`, declared under `s2script.libraries` and loaded via a second,
+*seeded* `Translations.load("common", commonPhrases)`. That does not work: the SDK bundles a
+plugin with esbuild, and every `@s2script/*` name is marked `external` in both `build.ts` and
+`build-library.ts` — those names are framework builtins resolved by core at runtime, never inlined.
+`tsc`'s path mapping *also* always resolves `@s2script/*` to a builtin `.d.ts`, so a library
+declared under that scope would typecheck cleanly (its `paths` entry wins) while esbuild still
+externalizes the name — the bundle would ship a bare `require("@s2script/phrases-common")` with none
+of the library's code inlined, and it would die at load. `packages/sdk/src/libraries.ts`'s
+`assertLibrariesResolved` refuses any `s2script.libraries` entry under the `@s2script/*` scope
+outright, precisely to stop tsc and esbuild from silently disagreeing about what the name means —
+which is what this design hit in practice before it was replaced with the drop-in file above.
+`packages/` today ships only `cs2`, `eslint-plugin`, and `sdk`; no `phrases-common` package exists.
 
-The repo already has the right mechanism (`packages/sdk/src/libraries.ts`): a workspace sibling
-declaring `"s2script": { "kind": "library" }` is resolved straight to its own `main`/`types` on disk
-— no vendored copy, no npm round-trip — and bundled into each consumer's `.s2sp` when that consumer
-lists it under `s2script.libraries`. `packages/*` is an npm workspace but is **not** in
-`s2script.workspace.plugins`, so a library there is a sibling and never a build target. Marked
-`private: true`, it is never published.
-
-This is also the first real consumer of the library mechanism inside the base-plugin tree, so the
-pilot task (Task 6) is where it gets proven.
-
-**Load order is load-bearing.** `translate` walks sets in insertion order and takes the first hit,
+**Load order is load-bearing.** Within each of `translate`'s two passes — every loaded set in the
+client's language, then every loaded set in English (see D1 below) — the first hit across sets wins,
 so each plugin loads **its own set first, `common` second**. A plugin-specific phrase then shadows a
-common phrase of the same key — the precedence you want. A test pins this rule (§F); it is only
-useful if something enforces it.
+common phrase of the same key *at the same tier* — the precedence you want. A test pins this rule
+(§F); it is only useful if something enforces it.
 
 ### Prefixes move into phrase text
 

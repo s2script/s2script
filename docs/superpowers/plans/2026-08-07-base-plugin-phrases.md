@@ -905,10 +905,12 @@ regression Step 1 exists to prevent, and this is where it would show.
 git add scripts/gen-phrases.mjs plugins/basechat translations
 git commit -m "feat(plugins): add the shared common phrase set, and move basechat onto it
 
-The common set is a workspace library (s2script.kind: library) bundled into each
-consumer's .s2sp — plugins/_shared/ would not work, because plugins/* is globbed
-as both an npm workspace and s2script.workspace.plugins, so a shared directory
-there is discovered and built as a plugin.
+common.phrases.json is a hand-authored data file in translations/, loaded by
+name via Translations.load(\"common\") with no seed — SourceMod's
+LoadTranslations(\"common.phrases\") cadence exactly. There is no package, no
+s2script.libraries entry, and no plugin manifest change: translations/ stays a
+drop-in folder operators and third-party plugin authors can add files to, and
+scripts/gen-phrases.mjs no longer deletes anything it did not generate.
 
 basechat is the pilot: own set loaded first, common second, so a plugin-specific
 key shadows a shared one. Its colours are now phrase text an operator can edit."
