@@ -38,8 +38,9 @@ function pickLoop(adminSlot: number, action: (t: Player) => void): void {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
-  // lets a plugin override a shared phrase.
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
   Translations.load("playercommands", phrases);
   Translations.load("common");
 
@@ -78,7 +79,12 @@ export default plugin((ctx) => {
       return;
     }
     const p = targets[0];
-    const newname = rawName.replace(/[\x00-\x1F]/g, "").slice(0, 127);
+    // Strip control chars AND braces. The brace strip isn't for injection (a name never reaches the
+    // colour-expanding funnel) — it's so "Renamed" echoes the SAME string that got set: translate's
+    // {1}/{2} substitution (__s2_tr_format, core/js/prelude.js) strips braces from every argument as
+    // collateral, so a raw "{green}X" here would be SET as-is but ECHOED as "greenX" — a stripped-here
+    // name keeps the stored and reported values identical.
+    const newname = rawName.replace(/[\x00-\x1F{}]/g, "").slice(0, 127);
     if (!newname) { cmd.replyT("Invalid Rename"); return; }
     const oldname = p.playerName ?? "";
     if (!p.setName(newname)) { cmd.replyT("Rename Failed"); return; }
@@ -89,9 +95,12 @@ export default plugin((ctx) => {
 
   // adminmenu items — the SAME action functions the text commands use (no re-implementation). pickLoop
   // keeps the picker open (act on multiple players) until Exit.
-  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slap", name: "Slap", flags: ADMFLAG.SLAY,
+  // `name` is a static field set once here, before any admin has opened the menu, so — same as
+  // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
+  // per-viewer.
+  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slapPlayer(t, 5)) });   // menu default: 5 damage + knockback
-  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slay", name: "Slay", flags: ADMFLAG.SLAY,
+  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slayPlayer(t)) });
 
   console.log("[playercommands] onLoad — slap/slay/rename registered");

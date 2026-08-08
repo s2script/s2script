@@ -13,4 +13,9 @@ export const phrases = {
   "Invalid Rename": "{green}[SM]{default} Invalid name (empty after sanitization).",
   "Rename Failed": "{green}[SM]{default} Rename failed (player became unavailable).",
   "Renamed": "{green}[SM]{default} Renamed {1} to {2}.",
+
+  // adminmenu topmenu item names — MenuStyle.Center, resolved once at registration (no viewer
+  // yet), same limitation/pattern as basecommands' "Change Map Item".
+  "Slap Item": "Slap",
+  "Slay Item": "Slay",
 };

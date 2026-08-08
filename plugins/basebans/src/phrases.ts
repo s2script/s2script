@@ -44,4 +44,9 @@ export const phrases = {
   "Ban Menu Title": "Ban {1} for",
   "Ban Menu Permanent": "Permanent",
   "Ban Menu Minutes": "{1} min",
+
+  // adminmenu topmenu item names — MenuStyle.Center, resolved once at registration (no viewer
+  // yet), same limitation/pattern as basecommands' "Change Map Item".
+  "Kick Item": "Kick",
+  "Ban Item": "Ban",
 };

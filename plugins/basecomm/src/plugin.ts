@@ -65,8 +65,9 @@ function setMute(p: Player, on: boolean): void {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
-  // lets a plugin override a shared phrase.
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
   Translations.load("basecomm", phrases);
   Translations.load("common");
 
@@ -98,7 +99,10 @@ export default plugin((ctx) => {
     forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unsilence", "Unsilenced Player", "Unsilenced Players", (p) => { setGag(p, false); setMute(p, false); }, false));
 
   // adminmenu — Gag proof item, same ADMFLAG as sm_gag, via pickPlayer + the shared setGag routine.
-  ctx.topmenu.addItem("Player Commands", { id: "basecomm:gag", name: "Gag", flags: ADMFLAG.CHAT,
+  // `name` is a static field set once here, before any admin has opened the menu, so — same as
+  // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
+  // per-viewer.
+  ctx.topmenu.addItem("Player Commands", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
     onSelect: adminSlot => pickPlayer(adminSlot, t => setGag(t, true)) });
 
   console.log("[basecomm] onLoad - gag/ungag/mute/unmute/silence/unsilence registered");

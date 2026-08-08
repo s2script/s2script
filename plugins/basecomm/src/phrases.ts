@@ -19,4 +19,8 @@ export const phrases = {
   "Silenced Players": "{green}[SM]{default} Silenced {1} players.",
   "Unsilenced Player": "{green}[SM]{default} Unsilenced {1} player.",
   "Unsilenced Players": "{green}[SM]{default} Unsilenced {1} players.",
+
+  // adminmenu topmenu item name — MenuStyle.Center, resolved once at registration (no viewer
+  // yet), same limitation/pattern as basecommands' "Change Map Item".
+  "Gag Item": "Gag",
 };
