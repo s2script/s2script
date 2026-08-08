@@ -608,7 +608,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function __s2_tr_format(text, args) {
     return String(text).replace(/\{(\d+)\}/g, function (_m, n) {
       var i = (parseInt(n, 10) | 0) - 1;
-      return (args && i >= 0 && i < args.length && args[i] != null) ? String(args[i]) : "";
+      if (!args || i < 0 || i >= args.length || args[i] == null) return "";
+      // Braces are stripped from SUBSTITUTED values so an argument cannot inject a colour tag
+      // (colors.js expands the finished string at output). A player name loses a brace; nobody
+      // recolours anyone else's chat. This is blunt, not name-aware: admin free text (a cvar value,
+      // a chosen new name) goes through the same strip as collateral damage, so a caller who echoes
+      // a free-text argument back to confirm it is echoing the STRIPPED value, not the one actually
+      // stored/set — a call site that cares must sanitize braces out of its own input up front so
+      // the two match (see basecommands' sm_cvar and playercommands' sm_rename).
+      return String(args[i]).replace(/[{}]/g, "");
     });
   }
   function __s2_tr_parse(text) { try { var o = JSON.parse(text); return (o && typeof o === "object") ? o : {}; } catch (e) { console.log("[s2script] WARN: translations file malformed — ignored"); return {}; } }
@@ -627,21 +635,42 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_translations = {
     load: function (name, seed) {
       name = String(name);
-      var def = __s2_tr_merge({}, (seed && typeof seed === "object") ? seed : {});   // fresh copy, not the caller's ref
+      var hasSeed = !!(seed && typeof seed === "object");
+      var def = __s2_tr_merge({}, hasSeed ? seed : {});   // fresh copy, not the caller's ref
       __s2_tr_reg[name] = { def: def, langs: {} };
       var root = __s2_translations_read("", name);           // OPTIONAL root override of the seed
-      if (root != null) __s2_tr_merge(def, __s2_tr_parse(root));                     // root file overrides seed keys
+      if (root != null) {
+        __s2_tr_merge(def, __s2_tr_parse(root));                                     // root file overrides seed keys
+      } else if (!hasSeed) {
+        // A plugin with a seed and a missing root file is the normal, correct case (degrades to the
+        // in-code English default) and must stay silent. A SEEDLESS load (the "common" convention —
+        // no second argument) has nothing to degrade TO: if translations/<name>.phrases.json is also
+        // missing, this set is now empty, and every key resolved against it falls all the way through
+        // to translate's ultimate fallback — the bare key text, rendered to players with no [SM]
+        // prefix, no colour, and nothing in the console to explain why.
+        console.log("[s2script] WARN: translations set \"" + name + "\" has no seed and translations/"
+          + name + ".phrases.json is missing — every key in it will render as its own key text");
+      }
     },
     setDefaultLanguage: function (code) { __s2_tr_default = String(code || ""); },
     translate: function (slot, key) {
       var args = [].slice.call(arguments, 2);
       key = String(key);
       var code = ((slot | 0) < 0) ? __s2_tr_default : __s2_tr_langCode(__s2_client_language(slot | 0));
-      // search EVERY loaded phrase set: the code's lang map (if not root) -> the default/seed -> the key.
-      for (var name in __s2_tr_reg) {
-        if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, name)) continue;
-        if (code) { var lm = __s2_tr_langMap(name, code); if (lm && lm[key] != null) return __s2_tr_format(lm[key], args); }
-        var d = __s2_tr_reg[name].def; if (d[key] != null) return __s2_tr_format(d[key], args);
+      // Sweep EVERY loaded set for the client's language FIRST, and only then sweep every set for
+      // an English default. The old single pass checked one set's language map and then that same
+      // set's default before moving on, so an earlier set's English beat a later set's translation.
+      if (code) {
+        for (var ln in __s2_tr_reg) {
+          if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, ln)) continue;
+          var lm = __s2_tr_langMap(ln, code);
+          if (lm && lm[key] != null) return __s2_tr_format(lm[key], args);
+        }
+      }
+      for (var dn in __s2_tr_reg) {
+        if (!Object.prototype.hasOwnProperty.call(__s2_tr_reg, dn)) continue;
+        var d = __s2_tr_reg[dn].def;
+        if (d[key] != null) return __s2_tr_format(d[key], args);
       }
       return key;                                            // ultimate fallback
     },
@@ -674,12 +703,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // rule without shifting every line right by a visible space. Idempotent: a line that ALREADY starts with
   // the ZWSP or a (legacy) plain space is left untouched, so an existing prefix never doubles up. Chat-only
   // — the console.log / replyToConsole path never runs through here, so console output stays byte-clean.
-  var __s2_chatZWSP = "\u200B";
-  function __s2_chatLine(msg) {
-    var body = __s2_chat.color + String(msg);
-    var lead = body.charAt(0);
-    return (lead === __s2_chatZWSP || lead === " ") ? body : __s2_chatZWSP + body;
-  }
+  //
+  // Colour TAGS ({green}, {default}) are expanded here too — see core/js/colors.js. The table is
+  // supplied by the game package at runtime; core never knows a colour name.
+  function __s2_chatLine(msg) { return globalThis.__s2_colors.chatLine(__s2_chat.color, msg); }
   var __s2_chat = {
     color: "",
     toSlot: function (slot, msg) { __s2_client_print(slot | 0, __s2_chatLine(msg)); },
@@ -897,7 +924,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // stray whitespace). Strip the whole C0 range + DEL with NO \t/\n/\r exemption — those three
   // codepoints ARE colours. Engine-generic: "a console line carries no control bytes" holds on any
   // Source 2 game, so core learns nothing game-specific here.
-  function __s2cmd_stripCtl(s) { return String(s).replace(/[\x00-\x1F\x7F]/g, ""); }
+  // Expand colour tags, then drop every control byte. Expansion must come first: an unexpanded
+  // "{green}" is not a control byte and would survive the strip as literal text on an rcon reply.
+  function __s2cmd_stripCtl(s) { return globalThis.__s2_colors.consoleLine(s); }
   // ReplySource (core/src/v8host.rs) → the JS name. Index order is load-bearing: it matches the
   // enum's discriminants (Server = 0, Console = 1, Chat = 2).
   var __s2cmd_SRC = ["server", "console", "chat"];

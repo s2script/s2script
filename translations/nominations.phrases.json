@@ -1,0 +1,15 @@
+{
+  "Must Be In Game": "Nominate in-game.",
+  "No Map Matching": "No map matching '{1}'.",
+  "Nominate Already Nominated": "{green}[Nominate] {grey}{lime}{1}{grey} is {lightred}already nominated{grey}.",
+  "Nominate Announced": "{green}[Nominate] {grey}{olive}{1}{grey} nominated {lime}{2}{grey}.",
+  "Nominate Available Item": "{lime}{1}",
+  "Nominate Disambiguation Title": "Did you mean...",
+  "Nominate Is Current Map": "{green}[Nominate] {grey}{lime}{1}{grey} is {lightred}the current map{grey}.",
+  "Nominate Menu Closed": "{green}[Nominate] {grey}Closed — type {yellow}nominate{grey} to open it again.",
+  "Nominate Menu Timed Out": "{green}[Nominate] {grey}Timed out — type {yellow}nominate{grey} to open it again.",
+  "Nominate Menu Title": "Nominate a map",
+  "Nominate None Available": "{green}[Nominate] {lightred}No maps available to nominate right now.",
+  "Nominate Played Too Recently": "{green}[Nominate] {grey}{lime}{1}{grey} was {lightred}played too recently{grey}.",
+  "Nominate Recent Item": "{grey}{1} {lightred}- (too recently played)"
+}

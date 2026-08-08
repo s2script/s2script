@@ -18,6 +18,8 @@ import type { PublishHandle } from "@s2script/sdk/interfaces";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
 import { Vector } from "@s2script/sdk/math";
 import { Chat } from "@s2script/sdk/chat";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 import type { Zones } from "../api";
 
 interface Vec3 { x: number; y: number; z: number; }
@@ -122,10 +124,9 @@ function startMarking(slot: number, name: string): boolean {
   const pw = Pawn.forSlot(slot);
   if (!pw || !pw.origin) return false;
   cancelEdit(slot);   // replace any prior session (and remove its preview)
-  const verb = zones.has(name) ? "Editing" : "Creating";
   edits.set(slot, { name, cornerA: null, prevMask: pw.buttons, expiresAt: Date.now() + 60_000, preview: [] });
   ensureEditPoll();
-  Chat.toSlot(slot, `[zones] ${verb} zone '${name}': walk to a corner and press E; press E again at the opposite corner. (60s timeout; sm_zone_edit cancel to abort)`);
+  Chat.toSlot(slot, Translations.translate(slot, zones.has(name) ? "Edit Start Editing" : "Edit Start Creating", name));
   return true;
 }
 
@@ -155,6 +156,12 @@ function playerByPawnIndex(idx: number): { slot: number; userId: number } | null
 }
 
 export default plugin(async (ctx) => {
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
+  Translations.load("zones", phrases);
+  Translations.load("common");
+
   // A DB failure now FAILS the load (fail-loud) rather than running a non-persistent, half-alive plugin.
   const db = await Database.open("zones");
   await db.execute(
@@ -322,9 +329,9 @@ export default plugin(async (ctx) => {
   function pollEditSessions(): void {
     const now = Date.now();
     for (const [slot, s] of edits) {
-      if (now >= s.expiresAt) { cancelEdit(slot, "[zones] Edit session timed out."); continue; }
+      if (now >= s.expiresAt) { cancelEdit(slot, Translations.translate(slot, "Edit Timed Out")); continue; }
       const pw = Pawn.forSlot(slot);
-      if (!pw) { cancelEdit(slot, "[zones] Edit session cancelled (no pawn)."); continue; }
+      if (!pw) { cancelEdit(slot, Translations.translate(slot, "Edit No Pawn")); continue; }
       const mask = pw.buttons;                     // 0 if unreadable — a momentary 0 can re-arm the edge; acceptable
       const pressed = mask & ~s.prevMask;
       s.prevMask = mask;
@@ -337,7 +344,7 @@ export default plugin(async (ctx) => {
           s.preview[i].update(new Vector(edges[i].a.x, edges[i].a.y, edges[i].a.z), new Vector(edges[i].b.x, edges[i].b.y, edges[i].b.z));
       }
       if (!(pressed & IN_USE)) continue;
-      if (!origin) { Chat.toSlot(slot, "[zones] No position — try again."); continue; }   // don't consume the press
+      if (!origin) { Chat.toSlot(slot, Translations.translate(slot, "Edit No Position Retry")); continue; }   // don't consume the press
       if (!s.cornerA) {
         // 1st press: pin corner A (a COPY — origin is a snapshot but never alias it) + create the preview collapsed at A.
         s.cornerA = { x: origin.x, y: origin.y, z: origin.z };
@@ -345,12 +352,12 @@ export default plugin(async (ctx) => {
           const b = Beam.draw(new Vector(e.a.x, e.a.y, e.a.z), new Vector(e.b.x, e.b.y, e.b.z), { color: [255, 165, 0, 255], width: 2 });
           if (b) s.preview.push(b);
         }
-        Chat.toSlot(slot, "[zones] Corner 1 set — walk to the opposite corner and press E.");
+        Chat.toSlot(slot, Translations.translate(slot, "Edit Corner1 Set"));
       } else {
         // 2nd press: normalize, reject zero-volume (keep the session), else save + swap preview for a timed showZone.
         const box = normBox(s.cornerA, { x: origin.x, y: origin.y, z: origin.z });
         if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) {
-          Chat.toSlot(slot, "[zones] Zero-volume box — move further from corner 1 and press E again.");
+          Chat.toSlot(slot, Translations.translate(slot, "Edit Zero Volume"));
           continue;
         }
         const name = s.name;
@@ -359,9 +366,9 @@ export default plugin(async (ctx) => {
           .then(() => {
             const z = zones.get(name);
             if (z) showZone(z, 10);   // timed confirmation wireframe of the SAVED box
-            Chat.toSlot(slot, `[zones] Zone '${name}' saved.`);
+            Chat.toSlot(slot, Translations.translate(slot, "Edit Zone Saved", name));
           })
-          .catch((e) => Chat.toSlot(slot, `[zones] Save failed: ${e}`));
+          .catch((e) => Chat.toSlot(slot, Translations.translate(slot, "Edit Save Failed", String(e))));
       }
     }
   }
@@ -369,84 +376,100 @@ export default plugin(async (ctx) => {
   // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)
   ctx.commands.registerAdmin("sm_zone_add", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
-    if (!name) { cmd.reply("Usage: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)"); return; }
+    if (!name) { cmd.replyT("Usage Zone Add"); return; }
     let box: { min: Vec3; max: Vec3 } | null = null;
     if (cmd.args.length >= 7) {
       const n = cmd.args.slice(1, 7).map((s) => parseFloat(s));
-      if (n.some((v) => !isFinite(v))) { cmd.reply("Invalid coordinates."); return; }
+      if (n.some((v) => !isFinite(v))) { cmd.replyT("Invalid Coordinates"); return; }
       box = normBox({ x: n[0], y: n[1], z: n[2] }, { x: n[3], y: n[4], z: n[5] });
     } else if (cmd.args.length === 1) {
       // Bare in-game form: start the interactive E-mark session (same as sm_zone_edit).
-      if (cmd.callerSlot < 0) { cmd.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
-      if (!startMarking(cmd.callerSlot, name)) cmd.reply("No position — spawn in first, or give explicit coords.");
+      if (cmd.callerSlot < 0) { cmd.replyT("Zone Add Console Only"); return; }
+      if (!startMarking(cmd.callerSlot, name)) cmd.replyT("No Position Spawn Coords");
       return;
     } else {
       // name + size (2..6 args): box around you (in-game). length is 2..6 here, so args[1] (the size) always exists.
-      if (cmd.callerSlot < 0) { cmd.reply("From the console, give explicit coords: sm_zone_add <name> <x1 y1 z1 x2 y2 z2>"); return; }
+      if (cmd.callerSlot < 0) { cmd.replyT("Zone Add Console Only"); return; }
       const pw = Pawn.forSlot(cmd.callerSlot);
       const o = pw ? pw.origin : null;
-      if (!o) { cmd.reply("No position — spawn in first, or give explicit coords."); return; }
+      if (!o) { cmd.replyT("No Position Spawn Coords"); return; }
       const size = Math.abs(parseFloat(cmd.args[1])) || 128;
       box = normBox({ x: o.x - size, y: o.y - size, z: o.z - size }, { x: o.x + size, y: o.y + size, z: o.z + size });
     }
-    if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { cmd.reply("Zero-volume zone rejected."); return; }
+    if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { cmd.replyT("Zero Volume Zone Rejected"); return; }
     const b = box;
+    const minStr = `${b.min.x.toFixed(0)},${b.min.y.toFixed(0)},${b.min.z.toFixed(0)}`;
+    const maxStr = `${b.max.x.toFixed(0)},${b.max.y.toFixed(0)},${b.max.z.toFixed(0)}`;
     upsertZone(name, b)
-      .then(() => cmd.reply(`Zone '${name}' saved (${b.min.x.toFixed(0)},${b.min.y.toFixed(0)},${b.min.z.toFixed(0)})-(${b.max.x.toFixed(0)},${b.max.y.toFixed(0)},${b.max.z.toFixed(0)})`))
-      .catch((e) => cmd.reply(`Save failed: ${e}`));
+      .then(() => cmd.replyT("Zone Add Saved", name, minStr, maxStr))
+      .catch((e) => cmd.replyT("Zone Add Save Failed", String(e)));
   });
 
   // sm_zone_edit <name> — in-game: press E at two opposite corners; a live rubber-band box tracks between.
   ctx.commands.registerAdmin("sm_zone_edit", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.reply("sm_zone_edit is in-game only (it marks corners at your position)."); return; }
+    if (cmd.callerSlot < 0) { cmd.replyT("Zone Edit Ingame Only"); return; }
     const raw = cmd.args[0] || "";
     if (!raw || raw === "cancel") {
-      if (edits.has(cmd.callerSlot)) { cancelEdit(cmd.callerSlot); cmd.reply("Zone edit cancelled."); }
-      else cmd.reply("Usage: sm_zone_edit <name>  |  sm_zone_edit cancel");
+      if (edits.has(cmd.callerSlot)) { cancelEdit(cmd.callerSlot); cmd.replyT("Zone Edit Cancelled"); }
+      else cmd.replyT("Usage Zone Edit");
       return;
     }
     const name = sanitizeName(raw);
-    if (!name) { cmd.reply("Invalid zone name."); return; }
-    if (!startMarking(cmd.callerSlot, name)) cmd.reply("No position — spawn in first.");
+    if (!name) { cmd.replyT("Invalid Zone Name"); return; }
+    if (!startMarking(cmd.callerSlot, name)) cmd.replyT("No Position Spawn First");
   });
 
   ctx.commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
-    if (!name || !zones.has(name)) { cmd.reply(`No zone '${name}' on this map.`); return; }
+    if (!name || !zones.has(name)) { cmd.replyT("Zone Not Found", name); return; }
     dropZone(name);
-    cmd.reply(`Zone '${name}' deleted.`);
+    cmd.replyT("Zone Deleted", name);
   });
 
   ctx.commands.registerAdmin("sm_zone_tag", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
     const z = zones.get(name);
-    if (!name || !z) { cmd.reply(`No zone '${name}' on this map. Usage: sm_zone_tag <name> [tag...] (no tags = clear)`); return; }
+    if (!name || !z) { cmd.replyT("Zone Tag Not Found", name); return; }
     const tags = cmd.args.slice(1).map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
     z.tags = tags;
     db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [tags.join(","), currentMap, name]).catch(() => {});
-    cmd.reply(tags.length > 0 ? `Zone '${name}' tags: ${tags.join(", ")}` : `Zone '${name}' tags cleared.`);
+    cmd.replyT(tags.length > 0 ? "Zone Tags Set" : "Zone Tags Cleared", name, tags.join(", "));
   });
 
   ctx.commands.registerAdmin("sm_zone_list", ADMFLAG.GENERIC, (cmd) => {
     const filter = cmd.args.length > 0 ? sanitizeTag(cmd.args[0]) : "";
     const list = filter ? zonesByTag(filter) : Array.from(zones.values());
-    cmd.reply(filter ? `Zones on ${currentMap} tagged '${filter}': ${list.length}` : `Zones on ${currentMap}: ${list.length}`);
+    if (filter) cmd.replyT("Zone List Header Tagged", currentMap, filter, list.length);
+    else cmd.replyT("Zone List Header All", currentMap, list.length);
     for (const z of list)
-      cmd.reply(`  ${z.name} (${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)})-(${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}) tags=[${z.tags.join(",")}] inside=${z.inside.size} trigger=${z.trigger ? "yes" : "pending"}`);
+      // trigger=yes/pending is a diagnostic identifier, not prose — the "trigger=" label itself is
+      // hardcoded English in "Zone List Row" (never routed through Translations), so translating
+      // only the value would language-mix a single dump line ("trigger=oui") and break any operator
+      // tooling grepping server logs for "trigger=yes". Left untranslated, same treatment as the
+      // ADMFLAG letter ladder in adminhelp/basecommands.
+      cmd.replyT(
+        "Zone List Row",
+        z.name,
+        `${z.min.x.toFixed(0)},${z.min.y.toFixed(0)},${z.min.z.toFixed(0)}`,
+        `${z.max.x.toFixed(0)},${z.max.y.toFixed(0)},${z.max.z.toFixed(0)}`,
+        z.tags.join(","),
+        z.inside.size,
+        z.trigger ? "yes" : "pending",
+      );
   });
 
   ctx.commands.registerAdmin("sm_zone_export", ADMFLAG.GENERIC, (cmd) => {
     const out: Record<string, { min: number[]; max: number[]; tags: string[] }> = {};
     for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z], tags: z.tags };
     config.writeFile(zonesFile(currentMap), JSON.stringify(out, null, 2));
-    cmd.reply(`Exported ${zones.size} zone(s) to ${zonesFile(currentMap)}.`);
+    cmd.replyT("Zone Export Done", zones.size, zonesFile(currentMap));
   });
 
   ctx.commands.registerAdmin("sm_zone_import", ADMFLAG.GENERIC, (cmd) => {
     const raw = config.readFile(zonesFile(currentMap));
-    if (!raw) { cmd.reply(`No zones file for ${currentMap}.`); return; }
+    if (!raw) { cmd.replyT("Zone Import No File", currentMap); return; }
     let parsed: Record<string, { min: number[]; max: number[]; tags?: string[] }>;
-    try { parsed = JSON.parse(raw); } catch { cmd.reply("Zones file is not valid JSON."); return; }
+    try { parsed = JSON.parse(raw); } catch { cmd.replyT("Zone Import Bad Json"); return; }
     let n = 0;
     const pend: Promise<void>[] = [];
     for (const key of Object.keys(parsed)) {
@@ -458,30 +481,30 @@ export default plugin(async (ctx) => {
       pend.push(upsertZone(name, box, tags));
       n++;
     }
-    Promise.all(pend).then(() => cmd.reply(`Imported ${n} zone(s).`)).catch((err) => cmd.reply(`Import error: ${err}`));
+    Promise.all(pend).then(() => cmd.replyT("Zone Import Done", n)).catch((err) => cmd.replyT("Zone Import Error", String(err)));
   });
 
   ctx.commands.registerAdmin("sm_zone_show", ADMFLAG.GENERIC, (cmd) => {
     const arg = cmd.args[0] || "";
-    if (!arg) { cmd.reply("Usage: sm_zone_show <name|all> [seconds] (default 30; 0 = persistent)"); return; }
+    if (!arg) { cmd.replyT("Usage Zone Show"); return; }
     const seconds = cmd.args.length > 1 ? Math.max(0, cmd.argFloat(1, 30)) : 30;
     if (arg === "all") {
       for (const z of zones.values()) showZone(z, seconds);
-      cmd.reply(`Showing ${zones.size} zone(s)` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+      cmd.replyT(seconds > 0 ? "Zone Show All Timed" : "Zone Show All Persistent", zones.size, seconds);
       return;
     }
     const z = zones.get(sanitizeName(arg));
-    if (!z) { cmd.reply(`No zone '${sanitizeName(arg)}' on this map.`); return; }
+    if (!z) { cmd.replyT("Zone Not Found", sanitizeName(arg)); return; }
     showZone(z, seconds);
-    cmd.reply(`Showing '${z.name}'` + (seconds > 0 ? ` for ${seconds}s.` : " (persistent)."));
+    cmd.replyT(seconds > 0 ? "Zone Show One Timed" : "Zone Show One Persistent", z.name, seconds);
   });
   ctx.commands.registerAdmin("sm_zone_hide", ADMFLAG.GENERIC, (cmd) => {
     const arg = cmd.args[0] || "all";
-    if (arg === "all") { const n = shown.size; clearAllBeams(); cmd.reply(`Hid ${n} zone(s).`); return; }
+    if (arg === "all") { const n = shown.size; clearAllBeams(); cmd.replyT("Zone Hide All Done", n); return; }
     const name = sanitizeName(arg);
-    if (!shown.has(name)) { cmd.reply(`Zone '${name}' is not shown.`); return; }
+    if (!shown.has(name)) { cmd.replyT("Zone Not Shown", name); return; }
     hideZone(name);
-    cmd.reply(`Hid '${name}'.`);
+    cmd.replyT("Zone Hide One Done", name);
   });
 
   console.log("[zones] onLoad — commands registered (real-trigger backend)");

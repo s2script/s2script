@@ -4,6 +4,8 @@ import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/sdk/server";
 import { Plugins } from "@s2script/sdk/plugins";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 // adminmenu — Change Map proof item (Server Commands, ADMFLAG.CHANGEMAP), a curated map picker filtered
 // by Server.isMapValid so an uninstalled map never shows.
@@ -21,71 +23,81 @@ function pad(text: string, width: number, maxLen: number): string {
  * SM's flag rendering ladder (basecommands/who.sp): no flags -> "none", ROOT -> "root" (ROOT
  * implies everything, so listing letters would be noise), otherwise the letter string.
  */
-function flagString(admin: { flags: number } | null): string {
+function flagString(admin: { flags: number } | null, slot: number): string {
   const flags = admin?.flags ?? 0;
-  if (flags === 0) return "none";
-  if ((flags & ADMFLAG.ROOT) !== 0) return "root";
+  if (flags === 0) return Translations.translate(slot, "Flag None");
+  if ((flags & ADMFLAG.ROOT) !== 0) return Translations.translate(slot, "Flag Root");
 
   let out = "";
   for (let i = 0; i < FLAG_LETTERS.length; i++) {
     if ((flags & (1 << i)) !== 0) out += FLAG_LETTERS[i];
   }
-  return out.length > 0 ? out : "none";
+  return out.length > 0 ? out : Translations.translate(slot, "Flag None");
 }
 
 /** `sm_who <target>` — SM's PerformWho: one line per resolved player, in the caller's own channel. */
-function whoOne(cmd: { arg(n: number): string; reply(m: string): void; callerSlot: number }, pattern: string): void {
+function whoOne(
+  cmd: { arg(n: number): string; replyT(key: string, ...args: (string | number)[]): void; callerSlot: number },
+  pattern: string,
+): void {
   const matches = Player.target(pattern, cmd.callerSlot);
-  if (matches.length === 0) { cmd.reply("[SM] No matching client was found."); return; }
+  if (matches.length === 0) { cmd.replyT("No matching players"); return; }
 
   for (const p of matches) {
     const admin = Admin.forSlot(p.slot);
     const name = p.playerName ?? "";
-    if (admin === null) { cmd.reply(`[SM] "${name}" is not an admin.`); continue; }
+    if (admin === null) { cmd.replyT("Not An Admin", name); continue; }
 
     const groups = admin.groups.length > 0 ? admin.groups.join(",") : "";
-    cmd.reply(
-      groups.length > 0
-        ? `[SM] "${name}" is logged in as "${groups}" with access: ${flagString(admin)}`
-        : `[SM] "${name}" has access: ${flagString(admin)}`,
-    );
+    if (groups.length > 0) cmd.replyT("Who Access With Groups", name, groups, flagString(admin, cmd.callerSlot));
+    else cmd.replyT("Who Access", name, flagString(admin, cmd.callerSlot));
   }
 }
 
 // Slice 6.2 live gate — admin-gated commands. Admin cache = host-global (file admins.json ⊕ runtime),
 // from @s2script/admin. sm_say has moved to @s2script/basechat.
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
+  Translations.load("basecommands", phrases);
+  Translations.load("common");
+
   // 6.3 — sm_kick <target> [reason] (ADMFLAG.KICK). Resolves the SM target string (#userid/name/@all/@me)
   // and disconnects each match via the engine KickClient. Server console / rcon is root.
   ctx.commands.registerAdmin("sm_kick", ADMFLAG.KICK, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.reply("Usage: sm_kick <target> [reason]"); return; }
-    const reason = cmd.argsFrom(1) || "Kicked by admin";
+    if (!targetStr) { cmd.replyT("Usage Kick"); return; }
+    const customReason = cmd.argsFrom(1);
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
     // Destructive-command safety (SM COMMAND_FILTER_NO_MULTI): an ambiguous NAME matching >1 player kicks
     // nobody — @all / #userid stay the explicit multi/precise selectors; an exact name still resolves to 1.
     if (targets.length > 1 && targetStr[0] !== "@" && targetStr[0] !== "#") {
-      cmd.reply("[SM] Multiple players match '" + targetStr + "' — be more specific (or use @all)."); return;
+      cmd.replyT("Kick Ambiguous Target", targetStr); return;
     }
     let n = 0;
     for (const p of targets) {
+      // The kick reason lands in the ENGINE disconnect UI, not the chat/console funnel, so it is
+      // translated for the TARGET (p.slot), not the admin — and never carries a colour tag (nothing
+      // expands it there).
+      const reason = customReason || Translations.translate(p.slot, "Kick Reason Default");
       console.log("[basecommands] sm_kick slot=" + p.slot + " name=" + p.playerName + " reason=" + reason);
       p.kick(reason);
       n++;
     }
-    cmd.reply("[SM] Kicked " + n + " player" + (n === 1 ? "" : "s") + ".");
+    cmd.replyT(n === 1 ? "Kicked Player" : "Kicked Players", n);
   });
 
   // 6.4 — sm_map <mapname> (ADMFLAG.CHANGEMAP). Sanitizes the name (injection guard, we build a
   // "changelevel <map>" string), rejects an invalid map cleanly, then changes level via @s2script/server.
   ctx.commands.registerAdmin("sm_map", ADMFLAG.CHANGEMAP, (cmd) => {
     const map = cmd.arg(0);
-    if (!map) { cmd.reply("Usage: sm_map <mapname>"); return; }
-    if (!/^[A-Za-z0-9_]+$/.test(map)) { cmd.reply("[SM] Invalid map name."); return; }
-    if (!Server.isMapValid(map)) { cmd.reply("[SM] '" + map + "' is not a valid map."); return; }
+    if (!map) { cmd.replyT("Usage Map"); return; }
+    if (!/^[A-Za-z0-9_]+$/.test(map)) { cmd.replyT("Invalid Map Name"); return; }
+    if (!Server.isMapValid(map)) { cmd.replyT("Map Not Valid", map); return; }
     console.log("[basecommands] sm_map -> changelevel " + map + " by slot=" + cmd.callerSlot);
-    cmd.reply("[SM] Changing map to " + map + "…");
+    cmd.replyT("Changing Map", map);
     Server.command("changelevel " + map);
   });
 
@@ -103,19 +115,23 @@ export default plugin((ctx) => {
     const target = cmd.arg(0);
     if (target) { whoOne(cmd, target); return; }
 
-    cmd.replyToConsole("    " + pad("Name", 24, 23) + " " + pad("Groups", 18, 17) + " Admin access");
+    // replyToConsole has no replyT variant — translate for the caller, then force it to console.
+    const name = Translations.translate(cmd.callerSlot, "Who Header Name");
+    const groups = Translations.translate(cmd.callerSlot, "Who Header Groups");
+    const access = Translations.translate(cmd.callerSlot, "Who Header Access");
+    cmd.replyToConsole("    " + pad(name, 24, 23) + " " + pad(groups, 18, 17) + " " + access);
 
     for (const p of Player.allConnected()) {
       const admin = Admin.forSlot(p.slot);
-      const groups = admin && admin.groups.length > 0 ? admin.groups.join(",") : "-";
+      const g = admin && admin.groups.length > 0 ? admin.groups.join(",") : "-";
       cmd.replyToConsole(
         String(p.slot + 1).padStart(2) + ". " +
-        pad(p.playerName ?? "", 24, 23) + " " + pad(groups, 18, 17) + " " + flagString(admin),
+        pad(p.playerName ?? "", 24, 23) + " " + pad(g, 18, 17) + " " + flagString(admin, cmd.callerSlot),
       );
     }
 
     // SM only nudges when the answer went somewhere the caller isn't looking.
-    if (cmd.replySource === "chat") cmd.reply("[SM] See console for output.");
+    if (cmd.replySource === "chat") cmd.replyT("See Console For Output");
   });
 
   // sm_reloadadmins (ADMFLAG.BAN) — SM parity (basecommands.sp:75). Re-reads admins.json into the
@@ -125,26 +141,26 @@ export default plugin((ctx) => {
   ctx.commands.registerAdmin("sm_reloadadmins", ADMFLAG.BAN, (cmd) => {
     Admin.reload();
     console.log("[basecommands] sm_reloadadmins by slot=" + cmd.callerSlot);
-    cmd.reply("[SM] Admin cache reloaded.");
+    cmd.replyT("Admin Cache Reloaded");
   });
 
   // 6.5 — sm_rcon <command> (ADMFLAG.RCON): a deliberate full server-command passthrough (highest-trust flag).
   ctx.commands.registerAdmin("sm_rcon", ADMFLAG.RCON, (cmd) => {
     const c = cmd.argString.trim();
-    if (!c) { cmd.reply("Usage: sm_rcon <command>"); return; }
+    if (!c) { cmd.replyT("Usage Rcon"); return; }
     console.log("[basecommands] sm_rcon by slot=" + cmd.callerSlot + " cmd=" + c);
     Server.command(c);
-    cmd.reply("[SM] Command sent.");
+    cmd.replyT("Rcon Command Sent");
   });
 
   // 6.5 — sm_exec <cfgfile> (ADMFLAG.CONFIG): exec a server config. Sanitize the filename (we build "exec <file>").
   ctx.commands.registerAdmin("sm_exec", ADMFLAG.CONFIG, (cmd) => {
     const file = cmd.arg(0);
-    if (!file) { cmd.reply("Usage: sm_exec <cfgfile>"); return; }
-    if (!/^[A-Za-z0-9_./-]+$/.test(file) || file.indexOf("..") !== -1) { cmd.reply("[SM] Invalid config name."); return; }
+    if (!file) { cmd.replyT("Usage Exec"); return; }
+    if (!/^[A-Za-z0-9_./-]+$/.test(file) || file.indexOf("..") !== -1) { cmd.replyT("Invalid Config Name"); return; }
     console.log("[basecommands] sm_exec by slot=" + cmd.callerSlot + " file=" + file);
     Server.command("exec " + file);
-    cmd.reply("[SM] Executing " + file + ".");
+    cmd.replyT("Executing Config", file);
   });
 
   // 6.6 — damage pre-hook (SDKHooks-equivalent). Logs the damage/attacker/type; halves damage as a demo of
@@ -162,18 +178,23 @@ export default plugin((ctx) => {
   // (via the console) then read back. Name sanitized (we build a console command for SET).
   ctx.commands.registerAdmin("sm_cvar", ADMFLAG.CONVARS, (cmd) => {
     const name = cmd.arg(0);
-    if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { cmd.reply("Usage: sm_cvar <name> [value]"); return; }
-    if (cmd.argCount < 2) { cmd.reply("[SM] " + name + " = " + Server.getCvar(name)); return; }  // GET
+    if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { cmd.replyT("Usage Cvar"); return; }
+    if (cmd.argCount < 2) { cmd.replyT("Cvar Value", name, Server.getCvar(name)); return; }  // GET
     const value = cmd.argsFrom(1);
     // SECURITY: setCvar concatenates into a server console command, which splits on ';'. Reject the
     // console-injection chars so an ADMFLAG.CONVARS admin can't escalate to arbitrary server commands
     // (e.g. `sm_cvar x "0; sv_cheats 1"`); quote the value so a legit multi-word string cvar is one token.
-    if (/[;"\r\n]/.test(value)) { cmd.reply("[SM] Invalid cvar value (no ; or quotes)."); return; }
+    // { and } are rejected too — not for injection, but because "Cvar Set" echoes `value` straight back
+    // through translate's {2} substitution, and __s2_tr_format (core/js/prelude.js) strips braces from
+    // every substituted argument as anti-colour-injection collateral. Without this the confirmation
+    // would misreport what was actually set (e.g. `sm_cvar mp_teamname_1 {clan}` sets "{clan}" but
+    // would echo "set to clan"); rejecting up front keeps the stored and reported values identical.
+    if (/[;"\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return; }
     console.log("[basecommands] sm_cvar SET " + name + " = " + value + " by slot=" + cmd.callerSlot);
     Server.setCvar(name, '"' + value + '"');
     // NOTE: Server.command queues the set for next frame, so an immediate getCvar reads the OLD value —
     // echo the requested value instead of a stale read-back.
-    cmd.reply("[SM] " + name + " set to " + value);
+    cmd.replyT("Cvar Set", name, value);
   });
 
   // 6.11b — chat triggers (!cmd / /cmd) are handled in the core Host_Say detour; 6.11c — CONSOLE commands
@@ -187,30 +208,30 @@ export default plugin((ctx) => {
   ctx.commands.register("sm", (cmd) => {
     const sub = cmd.arg(0).toLowerCase();
     if (!sub || sub === "version" || sub === "credits") {
-      cmd.reply("[SM] s2script 0.1.0 — a TypeScript plugin framework for Source 2 / CS2, by Gabriel Hirakawa.");
-      cmd.reply("[SM] github.com/s2script/s2script");
+      cmd.replyT("Sm Version");
+      cmd.replyT("Sm Repo");
       return;
     }
     if (sub === "plugins") {
       const action = cmd.arg(1).toLowerCase();
       if (!action || action === "list") {
         const list = Plugins.list();
-        cmd.reply("[SM] Plugins (" + list.length + "):");
-        list.forEach((p, i) => cmd.reply("  " + (i + 1) + ' "' + p.id + '" ' + (p.loaded ? "(running)" : "(unloaded)")));
+        cmd.replyT("Plugins Header", list.length);
+        list.forEach((p, i) => cmd.replyT(p.loaded ? "Plugin List Row Running" : "Plugin List Row Unloaded", i + 1, p.id));
         return;
       }
       // Mutating plugin ops require ROOT. Server console is always root; a player needs the ROOT flag.
       const isRoot = cmd.callerSlot < 0 || (() => { const a = Admin.forSlot(cmd.callerSlot); return !!a && a.hasFlags(ADMFLAG.ROOT); })();
-      if (!isRoot) { cmd.reply("[SM] You do not have access to this command."); return; }
+      if (!isRoot) { cmd.replyT("No access"); return; }
       const id = cmd.arg(2);
-      if (!id) { cmd.reply("Usage: sm plugins <list|load|unload|reload> [id]"); return; }
-      if (action === "unload") { cmd.reply(Plugins.unload(id) ? "[SM] Unloading '" + id + "'…" : "[SM] Not a loaded plugin: " + id); return; }
-      if (action === "reload") { cmd.reply(Plugins.reload(id) ? "[SM] Reloading '" + id + "'…" : "[SM] No such plugin: " + id); return; }
-      if (action === "load")   { cmd.reply(Plugins.load(id)   ? "[SM] Loading '" + id + "'…"   : "[SM] Plugin is not unloaded: " + id); return; }
-      cmd.reply("Usage: sm plugins <list|load|unload|reload> [id]");
+      if (!id) { cmd.replyT("Usage Sm Plugins"); return; }
+      if (action === "unload") { cmd.replyT(Plugins.unload(id) ? "Unloading Plugin" : "Plugin Not Loaded", id); return; }
+      if (action === "reload") { cmd.replyT(Plugins.reload(id) ? "Reloading Plugin" : "Plugin Not Found", id); return; }
+      if (action === "load")   { cmd.replyT(Plugins.load(id)   ? "Loading Plugin"   : "Plugin Not Unloaded", id); return; }
+      cmd.replyT("Usage Sm Plugins");
       return;
     }
-    cmd.reply("[SM] Unknown sub-command '" + sub + "'. Try: sm plugins list");
+    cmd.replyT("Sm Unknown Subcommand", sub);
   });
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
@@ -220,9 +241,16 @@ export default plugin((ctx) => {
     + " hasBan=" + (t ? String(t.hasFlags(ADMFLAG.BAN)) : "null"));
   console.log("[basecommands] admin diag: slot0=" + (Admin.forSlot(0) ? "admin" : "not-admin (bot/steamid=0)"));
 
-  ctx.topmenu.addItem("Server Commands", { id: "basecommands:map", name: "Change Map", flags: ADMFLAG.CHANGEMAP,
+  // The category string "Server Commands" is a cross-plugin matching key (adminmenu's itemsFor
+  // compares it by exact equality against every plugin's addItem category) — it stays untranslated,
+  // same reasoning as adminmenu's own category constants. `name` is a static field set once here,
+  // before any admin has opened the menu, so — unlike the sub-menu title below, which is built
+  // fresh per onSelect and can use the calling admin's own language — it can only ever resolve at
+  // the server default language (-1); still an operator-configurable string via
+  // translations/basecommands.phrases.json, just not a per-viewer one.
+  ctx.topmenu.addItem("Server Commands", { id: "basecommands:map", name: Translations.translate(-1, "Change Map Item"), flags: ADMFLAG.CHANGEMAP,
     onSelect: adminSlot => {
-      const m = new Menu("Change Map");
+      const m = new Menu(Translations.translate(adminSlot, "Change Map Title"));
       m.style = MenuStyle.Center;
       m.freezePlayer = true;   // WASD nav — keep the admin frozen through the sub-menu
       for (const map of MAP_CHOICES) if (Server.isMapValid(map)) m.addItem(map, map);

@@ -4,6 +4,8 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 import { Chat } from "@s2script/sdk/chat";
 import { config } from "@s2script/sdk/config";
 import { Player, pickPlayer } from "@s2script/cs2";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 // Parse a command arg string into quoted (or bare) tokens: sm_vote "Kick Rex?" Yes No
 function parseTokens(s: string): string[] {
@@ -14,49 +16,68 @@ function parseTokens(s: string): string[] {
   return out;
 }
 
+// The vote QUESTION is shown to every voter (broadcast by the core vote system, not through this
+// plugin's own Chat funnel), so — like the pass/fail lines below — it translates at the server
+// default language (-1), not the requesting admin's.
 function startKickVote(userId: number, name: string): boolean {
   return Vote.start({
-    question: "Kick " + name + "?",
+    question: Translations.translate(-1, "Kick Vote Question", name),
     options: ["Yes", "No"],
     duration: config.getInt("vote_duration"),
     showLiveTally: config.getBool("show_live_tally"),
     onEnd: (r) => {
       if (r.winner === 0 && r.counts[0] > r.total / 2) {
         const cur = Player.fromUserId(userId);   // re-resolve at end (pick-time slot may be stale)
-        if (cur) cur.kick("Vote kicked");
-        Chat.toAll("[Vote] " + name + " was vote-kicked.");
+        // Player.kick's reason is the engine disconnect UI for the TARGET — translate for them.
+        if (cur) cur.kick(Translations.translate(cur.slot, "Kick Vote Reason"));
+        Chat.toAll(Translations.translate(-1, "Kick Vote Success", name));
       } else {
-        Chat.toAll("[Vote] Kick " + name + " failed.");
+        Chat.toAll(Translations.translate(-1, "Kick Vote Failed", name));
       }
     },
   });
 }
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
+  Translations.load("basevotes", phrases);
+  Translations.load("common");
+
   ctx.commands.registerAdmin("sm_vote", ADMFLAG.VOTE, (cmd) => {
     const toks = parseTokens(cmd.argString);
-    if (toks.length < 3) { cmd.reply('Usage: sm_vote "Question" "Opt1" "Opt2" ...'); return; }
+    if (toks.length < 3) { cmd.replyT("Usage Vote"); return; }
     const question = toks[0], options = toks.slice(1, 10);   // up to 9 options (single-digit chat)
     if (!Vote.start({ question, options, duration: config.getInt("vote_duration"), showLiveTally: config.getBool("show_live_tally"),
-                      onEnd: (r) => { Chat.toAll(r.winner === null ? "[Vote] No decision." : "[Vote] Result: " + options[r.winner]); } })) {
-      cmd.reply("[SM] A vote is already in progress.");
+                      onEnd: (r) => {
+                        Chat.toAll(r.winner === null
+                          ? Translations.translate(-1, "Vote No Decision")
+                          : Translations.translate(-1, "Vote Result", options[r.winner]));
+                      } })) {
+      cmd.replyT("Vote In Progress");
     }
   });
 
   ctx.commands.registerAdmin("sm_votekick", ADMFLAG.VOTE, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.reply("Usage: sm_votekick <target>"); return; }
+    if (!targetStr) { cmd.replyT("Usage Votekick"); return; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
-    if (targets.length > 1) { cmd.reply("[SM] Ambiguous target."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
+    // Reuse common's ambiguous-target phrase (it takes the attempted pattern as {1}) rather than a
+    // bare local "Ambiguous target." — same meaning, more informative, no advisory text lost.
+    if (targets.length > 1) { cmd.replyT("More than one client matched", targetStr); return; }
     const p = targets[0];
-    if (Vote.isActive()) { cmd.reply("[SM] A vote is already in progress."); return; }
+    if (Vote.isActive()) { cmd.replyT("Vote In Progress"); return; }
     startKickVote(p.userId, p.playerName ?? "player");
   });
 
-  ctx.topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: "Vote Kick", flags: ADMFLAG.VOTE,
+  // `name` is a static field set once here, before any admin has opened the menu, so — same as
+  // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
+  // per-viewer.
+  ctx.topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: Translations.translate(-1, "Vote Kick Item"), flags: ADMFLAG.VOTE,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
-      if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, "[SM] A vote is already in progress.");
+      if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, Translations.translate(adminSlot, "Vote In Progress"));
     }) });
 
   console.log("[basevotes] onLoad — sm_vote/sm_votekick registered");

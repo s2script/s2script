@@ -1,0 +1,21 @@
+{
+  "Ballot Option Dont Change": "  {yellow}{1}{grey}. {grey}{2}",
+  "Ballot Option Map": "  {yellow}{1}{grey}. {lime}{2}",
+  "Rtv Already Voted": "{green}[RTV] {grey}You already voted to rock the vote — {yellow}{1}{grey} needed in total.",
+  "Rtv Ballot Header": "{green}[RTV] {grey}Vote for the next map — type its {yellow}number{grey} in chat:",
+  "Rtv Dont Change Won": "{green}[RTV] {lightred}Don't Change{grey} won — the map stays.",
+  "Rtv Forced": "RTV forced.",
+  "Rtv Forced Already Running": "A vote is already running.",
+  "Rtv Hud Hint": "type a number in chat · ",
+  "Rtv Hud Left": " left",
+  "Rtv Hud Title": "Rock The Vote",
+  "Rtv No Maps Available": "{green}[RTV] {lightred}No maps available to vote on.",
+  "Rtv Not Enough Players": "{green}[RTV] {lightred}Not enough players.",
+  "Rtv Not Open Yet": "{green}[RTV] {grey}RockTheVote is not open yet — {yellow}{1}s{grey} to go.",
+  "Rtv Vote Already Happened": "{green}[RTV] {grey}A vote already happened this map.",
+  "Rtv Vote Already Running": "{green}[RTV] {grey}A vote is already running.",
+  "Rtv Vote Tied": "{green}[RTV] {lightred}Vote tied{grey} — the map stays.",
+  "Rtv Wants To Vote": "{green}[RTV] {lime}{1}{grey} wants to rock the vote — {yellow}{2}{grey} more needed.",
+  "Rtv Winner": "{green}[RTV] {lime}{1}{grey} won — changing at the end of the round.",
+  "Rtv Winner Invalid": "{green}[RTV] {lightred}Winner invalid{grey} — the map is unchanged."
+}

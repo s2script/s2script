@@ -1,0 +1,17 @@
+{
+  "Blinded Player": "{green}[SM]{default} Blinded {1} player.",
+  "Blinded Players": "{green}[SM]{default} Blinded {1} players.",
+  "Froze Player": "{green}[SM]{default} Froze {1} player.",
+  "Froze Players": "{green}[SM]{default} Froze {1} players.",
+  "Set Gravity For Player": "{green}[SM]{default} Set gravity for {1} player.",
+  "Set Gravity For Players": "{green}[SM]{default} Set gravity for {1} players.",
+  "Toggled Noclip For Player": "{green}[SM]{default} Toggled noclip for {1} player.",
+  "Toggled Noclip For Players": "{green}[SM]{default} Toggled noclip for {1} players.",
+  "Unfroze Player": "{green}[SM]{default} Unfroze {1} player.",
+  "Unfroze Players": "{green}[SM]{default} Unfroze {1} players.",
+  "Usage Blind": "{green}[SM]{default} Usage: sm_blind <target> [seconds]",
+  "Usage Freeze": "{green}[SM]{default} Usage: sm_freeze <target> [seconds]",
+  "Usage Gravity": "{green}[SM]{default} Usage: sm_gravity <target> [factor]",
+  "Usage Noclip": "{green}[SM]{default} Usage: sm_noclip <target>",
+  "Usage Unfreeze": "{green}[SM]{default} Usage: sm_unfreeze <target>"
+}

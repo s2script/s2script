@@ -17,11 +17,16 @@ import { Server } from "@s2script/sdk/server";
 import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Player } from "@s2script/cs2";
 import { config } from "@s2script/sdk/config";
-
-const KICK_MESSAGE =
-  "[SM] This server has reserved slots — you were disconnected to keep a slot open for a reserved player.";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 export default plugin((ctx) => {
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
+  Translations.load("reservedslots", phrases);
+  Translations.load("common");
+
   ctx.clients.onActive((c) => {
     const reserved = config.getInt("reserved_slots");
     if (reserved <= 0) return; // disabled
@@ -32,7 +37,8 @@ export default plugin((ctx) => {
     if (max <= 0) return; // maxPlayers unavailable (degrade) — never kick on bad data
     if (reserved >= max) return; // misconfig: reserved >= capacity would kick everyone — treat as disabled
     if (Player.allConnected().length > max - reserved) {
-      c.kick(KICK_MESSAGE);
+      // Recipient is the kicked client itself (c.slot) — translate for THEM, not any admin/actor.
+      c.kick(Translations.translate(c.slot, "Kick Reserved Slot"));
     }
   });
 

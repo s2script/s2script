@@ -19,26 +19,19 @@ import { Server } from "@s2script/sdk/server";
 import { config } from "@s2script/sdk/config";
 import { Database } from "@s2script/sdk/db";
 import { Events } from "@s2script/sdk/events";
-import { ChatColors, Player } from "@s2script/cs2";
+import { Player } from "@s2script/cs2";
+import { Translations } from "@s2script/sdk/translations";
+import { phrases } from "./phrases";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative — see the ballot). */
 interface MapEntry { name: string; workshopId: string | null; }
 
-// --- presentation -----------------------------------------------------------------------------
-// One palette for every line this plugin prints, so a map name always reads the same colour
-// wherever it appears. CS2 needs a colour control byte before any text or the line renders in the
-// default colour, and a byte stays in force until the next one — hence the explicit reset back to
-// `Grey` (the body colour) after each highlighted span.
-const TAG = ChatColors.Green + "[RTV] " + ChatColors.Grey;
-/** A map name, anywhere it is mentioned. */
-const MAP = ChatColors.Lime;
-/** A number the player is meant to act on — votes still needed, seconds remaining. */
-const NUM = ChatColors.Yellow;
-/** Something refused, or a vote that decided nothing. */
-const BAD = ChatColors.LightRed;
-const BODY = ChatColors.Grey;
+// Colour is now carried entirely by tags inside phrases.ts (own {green}[RTV]{grey}/{lime}/{yellow}/
+// {lightred} per phrase) — see that file's header comment for the mapping from the original
+// ChatColors constants that used to live here.
 
-/** The non-map ballot sentinel (SM "Don't Change") — one literal, referenced by both build + finish. */
+/** The non-map ballot sentinel (SM "Don't Change") — one literal, referenced by both build + finish.
+ *  Deliberately NEVER translated — see phrases.ts's header note. */
 const DONT_CHANGE = "Don't Change";
 
 // --- module state (persists across a changelevel — see pollMapChange below) ---
@@ -100,13 +93,15 @@ UserMessages.onPre("SayText2", (m): HookResultValue | void => {
   if (m.debugString.includes("[Vote] RockTheVote")) return HookResult.Handled;
 });
 
-/** Print the ballot the way a ballot should look: a header, then one option per line. */
+/** Print the ballot the way a ballot should look: a header, then one option per line.
+ *  Broadcast (Chat.toAll) — everyone reads the ballot, so it resolves at the server default
+ *  language, not any one player's. */
 function announceBallot(options: string[]): void {
-  Chat.toAll(TAG + BODY + "Vote for the next map — type its " + NUM + "number" + BODY + " in chat:");
+  Chat.toAll(Translations.translate(-1, "Rtv Ballot Header"));
   for (let i = 0; i < options.length; i++) {
     const label = options[i]!;
-    const colour = label === DONT_CHANGE ? ChatColors.Grey : MAP;
-    Chat.toAll("  " + NUM + (i + 1) + BODY + ". " + colour + label);
+    const key = label === DONT_CHANGE ? "Ballot Option Dont Change" : "Ballot Option Map";
+    Chat.toAll(Translations.translate(-1, key, i + 1, label));
   }
 }
 
@@ -153,6 +148,12 @@ function loadPool(): MapEntry[] {
 // reads the map_history (cooldown) + nominations (ballot) tables it needs. L1: the factory awaits
 // the DB, so a failure FAILS the load loudly (no zombie) and `db` is non-null everywhere below.
 export default plugin(async (ctx) => {
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
+  Translations.load("rockthevote", phrases);
+  Translations.load("common");
+
   const db = await Database.open("mapvote");
   // Standalone-safe: create our own schema idempotently. IF NOT EXISTS makes this harmless
   // alongside nominations (whichever plugin loads first wins; the two CREATE statements are
@@ -232,21 +233,22 @@ export default plugin(async (ctx) => {
 
     const chosen = result.winner === null ? null : options[result.winner];
     if (chosen === null || chosen === DONT_CHANGE) {
-      Chat.toAll(TAG + (chosen === null ? BAD + "Vote tied" + BODY + " — the map stays." : BAD + "Don't Change" + BODY + " won — the map stays."));
+      // Broadcast — no single recipient, resolves at the server default language.
+      Chat.toAll(Translations.translate(-1, chosen === null ? "Rtv Vote Tied" : "Rtv Dont Change Won"));
       return;
     }
 
     const entry = entries.get(chosen) ?? { name: chosen, workshopId: null };
     if (!/^[A-Za-z0-9_]+$/.test(entry.name) || (entry.workshopId !== null && !/^[0-9]+$/.test(entry.workshopId))) {
       console.log("[rockthevote] winner failed validation: " + JSON.stringify(entry));
-      Chat.toAll(TAG + BAD + "Winner invalid" + BODY + " — the map is unchanged.");
+      Chat.toAll(Translations.translate(-1, "Rtv Winner Invalid"));
       return;
     }
 
     pendingMap = entry;
     votedThisMap = true;   // a change is queued for round end — block further RTV until the map changes
     console.log("[rockthevote] vote won by " + chosen + (entry.workshopId ? " (workshop " + entry.workshopId + ")" : "") + " — queued for round end");
-    Chat.toAll(TAG + MAP + chosen + BODY + " won — changing at the end of the round.");
+    Chat.toAll(Translations.translate(-1, "Rtv Winner", chosen));
   }
 
   /** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes.
@@ -256,7 +258,7 @@ export default plugin(async (ctx) => {
     voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
     buildBallot().then(ballot => {
       if (ballot === null) {
-        Chat.toAll(TAG + BAD + "No maps available to vote on.");
+        Chat.toAll(Translations.translate(-1, "Rtv No Maps Available"));
         voteRunning = false;      // release — nothing started
         votedThisMap = true;
         return;
@@ -282,31 +284,32 @@ export default plugin(async (ctx) => {
 
   function requestRtv(slot: number): void {
     if (voteRunning || votedThisMap) {
-      Chat.toSlot(slot, TAG + (voteRunning ? "A vote is already running." : "A vote already happened this map."));
+      Chat.toSlot(slot, Translations.translate(slot, voteRunning ? "Rtv Vote Already Running" : "Rtv Vote Already Happened"));
       return;
     }
     // rtv_initialdelay — refuse player RTV during a map's opening window (SM parity; sm_forcertv bypasses it).
     const initialDelayMs = Math.max(0, config.getInt("rtv_initialdelay")) * 1000;
     const remainingMs = initialDelayMs - (Date.now() - mapStartMs);
     if (remainingMs > 0) {
-      Chat.toSlot(slot, TAG + "RockTheVote is not open yet — " + NUM + Math.ceil(remainingMs / 1000) + "s" + BODY + " to go.");
+      Chat.toSlot(slot, Translations.translate(slot, "Rtv Not Open Yet", Math.ceil(remainingMs / 1000)));
       return;
     }
     const pc = playerCount();
     const need = Math.ceil(config.getFloat("rtv_threshold") * pc);
     if (rtvVoters.has(slot)) {
-      Chat.toSlot(slot, TAG + "You already voted to rock the vote — " + NUM + need + BODY + " needed in total.");
+      Chat.toSlot(slot, Translations.translate(slot, "Rtv Already Voted", need));
       return;
     }
     rtvVoters.add(slot);
     if (pc < config.getInt("rtv_min_players")) {
-      Chat.toSlot(slot, TAG + BAD + "Not enough players.");
+      Chat.toSlot(slot, Translations.translate(slot, "Rtv Not Enough Players"));
       return;
     }
     if (rtvVoters.size >= need) {
       startVote(false);
     } else {
-      Chat.toAll(TAG + MAP + playerName(slot) + BODY + " wants to rock the vote — " + NUM + (need - rtvVoters.size) + BODY + " more needed.");
+      // Broadcast — everyone sees the running tally, resolves at the server default language.
+      Chat.toAll(Translations.translate(-1, "Rtv Wants To Vote", playerName(slot), need - rtvVoters.size));
     }
   }
 
@@ -356,11 +359,17 @@ export default plugin(async (ctx) => {
             + (o.count > 0 ? ` <font color='#8a8a8a'>(</font><font color='#f0c040'>${o.count}</font><font color='#8a8a8a'>)</font>` : "");
         })
         .join("<br>");
+      // Wording only (Translations.translate at the server default language -1 — this HUD is the
+      // same shared buffer for every viewer, see paintHud). The hex `color='#...'` values are raw
+      // HTML for the show_survival_respawn_status panel, not the {tag} chat colour system, so they
+      // stay literal here — see phrases.ts's header note. esc() covers the translated text too,
+      // same as it already does for map labels: an operator-provided translation is as much
+      // untrusted-for-HTML content as a player-supplied map name.
       hudHtml =
-        `<font class='fontSize-m' color='#a3e048'>Rock The Vote</font><br>`
-        + `<font class='fontSize-s' color='#8a8a8a'>type a number in chat &middot; </font>`
+        `<font class='fontSize-m' color='#a3e048'>${esc(Translations.translate(-1, "Rtv Hud Title"))}</font><br>`
+        + `<font class='fontSize-s' color='#8a8a8a'>${esc(Translations.translate(-1, "Rtv Hud Hint"))}</font>`
         + `<font class='fontSize-s' color='#f0c040'>${tally.secondsLeft}s</font>`
-        + `<font class='fontSize-s' color='#8a8a8a'> left</font><br>`
+        + `<font class='fontSize-s' color='#8a8a8a'>${esc(Translations.translate(-1, "Rtv Hud Left"))}</font><br>`
         + `<font class='fontSize-sm'>${rows}</font>`;
     },
     clear() {
@@ -388,7 +397,7 @@ export default plugin(async (ctx) => {
   });
 
   ctx.commands.registerAdmin("sm_forcertv", ADMFLAG.CHANGEMAP, (cmd) => {
-    cmd.reply(startVote(true) ? "RTV forced." : "A vote is already running.");
+    cmd.replyT(startVote(true) ? "Rtv Forced" : "Rtv Forced Already Running");
   });
 
   ctx.clients.onDisconnect(c => rtvVoters.delete(c.slot));

@@ -57,6 +57,13 @@ fi
 
 # --- Runtime dirs (plugins drop zone + writable configs/data) ---
 mkdir -p "$DIST/s2script/plugins" "$DIST/s2script/configs" "$DIST/s2script/data"
+# translations/: the operator-editable phrase files. Without this the directory never exists in an
+# install, translations_read always returns null, and every phrase silently falls back to its
+# in-code seed — the whole file mechanism dead while appearing to work.
+mkdir -p "$DIST/s2script/translations"
+if [ -d translations ]; then
+    cp -r translations/. "$DIST/s2script/translations/"
+fi
 
 # --- Metamod plugin registration VDF ---
 cp docker/s2script.vdf "$DIST/metamod/s2script.vdf"
