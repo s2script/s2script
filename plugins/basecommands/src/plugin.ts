@@ -57,8 +57,9 @@ function whoOne(
 // Slice 6.2 live gate — admin-gated commands. Admin cache = host-global (file admins.json ⊕ runtime),
 // from @s2script/admin. sm_say has moved to @s2script/basechat.
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
-  // lets a plugin override a shared phrase.
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
   Translations.load("basecommands", phrases);
   Translations.load("common");
 
@@ -183,7 +184,12 @@ export default plugin((ctx) => {
     // SECURITY: setCvar concatenates into a server console command, which splits on ';'. Reject the
     // console-injection chars so an ADMFLAG.CONVARS admin can't escalate to arbitrary server commands
     // (e.g. `sm_cvar x "0; sv_cheats 1"`); quote the value so a legit multi-word string cvar is one token.
-    if (/[;"\r\n]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return; }
+    // { and } are rejected too — not for injection, but because "Cvar Set" echoes `value` straight back
+    // through translate's {2} substitution, and __s2_tr_format (core/js/prelude.js) strips braces from
+    // every substituted argument as anti-colour-injection collateral. Without this the confirmation
+    // would misreport what was actually set (e.g. `sm_cvar mp_teamname_1 {clan}` sets "{clan}" but
+    // would echo "set to clan"); rejecting up front keeps the stored and reported values identical.
+    if (/[;"\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return; }
     console.log("[basecommands] sm_cvar SET " + name + " = " + value + " by slot=" + cmd.callerSlot);
     Server.setCvar(name, '"' + value + '"');
     // NOTE: Server.command queues the set for next frame, so an immediate getCvar reads the OLD value —
