@@ -34,17 +34,23 @@ function theTime(): string {
 }
 
 function currentMap(): string {
+  // "unknown" (an empty Server.mapName) is a literal fallback, not a phrase — same treatment as
+  // basechat's actorName() falling back to the literal "Console" and nominations' Nominate
+  // Announced falling back to "A player".
   return Translations.translate(-1, "Current Map", Server.mapName || "unknown");
 }
 
 function nextMap(): string {
   const next = Server.getCvar("nextlevel");
+  // "Pending" (nextlevel unset — see the file header's nextmap DEFERRED note) is a literal
+  // fallback, not a phrase — same treatment as currentMap()'s "unknown" above.
   return Translations.translate(-1, "Next Map", next ? next : "Pending");
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
-  // lets a plugin override a shared phrase.
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
   Translations.load("basetriggers", phrases);
   Translations.load("common");
 
