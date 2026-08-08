@@ -17,9 +17,12 @@ export const phrases = {
   "Vote Failed": "[Vote] Failed ({1} < {2} Yes): {3}",
 
   "Usage Votegravity": "Usage: sm_votegravity <number>",
-  // Local, not common's "More than one client matched" — this carries no advisory text and no
-  // colour/"[SM]" prefix in the original, so reusing common would both add colour and drop nothing
-  // (there's nothing to drop) but would still be a wording change beyond what's warranted here;
-  // kept local to match the source exactly.
+  // Both of sm_voteslay's failure replies below are LOCAL, not common's colour/"[SM]"-prefixed
+  // equivalents — this command's failure messages never carried a colour or an "[SM] " prefix in
+  // the original (matching every other phrase in this file), so reusing common's "No matching
+  // players" / "More than one client matched" here would add colour/prefix to only ONE of the two
+  // adjacent replies, or would be a wording change beyond what's warranted; kept local, both
+  // colour-free, to match the source exactly and to match each other.
+  "Voteslay No Matching Players": "No matching players",
   "Voteslay Ambiguous Target": "Multiple players match — be specific",
 };

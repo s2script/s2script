@@ -51,8 +51,9 @@ function startYesNo(cmd: CommandInvocation, questionKey: keyof typeof phrases, q
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
-  // lets a plugin override a shared phrase.
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
   Translations.load("funvotes", phrases);
   Translations.load("common");
 
@@ -78,7 +79,8 @@ export default plugin((ctx) => {
 
   ctx.commands.registerAdmin("sm_voteslay", ADMFLAG.VOTE, cmd => {
     const targets = Player.target(cmd.arg(0), cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
+    // Both replies below are LOCAL keys (colour-free, no "[SM] " prefix) — see phrases.ts.
+    if (targets.length === 0) { cmd.replyT("Voteslay No Matching Players"); return; }
     if (targets.length > 1) { cmd.replyT("Voteslay Ambiguous Target"); return; }
     const uid = targets[0].userId;
     const name = targets[0].playerName ?? "player";

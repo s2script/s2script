@@ -10,5 +10,6 @@
   "Vote Failed": "[Vote] Failed ({1} < {2} Yes): {3}",
   "Vote Passed": "[Vote] Passed ({1} ≥ {2} Yes): {3}",
   "Vote Started": "Vote started.",
-  "Voteslay Ambiguous Target": "Multiple players match — be specific"
+  "Voteslay Ambiguous Target": "Multiple players match — be specific",
+  "Voteslay No Matching Players": "No matching players"
 }
