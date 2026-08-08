@@ -17,8 +17,9 @@ const state = new Map<number, SlotState>();
 const NOTIFY_INTERVAL = 2.0; // seconds — throttle the "slow down" notice so it isn't itself spammy
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
-  // lets a plugin override a shared phrase.
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
   Translations.load("antiflood", phrases);
   Translations.load("common");
 

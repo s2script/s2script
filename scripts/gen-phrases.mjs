@@ -207,14 +207,19 @@ for (const t of targets) {
     keyErrors++;
   }
 
-  // Shadow report: a seed key that duplicates a common.phrases.json key is legal (own-set-first
-  // always resolves it locally) but almost always unintended — an operator editing the shared
-  // file would see no effect on this key with no diagnostic anywhere. Warn, never fail.
+  // Shadow report: a seed key that duplicates a common.phrases.json key is legal — own-set-first
+  // makes the plugin's own ENGLISH default beat common's English default (translate's second pass) —
+  // but it is almost always unintended, and it is not a full shadow: translate's first pass sweeps
+  // every set's LANGUAGE file before either default is consulted, so a translations/<code>/
+  // common.phrases.json that translates this key still wins over the plugin's own English text for a
+  // client in that language, if the plugin's own translations/<code>/<name>.phrases.json is silent on
+  // it. An operator editing the shared file would then see no effect for English speakers only, with
+  // no diagnostic anywhere. Warn, never fail.
   for (const k of ownKeys) {
     if (!commonKeys.has(k)) continue;
     console.log(
-      `NOTE: ${rel(t.seed)}: seed key "${k}" duplicates ${rel(COMMON_FILE)} — the shared phrase ` +
-        `is shadowed and can never be reached for this key`,
+      `NOTE: ${rel(t.seed)}: seed key "${k}" duplicates ${rel(COMMON_FILE)} — the shared phrase is ` +
+        `shadowed at the English default only; a translated common phrase for this key still wins`,
     );
   }
 }

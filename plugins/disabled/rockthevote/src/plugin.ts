@@ -148,8 +148,9 @@ function loadPool(): MapEntry[] {
 // reads the map_history (cooldown) + nominations (ballot) tables it needs. L1: the factory awaits
 // the DB, so a failure FAILS the load loudly (no zombie) and `db` is non-null everywhere below.
 export default plugin(async (ctx) => {
-  // Own set FIRST, common SECOND: translate takes the first hit across sets, so this order is what
-  // lets a plugin override a shared phrase.
+  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
+  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
+  // the same tier.
   Translations.load("rockthevote", phrases);
   Translations.load("common");
 
