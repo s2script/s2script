@@ -11342,6 +11342,55 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    /// `Sound.stop` is a SPELLING of `EntityRef.stopSound`, not a reimplementation: it must reach the
+    /// same native with byte-identical arguments, and must short-circuit to `false` without touching
+    /// the native when no entity is supplied.
+    ///
+    /// Spies on `__s2_ent_stop_sound` rather than asserting the degraded return value, because
+    /// without engine-ops EVERY path returns `false` — including a `Sound.stop` that silently did
+    /// nothing at all. A return-value test here would pass on a completely broken forward.
+    #[test]
+    fn sound_stop_forwards_identically_to_entityref_stop_sound() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__calls = [];
+            // A bare identifier in the prelude resolves against the global at CALL time, so replacing
+            // the native here intercepts both the direct and the Sound.stop path.
+            globalThis.__s2_ent_stop_sound = function (index, id, name) {
+                globalThis.__calls.push(index + "," + id + "," + name + "," + typeof name);
+                return true;
+            };
+            var { EntityRef } = __s2require("@s2script/entity");
+            var { Sound } = __s2require("@s2script/sound");
+            var ref = new EntityRef(3, 11);
+            globalThis.__direct   = String(ref.stopSound("Weapon.Fire"));
+            globalThis.__viaSound = String(Sound.stop("Weapon.Fire", { entity: ref }));
+            globalThis.__reached  = String(globalThis.__calls.length);
+            // no entity / no opts at all: false WITHOUT reaching the native
+            globalThis.__noEntity  = String(Sound.stop("Weapon.Fire", {}));
+            globalThis.__noOpts    = String(Sound.stop("Weapon.Fire"));
+            globalThis.__nullEnt   = String(Sound.stop("Weapon.Fire", { entity: null }));
+            globalThis.__afterMiss = String(globalThis.__calls.length);
+        "#).unwrap();
+        // both spellings reached the native, and both returned what it returned
+        assert_eq!(eval_in_context_string("p", "__direct"), "true");
+        assert_eq!(eval_in_context_string("p", "__viaSound"), "true");
+        assert_eq!(eval_in_context_string("p", "__reached"), "2");
+        // ...with identical arguments, including the String() coercion of the name
+        assert_eq!(
+            eval_in_context_string("p", "__calls.join('|')"),
+            "3,11,Weapon.Fire,string|3,11,Weapon.Fire,string",
+        );
+        // the three no-entity forms degrade to false and never call the native (count stays 2)
+        assert_eq!(eval_in_context_string("p", "__noEntity"), "false");
+        assert_eq!(eval_in_context_string("p", "__noOpts"), "false");
+        assert_eq!(eval_in_context_string("p", "__nullEnt"), "false");
+        assert_eq!(eval_in_context_string("p", "__afterMiss"), "2");
+        shutdown();
+    }
+
     /// Slice 5C.3 Task 2: `__s2_ent_ref_read_floats` native + `EntityRef.readFloats` degrade safely
     /// without engine-ops (serial-gated → null on stale ref / no ops table).
     #[test]

@@ -455,31 +455,30 @@
     return pkg.Sound.emit(name, { entity: this.ref, recipients: o.recipients, volume: o.volume });
   };
 
-  // pawn.stopSound(name) — the counterpart to emitSound. No recipients/volume: the engine stops the
-  // sound for everyone hearing it. Returns false on a stale ref or an unavailable op.
-  Pawn.prototype.stopSound = function (name) {
-    var r = this.ref;
-    return r ? r.stopSound(name) : false;
-  };
-
-  // The entity-property setters, forwarded from the pawn's serial-gated EntityRef. These are thin by
-  // design — the engine ops are entity-generic (see @s2script/sdk/entity), and these exist because a
-  // pawn is what a plugin actually holds. `pawn.ref.setGravityScale(x)` remains equivalent.
+  // Entity ops forwarded from the pawn's serial-gated EntityRef. Thin by design: the engine ops are
+  // entity-generic (see @s2script/sdk/entity) and these exist because a pawn is what a plugin
+  // actually holds — `pawn.ref.setGravityScale(x)` stays equivalent.
   //
-  // setBodyGroupByName is deliberately NOT forwarded: it is a model concern rather than a pawn one,
-  // and reaching it via pawn.ref keeps the pawn surface about the player.
-  Pawn.prototype.setGravityScale = function (scale) {
-    var r = this.ref;
-    return r ? r.setGravityScale(scale) : false;
-  };
-  Pawn.prototype.applyAbsVelocityImpulse = function (impulse) {
-    var r = this.ref;
-    return r ? r.applyAbsVelocityImpulse(impulse) : false;
-  };
-  Pawn.prototype.setModelScale = function (scale) {
-    var r = this.ref;
-    return r ? r.setModelScale(scale) : false;
-  };
+  // Guarded on the METHOD, not on `this.ref`. A Pawn is always constructed with a ref
+  // (`function Pawn(ref) { this.ref = ref; }`), so a ref check would be dead code; what can actually
+  // be missing is the method itself on an older core, the same skew emitSound guards for via
+  // __s2pkg_sound. Staleness needs no guard here — the EntityRef method is serial-gated and returns
+  // false on a dead ref, which is precisely the behaviour to pass through.
+  //
+  // setBodyGroupByName is deliberately NOT forwarded: a model concern rather than a player one. It
+  // stays reachable as pawn.ref.setBodyGroupByName(...).
+  function forwardToRef(method) {
+    return function () {
+      var r = this.ref, f = r && r[method];
+      return typeof f === "function" ? f.apply(r, arguments) : false;
+    };
+  }
+  // pawn.stopSound(name) — the counterpart to emitSound. No recipients/volume: the engine stops the
+  // sound for everyone hearing it.
+  Pawn.prototype.stopSound = forwardToRef("stopSound");
+  Pawn.prototype.setGravityScale = forwardToRef("setGravityScale");
+  Pawn.prototype.applyAbsVelocityImpulse = forwardToRef("applyAbsVelocityImpulse");
+  Pawn.prototype.setModelScale = forwardToRef("setModelScale");
 
   // pawn.activeWeapon — the currently-deployed weapon (m_hActiveWeapon on WeaponServices), as a Weapon.
   // null if unresolved / none / stale.
