@@ -412,6 +412,83 @@
         "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 08 8B BF D0 20 00 00",
         "resolve": "direct"
       }
+    },
+    // ---------------------------------------------------------------------------------------
+    // Entity-property slice. All five below were LOCATED by source2rosetta (an independent
+    // per-build derivation of CS2 gamedata) on its build 24442510, then RE-RESOLVED and
+    // RE-VERIFIED against OUR pinned libserver.so (build 2000880) per re-strategy.md Rule 3 —
+    // a borrowed pattern is a HINT, never a number. For each: the pattern matches EXACTLY ONCE
+    // in the PF_X segment, and the match address is preceded by int3 padding or a `ret`, i.e. it
+    // is a real function ENTRY (which is what makes `resolve: "direct"` safe — the match offset
+    // IS the call target). Every prototype below was then confirmed by DISASSEMBLY at that
+    // address, not taken from the deriver's declaration. Addresses are for build 2000880.
+    // ---------------------------------------------------------------------------------------
+    // CBaseEntity::SetGravityScale(float flScale /*xmm0*/) -> void.  @0xd4df30
+    // NOT a field write, and that is the whole reason it is here: the body opens
+    // `ucomiss xmm0,[rdi+0x6dc]` — offset 0x6dc == 1756 == CBaseEntity.m_flGravityScale in the
+    // schema — and RETURNS EARLY when the value is unchanged. On a real change it builds a 0x168
+    // stack frame and does substantial work (there is a second field, m_flActualGravityScale
+    // @1772, that the setter is what maintains). A plugin that writes m_flGravityScale directly
+    // sees nothing happen; that is the trap this entry closes.
+    "SetGravityScale": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 81 EC 68 01 00 00 0F 2E 87 DC 06 00 00",
+        "resolve": "direct"
+      }
+    },
+    // CBaseEntity::ApplyAbsVelocityImpulse(const Vector* vecImpulse /*rsi*/) -> void.  @0xd36d70
+    // The Vector travels BY ADDRESS in an integer register, confirmed by the body: it zeroes xmm0
+    // then `ucomiss xmm0,[rsi]` / `[rsi+4]` / `[rsi+8]` — three floats read through rsi — and
+    // early-outs when all three are zero. This is the physics-correct way to add velocity; writing
+    // m_vecAbsVelocity (@1644) directly is the classic Source bug (no partition/physics update).
+    "ApplyAbsVelocityImpulse": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 66 0F EF C0 48 89 E5 41 56 41 55 49 89 FD 41 54 49 89 F4",
+        "resolve": "direct"
+      }
+    },
+    // CBaseEntity::StopSound(const char* pszSoundName /*rsi*/) -> void.  @0x1a47c90
+    // rsi is a C string: the body null-checks it AND checks for the empty string
+    // (`test rbx,rbx` then `cmp BYTE PTR [rbx],0x0`), so both are already handled callee-side.
+    // Cross-check on identity: it calls 0x2109f30, which is CEntityInstance::GetEntityIndex.
+    // Pairs with the existing EmitSound entry (Sound.emit / pawn.emitSound).
+    "StopSound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 89 F3 48 83 EC 20 E8 ? ? ? ? 48 85 DB",
+        "resolve": "direct"
+      }
+    },
+    // CBaseModelEntity::SetBodyGroupByName(const char* pszName /*rsi*/, int nGroup /*edx*/) -> void.
+    // @0x1614fb0. Note the SECOND argument is a 32-BIT int in edx (`mov r12d,edx`), not 64 — the
+    // shim prototype must say `int`, or a caller's high bits become garbage the callee may read.
+    // The schema route is not available here: CBaseModelEntity.m_bodyGroupChoices is a
+    // CUtlOrderedMap<CGlobalSymbol,int32>, not a writable scalar.
+    "SetBodyGroupByName": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 F5 41 54 41 89 D4 53 48 89 FB 48 83 EC 08 E8 ? ? ? ? 48 85 C0",
+        "resolve": "direct"
+      }
+    },
+    // CBaseModelEntity::SetModelScale(float flScale /*xmm0*/) -> void.  @0x15dce30
+    // LOWER CONFIDENCE THAN THE FOUR ABOVE, and deliberately recorded as such. The arg shape is
+    // certain (float in xmm0, receiver in rdi) but the body is not a plain setter: it is a
+    // devirtualisation guard — `mov rax,[rdi]; cmp [rax+0x7b8], <expected>` — that either takes an
+    // inline fast path (hop to the sub-object at [rdi+0x528], call its vtable slot 0x68, tail-jump)
+    // or `jmp rax` to the virtual. So the NAME is source2rosetta's catalogue attribution rather
+    // than something this body proves on its own. It is safe to call (a real entry, preceded by
+    // `ret` + int3 padding, arg in the right register); if it turns out to scale something other
+    // than the model, that is a naming bug, not a memory-safety one. Re-confirm before relying on
+    // it in a shipped plugin.
+    "SetModelScale": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 8B 07 48 8D 15 ? ? ? ? 48 8B 80 B8 07 00 00",
+        "resolve": "direct"
+      }
     }
     // (Sound slice precache: there is NO factory-list signature. The abandoned "GameSystemFactoryList"
     // sig-scan + walk-the-factory-node-for-the-instance premise was DISPROVEN offline on the pinned

@@ -209,6 +209,15 @@ pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
 // takes the (index, serial) pair already used by every other serial-gated entity op.
 type CollisionActivateFn = extern "C" fn(c_int, c_int) -> c_int;
 type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
+// Entity-property slice: five engine-generic setters with no usable schema-write route. Each is
+// serial-gated shim-side and returns 1 on success / 0 if the signature was unresolved or the ref is
+// stale. `impulse` is a 3-float array (the Vector travels by address).
+type EntitySetGravityScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
+type EntityApplyAbsVelocityImpulseFn = extern "C" fn(c_int, c_int, *const f32) -> c_int;
+type EntityStopSoundFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
+type EntitySetBodyGroupByNameFn =
+    extern "C" fn(c_int, c_int, *const std::os::raw::c_char, c_int) -> c_int;
+type EntitySetModelScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
 
 // --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI).
 type EntityListenerInstallFn = extern "C" fn() -> c_int;
@@ -537,6 +546,12 @@ pub struct S2EngineOps {
     pub hook_write_i32: Option<HookWriteI32Fn>,
     pub hook_receiver_handle: Option<HookReceiverHandleFn>,
     pub engine_call_address: Option<EngineCallAddressFn>,
+    // --- Entity-property slice (APPENDED after engine_call_address; order is the ABI) ---
+    pub entity_set_gravity_scale: Option<EntitySetGravityScaleFn>,
+    pub entity_apply_abs_velocity_impulse: Option<EntityApplyAbsVelocityImpulseFn>,
+    pub entity_stop_sound: Option<EntityStopSoundFn>,
+    pub entity_set_body_group_by_name: Option<EntitySetBodyGroupByNameFn>,
+    pub entity_set_model_scale: Option<EntitySetModelScaleFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -11327,6 +11342,55 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    /// `Sound.stop` is a SPELLING of `EntityRef.stopSound`, not a reimplementation: it must reach the
+    /// same native with byte-identical arguments, and must short-circuit to `false` without touching
+    /// the native when no entity is supplied.
+    ///
+    /// Spies on `__s2_ent_stop_sound` rather than asserting the degraded return value, because
+    /// without engine-ops EVERY path returns `false` — including a `Sound.stop` that silently did
+    /// nothing at all. A return-value test here would pass on a completely broken forward.
+    #[test]
+    fn sound_stop_forwards_identically_to_entityref_stop_sound() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__calls = [];
+            // A bare identifier in the prelude resolves against the global at CALL time, so replacing
+            // the native here intercepts both the direct and the Sound.stop path.
+            globalThis.__s2_ent_stop_sound = function (index, id, name) {
+                globalThis.__calls.push(index + "," + id + "," + name + "," + typeof name);
+                return true;
+            };
+            var { EntityRef } = __s2require("@s2script/entity");
+            var { Sound } = __s2require("@s2script/sound");
+            var ref = new EntityRef(3, 11);
+            globalThis.__direct   = String(ref.stopSound("Weapon.Fire"));
+            globalThis.__viaSound = String(Sound.stop("Weapon.Fire", { entity: ref }));
+            globalThis.__reached  = String(globalThis.__calls.length);
+            // no entity / no opts at all: false WITHOUT reaching the native
+            globalThis.__noEntity  = String(Sound.stop("Weapon.Fire", {}));
+            globalThis.__noOpts    = String(Sound.stop("Weapon.Fire"));
+            globalThis.__nullEnt   = String(Sound.stop("Weapon.Fire", { entity: null }));
+            globalThis.__afterMiss = String(globalThis.__calls.length);
+        "#).unwrap();
+        // both spellings reached the native, and both returned what it returned
+        assert_eq!(eval_in_context_string("p", "__direct"), "true");
+        assert_eq!(eval_in_context_string("p", "__viaSound"), "true");
+        assert_eq!(eval_in_context_string("p", "__reached"), "2");
+        // ...with identical arguments, including the String() coercion of the name
+        assert_eq!(
+            eval_in_context_string("p", "__calls.join('|')"),
+            "3,11,Weapon.Fire,string|3,11,Weapon.Fire,string",
+        );
+        // the three no-entity forms degrade to false and never call the native (count stays 2)
+        assert_eq!(eval_in_context_string("p", "__noEntity"), "false");
+        assert_eq!(eval_in_context_string("p", "__noOpts"), "false");
+        assert_eq!(eval_in_context_string("p", "__nullEnt"), "false");
+        assert_eq!(eval_in_context_string("p", "__afterMiss"), "2");
+        shutdown();
+    }
+
     /// Slice 5C.3 Task 2: `__s2_ent_ref_read_floats` native + `EntityRef.readFloats` degrade safely
     /// without engine-ops (serial-gated → null on stale ref / no ops table).
     #[test]
@@ -11627,6 +11691,11 @@ pub(crate) mod frame_tests {
             hook_write_i32: None,
             hook_receiver_handle: None,
             engine_call_address: None,
+            entity_set_gravity_scale: None,
+            entity_apply_abs_velocity_impulse: None,
+            entity_stop_sound: None,
+            entity_set_body_group_by_name: None,
+            entity_set_model_scale: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -13402,6 +13471,11 @@ pub(crate) mod frame_tests {
             hook_write_i32: None,
             hook_receiver_handle: None,
             engine_call_address: None,
+            entity_set_gravity_scale: None,
+            entity_apply_abs_velocity_impulse: None,
+            entity_stop_sound: None,
+            entity_set_body_group_by_name: None,
+            entity_set_model_scale: None,
         }
     }
 

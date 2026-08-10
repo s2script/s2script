@@ -179,6 +179,32 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Zones real-trigger slice: give this entity a model (and its collision) via CBaseEntity::SetModel.
   // A runtime trigger_multiple needs a model to build the physics volume that fires touch.
   EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.id, String(name)); };
+  // --- Entity-property slice: five engine setters with no usable schema-write equivalent. ---
+  // Gravity multiplier. NOT the same as writing m_flGravityScale: the engine setter early-returns on
+  // an unchanged value and maintains m_flActualGravityScale, so a raw field write appears to do nothing.
+  EntityRef.prototype.setGravityScale = function (scale) {
+    return __s2_ent_set_gravity_scale(this.index, this.id, Number(scale));
+  };
+  // Add velocity, physics-aware. Writing m_vecAbsVelocity directly skips the partition/physics update.
+  // Accepts [x,y,z] or a Vector. A zero impulse is a legal no-op.
+  EntityRef.prototype.applyAbsVelocityImpulse = function (impulse) {
+    return impulse
+      ? __s2_ent_apply_abs_velocity_impulse(this.index, this.id, [impulse[0], impulse[1], impulse[2]])
+      : false;
+  };
+  // Stop a sound on this entity — the counterpart to Sound.emit / pawn.emitSound.
+  EntityRef.prototype.stopSound = function (name) {
+    return __s2_ent_stop_sound(this.index, this.id, String(name));
+  };
+  // Model body group by name. The schema route is unavailable (m_bodyGroupChoices is a CUtlOrderedMap).
+  EntityRef.prototype.setBodyGroupByName = function (name, group) {
+    return __s2_ent_set_body_group_by_name(this.index, this.id, String(name), Number(group) | 0);
+  };
+  // Model scale. Arg shape confirmed by disassembly; the NAME is a catalogue attribution the function
+  // body does not itself prove (see the gamedata comment) — safe to call, verify before relying on it.
+  EntityRef.prototype.setModelScale = function (scale) {
+    return __s2_ent_set_model_scale(this.index, this.id, Number(scale));
+  };
   // Targetname (CEntityIdentity::m_name) — e.g. a map trigger's "map_start". null if stale; "" if unnamed.
   Object.defineProperty(EntityRef.prototype, "name", {
     get: function () { var n = __s2_entity_name(this.index, this.id); return n == null ? null : n; }
@@ -1391,6 +1417,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       }
       var vol = (opts.volume == null) ? 1.0 : +opts.volume;
       return __s2_sound_emit(String(name), idx, id, slots, vol);
+    },
+    // stop(name, opts) — the counterpart to emit. UNLIKE emit, an entity is REQUIRED: the engine
+    // call behind this is an instance method on the entity, reached through the books-gated entity
+    // resolve, so there is no global/2D form to default to the way emit falls back to worldspawn.
+    // Returns false with no entity, on a stale ref, or when the op is unavailable.
+    stop: function (name, opts) {
+      var e = (opts || {}).entity;
+      if (!e || typeof e.stopSound !== "function") return false;
+      return e.stopSound(name);
     },
     onPrecache: function (h) {
       return __s2_precache_subscribe(function () {

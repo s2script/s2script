@@ -75,6 +75,16 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
   EntityRef.prototype.writeFloat32 = function () { return true; };
   EntityRef.prototype.notifyStateChanged = function () {};
   EntityRef.prototype.remove = function () { this.removed = true; return true; };
+  // Entity ops the pawn forwards to. Recorded rather than stubbed true/false: the thing under test
+  // is WHICH ref is called with WHICH arguments, and a boolean return cannot distinguish a correct
+  // forward from a forward to the wrong ref. `refOps` is asserted on directly by the tests below.
+  const refOps = [];
+  for (const m of ["stopSound", "setGravityScale", "applyAbsVelocityImpulse", "setModelScale"]) {
+    EntityRef.prototype[m] = function (...args) {
+      refOps.push({ op: m, index: this.index, id: this.id, args });
+      return true;
+    };
+  }
 
   const gamerules = new EntityRef(99, 3);
 
@@ -122,7 +132,7 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
 
   const pkg = ctx.__s2pkg_cs2;
   return {
-    ctx, pkg, invokes, logs, frame, EntityRef, gamerules, offsetOf,
+    ctx, pkg, invokes, logs, frame, EntityRef, gamerules, offsetOf, refOps,
     names: () => invokes.map((i) => i.name),
     /** A dead player on `slot`, with a live controller and a live m_hPlayerPawn. */
     player(slot) {
@@ -507,4 +517,56 @@ test("__s2pkg_cs2_calls.status names WHY a descriptor is unavailable", () => {
   const h = makeHost({ ready: ALL_CALLS.filter((n) => n !== "respawn") });
   assert.equal(h.ctx.__s2pkg_cs2_calls.status("changeTeam"), "available");
   assert.equal(h.ctx.__s2pkg_cs2_calls.status("respawn"), "degraded in this test");
+});
+
+// --- The entity-op forwards: pawn.stopSound / setGravityScale / applyAbsVelocityImpulse /
+// setModelScale. These are NOT `calls` descriptors — they are core entity natives reached through
+// the pawn's own EntityRef — but they belong here for the same reason the rest of the file does:
+// the decision of WHICH ref to call, with WHICH arguments, lives in games/cs2/js/pawn.js and is
+// invisible to a typecheck.
+
+test("pawn entity-op forwards reach the PAWN's own ref, arguments untouched", () => {
+  const h = makeHost();
+  const pawn = h.pkg.Pawn.forSlot(0);
+  assert.ok(pawn, "expected a pawn for slot 0");
+
+  assert.equal(pawn.stopSound("Weapon.Fire"), true);
+  assert.equal(pawn.setGravityScale(0.25), true);
+  assert.equal(pawn.applyAbsVelocityImpulse([0, 0, 400]), true);
+  assert.equal(pawn.setModelScale(1.5), true);
+
+  assert.deepEqual(h.refOps.map((r) => r.op),
+    ["stopSound", "setGravityScale", "applyAbsVelocityImpulse", "setModelScale"]);
+  // Every one went to the pawn's own EntityRef. This catches a forward applied to the Pawn object
+  // itself (index undefined) or to any other ref. It does NOT distinguish pawn-ref from
+  // controller-ref: `pawn.controller` is falsy in this host, so a forward through it degrades to
+  // `false` rather than calling the wrong ref — verified by deliberately breaking it that way.
+  for (const r of h.refOps) assert.equal(r.index, pawn.ref.index, `${r.op} called the wrong ref`);
+  // Arguments pass through verbatim: no coercion, no reordering, no dropped trailing args.
+  assert.deepEqual(h.refOps.map((r) => r.args),
+    [["Weapon.Fire"], [0.25], [[0, 0, 400]], [1.5]]);
+});
+
+test("pawn entity-op forwards degrade to false on an older core that lacks the ref methods", () => {
+  const h = makeHost();
+  const pawn = h.pkg.Pawn.forSlot(0);
+  // Model an older core: the EntityRef the pawn holds simply does not carry these methods. This is
+  // the skew the forward guards for — `this.ref` itself is never absent, because Pawn's constructor
+  // always assigns it.
+  for (const m of ["stopSound", "setGravityScale", "applyAbsVelocityImpulse", "setModelScale"]) {
+    delete h.EntityRef.prototype[m];
+  }
+  assert.equal(pawn.stopSound("Weapon.Fire"), false);
+  assert.equal(pawn.setGravityScale(0.25), false);
+  assert.equal(pawn.applyAbsVelocityImpulse([0, 0, 400]), false);
+  assert.equal(pawn.setModelScale(1.5), false);
+  assert.equal(h.refOps.length, 0, "nothing should have been called");
+});
+
+test("setBodyGroupByName is deliberately NOT on the pawn surface", () => {
+  const h = makeHost();
+  const pawn = h.pkg.Pawn.forSlot(0);
+  // A model concern, not a player one. If someone adds it to Pawn later, that is a decision to make
+  // on purpose — this asserts it is not there by accident.
+  assert.equal(typeof pawn.setBodyGroupByName, "undefined");
 });
