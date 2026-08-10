@@ -30,6 +30,14 @@ done
 echo "== packages/sdk unit suite =="
 ( cd packages/sdk && node --experimental-strip-types --no-warnings --test test/*.test.mjs )
 
+# Phrase-key declarations are DERIVED and gitignored, so CI must write them before anything
+# typechecks a plugin — otherwise keys silently widen to `string` and the check passes vacuously.
+echo "== sync-phrase-types.mjs (write the derived phrase-key declarations) =="
+node --experimental-strip-types --no-warnings scripts/sync-phrase-types.mjs
+
+echo "== check-phrase-types.sh (declarations match the loaded phrase files) =="
+bash scripts/check-phrase-types.sh
+
 echo "== check-changeset.sh (published package changes carry a changeset) =="
 bash scripts/check-changeset.sh
 
@@ -50,6 +58,9 @@ bash scripts/check-examples-coverage.sh
 
 echo "== check-activity-test.sh =="
 bash scripts/check-activity-test.sh
+
+echo "== check-colors-test.sh (colour-tag expander) =="
+bash scripts/check-colors-test.sh
 
 echo "== check-antiflood-test.sh =="
 bash scripts/check-antiflood-test.sh

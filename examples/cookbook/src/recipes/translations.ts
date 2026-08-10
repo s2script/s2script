@@ -17,7 +17,9 @@ export const translationsRecipe: Recipe = {
       console.log(`[cookbook] translations en: ${Translations.translate(-1, "Greeting", "world")}`);       // Hello world
       console.log(`[cookbook] translations en missing-key: ${Translations.translate(-1, "Nope")}`);         // Nope (fallback)
 
-      // switch the server default to German -> reads translations/de/trdemo.phrases.json (operator-seeded)
+      // switch the server default to German -> reads translations/de/trdemo.phrases.json, which
+      // SHIPS in the addon (scripts/package-addon.sh copies translations/). This is the only
+      // language file in the repo and exists to exercise the <code>/ read path end to end.
       Translations.setDefaultLanguage("de");
       console.log(`[cookbook] translations de: ${Translations.translate(-1, "Greeting", "world")}`);        // Hallo world (from de file)
       console.log(`[cookbook] translations de fallback-to-seed: ${Translations.translate(-1, "OnlyEn")}`);  // English only (de miss -> seed)

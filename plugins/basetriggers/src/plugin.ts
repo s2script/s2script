@@ -13,31 +13,42 @@ import { Chat } from "@s2script/sdk/chat";
 import { Server } from "@s2script/sdk/server";
 import { HookResult } from "@s2script/sdk/events";
 import { nextFrame } from "@s2script/sdk/timers";
+import { Translations } from "@s2script/sdk/translations";
 
+// Every trigger answer is broadcast (Chat.toAll) to the whole server, not replied to just the
+// asker — there's no single "recipient" slot to translate for, so these resolve at the server
+// default language (-1), same as every other broadcast in this batch.
 function timeLeft(): string {
   const timelimit = parseFloat(Server.getCvar("mp_timelimit")) || 0; // minutes; 0 = no limit
-  if (timelimit <= 0) return "Time left: no time limit";
+  if (timelimit <= 0) return Translations.translate(-1, "Time Left No Limit");
   const left = Math.max(0, Math.round(timelimit * 60 - Server.gameTime));
-  if (left <= 0) return "Time left: last round";
+  if (left <= 0) return Translations.translate(-1, "Time Left Last Round");
   const m = Math.floor(left / 60);
   const s = left % 60;
-  return "Time left: " + m + ":" + (s < 10 ? "0" : "") + s;
+  return Translations.translate(-1, "Time Left", m + ":" + (s < 10 ? "0" : "") + s);
 }
 
 function theTime(): string {
-  return "Current time: " + new Date().toLocaleTimeString();
+  return Translations.translate(-1, "The Time", new Date().toLocaleTimeString());
 }
 
 function currentMap(): string {
-  return "Current map: " + (Server.mapName || "unknown");
+  // "unknown" (an empty Server.mapName) is a literal fallback, not a phrase — same treatment as
+  // basechat's actorName() falling back to the literal "Console" and nominations' Nominate
+  // Announced falling back to "A player".
+  return Translations.translate(-1, "Current Map", Server.mapName || "unknown");
 }
 
 function nextMap(): string {
   const next = Server.getCvar("nextlevel");
-  return "Next map: " + (next ? next : "Pending");
+  // "Pending" (nextlevel unset — see the file header's nextmap DEFERRED note) is a literal
+  // fallback, not a phrase — same treatment as currentMap()'s "unknown" above.
+  return Translations.translate(-1, "Next Map", next ? next : "Pending");
 }
 
 export default plugin((ctx) => {
+  ctx.translations.load("basetriggers", "common");
+
   ctx.clients.onSay((_slot, text, _teamonly) => {
     const t = text.trim().toLowerCase();
     let answer: string | null = null;

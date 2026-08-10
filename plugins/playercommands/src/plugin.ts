@@ -1,6 +1,7 @@
 import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
+import { Translations } from "@s2script/sdk/translations";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
 // item (two UIs over one action, never a re-implementation). Each returns whether it applied (a null
@@ -36,55 +37,65 @@ function pickLoop(adminSlot: number, action: (t: Player) => void): void {
 }
 
 export default plugin((ctx) => {
+  ctx.translations.load("playercommands", "common");
+
   // Slice 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY).
   ctx.commands.registerAdmin("sm_slap", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.reply("Usage: sm_slap <target> [damage]"); return; }
+    if (!targetStr) { cmd.replyT("Usage Slap"); return; }
     const damage = Math.max(0, cmd.argInt(1, 0));
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
     let n = 0;
     for (const p of targets) if (slapPlayer(p, damage)) n++;
-    cmd.reply("[SM] Slapped " + n + " player" + (n === 1 ? "" : "s") + " for " + damage + " damage.");
+    cmd.replyT(n === 1 ? "Slapped Player" : "Slapped Players", n, damage);
   });
 
   // Slice 6.14 — sm_slay <target> (ADMFLAG.SLAY).
   ctx.commands.registerAdmin("sm_slay", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.reply("Usage: sm_slay <target>"); return; }
+    if (!targetStr) { cmd.replyT("Usage Slay"); return; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
     let n = 0;
     for (const p of targets) if (slayPlayer(p)) n++;
-    cmd.reply("[SM] Slayed " + n + " player" + (n === 1 ? "" : "s") + ".");
+    cmd.replyT(n === 1 ? "Slayed Player" : "Slayed Players", n);
   });
 
   // Slice 6.14 — sm_rename <target> <newname> (ADMFLAG.SLAY). Single-target only (reject ambiguous multi).
   ctx.commands.registerAdmin("sm_rename", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
     const rawName = cmd.argsFrom(1).trim();
-    if (!targetStr || !rawName) { cmd.reply("Usage: sm_rename <target> <newname>"); return; }
+    if (!targetStr || !rawName) { cmd.replyT("Usage Rename"); return; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("[SM] No matching players."); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
     if (targets.length > 1) {
-      cmd.reply("[SM] Ambiguous target — matched " + targets.length + " players. Use #userid or full name.");
+      cmd.replyT("Rename Ambiguous Target", targets.length);
       return;
     }
     const p = targets[0];
-    const newname = rawName.replace(/[\x00-\x1F]/g, "").slice(0, 127);
-    if (!newname) { cmd.reply("[SM] Invalid name (empty after sanitization)."); return; }
+    // Strip control chars AND braces. The brace strip isn't for injection (a name never reaches the
+    // colour-expanding funnel) — it's so "Renamed" echoes the SAME string that got set: translate's
+    // {1}/{2} substitution (__s2_tr_format, core/js/prelude.js) strips braces from every argument as
+    // collateral, so a raw "{green}X" here would be SET as-is but ECHOED as "greenX" — a stripped-here
+    // name keeps the stored and reported values identical.
+    const newname = rawName.replace(/[\x00-\x1F{}]/g, "").slice(0, 127);
+    if (!newname) { cmd.replyT("Invalid Rename"); return; }
     const oldname = p.playerName ?? "";
-    if (!p.setName(newname)) { cmd.reply("[SM] Rename failed (player became unavailable)."); return; }
+    if (!p.setName(newname)) { cmd.replyT("Rename Failed"); return; }
     Events.fire("player_changename", { userid: p.userId, oldname, newname });
     console.log("[playercommands] sm_rename slot=" + p.slot + " '" + oldname + "' -> '" + newname + "'");
-    cmd.reply("[SM] Renamed " + oldname + " to " + newname + ".");
+    cmd.replyT("Renamed", oldname, newname);
   });
 
   // adminmenu items — the SAME action functions the text commands use (no re-implementation). pickLoop
   // keeps the picker open (act on multiple players) until Exit.
-  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slap", name: "Slap", flags: ADMFLAG.SLAY,
+  // `name` is a static field set once here, before any admin has opened the menu, so — same as
+  // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
+  // per-viewer.
+  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slapPlayer(t, 5)) });   // menu default: 5 damage + knockback
-  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slay", name: "Slay", flags: ADMFLAG.SLAY,
+  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slayPlayer(t)) });
 
   console.log("[playercommands] onLoad — slap/slay/rename registered");

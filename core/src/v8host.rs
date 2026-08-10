@@ -1250,9 +1250,14 @@ fn config_templates_prelude() -> String {
 /// reviewable as JS. It is ONE file because the whole body shares one IIFE scope (`(function () {`
 /// … `})();`) — splitting it per module would make concatenation order silently load-bearing.
 ///
-/// File line N is V8 line N: the file starts directly at `globalThis.HookResult`, where the old
+/// prelude.js's own file line N is no longer V8 line N now that colors.js is concatenated ahead
+/// of it below: V8 line = colors.js's line count + 1 (the joining "\n") + N. Historically file
+/// line N WAS V8 line N — the file starts directly at `globalThis.HookResult`, where the old
 /// `r#"` literal opened with a newline and shifted every reported line by one.
-const INJECTED_STD_PRELUDE: &str = include_str!("../js/prelude.js");
+// colors.js FIRST: it sets globalThis.__s2_colors, which prelude.js's chat and console
+// funnels call. Same ordering contract as games/cs2/js (activity.js before pawn.js).
+const INJECTED_STD_PRELUDE: &str =
+    concat!(include_str!("../js/colors.js"), "\n", include_str!("../js/prelude.js"));
 
 // @s2script/cs2 is NOT embedded here. It is provided externally at runtime by the shim via
 // `register_injected_package("@s2script/cs2", <js>)` (see `ffi.rs`).  Core contains zero cs2 JS.
@@ -13765,6 +13770,128 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    /// H3(b): `Translations.load` must warn loudly, exactly once, naming the set — but ONLY when
+    /// the caller supplied no usable seed (the `Translations.load("common")` convention) AND the
+    /// root-file read comes back null. With no ENGINE_OPS installed (as above), every root read is
+    /// null, so this isolates the branch on `hasSeed` alone: a SEEDLESS load with the file "missing"
+    /// must warn (every key in that set would silently render as its own key text — e.g. a missing
+    /// translations/common.phrases.json degrading "No matching players" to that literal, no [SM],
+    /// no colour, nothing in the console); a load WITH a seed and the identical missing-file read is
+    /// the normal, correct in-code-English-default degrade path and must stay silent.
+    #[test]
+    fn translations_load_warns_only_when_seedless_and_file_missing() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+
+        // Seedless — the "common" convention — with the backing file absent: must warn, naming the set.
+        eval_in_context("p", "__s2pkg_translations.Translations.load('common');").unwrap();
+        let after_seedless = LOG.lock().unwrap().clone();
+        assert!(
+            after_seedless.iter().any(|l| l.starts_with("[s2script] WARN") && l.contains("common")),
+            "a seedless Translations.load with no backing file should have logged one \
+             [s2script] WARN naming the set \"common\"; got: {:?}",
+            after_seedless
+        );
+
+        // Seeded — every other plugin's convention — with the identical missing-file read: must stay silent.
+        LOG.lock().unwrap().clear();
+        eval_in_context("p", "__s2pkg_translations.Translations.load('withseed', { Hi: 'Hi' });").unwrap();
+        let after_seeded = LOG.lock().unwrap().clone();
+        assert!(
+            after_seeded.iter().all(|l| !l.starts_with("[s2script] WARN")),
+            "a Translations.load WITH a seed degrades correctly to the in-code English default and \
+             must not warn just because the root file is also missing; got: {:?}",
+            after_seeded
+        );
+        shutdown();
+    }
+
+    /// Colour tags expand on the chat path and are deleted on the console path. The table is
+    /// supplied the way a game package supplies it — at runtime, from inside the context.
+    #[test]
+    fn colour_tags_expand_on_chat_and_vanish_on_console() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_colors.setTable({ Green: '\\x04', White: '\\x01' });").unwrap();
+        // chat: tag -> byte, and the ZWSP still leads. JSON.stringify escapes the C0
+        // control byte but leaves U+200B unescaped, so the ZWSP survives literally.
+        assert_eq!(
+            eval_in_context_string("p", "JSON.stringify(__s2_colors.chatLine('', '{green}hi'))"),
+            "\"\u{200b}\\u0004hi\""
+        );
+        // console: tag deleted entirely
+        assert_eq!(eval_in_context_string("p", "__s2_colors.consoleLine('{green}hi')"), "hi");
+        // unknown tag: deleted, never literal
+        assert_eq!(eval_in_context_string("p", "__s2_colors.consoleLine('{nope}hi')"), "hi");
+        shutdown();
+    }
+
+    /// Task 2 wiring proof, chat side: `colour_tags_expand_on_chat_and_vanish_on_console` above
+    /// only proves `colors.js` is reachable — it calls `__s2_colors.chatLine`/`consoleLine`
+    /// directly, never the two functions Task 2 actually rewired (`__s2_chatLine`,
+    /// `__s2cmd_stripCtl`). This test drives the real production entry point,
+    /// `__s2pkg_chat.Chat.toSlot` (which calls `__s2_chatLine` internally), and observes what
+    /// `__s2_client_print` actually received — the same spy technique as
+    /// `chat_prepends_leading_zwsp_idempotently` above. A tag is put in BOTH `Chat.color` (the
+    /// `prefix` argument of `chatLine(prefix, msg)`) and the message body, so a transposed
+    /// argument order in the `__s2_chatLine` wrapper would produce a different byte sequence
+    /// than expected and fail this test — `colour_tags_expand_on_chat_and_vanish_on_console`
+    /// cannot catch that class of bug because it never calls the wrapper.
+    #[test]
+    fn colour_tags_expand_through_chat_to_slot() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_colors.setTable({ Green: '\\x04', White: '\\x01' });").unwrap();
+        let seen = eval_in_context_string(
+            "p",
+            r#"
+            var seen = [];
+            var orig = globalThis.__s2_client_print;
+            globalThis.__s2_client_print = function (slot, m) { seen.push(m); };
+            var C = __s2pkg_chat.Chat;
+            C.color = "{white}";        // the `prefix` argument of chatLine(prefix, msg)
+            C.toSlot(0, "{green}hi");   // the `msg` argument — a DIFFERENT tag, to catch transposition
+            globalThis.__s2_client_print = orig;
+            seen.map(function (s) {
+              return s.split("").map(function (c) { return c.charCodeAt(0); }).join(",");
+            }).join("|");
+            "#,
+        );
+        // ZWSP + white(\x01) + green(\x04) + "hi" — prefix expands before msg, in that order.
+        assert_eq!(seen, "8203,1,4,104,105");
+        shutdown();
+    }
+
+    /// Task 2 wiring proof, console side: same gap as above but for `__s2cmd_stripCtl`. Drives
+    /// the real production entry point — a registered command replying via
+    /// `ctx.replyToConsole` for a server caller (slot -1), which logs through `console.log` and
+    /// is captured in `LOG` (same technique as `ctx_replyt_localizes` above). The message mixes
+    /// a colour TAG with a raw C0 control byte in one string: the tag must be gone (proving
+    /// `__s2cmd_stripCtl` really calls the expander, not just the old regex) and the raw byte
+    /// must still be gone too (proving the pre-existing strip behaviour survived the rewrite).
+    #[test]
+    fn colour_tags_vanish_through_reply_to_console() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_colors.setTable({ Green: '\\x04' });").unwrap();
+        eval_in_context(
+            "p",
+            "__s2pkg_commands.Commands.register('sm_x', function (ctx) { ctx.replyToConsole('{green}hi\\x07there'); });",
+        )
+        .unwrap();
+        eval_in_context("p", "__s2pkg_commands.Commands.dispatch('sm_x', -1, '');").unwrap();
+        assert!(
+            LOG.lock().unwrap().iter().any(|l| l == "hithere"),
+            "replyToConsole should have logged the tag- and control-byte-stripped string, got: {:?}",
+            LOG.lock().unwrap()
+        );
+        shutdown();
+    }
+
     /// Translations slice: the pure formatting/lang-code test hooks (`__s2_tr_format`/`__s2_tr_langCode`).
     #[test]
     fn translations_format_and_langcode() {
@@ -13800,6 +13927,67 @@ pub(crate) mod frame_tests {
         assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Only')"), "Only-EN"); // de miss -> seed
         // an unknown key -> the key itself
         assert_eq!(eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Nope')"), "Nope");
+        shutdown();
+    }
+
+    /// D1: a translation in a LATER-loaded set must beat an English default in an earlier one.
+    /// Unreachable with a single set, which is why it survived; reachable the moment a plugin
+    /// loads its own set plus the shared `common` set.
+    #[test]
+    fn translate_prefers_any_language_hit_over_any_english_default() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "\
+            __s2pkg_translations.Translations.load('own',    { Greet: 'EN own' });\
+            __s2pkg_translations.Translations.load('common', { Greet: 'EN common' });\
+            __s2_tr_injectLang('common', 'de', { Greet: 'DE common' });\
+            __s2pkg_translations.Translations.setDefaultLanguage('de');\
+        ").unwrap();
+        assert_eq!(
+            eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Greet')"),
+            "DE common"
+        );
+        shutdown();
+    }
+
+    /// `ctx.translations.load(a, b)` registers in the order given, so a plugin's own phrase beats a
+    /// shared one of the same key. Nothing is loaded for a plugin automatically — that is the rule
+    /// SourceMod's LoadTranslations enforces, and the order is the plugin's to state.
+    #[test]
+    fn ctx_translations_load_registers_in_the_order_given() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_body("p", r#"ctx.translations.load("own", "common");"#, "{}");
+        // Both sets define Greet. Injected at a real language code, not "", because translate skips
+        // the language pass entirely when the code is empty and would then only see the (empty,
+        // file-less) English defaults.
+        eval_in_context("p", "\
+            __s2_tr_injectLang('own',    'de', { Greet: 'from own' });\
+            __s2_tr_injectLang('common', 'de', { Greet: 'from common' });\
+            __s2pkg_translations.Translations.setDefaultLanguage('de');\
+        ").unwrap();
+        assert_eq!(
+            eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Greet')"),
+            "from own",
+        );
+        shutdown();
+    }
+
+    /// D2: a substituted argument must not be able to inject a colour tag. A player who renames
+    /// themselves "{red}x{default}" would otherwise recolour every message that names them.
+    #[test]
+    fn translate_strips_braces_from_substituted_args() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p",
+            "__s2pkg_translations.Translations.load('t', { Slain: '{1} was slain' });").unwrap();
+        assert_eq!(
+            eval_in_context_string("p",
+                "__s2pkg_translations.Translations.translate(-1,'Slain','{red}evil{default}')"),
+            "redevildefault was slain"
+        );
         shutdown();
     }
 

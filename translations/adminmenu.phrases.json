@@ -1,0 +1,8 @@
+{
+  "Admin Menu Title": "Admin Menu",
+  "Category Player Commands": "Player Commands",
+  "Category Server Commands": "Server Commands",
+  "Category Voting Commands": "Voting Commands",
+  "Must Be In Game": "Run sm_admin in-game.",
+  "No Admin Actions Available": "No admin actions available."
+}

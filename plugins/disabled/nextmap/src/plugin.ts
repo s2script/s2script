@@ -13,6 +13,7 @@ import { Server } from "@s2script/sdk/server";
 import { config } from "@s2script/sdk/config";
 import { delay } from "@s2script/sdk/timers";
 import { Chat } from "@s2script/sdk/chat";
+import { Translations } from "@s2script/sdk/translations";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative). */
 interface MapEntry { name: string; workshopId: string | null; }
@@ -97,7 +98,8 @@ function changeToNext(): void {
   console.log("[nextmap] map end reached — changing to " + next.name + " in " + secs + "s");
   const scheduledMap = currentMap; // captured now — if an external actor changes the map before
   // our delay fires, Server.mapName will have moved on and the stale changelevel is skipped below.
-  Chat.toAll("[nextmap] Changing to " + next.name + " in " + secs + "s");
+  // Broadcast to everyone — no single recipient, so this resolves at the server default language.
+  Chat.toAll(Translations.translate(-1, "Changing To", next.name, secs));
   delay(secs * 1000).then(() => {
     if (Server.mapName !== scheduledMap) {
       console.log("[nextmap] scheduled change to " + next.name + " skipped — map already changed to " + Server.mapName);
@@ -126,6 +128,8 @@ function pollTick(): void {
 }
 
 export default plugin((ctx) => {
+  ctx.translations.load("nextmap", "common");
+
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the
                 // rotation before the first map-end — nextmap owns this, independent of nominations.
   ctx.server.onGameFrame(pollTick);
@@ -139,14 +143,14 @@ export default plugin((ctx) => {
 
   ctx.commands.registerAdmin("sm_setnextmap", ADMFLAG.CHANGEMAP, cmd => {
     const m = cmd.arg(0);
-    if (!m) { cmd.reply("Usage: sm_setnextmap <map>"); return; }
+    if (!m) { cmd.replyT("Usage Setnextmap"); return; }
     const inList = loadPool().find(e => e.name === m);
     const entry = inList ?? (Server.isMapValid(m) ? { name: m, workshopId: null } : null);
-    if (!entry) { cmd.reply("'" + m + "' is not a valid map"); return; }
-    if (!isValidEntry(entry)) { cmd.reply("Invalid map name"); return; }
+    if (!entry) { cmd.replyT("Invalid Map", m); return; }
+    if (!isValidEntry(entry)) { cmd.replyT("Invalid Map Name"); return; }
     override = entry;
     Server.setCvar("nextlevel", entry.name);
-    cmd.reply("Next map set to " + entry.name);
+    cmd.replyT("Next Map Set", entry.name);
   });
 
   // DESCOPED: SM's sm_maphistory (list the recently-played maps) is intentionally not implemented —

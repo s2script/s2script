@@ -654,6 +654,14 @@
     BlueGrey: "\x0D", Purple: "\x0E", LightRed: "\x0F", Orange: "\x10"
   });
 
+  // Hand the tag table to core's expander (core/js/colors.js). This is the ONLY direction game
+  // colour knowledge may travel: core receives a map, it never holds one. setTable lowercases the
+  // keys, so `Green` above is reachable as `{green}` in any phrase file an operator edits.
+  // Guarded for an older core that predates the expander.
+  if (globalThis.__s2_colors && typeof globalThis.__s2_colors.setTable === "function") {
+    globalThis.__s2_colors.setTable(ChatColors);
+  }
+
   // --- Activity.formatSource: SourceMod FormatActivitySource port ---
   // activity.js (concatenated ahead of pawn.js) sets globalThis.__s2_activity = { computeActivitySource, SHOW_ACTIVITY_DEFAULT }.
   var __act = globalThis.__s2_activity;

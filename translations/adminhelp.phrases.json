@@ -1,0 +1,9 @@
+{
+  "Command Row": "  {1} - {2}",
+  "Commands Header": "{green}[SM]{default} Commands (page {1}/{2}, {3} total):",
+  "Flags Admin": "admin",
+  "Flags Anyone": "anyone",
+  "Flags Root": "root",
+  "Flags Server Console": "server console",
+  "Next Page": "{green}[SM]{default} Type sm_help {1} for the next page."
+}

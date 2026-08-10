@@ -1,4 +1,5 @@
 /** @s2script/commands — register server commands. NO runtime code (injected at load). */
+import type { PhraseKey } from "./phrases";
 
 import type { HookResultValue } from "./events";
 
@@ -72,9 +73,13 @@ export interface CommandInvocation {
    * is printed immediately. The server console (`callerSlot` `-1`) prints to the server console.
    */
   replyToConsole(message: string): void;
-  /** reply to the caller, translated for THEIR language (SM's `%t` on the reply path). Soft-deps
-   * `@s2script/translations` — degrades to the raw `key` if it isn't loaded. */
-  replyT(key: string, ...args: (string | number)[]): void;
+  /** Reply to the caller, translated for THEIR language (SM's `%t` on the reply path). Soft-deps
+   * `@s2script/translations` — degrades to the raw `key` if it isn't loaded.
+   *
+   * `key` is checked against this plugin's phrase file plus the shared one (see
+   * `@s2script/sdk/phrases`); it widens to `string` in a plugin that has no phrase file, so this is
+   * never in the way. */
+  replyT(key: PhraseKey, ...args: (string | number)[]): void;
 }
 /** A parsed chat trigger: which command + args, and whether it was the silent (`/`) trigger. */
 export interface ChatTrigger {

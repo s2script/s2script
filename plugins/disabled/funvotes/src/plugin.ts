@@ -11,15 +11,24 @@ import { config } from "@s2script/sdk/config";
 import { Vote } from "@s2script/sdk/votes";
 import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/sdk/server";
+import type { CommandInvocation } from "@s2script/sdk/commands";
+import { Translations } from "@s2script/sdk/translations";
+import type { PhraseKey } from "@s2script/sdk/phrases";
 
-/** Start a Yes/No vote; on pass, run `onPass`. Refuses (via `reply`) if a vote is already active —
- *  never queues, SM parity ("one vote at a time").
+/** Start a Yes/No vote; on pass, run `onPass`. Refuses (via `cmd.replyT`) if a vote is already
+ *  active — never queues, SM parity ("one vote at a time"). `questionKey` is resolved at the
+ *  server default language (-1): the question is broadcast to every voter (embedded in the
+ *  "Passed"/"Failed" line too), not privately replied to the requesting admin, so there is no
+ *  single recipient to translate it for.
  *
  *  Pass semantics (SM parity): NOT plurality. A vote passes when the Yes SHARE of the votes cast is
  *  at least funvote_ratio (default 0.60). With no votes cast (total === 0) the share is 0 → it fails.
  *  options[0] === "Yes", so counts[0] is the Yes tally. */
-function startYesNo(reply: (m: string) => void, question: string, onPass: () => void): void {
-  if (Vote.isActive()) { reply("A vote is already running."); return; }
+function startYesNo(cmd: CommandInvocation, questionKey: PhraseKey, questionArg: string | undefined, onPass: () => void): void {
+  if (Vote.isActive()) { cmd.replyT("Vote Already Running"); return; }
+  const question = questionArg === undefined
+    ? Translations.translate(-1, questionKey)
+    : Translations.translate(-1, questionKey, questionArg);
   Vote.start({
     question,
     options: ["Yes", "No"],
@@ -31,25 +40,27 @@ function startYesNo(reply: (m: string) => void, question: string, onPass: () => 
       const ratio = config.getFloat("funvote_ratio");
       const pct = (x: number) => Math.round(x * 100) + "%";
       if (share >= ratio) {
-        Chat.toAll("[Vote] Passed (" + pct(share) + " ≥ " + pct(ratio) + " Yes): " + question);
+        Chat.toAll(Translations.translate(-1, "Vote Passed", pct(share), pct(ratio), question));
         onPass();
       } else {
-        Chat.toAll("[Vote] Failed (" + pct(share) + " < " + pct(ratio) + " Yes): " + question);
+        Chat.toAll(Translations.translate(-1, "Vote Failed", pct(share), pct(ratio), question));
       }
     },
   });
-  reply("Vote started.");
+  cmd.replyT("Vote Started");
 }
 
 export default plugin((ctx) => {
+  ctx.translations.load("funvotes", "common");
+
   ctx.commands.registerAdmin("sm_votealltalk", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("sv_alltalk"));
-    startYesNo(cmd.reply, (on ? "Disable" : "Enable") + " AllTalk?", () => Server.setCvar("sv_alltalk", on ? "0" : "1"));
+    startYesNo(cmd, on ? "Disable Alltalk Question" : "Enable Alltalk Question", undefined, () => Server.setCvar("sv_alltalk", on ? "0" : "1"));
   });
 
   ctx.commands.registerAdmin("sm_voteff", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("mp_friendlyfire"));
-    startYesNo(cmd.reply, (on ? "Disable" : "Enable") + " Friendly Fire?", () => Server.setCvar("mp_friendlyfire", on ? "0" : "1"));
+    startYesNo(cmd, on ? "Disable Friendlyfire Question" : "Enable Friendlyfire Question", undefined, () => Server.setCvar("mp_friendlyfire", on ? "0" : "1"));
   });
 
   // DEVIATION FROM SM: SourceMod's sm_votegravity can present MULTIPLE gravity options in one
@@ -58,17 +69,18 @@ export default plugin((ctx) => {
   // funvotes are a future item if demand appears.
   ctx.commands.registerAdmin("sm_votegravity", ADMFLAG.VOTE, cmd => {
     const v = cmd.arg(0);
-    if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { cmd.reply("Usage: sm_votegravity <number>"); return; }
-    startYesNo(cmd.reply, "Set gravity to " + v + "?", () => Server.setCvar("sv_gravity", v));
+    if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { cmd.replyT("Usage Votegravity"); return; }
+    startYesNo(cmd, "Set Gravity Question", v, () => Server.setCvar("sv_gravity", v));
   });
 
   ctx.commands.registerAdmin("sm_voteslay", ADMFLAG.VOTE, cmd => {
     const targets = Player.target(cmd.arg(0), cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.reply("No matching players"); return; }
-    if (targets.length > 1) { cmd.reply("Multiple players match — be specific"); return; }
+    // Both replies below are LOCAL keys (colour-free, no "[SM] " prefix) — see phrases.ts.
+    if (targets.length === 0) { cmd.replyT("Voteslay No Matching Players"); return; }
+    if (targets.length > 1) { cmd.replyT("Voteslay Ambiguous Target"); return; }
     const uid = targets[0].userId;
     const name = targets[0].playerName ?? "player";
-    startYesNo(cmd.reply, "Slay " + name + "?", () => {
+    startYesNo(cmd, "Slay Question", name, () => {
       const p = Player.fromUserId(uid);   // re-resolve at end (pick-time slot/pawn may be stale)
       if (p && p.pawn) p.pawn.slay();
     });

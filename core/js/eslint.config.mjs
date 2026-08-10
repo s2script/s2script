@@ -46,7 +46,25 @@ if (natives.length === 0) {
 
 export default [
   {
+    // colors.js is dual-use — it ships concatenated into the prelude AND is unit-tested under node
+    // (`scripts/check-colors-test.sh`), so its `typeof module !== "undefined"` guard and its test
+    // file legitimately reference CommonJS globals. Scoped narrowly rather than adding them to the
+    // prelude's own globals, where they would mask a real `require` creeping into raw-context code.
+    // Mirrors games/cs2/js/eslint.config.mjs's activity.js block.
+    files: ["colors.js", "colors.test.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "script",
+      globals: {
+        module: "readonly", require: "readonly", exports: "readonly",
+        globalThis: "readonly", console: "readonly",
+      },
+    },
+    rules: { "no-undef": "error", "no-unused-vars": ["error", { args: "none", caughtErrors: "none" }] },
+  },
+  {
     files: ["**/*.js"],
+    ignores: ["colors.js", "colors.test.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
