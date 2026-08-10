@@ -13,7 +13,7 @@ import { Player } from "@s2script/cs2";
 import { Server } from "@s2script/sdk/server";
 import type { CommandInvocation } from "@s2script/sdk/commands";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
+import type { PhraseKey } from "@s2script/sdk/phrases";
 
 /** Start a Yes/No vote; on pass, run `onPass`. Refuses (via `cmd.replyT`) if a vote is already
  *  active — never queues, SM parity ("one vote at a time"). `questionKey` is resolved at the
@@ -24,7 +24,7 @@ import { phrases } from "./phrases";
  *  Pass semantics (SM parity): NOT plurality. A vote passes when the Yes SHARE of the votes cast is
  *  at least funvote_ratio (default 0.60). With no votes cast (total === 0) the share is 0 → it fails.
  *  options[0] === "Yes", so counts[0] is the Yes tally. */
-function startYesNo(cmd: CommandInvocation, questionKey: keyof typeof phrases, questionArg: string | undefined, onPass: () => void): void {
+function startYesNo(cmd: CommandInvocation, questionKey: PhraseKey, questionArg: string | undefined, onPass: () => void): void {
   if (Vote.isActive()) { cmd.replyT("Vote Already Running"); return; }
   const question = questionArg === undefined
     ? Translations.translate(-1, questionKey)
@@ -51,11 +51,7 @@ function startYesNo(cmd: CommandInvocation, questionKey: keyof typeof phrases, q
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("funvotes", phrases);
-  Translations.load("common");
+  ctx.translations.load("funvotes", "common");
 
   ctx.commands.registerAdmin("sm_votealltalk", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("sv_alltalk"));

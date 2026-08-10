@@ -15,7 +15,7 @@ import { Player, pickPlayer } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
 import { Clients } from "@s2script/sdk/clients";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
+import type { PhraseKey } from "@s2script/sdk/phrases";
 
 const gagged = new Set<string>(); // SteamIDs — chat suppressed
 const muted = new Set<string>();  // SteamIDs — voice mute requested (best-effort)
@@ -23,22 +23,17 @@ const muted = new Set<string>();  // SteamIDs — voice mute requested (best-eff
 // Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
 // caller); filterImmunity=false for a reversal command (un-gag/un-mute/un-silence — no filter).
 //
-// usageKey/singularKey/pluralKey are phrase KEYS, not raw text — this helper is shared by all six
-// commands below, so the actual key used at the `Translations.translate` call sites inside here is a
-// variable, not a string literal. scripts/gen-phrases.mjs's unknown-key scan only recognises a
-// literal key argument (by design — a dynamic key is skipped, not guessed at), so it canNOT validate
-// those two `Translations.translate(callerSlot, usageKey)` / `(..., singularKey/pluralKey)` call
-// sites. Typed as `keyof typeof phrases` (not `string`) instead of relying on a comment: a typo or a
-// key that doesn't exist in this plugin's own seed at any of the six call sites below is now a
-// typecheck error, not a silent gap. (This only covers basecomm's own seed — a common-set key like
-// "No matching players" below is still a plain string literal, validated by the AST scanner as usual.)
+// usageKey/singularKey/pluralKey are phrase KEYS, not raw text: this helper is shared by all six
+// commands below, so the key is a variable here rather than a literal. `PhraseKey` covers this
+// plugin's phrase file plus the shared one, so a key that exists in neither is a typecheck error at
+// each of the six call sites — including the dynamic ones, which no scan of literals could reach.
 function forTargets(
   pat: string,
   callerSlot: number,
   reply: (m: string) => void,
-  usageKey: keyof typeof phrases,
-  singularKey: keyof typeof phrases,
-  pluralKey: keyof typeof phrases,
+  usageKey: PhraseKey,
+  singularKey: PhraseKey,
+  pluralKey: PhraseKey,
   act: (p: Player) => void,
   filterImmunity: boolean,
 ): void {
@@ -65,11 +60,11 @@ function setMute(p: Player, on: boolean): void {
 }
 
 export default plugin((ctx) => {
+  ctx.translations.load("basecomm", "common");
+
   // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
   // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
   // the same tier.
-  Translations.load("basecomm", phrases);
-  Translations.load("common");
 
   // Suppress chat from a gagged speaker (both say and say_team route through Host_Say).
   ctx.clients.onSay((slot, _text, _teamonly) => {

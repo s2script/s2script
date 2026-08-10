@@ -21,7 +21,6 @@ import { Database } from "@s2script/sdk/db";
 import { Events } from "@s2script/sdk/events";
 import { Player } from "@s2script/cs2";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative — see the ballot). */
 interface MapEntry { name: string; workshopId: string | null; }
@@ -148,11 +147,7 @@ function loadPool(): MapEntry[] {
 // reads the map_history (cooldown) + nominations (ballot) tables it needs. L1: the factory awaits
 // the DB, so a failure FAILS the load loudly (no zombie) and `db` is non-null everywhere below.
 export default plugin(async (ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("rockthevote", phrases);
-  Translations.load("common");
+  ctx.translations.load("rockthevote", "common");
 
   const db = await Database.open("mapvote");
   // Standalone-safe: create our own schema idempotently. IF NOT EXISTS makes this harmless

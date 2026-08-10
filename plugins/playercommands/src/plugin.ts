@@ -2,7 +2,6 @@ import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
 // item (two UIs over one action, never a re-implementation). Each returns whether it applied (a null
@@ -38,11 +37,7 @@ function pickLoop(adminSlot: number, action: (t: Player) => void): void {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("playercommands", phrases);
-  Translations.load("common");
+  ctx.translations.load("playercommands", "common");
 
   // Slice 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY).
   ctx.commands.registerAdmin("sm_slap", ADMFLAG.SLAY, (cmd) => {

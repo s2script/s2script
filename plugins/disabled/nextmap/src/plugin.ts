@@ -14,7 +14,6 @@ import { config } from "@s2script/sdk/config";
 import { delay } from "@s2script/sdk/timers";
 import { Chat } from "@s2script/sdk/chat";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative). */
 interface MapEntry { name: string; workshopId: string | null; }
@@ -129,11 +128,7 @@ function pollTick(): void {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("nextmap", phrases);
-  Translations.load("common");
+  ctx.translations.load("nextmap", "common");
 
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the
                 // rotation before the first map-end — nextmap owns this, independent of nominations.

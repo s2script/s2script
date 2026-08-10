@@ -19,7 +19,6 @@ import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "
 import { Vector } from "@s2script/sdk/math";
 import { Chat } from "@s2script/sdk/chat";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 import type { Zones } from "../api";
 
 interface Vec3 { x: number; y: number; z: number; }
@@ -156,11 +155,7 @@ function playerByPawnIndex(idx: number): { slot: number; userId: number } | null
 }
 
 export default plugin(async (ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("zones", phrases);
-  Translations.load("common");
+  ctx.translations.load("zones", "common");
 
   // A DB failure now FAILS the load (fail-loud) rather than running a non-persistent, half-alive plugin.
   const db = await Database.open("zones");

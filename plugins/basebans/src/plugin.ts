@@ -20,7 +20,6 @@ import { Clients } from "@s2script/sdk/clients";
 import { Player, pickPlayer } from "@s2script/cs2";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 
 // Canonical (untranslated) placeholder for "the adminmenu Ban flow banned with no free-text reason"
 // — that flow has a duration sub-menu, never a text box, so it always supplies this exact literal.
@@ -49,11 +48,7 @@ function banMessage(slot: number, reason: string, until: number): string {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("basebans", phrases);
-  Translations.load("common");
+  ctx.translations.load("basebans", "common");
 
   // sm_ban <target> <minutes> [reason] — ADMFLAG.BAN
   // Resolves the target live, validates the SteamID, adds the ban, and kicks the player.

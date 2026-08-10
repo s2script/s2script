@@ -5,7 +5,6 @@ import { Chat } from "@s2script/sdk/chat";
 import { config } from "@s2script/sdk/config";
 import { Player, pickPlayer } from "@s2script/cs2";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 
 // Parse a command arg string into quoted (or bare) tokens: sm_vote "Kick Rex?" Yes No
 function parseTokens(s: string): string[] {
@@ -39,11 +38,7 @@ function startKickVote(userId: number, name: string): boolean {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("basevotes", phrases);
-  Translations.load("common");
+  ctx.translations.load("basevotes", "common");
 
   ctx.commands.registerAdmin("sm_vote", ADMFLAG.VOTE, (cmd) => {
     const toks = parseTokens(cmd.argString);

@@ -114,6 +114,26 @@ export interface CtxCommands {
     handler: (slot: number, argString: string) => HookResultValue | void,
   ): void;
 }
+/**
+ * The phrase files this plugin uses ({@link PluginContext.translations}).
+ *
+ * Nothing is loaded automatically — a plugin declares what it needs, the same rule SourceMod's
+ * `LoadTranslations` enforces. The build reads this call to work out which keys `cmd.replyT` and
+ * `Translations.translate` will accept, so a key from a file you did not load is a compile error.
+ */
+export interface CtxTranslations {
+  /**
+   * Load `translations/<name>.phrases.json` for each name, in the order given.
+   *
+   * Order is significant: `translate` takes the first hit within each of its two passes (the
+   * client's language, then English), so list your own set before any shared one if you want to be
+   * able to override a shared phrase.
+   *
+   * @example ctx.translations.load("basecomm", "common");
+   */
+  load(...names: string[]): void;
+}
+
 /** Config live-reload subscription on this plugin's load-scope ({@link PluginContext.config}). */
 export interface CtxConfig {
   /** Fires when the plugin's config file is re-materialized on disk; re-read values inside. */
@@ -175,6 +195,8 @@ export interface PluginContext {
   readonly commands: CtxCommands;
   /** Config live-reload subscription ({@link CtxConfig}). */
   readonly config: CtxConfig;
+  /** Phrase files this plugin uses ({@link CtxTranslations}). */
+  readonly translations: CtxTranslations;
   /** TopMenu (adminmenu) contribution ({@link CtxTopMenu}). */
   readonly topmenu: CtxTopMenu;
   /** Publish this plugin's manifest-declared interface. Buffered; goes live at Active. */

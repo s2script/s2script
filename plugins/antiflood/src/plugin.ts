@@ -9,7 +9,6 @@ import { Chat } from "@s2script/sdk/chat";
 import { config } from "@s2script/sdk/config";
 import { HookResult } from "@s2script/sdk/events";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 import { floodStep } from "./flood";
 
 interface SlotState { tokens: number; lastTime: number; lastNotify: number; }
@@ -17,11 +16,7 @@ const state = new Map<number, SlotState>();
 const NOTIFY_INTERVAL = 2.0; // seconds — throttle the "slow down" notice so it isn't itself spammy
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("antiflood", phrases);
-  Translations.load("common");
+  ctx.translations.load("antiflood", "common");
 
   // Log tuning changes so an admin editing the config file sees them take effect (also opts this
   // plugin into the loader's live-reload watch, so getFloat/getInt below read fresh values).

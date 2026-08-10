@@ -5,7 +5,7 @@ import { Server } from "@s2script/sdk/server";
 import { Plugins } from "@s2script/sdk/plugins";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
+import type { PhraseKey } from "@s2script/sdk/phrases";
 
 // adminmenu — Change Map proof item (Server Commands, ADMFLAG.CHANGEMAP), a curated map picker filtered
 // by Server.isMapValid so an uninstalled map never shows.
@@ -37,7 +37,7 @@ function flagString(admin: { flags: number } | null, slot: number): string {
 
 /** `sm_who <target>` — SM's PerformWho: one line per resolved player, in the caller's own channel. */
 function whoOne(
-  cmd: { arg(n: number): string; replyT(key: string, ...args: (string | number)[]): void; callerSlot: number },
+  cmd: { arg(n: number): string; replyT(key: PhraseKey, ...args: (string | number)[]): void; callerSlot: number },
   pattern: string,
 ): void {
   const matches = Player.target(pattern, cmd.callerSlot);
@@ -57,11 +57,11 @@ function whoOne(
 // Slice 6.2 live gate — admin-gated commands. Admin cache = host-global (file admins.json ⊕ runtime),
 // from @s2script/admin. sm_say has moved to @s2script/basechat.
 export default plugin((ctx) => {
+  ctx.translations.load("basecommands", "common");
+
   // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
   // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
   // the same tier.
-  Translations.load("basecommands", phrases);
-  Translations.load("common");
 
   // 6.3 — sm_kick <target> [reason] (ADMFLAG.KICK). Resolves the SM target string (#userid/name/@all/@me)
   // and disconnects each match via the engine KickClient. Server console / rcon is root.
@@ -236,9 +236,10 @@ export default plugin((ctx) => {
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
   Admin.add("76561199000000009", ADMFLAG.KICK | ADMFLAG.CHAT);   // runtime tier
-  const t = Admin.get("76561199000000009");
-  console.log("[basecommands] admin diag: runtime-add hasKick=" + (t ? String(t.hasFlags(ADMFLAG.KICK)) : "null")
-    + " hasBan=" + (t ? String(t.hasFlags(ADMFLAG.BAN)) : "null"));
+  const diagAdmin = Admin.get("76561199000000009");
+  console.log("[basecommands] admin diag: runtime-add hasKick="
+    + (diagAdmin ? String(diagAdmin.hasFlags(ADMFLAG.KICK)) : "null")
+    + " hasBan=" + (diagAdmin ? String(diagAdmin.hasFlags(ADMFLAG.BAN)) : "null"));
   console.log("[basecommands] admin diag: slot0=" + (Admin.forSlot(0) ? "admin" : "not-admin (bot/steamid=0)"));
 
   // The category string "Server Commands" is a cross-plugin matching key (adminmenu's itemsFor

@@ -15,7 +15,7 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Pawn, Fade } from "@s2script/cs2";
 import { delay } from "@s2script/sdk/timers";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
+import type { PhraseKey } from "@s2script/sdk/phrases";
 
 // MoveType_t (const.h)
 const WALK = 2;
@@ -27,15 +27,15 @@ const NONE = 0;
 // Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
 // caller); filterImmunity=false for a reversal/benign command (no filter — e.g. un-freezing).
 //
-// usageKey/singularKey/pluralKey are typed `keyof typeof phrases`, not `string`, so a typo at one of
+// usageKey/singularKey/pluralKey are typed `PhraseKey`, not `string`, so a typo at one of
 // the five call sites below is a typecheck error — gen-phrases.mjs's AST scanner can only validate a
 // literal key argument to .replyT/.translate directly, and these arrive as arguments to this helper
 // instead, so they're invisible to that scan (same limitation as basecomm's forTargets, Task 7).
 function forEachPawn(
   cmd: CommandInvocation,
-  usageKey: keyof typeof phrases,
-  singularKey: keyof typeof phrases,
-  pluralKey: keyof typeof phrases,
+  usageKey: PhraseKey,
+  singularKey: PhraseKey,
+  pluralKey: PhraseKey,
   fn: (p: Player, pw: Pawn) => void,
   filterImmunity: boolean,
 ): void {
@@ -55,11 +55,7 @@ function forEachPawn(
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("funcommands", phrases);
-  Translations.load("common");
+  ctx.translations.load("funcommands", "common");
 
   // sm_gravity <target> [factor] — factor multiplies the player's gravity (1 = normal, <1 floaty, >1 heavy).
   ctx.commands.registerAdmin("sm_gravity", ADMFLAG.SLAY, (cmd) => {

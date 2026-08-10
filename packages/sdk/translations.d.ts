@@ -1,20 +1,50 @@
 /** @s2script/translations — SourceMod-style i18n (per-client language, phrase files, {1} formatting). */
+import type { PhraseKey } from "./phrases";
 
 /** A phrase set: key → template string, where `{1}`/`{2}`/… are positional substitution slots. */
 export type Phrases = Record<string, string>;
+
 /**
- * SourceMod-style translation registry: seed a default phrase set, override it per language from
- * `translations/<code>/<name>.phrases.json`, then translate a key for a given client's language.
+ * SourceMod-style translation registry. Phrases live in `translations/<name>.phrases.json`, shipped
+ * with the addon and edited by operators; `translations/<code>/<name>.phrases.json` overrides per
+ * language, added by a translator with no code change.
+ *
+ * A plugin declares the files it uses with {@link PluginContext.translations} — nothing is loaded
+ * for it automatically, the same rule SourceMod's `LoadTranslations` enforces:
+ *
  * @example
- * import { Translations } from "@s2script/sdk/translations";
- * Translations.load("trdemo", { Greeting: "Hello {1}", Bye: "Goodbye {1}" });
- * console.log(Translations.translate(-1, "Greeting", "world")); // "Hello world"
+ * export default plugin((ctx) => {
+ *   ctx.translations.load("basecomm", "common");
+ *   ctx.commands.registerAdmin("sm_gag", ADMFLAG.CHAT, (cmd) => {
+ *     cmd.replyT("Usage Gag");                                  // key-checked
+ *     Chat.toSlot(p.slot, Translations.translate(p.slot, "Gagged Player", n));
+ *   });
+ * });
+ *
+ * Keys are checked against the files that plugin loads — see `@s2script/sdk/phrases`.
  */
 export declare const Translations: {
-  /** Register a phrase set: `seed` is the built-in English default; translations/<code>/<name>.phrases.json overrides per language. `seed` is optional — with none, the set starts empty and is populated entirely from translations/<name>.phrases.json (SourceMod's `LoadTranslations`, for a shared/third-party file with no in-code default). */
+  /**
+   * Register a phrase set by name, populating it from `translations/<name>.phrases.json`.
+   *
+   * Prefer {@link PluginContext.translations}`.load(...)`, which is what the build reads to work out
+   * which keys your plugin may use. This is the lower-level form, for a name computed at runtime or
+   * a set with an in-code default — a `seed` here is the starting content, which the file overrides.
+   *
+   * Registration order is significant: `translate` takes the first hit within each of its two passes
+   * (the client's language, then English), so load your own set before any shared one if you want to
+   * override a shared phrase.
+   */
   load(name: string, seed?: Phrases): void;
-  /** Translate `key` for `slot`'s language (slot < 0 = the server default), substituting positional {1}/{2} args. */
-  translate(slot: number, key: string, ...args: (string | number)[]): string;
+  /**
+   * Translate `key` for `slot`'s language (slot < 0 = the server default), substituting positional
+   * {1}/{2} args.
+   *
+   * `key` is checked against the phrase files this plugin loads; it widens to `string` in a plugin
+   * that loads none, so this is never in the way. A key found in no loaded set returns the key
+   * itself — which is what the checking exists to prevent reaching a player.
+   */
+  translate(slot: number, key: PhraseKey, ...args: (string | number)[]): string;
   /** Set the server/console default language code (default "" = root/English). */
   setDefaultLanguage(code: string): void;
 };

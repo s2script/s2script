@@ -13877,6 +13877,29 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    /// `ctx.translations.load(a, b)` registers in the order given, so a plugin's own phrase beats a
+    /// shared one of the same key. Nothing is loaded for a plugin automatically — that is the rule
+    /// SourceMod's LoadTranslations enforces, and the order is the plugin's to state.
+    #[test]
+    fn ctx_translations_load_registers_in_the_order_given() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_body("p", r#"ctx.translations.load("own", "common");"#, "{}");
+        // Both sets define Greet. Injected at a real language code, not "", because translate skips
+        // the language pass entirely when the code is empty and would then only see the (empty,
+        // file-less) English defaults.
+        eval_in_context("p", "\
+            __s2_tr_injectLang('own',    'de', { Greet: 'from own' });\
+            __s2_tr_injectLang('common', 'de', { Greet: 'from common' });\
+            __s2pkg_translations.Translations.setDefaultLanguage('de');\
+        ").unwrap();
+        assert_eq!(
+            eval_in_context_string("p", "__s2pkg_translations.Translations.translate(-1,'Greet')"),
+            "from own",
+        );
+        shutdown();
+    }
+
     /// D2: a substituted argument must not be able to inject a colour tag. A player who renames
     /// themselves "{red}x{default}" would otherwise recolour every message that names them.
     #[test]

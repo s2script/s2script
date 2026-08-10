@@ -4,7 +4,6 @@ import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Player, Activity } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 
 function actorName(slot: number): string {
   if (slot < 0) return "Console";
@@ -50,11 +49,7 @@ function resolveOne(pattern: string, callerSlot: number, reply: (m: string) => v
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("basechat", phrases);
-  Translations.load("common");   // shared file in translations/, SourceMod's LoadTranslations("common.phrases")
+  ctx.translations.load("basechat", "common");
 
   // cmd.replyT(key) below: we hold a `cmd` context, so let it pick chat vs console for the reply.
   // Above and further down (resolveOne, the @@ trigger in onSay) there is only a raw slot — no

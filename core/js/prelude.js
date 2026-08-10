@@ -1786,6 +1786,17 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
           onSay:             function (h) { regFn(viaId(function () { return Ch.onMessage(h); })); },
           onRunCmd:          function (h) { regFn(viaId(function () { return Uc.onRun(h); })); },
         },
+        translations: {
+          // Declare the phrase files this plugin uses. Nothing is loaded for a plugin automatically
+          // — the same rule SourceMod's LoadTranslations enforces. ORDER MATTERS: translate takes
+          // the first hit within each of its two passes (the client's language, then English), so
+          // list your own set before any shared one to be able to override a shared phrase.
+          load: function () {
+            for (var i = 0; i < arguments.length; i++) {
+              __s2pkg_translations.Translations.load(String(arguments[i]));
+            }
+          },
+        },
         entities: {
           onCreate: function (c, h) { regFn(viaId(function () { return En.onCreate(c, h); })); },
           onSpawn:  function (c, h) { regFn(viaId(function () { return En.onSpawn(c, h); })); },

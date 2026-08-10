@@ -14,7 +14,6 @@ import { Server } from "@s2script/sdk/server";
 import { HookResult } from "@s2script/sdk/events";
 import { nextFrame } from "@s2script/sdk/timers";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
 
 // Every trigger answer is broadcast (Chat.toAll) to the whole server, not replied to just the
 // asker — there's no single "recipient" slot to translate for, so these resolve at the server
@@ -48,11 +47,7 @@ function nextMap(): string {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("basetriggers", phrases);
-  Translations.load("common");
+  ctx.translations.load("basetriggers", "common");
 
   ctx.clients.onSay((_slot, text, _teamonly) => {
     const t = text.trim().toLowerCase();

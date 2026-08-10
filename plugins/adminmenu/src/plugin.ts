@@ -3,7 +3,7 @@ import { TopMenu } from "@s2script/sdk/topmenu";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
 import { Admin, ADMFLAG } from "@s2script/sdk/admin";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
+import type { PhraseKey } from "@s2script/sdk/phrases";
 
 // Pure helpers (no side effects) — module-level.
 function itemsFor(category: string, flags: number) {
@@ -15,7 +15,7 @@ function itemsFor(category: string, flags: number) {
 // TopMenu.select) — only the text shown in the menu is looked up here. A category this plugin does
 // not know about (a third-party plugin's own) falls back to showing its raw name, unchanged from
 // today's behavior.
-const CATEGORY_LABEL_KEY: Record<string, keyof typeof phrases> = {
+const CATEGORY_LABEL_KEY: Record<string, PhraseKey> = {
   "Player Commands": "Category Player Commands",
   "Server Commands": "Category Server Commands",
   "Voting Commands": "Category Voting Commands",
@@ -38,11 +38,7 @@ function showCategory(slot: number, category: string, flags: number): void {
 }
 
 export default plugin((ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("adminmenu", phrases);
-  Translations.load("common");
+  ctx.translations.load("adminmenu", "common");
 
   // Fix the standard category order (items land in these; a plugin may add more). These strings are
   // a cross-plugin matching key (basebans/playercommands/basecomm/basevotes addItem against the same

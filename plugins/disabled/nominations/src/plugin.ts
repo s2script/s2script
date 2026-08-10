@@ -7,7 +7,7 @@ import { Player } from "@s2script/cs2";
 import { Chat } from "@s2script/sdk/chat";
 import { HookResult } from "@s2script/sdk/events";
 import { Translations } from "@s2script/sdk/translations";
-import { phrases } from "./phrases";
+import type { PhraseKey } from "@s2script/sdk/phrases";
 
 interface MapEntry { name: string; workshopId: string | null; }
 
@@ -47,11 +47,7 @@ function resolveMap(input: string, pool: MapEntry[]): MapEntry[] {
 }
 
 export default plugin(async (ctx) => {
-  // Own set FIRST, common SECOND: within each of translate's two passes (client language, then
-  // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
-  // the same tier.
-  Translations.load("nominations", phrases);
-  Translations.load("common");
+  ctx.translations.load("nominations", "common");
 
   let currentMap = "";     // the map we've claimed/recorded ("" until the DB is ready + first poll)
   let frameCounter = 0;    // throttles the map-change poll to ~once/sec
@@ -99,7 +95,7 @@ export default plugin(async (ctx) => {
    * `disabled` flag is what keeps them off the number keys, so the selectable maps below still
    * number contiguously and nothing can be nominated by accident.
    */
-  function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], titleKey: keyof typeof phrases): void {
+  function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], titleKey: PhraseKey): void {
     const m = new Menu(Translations.translate(slot, titleKey));
     m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
     // The chat menu renderer prints each line through Chat.toSlot, so colour tags in the DISPLAY
