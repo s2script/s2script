@@ -10,6 +10,20 @@
 
 **Design:** `docs/superpowers/specs/2026-08-07-base-plugin-phrases-design.md`
 
+> **Superseded in part — read the spec, not this plan, for the shipped design.**
+>
+> This plan is the execution record of the eleven tasks as they ran. After they landed, the phrase
+> layer was reworked: the per-plugin `src/phrases.ts` seeds and the generated-from-seed JSON were
+> collapsed to **one hand-authored `translations/<plugin>.phrases.json`**, loading became
+> **explicit** (`ctx.translations.load("plugin", "common")` — nothing is automatic, including
+> `common`), and phrase keys are now **checked at build** against the files each plugin loads.
+>
+> `scripts/gen-phrases.mjs` and `scripts/check-phrases-generated.sh` no longer exist; they are
+> replaced by `scripts/sync-phrase-types.mjs` and `scripts/check-phrase-types.sh`, which derive
+> *types* rather than data. Tasks 5-9 below describe the superseded arrangement and are kept as
+> history. §B and §C of the design doc describe what actually shipped, and why the first shape was
+> wrong.
+
 ## Global Constraints
 
 - **Worktree:** `/home/gkh/projects/s2script/.claude/worktrees/base-plugin-phrases`, branch `i18n/base-plugin-phrases`, based on `origin/main`. All paths below are relative to that worktree root.

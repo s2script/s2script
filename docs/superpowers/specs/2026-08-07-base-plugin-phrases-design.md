@@ -119,91 +119,110 @@ Players never see stray braces; the operator gets a diagnostic. This also means 
 hard dependency on `@s2script/cs2`: a plugin running without a game package degrades to correct
 uncolored text.
 
-## B. Phrase files, keys, and the shared set
+## B. Phrase files
 
-### `src/phrases.ts` per plugin
+### One file per plugin, and it is the only copy
 
-English lives in code as the seed, in its own module exporting a plain object:
+`translations/<plugin>.phrases.json` is the single source of truth: hand-authored, checked in,
+shipped in the addon, edited by operators. There is no in-code copy of any phrase.
 
-```ts
-// plugins/basechat/src/phrases.ts
-export const phrases = {
-  "Say All":     "{green}(ALL) {1}: {default}{2}",
-  "Say Admins":  "{green}(ADMINS) {1}: {default}{2}",
-  "Say Private": "{green}(private to {1}) {2}: {default}{3}",
-};
+```json
+// translations/basecomm.phrases.json
+{
+  "Usage Gag": "Usage: sm_gag <target>",
+  "Gagged Player": "{green}[SM]{default} Gagged {1} player."
+}
 ```
 
-A separate module so the generator (§C) can read it without parsing `plugin.ts`, and so `plugin.ts`
-stays about behavior.
+*This is a revision.* The slice first shipped English twice — a `src/phrases.ts` seed per plugin
+plus a JSON generated from it — on the reasoning that a compiled-in default meant a plugin worked
+with zero files. That bought a real property and cost 35 files, a generator, and a freshness gate
+whose only job was keeping two copies of the same strings in step. SourceMod does this with one
+file, and so do we now. The consequence is SourceMod's: a missing phrase file means keys render as
+themselves, so `Translations.load` warns on a seedless load whose file is absent (§D3).
+
+### Loading is explicit — nothing is automatic
+
+A plugin declares the files it uses, in load order:
+
+```ts
+ctx.translations.load("basecomm", "common");
+```
+
+Nothing is loaded for a plugin automatically, including the shared `common` set. This is
+SourceMod's rule ("Plugins must call LoadTranslations on each translation file they wish to use").
+
+SourceMod's stated *reason* — stopping one plugin's file leaking into another — does not apply
+here: each plugin runs in its own V8 context with its own phrase registry, so cross-plugin clashing
+is impossible by construction (pinned by
+`phrases_module_binds_to_the_calling_plugins_own_set`-style context isolation). Explicitness is
+kept for the other reasons: one obvious way to do it, familiarity for SM authors, no reads for a
+plugin that uses none, and a visible line saying which files a plugin depends on.
+
+**Order is significant and is the plugin's to state.** `translate` takes the first hit within each
+of its two passes (the client's language, then English), so a plugin lists its own set before any
+shared one to be able to override a shared phrase. Stating it as one variadic call rather than N
+statements keeps the order visible in one place.
+
+### The shared set
+
+`translations/common.phrases.json` is a hand-authored file with no generator involvement — the
+cross-plugin phrases (target-resolution failures, "no access"). It is SourceMod's
+`common.phrases.txt`: a data file any plugin loads by name, including third-party ones. Every base
+plugin loads it explicitly.
+
+`sync-phrase-types.mjs` reserves the plugin-directory name `"common"` so a plugin cannot be created
+that would overwrite it.
 
 ### Key naming
 
-Human-readable English phrases as keys, SourceMod-style (`"Player not found"`, not
-`"ERR_NO_PLAYER"`). The key is the ultimate fallback when every lookup misses, so a miss should read
-as English rather than as a symbol.
+Human-readable English phrases as keys (`"Player not found"`, not `"ERR_NO_PLAYER"`). The key is
+what renders when every lookup misses, so a miss should read as English rather than a symbol.
 
-### A shared `common` set
-
-SourceMod ships `common.phrases.txt`; our plugins already duplicate `"No matching players"` and
-`"Multiple players match"` verbatim across files. A `common` set holds the cross-plugin phrases:
-target-resolution failures, `"You do not have access to this command."`, usage scaffolding.
-
-**Its source of truth is one hand-authored drop-in file**, `translations/common.phrases.json`. It has
-no `src/phrases.ts` seed — nothing generates it, and `scripts/gen-phrases.mjs` never touches it. Every
-plugin calls a *seedless* `Translations.load("common")` (no second argument) after loading its own
-set; that call reads only the root file — SourceMod's `LoadTranslations("common.phrases")` cadence,
-exactly. `translations/` stays a plain drop-in folder, exactly like SourceMod's
-`addons/sourcemod/translations/`: operators and third-party plugin authors add files to it directly,
-and `gen-phrases.mjs` reserves the plugin-directory name `"common"` (`gen-phrases.mjs:157-169`) so a
-future plugin can never generate a file that collides with — and silently overwrites — the
-hand-authored one.
-
-**Rejected: a shared library package.** An earlier iteration put the shared set at
-`packages/phrases-common/`, declared under `s2script.libraries` and loaded via a second,
-*seeded* `Translations.load("common", commonPhrases)`. That does not work: the SDK bundles a
-plugin with esbuild, and every `@s2script/*` name is marked `external` in both `build.ts` and
-`build-library.ts` — those names are framework builtins resolved by core at runtime, never inlined.
-`tsc`'s path mapping *also* always resolves `@s2script/*` to a builtin `.d.ts`, so a library
-declared under that scope would typecheck cleanly (its `paths` entry wins) while esbuild still
-externalizes the name — the bundle would ship a bare `require("@s2script/phrases-common")` with none
-of the library's code inlined, and it would die at load. `packages/sdk/src/libraries.ts`'s
-`assertLibrariesResolved` refuses any `s2script.libraries` entry under the `@s2script/*` scope
-outright, precisely to stop tsc and esbuild from silently disagreeing about what the name means —
-which is what this design hit in practice before it was replaced with the drop-in file above.
-`packages/` today ships only `cs2`, `eslint-plugin`, and `sdk`; no `phrases-common` package exists.
-
-**Load order is load-bearing.** Within each of `translate`'s two passes — every loaded set in the
-client's language, then every loaded set in English (see D1 below) — the first hit across sets wins,
-so each plugin loads **its own set first, `common` second**. A plugin-specific phrase then shadows a
-common phrase of the same key *at the same tier* — the precedence you want. A test pins this rule
-(§F); it is only useful if something enforces it.
-
-### Prefixes move into phrase text
+### Prefixes live in phrase text
 
 `"[SM] Kicked {1}"` rather than `"[SM] " + t("Kicked", …)`. Rebranding the tag to `[MyServer]`
 becomes an operator edit of one string instead of a fork.
 
-## C. Generated English files + a freshness gate
+## C. Keys are checked at build time
 
-The shipped English file is **generated from the seed**, never hand-written.
+`cmd.replyT(key)` and `Translations.translate(slot, key)` take a `PhraseKey`, not a `string`. The
+valid keys are resolved per plugin from **the files that plugin actually loads**.
 
-- `scripts/gen-phrases.mjs` imports each plugin's `src/phrases.ts` under
-  `node --experimental-strip-types` — the same mechanism `ci-js.sh` already uses to run the SDK's
-  test suite — and writes `translations/<name>.phrases.json`. Importing rather than text-parsing
-  means the seed is validated as real TypeScript by the act of generating from it.
-- **`<name>` is the plugin's directory name** (`basechat` → `translations/basechat.phrases.json`),
-  and is the same string the plugin passes to `Translations.load`. A test asserts the three agree,
-  because a mismatch fails silently: the file is simply never read and English seeds stand.
-- `scripts/check-phrases-generated.sh` regenerates into a temp dir and diffs; drift fails the gate.
-  It self-wires via the `check-*-generated.sh` glob in `ci-js.sh`.
+- `scripts/sync-phrase-types.mjs` parses each plugin's `ctx.translations.load(...)` call with the
+  TypeScript compiler API — not a regex, which matches the same text inside a comment or a string,
+  and a conversion of this shape leaves commented-out calls behind. Only literal arguments are
+  collected; a name built at runtime is skipped rather than guessed at.
+- It writes `plugins/<name>/src/phrases.generated.d.ts`, which augments the `PhraseKeys` interface
+  in `packages/sdk/phrases.d.ts` with the union of those files' keys. Interface merging turns that
+  into the exact literal union `PhraseKey` resolves to.
+- That file carries key **names** only, never phrase text. It is derived and gitignored — the
+  `.svelte-kit/types` model, not a second copy of the data.
+- `PhraseKey` falls back to `string` when nothing has augmented it, so a plugin that loads no
+  phrases — or whose declaration has not been written yet — compiles unchecked rather than failing
+  to compile at all.
 
-This gives operators a real, discoverable file to edit — the root-override path means their edit
-beats the seed — while making seed-vs-file drift structurally impossible. It is the repo's existing
-codegen-freshness pattern applied to a new artifact.
+Two failures this catches that no runtime check can:
 
-`scripts/package-addon.sh` gains `translations/` to its runtime-dir creation and copies the
-generated files in. Without this the whole feature is inert (see Background).
+```ts
+ctx.translations.load("basecomm", "common");
+cmd.replyT("Usage Gagg");            // compile error — typo
+
+ctx.translations.load("basecomm");   // common not loaded
+cmd.replyT("No matching players");   // compile error — key not in any loaded file
+```
+
+SourceMod fails the second at runtime, printing the raw key to a player when the line is reached.
+Here it fails the build.
+
+`scripts/check-phrase-types.sh` gates declaration freshness. Because the declarations are gitignored,
+`ci-js.sh` runs the sync **before** any plugin typecheck — otherwise keys would silently widen to
+`string` and the check would pass vacuously.
+
+`scripts/package-addon.sh` ships `translations/`. Without it the directory does not exist in an
+install, every phrase resolves to its own key, and the whole mechanism is dead while appearing to
+work — the original defect this slice was written to fix.
+
 
 ## D. Two correctness fixes this slice makes necessary
 
@@ -232,11 +251,23 @@ that arrives later as a "chat color exploit" report.
 Fix: strip `{` and `}` from substituted argument values in `__s2_tr_format`. A player name loses a
 brace; nobody recolors anyone else's chat.
 
+### D3. A seedless load whose file is missing renders raw keys
+
+With no in-code copy, a phrase set whose file is absent is empty, and every key resolved against it
+falls through to the key itself — visible to players, with nothing in the log. `Translations.load`
+therefore warns, naming the set, when a load supplies no seed **and** finds no file. Only that
+combination: a load with a seed and no file is the normal degrade and stays silent.
+
+This is the same failure mode as SourceMod's, and it is the price of one file per plugin. The
+mitigations are that `package-addon.sh` ships the directory and the warning names the set.
+
 ## E. Testing and gates
 
 **New gates**
 
-- `check-phrases-generated.sh` — seed-vs-shipped-file drift (self-wiring, §C).
+- `check-phrase-types.sh` — the generated key declarations match the files each plugin loads (§C).
+- The declarations are gitignored, so `ci-js.sh` runs `sync-phrase-types.mjs` BEFORE any plugin
+  typecheck — otherwise keys widen to `string` and the typecheck passes vacuously.
 - A `node:test` suite over the pure pieces — `core/js/prelude.test.js`, the first test file that
   directory has ever had, following the `games/cs2/js/activity.test.js` pattern:
   - known / unknown / adjacent tags; empty table; no table at all
@@ -294,7 +325,8 @@ plugins are `private: true` and do not.
 1. Color expansion in `core/js/prelude.js` (`__s2_chatLine`, `__s2cmd_stripCtl`) + the cs2 table
    registration.
 2. D1 and D2 correctness fixes, with their tests.
-3. `src/phrases.ts` + `gen-phrases.mjs` + `check-phrases-generated.sh` + `package-addon.sh`.
+3. `translations/<plugin>.phrases.json` + `sync-phrase-types.mjs` + `check-phrase-types.sh` +
+   `package-addon.sh`.
 4. The `common` set.
 5. The 18-plugin rewrite.
 6. The cookbook `de/` fixture.
