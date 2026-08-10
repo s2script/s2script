@@ -1418,6 +1418,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var vol = (opts.volume == null) ? 1.0 : +opts.volume;
       return __s2_sound_emit(String(name), idx, id, slots, vol);
     },
+    // stop(name, opts) — the counterpart to emit. UNLIKE emit, an entity is REQUIRED: the engine
+    // call behind this is an instance method on the entity, reached through the books-gated entity
+    // resolve, so there is no global/2D form to default to the way emit falls back to worldspawn.
+    // Returns false with no entity, on a stale ref, or when the op is unavailable.
+    stop: function (name, opts) {
+      var e = (opts || {}).entity;
+      if (!e || typeof e.stopSound !== "function") return false;
+      return e.stopSound(name);
+    },
     onPrecache: function (h) {
       return __s2_precache_subscribe(function () {
         h({ add: function (p) { return __s2_sound_precache_add(String(p)); } });

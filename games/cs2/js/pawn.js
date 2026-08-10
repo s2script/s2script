@@ -455,6 +455,32 @@
     return pkg.Sound.emit(name, { entity: this.ref, recipients: o.recipients, volume: o.volume });
   };
 
+  // pawn.stopSound(name) — the counterpart to emitSound. No recipients/volume: the engine stops the
+  // sound for everyone hearing it. Returns false on a stale ref or an unavailable op.
+  Pawn.prototype.stopSound = function (name) {
+    var r = this.ref;
+    return r ? r.stopSound(name) : false;
+  };
+
+  // The entity-property setters, forwarded from the pawn's serial-gated EntityRef. These are thin by
+  // design — the engine ops are entity-generic (see @s2script/sdk/entity), and these exist because a
+  // pawn is what a plugin actually holds. `pawn.ref.setGravityScale(x)` remains equivalent.
+  //
+  // setBodyGroupByName is deliberately NOT forwarded: it is a model concern rather than a pawn one,
+  // and reaching it via pawn.ref keeps the pawn surface about the player.
+  Pawn.prototype.setGravityScale = function (scale) {
+    var r = this.ref;
+    return r ? r.setGravityScale(scale) : false;
+  };
+  Pawn.prototype.applyAbsVelocityImpulse = function (impulse) {
+    var r = this.ref;
+    return r ? r.applyAbsVelocityImpulse(impulse) : false;
+  };
+  Pawn.prototype.setModelScale = function (scale) {
+    var r = this.ref;
+    return r ? r.setModelScale(scale) : false;
+  };
+
   // pawn.activeWeapon — the currently-deployed weapon (m_hActiveWeapon on WeaponServices), as a Weapon.
   // null if unresolved / none / stale.
   Object.defineProperty(Pawn.prototype, "activeWeapon", {

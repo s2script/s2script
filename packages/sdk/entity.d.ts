@@ -174,8 +174,10 @@ export declare class EntityRef {
    *  [x,y,z] triple. A zero impulse is a legal no-op. Returns false if the op is unavailable, the ref
    *  is stale, or any component is not finite. */
   applyAbsVelocityImpulse(impulse: number[]): boolean;
-  /** Stop a sound playing on this entity (`CBaseEntity::StopSound`) — the counterpart to
-   *  `Sound.emit`. Returns false if the op is unavailable or the ref is stale. */
+  /** Stop a sound playing on this entity (`CBaseEntity::StopSound`). `Sound.stop(name, { entity })`
+   *  in `@s2script/sdk/sound` is the same call spelled next to `Sound.emit`, and
+   *  `pawn.stopSound(name)` in `@s2script/cs2` is the pawn-shaped one. Returns false if the op is
+   *  unavailable or the ref is stale. */
   stopSound(name: string): boolean;
   /** Set a model body group by name (`CBaseModelEntity::SetBodyGroupByName`).
    *

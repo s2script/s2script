@@ -108,6 +108,22 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   /** Play a named CS2 SoundEvent from this pawn (the liveness-gated source entity; a stale ref emits
    *  nothing). Returns the engine sound GUID (nonzero) or 0. Bot recipients are always skipped. */
   emitSound(name: string, opts?: { recipients?: number[]; volume?: number }): number;
+  /** Stop a named SoundEvent playing on this pawn — the counterpart to {@link Pawn.emitSound}.
+   *  No `recipients`/`volume`: the engine stops it for everyone hearing it. False if the ref is
+   *  stale or the op is unavailable. */
+  stopSound(name: string): boolean;
+  /** Set this pawn's gravity multiplier (1 normal, 0 weightless). Prefer this over writing
+   *  `m_flGravityScale`, which the engine ignores — see `EntityRef.setGravityScale`. False if the
+   *  ref is stale, the op is unavailable, or `scale` is not finite. */
+  setGravityScale(scale: number): boolean;
+  /** Add to this pawn's velocity, physics-aware — knockback, boosts, explosions. Additive, unlike
+   *  `teleport(null, null, velocity)` which sets velocity absolutely. `impulse` is an [x,y,z] triple.
+   *  False if the ref is stale, the op is unavailable, or any component is not finite. */
+  applyAbsVelocityImpulse(impulse: number[]): boolean;
+  /** Set this pawn's model scale. The argument shape is confirmed against the pinned build, but the
+   *  engine function's NAME is a catalogue attribution its body does not prove — verify the effect
+   *  before relying on it in a shipped plugin. Calling it is safe either way. */
+  setModelScale(scale: number): boolean;
 }
 /**
  * Entry point for the {@link Pawn} body object — resolve the in-world pawn for a player slot.

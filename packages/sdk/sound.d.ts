@@ -52,4 +52,18 @@ export declare const Sound: {
    *  function / stale source entity / an empty `recipients` array). An all-bot-skipped recipient
    *  set still emits to nobody (a real engine call, may return a nonzero GUID). */
   emit(name: string, opts?: SoundEmitOptions): number;
+  /**
+   * Stop a named SoundEvent playing on an entity — the counterpart to {@link Sound.emit}.
+   *
+   * **`opts.entity` is required**, unlike `emit`. The engine call behind this is an instance method
+   * on the entity, so there is no global/2D form to default to the way `emit` falls back to
+   * worldspawn. `recipients` and `volume` do not apply: the engine stops the sound for everyone
+   * hearing it.
+   *
+   * Equivalent to `entity.stopSound(name)`; this is the discoverable spelling next to `emit`.
+   * `pawn.stopSound(name)` in `@s2script/cs2` is the pawn-shaped one.
+   *
+   * Returns false when `opts.entity` is absent or stale, or the engine op is unavailable.
+   */
+  stop(name: string, opts: { entity: EntityRef }): boolean;
 };

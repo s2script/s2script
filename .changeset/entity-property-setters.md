@@ -3,7 +3,7 @@
 "@s2script/cs2": minor
 ---
 
-Add five `EntityRef` property setters and `Pawn.maxSpeed`
+Add five entity property setters, `Pawn.maxSpeed`, and their `Sound` / `Pawn` spellings
 
 Each of these wraps an engine function that has **no working schema equivalent**, which is the
 reason they are engine calls rather than field writes:
@@ -15,6 +15,7 @@ reason they are engine calls rather than field writes:
   physics-aware, for knockback and boosts. `teleport(null, null, velocity)` sets velocity absolutely;
   a raw `m_vecAbsVelocity` write skips the partition/physics update entirely.
 - `EntityRef.stopSound(name)` — `CBaseEntity::StopSound`, the counterpart to `Sound.emit`.
+  Also spelled `Sound.stop(name, { entity })` and `pawn.stopSound(name)`.
 - `EntityRef.setBodyGroupByName(name, group)` — `CBaseModelEntity::SetBodyGroupByName`.
   `m_bodyGroupChoices` is a `CUtlOrderedMap`, not a writable scalar.
 - `EntityRef.setModelScale(scale)` — `CBaseModelEntity::SetModelScale`.
@@ -26,6 +27,20 @@ The five `EntityRef` methods are engine-generic (`CBaseEntity` / `CBaseModelEnti
 native ops. `Pawn.maxSpeed` names a CS2 class, so it ships as a `calls` descriptor in
 `gamedata/cs2/game.cs2.jsonc` and is consumed from `games/cs2/js/pawn.js` — no CS2 identifier enters
 core, as `check-core-names.sh` verifies.
+
+**Reachable where you would look for them, not only on `EntityRef`.** The ops live at the entity
+layer because that is what the engine functions are, but that is not where a plugin author looks:
+
+- `Sound.stop(name, { entity })` sits beside `Sound.emit`. `entity` is **required** here, unlike
+  `emit` — the engine call is an instance method reached through the books-gated entity resolve, so
+  there is no global/2D form to fall back to the way `emit` defaults to worldspawn.
+- `pawn.stopSound(name)` mirrors the existing `pawn.emitSound(name)`.
+- `pawn.setGravityScale()`, `pawn.applyAbsVelocityImpulse()` and `pawn.setModelScale()` forward to
+  the pawn's own serial-gated `EntityRef`, so gravity and knockback are one call on the object a
+  plugin actually holds rather than `pawn.ref.setGravityScale(...)`.
+
+`setBodyGroupByName` is deliberately **not** forwarded to `Pawn`: it is a model concern rather than a
+player one, and it stays reachable as `pawn.ref.setBodyGroupByName(...)`.
 
 Every signature was located by an independent per-build derivation and then **re-resolved against our
 own pinned `libserver.so` per `docs/re-strategy.md` Rule 3** — a borrowed pattern is a hint, never a
