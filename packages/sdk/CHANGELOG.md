@@ -1,5 +1,103 @@
 # @s2script/cli
 
+## 0.21.0
+
+### Minor Changes
+
+- 9cf800c: Add five entity property setters, `Pawn.maxSpeed`, and their `Sound` / `Pawn` spellings
+
+  Each of these wraps an engine function that has **no working schema equivalent**, which is the
+  reason they are engine calls rather than field writes:
+
+  - `EntityRef.setGravityScale(scale)` — `CBaseEntity::SetGravityScale`. The setter early-returns when
+    the value is unchanged and maintains a second field (`m_flActualGravityScale`), so a plugin that
+    writes `m_flGravityScale` directly sees nothing happen. That trap is the whole reason this exists.
+  - `EntityRef.applyAbsVelocityImpulse([x,y,z])` — `CBaseEntity::ApplyAbsVelocityImpulse`. Additive and
+    physics-aware, for knockback and boosts. `teleport(null, null, velocity)` sets velocity absolutely;
+    a raw `m_vecAbsVelocity` write skips the partition/physics update entirely.
+  - `EntityRef.stopSound(name)` — `CBaseEntity::StopSound`, the counterpart to `Sound.emit`.
+    Also spelled `Sound.stop(name, { entity })` and `pawn.stopSound(name)`.
+  - `EntityRef.setBodyGroupByName(name, group)` — `CBaseModelEntity::SetBodyGroupByName`.
+    `m_bodyGroupChoices` is a `CUtlOrderedMap`, not a writable scalar.
+  - `EntityRef.setModelScale(scale)` — `CBaseModelEntity::SetModelScale`.
+  - `Pawn.maxSpeed` — `CCSPlayerPawn::GetPlayerMaxSpeed`. Computed by the engine; there is no
+    `m_flMaxSpeed` on `CCSPlayerPawn` to read. `null` (never `0`) when unavailable, because `0` is a
+    legitimate speed for a frozen player.
+
+  The five `EntityRef` methods are engine-generic (`CBaseEntity` / `CBaseModelEntity`) and so are core
+  native ops. `Pawn.maxSpeed` names a CS2 class, so it ships as a `calls` descriptor in
+  `gamedata/cs2/game.cs2.jsonc` and is consumed from `games/cs2/js/pawn.js` — no CS2 identifier enters
+  core, as `check-core-names.sh` verifies.
+
+  **Reachable where you would look for them, not only on `EntityRef`.** The ops live at the entity
+  layer because that is what the engine functions are, but that is not where a plugin author looks:
+
+  - `Sound.stop(name, { entity })` sits beside `Sound.emit`. `entity` is **required** here, unlike
+    `emit` — the engine call is an instance method reached through the books-gated entity resolve, so
+    there is no global/2D form to fall back to the way `emit` defaults to worldspawn.
+  - `pawn.stopSound(name)` mirrors the existing `pawn.emitSound(name)`.
+  - `pawn.setGravityScale()`, `pawn.applyAbsVelocityImpulse()` and `pawn.setModelScale()` forward to
+    the pawn's own serial-gated `EntityRef`, so gravity and knockback are one call on the object a
+    plugin actually holds rather than `pawn.ref.setGravityScale(...)`.
+
+  `setBodyGroupByName` is deliberately **not** forwarded to `Pawn`: it is a model concern rather than a
+  player one, and it stays reachable as `pawn.ref.setBodyGroupByName(...)`.
+
+  Every signature was located by an independent per-build derivation and then **re-resolved against our
+  own pinned `libserver.so` per `docs/re-strategy.md` Rule 3** — a borrowed pattern is a hint, never a
+  number. For each: the pattern matches exactly once in the PF_X segment, and the match address is
+  preceded by `int3` padding or a `ret`, confirming it is a real function entry (which is what makes
+  `resolve: "direct"` safe). Every prototype was then confirmed by disassembly at that address rather
+  than trusted from the deriver's declaration — this caught that `SetBodyGroupByName`'s group argument
+  is 32-bit, and that `ApplyAbsVelocityImpulse` takes its `Vector` by address.
+
+  `setModelScale` is recorded as **lower confidence than the other four**: its argument shape is
+  confirmed, but its body is a devirtualisation guard that hops to a sub-object and tail-calls, so the
+  name is a catalogue attribution the body does not itself prove. It is memory-safe to call; verify the
+  effect before relying on it in a shipped plugin. The gamedata comment says so too.
+
+  All six degrade per-descriptor in the usual way: an unresolved signature leaves the op null and the
+  accessor returns `false` (or `null` for `maxSpeed`), never a crash.
+
+- 1c00b89: Phrase keys are now checked at build time, and a plugin declares the phrase files it uses.
+
+  `cmd.replyT(key)` and `Translations.translate(slot, key)` no longer take a bare `string`. Their key
+  is checked against the phrase files the plugin loads, so a typo — or a key from a file the plugin
+  forgot to load — is a compile error instead of raw key text printed to a player at runtime.
+  SourceMod enforces the same rule, but only when the line is reached.
+
+  A plugin declares what it uses on its context, in load order:
+
+  ```ts
+  export default plugin((ctx) => {
+    ctx.translations.load("basecomm", "common");
+    // ...
+  });
+  ```
+
+  Nothing is loaded automatically, including the shared `common` set. Order is significant:
+  `translate` takes the first hit within each of its two passes (the client's language, then English),
+  so a plugin lists its own set before any shared one to be able to override a shared phrase.
+
+  **New:** `ctx.translations` (`CtxTranslations`), and `@s2script/sdk/phrases`, which exports the
+  `PhraseKey` type. You do not import that module in normal use — it exists so the checking has
+  somewhere to live, and for the rare helper that takes a phrase key as a parameter:
+
+  ```ts
+  function usage(cmd: CommandInvocation, key: PhraseKey) {
+    cmd.replyT(key);
+  }
+  ```
+
+  **Also:** `Translations.load`'s `seed` parameter is optional, matching the runtime, which has always
+  treated a missing seed as an empty starting set. A phrase set is now normally populated entirely
+  from its file.
+
+  **Compatibility.** A plugin that loads no phrase files sees `PhraseKey` widen to `string` and is
+  unaffected. Existing plugins that call `Translations.load(name, seed)` keep working; they gain key
+  checking by moving the call to `ctx.translations.load(name)` and putting the phrases in
+  `translations/<name>.phrases.json`.
+
 ## 0.20.0
 
 ### Minor Changes
