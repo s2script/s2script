@@ -1381,6 +1381,35 @@ fn make_timer_promise<'s>(
     promise.into()
 }
 
+/// Shared helper for payload-carrying job natives (`__s2_fetch`, and any later cousin): create a
+/// `PromiseResolver`, tag it with the calling plugin, ledger it as a `Job`, stash it under a fresh
+/// async id, bump `PENDING_JOBS`, reconcile the detour, and return `(id, promise)`.
+///
+/// The caller submits work keyed by `id`; `frame_async_drain` later pops the resolver. RESOLVERS
+/// stay here — modules must not touch the map. A non-plugin / unknown owner is a safe no-op.
+pub(crate) fn begin_job_promise<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> (u64, v8::Local<'s, v8::Value>) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let id = next_async_id();
+    let owner = resolver_owner_tag(scope);
+    if let Some((ref oid, _)) = owner {
+        REGISTRY.with(|r| {
+            if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                l.record_job(id);
+            }
+        });
+    }
+    RESOLVERS.with(|m| {
+        m.borrow_mut()
+            .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+    });
+    PENDING_JOBS.with(|c| c.set(c.get() + 1));
+    refresh_detour();
+    (id, promise.into())
+}
+
 /// Native `__s2_delay(ms) -> Promise`.  Resolves after a wall-clock deadline.
 fn s2_delay(
     scope: &mut v8::PinScope,
@@ -1531,98 +1560,6 @@ fn s2_thread_sleep(
             std::thread::sleep(std::time::Duration::from_millis(ms));
             Ok(())
         }));
-        refresh_detour();
-        rv.set(promise.into());
-    }));
-}
-
-/// Read `obj[name]` as a `String`, or `None` if the property is absent/`null`/`undefined` (a
-/// missing/nullish `options` field should fall back to its default, not stringify to `"undefined"`).
-fn get_str_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str) -> Option<String> {
-    let key = v8::String::new(scope, name)?;
-    let val = obj.get(scope, key.into())?;
-    if val.is_null_or_undefined() {
-        return None;
-    }
-    Some(val.to_rust_string_lossy(scope))
-}
-
-/// Native `__s2_fetch(url, options) -> Promise<rawResponse>` where `rawResponse =
-/// {status, ok, statusText, headers, body}`.  MIRRORS `s2_thread_sleep`'s resolver/ledger/pending
-/// block exactly (a `Job` resource — teardown drops its `RESOLVERS` entry before the context
-/// disposes, and a completion for an unloaded/reloaded plugin is DROPPED by the async-liveness
-/// guard in the drain step, never resolved) but hands off to `crate::http::fetch` (the
-/// process-global tokio+reqwest engine, Task 1) instead of the blocking-sleep worker pool — so the
-/// calling (main/game) thread never blocks on I/O; the request runs off-thread and the Promise
-/// resolves on a LATER `frame_async_drain` via `resolve_fetch`.
-///
-/// `options` (all optional): `method` (default `"GET"`), `headers` (a plain string→string object),
-/// `body` (a string), `timeoutMs` (default 30000). Degrade-never-crash: the whole body runs under
-/// `catch_unwind`; a malformed/absent `options` degrades to the defaults (never throws
-/// synchronously) — the actual network outcome (incl. a 4xx/5xx, which RESOLVES with `ok:false`,
-/// vs. a network/timeout error, which REJECTS) is decided later by `resolve_fetch`.
-fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let url = args.get(0).to_rust_string_lossy(scope);
-        // Parse options (defaults GET / no headers / no body / 30000ms timeout).
-        let mut method = "GET".to_string();
-        let mut headers: Vec<(String, String)> = Vec::new();
-        let mut body: Option<String> = None;
-        let mut timeout_ms = 30_000u64;
-        if let Ok(opts) = v8::Local::<v8::Object>::try_from(args.get(1)) {
-            if let Some(v) = get_str_prop(scope, opts, "method") {
-                method = v;
-            }
-            if let Some(v) = get_str_prop(scope, opts, "body") {
-                body = Some(v);
-            }
-            if let Some(k) = v8::String::new(scope, "timeoutMs") {
-                if let Some(v) = opts.get(scope, k.into()) {
-                    if v.is_number() {
-                        timeout_ms = v.integer_value(scope).unwrap_or(30_000).max(0) as u64;
-                    }
-                }
-            }
-            if let Some(k) = v8::String::new(scope, "headers") {
-                if let Some(hv) = opts.get(scope, k.into()) {
-                    if let Ok(ho) = v8::Local::<v8::Object>::try_from(hv) {
-                        if let Some(names) = ho.get_own_property_names(scope, Default::default()) {
-                            for i in 0..names.length() {
-                                let Some(key) = names.get_index(scope, i) else { continue };
-                                let Some(val) = ho.get(scope, key) else { continue };
-                                headers.push((
-                                    key.to_rust_string_lossy(scope),
-                                    val.to_rust_string_lossy(scope),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-        let id = next_async_id();
-        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
-        let owner = resolver_owner_tag(scope);
-        // Ledger this async job against the CALLING plugin (teardown authority) — a non-plugin/
-        // unknown owner is a safe no-op; no borrow held across a JS call.
-        if let Some((ref oid, _)) = owner {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
-                }
-            });
-        }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
-        crate::http::fetch(
-            id,
-            crate::http::FetchRequest { method, url, headers, body, timeout_ms },
-        );
         refresh_detour();
         rv.set(promise.into());
     }));
@@ -5255,7 +5192,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_db_remote_execute", s2_db_remote_execute);
     set_native(scope, global_obj, "__s2_db_remote_close", s2_db_remote_close);
     // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
-    set_native(scope, global_obj, "__s2_fetch", s2_fetch);
+    crate::http::install_natives(scope, global_obj);
     // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
     set_native(scope, global_obj, "__s2_ws_connect", s2_ws_connect);
     crate::ws::install_natives(scope, global_obj);
@@ -7114,86 +7051,30 @@ pub(crate) fn frame_async_drain() {
             PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
             resolve_db(host, &entry, c.result);
         }
-        // Route completed ws signals (WebSocket Task 2, over core/src/ws.rs's tokio+tungstenite
-        // engine). ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect
-        // Promise INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then`
-        // continuation — which subscribes onMessage — runs THIS frame); Message/Errored/Closed are
-        // queued into WS_EVENT_PENDING and fanned out separately, AFTER this whole drain returns
-        // (dispatch_pending_ws_events, called from ffi.rs, HOST free) — never before the checkpoint.
-        // Deregistering a conn is DEFERRED past the microtask checkpoint below, and that ordering is
-        // load-bearing. `Connected` resolves the connect Promise here, but the plugin's `.then` — the
-        // continuation that calls onMessage/onClose/send — does not run until the checkpoint. If a
-        // terminal signal for the SAME conn is in this batch (a server that dies right after the
-        // handshake sends Connected then Closed(1006)), dropping it here removes it from `conns`
-        // before that continuation runs, so its subscribe fails the ownership gate and its close
-        // event fans out to nobody. The plugin is then left with a Promise that resolved onto a
-        // connection it can neither use nor be told about.
-        let mut deferred_ws_drops: Vec<u64> = Vec::new();
-        let mut deferred_net_drops: Vec<u64> = Vec::new();
-        while let Some(sig) = crate::ws::try_recv_signal() {
-            match sig.kind {
-                crate::ws::WsSignalKind::Connected => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_ws_connect(host, &entry, sig.conn_id, Ok(()));
-                    }
-                }
-                crate::ws::WsSignalKind::ConnectFailed(e) => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_ws_connect(host, &entry, sig.conn_id, Err(e));
-                    }
-                    deferred_ws_drops.push(sig.conn_id);
-                }
-                crate::ws::WsSignalKind::Message(t) => {
-                    crate::ws::queue_event(sig.conn_id, "message", t, 0);
-                }
-                crate::ws::WsSignalKind::Errored(e) => {
-                    crate::ws::queue_event(sig.conn_id, "error", e, 0);
-                }
-                crate::ws::WsSignalKind::Closed(code, reason) => {
-                    crate::ws::queue_event(sig.conn_id, "close", reason, code as i32);
-                    deferred_ws_drops.push(sig.conn_id);
-                    // (mux subscribers for this conn are cleaned up when the plugin unloads; a closed
-                    // conn's stale subscribers simply never fire again — acceptable.)
-                }
+        // Poll ws/net. The tick only polls: each module matches its own signal kinds, queues
+        // events internally, and hands back connect results + deferred drops.
+        //
+        // ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect Promise
+        // INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then` —
+        // which subscribes onMessage — runs THIS frame). Events fan out AFTER this drain returns
+        // (`dispatch_pending_*`, HOST free). Deregistering a conn is DEFERRED past the checkpoint.
+        // `Connected` resolves the connect Promise here, but the plugin's `.then` does not run
+        // until the checkpoint. If a terminal signal for the SAME conn is in this batch (a server
+        // that dies right after the handshake sends Connected then Closed(1006)), dropping it here
+        // removes it from `conns` before that continuation runs, so its subscribe fails the
+        // ownership gate and its close event fans out to nobody.
+        let ws = crate::ws::poll_signals();
+        for (id, result) in ws.connects {
+            if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
+                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+                resolve_ws_connect(host, &entry, id, result);
             }
         }
-
-        // Route completed net (raw TCP/UDP) signals (Net Task 2, over core/src/net.rs's tokio engine).
-        // MIRRORS the ws routing above verbatim: Connected/Bound resolve the connect/bind Promise INSIDE
-        // this drain (before the microtask checkpoint, so the plugin's `.then` — which subscribes
-        // onData/onMessage — runs THIS frame); ConnectFailed rejects + drops; Data/Datagram/Errored are
-        // queued into NET_EVENT_PENDING and fanned out post-drain (dispatch_pending_net_events, HOST
-        // free); Closed queues then drops the conn (the drain's single drop_conn/mux-prune driver).
-        while let Some(sig) = crate::net::try_recv_signal() {
-            match sig.kind {
-                crate::net::NetSignalKind::Connected | crate::net::NetSignalKind::Bound => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_net_connect(host, &entry, sig.conn_id, Ok(()));
-                    }
-                }
-                crate::net::NetSignalKind::ConnectFailed(e) => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_net_connect(host, &entry, sig.conn_id, Err(e));
-                    }
-                    deferred_net_drops.push(sig.conn_id);
-                }
-                crate::net::NetSignalKind::Data(b) => {
-                    crate::net::queue_data(sig.conn_id, b);
-                }
-                crate::net::NetSignalKind::Datagram { from, data } => {
-                    crate::net::queue_datagram(sig.conn_id, from, data);
-                }
-                crate::net::NetSignalKind::Errored(e) => {
-                    crate::net::queue_error(sig.conn_id, e);
-                }
-                crate::net::NetSignalKind::Closed => {
-                    crate::net::queue_close(sig.conn_id);
-                    deferred_net_drops.push(sig.conn_id);
-                }
+        let net = crate::net::poll_signals();
+        for (id, result) in net.connects {
+            if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
+                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+                resolve_net_connect(host, &entry, id, result);
             }
         }
 
@@ -7213,8 +7094,8 @@ pub(crate) fn frame_async_drain() {
         // this drain has run, so a `.then` that subscribes to the connection it was just handed has
         // already been able to do so. Dropping earlier is what made a server dying right after the
         // handshake look like a connection that simply never spoke.
-        for id in deferred_ws_drops { crate::ws::drop_conn(id); }
-        for id in deferred_net_drops { crate::net::drop_conn(id); }
+        for id in ws.drops { crate::ws::drop_conn(id); }
+        for id in net.drops { crate::net::drop_conn(id); }
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
