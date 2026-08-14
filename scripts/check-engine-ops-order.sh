@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# S2EngineOps is declared TWICE, in two languages, and its FIELD ORDER is the ABI. The shim fills a
-# C struct; core reinterprets the same bytes as a #[repr(C)] Rust struct. Both files already carry a
-# comment saying they must stay index-for-index identical and change in the same commit — this is
-# what makes that true.
+# S2EngineOps is generated from one list (core/engine-ops.jsonc). Field ORDER is the ABI: the shim
+# fills a C struct; core reinterprets the same bytes as a #[repr(C)] Rust struct. This gate first
+# checks the generated copies are fresh, then diffs names + arity so a generator bug cannot ship
+# a silent reorder.
 #
 # WHY THIS GATE EXISTS. Nothing else catches a divergence. There is no shared header, no bindgen, no
 # link-time check: core takes a `*const S2EngineOps` and does `unsafe { *ops }`, so ANY field list
@@ -21,8 +21,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RS="core/src/v8host.rs"
-H="shim/include/s2script_core.h"
+# Freshness first: the three generated copies must match the list. A stale
+# generated file is how the two-language lockstep used to drift.
+python3 scripts/gen-engine-ops.py --check
+
+RS="core/src/engine_ops.generated.rs"
+H="shim/include/s2script_engine_ops.generated.h"
 
 rs_fields="$(
   awk '/^pub struct S2EngineOps \{/,/^\}/' "$RS" |
