@@ -52,9 +52,9 @@ export type HookResultValue = 0 | 1 | 2 | 3;
  * Events.fire("player_changename", { userid: p.userId, oldname, newname });
  */
 export declare const Events: {
-  /** Fire a game event. Returns the engine FireEvent result. */
+  /** Fire a game event (SourceMod `FireEvent`). Other plugins' `on` / `onPre`
+   *  handlers run before this returns. Returns the engine FireEvent result. */
   fire(name: string, fields?: Record<string, number | string | boolean | bigint>, dontBroadcast?: boolean): boolean;
-  /** Fire a game event to ONE client (SourceMod FireToClient). Same field type-inference as `fire`. Returns false on miss. */
   /**
    * Restrict the event currently being pre-dispatched to `slots`, instead of hiding it from everyone.
    *
@@ -73,6 +73,7 @@ export declare const Events: {
    * });
    */
   setRecipients(slots: readonly number[]): void;
-
+  /** Fire a game event to ONE client (SourceMod `FireToClient`). Does not go through
+   *  `IGameEventManager2::FireEvent` (no `onPre`). Returns false on miss. */
   fireToClient(slot: number, name: string, fields?: Record<string, string | number | boolean | bigint>): boolean;
 };

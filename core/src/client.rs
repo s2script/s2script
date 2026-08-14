@@ -249,7 +249,7 @@ fn s2_client_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         let Some(ops) = engine_ops() else { return };
         let Some(f) = ops.client_command else { return };
         let Ok(ccmd) = CString::new(cmd) else { return };
-        rv.set_bool(f(slot, ccmd.as_ptr()) != 0);
+        rv.set_bool(crate::nest::with_outbound(&args, || f(slot, ccmd.as_ptr())) != 0);
     }));
 }
 

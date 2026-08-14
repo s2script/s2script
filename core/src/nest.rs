@@ -5,8 +5,9 @@
 //! `promise_reject_cb`). Publishing the pointer for the FFI window is what lets inbound
 //! `fan_out_inner` run other plugins while the caller is paused in the native.
 //!
-//! Empty stack = true engine inbound (or a native that must not nest, e.g. `__s2_defer_selftest`).
-//! `#63` still applies: do not reconstruct `&mut Isolate` from a raw pointer.
+//! Empty stack = true engine inbound (C-ABI, no live `FunctionCallbackInfo`) or a
+//! native that has not published a token. `#63` still applies: do not reconstruct
+//! `&mut Isolate` from a raw pointer.
 
 use std::cell::RefCell;
 

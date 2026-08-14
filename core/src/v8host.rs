@@ -116,6 +116,7 @@ pub type DamageReadIntFn    = extern "C" fn(offset: c_int) -> c_int;
 pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
 pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityHandle; -1 = none
 pub type CvarGetFn          = extern "C" fn(name: *const c_char) -> *const c_char;   // Slice 6.7: cvar value string
+pub type CvarSetFn          = extern "C" fn(name: *const c_char, value: *const c_char) -> c_int;
 // --- ban-reason sub-project 2: console-print + client-address ops (C-ABI; the C header must match exactly) ---
 pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
 pub type ClientAddressFn      = extern "C" fn(slot: c_int) -> *const c_char;
@@ -552,6 +553,8 @@ pub struct S2EngineOps {
     pub entity_stop_sound: Option<EntityStopSoundFn>,
     pub entity_set_body_group_by_name: Option<EntitySetBodyGroupByNameFn>,
     pub entity_set_model_scale: Option<EntitySetModelScaleFn>,
+    // --- ICvar set (APPENDED after entity_set_model_scale; order is the ABI) ---
+    pub cvar_set: Option<CvarSetFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -2685,7 +2688,7 @@ fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
 ///    released before any JS runs. A handler that subscribes or unsubscribes mid-dispatch therefore
 ///    cannot invalidate the list being walked.
 /// 2. **`try_borrow_mut` re-entrancy guard** — core holds `HOST.borrow_mut()` across ALL JS, so a
-///    handler that re-enters dispatch (`Events.fire` from an event handler) would double-borrow.
+///    handler that re-enters dispatch with no nest token (`#63` C-ABI inbound) would double-borrow.
 ///    Graceful skip, never a panic.
 /// 3. **Per-subscriber liveness** — an owner unloaded earlier in THIS fan-out must not be called;
 ///    the `REGISTRY` borrow is released before entering the context.
@@ -4125,6 +4128,22 @@ fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mu
     }));
 }
 
+/// `__s2_cvar_set(name, value) -> boolean` — write a cvar through ICvar now (not ServerCommand).
+/// False if the op is missing, the cvar is absent, or the string cannot become that type.
+fn s2_cvar_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 2 { return; }
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let value = args.get(1).to_rust_string_lossy(scope);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.cvar_set else { return };
+        let Ok(cn) = CString::new(name) else { return };
+        let Ok(cv) = CString::new(value) else { return };
+        rv.set_bool(crate::nest::with_outbound(&args, || f(cn.as_ptr(), cv.as_ptr())) != 0);
+    }));
+}
+
 /// Native `__s2_convar_register(name, helpOrNull, flags, type, defaultStr, minOrNull, maxOrNull) -> i32`.
 /// Over the `convar_register` op. Degrades to 0 with no op; never throws (catch_unwind + safe default).
 fn s2_convar_register(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -4710,7 +4729,7 @@ fn s2_user_message_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
         let Some(f) = ops.and_then(|o| o.user_message_send) else { return };
         let arg0 = args.get(0);
         if arg0.is_null_or_undefined() {
-            rv.set_bool(f(std::ptr::null(), -1) == 1);
+            rv.set_bool(crate::nest::with_outbound(&args, || f(std::ptr::null(), -1)) == 1);
             return;
         }
         let slots_arr = match v8::Local::<v8::Array>::try_from(arg0) { Ok(a) => a, Err(_) => return };
@@ -4723,7 +4742,7 @@ fn s2_user_message_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
             };
             slots.push(s);
         }
-        rv.set_bool(f(slots.as_ptr(), slots.len() as i32) == 1);
+        rv.set_bool(crate::nest::with_outbound(&args, || f(slots.as_ptr(), slots.len() as i32)) == 1);
     }));
 }
 
@@ -5801,7 +5820,7 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
 /// call when the result is >= Handled. Mirrors `dispatch_game_event_pre` / `dispatch_damage` (the
 /// SYNCHRONOUS pre-hook pattern — a handler must be able to block), NOT the post-drain
 /// `dispatch_pending_*` path. A `try_borrow_mut` graceful-skip guards re-entrancy (a handler firing
-/// another output mid-dispatch skips the nested dispatch — the documented `Events.fire` limitation).
+/// another output mid-dispatch without a nest token is skipped (`#63`); `acceptInput` publishes one).
 pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, caller_handle: i32, value: &str, delay: f32) -> i32 {
     // Snapshot every matching key, releasing the OUTPUT_MUX borrow before any JS runs. Dedup keys
     // that collapse onto the same string (a literal "*" classname/output would be unusual but
@@ -6085,6 +6104,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
     set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
+    set_native(scope, global_obj, "__s2_cvar_set", s2_cvar_set);
     set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
     set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
@@ -6713,7 +6733,9 @@ fn s2_server_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         let cmd = args.get(0).to_rust_string_lossy(scope);
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.server_command else { return };
-        if let Ok(ccmd) = CString::new(cmd) { f(ccmd.as_ptr()); }
+        if let Ok(ccmd) = CString::new(cmd) {
+            crate::nest::with_outbound(&args, || f(ccmd.as_ptr()));
+        }
     }));
 }
 
@@ -10835,10 +10857,10 @@ pub(crate) mod frame_tests {
     // ============================================================================================
     // Deferred-dispatch queue — the CORE half.
     //
-    // Core holds `HOST.borrow_mut()` across ALL JS, so a handler that causes the engine to
-    // synchronously dispatch back into core hits a failed `try_borrow_mut` on the inner dispatch.
-    // That used to be a SILENT DROP — no error, no log, presenting only as "my plugin stopped
-    // getting events". Core now reports `Delivery::Deferred` instead.
+    // Core holds `HOST.borrow_mut()` across ALL JS. Plugin-originated outbound (`Events.fire`,
+    // `Engine.call`, …) publishes a nest token so inbound `fan_out_inner` uses CallbackScope
+    // and does not take HOST. True engine inbound still arrives through the C ABI with no
+    // handle (`#63`): that path reports `Delivery::Deferred` instead of a silent drop.
     //
     // Core detects the failed borrow but owns no dispatch payload: every dispatch ORIGINATES in the
     // shim, which still has its arguments on the stack, and a game event's data lives in an
@@ -10850,13 +10872,9 @@ pub(crate) mod frame_tests {
     // behind that op — and it is why `v8host::dispatch_*` (not just the FFI wrapper) returns the
     // delivery status.
     //
-    // INVESTIGATED AND REJECTED in #63: `v8::CallbackScope`, the sanctioned way to obtain a scope
-    // when V8 is already on the stack. Every `NewCallbackScope` impl in rusty_v8 149.4.0 requires
-    // either `&mut Isolate` — the borrow we do not have — or a live V8 handle
-    // (`FunctionCallbackInfo`, `Local<Context>`, `PromiseRejectMessage`). The re-entrant dispatch
-    // arrives through the C ABI (engine -> shim -> `s2script_core_dispatch_*`) with none of those in
-    // hand, and reconstructing one from a stashed `*mut Isolate` would alias a live `&mut`. That
-    // door is closed; deferral is the tractable fix.
+    // `#63` closed reconstructing `&mut Isolate` from a raw pointer when the C-ABI inbound has
+    // no live V8 handle. Outbound natives publish their `FunctionCallbackInfo` for that window;
+    // only the no-handle case still defers.
     // ============================================================================================
 
     thread_local! {
@@ -10929,9 +10947,8 @@ pub(crate) mod frame_tests {
         batch.len()
     }
 
-    /// The engine op behind a plugin's `Events.fire()`: the engine fires the event and synchronously
-    /// dispatches it back into core. Under the OUTER dispatch's borrow that inner dispatch reports
-    /// `Deferred`, and the shim (here, us) queues the replay.
+    /// The engine op behind a plugin's `Events.fire()`: the engine fires the event and
+    /// synchronously dispatches it back into core. With a nest token this delivers now.
     extern "C" fn reentrant_event_fire(_dont: c_int) -> c_int {
         if dispatch_game_event("inner") == Delivery::Deferred {
             defer_push("inner");
@@ -10939,24 +10956,10 @@ pub(crate) mod frame_tests {
         1
     }
 
-    /// The engine op for the ORDERING case: one `Events.fire()` that re-enters TWO different
-    /// dispatches. Pushed B-then-A on purpose — see `deferred_dispatches_replay_in_push_order`.
-    extern "C" fn reentrant_fire_two_events(_dont: c_int) -> c_int {
-        for name in ["innerB", "innerA"] {
-            if dispatch_game_event(name) == Delivery::Deferred {
-                defer_push(name);
-            }
-        }
-        1
-    }
-
-    /// A re-entrant NOTIFY dispatch is DELIVERED ONE DRAIN LATER instead of being silently dropped.
-    ///
-    /// This is the slice's acceptance tripwire, written in #63 as `reentrant_dispatch_is_currently_
-    /// dropped` with the listener asserted at 0 and a doc comment saying "when the queue lands, this
-    /// test flips to asserting the listener DID run". This is that flip.
+    /// `Events.fire` from a handler nests: the other plugin's listener runs before `fire()` returns.
+    /// SourceMod `FireEvent` shape. DDQ is not this path — see `no_handle_reentry_is_delivered_next_drain`.
     #[test]
-    fn reentrant_dispatch_is_delivered_next_drain() {
+    fn events_fire_from_a_handler_nests() {
         let _ = init(dummy_logger());
         deferred_clear();
         set_engine_ops(Some(S2EngineOps {
@@ -10966,7 +10969,7 @@ pub(crate) mod frame_tests {
         load_body("firer", r#"
             __s2pkg_events.Events.on("outer", function () {
                 globalThis.__ran = 1;
-                __s2_event_fire(false);       // engine fires -> re-enters dispatch_game_event("inner")
+                __s2_event_fire(false);
             });
         "#, "{}");
         load_body("listener", r#"
@@ -10978,61 +10981,61 @@ pub(crate) mod frame_tests {
         let _ = dispatch_game_event("outer");
         assert_eq!(read_i32_global_in("firer", "__ran"), 1, "outer handler must run");
         assert_eq!(
-            read_i32_global_in("listener", "__ran"), 0,
-            "the re-entrant dispatch still cannot run INSIDE the outer borrow"
-        );
-        assert_eq!(deferred_len(), 1, "core must have reported Deferred so the shim queued a replay");
-
-        // Next frame: the drain.
-        assert_eq!(drain_deferred(), 1);
-        assert_eq!(
             read_i32_global_in("listener", "__ran"), 1,
-            "delivered one drain later — this is the whole point of the queue"
+            "Events.fire must run other plugins' handlers before it returns"
         );
-        assert_eq!(deferred_len(), 0, "and the drain left nothing behind");
+        assert_eq!(deferred_len(), 0, "a nested Events.fire is not a DDQ defer");
 
         set_engine_ops(None);
         deferred_clear();
         shutdown();
     }
 
-    /// A dispatch deferred BY a deferred handler lands in the NEXT drain, not the current one.
-    ///
-    /// Without the double buffer, a handler that re-fires its own event extends the batch it is
-    /// being replayed from and spins the frame forever. The listener here re-fires unconditionally,
-    /// so the ONLY thing stopping an infinite loop is the buffer swap.
+    /// `#63` no-handle inbound while HOST is held still defers notify and delivers next drain.
+    #[test]
+    fn no_handle_reentry_is_delivered_next_drain() {
+        let _ = init(dummy_logger());
+        deferred_clear();
+        set_engine_ops(Some(mock_event_ops()));
+        load_body("listener", r#"
+            __s2pkg_events.Events.on("inner", function () {
+                globalThis.__ran = (globalThis.__ran || 0) + 1;
+            });
+        "#, "{}");
+
+        with_host_borrowed(|| {
+            if dispatch_game_event("inner") == Delivery::Deferred {
+                defer_push("inner");
+            }
+        });
+        assert_eq!(
+            read_i32_global_in("listener", "__ran"), 0,
+            "C-ABI inbound with no nest token cannot take HOST"
+        );
+        assert_eq!(deferred_len(), 1);
+
+        assert_eq!(drain_deferred(), 1);
+        assert_eq!(read_i32_global_in("listener", "__ran"), 1);
+        assert_eq!(deferred_len(), 0);
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// `mem::take` isolation: a push that happens after the drain has taken the batch is the
+    /// NEXT drain, not an extension of this one. This is the `#63` double-buffer, no longer
+    /// driven by `Events.fire` (that nests).
     #[test]
     fn nested_defer_lands_in_the_next_drain_not_the_current_one() {
         let _ = init(dummy_logger());
         deferred_clear();
-        set_engine_ops(Some(S2EngineOps {
-            event_fire: Some(reentrant_event_fire),
-            ..mock_event_ops()
-        }));
-        load_body("firer", r#"
-            __s2pkg_events.Events.on("outer", function () { __s2_event_fire(false); });
-        "#, "{}");
-        load_body("listener", r#"
-            __s2pkg_events.Events.on("inner", function () {
-                globalThis.__ran = (globalThis.__ran || 0) + 1;
-                __s2_event_fire(false);       // re-fire from INSIDE the replay
-            });
-        "#, "{}");
-
-        let _ = dispatch_game_event("outer");
-        assert_eq!(deferred_len(), 1);
-
-        // Drain 1 replays exactly one entry. The listener's own re-fire defers into the NEXT batch.
-        assert_eq!(drain_deferred(), 1, "the drain must not grow while it is running");
-        assert_eq!(read_i32_global_in("listener", "__ran"), 1);
-        assert_eq!(deferred_len(), 1, "the nested defer waits for the next drain");
-
-        // Drain 2 delivers it — the second delivery still arrives, it is merely a frame later.
-        assert_eq!(drain_deferred(), 1);
-        assert_eq!(read_i32_global_in("listener", "__ran"), 2);
-        assert_eq!(deferred_len(), 1, "and it re-fires again, one bounded step per frame");
-
-        set_engine_ops(None);
+        defer_push("inner");
+        let batch: Vec<String> = DEFERRED_Q.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        assert_eq!(batch, vec!["inner".to_string()]);
+        defer_push("inner");
+        assert_eq!(deferred_len(), 1, "a push after take is the next batch");
+        assert_eq!(batch.len(), 1, "the drain must not grow while it is running");
         deferred_clear();
         shutdown();
     }
@@ -11048,13 +11051,7 @@ pub(crate) mod frame_tests {
     fn deferred_dispatches_replay_in_push_order() {
         let _ = init(dummy_logger());
         deferred_clear();
-        set_engine_ops(Some(S2EngineOps {
-            event_fire: Some(reentrant_fire_two_events),
-            ..mock_event_ops()
-        }));
-        load_body("firer", r#"
-            __s2pkg_events.Events.on("outer", function () { __s2_event_fire(false); });
-        "#, "{}");
+        set_engine_ops(Some(mock_event_ops()));
         load_body("listener", r#"
             __s2pkg_events.Events.on("innerA", function () {
                 globalThis.__order = (globalThis.__order || "") + "A";
@@ -11064,14 +11061,21 @@ pub(crate) mod frame_tests {
             });
         "#, "{}");
 
-        let _ = dispatch_game_event("outer");
+        // `#63` no-handle: two inbound dispatches while HOST is held, no nest token.
+        with_host_borrowed(|| {
+            for name in ["innerB", "innerA"] {
+                if dispatch_game_event(name) == Delivery::Deferred {
+                    defer_push(name);
+                }
+            }
+        });
         assert_eq!(
             deferred_names(), vec!["innerB".to_string(), "innerA".to_string()],
             "both re-entrant dispatches must land in the ONE queue, in the order they were pushed"
         );
         assert_eq!(
             read_string_global_in("listener", "__order"), "undefined",
-            "neither ran inside the outer borrow"
+            "neither ran inside the held borrow"
         );
 
         assert_eq!(drain_deferred(), 2, "one drain replays the whole batch");
@@ -11101,23 +11105,20 @@ pub(crate) mod frame_tests {
         const BURST: usize = MOCK_DEFER_MAX + 2;
         let _ = init(dummy_logger());
         deferred_clear();
-        set_engine_ops(Some(S2EngineOps {
-            event_fire: Some(reentrant_event_fire),
-            ..mock_event_ops()
-        }));
-        load_body("firer", &format!(r#"
-            __s2pkg_events.Events.on("outer", function () {{
-                // {BURST} re-entrant defers inside ONE outer borrow — the runaway-handler shape.
-                for (var i = 0; i < {BURST}; i++) __s2_event_fire(false);
-            }});
-        "#), "{}");
+        set_engine_ops(Some(mock_event_ops()));
         load_body("listener", r#"
             __s2pkg_events.Events.on("inner", function () {
                 globalThis.__ran = (globalThis.__ran || 0) + 1;
             });
         "#, "{}");
 
-        let _ = dispatch_game_event("outer");
+        with_host_borrowed(|| {
+            for _ in 0..BURST {
+                if dispatch_game_event("inner") == Delivery::Deferred {
+                    defer_push("inner");
+                }
+            }
+        });
 
         assert_eq!(deferred_len(), MOCK_DEFER_MAX, "the queue must not grow past its cap");
         let drops = deferred_drops();
@@ -11150,16 +11151,9 @@ pub(crate) mod frame_tests {
         1
     }
 
-    /// A re-entrant PRE hook stays on today's GRACEFUL SKIP and is never queued.
-    ///
-    /// A pre-hook returns a `HookResult` the engine consumes synchronously; there is no answer to
-    /// give a frame later, so deferral cannot serve it. This is a permanent, documented limitation
-    /// (spec §2 / the `.d.ts` note), not a gap to close later — and it is enforced by the type
-    /// system: `fan_out_collapsing` discards its `Delivery` and `dispatch_game_event_pre` has none
-    /// to return. This test pins the observable half: the subscriber does NOT run, and the answer
-    /// the engine gets is ALLOW (the fail-open direction), not the suppress its subscriber wanted.
+    /// `Events.fire` nests `onPre` too: the subscriber runs and its HookResult is what the engine sees.
     #[test]
-    fn reentrant_pre_hook_is_skipped_not_deferred() {
+    fn events_fire_nests_pre_hooks() {
         let _ = init(dummy_logger());
         deferred_clear();
         PRE_REENTRANT_RESULT.with(|c| c.set(-1));
@@ -11170,11 +11164,10 @@ pub(crate) mod frame_tests {
         load_body("firer", r#"
             __s2pkg_events.Events.on("outer", function () {
                 globalThis.__ran = 1;
-                __s2_event_fire(false);   // engine fires -> re-enters dispatch_game_event_pre("innerpre")
+                __s2_event_fire(false);
             });
         "#, "{}");
         load_body("prelistener", r#"
-            // Raw pre-subscribe native; `2` is HookResult.Handled = SUPPRESS the broadcast.
             __s2_event_subscribe_pre("innerpre", function () {
                 globalThis.__ran = 1;
                 return 2;
@@ -11184,14 +11177,40 @@ pub(crate) mod frame_tests {
         let _ = dispatch_game_event("outer");
         assert_eq!(read_i32_global_in("firer", "__ran"), 1, "outer handler must run");
         assert_eq!(
-            read_i32_global_in("prelistener", "__ran"), 0,
-            "a re-entrant PRE hook is SKIPPED — it cannot be delivered a frame later"
+            read_i32_global_in("prelistener", "__ran"), 1,
+            "Events.fire must run onPre before it returns"
         );
         assert_eq!(
-            PRE_REENTRANT_RESULT.with(|c| c.get()), 0,
-            "and it must answer ALLOW (0) — fail-open — not the Handled(1) its subscriber wanted"
+            PRE_REENTRANT_RESULT.with(|c| c.get()), 1,
+            "Handled (2) collapses to suppress (1) — the engine sees the subscriber's answer"
         );
-        assert_eq!(deferred_len(), 0, "nothing was queued: pre-hooks are not deferrable");
+        assert_eq!(deferred_len(), 0, "a nested onPre is not queued");
+
+        set_engine_ops(None);
+        deferred_clear();
+        shutdown();
+    }
+
+    /// `#63` no-handle PRE inbound is still skip + fail-open (pre-hooks cannot replay).
+    #[test]
+    fn no_handle_pre_hook_is_skipped_not_deferred() {
+        let _ = init(dummy_logger());
+        deferred_clear();
+        set_engine_ops(Some(mock_event_ops()));
+        load_body("prelistener", r#"
+            __s2_event_subscribe_pre("innerpre", function () {
+                globalThis.__ran = 1;
+                return 2;
+            });
+        "#, "{}");
+
+        let pre = with_host_borrowed(|| dispatch_game_event_pre("innerpre"));
+        assert_eq!(
+            read_i32_global_in("prelistener", "__ran"), 0,
+            "C-ABI onPre with no nest token is skipped"
+        );
+        assert_eq!(pre, 0, "fail-open ALLOW, not the Handled the subscriber wanted");
+        assert_eq!(deferred_len(), 0, "pre-hooks are not deferrable");
 
         set_engine_ops(None);
         deferred_clear();
@@ -11836,6 +11855,7 @@ pub(crate) mod frame_tests {
             entity_stop_sound: None,
             entity_set_body_group_by_name: None,
             entity_set_model_scale: None,
+            cvar_set: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -13638,6 +13658,7 @@ pub(crate) mod frame_tests {
             entity_stop_sound: None,
             entity_set_body_group_by_name: None,
             entity_set_model_scale: None,
+            cvar_set: None,
         }
     }
 
@@ -14167,6 +14188,41 @@ pub(crate) mod frame_tests {
 
 
 
+
+    /// `__s2_cvar_set` degrades to false without the op; Server.setCvar is wired to it.
+    #[test]
+    fn cvar_set_degrades_false_without_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("pcset");
+        assert_eq!(eval_in_context_string("pcset", "String(__s2_cvar_set('sv_gravity', '800'))"), "false");
+        assert_eq!(eval_in_context_string("pcset", "String(__s2pkg_server.Server.setCvar('sv_gravity', '800'))"), "false");
+        shutdown();
+    }
+
+    /// `__s2_cvar_set` passes (name, value) to the op and returns its 1/0 as a boolean.
+    #[test]
+    fn cvar_set_passes_name_and_value_to_op() {
+        use std::sync::Mutex;
+        static LAST: Mutex<Option<(String, String)>> = Mutex::new(None);
+        extern "C" fn mock_set(name: *const c_char, value: *const c_char) -> c_int {
+            let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+            let v = unsafe { std::ffi::CStr::from_ptr(value) }.to_string_lossy().into_owned();
+            *LAST.lock().unwrap() = Some((n, v));
+            1
+        }
+        let _ = init(dummy_logger());
+        *LAST.lock().unwrap() = None;
+        set_engine_ops(Some(S2EngineOps {
+            cvar_set: Some(mock_set),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("pcset2");
+        assert_eq!(eval_in_context_string("pcset2", "String(__s2pkg_server.Server.setCvar('sv_gravity', '400'))"), "true");
+        assert_eq!(LAST.lock().unwrap().clone(), Some(("sv_gravity".into(), "400".into())));
+        set_engine_ops(None);
+        shutdown();
+    }
 
     /// FakeConVar slice: Server.registerCvar degrades to false without the convar_register op, and an
     /// unknown type string is rejected false JS-side (never reaches the op).

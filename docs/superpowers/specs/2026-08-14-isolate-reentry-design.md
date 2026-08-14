@@ -1,6 +1,6 @@
 # Isolate re-entry — outbound nest (board-wide)
 
-**Status:** Locked 2026-08-14. Implementing.
+**Status:** Implemented and live-gated (2026-08-14).
 **Audience:** core/shim + `@s2script/cs2` maintainers.
 **Builds on:** isolate-reentry research; deferred-dispatch queue (#63); pickup-gates (PR1 thunk is independent); switchteam / respawn / terminateRound designs (those *queues* are revoked).
 
@@ -53,7 +53,7 @@ Author-facing `nextTick` / `nextFrame` stay.
 - Unit: `dispatch_hook` with empty nest stack while `HOST` held → still skip + named.
 - `Player.respawn()` / `GameRules.terminateRound()` are synchronous; pending queues deleted.
 - `.d.ts` no longer advertises those queues or the “onPre cannot run” story.
-- Live-gate (when a CS2 box is available): `giveNamedItem` runs `onCanAcquire`; `respawn` runs `Events.onPre("player_spawn")`.
+- Live-gate (Docker CS2): `giveNamedItem` runs `onCanAcquire` before return; `slay` runs `onPre("player_death")` before return; `setCvar` applies and fires `onCvarChange` before return. `respawn` is synchronous; on custom/warmup `Respawn()` no-ops mid-round (game rules, not isolate skip).
 
 Pickup-gates PR1 is the thunk + subscribe API. JS give lighting it up is this host change.
 

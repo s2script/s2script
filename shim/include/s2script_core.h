@@ -102,6 +102,8 @@ typedef void  (*s2_damage_write_float_fn)(int offset, float value);
 typedef int   (*s2_damage_victim_fn)(void);
 // Slice 6.7: read a cvar's current value as a string ("" if absent). Valid until the next cvar_get call.
 typedef const char* (*s2_cvar_get_fn)(const char* name);
+/* Write a cvar through ICvar now (not ServerCommand). 1 = applied, 0 = absent / unparseable. */
+typedef int (*s2_cvar_set_fn)(const char* name, const char* value);
 // Slice sub-project-2: print one line to a client's developer console (IVEngineServer2::ClientPrintf).
 typedef void (*s2_client_console_print_fn)(int slot, const char* msg);
 // Client IP address ("IP:port"; "" for a bot/no netchannel). Valid until the next call.
@@ -595,6 +597,9 @@ typedef struct {
     s2_entity_stop_sound_fn                 entity_stop_sound;
     s2_entity_set_body_group_by_name_fn     entity_set_body_group_by_name;
     s2_entity_set_model_scale_fn            entity_set_model_scale;
+    /* ICvar set — APPENDED after entity_set_model_scale; order is the ABI. Write through
+     * ConVarData (same layout as cvar_get), not ServerCommand. 1 = applied, 0 = absent / bad type. */
+    s2_cvar_set_fn cvar_set;
 } S2EngineOps;
 
 /* Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant
