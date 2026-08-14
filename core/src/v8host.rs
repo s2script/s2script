@@ -644,20 +644,6 @@ struct ResolverEntry {
     resolver: v8::Global<v8::PromiseResolver>,
 }
 
-/// Net (raw TCP/UDP) Task 2: a queued per-connection event awaiting post-drain fan-out (see
-/// `NET_EVENT_PENDING`/`dispatch_pending_net_events`). Carries raw binary payloads (a TCP inbound
-/// chunk or a UDP datagram + its "host:port" source), unlike ws's text-only pending tuple.
-enum PendingNetEvent {
-    /// TCP inbound chunk → `"<id>:data"` fan-out with `[Uint8Array]`.
-    Data(Vec<u8>),
-    /// UDP inbound datagram → `"<id>:message"` fan-out with `[{host,port}, Uint8Array]`; `from` is
-    /// the source `"host:port"` string.
-    Datagram { from: String, data: Vec<u8> },
-    /// Terminal → `"<id>:close"` fan-out with `[]` (then prune every key for this conn).
-    Closed,
-    /// Mid-stream error → `"<id>:error"` fan-out with `[String]`.
-    Errored(String),
-}
 
 thread_local! {
     static LOGGER: std::cell::Cell<Option<LogFn>> = std::cell::Cell::new(None);
@@ -778,16 +764,6 @@ thread_local! {
     // COOKIE_CACHED_MUX / _PENDING moved to `crate::cookies`.
     // WS_EVENT_MUX / WS_EVENT_PENDING moved to `crate::ws`.
 
-    /// Net (raw TCP/UDP) Task 2: `TcpSocket`/`UdpSocket` `on*` subscriber mux, keyed `"<conn_id>:<event>"`
-    /// (event = "data"/"message"/"close"/"error"). Same EventMux shape/discipline as `WS_EVENT_MUX`;
-    /// fanned out post-frame by `dispatch_pending_net_events` (called from `ffi.rs` AFTER
-    /// `frame_async_drain()` returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
-    static NET_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
-    /// Net Task 2: `(conn_id, PendingNetEvent)` queued during `frame_async_drain`'s signal-routing step,
-    /// fanned out post-drain (HOST free) by `dispatch_pending_net_events`. Unlike `WS_EVENT_PENDING`'s
-    /// (String, i32) payload, net carries raw binary bytes → a dedicated `PendingNetEvent` enum.
-    static NET_EVENT_PENDING: std::cell::RefCell<Vec<(u64, PendingNetEvent)>> = std::cell::RefCell::new(Vec::new());
 
     /// Entity-I/O slice: `Entity.onOutput(classname, output, handler)` subscriber mux, keyed by the
     /// literal string `"<classname>\0<output>"` (a NUL separator — classnames/outputs never contain one).
@@ -1790,45 +1766,7 @@ fn ws_owner(scope: &mut v8::PinScope) -> String {
 // pointer NEVER crosses the boundary).
 // ---------------------------------------------------------------------------
 
-/// Read a native arg as bytes: a `Uint8Array`/any TypedArray/DataView (COPIED out via
-/// `copy_contents`) OR a `string` (UTF-8). Anything else → empty. Never hands a raw backing store to
-/// Rust: `copy_contents` writes into our own owned `Vec` — no view of V8-owned memory escapes.
-fn js_bytes_arg(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<u8> {
-    if val.is_string() {
-        return val.to_rust_string_lossy(scope).into_bytes();
-    }
-    if let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(val) {
-        let len = view.byte_length();
-        let mut buf = vec![0u8; len];
-        let n = view.copy_contents(&mut buf); // copies min(len, view) bytes into our Vec
-        buf.truncate(n);
-        return buf;
-    }
-    Vec::new()
-}
 
-/// Build a JS `Uint8Array` from bytes — a fresh COPY (`bytes.to_vec()`) into a standalone
-/// `ArrayBuffer` that V8 owns (the backing store's deleter frees the Vec). No raw pointer / borrowed
-/// slice crosses into JS. Returns `null` if the typed-array construction fails (defensive).
-fn bytes_to_uint8array<'s>(scope: &mut v8::PinScope<'s, '_>, bytes: &[u8]) -> v8::Local<'s, v8::Value> {
-    if bytes.is_empty() {
-        // A zero-length UDP datagram is a reachable input (net.rs recv_from -> Ok((0, from))
-        // -> Datagram { data: vec![] }); build a fresh 0-length Uint8Array rather than routing
-        // an empty Vec through new_backing_store_from_bytes.
-        let ab = v8::ArrayBuffer::new(scope, 0);
-        return match v8::Uint8Array::new(scope, ab, 0, 0) {
-            Some(u) => u.into(),
-            None => v8::null(scope).into(),
-        };
-    }
-    let store = v8::ArrayBuffer::new_backing_store_from_bytes(bytes.to_vec()).make_shared();
-    let ab = v8::ArrayBuffer::with_backing_store(scope, &store);
-    let len = bytes.len();
-    match v8::Uint8Array::new(scope, ab, 0, len) {
-        Some(u) => u.into(),
-        None => v8::null(scope).into(),
-    }
-}
 
 /// Native `__s2_net_tcp_connect(host, port) -> Promise<connId>`. MIRRORS `s2_ws_connect`'s
 /// resolver/`resolver_owner_tag`/ledger(`record_job` + `record_net_conn`)/`RESOLVERS`/`PENDING_JOBS`/
@@ -1931,173 +1869,10 @@ fn resolve_net_connect(host: &mut Host, entry: &ResolverEntry, id: u64, result: 
     }
 }
 
-/// Native `__s2_net_send(id, data)`. Owner-scoped (a no-op for a conn this plugin doesn't own, or an
-/// absent conn); `data` is marshalled via `js_bytes_arg` (a `Uint8Array`/TypedArray copied out, or a
-/// string as UTF-8). Hands off to `crate::net::send` (a non-blocking channel send). No return value.
-fn s2_net_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let bytes = js_bytes_arg(scope, args.get(1));
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::net::send(id, &owner, bytes);
-    }));
-}
 
-/// Native `__s2_net_send_to(id, host, port, data)` — send a UDP datagram to `host:port`. Owner-scoped
-/// like `s2_net_send`; `data` marshalled via `js_bytes_arg`. Hands off to `crate::net::send_to`.
-fn s2_net_send_to(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 4 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let dhost = args.get(1).to_rust_string_lossy(scope);
-        let port = args.get(2).number_value(scope).unwrap_or(0.0) as u16;
-        let bytes = js_bytes_arg(scope, args.get(3));
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::net::send_to(id, &owner, dhost, port, bytes);
-    }));
-}
 
-/// Native `__s2_net_close(id)`. Owner-scoped (mirrors `s2_net_send`); hands off to `crate::net::close`
-/// (a non-blocking command send that emits a terminal `Closed` signal). No return value.
-fn s2_net_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::net::close(id, &owner);
-    }));
-}
 
-/// Native `__s2_net_on(id, event, handler)` — subscribe a JS fn to a net connection's event
-/// ("data"/"message"/"close"/"error"). MIRRORS `s2_ws_on` EXACTLY (owner-tracked, mux keyed
-/// `"<id>:<event>"`, gated via `crate::net::is_owner` so a co-loaded plugin can't subscribe to
-/// another plugin's inbound socket traffic by guessing conn ids).
-fn s2_net_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let event = args.get(1).to_rust_string_lossy(scope);
-        // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
-        // owns. Resolved here rather than inside the helper because refusal must store no row.
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        if !crate::net::is_owner(id, &owner) { return; }
-        let key = format!("{id}:{event}");
-        let _ = subscribe_into(scope, &args, &NET_EVENT_MUX, &key, 2);
-    }));
-}
 
-/// Drain `NET_EVENT_PENDING` and fan each queued `(conn_id, PendingNetEvent)` out to the
-/// `NET_EVENT_MUX` subscribers keyed `"<conn_id>:<event>"` (Net Task 2). Called from `ffi.rs`'s
-/// Post-frame branch AFTER `frame_async_drain()` returns (HOST is free). MIRRORS
-/// `dispatch_pending_ws_events` verbatim (snapshot / `try_borrow_mut` re-entrancy guard / per-sub
-/// liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw + the terminal-close
-/// prune), except the payload is RAW BINARY (`bytes_to_uint8array`, a fresh V8-owned copy):
-///   - `Data(b)`            → key `"<id>:data"`,    args `[Uint8Array]`.
-///   - `Datagram{from,data}`→ key `"<id>:message"`, args `[{host,port}, Uint8Array]`.
-///   - `Errored(e)`         → key `"<id>:error"`,   args `[String]`.
-///   - `Closed`             → key `"<id>:close"`,   args `[]` + prune every key for this conn.
-pub(crate) fn dispatch_pending_net_events() {
-    let pending: Vec<(u64, PendingNetEvent)> = NET_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if pending.is_empty() { return; }
-
-    for (conn_id, ev) in pending {
-        // The event-name dimension for the mux key (also the terminal-close discriminator below).
-        let event: &str = match &ev {
-            PendingNetEvent::Data(_) => "data",
-            PendingNetEvent::Datagram { .. } => "message",
-            PendingNetEvent::Closed => "close",
-            PendingNetEvent::Errored(_) => "error",
-        };
-        let key = format!("{conn_id}:{event}");
-        // Phase 1: snapshot — release NET_EVENT_MUX borrow before entering any context.
-        let snap = NET_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
-
-        // Phase 2: enter each subscriber's context and invoke handler(...). Skipped when this
-        // (conn,event) key has no subscriber — but the Phase-3 terminal-close prune still runs.
-        if !snap.is_empty() { HOST.with(|h| {
-            // Re-entrancy guard (mirrors dispatch_pending_ws_events): expected free here (called after
-            // frame_async_drain returns), but guarded anyway per the shared discipline.
-            let Ok(mut borrow) = h.try_borrow_mut() else { return };
-            let Some(host) = borrow.as_mut() else { return };
-
-            for (owner, generation, handler_g) in &snap {
-                // Liveness check (release REGISTRY borrow before entering context).
-                if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-                // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-                let hs = &mut hs;
-                let ctx_local = v8::Local::new(hs, &g_ctx);
-                let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-                let mut tc_storage = v8::TryCatch::new(scope);
-                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-                let tc = &mut tc;
-
-                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                let func = v8::Local::new(tc, handler_g);
-                let call_result = match &ev {
-                    PendingNetEvent::Data(b) => {
-                        let arr = bytes_to_uint8array(tc, b);
-                        func.call(tc, recv, &[arr])
-                    }
-                    PendingNetEvent::Datagram { from, data } => {
-                        // Parse "host:port" on the LAST ':' (keeps an IPv6 host intact); a missing
-                        // port → 0. The datagram source is a plain {host, port} object.
-                        let (fhost, fport): (&str, u16) = match from.rsplit_once(':') {
-                            Some((h, p)) => (h, p.parse::<u16>().unwrap_or(0)),
-                            None => (from.as_str(), 0),
-                        };
-                        let from_obj = v8::Object::new(tc);
-                        if let Some(k) = v8::String::new(tc, "host") {
-                            let v: v8::Local<v8::Value> =
-                                v8::String::new(tc, fhost).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                            from_obj.set(tc, k.into(), v);
-                        }
-                        if let Some(k) = v8::String::new(tc, "port") {
-                            let v: v8::Local<v8::Value> = v8::Number::new(tc, fport as f64).into();
-                            from_obj.set(tc, k.into(), v);
-                        }
-                        let from_val: v8::Local<v8::Value> = from_obj.into();
-                        let arr = bytes_to_uint8array(tc, data);
-                        func.call(tc, recv, &[from_val, arr])
-                    }
-                    PendingNetEvent::Errored(e) => {
-                        let s_val: v8::Local<v8::Value> =
-                            v8::String::new(tc, e).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                        func.call(tc, recv, &[s_val])
-                    }
-                    PendingNetEvent::Closed => func.call(tc, recv, &[]),
-                };
-                if call_result.is_none() {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_pending_net_events('{}'): handler '{}': {}", key, owner, msg));
-                }
-            }
-        }); }
-
-        // Phase 3: on the terminal "close" event, prune every subscriber key for this conn_id
-        // (data/message/error/close). conn ids are monotonic (next_async_id, never reused), so nothing
-        // ever re-subscribes these keys — without this a reconnect-on-close loop accumulates dead
-        // EventMux entries + retained JS closure Globals. Runs outside the Phase-2 empty-check so a
-        // conn with only onData is still pruned. Every teardown path funnels through Closed (peer
-        // close, self-close, stream-end, and read-error — net.rs emits Closed after Errored). It runs
-        // AFTER this close's own fan-out, so any onClose handler has already been invoked.
-        if matches!(ev, PendingNetEvent::Closed) {
-            NET_EVENT_MUX.with(|m| {
-                let mut mux = m.borrow_mut();
-                for evn in ["data", "message", "error", "close"] {
-                    mux.remove_by_name(&format!("{conn_id}:{evn}"));
-                }
-            });
-        }
-    }
-}
 
 /// Native `__s2_schema_offset(class, field) -> i32`.  Resolves a schema field's byte offset
 /// within a class via the live SchemaSystem (through the shim's `schema_offset` engine-op),
@@ -5487,10 +5262,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Net Task 2: raw TCP/UDP client sockets over the process-global tokio engine (core/src/net.rs).
     set_native(scope, global_obj, "__s2_net_tcp_connect", s2_net_tcp_connect);
     set_native(scope, global_obj, "__s2_net_udp_bind", s2_net_udp_bind);
-    set_native(scope, global_obj, "__s2_net_send", s2_net_send);
-    set_native(scope, global_obj, "__s2_net_send_to", s2_net_send_to);
-    set_native(scope, global_obj, "__s2_net_close", s2_net_close);
-    set_native(scope, global_obj, "__s2_net_on", s2_net_on);
+    crate::net::install_natives(scope, global_obj);
     // TopMenu registry (adminmenu framework): owner-tracked categories/items + post-drain select dispatch.
     set_native(scope, global_obj, "__s2_topmenu_add_category", s2_topmenu_add_category);
     set_native(scope, global_obj, "__s2_topmenu_add_item", s2_topmenu_add_item);
@@ -7410,16 +7182,16 @@ pub(crate) fn frame_async_drain() {
                     deferred_net_drops.push(sig.conn_id);
                 }
                 crate::net::NetSignalKind::Data(b) => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Data(b))));
+                    crate::net::queue_data(sig.conn_id, b);
                 }
                 crate::net::NetSignalKind::Datagram { from, data } => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Datagram { from, data })));
+                    crate::net::queue_datagram(sig.conn_id, from, data);
                 }
                 crate::net::NetSignalKind::Errored(e) => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Errored(e))));
+                    crate::net::queue_error(sig.conn_id, e);
                 }
                 crate::net::NetSignalKind::Closed => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Closed)));
+                    crate::net::queue_close(sig.conn_id);
                     deferred_net_drops.push(sig.conn_id);
                 }
             }
@@ -7540,15 +7312,7 @@ pub(crate) fn register_builtin_stores() {
 
     crate::ws::register_store();
 
-    // NET_EVENT_MUX: pure post-frame JS dispatch — the sockets themselves drop via the ledger.
-    crate::owner_stores::register(
-        "NET_EVENT_MUX",
-        Box::new(|owner| { NET_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { NET_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            NET_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    crate::net::register_store();
 
     // OUTPUT_MUX: the FireOutputInternal detour stays installed for the process lifetime — no follow-up.
     crate::owner_stores::register(
@@ -7710,7 +7474,7 @@ pub(crate) fn register_process_singletons() {
     // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
     crate::cookies::register_singletons();
     crate::ws::register_singletons();
-    reg("NET_EVENT_PENDING", AfterIsolateDrop, || NET_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
+    crate::net::register_singletons();
     // usermsg name→id resolution caches (the MUX itself is an owner-scoped store). Registered by the
     // feature module — same phase, same position in the order.
     crate::usermsg::register_singletons();
@@ -8181,6 +7945,7 @@ pub(crate) mod frame_tests {
     use crate::client::dispatch_client_event;
     use crate::commands::{dispatch_concommand, ReplySource};
     use crate::ws::dispatch_pending_events as dispatch_pending_ws_events;
+    use crate::net::dispatch_pending_events as dispatch_pending_net_events;
     use crate::multiplexer::{Phase, HookResult};
     use std::ffi::CStr;
     use std::os::raw::{c_char, c_int};
