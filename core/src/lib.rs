@@ -33,6 +33,7 @@ pub mod plugin;
 pub(crate) mod entity;
 pub(crate) mod liveness;
 pub(crate) mod entity_live;
+pub(crate) mod fold;
 mod channels;
 mod client;
 mod commands;
