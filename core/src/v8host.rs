@@ -2526,10 +2526,34 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str, src: ReplyS
     let _crash_guard = crate::crash::breadcrumb::enter_dispatch(&owner, &format!("command:{}", name));
 
     // Phase 2: enter the OWNER's context and invoke the JS fn.
+    if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
+        let info = unsafe { &*info };
+        let mut storage = unsafe { v8::CallbackScope::new(info) };
+        let mut cs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+        let cs = &mut cs;
+        let ctx_local = v8::Local::new(cs, &g_ctx);
+        let scope = &mut v8::ContextScope::new(cs, ctx_local);
+        let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
+        let slot_val: v8::Local<v8::Value> = v8::Number::new(scope, slot as f64).into();
+        let Some(args_str) = v8::String::new(scope, args) else { return };
+        let src_val: v8::Local<v8::Value> = v8::Integer::new(scope, src as i32).into();
+        let mut tc_storage = v8::TryCatch::new(scope);
+        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+        let tc = &mut tc;
+        let func = v8::Local::new(tc, &global);
+        if func.call(tc, recv, &[slot_val, args_str.into(), src_val]).is_none() {
+            let msg = tc.exception()
+                .map(|e| e.to_rust_string_lossy(&*tc))
+                .unwrap_or_else(|| "handler threw".into());
+            log_warn(&format!("WARN: dispatch_concommand('{}'): {}", name, msg));
+            let stack = tc.stack_trace()
+                .map(|s| s.to_rust_string_lossy(&*tc))
+                .unwrap_or_default();
+            crate::crash::report_js_error(&owner, &format!("command:{}", name), &msg, &stack);
+        }
+        return;
+    }
     HOST.with(|h| {
-        // Re-entrancy guard (mirrors dispatch_game_event / dispatch_game_event_pre):
-        // a command handler may call Events.fire or another native that re-enters dispatch while
-        // HOST is already borrowed. Use try_borrow_mut and graceful-skip rather than double-borrow.
         let Ok(mut borrow) = h.try_borrow_mut() else { return };
         let Some(host) = borrow.as_mut() else { return };
 
@@ -2539,13 +2563,11 @@ pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str, src: ReplyS
         let ctx_local = v8::Local::new(hs, &g_ctx);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-        // Build JS arguments: (slot: number, argString: string, replySource: number).
         let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
         let slot_val: v8::Local<v8::Value> = v8::Number::new(scope, slot as f64).into();
         let Some(args_str) = v8::String::new(scope, args) else { return };
         let src_val: v8::Local<v8::Value> = v8::Integer::new(scope, src as i32).into();
 
-        // Per-call TryCatch so a throwing handler is caught + WARN, never propagates.
         let mut tc_storage = v8::TryCatch::new(scope);
         let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
         let tc = &mut tc;
@@ -2795,6 +2817,103 @@ where
     fan_out_inner(snap, label, instrument, stop_at, build_args).0
 }
 
+/// Inbound fan-out while a plugin native is paused in engine FFI. Uses the published
+/// `FunctionCallbackInfo` — never `HOST`, never a second `&mut Isolate`.
+fn fan_out_nested<F>(
+    info: *const v8::FunctionCallbackInfo,
+    snap: &[(String, u64, v8::Global<v8::Function>)],
+    label: &str,
+    instrument: Instrument<'_>,
+    stop_at: StopAt,
+    build_args: F,
+) -> (HookResult, Delivery)
+where
+    F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
+{
+    let info = unsafe { &*info };
+    let mut storage = unsafe { v8::CallbackScope::new(info) };
+    let mut cs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+    let cs = &mut cs;
+    fan_out_call_subscribers(cs, snap, label, instrument, stop_at, build_args)
+}
+
+fn fan_out_call_subscribers<F>(
+    parent: &mut v8::PinScope,
+    snap: &[(String, u64, v8::Global<v8::Function>)],
+    label: &str,
+    instrument: Instrument<'_>,
+    stop_at: StopAt,
+    build_args: F,
+) -> (HookResult, Delivery)
+where
+    F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
+{
+    let mut result = HookResult::Continue;
+    for (owner, generation, handler_g) in snap {
+        if stop_at != StopAt::Never {
+            let truncated = match stop_at {
+                StopAt::Stop => result == HookResult::Stop,
+                StopAt::Handled => result >= HookResult::Handled,
+                StopAt::Never => false,
+            };
+            if truncated {
+                break;
+            }
+        }
+        if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) {
+            continue;
+        }
+        let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+        else {
+            continue;
+        };
+
+        let _crash_guard = instrument
+            .breadcrumb
+            .map(|tag| crate::crash::breadcrumb::enter_dispatch(owner, tag));
+
+        let ctx_local = v8::Local::new(parent, &g_ctx);
+        let scope = &mut v8::ContextScope::new(parent, ctx_local);
+
+        let mut tc_storage = v8::TryCatch::new(scope);
+        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+        let tc = &mut tc;
+
+        let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+        let Some(args) = build_args(tc) else { continue };
+        let func = v8::Local::new(tc, handler_g);
+        match func.call(tc, recv, &args) {
+            None => {
+                let msg = tc
+                    .exception()
+                    .map(|e| e.to_rust_string_lossy(&*tc))
+                    .unwrap_or_else(|| "handler threw".into());
+                log_warn(&format!("WARN: {}: handler '{}': {}", label, owner, msg));
+                if let Some(context) = instrument.report_as {
+                    let stack = tc
+                        .stack_trace()
+                        .map(|s| s.to_rust_string_lossy(&*tc))
+                        .unwrap_or_default();
+                    crate::crash::report_js_error(owner, context, &msg, &stack);
+                }
+            }
+            Some(ret) if stop_at != StopAt::Never && ret.is_number() => {
+                let r = match ret.uint32_value(tc).unwrap_or(0) {
+                    1 => HookResult::Changed,
+                    2 => HookResult::Handled,
+                    3 => HookResult::Stop,
+                    _ => HookResult::Continue,
+                };
+                if r > result {
+                    result = r;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    (result, Delivery::Delivered)
+}
+
 /// The one fan-out body. Returns BOTH the collapsed `HookResult` (for `fan_out_collapsing`) and
 /// whether anything ran at all (for `fan_out`). Keeping them in one function is the point: the two
 /// public wrappers must not drift in re-entrancy discipline, and the borrow-failure signal exists in
@@ -2813,6 +2932,11 @@ where
         // Nobody subscribed → nothing to replay. Reporting `Deferred` here would make the shim
         // `DuplicateEvent` every event on the server with no one listening.
         return (HookResult::Continue, Delivery::Delivered);
+    }
+    // Plugin-originated outbound: a FunctionCallbackInfo is on the stack. Nested CallbackScope
+    // does not take HOST (promise_reject_cb). #63 still applies when the stack is empty.
+    if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
+        return fan_out_nested(info, snap, label, instrument, stop_at, build_args);
     }
     HOST.with(|h| {
         // Re-entrancy: a handler that re-enters dispatch while HOST is already borrowed cannot run
@@ -4991,11 +5115,9 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 
         let Some(func) = engine_ops().and_then(|o| o.engine_call_invoke) else { return };
 
-        // THE BYPASS LATCH (spec §3). Any hook in this SAME owner that names this call as its
-        // `bypassWith` must not fire for OUR OWN outbound invocation — SourceMod's
-        // g_pIgnoreTerminateDetour, and the thing that also keeps a hook from ever firing while core
-        // holds the isolate borrow (a hook dispatch is not deferrable, so one that fired here would
-        // be silently skipped).
+        // THE BYPASS LATCH. Any hook in this SAME owner that names this call as its `bypassWith`
+        // must not fire for OUR OWN outbound invocation — SourceMod's g_pIgnoreTerminateDetour /
+        // blockhook. Other plugins still see the side-effect events (round_end / player_spawn).
         //
         // ARM IMMEDIATELY BEFORE, DISARM IMMEDIATELY AFTER — straight-line, with no `return` between
         // them. The latch is one-shot and the thunk clears it by TAKING it, but the take only
@@ -5025,13 +5147,15 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
             if let Some(arm) = arm_fn { arm(*id); }
         }
         let mut ret: u64 = 0;
-        let ok = func(
-            plan.call_id, index, serial, subobj_off,
-            gp.as_ptr(), gp_kind.as_ptr(), gp.len() as i32,
-            fp.as_ptr(), fp.len() as i32,
-            strs.as_ptr(), vecs.as_ptr(),
-            plan.ret_code, &mut ret,
-        );
+        let ok = crate::nest::with_outbound(&args, || {
+            func(
+                plan.call_id, index, serial, subobj_off,
+                gp.as_ptr(), gp_kind.as_ptr(), gp.len() as i32,
+                fp.as_ptr(), fp.len() as i32,
+                strs.as_ptr(), vecs.as_ptr(),
+                plan.ret_code, &mut ret,
+            )
+        });
         for id in &bypass_ids {
             if let Some(disarm) = disarm_fn { disarm(*id); }
         }
@@ -5617,6 +5741,17 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
     // An id core never handed out — a detour installed by a PREVIOUS core (Metamod reload) — has no
     // descriptor. Continue, so the engine proceeds unhooked.
     let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
+    // Same hook already on the stack: giveNamedItem from onCanAcquire, etc. Skip and name —
+    // not a nest, not a queue.
+    let same = ACTIVE_HOOK.with(|a| {
+        a.borrow()
+            .as_ref()
+            .is_some_and(|h| h.owner == owner && h.name == name)
+    });
+    if same {
+        crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
+        return 0;
+    }
     let Some(plan) = crate::gamedata_hooks::plan(&owner, &name) else { return 0 };
     let snap = HOOK_MUX.with(|m| m.borrow().snapshot(&hook_key(&owner, &name)));
     if snap.is_empty() {
@@ -12417,16 +12552,10 @@ pub(crate) mod frame_tests {
         1
     }
 
-    /// A hook that fires RE-ENTRANTLY is skipped — and says so.
-    ///
-    /// The bypass latch makes "unlatched ⇒ engine-originated" true for the hook's OWN declared
-    /// `bypassWith` path only. Any other JS→engine path to the same address (a plugin's own `calls`
-    /// descriptor, which `engine:calls` permits) arms nothing, so the thunk fires with `HOST`
-    /// already borrowed. Skipping is the safe direction and stays; VANISHING is not. Before this,
-    /// `fan_out_collapsing` discarded the `Deferred` and the hook did not fire with no log, no
-    /// `note_miss` and no `status()` change.
+    /// A hook that fires from inside a JS `Engine.call` runs — the outbound native published a
+    /// nest token, so `fan_out_inner` uses CallbackScope and does not take HOST.
     #[test]
-    fn a_reentrant_hook_dispatch_is_skipped_and_named() {
+    fn a_reentrant_hook_dispatch_from_engine_call_runs() {
         let _ = init(dummy_logger());
         set_engine_ops(Some(S2EngineOps {
             engine_call_invoke: Some(mock_call_invoke_reenters_a_hook),
@@ -12452,11 +12581,47 @@ pub(crate) mod frame_tests {
         eval_in_context("hk10", r#"__s2_engine_call_invoke("aCallNoHookNames", -1, 0, []);"#).unwrap();
         *REENTER_HOOK_ID.lock().unwrap() = -1;
 
-        assert_eq!(eval_in_context_string("hk10", "String(globalThis.__ran)"), "0",
-            "the handler cannot run — core already holds the isolate borrow");
-        let st = crate::gamedata_hooks::status("hk10", "onX");
+        assert_eq!(eval_in_context_string("hk10", "String(globalThis.__ran)"), "1",
+            "JS Engine.call must run other plugins' hooks before it returns");
+        shutdown();
+    }
+
+    /// Same hook already on the stack (give from onCanAcquire) is skip-and-named, not nested.
+    #[test]
+    fn same_hook_reentry_is_skipped_and_named() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_invoke: Some(mock_call_invoke_reenters_a_hook),
+            ..hook_test_ops()
+        }));
+        crate::loader::load_permissions_from_str(
+            r#"{"engine:calls":["hk11"],"engine:hooks":["hk11"]}"#).expect("parses");
+        *HOOK_F32.lock().unwrap() = [1.5];
+        *HOOK_I32.lock().unwrap() = [7, 8, 9];
+        crate::gamedata_calls::register_plugin("hk11", unlatched_reentrancy_gamedata());
+        crate::gamedata_hooks::register_plugin("hk11", unlatched_reentrancy_gamedata());
+        let hook_id = crate::gamedata_hooks::plan("hk11", "onX").expect("ready").hook_id;
+        create_plugin_context("hk11");
+        eval_in_context("hk11", r#"
+            globalThis.__ran = 0;
+            __s2_hook_on("hk11", "onX", function () {
+                globalThis.__ran++;
+                __s2_engine_call_invoke("aCallNoHookNames", -1, 0, []);
+            });
+        "#).unwrap();
+
+        let _reenter_reset = ResetOnDrop(&REENTER_HOOK_ID, -1);
+        *REENTER_HOOK_ID.lock().unwrap() = hook_id;
+        // Engine-originated inbound (no nest token): HOST is free, handler runs, then the
+        // inner Engine.call re-enters the SAME hook and must skip.
+        dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        *REENTER_HOOK_ID.lock().unwrap() = -1;
+
+        assert_eq!(eval_in_context_string("hk11", "String(globalThis.__ran)"), "1",
+            "outer dispatch runs once; inner same-hook give is skipped");
+        let st = crate::gamedata_hooks::status("hk11", "onX");
         assert!(st.contains("re-entrant") && st.contains("UNHOOKED"),
-            "a skipped dispatch must be NAMED, not silent: {st}");
+            "same-hook skip must be NAMED: {st}");
         shutdown();
     }
 
@@ -12774,17 +12939,9 @@ pub(crate) mod frame_tests {
         S2EngineOps { client_fake_command: Some(mock_fake_command_roundtrip), ..mock_event_ops() }
     }
 
-    /// The REAL shape of the plugin-command limitation, and it is not what the first live gate
-    /// suggested. Core holds `HOST.borrow_mut()` across ALL JS execution, so a fakeCommand issued
-    /// from JS re-enters `dispatch_concommand` while the isolate is already borrowed and hits the
-    /// documented `try_borrow_mut` graceful skip. The engine IS asked to dispatch — the op is
-    /// reached and `DispatchConCommand` runs — but the nested JS handler cannot run.
-    ///
-    /// This is NOT a missing client-executable flag: every s2script command is registered
-    /// FCVAR_CLIENT_CAN_EXECUTE (shim/src/s2script_mm.cpp), which is exactly why a real player can
-    /// type `sm_ban` in their own console and reach the handler through the ClientCommand hook.
+    /// fakeCommand from JS publishes a nest token, so the target plugin's command handler runs.
     #[test]
-    fn fake_command_cannot_reenter_a_plugin_command_from_js() {
+    fn fake_command_runs_the_target_plugin_command() {
         let _ = init(dummy_logger());
         FAKE_CMD_CALLS.lock().unwrap().clear();
         set_engine_ops(Some(roundtrip_ops()));
@@ -12795,14 +12952,14 @@ pub(crate) mod frame_tests {
         eval_in_context_string("p", r#"new __s2pkg_clients.Client(0).fakeCommand("s2_target"); ''"#);
         assert_eq!(FAKE_CMD_CALLS.lock().unwrap().len(), 1,
             "the op IS reached — the engine really is asked to dispatch");
-        assert_eq!(read_i32_global_in("p", "__ran"), 0,
-            "but the nested JS handler is re-entrancy-skipped, never double-borrowed");
+        assert_eq!(read_i32_global_in("p", "__ran"), 1,
+            "the target command handler runs before fakeCommand returns");
         shutdown();
     }
 
-    /// Same skip from inside a command handler — the common case a plugin author would try.
+    /// fakeCommand from inside a command handler also nests (board-wide composition).
     #[test]
-    fn fake_command_from_inside_a_command_handler_is_reentrancy_skipped() {
+    fn fake_command_from_inside_a_command_handler_runs() {
         let _ = init(dummy_logger());
         FAKE_CMD_CALLS.lock().unwrap().clear();
         set_engine_ops(Some(roundtrip_ops()));
@@ -12815,8 +12972,8 @@ pub(crate) mod frame_tests {
         "#, "{}");
         dispatch_concommand("s2_outer", -1, "", ReplySource::Server);
         assert_eq!(FAKE_CMD_CALLS.lock().unwrap().len(), 1, "the op is still called");
-        assert_eq!(read_i32_global_in("p", "__ran"), 0,
-            "nested dispatch must be re-entrancy-skipped, not run");
+        assert_eq!(read_i32_global_in("p", "__ran"), 1,
+            "nested command handler runs, not skipped");
         shutdown();
     }
 

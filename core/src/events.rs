@@ -351,6 +351,9 @@ fn s2_event_fire(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let dont = if args.length() >= 1 { args.get(0).boolean_value(scope) } else { false };
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.event_fire else { return };
+        // Not nested: CS2 does not route a JS-fired event back through our listener inside the
+        // borrow (see s2_defer_selftest). Nesting here would only change the mock DDQ tests and
+        // undo that queue's recursion brake. Engine.call / fakeCommand publish a nest token.
         rv.set_bool(func(dont as c_int) != 0);
     }));
 }
