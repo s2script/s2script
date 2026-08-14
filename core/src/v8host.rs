@@ -776,18 +776,7 @@ thread_local! {
         = std::cell::RefCell::new(crate::channels::Channels::new());
 
     // COOKIE_CACHED_MUX / _PENDING moved to `crate::cookies`.
-
-    /// WebSocket Task 2: `WebSocket.on*` subscriber mux, keyed `"<conn_id>:<event>"` (event =
-    /// "message"/"close"/"error"). Same EventMux shape/discipline as cookies::COOKIE_CACHED_MUX; fanned out
-    /// post-frame by `dispatch_pending_ws_events` (called from `ffi.rs` AFTER `frame_async_drain()`
-    /// returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
-    static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
-    /// WebSocket Task 2: `(conn_id, event, payload1, payload2)` queued during `frame_async_drain`'s
-    /// signal-routing step, fanned out post-drain (HOST free) by `dispatch_pending_ws_events`. For
-    /// "message"/"error" the 3rd tuple field is the text and the 4th is unused (0); for "close" the
-    /// 3rd is the reason and the 4th is the code.
-    static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32)>> = std::cell::RefCell::new(Vec::new());
+    // WS_EVENT_MUX / WS_EVENT_PENDING moved to `crate::ws`.
 
     /// Net (raw TCP/UDP) Task 2: `TcpSocket`/`UdpSocket` `on*` subscriber mux, keyed `"<conn_id>:<event>"`
     /// (event = "data"/"message"/"close"/"error"). Same EventMux shape/discipline as `WS_EVENT_MUX`;
@@ -1787,155 +1776,9 @@ fn ws_owner(scope: &mut v8::PinScope) -> String {
     current_plugin(scope).unwrap_or_default()
 }
 
-fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let text = args.get(1).to_rust_string_lossy(scope);
-        let owner = ws_owner(scope);
-        // `send` reports whether the command reached the connection's task; discarding that made a
-        // send to a dead or unowned conn indistinguishable from a delivered one.
-        if !crate::ws::send(id, &owner, text) {
-            log_warn(&format!(
-                "WARN: __s2_ws_send: '{owner}' does not own ws conn {id} (or it is already closed) \
-                 — the message was NOT sent"
-            ));
-        }
-    }));
-}
 
-/// Native `__s2_ws_close(id)`.  Owner-scoped (mirrors `s2_ws_send`); hands off to `crate::ws::close`
-/// (a non-blocking command send). No return value.
-fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let owner = ws_owner(scope);
-        if !crate::ws::close(id, &owner) {
-            log_warn(&format!(
-                "WARN: __s2_ws_close: '{owner}' does not own ws conn {id} (or it is already closed) \
-                 — no close was sent"
-            ));
-        }
-    }));
-}
 
-/// Native `__s2_ws_on(id, event, handler)` — subscribe a JS fn to a ws connection's event
-/// ("message"/"close"/"error"). MIRRORS `s2_cookie_on_cached` (owner-tracked, keyed mux) but the
-/// mux key is `"<id>:<event>"` (a connection has a name dimension, unlike cookies-cached).
-/// Owner-scoped like `s2_ws_send`/`s2_ws_close`: conn ids are small sequential integers shared
-/// across every async primitive, so WITHOUT this check any co-loaded plugin could subscribe to
-/// (and read) another plugin's inbound WebSocket traffic by guessing/enumerating conn ids — gated
-/// via `crate::ws::is_owner` (a no-op subscribe for a conn this plugin doesn't own, mirroring the
-/// `owner == owner` check `ws::send`/`ws::close` already perform).
-fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let event = args.get(1).to_rust_string_lossy(scope);
-        // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
-        // owns. Resolved here rather than inside the helper because refusal must store no row.
-        // MUST match the fallback `__s2_ws_connect` used when it registered the owner, and the one
-        // `__s2_ws_send`/`__s2_ws_close` use to check it — all four are `unwrap_or_default()`, i.e.
-        // "". This used to be `unwrap_or_else(|| "legacy")` here alone, which meant that whenever
-        // `current_plugin` could not name a plugin, `send` matched the stored owner and `on` did NOT:
-        // the socket worked and the subscription was silently discarded, so the handler never fired
-        // and nothing anywhere said why.
-        let owner = ws_owner(scope);
-        if !crate::ws::is_owner(id, &owner) {
-            // NAMED, not silent. A refused subscribe means this handler will never fire; leaving it
-            // quiet turns a wrong owner into "the network is broken", which is a much longer walk.
-            log_warn(&format!(
-                "WARN: __s2_ws_on: '{owner}' does not own ws conn {id} — '{event}' handler NOT \
-                 subscribed and will never fire"
-            ));
-            return;
-        }
-        let key = format!("{id}:{event}");
-        let _ = subscribe_into(scope, &args, &WS_EVENT_MUX, &key, 2);
-    }));
-}
 
-/// Drain `WS_EVENT_PENDING` and fan each queued `(conn_id, event, s, n)` out to the `WS_EVENT_MUX`
-/// subscribers keyed `"<conn_id>:<event>"` (WebSocket Task 2). Called from `ffi.rs`'s Post-frame
-/// branch AFTER `frame_async_drain()` returns (HOST is free). Mirrors
-/// `cookies::dispatch_pending_cached` verbatim (snapshot, `try_borrow_mut` re-entrancy guard,
-/// per-subscriber liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw),
-/// except the payload carries the event data: for "message"/"error" a single String arg `s`; for
-/// "close" two args `(Number code, String reason)` built from `(s, n)` = `(reason, code)`.
-pub(crate) fn dispatch_pending_ws_events() {
-    let pending: Vec<(u64, String, String, i32)> = WS_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if pending.is_empty() { return; }
-
-    for (conn_id, event, s, n) in pending {
-        let key = format!("{conn_id}:{event}");
-        // Phase 1: snapshot — release WS_EVENT_MUX borrow before entering any context.
-        let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
-
-        // Phase 2: enter each subscriber's context and invoke handler(...).
-        // Skipped when this (conn,event) key has no subscriber — but the terminal-close
-        // prune in Phase 3 still runs, so an onMessage-only conn is pruned on close.
-        if !snap.is_empty() { HOST.with(|h| {
-            // Re-entrancy guard (mirrors cookies::dispatch_pending_cached): expected free here (called
-            // after frame_async_drain returns), but guarded anyway per the shared discipline.
-            let Ok(mut borrow) = h.try_borrow_mut() else { return };
-            let Some(host) = borrow.as_mut() else { return };
-
-            for (owner, generation, handler_g) in &snap {
-                // Liveness check (release REGISTRY borrow before entering context).
-                if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-                // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-                let hs = &mut hs;
-                let ctx_local = v8::Local::new(hs, &g_ctx);
-                let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-                let mut tc_storage = v8::TryCatch::new(scope);
-                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-                let tc = &mut tc;
-
-                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                let func = v8::Local::new(tc, handler_g);
-                let call_result = if event == "close" {
-                    let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
-                    let reason_val: v8::Local<v8::Value> =
-                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                    func.call(tc, recv, &[code_val, reason_val])
-                } else {
-                    let s_val: v8::Local<v8::Value> =
-                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                    func.call(tc, recv, &[s_val])
-                };
-                if call_result.is_none() {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_pending_ws_events('{}'): handler '{}': {}", key, owner, msg));
-                }
-            }
-        }); }
-
-        // Phase 3: on the terminal "close" event, prune every subscriber key for this conn_id
-        // (message/close/error). conn ids are monotonic (next_async_id, never reused), so nothing
-        // ever re-subscribes these keys — without this, a reconnect-on-close loop accumulates dead
-        // EventMux entries + retained JS closure Globals for the plugin's whole uptime. Runs outside
-        // the Phase-2 empty-check so a conn with only onMessage is still pruned. Every teardown path
-        // funnels through Closed: peer close, self-close (WsCommand::Close), stream-end, and read
-        // error (ws.rs emits Closed after Errored). It runs AFTER this close's own fan-out, so any
-        // onClose handler has already been invoked from the snapshot taken above.
-        if event == "close" {
-            WS_EVENT_MUX.with(|m| {
-                let mut mux = m.borrow_mut();
-                for ev in ["message", "close", "error"] {
-                    mux.remove_by_name(&format!("{conn_id}:{ev}"));
-                }
-            });
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Net (raw TCP + UDP client sockets) Task 2: __s2_net_* natives + Uint8Array
@@ -5640,9 +5483,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_fetch", s2_fetch);
     // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
     set_native(scope, global_obj, "__s2_ws_connect", s2_ws_connect);
-    set_native(scope, global_obj, "__s2_ws_send", s2_ws_send);
-    set_native(scope, global_obj, "__s2_ws_close", s2_ws_close);
-    set_native(scope, global_obj, "__s2_ws_on", s2_ws_on);
+    crate::ws::install_natives(scope, global_obj);
     // Net Task 2: raw TCP/UDP client sockets over the process-global tokio engine (core/src/net.rs).
     set_native(scope, global_obj, "__s2_net_tcp_connect", s2_net_tcp_connect);
     set_native(scope, global_obj, "__s2_net_udp_bind", s2_net_udp_bind);
@@ -7533,13 +7374,13 @@ pub(crate) fn frame_async_drain() {
                     deferred_ws_drops.push(sig.conn_id);
                 }
                 crate::ws::WsSignalKind::Message(t) => {
-                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "message".into(), t, 0)));
+                    crate::ws::queue_event(sig.conn_id, "message", t, 0);
                 }
                 crate::ws::WsSignalKind::Errored(e) => {
-                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "error".into(), e, 0)));
+                    crate::ws::queue_event(sig.conn_id, "error", e, 0);
                 }
                 crate::ws::WsSignalKind::Closed(code, reason) => {
-                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "close".into(), reason, code as i32)));
+                    crate::ws::queue_event(sig.conn_id, "close", reason, code as i32);
                     deferred_ws_drops.push(sig.conn_id);
                     // (mux subscribers for this conn are cleaned up when the plugin unloads; a closed
                     // conn's stale subscribers simply never fire again — acceptable.)
@@ -7697,15 +7538,7 @@ pub(crate) fn register_builtin_stores() {
     // COOKIE_CACHED_MUX: pure post-frame JS dispatch — no engine hook to remove.
     crate::cookies::register_store();
 
-    // WS_EVENT_MUX: pure post-frame JS dispatch — the conns themselves close via the ledger.
-    crate::owner_stores::register(
-        "WS_EVENT_MUX",
-        Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    crate::ws::register_store();
 
     // NET_EVENT_MUX: pure post-frame JS dispatch — the sockets themselves drop via the ledger.
     crate::owner_stores::register(
@@ -7876,7 +7709,7 @@ pub(crate) fn register_process_singletons() {
     reg("FRAME_COUNTER", AfterIsolateDrop, || FRAME_COUNTER.with(|c| c.set(0)));
     // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
     crate::cookies::register_singletons();
-    reg("WS_EVENT_PENDING", AfterIsolateDrop, || WS_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
+    crate::ws::register_singletons();
     reg("NET_EVENT_PENDING", AfterIsolateDrop, || NET_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
     // usermsg name→id resolution caches (the MUX itself is an owner-scoped store). Registered by the
     // feature module — same phase, same position in the order.
@@ -8347,6 +8180,7 @@ pub(crate) mod frame_tests {
     // below still drive it as their vehicle.
     use crate::client::dispatch_client_event;
     use crate::commands::{dispatch_concommand, ReplySource};
+    use crate::ws::dispatch_pending_events as dispatch_pending_ws_events;
     use crate::multiplexer::{Phase, HookResult};
     use std::ffi::CStr;
     use std::os::raw::{c_char, c_int};

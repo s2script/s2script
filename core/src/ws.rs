@@ -268,6 +268,137 @@ pub fn try_recv_signal() -> Option<WsSignal> {
     engine().sig_rx.lock().ok()?.try_recv().ok()
 }
 
+// ---------------------------------------------------------------------------
+// V8 adapter — natives, mux, pending queue, post-drain dispatch, teardown.
+// The tokio engine above holds no V8 handles. This half owns the isolate-facing
+// surface and routes through `fan_out` so the host isolate stays in `v8host`.
+// ---------------------------------------------------------------------------
+
+use crate::v8host::{current_plugin, fan_out, log_warn, set_native, subscribe_into, Instrument};
+
+thread_local! {
+    static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
+    static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32)>>
+        = std::cell::RefCell::new(Vec::new());
+}
+
+/// Queue a post-drain fan-out. Called from `frame_async_drain` while HOST is borrowed.
+pub(crate) fn queue_event(conn_id: u64, event: &str, s: String, n: i32) {
+    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, event.to_string(), s, n)));
+}
+
+fn ws_owner(scope: &mut v8::PinScope) -> String {
+    current_plugin(scope).unwrap_or_default()
+}
+
+fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let text = args.get(1).to_rust_string_lossy(scope);
+        let owner = ws_owner(scope);
+        if !send(id, &owner, text) {
+            log_warn(&format!(
+                "WARN: __s2_ws_send: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — the message was NOT sent"
+            ));
+        }
+    }));
+}
+
+fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let owner = ws_owner(scope);
+        if !close(id, &owner) {
+            log_warn(&format!(
+                "WARN: __s2_ws_close: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — no close was sent"
+            ));
+        }
+    }));
+}
+
+fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let event = args.get(1).to_rust_string_lossy(scope);
+        let owner = ws_owner(scope);
+        if !is_owner(id, &owner) {
+            log_warn(&format!(
+                "WARN: __s2_ws_on: '{owner}' does not own ws conn {id} — '{event}' handler NOT \
+                 subscribed and will never fire"
+            ));
+            return;
+        }
+        let key = format!("{id}:{event}");
+        let _ = subscribe_into(scope, &args, &WS_EVENT_MUX, &key, 2);
+    }));
+}
+
+/// Drain queued events after `frame_async_drain` (HOST free). Uses `fan_out` so the isolate
+/// stays in the host. Terminal `close` prunes every subscriber key for that conn.
+pub(crate) fn dispatch_pending_events() {
+    let pending: Vec<(u64, String, String, i32)> =
+        WS_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if pending.is_empty() { return; }
+
+    for (conn_id, event, s, n) in pending {
+        let key = format!("{conn_id}:{event}");
+        let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
+        if !snap.is_empty() {
+            let _ = fan_out(&snap, &format!("dispatch_pending_ws_events('{key}')"), Instrument::none(), |tc| {
+                if event == "close" {
+                    let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
+                    let reason_val: v8::Local<v8::Value> =
+                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
+                    Some(vec![code_val, reason_val])
+                } else {
+                    let s_val: v8::Local<v8::Value> =
+                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
+                    Some(vec![s_val])
+                }
+            });
+        }
+        if event == "close" {
+            WS_EVENT_MUX.with(|m| {
+                let mut mux = m.borrow_mut();
+                for ev in ["message", "close", "error"] {
+                    mux.remove_by_name(&format!("{conn_id}:{ev}"));
+                }
+            });
+        }
+    }
+}
+
+pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    set_native(scope, global_obj, "__s2_ws_send", s2_ws_send);
+    set_native(scope, global_obj, "__s2_ws_close", s2_ws_close);
+    set_native(scope, global_obj, "__s2_ws_on", s2_ws_on);
+}
+
+pub(crate) fn register_store() {
+    crate::owner_stores::register(
+        "WS_EVENT_MUX",
+        Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+        }),
+    );
+}
+
+pub(crate) fn register_singletons() {
+    use crate::process_singletons::ResetPhase::AfterIsolateDrop;
+    crate::process_singletons::register(
+        "WS_EVENT_PENDING", AfterIsolateDrop,
+        Box::new(|| WS_EVENT_PENDING.with(|q| q.borrow_mut().clear())),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
