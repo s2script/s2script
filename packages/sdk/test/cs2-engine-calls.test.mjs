@@ -3,15 +3,15 @@
  * calls became `calls` descriptors in gamedata/cs2/game.cs2.jsonc.
  *
  * WHY THIS FILE EXISTS. A descriptor expresses LAYOUT: receiver, arg kinds, return kind. It cannot
- * express a precondition, a default, a bound, a fallback to a different descriptor, or a deferral —
- * and every one of the eight had at least one, each of them a live-gate finding paid for once. Those
- * rules used to live in C++/Rust and had core-side tests; the ops are gone and so are those tests.
- * This is where the same rules are pinned now.
+ * express a precondition, a default, a bound, or a fallback to a different descriptor — and every
+ * one of the eight had at least one, each of them a live-gate finding paid for once. Those rules
+ * used to live in C++/Rust and had core-side tests; the ops are gone and so are those tests. This
+ * is where the same rules are pinned now.
  *
  * These are NOT tests of the marshalling path (core/src/gamedata_calls.rs and
  * shim/tests/call_validate_test.cpp own that) and NOT tests of whether a signature resolves (that
  * needs the binary, and is the live gate's job). They test the DECISIONS games/cs2/js makes before
- * and after it invokes: what is called, with which arguments, in which order, on which frame, and
+ * and after it invokes: what is called, with which arguments, in which order, on this call, and
  * — most often the interesting one — when nothing is called at all.
  *
  * The subject is the REAL shipped bundle (packages/sdk/test/cs2-addon.mjs derives the file list from
@@ -219,36 +219,32 @@ test("switchTeam: the 0..3 bound is checked BEFORE the route (a bad team never r
 });
 
 // -------------------------------------------------------------------------------------------
-// respawn + setPawn — the richest precondition set, and the drain that used to be C++
+// respawn + setPawn — the richest precondition set
 // -------------------------------------------------------------------------------------------
 
-test("respawn: a LIVE player is refused and nothing is queued", async () => {
+test("respawn: a LIVE player is refused and nothing is called", () => {
   const h = makeHost();
   const p = h.player(0);
   p.ref.alive = true;
   assert.equal(p.respawn(), false);
-  await h.frame();
   assert.equal(h.invokes.length, 0);
 });
 
-test("respawn: BOTH Respawn and SetPawn or NEITHER — a half-ready pair never half-runs", async () => {
+test("respawn: BOTH Respawn and SetPawn or NEITHER — a half-ready pair never half-runs", () => {
   // Live-gate finding on 2000875: Respawn without SetPawn clears the death screen and never spawns,
   // which reads to a player as a broken server rather than a disabled feature.
   for (const missing of ["respawn", "setPawn"]) {
     const h = makeHost({ ready: ALL_CALLS.filter((n) => n !== missing) });
     assert.equal(h.player(0).respawn(), false, `${missing} degraded -> refused`);
-    await h.frame();
     assert.equal(h.invokes.length, 0, `${missing} degraded -> no engine call at all`);
   }
 });
 
-test("respawn: nothing runs synchronously; SetPawn then Respawn on the NEXT frame", async () => {
+test("respawn: SetPawn then Respawn run on THIS call, in that order", () => {
   const h = makeHost();
   const p = h.player(0);
-  assert.equal(p.respawn(), true, "queued");
-  assert.equal(h.invokes.length, 0, "the engine call must not run inside the caller's dispatch");
-  await h.frame();
-  // SetPawn BEFORE Respawn, same frame, in that order (SwiftlyS2/CSSharp's exact sequence).
+  assert.equal(p.respawn(), true);
+  // SetPawn BEFORE Respawn, same call, in that order (SwiftlyS2/CSSharp's exact sequence).
   assert.deepEqual(h.names(), ["setPawn", "respawn"]);
   // EXACTLY three args after `this`: (playerPawn, true, false). A fourth feeds the function a
   // different reset flag — the arity is a correctness fact, not a convenience.
@@ -258,35 +254,28 @@ test("respawn: nothing runs synchronously; SetPawn then Respawn on the NEXT fram
   assert.deepEqual(h.invokes[1].args, [], "Respawn is nullary");
 });
 
-test("respawn: dedupe within a frame — the second call returns TRUE and queues nothing", async () => {
+test("respawn: a second call while still dead fires again (no queue, no dedupe)", () => {
   const h = makeHost();
   const p = h.player(0);
   assert.equal(p.respawn(), true);
-  // The idempotent second call reports SUCCESS, not failure: TTT's round-start loop legitimately
-  // respawns the same player twice and must not read that as a rejection.
-  assert.equal(p.respawn(), true, "idempotent second call is a success");
-  // A DIFFERENT Player object for the same slot dedupes too — the key is the (index, id) pair.
-  assert.equal(h.player(0).respawn(), true);
-  await h.frame();
-  assert.deepEqual(h.names(), ["setPawn", "respawn"], "one pair, not three");
+  assert.equal(p.respawn(), true);
+  assert.deepEqual(h.names(), ["setPawn", "respawn", "setPawn", "respawn"]);
 });
 
-test("respawn: the pending set is capped, and the cap rejects rather than grows", async () => {
+test("respawn: a second call after pawnIsAlive flips is refused", () => {
+  // The engine's Respawn fires player_spawn before returning; a handler that respawns the same
+  // player again no-ops on pawnIsAlive. Same-hook skip covers a hook that re-enters itself.
   const h = makeHost();
-  const queued = [];
-  for (let slot = 0; slot < 140; slot++) queued.push(h.player(slot).respawn());
-  const accepted = queued.filter(Boolean).length;
-  assert.equal(accepted, 130, "the shim's kRespawnPendingMax, verbatim");
-  assert.equal(queued[130], false, "over the cap -> rejected, not silently dropped");
-  assert.ok(h.logs.some((l) => /pending set full/.test(l)), "and it says so");
-  await h.frame();
-  assert.equal(h.invokes.length, 260, "130 pairs");
+  const p = h.player(0);
+  assert.equal(p.respawn(), true);
+  p.ref.alive = true;
+  assert.equal(p.respawn(), false);
+  assert.deepEqual(h.names(), ["setPawn", "respawn"]);
 });
 
-test("respawn: CONSUME BEFORE CALL — a respawn issued from the drain lands on the NEXT frame", async () => {
-  // The engine's Respawn fires player_spawn synchronously, so a player_spawn handler calling
-  // respawn() re-enters this queue mid-drain. Draining a list you are still appending to is an
-  // unbounded loop inside one frame; emptying it first turns that into one pair per frame.
+test("respawn: a call from inside the engine invoke NESTS", () => {
+  // The engine's Respawn fires player_spawn synchronously, so a handler calling respawn() on
+  // another dead player is visible before the first call returns.
   let reentered = false;
   const h = makeHost({
     onInvoke: (name) => {
@@ -294,65 +283,35 @@ test("respawn: CONSUME BEFORE CALL — a respawn issued from the drain lands on 
     },
   });
   h.player(0).respawn();
-  await h.frame();
-  assert.deepEqual(h.names(), ["setPawn", "respawn"], "the re-entrant request is NOT in this batch");
-  await h.frame();
-  assert.deepEqual(h.names().slice(2), ["setPawn", "respawn"], "it lands on the following frame");
+  assert.deepEqual(h.names(), ["setPawn", "respawn", "setPawn", "respawn"]);
 });
 
-test("respawn: a controller that goes stale between enqueue and drain is skipped", async () => {
-  const h = makeHost();
-  const p = h.player(0);
-  assert.equal(p.respawn(), true);
-  p.ref.live = false;                       // died in the intervening frame
-  await h.frame();
-  assert.equal(h.invokes.length, 0);
-  assert.ok(h.logs.some((l) => /stale controller at drain/.test(l)));
-});
-
-test("respawn: a player who came ALIVE between enqueue and drain is skipped (the TOCTOU)", async () => {
-  const h = makeHost();
-  const p = h.player(0);
-  assert.equal(p.respawn(), true);
-  p.ref.alive = true;                       // another plugin respawned them first
-  await h.frame();
-  assert.equal(h.invokes.length, 0, "the drain re-check, not just the enqueue check");
-});
-
-test("respawn: a stale m_hPlayerPawn SKIPS SetPawn but still runs Respawn", async () => {
+test("respawn: a stale m_hPlayerPawn SKIPS SetPawn but still runs Respawn", () => {
   // The guard a descriptor INVERTS: an `entity` argument that fails to resolve does not abort the
   // call, it marshals to nullptr and the engine still runs — so without an explicit null test the
   // engine would get SetPawn(controller, nullptr).
   const h = makeHost();
   const p = h.player(0);
+  p.ref.pawnHandle = null;
   assert.equal(p.respawn(), true);
-  p.ref.pawnHandle = null;                  // handle went stale/absent between enqueue and drain
-  await h.frame();
   assert.deepEqual(h.names(), ["respawn"]);
 });
 
-test("respawn: refused when the host has no nextFrame (nothing would drain the queue)", () => {
-  const h = makeHost();
-  h.ctx.__s2_next_frame = undefined;
-  assert.equal(h.player(0).respawn(), false);
-  assert.equal(h.invokes.length, 0);
-});
-
-test("respawn: a stale controller is refused at enqueue too", () => {
+test("respawn: a stale controller is refused", () => {
   const h = makeHost();
   const p = h.player(0);
   p.ref.live = false;
   assert.equal(p.respawn(), false);
+  assert.equal(h.invokes.length, 0);
 });
 
 // -------------------------------------------------------------------------------------------
-// terminateRound — the bound, the default, DELAY-FIRST, and the single-slot drain
+// terminateRound — the bound, the default, DELAY-FIRST
 // -------------------------------------------------------------------------------------------
 
-test("terminateRound: DELAY FIRST, and the default delay is 5s", async () => {
+test("terminateRound: DELAY FIRST, and the default delay is 5s", () => {
   const h = makeHost();
   assert.equal(h.pkg.GameRules.terminateRound(8), true);
-  await h.frame();
   assert.equal(h.invokes.length, 1);
   assert.equal(h.invokes[0].name, "terminateRound");
   // (float delay /*xmm0*/, uint32 reason /*esi*/, void* unk3, uint32 unk4). Reason-first is a
@@ -361,41 +320,33 @@ test("terminateRound: DELAY FIRST, and the default delay is 5s", async () => {
   assert.deepEqual(h.invokes[0].args, [5.0, 8, 0, 0]);
 });
 
-test("terminateRound: an explicit delay is passed through, still first", async () => {
+test("terminateRound: an explicit delay is passed through, still first", () => {
   const h = makeHost();
   h.pkg.GameRules.terminateRound(8, 1.5);
-  await h.frame();
   assert.deepEqual(h.invokes[0].args, [1.5, 8, 0, 0]);
 });
 
-test("terminateRound: the reason bound is the engine's own 0..22", async () => {
+test("terminateRound: the reason bound is the engine's own 0..22", () => {
   const h = makeHost();
   for (const r of [-1, 23, 99]) {
     assert.equal(h.pkg.GameRules.terminateRound(r), false, `reason ${r} rejected`);
   }
-  await h.frame();
   assert.equal(h.invokes.length, 0);
   assert.ok(h.logs.some((l) => /out of range 0\.\.22/.test(l)));
   // The in-range legacy holes pass through deliberately — the engine's own switch handles them.
   for (const r of [0, 2, 3, 15, 22]) assert.equal(h.pkg.GameRules.terminateRound(r), true, `reason ${r}`);
 });
 
-// Scoped deliberately: `makeHost()` is ONE plugin context, and the pending slot lives in the
-// prelude closure, which is evaluated once per context. This pins latest-wins WITHIN a plugin.
-// It is NOT "a round ends once" — the shim's s_pendingTerminate was a host-global static and this
-// is not, so two plugins in one frame drain two requests (spec §9.2a). Nothing here can assert
-// that, and no test should be written as if it did.
-test("terminateRound: single slot, LATEST WINS within one plugin context", async () => {
+test("terminateRound: two calls in one context both run (no latest-wins slot)", () => {
   const h = makeHost();
   h.pkg.GameRules.terminateRound(8);
   h.pkg.GameRules.terminateRound(9);
-  assert.ok(h.logs.some((l) => /overwriting a pending request/.test(l)));
-  await h.frame();
-  assert.equal(h.invokes.length, 1, "one round end from this context, not two");
-  assert.equal(h.invokes[0].args[1], 9, "the latest reason");
+  assert.equal(h.invokes.length, 2);
+  assert.equal(h.invokes[0].args[1], 8);
+  assert.equal(h.invokes[1].args[1], 9);
 });
 
-test("terminateRound: CONSUME BEFORE CALL — a request from the drain arms the NEXT frame", async () => {
+test("terminateRound: a call from inside the engine invoke NESTS", () => {
   let reentered = false;
   const h = makeHost({
     onInvoke: (name) => {
@@ -403,26 +354,21 @@ test("terminateRound: CONSUME BEFORE CALL — a request from the drain arms the 
     },
   });
   h.pkg.GameRules.terminateRound(8);
-  await h.frame();
-  assert.equal(h.invokes.length, 1, "the re-entrant request did not run inside this drain");
-  await h.frame();
-  assert.equal(h.invokes.length, 2);
+  assert.equal(h.invokes.length, 2, "the re-entrant request runs before the first call returns");
+  assert.equal(h.invokes[0].args[1], 8);
   assert.equal(h.invokes[1].args[1], 10);
 });
 
-test("terminateRound: a proxy that dies before the drain drops the request", async () => {
+test("terminateRound: a stale proxy at call time is refused", () => {
   const h = makeHost();
-  h.pkg.GameRules.terminateRound(8);
-  h.gamerules.live = false;                 // map change between enqueue and drain
-  await h.frame();
+  h.gamerules.live = false;
+  assert.equal(h.pkg.GameRules.terminateRound(8), false);
   assert.equal(h.invokes.length, 0);
-  assert.ok(h.logs.some((l) => /stale gamerules proxy at drain/.test(l)));
 });
 
-test("terminateRound: a degraded descriptor answers false immediately", async () => {
+test("terminateRound: a degraded descriptor answers false immediately", () => {
   const h = makeHost({ ready: ALL_CALLS.filter((n) => n !== "terminateRound") });
   assert.equal(h.pkg.GameRules.terminateRound(8), false);
-  await h.frame();
   assert.equal(h.invokes.length, 0);
 });
 

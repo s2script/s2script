@@ -63,7 +63,7 @@ export default plugin((ctx) => {
     L(`hook_own_call: firing our own terminateRound at frame=${frame} (handler count=${before})`);
     const r = GameRules.terminateRound(RoundEndReason.CTsWin, 5);
     L(`hook_own_call: terminateRound returned ${r}`);
-    // Checked on the next command, since the engine call is queued to next frame.
+    // Captured now: terminateRound is synchronous. hook_report compares against this snapshot.
     afterOwnCall = before;
   });
 
