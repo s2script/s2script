@@ -6,9 +6,11 @@ Prefix: `[PICKUPGATE]`. Drive with `python3 scripts/rcon.py pickup_report` / `pi
 
 Checks (spec §8):
 
-1. Natural pickup fires the handler.
-2. `pickup_give` (`giveNamedItem`) fires the handler.
-3. `pickup_deny` then a give withholds the item (`Handled` + `InvalidItem`).
-4. `pickup_reenter` then a give: the inner `giveNamedItem` is skipped and named.
-5. With this plugin removed, boot log shows the detour was never installed.
-6. After a denied give, Post logs `skipped=true`.
+1. Natural pickup / round-start loadout fires the handler.
+2. `pawn.giveNamedItem` from JS is isolate-re-entrant (skipped + named). Engine-originated acquire fires.
+3. `pickup_deny` then `mp_restartgame` with `mp_*_default_primary weapon_negev` withholds that item (`Handled` + `InvalidItem=1`).
+4. `pickup_reenter` then a restart: inner `giveNamedItem` is skipped (no nested Pre).
+5. Boot log: hook is *armed* but not installed until first subscribe.
+6. After a denied Negev, Post logs `skipped=true` `result=1`.
+
+Modes only consume `defIndex=28` (Negev) so the AK AlreadyOwned poll cannot steal them.
