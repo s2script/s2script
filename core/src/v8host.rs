@@ -5596,6 +5596,52 @@ fn s2_hook_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut
     }));
 }
 
+/// `__s2_engine_hook_ready(hookName) -> boolean`. True iff this plugin's descriptor passed every
+/// load-time gate. The owner is the calling context — JS cannot name another plugin.
+fn s2_engine_hook_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        rv.set_bool(crate::gamedata_hooks::status(&pid, &name) == "available");
+    }));
+}
+
+/// `__s2_engine_hook_status(hookName) -> string`. `"available"`, or the named degrade reason.
+fn s2_engine_hook_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(s) = v8::String::new(scope, "unavailable") { rv.set(s.into()); }
+        if args.length() < 1 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let status = crate::gamedata_hooks::status(&pid, &name);
+        if let Some(s) = v8::String::new(scope, &status) { rv.set(s.into()); }
+    }));
+}
+
+/// `__s2_engine_hook_on(hookName, handler)` — subscribe this plugin to one of ITS OWN declared
+/// hooks. Same body as `__s2_hook_on`, but the owner is the calling context, never an argument,
+/// so a plugin cannot attach to another owner's detour through `Engine.hook`.
+fn s2_engine_hook_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 2 { return; }
+        let Some(owner) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let key = hook_key(&owner, &name);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 1) else { return };
+        if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
+            log_warn(&format!(
+                "WARN: hook_on('{}', '{}'): the detour is not installed, so this handler will not \
+                 fire: {}",
+                owner, name, reason
+            ));
+        }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
 /// Run the subscribers of one declaratively-declared engine hook and return the collapsed
 /// `HookResult` the thunk applies (>= Handled suppresses the original engine call entirely).
 ///
@@ -6063,10 +6109,15 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_game_call_receiverless", s2_game_call_receiverless);
     set_native(scope, global_obj, "__s2_game_call_status", s2_game_call_status);
     set_native(scope, global_obj, "__s2_game_call_invoke", s2_game_call_invoke);
-    // Declarative inbound hooks: the ONE native the generated `ctx` namespaces call. There is no
-    // registration native here either — core registers hook descriptors itself from the same packed
+    // Declarative inbound hooks: `__s2_hook_on` is the game-package subscribe (owner is the first
+    // argument, remapped to the reserved owner id). `__s2_engine_hook_*` is the plugin path —
+    // owner is the calling context, never an argument — so `Engine.hook` cannot name another plugin.
+    // There is no registration native: core registers hook descriptors itself from the packed
     // gamedata, so JS can never declare a detour, only subscribe to a declared one.
     set_native(scope, global_obj, "__s2_hook_on", s2_hook_on);
+    set_native(scope, global_obj, "__s2_engine_hook_ready", s2_engine_hook_ready);
+    set_native(scope, global_obj, "__s2_engine_hook_status", s2_engine_hook_status);
+    set_native(scope, global_obj, "__s2_engine_hook_on", s2_engine_hook_on);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -12051,6 +12102,41 @@ pub(crate) mod frame_tests {
         assert_eq!(crate::gamedata_hooks::status(plugin, "onX"), "available",
             "{}", crate::gamedata_hooks::status(plugin, "onX"));
         crate::gamedata_hooks::plan(plugin, "onX").expect("ready").hook_id
+    }
+
+    /// `Engine.hook` is the plugin-facing subscribe factory: owner is the calling context (never
+    /// an argument), null when the descriptor is missing, and a successful subscribe actually
+    /// fires on dispatch.
+    #[test]
+    fn engine_hook_factory_uses_the_calling_plugin() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk_eng");
+        create_plugin_context("hk_eng");
+
+        eval_in_context("hk_eng", r#"
+            var Engine = __s2require("@s2script/sdk/unsafe").Engine;
+            globalThis.__ready = Engine.hook("onX") !== null;
+            globalThis.__status = Engine.hookStatus("onX");
+            globalThis.__missing = Engine.hook("nope") === null;
+            globalThis.__missingStatus = Engine.hookStatus("nope");
+            globalThis.__hit = null;
+            var onX = Engine.hook("onX");
+            onX(function (v) { globalThis.__hit = v.reason; return HookResult.Continue; });
+        "#).unwrap();
+        assert!(eval_in_context_bool("hk_eng", "globalThis.__ready === true"),
+            "Engine.hook('onX') must return a subscribe function when the descriptor is ready");
+        assert_eq!(eval_in_context_string("hk_eng", "String(globalThis.__status)"), "available");
+        assert!(eval_in_context_bool("hk_eng", "globalThis.__missing === true"),
+            "Engine.hook('nope') must be null — an undeclared name is not a callable");
+        assert_eq!(
+            eval_in_context_string("hk_eng", "String(globalThis.__missingStatus)"),
+            "not declared in this owner's gamedata"
+        );
+
+        assert_eq!(dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void), 0);
+        assert!(eval_in_context_bool("hk_eng", "globalThis.__hit === 7"),
+            "Engine.hook subscribe must actually fire (reason mock is 7)");
     }
 
     /// The view is LIVE: reads hit the frame, a `mutable` write reaches the engine's copy, a

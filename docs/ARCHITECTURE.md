@@ -82,15 +82,14 @@ slice, 7–9 coordinated core edit sites per hook (the core-stabilization audit'
 `hooks`, authored beside `calls` in the same gamedata file, closes it for the case a `calls` entry
 cannot express: the engine calling *into* a plugin, not a plugin calling *into* the engine.
 
-**In v1 a hook is declared by a GAME PACKAGE, not by a plugin.** Core's registry is owner-generic —
-`gamedata_hooks::register_plugin` and the `engine:hooks` permission check exist and are tested — but
-that path is not reachable from a shipped artifact: `s2s build` refuses a `hooks` gamedata section
-and an `engine:hooks` permission, so no `.s2sp` can carry either. This is stated rather than quietly
-fixed because the validator is not the only gap; a plugin-declared hook would also need a typed
-subscribe surface (`__s2_hook_on` is not in `packages/sdk/globals.d.ts`; `__s2pkg_game_ctx` is a
-game-package-only extension point) and a `gen-hooks` codegen that is not hardcoded to one game's
-gamedata file. Opening the path is its own slice; until it lands, treat `engine:hooks` as an
-operator-facing permission that exists in core and has no shipping consumer.
+**A hook is declared by a game package or by a plugin.** Game-package hooks hang off generated
+`ctx` namespaces (`ctx.gameRules.onTerminateRound`). Plugin-declared hooks live on
+`Engine.hook(name)` from `@s2script/sdk/unsafe` — the inbound sibling of `Engine.call`. `s2s build`
+accepts a `hooks` gamedata section and the `engine:hooks` permission; types are generated into
+`.s2script/hooks.d.ts` as an `EngineHooks` augmentation. The owner is always the calling plugin:
+JS cannot name another plugin's detour through `Engine.hook`. Game-package subscribe stays
+`__s2_hook_on` (the first argument is remapped to the reserved owner id). The thunk vocabulary is
+still closed — a plugin cannot invent a shape.
 
 **Two axes, and only one of them is data.** *Location* — which function, at what address, in this
 game's binary — is a gamedata fact, resolved through the same `S2_EngineCallResolve` path and the
@@ -198,10 +197,10 @@ like `Damage.onPre`'s `info` — no pointer crosses into JS, and the view cannot
 than a call — it patches bytes and can suppress engine behaviour — so an operator who granted a
 plugin the ability to *call* engine functions has not thereby granted it the ability to *detour*
 them. It gates **declaring** a hook, never subscribing to one: subscribing to a hook someone else
-declared is the intended path (that is what the generated `ctx` namespaces are), and matches
-SourceMod, where any plugin subscribing to `CS_OnTerminateRound` installs the detour. Per the v1
-scope note above, the only owner that can declare one today is the game package, which is exempt as
-first-party runtime — so the permission currently has no plugin that can request it.
+declared is the intended path for game-package hooks (that is what the generated `ctx` namespaces
+are), and matches SourceMod, where any plugin subscribing to `CS_OnTerminateRound` installs the
+detour. A plugin declaring its own hook also needs the operator allow-list entry, exactly as
+`engine:calls` does. The game package is exempt as first-party runtime.
 
 Two hooks ship today, both declared in `gamedata/cs2/game.cs2.jsonc` — nothing named in `shim/src`
 or `core/src`: `ctx.gameRules.onTerminateRound` (shape `this_f32_i32_i32_i32`, mutable

@@ -185,6 +185,93 @@ test("argName 'self' is reserved (it names the receiver)", () => {
   assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("reserved")));
 });
 
+// --- hooks (plugin-declared inbound detours) ---
+
+const HOOK_PERMS = ["engine:calls", "engine:hooks"];
+const hookGd = {
+  signatures: { Foo: { linuxsteamrt64: { module: "libserver.so", pattern: "55 48", resolve: "direct" } } },
+  hooks: {
+    onX: {
+      target: { kind: "signature", name: "Foo", validate: { prologue: "55 48" } },
+      shape: "this_void",
+      expose: { ctx: "custom" },
+    },
+  },
+};
+
+test("a valid hook descriptor passes", () => {
+  assert.deepEqual(validatePluginGamedata(hookGd, { permissions: HOOK_PERMS }), []);
+});
+
+test("hooks section without engine:hooks permission is rejected", () => {
+  const errs = validatePluginGamedata(hookGd, { permissions: ["engine:calls"] });
+  assert.ok(errs.some((e) => e.includes("engine:hooks")));
+});
+
+test("engine:hooks is a known permission", () => {
+  assert.deepEqual(validatePluginGamedata(sigCall, { permissions: ["engine:calls", "engine:hooks"] }), []);
+});
+
+test("a hook without validate is rejected", () => {
+  const gd = structuredClone(hookGd);
+  delete gd.hooks.onX.target.validate;
+  assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("validate")));
+});
+
+test("an unknown hook shape is rejected", () => {
+  const gd = structuredClone(hookGd);
+  gd.hooks.onX.shape = "this_ptr_i32";
+  assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("unknown hook shape")));
+});
+
+test("more params than the shape's arity is rejected", () => {
+  const gd = structuredClone(hookGd);
+  gd.hooks.onX.params = ["a"];
+  assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("passes only 0")));
+});
+
+test("mutable must name a declared param", () => {
+  const gd = structuredClone(hookGd);
+  gd.hooks.onX.shape = "this_f32_i32_i32_i32";
+  gd.hooks.onX.params = ["delay", "reason", "u3", "u4"];
+  gd.hooks.onX.mutable = ["nope"];
+  assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("mutable")));
+});
+
+test("a hook without expose.ctx is rejected", () => {
+  const gd = structuredClone(hookGd);
+  delete gd.hooks.onX.expose;
+  assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("expose.ctx")));
+});
+
+test("bypassWith must name a call in the same gamedata", () => {
+  const gd = structuredClone(hookGd);
+  gd.hooks.onX.bypassWith = "missing";
+  assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("bypassWith")));
+});
+
+test("bypassWith naming a real call is accepted", () => {
+  const gd = {
+    ...structuredClone(sigCall),
+    hooks: {
+      onX: {
+        target: { kind: "signature", name: "Foo", validate: { prologue: "55 48" } },
+        shape: "this_void",
+        expose: { ctx: "custom" },
+        bypassWith: "foo",
+      },
+    },
+  };
+  assert.deepEqual(validatePluginGamedata(gd, { permissions: HOOK_PERMS }), []);
+});
+
+test("a hook name that injects TypeScript is rejected", () => {
+  const gd = structuredClone(hookGd);
+  delete gd.hooks.onX;
+  gd.hooks["y: (...a: any[]) => any; [k: string]: any; z"] = hookGd.hooks.onX;
+  assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("plain identifier")));
+});
+
 test("duplicate argNames are rejected", () => {
   const gd = structuredClone(sigCall);
   gd.calls.foo.args = ["float", "float"];

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateGamedataTypes } from "../src/gamedata/gen-types.ts";
+import { generateGamedataTypes, generateHookTypes } from "../src/gamedata/gen-types.ts";
 
 const gd = {
   calls: {
@@ -68,6 +68,20 @@ test("argNames replace the positional aN parameter names", () => {
   });
   assert.match(out, /ignite: \(self: EntityRef, flFlameLifetime: number, nFlags: number, pAttacker: EntityRef \| null, flSize: number\) => void;/);
   assert.doesNotMatch(out, /\ba0:/);
+});
+
+test("generateHookTypes augments EngineHooks from the hooks section", () => {
+  const out = generateHookTypes({
+    hooks: {
+      onX: {
+        target: { kind: "signature", name: "S", validate: { prologue: "55" } },
+        shape: "this_void",
+        expose: { ctx: "custom" },
+      },
+    },
+  });
+  assert.match(out, /interface EngineHooks/);
+  assert.match(out, /onX: \(handler: \(view: OnXView\) => HookResultValue \| void\) => void;/);
 });
 
 test("omitting argNames still yields positional aN", () => {
