@@ -4998,6 +4998,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     ops.entity_stop_sound                 = &Shim_EntityStopSound;
     ops.entity_set_body_group_by_name     = &Shim_EntitySetBodyGroupByName;
     ops.entity_set_model_scale            = &Shim_EntitySetModelScale;
+    ops.hook_read_u16_at_q       = &S2_HookReadU16AtQ;
+    ops.hook_self_matches_field  = &S2_HookSelfMatchesField;
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
@@ -5013,10 +5015,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     {
         S2HookOps hookOps{};
         hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
+        hookOps.dispatch_post = &s2script_core_dispatch_hook_post;
         S2Hook_SetOps(hookOps);
         if (!hookOps.dispatch)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
                            "declarative inbound hooks are OFF (shim/core version mismatch)\n");
+        if (!hookOps.dispatch_post)
+            META_CONPRINTF("[s2script] WARN: core exports no inbound-hook POST dispatch entry — "
+                           "onCanAcquirePost will not fire (shim/core version mismatch)\n");
     }
 
     // --- Crash reporter: identity + spool-dir push (fail-off: any miss degrades to "") ---

@@ -346,6 +346,18 @@ pub extern "C" fn s2script_core_dispatch_hook(
     catch_unwind(|| v8host::dispatch_hook(hook_id, arg_view)).unwrap_or(0)
 }
 
+/// Shim → core: the Post spectator mux for a returning inbound hook. `skipped` is 1 when Pre
+/// suppressed the original. Notify-only: the return is unused. Weak on the shim side.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_hook_post(
+    hook_id: c_int,
+    arg_view: *mut std::ffi::c_void,
+    skipped: c_int,
+) -> c_int {
+    catch_unwind(|| v8host::dispatch_hook_post(hook_id, arg_view, skipped != 0)).unwrap_or(0);
+    0
+}
+
 /// Shim → core: a cvar's value changed. Called from the shim's ONE `ICvar` global change callback.
 ///
 /// NOTIFY-ONLY — the engine has ALREADY applied the value, so there is nothing to veto: this entry

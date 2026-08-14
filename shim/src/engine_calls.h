@@ -61,6 +61,10 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
 // books-first rule is one copy too many.
 uint32_t S2_EntityHandleFromPtr(void* p);
 
+// (index, engine serial) -> instance, books-first in the identity chunk. Null on any miss.
+// Used by the pickup-gate player hop (compare a schema pointer field to the detour `this`).
+void* S2_ResolveEntity(int index, int serial);
+
 // Is `addr` inside the executable range of SOME loaded module? The .text-range guard from
 // S2_EngineCallResolve (InModuleText), re-asked WITHOUT a module name so a caller that only holds a
 // resolved address can still refuse to touch it. Module-agnostic on purpose: a hook target may

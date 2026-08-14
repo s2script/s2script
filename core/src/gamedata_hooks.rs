@@ -70,6 +70,10 @@ pub(crate) const SHAPES: &[(&str, i32)] = &[
     // "truncate whatever the engine put in that register", which is a live-server SEGV when the
     // thing being truncated is a pointer. See shim/src/hook_dispatch.h.
     ("this_f32_i32_i64_i64", 2),
+    // i32(void* self, int64, int32, int64). The two i64s are opaque pass-through (an item
+    // view pointer and an unknown trailing ptr). JS sees `method` and a writable `result`
+    // (the i32 return), never the pointers. Pickup-gates spec PR1.
+    ("this_i64_i32_i64", 3),
 ];
 
 /// The shape id for a vocabulary name, or `None` for anything outside it.
@@ -1202,6 +1206,8 @@ mod tests {
     fn the_shape_vocabulary_is_pinned() {
         assert_eq!(shape_id("this_void"), Some(0));
         assert_eq!(shape_id("this_f32_i32_i32_i32"), Some(1));
+        assert_eq!(shape_id("this_f32_i32_i64_i64"), Some(2));
+        assert_eq!(shape_id("this_i64_i32_i64"), Some(3));
         assert_eq!(shape_id("this_i32"), None);
         assert_eq!(shape_id(""), None);
     }

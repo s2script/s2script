@@ -8,6 +8,7 @@ const ShapeEntry kShapes[] = {
     { S2_HOOK_SHAPE_THIS_VOID,            "this_void" },
     { S2_HOOK_SHAPE_THIS_F32_I32_I32_I32, "this_f32_i32_i32_i32" },
     { S2_HOOK_SHAPE_THIS_F32_I32_I64_I64, "this_f32_i32_i64_i64" },
+    { S2_HOOK_SHAPE_THIS_I64_I32_I64,     "this_i64_i32_i64" },
 };
 S2HookOps g_ops{};
 
@@ -65,6 +66,11 @@ int S2Hook_Dispatch(int hookId, void* argView) {
     return g_ops.dispatch(hookId, argView);
 }
 
+int S2Hook_DispatchPost(int hookId, void* argView, int skipped) {
+    if (!g_ops.dispatch_post) return 0;
+    return g_ops.dispatch_post(hookId, argView, skipped);
+}
+
 void S2Hook_BypassArm(int hookId) {
     if (hookId >= 0 && hookId < S2_HOOK_MAX) g_bypass.slots[hookId] = true;
 }
@@ -87,3 +93,7 @@ bool S2Hook_DebugGuardLo() { return g_bypass.guardLo; }
 bool S2Hook_DebugGuardHi() { return g_bypass.guardHi; }
 
 bool S2Hook_Suppresses(int hookResult) { return hookResult == 2 || hookResult == 3; }
+
+int32_t S2Hook_MostRestrictiveAcquire(int32_t first, int32_t second) {
+    return first != 0 ? first : second;
+}

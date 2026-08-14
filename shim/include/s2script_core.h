@@ -411,6 +411,11 @@ typedef int  (*s2_hook_write_f32_fn)(void* argView, int idx, float value);
 typedef int  (*s2_hook_write_i32_fn)(void* argView, int idx, int32_t value);
 typedef int  (*s2_hook_receiver_handle_fn)(void* argView, uint32_t* outHandle);
 typedef int64_t (*s2_engine_call_address_fn)(int callId);
+/* Pickup-gate accessors — APPENDED after engine_call_address's siblings; the pointer never
+ * crosses to core. hook_read_u16_at_q: u16 at q[qslot]+schemaOffset. hook_self_matches_field:
+ * does the live entity's pointer field equal the detour `this`? */
+typedef int (*s2_hook_read_u16_at_q_fn)(void* argView, int qslot, int offset, uint16_t* out);
+typedef int (*s2_hook_self_matches_field_fn)(void* argView, int index, int serial, int offset);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI: this struct and `S2EngineOps` in
  * core/src/v8host.rs must stay index-for-index identical and must change in the SAME commit.
@@ -595,6 +600,9 @@ typedef struct {
     s2_entity_stop_sound_fn                 entity_stop_sound;
     s2_entity_set_body_group_by_name_fn     entity_set_body_group_by_name;
     s2_entity_set_model_scale_fn            entity_set_model_scale;
+    /* Pickup-gate accessors — APPENDED after entity_set_model_scale; order is the ABI. */
+    s2_hook_read_u16_at_q_fn       hook_read_u16_at_q;
+    s2_hook_self_matches_field_fn  hook_self_matches_field;
 } S2EngineOps;
 
 /* Returned by a NOTIFY dispatch entry when the JS isolate was already borrowed (a re-entrant
@@ -762,6 +770,9 @@ int s2script_core_dispatch_usermsg(const char* name, int id);
  * resolve to null instead; S2Hook_SetOps then receives a null dispatch, S2Hook_Dispatch returns
  * Continue, and Load logs the miss BY NAME. */
 int s2script_core_dispatch_hook(int hookId, void* argView) __attribute__((weak));
+/* Post-phase spectator mux for a returning inbound hook (CanAcquire). `skipped` is 1 when Pre
+ * suppressed the original. Weak for the same reason as dispatch_hook. */
+int s2script_core_dispatch_hook_post(int hookId, void* argView, int skipped) __attribute__((weak));
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);

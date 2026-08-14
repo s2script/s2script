@@ -47,6 +47,26 @@ test("buildHookModel groups hooks by expose.ctx, sorted, with per-param mutabili
   assert.equal(onRespawn.receiverAs, "player");
 });
 
+test("buildHookModel skips a handwritten hook (first-class view lives in items.d.ts)", () => {
+  const gd = {
+    onCanAcquire: {
+      shape: "this_i64_i32_i64",
+      params: ["method", "result"],
+      mutable: ["result"],
+      expose: { ctx: "items", handwritten: true },
+    },
+    onTerminateRound: {
+      shape: "this_f32_i32_i32_i32",
+      params: ["delay", "reason"],
+      expose: { ctx: "gameRules" },
+    },
+  };
+  const m = buildHookModel(gd);
+  assert.deepEqual(m.map((ns) => ns.ns), ["gameRules"], "handwritten items namespace is omitted");
+  assert.equal(m[0].hooks.length, 1);
+  assert.equal(m[0].hooks[0].name, "onTerminateRound");
+});
+
 test("buildHookModel skips a hook with no expose.ctx (nothing could subscribe to it)", () => {
   const gd = { onOrphan: { target: { kind: "signature", name: "X" }, shape: "this_void" } };
   const m = buildHookModel(gd);

@@ -369,6 +369,8 @@ pub type HookWriteF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, f32) -> c_
 pub type HookWriteI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, i32) -> c_int;
 pub type HookReceiverHandleFn = extern "C" fn(*mut std::ffi::c_void, *mut u32) -> c_int;
 pub type EngineCallAddressFn = extern "C" fn(c_int) -> i64;
+pub type HookReadU16AtQFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, *mut u16) -> c_int;
+pub type HookSelfMatchesFieldFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI: the shim fills the matching
 /// `struct s2_engine_ops` in `shim/include/s2script_core.h`, so the two declarations must stay
@@ -552,6 +554,9 @@ pub struct S2EngineOps {
     pub entity_stop_sound: Option<EntityStopSoundFn>,
     pub entity_set_body_group_by_name: Option<EntitySetBodyGroupByNameFn>,
     pub entity_set_model_scale: Option<EntitySetModelScaleFn>,
+    // --- Pickup-gate accessors (APPENDED after entity_set_model_scale; order is the ABI) ---
+    pub hook_read_u16_at_q: Option<HookReadU16AtQFn>,
+    pub hook_self_matches_field: Option<HookSelfMatchesFieldFn>,
 }
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
@@ -947,6 +952,27 @@ thread_local! {
     /// epoch collide with a fresh dispatch's. At one dispatch per tick it would take ~9 billion
     /// years to wrap.
     static HOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+// Pickup-gate vote collection. Its own block: the one above is at the thread_local_inner! limit.
+thread_local! {
+    /// Called after each collapsing handler with that handler's HookResult. Used by the
+    /// return-value pickup gate to collect per-handler votes (Continue is not a vote).
+    static AFTER_HANDLER: std::cell::Cell<Option<fn(crate::multiplexer::HookResult)>> =
+        const { std::cell::Cell::new(None) };
+
+    /// Live acquire-fold session, save/restored around a nested dispatch.
+    static ACQUIRE: std::cell::RefCell<Option<AcquireSession>> =
+        const { std::cell::RefCell::new(None) };
+
+    /// Post-phase `skipped` flag, published only while `dispatch_hook_post` builds its view.
+    static HOOK_POST_SKIPPED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+struct AcquireSession {
+    view: *mut std::ffi::c_void,
+    votes: Vec<crate::acquire::AcquireVote>,
+    wrote: bool,
 }
 
 /// A registered TopMenu item. `on_select` is invoked in `owner`'s context (liveness-gated by `generation`).
@@ -2871,7 +2897,7 @@ where
             // handler with its arguments silently missing.
             let Some(args) = build_args(tc) else { continue };
             let func = v8::Local::new(tc, handler_g);
-            match func.call(tc, recv, &args) {
+            let hr = match func.call(tc, recv, &args) {
                 None => {
                     let msg = tc
                         .exception()
@@ -2885,6 +2911,7 @@ where
                             .unwrap_or_default();
                         crate::crash::report_js_error(owner, context, &msg, &stack);
                     }
+                    HookResult::Continue
                 }
                 Some(ret) if stop_at != StopAt::Never && ret.is_number() => {
                     // Out-of-range => Continue, NOT Stop. A handler returning a garbage number
@@ -2900,9 +2927,15 @@ where
                     if r > result {
                         result = r;
                     }
+                    r
                 }
-                Some(_) => {}
-            }
+                Some(_) => HookResult::Continue,
+            };
+            AFTER_HANDLER.with(|c| {
+                if let Some(f) = c.get() {
+                    f(hr);
+                }
+            });
         }
         (result, Delivery::Delivered)
     })
@@ -5490,6 +5523,13 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
                     idx
                 )),
             );
+        } else {
+            // A successful write during an acquire session is a vote-eligible `result` write.
+            ACQUIRE.with(|a| {
+                if let Some(s) = a.borrow_mut().as_mut() {
+                    s.wrote = true;
+                }
+            });
         }
     }));
 }
@@ -5522,7 +5562,8 @@ fn build_hook_view<'s>(
             v8::Function::builder(s2_hook_param_get).data(data).build(tc)?.into();
         // No setter at all for a read-only param — `undefined` is how V8 spells "accessor with no
         // setter", which makes an assignment throw under strict mode instead of silently vanishing.
-        let setter: v8::Local<v8::Value> = if plan.writable[i] {
+        let post = HOOK_POST_SKIPPED.with(|c| c.get().is_some());
+        let setter: v8::Local<v8::Value> = if plan.writable[i] && !post {
             v8::Function::builder(s2_hook_param_set).data(data).build(tc)?.into()
         } else {
             v8::undefined(tc).into()
@@ -5561,6 +5602,11 @@ fn build_hook_view<'s>(
             None => v8::null(tc).into(),
         };
         obj.set(tc, key.into(), ent);
+    }
+    if let Some(skipped) = HOOK_POST_SKIPPED.with(|c| c.get()) {
+        let key = v8::String::new(tc, "skipped")?;
+        let val: v8::Local<v8::Value> = v8::Boolean::new(tc, skipped).into();
+        obj.set(tc, key.into(), val);
     }
     Some(vec![obj.into()])
 }
@@ -5640,11 +5686,46 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
             epoch,
         })
     });
+    let is_acquire = plan.shape == 3; // this_i64_i32_i64 — see gamedata_hooks::SHAPES
+    let prev_acq = if is_acquire {
+        ACQUIRE.with(|a| {
+            a.borrow_mut().replace(AcquireSession {
+                view: arg_view,
+                votes: Vec::new(),
+                wrote: false,
+            })
+        })
+    } else {
+        None
+    };
+    let prev_after = if is_acquire {
+        AFTER_HANDLER.with(|c| c.replace(Some(acquire_after_handler)))
+    } else {
+        None
+    };
     let label = format!("dispatch_hook('{}.{}')", owner, name);
     let (result, delivery) =
         fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
             build_hook_view(tc, &plan, arg_view, epoch)
         });
+    if is_acquire {
+        AFTER_HANDLER.with(|c| c.set(prev_after));
+        let session = ACQUIRE.with(|a| {
+            let cur = a.borrow_mut().take();
+            *a.borrow_mut() = prev_acq;
+            cur
+        });
+        if let Some(mut session) = session {
+            crate::acquire::order_votes(&mut session.votes);
+            let (folded, _) = crate::acquire::fold_acquire(&session.votes, None);
+            if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
+                if let Some(w) = ops.hook_write_i32 {
+                    let _ = w(arg_view, 1, folded);
+                    let _ = w(arg_view, 2, if session.votes.is_empty() { 0 } else { 1 });
+                }
+            }
+        }
+    }
     ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
     // Nothing ran. The `Continue` above is still the right answer for the thunk (never a replay —
     // the frame is gone), but the skip is now NAMED instead of silent, and rate-limited to once per
@@ -5653,6 +5734,138 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
         crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
     }
     result as i32
+}
+
+fn acquire_after_handler(hr: HookResult) {
+    ACQUIRE.with(|a| {
+        let mut slot = a.borrow_mut();
+        let Some(s) = slot.as_mut() else { return };
+        let result = hook_param_read(s.view, 1).map(|(v, _)| v as i32).unwrap_or(0);
+        match hr {
+            HookResult::Continue => {
+                s.wrote = false;
+            }
+            HookResult::Changed => {
+                s.votes.push(crate::acquire::AcquireVote { result, skip_original: false });
+                s.wrote = false;
+            }
+            HookResult::Handled | HookResult::Stop => {
+                let r = if s.wrote { result } else { crate::acquire::ACQUIRE_IMPLICIT_DENY };
+                s.votes.push(crate::acquire::AcquireVote { result: r, skip_original: true });
+                s.wrote = false;
+            }
+        }
+    });
+}
+
+/// Post-phase spectator mux. Readonly view. `HookResult` ignored. Always runs if subscribed,
+/// including after a Pre skip (`skipped: true`).
+pub(crate) fn dispatch_hook_post(hook_id: i32, arg_view: *mut std::ffi::c_void, skipped: bool) -> i32 {
+    let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
+    let Some(plan) = crate::gamedata_hooks::plan(&owner, &name) else { return 0 };
+    let snap = HOOK_MUX.with(|m| m.borrow().snapshot(&hook_key_post(&owner, &name)));
+    if snap.is_empty() {
+        return 0;
+    }
+    let epoch = HOOK_EPOCH.with(|e| {
+        let next = e.get().wrapping_add(1);
+        e.set(next);
+        next
+    });
+    let prev = ACTIVE_HOOK.with(|a| {
+        a.borrow_mut().replace(ActiveHook {
+            view: arg_view,
+            owner: owner.clone(),
+            name: name.clone(),
+            epoch,
+        })
+    });
+    let prev_skipped = HOOK_POST_SKIPPED.with(|c| c.replace(Some(skipped)));
+    let label = format!("dispatch_hook_post('{}.{}')", owner, name);
+    let (_, delivery) = fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Never, |tc| {
+        build_hook_view(tc, &plan, arg_view, epoch)
+    });
+    HOOK_POST_SKIPPED.with(|c| c.set(prev_skipped));
+    ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
+    if delivery == Delivery::Deferred {
+        crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
+    }
+    0
+}
+
+fn hook_key_post(owner: &str, name: &str) -> String {
+    format!("{}\u{0}{}\u{0}post", owner, name)
+}
+
+/// `__s2_hook_on_post(owner, hookName, handler)` — subscribe to the Post spectator of a declared hook.
+fn s2_hook_on_post(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 3 {
+            return;
+        }
+        let owner = hook_owner_id(&args.get(0).to_rust_string_lossy(scope));
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let key = hook_key_post(&owner, &name);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 2) else { return };
+        if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
+            log_warn(&format!(
+                "WARN: hook_on_post('{}', '{}'): the detour is not installed, so this handler will not \
+                 fire: {}",
+                owner, name, reason
+            ));
+        }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// `__s2_hook_q_u16(qslot, class, field)` — u16 at the live view's q[qslot] + schema offset.
+/// Game package supplies the class/field names; the pointer never crosses to JS.
+fn s2_hook_q_u16(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        let Some((view, _, _, _)) = active_hook() else { return };
+        if args.length() < 3 {
+            return;
+        }
+        let qslot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let class = args.get(1).to_rust_string_lossy(scope);
+        let field = args.get(2).to_rust_string_lossy(scope);
+        let off = schema_offset_cached(&class, &field);
+        if off < 0 {
+            return;
+        }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.hook_read_u16_at_q else { return };
+        let mut out: u16 = 0;
+        if f(view, qslot, off, &mut out) != 0 {
+            return;
+        }
+        rv.set_uint32(out as u32);
+    }));
+}
+
+/// `__s2_hook_self_matches(entityRef, offset)` — does this live entity's pointer-at-offset equal
+/// the detour `this`? Used by the game package to hop a services sub-object back to its pawn.
+fn s2_hook_self_matches(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((view, _, _, _)) = active_hook() else { return };
+        if args.length() < 2 {
+            return;
+        }
+        let packed = pack_entity_arg(scope, args.get(0));
+        const NO_ENTITY: u64 = 0xffff_ffff_ffff_ffff;
+        if packed == NO_ENTITY {
+            return;
+        }
+        let index = (packed >> 32) as i32;
+        let serial = packed as u32 as i32;
+        let offset = args.get(1).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.hook_self_matches_field else { return };
+        rv.set_bool(f(view, index, serial, offset) == 1);
+    }));
 }
 
 
@@ -6067,6 +6280,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // registration native here either — core registers hook descriptors itself from the same packed
     // gamedata, so JS can never declare a detour, only subscribe to a declared one.
     set_native(scope, global_obj, "__s2_hook_on", s2_hook_on);
+    set_native(scope, global_obj, "__s2_hook_on_post", s2_hook_on_post);
+    set_native(scope, global_obj, "__s2_hook_q_u16", s2_hook_q_u16);
+    set_native(scope, global_obj, "__s2_hook_self_matches", s2_hook_self_matches);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -11701,6 +11917,8 @@ pub(crate) mod frame_tests {
             entity_stop_sound: None,
             entity_set_body_group_by_name: None,
             entity_set_model_scale: None,
+            hook_read_u16_at_q: None,
+            hook_self_matches_field: None,
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -13481,6 +13699,8 @@ pub(crate) mod frame_tests {
             entity_stop_sound: None,
             entity_set_body_group_by_name: None,
             entity_set_model_scale: None,
+            hook_read_u16_at_q: None,
+            hook_self_matches_field: None,
         }
     }
 

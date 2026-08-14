@@ -124,6 +124,16 @@ constexpr ParamSlot kParamsThisF32I32I64I64[] = {
     { kParamI32, 0 },
 };
 
+// S2_HOOK_SHAPE_THIS_I64_I32_I64 — i32(void* self, int64, int32, int64).
+// Addressable: method (i32 slot 0), result (i32 slot 1, the RETURN — not an ABI arg),
+// and voted (i32 slot 2, core-only: set when a handler's HookResult is a vote).
+// The two i64s are opaque pass-through (item view + unknown).
+constexpr ParamSlot kParamsThisI64I32I64[] = {
+    { kParamI32, 0 },
+    { kParamI32, 1 },
+    { kParamI32, 2 },
+};
+
 struct ShapeInfo { const ParamSlot* params; int count; };
 
 
@@ -137,6 +147,7 @@ constexpr ShapeInfo InfoFor(int shape) {
         case S2_HOOK_SHAPE_THIS_VOID:            return { kParamsThisVoid, 0 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kParamsThisF32I32I32I32, 4 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kParamsThisF32I32I64I64, 2 };
+        case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kParamsThisI64I32I64, 3 };
         default:                                 return { nullptr, 0 };
     }
 }
@@ -182,12 +193,14 @@ struct ShapeAbi { const uint8_t* wide; int slots; };
 constexpr uint8_t kAbiThisVoid[]         = { 1 };             // (this)
 constexpr uint8_t kAbiThisF32I32I32I32[] = { 1, 0, 0, 0 };    // (this, [f32], i32, i32, i32)
 constexpr uint8_t kAbiThisF32I32I64I64[] = { 1, 0, 1, 1 };    // (this, [f32], i32, i64, i64)
+constexpr uint8_t kAbiThisI64I32I64[]    = { 1, 1, 0, 1 };    // (this, i64, i32, i64)
 
 constexpr ShapeAbi AbiFor(int shape) {
     switch (shape) {
         case S2_HOOK_SHAPE_THIS_VOID:            return { kAbiThisVoid,         1 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kAbiThisF32I32I32I32, 4 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kAbiThisF32I32I64I64, 4 };
+        case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kAbiThisI64I32I64,    4 };
         default:                                 return { nullptr, 0 };
     }
 }
@@ -209,6 +222,7 @@ constexpr bool AbiCoversShape(int shape) {
 static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_VOID),            "this_void: ABI row too short");
 static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I32_I32), "narrow 4-arg: ABI row too short");
 static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I64_I64), "wide 4-arg: ABI row too short");
+static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_I64_I32_I64),     "canaquire: ABI row too short");
 
 
 // ---------------------------------------------------------------------------
@@ -217,6 +231,7 @@ static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I64_I64), "wide 4-arg: A
 using ThisVoidFn           = void (*)(void*);
 using ThisF32I32I32I32Fn   = void (*)(void*, float, int32_t, int32_t, int32_t);
 using ThisF32I32I64I64Fn   = void (*)(void*, float, int32_t, int64_t, int64_t);
+using ThisI64I32I64Fn      = int32_t (*)(void*, int64_t, int32_t, int64_t);
 
 // `orig` is null only in the window between s2detour patching the prologue and publishing the
 // trampoline — unreachable on the single-threaded game thread, but guarded rather than assumed.
@@ -289,6 +304,40 @@ void Thunk_ThisF32I32I64I64(void* self, float a0, int32_t a1, int64_t a2, int64_
     if (orig) orig(self, v.f[0], v.i[0], v.q[0], v.q[1]);
 }
 
+template <int Id>
+int32_t Thunk_ThisI64I32I64(void* self, int64_t item, int32_t method, int64_t unknown) {
+    const ThisI64I32I64Fn orig = reinterpret_cast<ThisI64I32I64Fn>(g_hooks[Id].orig);
+    if (S2Hook_BypassTake(Id)) { return orig ? orig(self, item, method, unknown) : 0; }
+
+    ArgView v;
+    v.hookId = Id;
+    v.shape  = S2_HOOK_SHAPE_THIS_I64_I32_I64;
+    v.self   = self;
+    v.i[0]   = method;   // addressable: method
+    v.i[1]   = 0;        // addressable: result, seed Allowed
+    v.i[2]   = 0;        // addressable: voted (core sets when a handler's result is a vote)
+    v.q[0]   = item;     // opaque CEconItemView*
+    v.q[1]   = unknown;  // opaque trailing ptr
+
+    const void* const prevView = g_activeView;
+    g_activeView = &v;
+    const int hr = S2Hook_Dispatch(Id, &v);
+    const bool skip = S2Hook_Suppresses(hr);
+    const int32_t plugin = v.i[1];
+    const bool voted = v.i[2] != 0; // core sets this when a handler writes `result`
+    int32_t out;
+    if (skip) {
+        out = voted ? plugin : 1; // implicit InvalidItem if Handled without a write
+    } else {
+        const int32_t engine = orig ? orig(self, v.q[0], v.i[0], v.q[1]) : 0;
+        out = voted ? S2Hook_MostRestrictiveAcquire(plugin, engine) : engine;
+    }
+    v.i[1] = out;
+    S2Hook_DispatchPost(Id, &v, skip ? 1 : 0);
+    g_activeView = prevView;
+    return out;
+}
+
 // The tables. One entry per hook slot, materialised at COMPILE time by expanding an index_sequence
 // over the templates above — so every slot's thunk address is a link-time constant and the id it
 // carries is an immediate, not a lookup. (A template template parameter cannot bind a FUNCTION
@@ -310,14 +359,22 @@ constexpr std::array<ThisF32I32I64I64Fn, sizeof...(Is)>
 MakeThisF32I32I64I64Table(std::index_sequence<Is...>) {
     return {{ &Thunk_ThisF32I32I64I64<static_cast<int>(Is)>... }};
 }
+template <std::size_t... Is>
+constexpr std::array<ThisI64I32I64Fn, sizeof...(Is)>
+MakeThisI64I32I64Table(std::index_sequence<Is...>) {
+    return {{ &Thunk_ThisI64I32I64<static_cast<int>(Is)>... }};
+}
 
 constexpr auto kThisVoidThunks = MakeThisVoidTable(std::make_index_sequence<kHookSlots>{});
 constexpr auto kThisF32I32I64I64Thunks =
     MakeThisF32I32I64I64Table(std::make_index_sequence<kHookSlots>{});
 constexpr auto kThisF32I32I32I32Thunks =
     MakeThisF32I32I32I32Table(std::make_index_sequence<kHookSlots>{});
+constexpr auto kThisI64I32I64Thunks =
+    MakeThisI64I32I64Table(std::make_index_sequence<kHookSlots>{});
 static_assert(kThisVoidThunks.size() == kHookSlots, "thunk table must cover every hook slot");
 static_assert(kThisF32I32I32I32Thunks.size() == kHookSlots, "thunk table must cover every hook slot");
+static_assert(kThisI64I32I64Thunks.size() == kHookSlots, "thunk table must cover every hook slot");
 
 // The slot's own thunk for `shape`, or null when the shape has no compiled thunk (a NAMED install
 // failure — the closed vocabulary and the compiled set must never drift apart silently).
@@ -330,6 +387,8 @@ void* ThunkFor(int shape, int hookId) {
             return reinterpret_cast<void*>(kThisF32I32I32I32Thunks[static_cast<std::size_t>(hookId)]);
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64:
             return reinterpret_cast<void*>(kThisF32I32I64I64Thunks[static_cast<std::size_t>(hookId)]);
+        case S2_HOOK_SHAPE_THIS_I64_I32_I64:
+            return reinterpret_cast<void*>(kThisI64I32I64Thunks[static_cast<std::size_t>(hookId)]);
         default:
             return nullptr;
     }
@@ -546,4 +605,23 @@ int S2_HookReceiverHandle(void* argView, uint32_t* outHandle) {
     if (h == S2_ENTITY_HANDLE_NONE) return -1;
     *outHandle = h;
     return 0;
+}
+
+int S2_HookReadU16AtQ(void* argView, int qslot, int offset, uint16_t* out) {
+    const ArgView* v = LiveViewOf(argView);
+    if (!v || !out) return -1;
+    if (qslot < 0 || qslot >= kViewI64Slots || offset < 0) return -1;
+    const int64_t p = v->q[qslot];
+    if (p == 0) return -1;
+    *out = *reinterpret_cast<const uint16_t*>(static_cast<uintptr_t>(p) + static_cast<uintptr_t>(offset));
+    return 0;
+}
+
+int S2_HookSelfMatchesField(void* argView, int index, int serial, int offset) {
+    const ArgView* v = LiveViewOf(argView);
+    if (!v || !v->self || offset < 0) return 0;
+    void* ent = S2_ResolveEntity(index, serial);
+    if (!ent) return 0;
+    void* field = *reinterpret_cast<void**>(static_cast<char*>(ent) + offset);
+    return field == v->self ? 1 : 0;
 }

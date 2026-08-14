@@ -280,6 +280,10 @@ uint32_t S2_EntityHandleFromPtr(void* p) {
     return static_cast<uint32_t>(EntityHandleFromPtr(p));   // kInvalidEntityHandle -> the none marker
 }
 
+void* S2_ResolveEntity(int index, int serial) {
+    return ResolveEntity(index, serial);
+}
+
 // InModuleText's rule, re-asked WITHOUT a module name, for a caller that holds only a resolved
 // address (engine_hooks.cpp, which must never patch bytes it cannot prove are code). Module-agnostic
 // on purpose: a hook target may live in whichever module its descriptor named, and this TU is the
