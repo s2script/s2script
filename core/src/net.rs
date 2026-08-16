@@ -142,17 +142,50 @@ thread_local! {
         = std::cell::RefCell::new(Vec::new());
 }
 
-pub(crate) fn queue_data(conn_id: u64, b: Vec<u8>) {
+fn queue_data(conn_id: u64, b: Vec<u8>) {
     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, PendingNetEvent::Data(b))));
 }
-pub(crate) fn queue_datagram(conn_id: u64, from: String, data: Vec<u8>) {
+fn queue_datagram(conn_id: u64, from: String, data: Vec<u8>) {
     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, PendingNetEvent::Datagram { from, data })));
 }
-pub(crate) fn queue_error(conn_id: u64, e: String) {
+fn queue_error(conn_id: u64, e: String) {
     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, PendingNetEvent::Errored(e))));
 }
-pub(crate) fn queue_close(conn_id: u64) {
+fn queue_close(conn_id: u64) {
     NET_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, PendingNetEvent::Closed)));
+}
+
+/// One drain's worth of net signals. Connect/bind results go back to the host so it can resolve
+/// the Promise (needs RESOLVERS). Events are queued here. Terminal drops are returned so the
+/// host can `drop_conn` AFTER the microtask checkpoint.
+pub(crate) struct SignalPoll {
+    pub connects: Vec<(u64, Result<(), String>)>,
+    pub drops: Vec<u64>,
+}
+
+/// Drain the engine channel. The tick only polls — it does not match Data/Datagram/Errored/Closed.
+pub(crate) fn poll_signals() -> SignalPoll {
+    let mut connects = Vec::new();
+    let mut drops = Vec::new();
+    while let Some(sig) = try_recv_signal() {
+        match sig.kind {
+            NetSignalKind::Connected | NetSignalKind::Bound => {
+                connects.push((sig.conn_id, Ok(())));
+            }
+            NetSignalKind::ConnectFailed(e) => {
+                connects.push((sig.conn_id, Err(e)));
+                drops.push(sig.conn_id);
+            }
+            NetSignalKind::Data(b) => queue_data(sig.conn_id, b),
+            NetSignalKind::Datagram { from, data } => queue_datagram(sig.conn_id, from, data),
+            NetSignalKind::Errored(e) => queue_error(sig.conn_id, e),
+            NetSignalKind::Closed => {
+                queue_close(sig.conn_id);
+                drops.push(sig.conn_id);
+            }
+        }
+    }
+    SignalPoll { connects, drops }
 }
 
 fn net_owner(scope: &mut v8::PinScope) -> String {
@@ -383,5 +416,40 @@ mod tests {
         let sig = drain_until(|s| matches!(s.kind, NetSignalKind::Datagram{..}));
         match sig.kind { NetSignalKind::Datagram{data,..} => assert_eq!(data, b"ping"), _ => unreachable!() }
         drop_conn(3);
+    }
+
+    /// The tick only polls. Data/Closed are queued here, not handed back as connect results;
+    /// Closed is also a deferred drop so the host can deregister after the checkpoint.
+    #[test]
+    fn poll_signals_returns_connects_and_queues_events() {
+        while try_recv_signal().is_some() {}
+        NET_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 8801));
+        let tx = &engine().sig_tx;
+        let _ = tx.send(NetSignal { conn_id: 8801, kind: NetSignalKind::Connected });
+        let _ = tx.send(NetSignal { conn_id: 8801, kind: NetSignalKind::Data(b"hi".to_vec()) });
+        let _ = tx.send(NetSignal { conn_id: 8801, kind: NetSignalKind::Closed });
+        let p = poll_signals();
+        assert_eq!(p.connects, vec![(8801, Ok(()))]);
+        assert_eq!(p.drops, vec![8801]);
+        let pending = NET_EVENT_PENDING.with(|q| q.borrow().len());
+        let ours = NET_EVENT_PENDING.with(|q| {
+            q.borrow().iter().filter(|e| e.0 == 8801).count()
+        });
+        assert_eq!(ours, 2, "expected data + close queued, pending={pending}");
+        NET_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 8801));
+    }
+
+    #[test]
+    fn poll_signals_failed_connect_is_a_drop_without_an_event() {
+        while try_recv_signal().is_some() {}
+        NET_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 8802));
+        let _ = engine().sig_tx.send(NetSignal {
+            conn_id: 8802,
+            kind: NetSignalKind::ConnectFailed("nope".into()),
+        });
+        let p = poll_signals();
+        assert_eq!(p.connects, vec![(8802, Err("nope".into()))]);
+        assert_eq!(p.drops, vec![8802]);
+        assert!(NET_EVENT_PENDING.with(|q| q.borrow().iter().all(|e| e.0 != 8802)));
     }
 }

@@ -21,8 +21,8 @@ pub struct WsSignal {
 enum WsCommand {
     Send(String),
     /// JS-initiated close (`__s2_ws_close` -> `ws::close`, owner-checked): the task emits its own
-    /// `Closed` WsSignal so `onClose` fires and the drain's Closed-routing deregisters the conn
-    /// (see the signal-routing step in v8host.rs's `frame_async_drain`).
+    /// `Closed` WsSignal so `onClose` fires and `poll_signals` records a deferred drop
+    /// (`frame_async_drain` calls `drop_conn` after the microtask checkpoint).
     Close,
     /// Ledger-teardown close (`ws::drop_conn`, unconditional — plugin unload / process shutdown):
     /// closes the socket WITHOUT emitting a signal. The registry entry is already removed
@@ -283,9 +283,39 @@ thread_local! {
         = std::cell::RefCell::new(Vec::new());
 }
 
-/// Queue a post-drain fan-out. Called from `frame_async_drain` while HOST is borrowed.
-pub(crate) fn queue_event(conn_id: u64, event: &str, s: String, n: i32) {
+/// Queue a post-drain fan-out. Called from `poll_signals` while HOST is borrowed.
+fn queue_event(conn_id: u64, event: &str, s: String, n: i32) {
     WS_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, event.to_string(), s, n)));
+}
+
+/// One drain's worth of ws signals. Connect results go back to the host so it can resolve the
+/// connect Promise (needs RESOLVERS). Events are queued here. Terminal drops are returned so the
+/// host can `drop_conn` AFTER the microtask checkpoint.
+pub(crate) struct SignalPoll {
+    pub connects: Vec<(u64, Result<(), String>)>,
+    pub drops: Vec<u64>,
+}
+
+/// Drain the engine channel. The tick only polls — it does not match Message/Errored/Closed.
+pub(crate) fn poll_signals() -> SignalPoll {
+    let mut connects = Vec::new();
+    let mut drops = Vec::new();
+    while let Some(sig) = try_recv_signal() {
+        match sig.kind {
+            WsSignalKind::Connected => connects.push((sig.conn_id, Ok(()))),
+            WsSignalKind::ConnectFailed(e) => {
+                connects.push((sig.conn_id, Err(e)));
+                drops.push(sig.conn_id);
+            }
+            WsSignalKind::Message(t) => queue_event(sig.conn_id, "message", t, 0),
+            WsSignalKind::Errored(e) => queue_event(sig.conn_id, "error", e, 0),
+            WsSignalKind::Closed(code, reason) => {
+                queue_event(sig.conn_id, "close", reason, code as i32);
+                drops.push(sig.conn_id);
+            }
+        }
+    }
+    SignalPoll { connects, drops }
 }
 
 fn ws_owner(scope: &mut v8::PinScope) -> String {
@@ -681,5 +711,38 @@ mod tests {
             WsSignalKind::ConnectFailed(reason) => reason.contains("reserved"),
             _ => false,
         }));
+    }
+
+    /// The tick only polls. Message/Closed are queued here, not handed back as connect results;
+    /// Closed is also a deferred drop so the host can deregister after the checkpoint.
+    #[test]
+    fn poll_signals_returns_connects_and_queues_events() {
+        while try_recv_signal().is_some() {}
+        WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7701));
+        let tx = &engine().sig_tx;
+        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Connected });
+        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Message("hi".into()) });
+        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Closed(1000, "bye".into()) });
+        let p = poll_signals();
+        assert_eq!(p.connects, vec![(7701, Ok(()))]);
+        assert_eq!(p.drops, vec![7701]);
+        let pending = WS_EVENT_PENDING.with(|q| q.borrow().clone());
+        assert!(pending.iter().any(|e| e.0 == 7701 && e.1 == "message" && e.2 == "hi"));
+        assert!(pending.iter().any(|e| e.0 == 7701 && e.1 == "close" && e.2 == "bye" && e.3 == 1000));
+        WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7701));
+    }
+
+    #[test]
+    fn poll_signals_failed_connect_is_a_drop_without_an_event() {
+        while try_recv_signal().is_some() {}
+        WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7702));
+        let _ = engine().sig_tx.send(WsSignal {
+            conn_id: 7702,
+            kind: WsSignalKind::ConnectFailed("nope".into()),
+        });
+        let p = poll_signals();
+        assert_eq!(p.connects, vec![(7702, Err("nope".into()))]);
+        assert_eq!(p.drops, vec![7702]);
+        assert!(WS_EVENT_PENDING.with(|q| q.borrow().iter().all(|e| e.0 != 7702)));
     }
 }
