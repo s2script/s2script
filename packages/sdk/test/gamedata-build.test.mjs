@@ -46,6 +46,39 @@ test("packs gamedata.json into the .s2sp and records permissions in the manifest
   assert.ok(JSON.parse(Buffer.from(zip["gamedata.json"]).toString("utf8")).calls.ignite);
 });
 
+const HOOK_GD = {
+  signatures: { Ig: { linuxsteamrt64: { module: "libserver.so", pattern: "55 48", resolve: "direct" } } },
+  hooks: {
+    onX: {
+      target: { kind: "signature", name: "Ig", validate: { prologue: "55 48" } },
+      shape: "this_void",
+      expose: { ctx: "custom" },
+    },
+  },
+};
+const HOOK_BODY = `import { plugin } from "@s2script/sdk/plugin";
+import { Engine } from "@s2script/sdk/unsafe";
+export default plugin(() => { const h = Engine.hook("onX"); if (h) h(() => {}); });`;
+
+test("writes .s2script/hooks.d.ts and typechecks Engine.hook", async () => {
+  const dir = scaffold(HOOK_GD, ["engine:hooks"], HOOK_BODY);
+  await buildPlugin(dir);
+  assert.ok(existsSync(join(dir, ".s2script", "hooks.d.ts")));
+});
+
+test("a hooks section without the permission fails the build", async () => {
+  const dir = scaffold(HOOK_GD, undefined, HOOK_BODY);
+  await assert.rejects(() => buildPlugin(dir), /engine:hooks/);
+});
+
+test("Engine.hook on an undeclared name fails the typecheck gate", async () => {
+  const body = `import { plugin } from "@s2script/sdk/plugin";
+import { Engine } from "@s2script/sdk/unsafe";
+export default plugin(() => { Engine.hook("nope"); });`;
+  const dir = scaffold(HOOK_GD, ["engine:hooks"], body);
+  await assert.rejects(() => buildPlugin(dir), /TS2345|not assignable/);
+});
+
 test("writes .s2script/gamedata.d.ts", async () => {
   const dir = scaffold(GD, ["engine:calls"], OK_BODY);
   await buildPlugin(dir);

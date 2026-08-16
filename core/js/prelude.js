@@ -938,6 +938,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         };
       },
       status: function (name) { return __s2_engine_call_status(name); },
+      // Inbound sibling of `call`. The owner is NEVER passed from here: each native reads the
+      // CALLING CONTEXT's id itself, so this layer cannot name another plugin even by mistake.
+      hook: function (name) {
+        if (!__s2_engine_hook_ready(name)) return null;
+        return function (handler) { return __s2_engine_hook_on(name, handler); };
+      },
+      hookStatus: function (name) { return __s2_engine_hook_status(name); },
     },
   };
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---

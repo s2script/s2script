@@ -1,18 +1,10 @@
 import {
   ARG_KINDS, RET_KINDS, INT_CLASS_ARGS, MAX_INT_ARGS, MAX_FLOAT_ARGS, PLATFORM,
+  HOOK_SHAPES, hookShapeArity,
   type ArgKind, type PluginGamedata,
 } from "./types.ts";
 
-/**
- * `hooks` is deliberately ABSENT (declarative-inbound-hooks slice, v1). Core's hook registry is
- * owner-generic and its `engine:hooks` check is enforced, but a plugin-declared hook needs three
- * things this package does not have yet: this section, a typed subscribe surface (`__s2_hook_on` is
- * not in `globals.d.ts` and `__s2pkg_game_ctx` is a game-package-only extension point), and a
- * `gen-hooks` codegen that is not hardcoded to one game's gamedata file. Adding the section alone
- * would let a plugin ship a `.s2sp` whose hooks nothing can subscribe to — a build that succeeds and
- * a feature that is silently absent. Opening the path is its own slice; see ARCHITECTURE.md §2.0.7.
- */
-const ALLOWED_SECTIONS = new Set(["signatures", "calls"]);
+const ALLOWED_SECTIONS = new Set(["signatures", "calls", "hooks"]);
 
 /**
  * A call name is interpolated VERBATIM into the generated `.s2script/gamedata.d.ts` as a TypeScript
@@ -37,10 +29,11 @@ const RESOLVE_KINDS = ["direct", "ctor-body-xref", "lea-disp"] as const;
 /**
  * Permissions the runtime understands. Closed for the same reason as RESOLVE_KINDS.
  *
- * `engine:hooks` is absent for the same reason `hooks` is absent from ALLOWED_SECTIONS above — it
- * would grant a capability no plugin can currently express. The runtime enforces it regardless.
+ * `engine:hooks` is separate from `engine:calls`: an operator who granted outbound calls has not
+ * granted inbound detours. Core already enforces this; the build list must match so a typo is a
+ * build error rather than a permission the runtime silently ignores.
  */
-const KNOWN_PERMISSIONS = ["engine:calls"] as const;
+const KNOWN_PERMISSIONS = ["engine:calls", "engine:hooks"] as const;
 
 /** Validate a plugin's gamedata. Returns [] when valid; every string is a build-blocking error. */
 export function validatePluginGamedata(gd: unknown, opts: { permissions: string[] }): string[] {
@@ -50,7 +43,7 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
 
   for (const key of Object.keys(g)) {
     if (!ALLOWED_SECTIONS.has(key)) {
-      errs.push(`gamedata section '${key}' is not supported in v1 (allowed: signatures, calls)`);
+      errs.push(`gamedata section '${key}' is not supported in v1 (allowed: signatures, calls, hooks)`);
     }
   }
 
@@ -207,5 +200,167 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
     }
   }
 
+  validateHooks(g, sigs, callNames, opts.permissions, errs);
   return errs;
+}
+
+function isNonEmptyObject(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === "object" && !Array.isArray(v) && Object.keys(v as object).length > 0;
+}
+
+/** Grammar for `hooks` — mirrors `scripts/check-call-descriptors.sh` §3b and core `prepare()`. */
+function validateHooks(
+  g: Record<string, unknown>,
+  sigs: Record<string, Record<string, unknown>>,
+  callNames: string[],
+  permissions: string[],
+  errs: string[],
+): void {
+  if (g.hooks === undefined) return;
+  if (g.hooks == null || typeof g.hooks !== "object" || Array.isArray(g.hooks)) {
+    errs.push("hooks must be an object");
+    return;
+  }
+  const hooks = g.hooks as Record<string, unknown>;
+  const hookNames = Object.keys(hooks);
+  if (hookNames.length && !permissions.includes("engine:hooks")) {
+    errs.push('gamedata declares a `hooks` section but the manifest does not declare permission "engine:hooks"');
+  }
+
+  for (const [name, rawDecl] of Object.entries(hooks)) {
+    const where = `hook '${name}'`;
+
+    if (!IDENTIFIER.test(name)) {
+      errs.push(
+        `${where}: hook name must be a plain identifier matching ${IDENTIFIER.source} — it is emitted ` +
+          `verbatim as a TypeScript interface member in the generated .s2script/hooks.d.ts`
+      );
+      continue;
+    }
+    if (RESERVED_CALL_NAMES.has(name)) {
+      errs.push(`${where}: hook name '${name}' is reserved`);
+      continue;
+    }
+
+    if (rawDecl == null || typeof rawDecl !== "object" || Array.isArray(rawDecl)) {
+      errs.push(`${where}: must be an object`);
+      continue;
+    }
+    const decl = rawDecl as Record<string, unknown>;
+
+    const ctx = (decl.expose as Record<string, unknown> | undefined)?.ctx;
+    if (typeof ctx !== "string" || !ctx.length) {
+      errs.push(`${where}: missing 'expose.ctx' — nothing could subscribe to this hook`);
+    } else if (!IDENTIFIER.test(ctx)) {
+      errs.push(`${where}: 'expose.ctx' must be a plain identifier, got ${JSON.stringify(ctx)}`);
+    }
+
+    const shape = decl.shape;
+    if (typeof shape !== "string" || !(HOOK_SHAPES as readonly string[]).includes(shape)) {
+      errs.push(
+        `${where}: unknown hook shape ${JSON.stringify(shape)} (this build compiles thunks for: ${HOOK_SHAPES.join(", ")})`
+      );
+    }
+
+    const params = decl.params ?? [];
+    if (!Array.isArray(params)) {
+      errs.push(`${where}: 'params' must be an array`);
+    } else {
+      const seen = new Set<string>();
+      for (let i = 0; i < params.length; i++) {
+        const p = params[i];
+        if (typeof p !== "string" || !IDENTIFIER.test(p)) {
+          errs.push(`${where}: params[${i}] = ${JSON.stringify(p)} must be a plain identifier`);
+          continue;
+        }
+        if (seen.has(p)) errs.push(`${where}: param name ${JSON.stringify(p)} is declared more than once`);
+        seen.add(p);
+      }
+      const arity = typeof shape === "string" ? hookShapeArity(shape) : undefined;
+      if (arity !== undefined && params.length > arity) {
+        errs.push(
+          `${where}: declares ${params.length} 'params' but shape ${JSON.stringify(shape)} passes only ${arity}`
+        );
+      }
+
+      if (decl.mutable !== undefined) {
+        const mutable = decl.mutable;
+        if (!Array.isArray(mutable)) {
+          errs.push(`${where}: 'mutable' must be an array`);
+        } else {
+          for (const m of mutable) {
+            if (typeof m !== "string" || !params.includes(m)) {
+              errs.push(`${where}: 'mutable' names ${JSON.stringify(m)}, which is not one of this hook's params`);
+            }
+          }
+        }
+      }
+    }
+
+    const recv = decl.receiver as Record<string, unknown> | undefined;
+    if (recv !== undefined) {
+      if (recv == null || typeof recv !== "object") {
+        errs.push(`${where}: 'receiver' must be an object`);
+      } else {
+        const rkind = recv.kind ?? "none";
+        if (rkind !== "none" && rkind !== "entity") {
+          errs.push(`${where}: receiver.kind must be "none" or "entity"`);
+        } else if (rkind === "entity") {
+          if (typeof recv.as !== "string" || !IDENTIFIER.test(recv.as)) {
+            errs.push(`${where}: receiver.kind "entity" needs a plain-identifier 'as' name`);
+          } else if (Array.isArray(params) && params.includes(recv.as)) {
+            errs.push(`${where}: receiver 'as' name ${JSON.stringify(recv.as)} collides with a param name`);
+          }
+        }
+      }
+    }
+
+    if (decl.bypassWith !== undefined) {
+      if (typeof decl.bypassWith !== "string" || !decl.bypassWith.length) {
+        errs.push(`${where}: 'bypassWith' must be a non-empty call name`);
+      } else if (!callNames.includes(decl.bypassWith)) {
+        errs.push(
+          `${where}: 'bypassWith' names ${JSON.stringify(decl.bypassWith)}, which is not a 'calls' descriptor in this owner's gamedata`
+        );
+      }
+    }
+
+    const target = decl.target as Record<string, unknown> | undefined;
+    if (!target) {
+      errs.push(`${where}: missing 'target'`);
+      continue;
+    }
+    if (target.kind === "signature") {
+      if (typeof target.name !== "string") {
+        errs.push(`${where}: target.name must be a string`);
+      } else if (!(target.name in sigs)) {
+        errs.push(`${where}: target.name '${target.name}' has no entry in 'signatures'`);
+      }
+      const sigPlat = typeof target.name === "string"
+        ? (sigs[target.name] as Record<string, unknown> | undefined)?.[PLATFORM] as Record<string, unknown> | undefined
+        : undefined;
+      const inherited = sigPlat?.validate;
+      if (!isNonEmptyObject(target.validate) && !isNonEmptyObject(inherited)) {
+        errs.push(
+          `${where}: a hook target MUST carry a non-empty 'validate' (inline, or inherited from its named signature) — a wrong detour address overwrites the prologue of whatever is actually there`
+        );
+      }
+    } else if (target.kind === "vtable") {
+      if (typeof target.class !== "string") errs.push(`${where}: vtable target requires 'class'`);
+      const plat = target[PLATFORM] as Record<string, unknown> | undefined;
+      if (!plat) {
+        errs.push(`${where}: vtable target missing platform '${PLATFORM}'`);
+      } else {
+        if (!Number.isInteger(plat.index) || (plat.index as number) < 0) {
+          errs.push(`${where}: vtable index must be a non-negative integer`);
+        }
+        const prologue = (plat.validate as Record<string, unknown> | undefined)?.prologue;
+        if (typeof prologue !== "string" || !prologue.length) {
+          errs.push(`${where}: a vtable target REQUIRES validate.prologue (a bare borrowed index is never trusted)`);
+        }
+      }
+    } else {
+      errs.push(`${where}: target.kind must be "signature" or "vtable"`);
+    }
+  }
 }
