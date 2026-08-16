@@ -1,0 +1,12 @@
+{
+  "name": "s2script",
+  "install": "bash scripts/cloud/install.sh",
+  "start": "bash scripts/cloud/start.sh",
+  "terminals": [
+    {
+      "name": "cs2-server",
+      "command": "if command -v docker >/dev/null 2>&1 && sudo docker ps --format '{{.Names}}' | grep -q '^s2script-cs2$'; then sudo docker compose -f docker/docker-compose.yml logs -f cs2; else echo 'live CS2 gate not active (npm-only environment) — see AGENTS.md'; fi",
+      "description": "Live CS2 dedicated server log. Boot lines '[plugins] @s2script/... Active' confirm s2script loaded. Drive it with: python3 scripts/rcon.py \"meta list\""
+    }
+  ]
+}
