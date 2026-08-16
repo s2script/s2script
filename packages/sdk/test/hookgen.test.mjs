@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { buildHookModel } from "../src/hookgen/model.ts";
-import { emitHookDts } from "../src/hookgen/emit-dts.ts";
+import { buildHookModel, buildPluginHookList } from "../src/hookgen/model.ts";
+import { emitHookDts, emitPluginHookDts } from "../src/hookgen/emit-dts.ts";
 
 const GD = {
   onTerminateRound: {
@@ -127,4 +127,22 @@ test("emitHookDts imports HookResultValue and EntityRef, and is deterministic", 
 test("emitHookDts on an empty model still emits a syntactically-closed (empty) PluginContext augmentation", () => {
   const dts = emitHookDts(buildHookModel({}));
   assert.match(dts, /declare module "@s2script\/sdk\/plugin" \{\n {2}interface PluginContext \{\n {2}\}\n\}/);
+});
+
+test("buildPluginHookList is flat, sorted, and does not skip an unexposed hook", () => {
+  const list = buildPluginHookList({
+    onB: { shape: "this_void", expose: { ctx: "x" } },
+    onA: { shape: "this_void" },
+  });
+  assert.deepEqual(list.map((h) => h.name), ["onA", "onB"]);
+});
+
+test("emitPluginHookDts augments EngineHooks, not PluginContext", () => {
+  const dts = emitPluginHookDts(GD);
+  assert.match(dts, /declare module "@s2script\/sdk\/unsafe"/);
+  assert.match(dts, /interface EngineHooks/);
+  assert.match(dts, /onTerminateRound: \(handler: \(view: OnTerminateRoundView\) => HookResultValue \| void\) => void;/);
+  assert.doesNotMatch(dts, /interface PluginContext/,
+    "plugin-declared hooks must not hang off ctx — expose.ctx colliding with a built-in would clobber it");
+  assert.equal(emitPluginHookDts(GD), emitPluginHookDts(GD), "deterministic");
 });

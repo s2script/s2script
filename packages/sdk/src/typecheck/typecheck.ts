@@ -21,13 +21,17 @@ function localDeclarationFiles(pluginDir: string): string[] {
     .map((f) => join(srcDir, f));
 }
 
-/** The build-generated gamedata augmentation (`.s2script/gamedata.d.ts`), when `s2s build` wrote one.
- *  It augments `@s2script/sdk/unsafe`'s `EngineCalls`, and a module augmentation nothing imports is
- *  invisible to the program — so it MUST be a typecheck ROOT or every declared `Engine.call(name)`
- *  fails as `never`. Absent for a plugin that ships no gamedata. */
+/** The build-generated gamedata augmentations (`.s2script/gamedata.d.ts`, `.s2script/hooks.d.ts`),
+ *  when `s2s build` wrote them. They augment `@s2script/sdk/unsafe`'s `EngineCalls` / `EngineHooks`,
+ *  and a module augmentation nothing imports is invisible to the program — so they MUST be typecheck
+ *  ROOTs or every declared `Engine.call(name)` / `Engine.hook(name)` fails as `never`. */
 function generatedDeclarationFiles(pluginDir: string): string[] {
-  const gd = join(pluginDir, ".s2script", "gamedata.d.ts");
-  return existsSync(gd) ? [gd] : [];
+  const out: string[] = [];
+  for (const name of ["gamedata.d.ts", "hooks.d.ts"]) {
+    const p = join(pluginDir, ".s2script", name);
+    if (existsSync(p)) out.push(p);
+  }
+  return out;
 }
 
 /**

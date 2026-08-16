@@ -15,6 +15,8 @@ test("package.json exports ./unsafe", () => {
 test("unsafe.d.ts declares an augmentable EngineCalls and Engine", () => {
   const dts = readFileSync(join(root, "unsafe.d.ts"), "utf8");
   assert.match(dts, /export interface EngineCalls/);
+  assert.match(dts, /export interface EngineHooks/);
   assert.match(dts, /export declare const Engine/);
   assert.match(dts, /status\(/);
+  assert.match(dts, /hookStatus\(/);
 });

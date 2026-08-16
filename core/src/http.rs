@@ -1,7 +1,10 @@
-//! Engine-generic async HTTP engine: a process-global tokio runtime + a shared reqwest Client + a
-//! completion channel. Holds NO V8 handles; the main thread only submits (`fetch`) and polls
-//! (`try_recv_completed`) — the runtime does all network I/O off-thread. Mirrors async_rt's POOL:
-//! a OnceLock, built once, never dropped (survives a Metamod re-init).
+//! Engine-generic async HTTP: a process-global tokio runtime + a shared reqwest Client + a
+//! completion channel. The engine half holds NO V8 handles; the main thread only submits (`fetch`)
+//! and polls (`try_recv_completed`) — the runtime does all network I/O off-thread. Mirrors
+//! async_rt's POOL: a OnceLock, built once, never dropped (survives a Metamod re-init).
+//!
+//! The adapter half (`__s2_fetch`) lives below. Promise resolve stays in `v8host` (`resolve_fetch`)
+//! because it needs RESOLVERS + the host isolate.
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -112,6 +115,82 @@ async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchRes
     }
     let body = String::from_utf8_lossy(&buf).into_owned();
     Ok(FetchResponse { status, status_text, headers, body })
+}
+
+// ---------------------------------------------------------------------------
+// V8 adapter — `__s2_fetch`. The tokio+reqwest engine above holds no V8 handles.
+// Promise create goes through `begin_job_promise` so RESOLVERS stay in v8host;
+// Promise resolve (`resolve_fetch`) stays there too.
+// ---------------------------------------------------------------------------
+
+use crate::v8host::{begin_job_promise, set_native};
+
+fn get_str_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str) -> Option<String> {
+    let key = v8::String::new(scope, name)?;
+    let val = obj.get(scope, key.into())?;
+    if val.is_null_or_undefined() {
+        return None;
+    }
+    Some(val.to_rust_string_lossy(scope))
+}
+
+/// Native `__s2_fetch(url, options) -> Promise<rawResponse>` where `rawResponse =
+/// {status, ok, statusText, headers, body}`. MIRRORS `s2_thread_sleep`'s resolver/ledger/pending
+/// block (via `begin_job_promise` — a `Job` resource) but hands off to `fetch` so the calling
+/// (main/game) thread never blocks on I/O. The Promise resolves on a LATER `frame_async_drain`
+/// via `v8host::resolve_fetch`.
+///
+/// `options` (all optional): `method` (default `"GET"`), `headers` (a plain string→string object),
+/// `body` (a string), `timeoutMs` (default 30000). Degrade-never-crash: the whole body runs under
+/// `catch_unwind`; a malformed/absent `options` degrades to the defaults (never throws
+/// synchronously) — the actual network outcome (incl. a 4xx/5xx, which RESOLVES with `ok:false`,
+/// vs. a network/timeout error, which REJECTS) is decided later by `resolve_fetch`.
+fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let url = args.get(0).to_rust_string_lossy(scope);
+        let mut method = "GET".to_string();
+        let mut headers: Vec<(String, String)> = Vec::new();
+        let mut body: Option<String> = None;
+        let mut timeout_ms = 30_000u64;
+        if let Ok(opts) = v8::Local::<v8::Object>::try_from(args.get(1)) {
+            if let Some(v) = get_str_prop(scope, opts, "method") {
+                method = v;
+            }
+            if let Some(v) = get_str_prop(scope, opts, "body") {
+                body = Some(v);
+            }
+            if let Some(k) = v8::String::new(scope, "timeoutMs") {
+                if let Some(v) = opts.get(scope, k.into()) {
+                    if v.is_number() {
+                        timeout_ms = v.integer_value(scope).unwrap_or(30_000).max(0) as u64;
+                    }
+                }
+            }
+            if let Some(k) = v8::String::new(scope, "headers") {
+                if let Some(hv) = opts.get(scope, k.into()) {
+                    if let Ok(ho) = v8::Local::<v8::Object>::try_from(hv) {
+                        if let Some(names) = ho.get_own_property_names(scope, Default::default()) {
+                            for i in 0..names.length() {
+                                let Some(key) = names.get_index(scope, i) else { continue };
+                                let Some(val) = ho.get(scope, key) else { continue };
+                                headers.push((
+                                    key.to_rust_string_lossy(scope),
+                                    val.to_rust_string_lossy(scope),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (id, promise) = begin_job_promise(scope);
+        fetch(id, FetchRequest { method, url, headers, body, timeout_ms });
+        rv.set(promise);
+    }));
+}
+
+pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    set_native(scope, global_obj, "__s2_fetch", s2_fetch);
 }
 
 #[cfg(test)]
