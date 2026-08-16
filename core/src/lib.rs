@@ -22,6 +22,7 @@
 // `cargo build`, and so no workflow path filter can route around it.
 #![deny(unreachable_patterns)]
 
+mod acquire;
 mod admin;
 mod async_rt;
 mod bans;

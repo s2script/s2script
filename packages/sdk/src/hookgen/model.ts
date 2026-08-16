@@ -14,7 +14,7 @@ export interface RawHookDecl {
   params?: string[];
   mutable?: string[];
   receiver?: { kind?: string; as?: string };
-  expose?: { ctx?: string };
+  expose?: { ctx?: string; handwritten?: boolean };
   // target/shape/bypassWith/validate are read by the runtime and the grammar gate, not by codegen.
 }
 
@@ -86,6 +86,8 @@ export function buildHookModel(hooks: GamedataHooks): CtxNamespace[] {
     const decl = hooks[name] ?? {};
     const ns = decl.expose?.ctx;
     if (!ns) continue;
+    // First-class views (CanAcquire) are hand-written in packages/cs2/items.d.ts.
+    if ((decl.expose as { handwritten?: boolean } | undefined)?.handwritten) continue;
 
     const list = byNs.get(ns) ?? [];
     list.push(hookDescriptor(name, decl));

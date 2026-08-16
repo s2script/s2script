@@ -1154,6 +1154,56 @@
         },
       };
     },
+    items: function (reg, viaId) {
+      var playerHopWarned = false;
+      function hopPlayer() {
+        if (typeof __s2_hook_self_matches !== "function") return null;
+        var off = __s2_schema_offset("CBasePlayerPawn", "m_pItemServices");
+        if (off < 0) return null;
+        for (var s = 0; s < MAX_PLAYERS; s++) {
+          var pawn = Pawn.forSlot(s);
+          if (pawn && pawn.ref && __s2_hook_self_matches(pawn.ref, off)) {
+            return pawn.controller;
+          }
+        }
+        if (!playerHopWarned) {
+          playerHopWarned = true;
+          console.log("[s2script] WARN: onCanAcquire player hop missed (ItemServices* matched no live pawn) — view.player is null; the hook still fires");
+        }
+        return null;
+      }
+      function readDefIndex() {
+        if (typeof __s2_hook_q_u16 !== "function") return 0;
+        var n = __s2_hook_q_u16(0, "CEconItemView", "m_iItemDefinitionIndex");
+        return typeof n === "number" ? n : 0;
+      }
+      function wrap(h, isPost) {
+        return function (raw) {
+          var view = {
+            get player() { return hopPlayer(); },
+            get defIndex() { return readDefIndex(); },
+            get method() { return raw.method; },
+            get result() { return raw.result; },
+            set result(v) { if (!isPost) raw.result = v; },
+            get skipped() { return isPost ? !!raw.skipped : false; },
+          };
+          return h(view);
+        };
+      }
+      return {
+        onCanAcquire: function (h) {
+          reg(viaId(function () { return __s2_hook_on("@s2script/cs2", "onCanAcquire", wrap(h, false)); }));
+        },
+        onCanAcquirePost: function (h) {
+          reg(viaId(function () {
+            if (typeof __s2_hook_on_post === "function") {
+              return __s2_hook_on_post("@s2script/cs2", "onCanAcquire", wrap(h, true));
+            }
+            return 0;
+          }));
+        },
+      };
+    },
   };
 
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the

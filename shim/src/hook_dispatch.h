@@ -10,6 +10,8 @@
 #ifndef S2SCRIPT_HOOK_DISPATCH_H
 #define S2SCRIPT_HOOK_DISPATCH_H
 
+#include <cstdint>
+
 // The CLOSED vocabulary of inbound thunk shapes. A shape is a concrete C++ signature compiled into
 // the shim; gamedata selects one BY NAME. You cannot detour an arbitrary signature from data — a
 // handler must have the callee's exact ABI — which is why SourceMod uses per-arity DETOUR_DECL_MEMBER
@@ -19,6 +21,7 @@ enum S2HookShape {
     S2_HOOK_SHAPE_THIS_VOID            = 0,  // void(void* self)
     S2_HOOK_SHAPE_THIS_F32_I32_I32_I32 = 1,  // void(void* self, float, int, int, int)
     S2_HOOK_SHAPE_THIS_F32_I32_I64_I64 = 2,  // void(void* self, float, int, int64, int64)
+    S2_HOOK_SHAPE_THIS_I64_I32_I64     = 3,  // i32(void* self, int64, int32, int64) — CanAcquire
 };
 
 // WIDTH IS NOT A DETAIL — IT IS THE WHOLE CONTRACT (learned from a live SEGV).
@@ -50,12 +53,15 @@ struct S2HookOps {
     // Fan the hook out to JS and return the COLLAPSED HookResult. `argView` is opaque here; the
     // thunk that owns the stack frame gives it meaning.
     int (*dispatch)(int hookId, void* argView) = nullptr;
+    // Post-phase spectator mux. `skipped` is 1 when Pre suppressed the original.
+    int (*dispatch_post)(int hookId, void* argView, int skipped) = nullptr;
 };
 void S2Hook_SetOps(const S2HookOps& ops);
 
 // Dispatch through the injected op. A null op returns 0 (Continue) rather than crashing: the engine
 // can call through a detour installed by a load whose core is already gone.
 int S2Hook_Dispatch(int hookId, void* argView);
+int S2Hook_DispatchPost(int hookId, void* argView, int skipped);
 
 // The bypass latch — SourceMod's g_pIgnoreTerminateDetour (extensions/cstrike/forwards.cpp:132),
 // made per-hook. Our own outbound descriptor invoke ARMS it; the thunk TAKES it and passes straight
@@ -96,6 +102,10 @@ bool S2Hook_DebugGuardHi();
 // Changed(1) do not. An out-of-range value does NOT suppress — garbage from a handler must never
 // silently cancel engine behaviour (ARCHITECTURE.md maps out-of-range to Continue).
 bool S2Hook_Suppresses(int hookResult);
+
+// Pickup-gate fold: Allowed is 0; any other code is a deny; two denys keep `first`.
+// `first` is the earlier vote (HookResult precedence then registration order).
+int32_t S2Hook_MostRestrictiveAcquire(int32_t first, int32_t second);
 
 // The number of hooks a build may install. Bounded so the latch array is fixed-size and lock-free.
 enum { S2_HOOK_MAX = 64 };

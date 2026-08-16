@@ -41,7 +41,7 @@ export interface VtableTarget { kind: "vtable"; class: string; [platform: string
  * `core/src/gamedata_hooks.rs` (kept in sync with the shim by `scripts/check-hook-shapes.sh`).
  * A new shape is a core change; this list is the build-time echo so a typo fails here, not at load.
  */
-export const HOOK_SHAPES = ["this_void", "this_f32_i32_i32_i32", "this_f32_i32_i64_i64"] as const;
+export const HOOK_SHAPES = ["this_void", "this_f32_i32_i32_i32", "this_f32_i32_i64_i64", "this_i64_i32_i64"] as const;
 export type HookShape = (typeof HOOK_SHAPES)[number];
 
 /** Positional arity implied by the shape name (`this_void` → 0; otherwise one slot per `_`-token). */

@@ -161,3 +161,7 @@
     ops.entity_set_model_scale = &Shim_EntitySetModelScale;
     // --- ICvar set — write through ConVarData, not ServerCommand ---
     ops.cvar_set = &s2_cvar_set;
+    // --- Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS ---
+    ops.hook_read_u16_at_q = &S2_HookReadU16AtQ;
+    // --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self ---
+    ops.hook_self_matches_field = &S2_HookSelfMatchesField;

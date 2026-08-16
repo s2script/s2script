@@ -1,0 +1,1 @@
+{ "name": "@pickupgate/a", "version": "0.1.0", "private": true, "main": "src/plugin.ts" }

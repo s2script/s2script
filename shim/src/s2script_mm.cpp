@@ -5027,10 +5027,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     {
         S2HookOps hookOps{};
         hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
+        hookOps.dispatch_post = &s2script_core_dispatch_hook_post;
         S2Hook_SetOps(hookOps);
         if (!hookOps.dispatch)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
                            "declarative inbound hooks are OFF (shim/core version mismatch)\n");
+        if (!hookOps.dispatch_post)
+            META_CONPRINTF("[s2script] WARN: core exports no inbound-hook POST dispatch entry — "
+                           "onCanAcquirePost will not fire (shim/core version mismatch)\n");
     }
 
     // --- Crash reporter: identity + spool-dir push (fail-off: any miss degrades to "") ---

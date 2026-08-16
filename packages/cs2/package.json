@@ -15,6 +15,7 @@
     "events.generated.d.ts",
     "hooks.generated.d.ts",
     "index.d.ts",
+    "items.d.ts",
     "nav.generated.d.ts",
     "schema.generated.d.ts",
     "weapon.d.ts"

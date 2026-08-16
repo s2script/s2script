@@ -137,6 +137,8 @@ typedef int (*s2_entity_stop_sound_fn)(int index, int serial, const char* soundN
 typedef int (*s2_entity_set_body_group_by_name_fn)(int index, int serial, const char* name, int group);
 typedef int (*s2_entity_set_model_scale_fn)(int index, int serial, float scale);
 typedef int (*s2_cvar_set_fn)(const char* name, const char* value);
+typedef int (*s2_hook_read_u16_at_q_fn)(void* argView, int qslot, int offset, uint16_t* out);
+typedef int (*s2_hook_self_matches_field_fn)(void* argView, int index, int serial, int offset);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -301,4 +303,8 @@ typedef struct {
     s2_entity_set_model_scale_fn entity_set_model_scale;
     /* --- ICvar set — write through ConVarData, not ServerCommand --- */
     s2_cvar_set_fn cvar_set;
+    /* --- Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS --- */
+    s2_hook_read_u16_at_q_fn hook_read_u16_at_q;
+    /* --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self --- */
+    s2_hook_self_matches_field_fn hook_self_matches_field;
 } S2EngineOps;
