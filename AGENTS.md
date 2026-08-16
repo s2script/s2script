@@ -11,10 +11,9 @@ type packages and CLI (`packages/*`) and the plugins (`plugins/*`, `examples/*`)
 Node.js; `npm install` (the update script) is the only dependency step. The native build (the Rust
 V8 core in `core/`, the C++ Metamod shim in `shim/`, and the `third_party/*` git submodules) is a
 separate, heavier toolchain that is **not** part of this loop — build it only when a task actually
-touches `core/` or `shim/` (see [`docs/BUILDING.md`](docs/BUILDING.md)). There is also no live CS2
-gate in the VM (no Docker), so the last gate in `scripts/ci-js.sh` (`test-gate.sh`) fails on
-`docker: command not found` — that one failure is expected here; in-engine / "human-client"
-behavior stays deferred.
+touches `core/` or `shim/` (see [`docs/BUILDING.md`](docs/BUILDING.md)), or when driving the live
+CS2 gate (below). If Docker is not present in the VM, the last gate in `scripts/ci-js.sh`
+(`test-gate.sh`) fails on `docker: command not found` — that failure is benign for the pure npm loop.
 
 **CLI + plugins (the main workflow):** the CLI is `@s2script/sdk` (the `s2s` bin), in
 `packages/sdk` — there is no `packages/cli`.
@@ -32,6 +31,36 @@ behavior stays deferred.
   `@s2script/sdk`'s `prepare` script otherwise trips `npm error ELOOP` — then `npm run build`.
   Inside the repo workspace, base plugins/examples resolve `@s2script/*` through the root
   `node_modules` symlinks, so a plain root `npm install` is enough.
+
+**Live CS2 gate (running s2script on a real server in the VM).** This IS supported in the dev VM —
+s2script is a Metamod plugin, so any behavior involving the engine (hooks, entities, commands,
+players) can only be truly tested here. It is heavy one-time setup, so it is **captured in the VM
+snapshot, not the `npm install` update script**. The pieces (once, already done for the snapshot):
+Docker (no systemd — start the daemon by hand: `sudo dockerd &`, storage-driver `fuse-overlayfs`,
+`iptables-legacy`); `git submodule update --init --recursive`; the sniper build for **loadable**
+binaries (a host `cargo build` links `GLIBC_2.34+` and Metamod refuses it — use
+`sudo docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/registry rust:bullseye bash /repo/scripts/build-sniper.sh`,
+which packages `dist/addons/s2script` with `.so`s needing ≤ GLIBC_2.31); base plugins dropped in
+(`bash scripts/build-base-plugins.sh` then `cp plugins/*/dist/*.s2sp dist/addons/s2script/plugins/`);
+and Metamod:Source for CS2 in `docker/metamod/` (the `mmsource-*-linux.tar.gz` unpacks to
+`addons/metamod/*` and must contain `bin/linuxsteamrt64/metamod.2.cs2.so`).
+
+Non-obvious gotchas for the live gate:
+- **`docker/cs2-data/` must be owned by uid 1000 BEFORE first boot.** The `joedwards32/cs2` image
+  runs srcds as `steam` (uid 1000); a root-owned bind mount makes `entry.sh` die writing
+  `post.sh`/`cfg/` (`./cs2.sh: No such file or directory`). `sudo chown -R 1000:1000 docker/cs2-data`.
+- First boot pulls a **~71 GB** CS2 download into `docker/cs2-data/` (persists across restarts via
+  the bind mount). `gameinfo.gi` self-heals on every boot via `docker/pre.sh`.
+- Bring it up: `sudo docker compose -f docker/docker-compose.yml up -d`; watch
+  `sudo docker logs -f s2script-cs2` for `[plugins] '@s2script/...' Active`.
+- Drive it over RCON (`127.0.0.1:27015`, pw `s2script`): `python3 scripts/rcon.py "meta list"`
+  (should list `s2script`), `"sm_slap <name> <dmg>"`, etc. `S2_DAMAGE_SELFTEST=1` (compose) fires a
+  synthetic damage hook every few hundred frames as a built-in liveness proof.
+- Bots on this headless LAN server get kicked unless you set `bot_quota_mode normal`,
+  `bot_join_after_player 0`, `mp_limitteams 0` before `bot_add` / `bot_quota N`.
+- After rebuilding `core`/`shim`, re-run the sniper build + `scripts/package-addon.sh`, then
+  `sudo docker compose -f docker/docker-compose.yml restart cs2` (**restart**, not
+  `--force-recreate`, which resets `gameinfo.gi`).
 
 **If you do need the native build** (touching `core/` or `shim/`), two non-obvious gotchas:
 - Rust: the committed `Cargo.lock` pins edition-2024 crates (e.g. `zeroize 1.9.0`) needing Rust
