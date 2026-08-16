@@ -26,7 +26,7 @@ import { packageKind, buildLibrary } from "./build-library.ts";
 import { scanPluginProgram } from "./publish-scan.ts";
 import { lintPlugin } from "./lint/lint.ts";
 import { validatePluginGamedata } from "./gamedata/validate.ts";
-import { generateGamedataTypes } from "./gamedata/gen-types.ts";
+import { generateGamedataTypes, generateHookTypes } from "./gamedata/gen-types.ts";
 import { stripJsonComments } from "./gamedata/jsonc.ts";
 import type { PluginGamedata } from "./gamedata/types.ts";
 
@@ -173,6 +173,11 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     const genDir = join(absDir, ".s2script");
     mkdirSync(genDir, { recursive: true });
     writeFileSync(join(genDir, "gamedata.d.ts"), generateGamedataTypes(gamedata));
+    if (gamedata.hooks && Object.keys(gamedata.hooks).length) {
+      writeFileSync(join(genDir, "hooks.d.ts"), generateHookTypes(gamedata));
+    } else {
+      rmSync(join(genDir, "hooks.d.ts"), { force: true });
+    }
   } else {
     // No gamedata: DELETE any previously generated types. Leaving them behind is not merely untidy —
     // typecheck.ts loads the file as a root, so a stale copy makes the gate certify Engine.call()s
@@ -180,6 +185,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     // when a call is renamed or dropped, which is why this runs unconditionally rather than only
     // when the gamedata key is removed.
     rmSync(join(absDir, ".s2script", "gamedata.d.ts"), { force: true });
+    rmSync(join(absDir, ".s2script", "hooks.d.ts"), { force: true });
   }
 
   // --- Workspace siblings (design spec 2026-07-27 §5.3): which declared dependencies resolve to a

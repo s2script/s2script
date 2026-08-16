@@ -57,6 +57,21 @@ function capitalize(name: string): string {
   return name.length === 0 ? name : name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+function hookDescriptor(name: string, decl: RawHookDecl): HookDescriptor {
+  const paramNames = decl.params ?? [];
+  const mutableSet = new Set(decl.mutable ?? []);
+  const params: HookParamDescriptor[] = paramNames.map((p) => ({ name: p, mutable: mutableSet.has(p) }));
+  const receiverAs = decl.receiver?.kind === "entity" ? decl.receiver.as ?? null : null;
+  return { name, viewIface: `${capitalize(name)}View`, params, receiverAs };
+}
+
+/** Flat list of every declared hook, for the plugin-side `Engine.hook` types. Unlike
+ *  {@link buildHookModel} this does not group by `expose.ctx` and does not skip an unexposed hook —
+ *  the plugin validator already refused those, and `Engine.hook` is keyed by the gamedata name. */
+export function buildPluginHookList(hooks: GamedataHooks): HookDescriptor[] {
+  return Object.keys(hooks).sort().map((name) => hookDescriptor(name, hooks[name] ?? {}));
+}
+
 /**
  * Build a sorted, deterministic model from a gamedata `hooks` section.
  *
@@ -72,14 +87,8 @@ export function buildHookModel(hooks: GamedataHooks): CtxNamespace[] {
     const ns = decl.expose?.ctx;
     if (!ns) continue;
 
-    const paramNames = decl.params ?? [];
-    const mutableSet = new Set(decl.mutable ?? []);
-    const params: HookParamDescriptor[] = paramNames.map((p) => ({ name: p, mutable: mutableSet.has(p) }));
-
-    const receiverAs = decl.receiver?.kind === "entity" ? decl.receiver.as ?? null : null;
-
     const list = byNs.get(ns) ?? [];
-    list.push({ name, viewIface: `${capitalize(name)}View`, params, receiverAs });
+    list.push(hookDescriptor(name, decl));
     byNs.set(ns, list);
   }
   return Array.from(byNs.keys())

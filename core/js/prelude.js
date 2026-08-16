@@ -739,10 +739,6 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // slot -1 = broadcast to all in ONE call (the shim routes it to the game's UTIL_ClientPrintAll, which
     // renders true custom color, not team color — SourceMod's PrintToChatAll). NOT a per-slot loop.
     toAll:  function (msg) { __s2_client_print(-1, __s2_chatLine(msg)); },
-    // Slice 6.13b: subscribe to raw player chat. The handler gets (slot, text, teamonly) and may return
-    // a HookResult (>= Handled suppresses the broadcast). Delivered from the Host_Say detour for every
-    // non-command chat line; the `@`-trigger layer (a later slice) subscribes through this.
-    onMessage: function (handler) { return __s2_chat_on_message(handler); },
   };
   globalThis.__s2pkg_chat = { Chat: __s2_chat };   // named export `Chat`
   // --- Slice 6.4: server module (command / isMapValid; engine-generic server control) ---
@@ -942,6 +938,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         };
       },
       status: function (name) { return __s2_engine_call_status(name); },
+      // Inbound sibling of `call`. The owner is NEVER passed from here: each native reads the
+      // CALLING CONTEXT's id itself, so this layer cannot name another plugin even by mistake.
+      hook: function (name) {
+        if (!__s2_engine_hook_ready(name)) return null;
+        return function (handler) { return __s2_engine_hook_on(name, handler); };
+      },
+      hookStatus: function (name) { return __s2_engine_hook_status(name); },
     },
   };
   // --- Slice 6.1/6.2: commands module (register / registerServer / registerAdmin) ---
@@ -953,7 +956,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Expand colour tags, then drop every control byte. Expansion must come first: an unexpanded
   // "{green}" is not a control byte and would survive the strip as literal text on an rcon reply.
   function __s2cmd_stripCtl(s) { return globalThis.__s2_colors.consoleLine(s); }
-  // ReplySource (core/src/v8host.rs) → the JS name. Index order is load-bearing: it matches the
+  // ReplySource (core/src/commands.rs) → the JS name. Index order is load-bearing: it matches the
   // enum's discriminants (Server = 0, Console = 1, Chat = 2).
   var __s2cmd_SRC = ["server", "console", "chat"];
   // Normalise whatever the dispatch path handed us. Rust sends the numeric discriminant; a JS caller
@@ -1475,7 +1478,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var subInstalled = false;
     function ensureSub() {
       if (subInstalled) return; subInstalled = true;
-      globalThis.__s2pkg_chat.Chat.onMessage(function (slot, text, teamonly) {
+      __s2_chat_on_message(function (slot, text, teamonly) {
         var s = chatSessions[slot];
         if (!s || s._ended) return;                 // no menu for this slot -> pass through
         var t = ("" + text).trim();
@@ -1720,7 +1723,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   }
   function __s2_vote_ensureSubs() {
     if (__s2_vote_subInstalled) return; __s2_vote_subInstalled = true;
-    globalThis.__s2pkg_chat.Chat.onMessage(function (slot, text) { return __s2_vote_castFromChat(slot, text); });
+    __s2_chat_on_message(function (slot, text) { return __s2_vote_castFromChat(slot, text); });
     globalThis.__s2pkg_clients.Clients.onDisconnect(function (c) { var st = __s2_vote_state; if (st) st.votes.delete(c.slot); });
   }
   function __s2_vote_tick(st) {
@@ -1803,7 +1806,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       function viaId(call) { return function () { var id = call.apply(null, arguments); if (typeof id === "number") t.ids(id); }; }
       var Ev = __s2pkg_events.Events, Cl = __s2pkg_clients.Clients, En = __s2pkg_entity.Entity;
       var Sv = __s2pkg_server.Server, Fr = __s2pkg_frame.OnGameFrame, Ck = __s2pkg_cookies.Cookies;
-      var Uc = __s2pkg_usercmd.UserCmd, Dm = __s2pkg_damage.Damage, Ch = __s2pkg_chat.Chat, Sn = __s2pkg_sound.Sound;
+      var Uc = __s2pkg_usercmd.UserCmd, Dm = __s2pkg_damage.Damage, Sn = __s2pkg_sound.Sound;
       return {
         events: {
           on:    function (n, h) { regFn(viaId(function () { return Ev.on(n, h); })); },
@@ -1818,7 +1821,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
           onSettingsChanged: function (h) { regFn(viaId(function () { return Cl.onSettingsChanged(h); })); },
           onVoice:           function (h) { regFn(viaId(function () { return Cl.onVoice(h); })); },
           onCookiesCached:   function (h) { regFn(viaId(function () { return Ck.onCached(h); })); },
-          onSay:             function (h) { regFn(viaId(function () { return Ch.onMessage(h); })); },
+          onSay:             function (h) { regFn(viaId(function () { return __s2_chat_on_message(h); })); },
           onRunCmd:          function (h) { regFn(viaId(function () { return Uc.onRun(h); })); },
         },
         translations: {

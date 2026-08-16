@@ -1,0 +1,1167 @@
+// S2EngineOps — one list, three generated copies (A7).
+// S2EngineOps source of truth. Order of `ops` IS the ABI. python3 scripts/gen-engine-ops.py  → rust + C header + shim fill. Do not replace this table with a runtime name-keyed map.
+// Re-generate: python3 scripts/gen-engine-ops.py
+{
+  "helpers": [
+    {
+      "kind": "fn",
+      "name": "EmitClassFn",
+      "c_name": "s2_emit_class_fn",
+      "rust": "extern \"C\" fn(ctx: *mut c_void, name: *const c_char, parent: *const c_char)",
+      "c_ret": "void",
+      "c_params": "void* ctx, const char* name, const char* parent",
+      "comment": "Schema enumeration callbacks. Core provides these; the shim streams classes/fields."
+    },
+    {
+      "kind": "fn",
+      "name": "EmitFieldFn",
+      "c_name": "s2_emit_field_fn",
+      "rust": "extern \"C\" fn(ctx: *mut c_void, cls: *const c_char, name: *const c_char, offset: c_int, kind: *const c_char, type_name: *const c_char, inner: *const c_char, size: c_int,)",
+      "c_ret": "void",
+      "c_params": "void* ctx, const char* cls, const char* name, int offset, const char* kind, const char* type_name, const char* inner, int size"
+    },
+    {
+      "kind": "fn",
+      "name": "EmitEnumFn",
+      "c_name": "s2_emit_enum_fn",
+      "rust": "extern \"C\" fn(ctx: *mut c_void, enum_name: *const c_char, size: c_int, enumerator: *const c_char, value: i64,)",
+      "c_ret": "void",
+      "c_params": "void* ctx, const char* enum_name, int size, const char* enumerator, long long value"
+    },
+    {
+      "kind": "struct",
+      "name": "S2TraceResult",
+      "c_name": "S2TraceResult",
+      "rust_fields": [
+        {
+          "name": "did_hit",
+          "ty": "c_int"
+        },
+        {
+          "name": "fraction",
+          "ty": "f32"
+        },
+        {
+          "name": "endpos",
+          "ty": "[f32; 3]"
+        },
+        {
+          "name": "normal",
+          "ty": "[f32; 3]"
+        },
+        {
+          "name": "all_solid",
+          "ty": "c_int"
+        },
+        {
+          "name": "hit_ent_handle",
+          "ty": "c_int"
+        }
+      ],
+      "c_fields": [
+        {
+          "ty": "int",
+          "name": "didHit"
+        },
+        {
+          "ty": "float",
+          "name": "fraction"
+        },
+        {
+          "ty": "float endpos[3];\n    float normal[3];\n    int",
+          "name": "allSolid"
+        },
+        {
+          "ty": "int",
+          "name": "hitEntHandle"
+        }
+      ],
+      "comment": "TraceShape out-struct. Layout is the ABI; mirrors the C S2TraceResult."
+    }
+  ],
+  "ops": [
+    {
+      "name": "schema_offset",
+      "alias": "SchemaOffsetFn",
+      "rust": "extern \"C\" fn(cls: *const c_char, field: *const c_char) -> c_int",
+      "group": null,
+      "c_ret": "int",
+      "c_params": "const char* cls, const char* field",
+      "shim": "s2_schema_offset"
+    },
+    {
+      "name": "ent_by_index",
+      "alias": "EntByIndexFn",
+      "rust": "extern \"C\" fn(idx: c_int) -> *mut c_void",
+      "group": null,
+      "note": "unused since E1 (kept for ABI order)",
+      "c_ret": "void*",
+      "c_params": "int idx",
+      "shim": "s2_ent_by_index"
+    },
+    {
+      "name": "deref_handle",
+      "alias": "DerefHandleFn",
+      "rust": "extern \"C\" fn(handle: c_uint) -> *mut c_void",
+      "group": null,
+      "note": "unused since E1 (kept for ABI order)",
+      "c_ret": "void*",
+      "c_params": "unsigned int handle",
+      "shim": "s2_deref_handle"
+    },
+    {
+      "name": "ent_state_changed",
+      "alias": "EntStateChangedFn",
+      "rust": "extern \"C\" fn(ent: *mut c_void, offset: c_int)",
+      "group": null,
+      "c_ret": "void",
+      "c_params": "void* ent, int offset",
+      "shim": "s2_ent_state_changed"
+    },
+    {
+      "name": "concommand_register",
+      "alias": "ConCommandRegisterFn",
+      "rust": "extern \"C\" fn(name: *const c_char)",
+      "group": null,
+      "c_ret": "void",
+      "c_params": "const char* name",
+      "shim": "s2_concommand_register"
+    },
+    {
+      "name": "schema_enumerate",
+      "alias": "SchemaEnumerateFn",
+      "rust": "extern \"C\" fn(ctx: *mut c_void, emit_class: EmitClassFn, emit_field: EmitFieldFn, emit_enum: EmitEnumFn) -> c_int",
+      "group": null,
+      "c_ret": "int",
+      "c_params": "void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field, s2_emit_enum_fn emit_enum",
+      "shim": "schema_enumerate"
+    },
+    {
+      "name": "event_subscribe",
+      "alias": "EventSubscribeFn",
+      "rust": "extern \"C\" fn(name: *const c_char) -> c_int",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "int",
+      "c_params": "const char* name",
+      "shim": "s2_event_subscribe"
+    },
+    {
+      "name": "event_unsubscribe",
+      "alias": "EventUnsubscribeFn",
+      "rust": "extern \"C\" fn(name: *const c_char) -> c_int",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "int",
+      "c_params": "const char* name",
+      "shim": "s2_event_unsubscribe"
+    },
+    {
+      "name": "event_get_int",
+      "alias": "EventGetIntFn",
+      "rust": "extern \"C\" fn(key: *const c_char) -> i32",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "int",
+      "c_params": "const char* key",
+      "shim": "s2_event_get_int"
+    },
+    {
+      "name": "event_get_float",
+      "alias": "EventGetFloatFn",
+      "rust": "extern \"C\" fn(key: *const c_char) -> f32",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "float",
+      "c_params": "const char* key",
+      "shim": "s2_event_get_float"
+    },
+    {
+      "name": "event_get_bool",
+      "alias": "EventGetBoolFn",
+      "rust": "extern \"C\" fn(key: *const c_char) -> c_int",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "int",
+      "c_params": "const char* key",
+      "shim": "s2_event_get_bool"
+    },
+    {
+      "name": "event_get_string",
+      "alias": "EventGetStringFn",
+      "rust": "extern \"C\" fn(key: *const c_char) -> *const c_char",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "const char*",
+      "c_params": "const char* key",
+      "shim": "s2_event_get_string"
+    },
+    {
+      "name": "event_get_uint64",
+      "alias": "EventGetUint64Fn",
+      "rust": "extern \"C\" fn(key: *const c_char) -> u64",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "uint64_t",
+      "c_params": "const char* key",
+      "shim": "s2_event_get_uint64"
+    },
+    {
+      "name": "event_get_player_slot",
+      "alias": "EventGetPlayerSlotFn",
+      "rust": "extern \"C\" fn(key: *const c_char) -> i32",
+      "group": "Slice 5D.1: game-event engine-ops",
+      "c_ret": "int",
+      "c_params": "const char* key",
+      "shim": "s2_event_get_player_slot"
+    },
+    {
+      "name": "client_valid",
+      "alias": "ClientValidFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> c_int",
+      "group": "Slice 5D.2: engine-identity ops",
+      "c_ret": "int",
+      "c_params": "int slot",
+      "shim": "s2_client_valid"
+    },
+    {
+      "name": "client_userid",
+      "alias": "ClientUseridFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> i32",
+      "group": "Slice 5D.2: engine-identity ops",
+      "c_ret": "int",
+      "c_params": "int slot",
+      "shim": "s2_client_userid"
+    },
+    {
+      "name": "client_signon",
+      "alias": "ClientSignonFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> i32",
+      "group": "Slice 5D.2: engine-identity ops",
+      "c_ret": "int",
+      "c_params": "int slot",
+      "shim": "s2_client_signon"
+    },
+    {
+      "name": "client_name",
+      "alias": "ClientNameFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> *const c_char",
+      "group": "Slice 5D.2: engine-identity ops",
+      "c_ret": "const char*",
+      "c_params": "int slot",
+      "shim": "s2_client_name"
+    },
+    {
+      "name": "client_find_by_userid",
+      "alias": "ClientFindByUseridFn",
+      "rust": "extern \"C\" fn(userid: c_int) -> i32",
+      "group": "Slice 5D.2: engine-identity ops",
+      "c_ret": "int",
+      "c_params": "int userid",
+      "shim": "s2_client_find_by_userid"
+    },
+    {
+      "name": "event_set_int",
+      "alias": "EventSetIntFn",
+      "rust": "extern \"C\" fn(key: *const c_char, value: i32)",
+      "group": "Slice 5D.3: event write/fire ops",
+      "c_ret": "void",
+      "c_params": "const char* key, int value",
+      "shim": "s2_event_set_int"
+    },
+    {
+      "name": "event_set_float",
+      "alias": "EventSetFloatFn",
+      "rust": "extern \"C\" fn(key: *const c_char, value: f32)",
+      "group": "Slice 5D.3: event write/fire ops",
+      "c_ret": "void",
+      "c_params": "const char* key, float value",
+      "shim": "s2_event_set_float"
+    },
+    {
+      "name": "event_set_bool",
+      "alias": "EventSetBoolFn",
+      "rust": "extern \"C\" fn(key: *const c_char, value: c_int)",
+      "group": "Slice 5D.3: event write/fire ops",
+      "c_ret": "void",
+      "c_params": "const char* key, int value",
+      "shim": "s2_event_set_bool"
+    },
+    {
+      "name": "event_set_string",
+      "alias": "EventSetStringFn",
+      "rust": "extern \"C\" fn(key: *const c_char, value: *const c_char)",
+      "group": "Slice 5D.3: event write/fire ops",
+      "c_ret": "void",
+      "c_params": "const char* key, const char* value",
+      "shim": "s2_event_set_string"
+    },
+    {
+      "name": "event_set_uint64",
+      "alias": "EventSetUint64Fn",
+      "rust": "extern \"C\" fn(key: *const c_char, value: u64)",
+      "group": "Slice 5D.3: event write/fire ops",
+      "c_ret": "void",
+      "c_params": "const char* key, uint64_t value",
+      "shim": "s2_event_set_uint64"
+    },
+    {
+      "name": "event_create",
+      "alias": "EventCreateFn",
+      "rust": "extern \"C\" fn(name: *const c_char) -> c_int",
+      "group": "Slice 5D.3: event write/fire ops",
+      "c_ret": "int",
+      "c_params": "const char* name",
+      "shim": "s2_event_create"
+    },
+    {
+      "name": "event_fire",
+      "alias": "EventFireFn",
+      "rust": "extern \"C\" fn(dont_broadcast: c_int) -> c_int",
+      "group": "Slice 5D.3: event write/fire ops",
+      "c_ret": "int",
+      "c_params": "int dontBroadcast",
+      "shim": "s2_event_fire"
+    },
+    {
+      "name": "config_read",
+      "alias": "ConfigReadFn",
+      "rust": "extern \"C\" fn(id: *const c_char) -> *const c_char",
+      "group": "Slice 5E.2: config ops",
+      "c_ret": "const char*",
+      "c_params": "const char* id",
+      "shim": "s2_config_read"
+    },
+    {
+      "name": "config_write",
+      "alias": "ConfigWriteFn",
+      "rust": "extern \"C\" fn(id: *const c_char, content: *const c_char) -> c_int",
+      "group": "Slice 5E.2: config ops",
+      "c_ret": "int",
+      "c_params": "const char* id, const char* content",
+      "shim": "s2_config_write"
+    },
+    {
+      "name": "client_print",
+      "alias": "ClientPrintFn",
+      "rust": "extern \"C\" fn(slot: c_int, msg: *const c_char)",
+      "group": "Slice 6.1: chat messaging op",
+      "c_ret": "void",
+      "c_params": "int slot, const char* msg",
+      "shim": "s2_client_print"
+    },
+    {
+      "name": "client_steamid",
+      "alias": "ClientSteamidFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> *const c_char",
+      "group": "Slice 6.2: client SteamID op",
+      "c_ret": "const char*",
+      "c_params": "int slot",
+      "shim": "s2_client_steamid"
+    },
+    {
+      "name": "client_kick",
+      "alias": "ClientKickFn",
+      "rust": "extern \"C\" fn(slot: c_int, reason: *const c_char)",
+      "group": "Slice 6.3: client kick op",
+      "c_ret": "void",
+      "c_params": "int slot, const char* reason",
+      "shim": "s2_client_kick"
+    },
+    {
+      "name": "server_command",
+      "alias": "ServerCommandFn",
+      "rust": "extern \"C\" fn(cmd: *const c_char)",
+      "group": "Slice 6.4: server command + map-validity ops",
+      "c_ret": "void",
+      "c_params": "const char* cmd",
+      "shim": "s2_server_command"
+    },
+    {
+      "name": "server_map_valid",
+      "alias": "ServerMapValidFn",
+      "rust": "extern \"C\" fn(map: *const c_char) -> c_int",
+      "group": "Slice 6.4: server command + map-validity ops",
+      "c_ret": "int",
+      "c_params": "const char* map",
+      "shim": "s2_server_map_valid"
+    },
+    {
+      "name": "damage_read_float",
+      "alias": "DamageReadFloatFn",
+      "rust": "extern \"C\" fn(offset: c_int) -> f32",
+      "group": "Slice 6.4: server command + map-validity ops",
+      "c_ret": "float",
+      "c_params": "int offset",
+      "shim": "s2_damage_read_float"
+    },
+    {
+      "name": "damage_read_int",
+      "alias": "DamageReadIntFn",
+      "rust": "extern \"C\" fn(offset: c_int) -> c_int",
+      "group": "Slice 6.4: server command + map-validity ops",
+      "c_ret": "int",
+      "c_params": "int offset",
+      "shim": "s2_damage_read_int"
+    },
+    {
+      "name": "damage_write_float",
+      "alias": "DamageWriteFloatFn",
+      "rust": "extern \"C\" fn(offset: c_int, value: f32)",
+      "group": "Slice 6.4: server command + map-validity ops",
+      "c_ret": "void",
+      "c_params": "int offset, float value",
+      "shim": "s2_damage_write_float"
+    },
+    {
+      "name": "damage_victim",
+      "alias": "DamageVictimFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "Slice 6.4: server command + map-validity ops",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_damage_victim"
+    },
+    {
+      "name": "cvar_get",
+      "alias": "CvarGetFn",
+      "rust": "extern \"C\" fn(name: *const c_char) -> *const c_char",
+      "group": "Slice 6.4: server command + map-validity ops",
+      "c_ret": "const char*",
+      "c_params": "const char* name",
+      "shim": "s2_cvar_get"
+    },
+    {
+      "name": "client_console_print",
+      "alias": "ClientConsolePrintFn",
+      "rust": "extern \"C\" fn(slot: c_int, msg: *const c_char)",
+      "group": "ban-reason sub-project 2",
+      "c_ret": "void",
+      "c_params": "int slot, const char* msg",
+      "shim": "s2_client_console_print"
+    },
+    {
+      "name": "client_address",
+      "alias": "ClientAddressFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> *const c_char",
+      "group": "ban-reason sub-project 2",
+      "c_ret": "const char*",
+      "c_params": "int slot",
+      "shim": "s2_client_address"
+    },
+    {
+      "name": "server_max_clients",
+      "alias": "ServerMaxClientsFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "reservedslots+basetriggers: server-info ops",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_server_max_clients"
+    },
+    {
+      "name": "server_map_name",
+      "alias": "ServerMapNameFn",
+      "rust": "extern \"C\" fn() -> *const c_char",
+      "group": "reservedslots+basetriggers: server-info ops",
+      "c_ret": "const char*",
+      "c_params": "void",
+      "shim": "s2_server_map_name"
+    },
+    {
+      "name": "server_game_time",
+      "alias": "ServerGameTimeFn",
+      "rust": "extern \"C\" fn() -> f32",
+      "group": "reservedslots+basetriggers: server-info ops",
+      "c_ret": "float",
+      "c_params": "void",
+      "shim": "s2_server_game_time"
+    },
+    {
+      "name": "db_data_dir",
+      "alias": "DbDataDirFn",
+      "rust": "extern \"C\" fn() -> *const c_char",
+      "group": "Slice DB: data-dir op",
+      "c_ret": "const char*",
+      "c_params": "void",
+      "shim": "s2_db_data_dir"
+    },
+    {
+      "name": "event_fire_to_client",
+      "alias": "EventFireToClientFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> c_int",
+      "group": "Slice menu: per-client event fire",
+      "c_ret": "int",
+      "c_params": "int slot",
+      "shim": "s2_event_fire_to_client"
+    },
+    {
+      "name": "config_read_file",
+      "alias": "ConfigReadFileFn",
+      "rust": "extern \"C\" fn(name: *const c_char) -> *const c_char",
+      "group": "Slice nominations: raw config-file read/write",
+      "c_ret": "const char*",
+      "c_params": "const char* name",
+      "shim": "s2_config_read_file"
+    },
+    {
+      "name": "config_write_file",
+      "alias": "ConfigWriteFileFn",
+      "rust": "extern \"C\" fn(name: *const c_char, content: *const c_char) -> i32",
+      "group": "Slice nominations: raw config-file read/write",
+      "c_ret": "int",
+      "c_params": "const char* name, const char* content",
+      "shim": "s2_config_write_file"
+    },
+    {
+      "name": "trace_shape",
+      "alias": "TraceShapeFn",
+      "rust": "extern \"C\" fn(start: *const f32, end: *const f32, mins: *const f32, maxs: *const f32, interacts_with: u64, interacts_exclude: u64, ignore_ent_idx: c_int, ignore_ent_serial: c_int, out: *mut S2TraceResult,) -> c_int",
+      "group": "Ray-trace slice: CNavPhysicsInterface::TraceShape",
+      "c_ret": "int",
+      "c_params": "const float* start, const float* end, const float* mins, const float* maxs, unsigned long long interactsWith, unsigned long long interactsExclude, int ignoreEntIdx, int ignoreEntSerial, S2TraceResult* out",
+      "shim": "s2_trace_shape"
+    },
+    {
+      "name": "entity_create",
+      "alias": "EntityCreateFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char) -> c_int",
+      "group": "Entity-creation lifecycle slice",
+      "c_ret": "int",
+      "c_params": "const char* className",
+      "shim": "Shim_EntityCreate"
+    },
+    {
+      "name": "entity_spawn",
+      "alias": "EntitySpawnFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> c_int",
+      "group": "Entity-creation lifecycle slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial",
+      "shim": "Shim_EntitySpawn"
+    },
+    {
+      "name": "entity_teleport",
+      "alias": "EntityTeleportFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const f32, *const f32, *const f32) -> c_int",
+      "group": "Entity-creation lifecycle slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const float* origin, const float* angles, const float* velocity",
+      "shim": "Shim_EntityTeleport"
+    },
+    {
+      "name": "entity_remove",
+      "alias": "EntityRemoveFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> c_int",
+      "group": "Entity-creation lifecycle slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial",
+      "shim": "Shim_EntityRemove"
+    },
+    {
+      "name": "entity_subobj_vcall",
+      "alias": "EntitySubobjVcallFn",
+      "rust": "extern \"C\" fn(c_int, c_int, c_int, c_int, c_int, c_int) -> c_int",
+      "group": "Item slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int subObjOffset, int vtableIndex, int argIndex, int argSerial",
+      "shim": "Shim_EntitySubobjVcall"
+    },
+    {
+      "name": "entity_read_handle_vector",
+      "alias": "EntityReadHandleVecFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const c_int, c_int, c_int, c_int, *mut c_int) -> c_int",
+      "group": "Item slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const int* ptrOffs, int ptrCount, int vectorOff, int maxCount, int* outHandles",
+      "shim": "Shim_EntityReadHandleVector"
+    },
+    {
+      "name": "entity_fire_input",
+      "alias": "EntityFireInputFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const c_char, *const c_char, c_int, c_int, c_int, c_int, f32) -> c_int",
+      "group": "Entity-I/O slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* input, const char* value, int actIdx, int actSerial, int callerIdx, int callerSerial, float delay",
+      "shim": "Shim_EntityFireInput"
+    },
+    {
+      "name": "entity_spawn_kv",
+      "alias": "EntitySpawnKvFn",
+      "rust": "extern \"C\" fn(c_int, c_int, c_int, *const *const c_char, *const c_int, *const *const c_char) -> c_int",
+      "group": "EKV slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int count, const char* const* keys, const int* types, const char* const* values",
+      "shim": "Shim_EntitySpawnKv"
+    },
+    {
+      "name": "entity_find_by_class",
+      "alias": "EntityFindByClassFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, *mut i32, *mut i32, i32) -> i32",
+      "group": "Game-rules + UserMessage slice",
+      "c_ret": "int",
+      "c_params": "const char* className, int* outIndices, int* outSerials, int maxCount",
+      "shim": "s2_entity_find_by_class"
+    },
+    {
+      "name": "user_message_create",
+      "alias": "UserMessageCreateFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char) -> i32",
+      "group": "UserMessage send family",
+      "c_ret": "int",
+      "c_params": "const char* name",
+      "shim": "s2_user_message_create"
+    },
+    {
+      "name": "user_message_set_int",
+      "alias": "UserMessageSetIntFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, i64) -> i32",
+      "group": "UserMessage send family",
+      "c_ret": "int",
+      "c_params": "const char* field, int64_t value",
+      "shim": "s2_user_message_set_int"
+    },
+    {
+      "name": "user_message_set_float",
+      "alias": "UserMessageSetFloatFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, f64) -> i32",
+      "group": "UserMessage send family",
+      "c_ret": "int",
+      "c_params": "const char* field, double value",
+      "shim": "s2_user_message_set_float"
+    },
+    {
+      "name": "user_message_set_string",
+      "alias": "UserMessageSetStringFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, *const std::os::raw::c_char) -> i32",
+      "group": "UserMessage send family",
+      "c_ret": "int",
+      "c_params": "const char* field, const char* value",
+      "shim": "s2_user_message_set_string"
+    },
+    {
+      "name": "user_message_set_bool",
+      "alias": "UserMessageSetBoolFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, i32) -> i32",
+      "group": "UserMessage send family",
+      "c_ret": "int",
+      "c_params": "const char* field, int value",
+      "shim": "s2_user_message_set_bool"
+    },
+    {
+      "name": "user_message_send",
+      "alias": "UserMessageSendFn",
+      "rust": "extern \"C\" fn(*const i32, i32) -> i32",
+      "group": "UserMessage send family",
+      "c_ret": "int",
+      "c_params": "const int* slots, int slotCount",
+      "shim": "s2_user_message_send"
+    },
+    {
+      "name": "convar_register",
+      "alias": "ConvarRegisterFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, *const std::os::raw::c_char, u64, i32, *const std::os::raw::c_char, *const std::os::raw::c_char, *const std::os::raw::c_char) -> i32",
+      "group": "FakeConVar slice",
+      "unsafe": true,
+      "c_ret": "int",
+      "c_params": "const char* name, const char* help, uint64_t flags, int type, const char* defaultValue, const char* minValue, const char* maxValue",
+      "shim": "s2_convar_register"
+    },
+    {
+      "name": "translations_read",
+      "alias": "TranslationsReadFn",
+      "rust": "extern \"C\" fn(lang: *const c_char, name: *const c_char) -> *const c_char",
+      "group": "Translations slice",
+      "c_ret": "const char*",
+      "c_params": "const char* lang, const char* name",
+      "shim": "s2_translations_read"
+    },
+    {
+      "name": "client_language",
+      "alias": "ClientLanguageFn",
+      "rust": "extern \"C\" fn(slot: c_int) -> *const c_char",
+      "group": "Translations slice",
+      "c_ret": "const char*",
+      "c_params": "int slot",
+      "shim": "s2_client_language"
+    },
+    {
+      "name": "collision_activate",
+      "alias": "CollisionActivateFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> c_int",
+      "group": "Zones real-trigger slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial",
+      "shim": "Shim_CollisionActivate"
+    },
+    {
+      "name": "entity_set_model",
+      "alias": "EntitySetModelFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int",
+      "group": "Zones real-trigger slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* modelName",
+      "shim": "Shim_EntitySetModel"
+    },
+    {
+      "name": "entity_listener_install",
+      "alias": "EntityListenerInstallFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "Entity lifecycle listeners slice",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "Shim_EntityListenerInstall"
+    },
+    {
+      "name": "entity_name",
+      "alias": "EntityNameFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> *const c_char",
+      "group": "entity_name slice",
+      "c_ret": "const char*",
+      "c_params": "int index, int serial",
+      "shim": "s2_entity_name"
+    },
+    {
+      "name": "sound_emit",
+      "alias": "SoundEmitFn",
+      "rust": "extern \"C\" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int",
+      "group": "Sound slice",
+      "c_ret": "int",
+      "c_params": "const char* soundName, int entIndex, int entSerial, const int* slots, int slotCount, float volume",
+      "shim": "s2_sound_emit"
+    },
+    {
+      "name": "sound_precache_add",
+      "alias": "SoundPrecacheAddFn",
+      "rust": "extern \"C\" fn(*const c_char) -> c_int",
+      "group": "Sound slice",
+      "c_ret": "int",
+      "c_params": "const char* path",
+      "shim": "s2_sound_precache_add"
+    },
+    {
+      "name": "usercmd_hook_install",
+      "alias": "UsercmdHookInstallFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "Sound slice",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "Shim_UsercmdHookInstall"
+    },
+    {
+      "name": "usercmd_read",
+      "alias": "UsercmdReadFn",
+      "rust": "extern \"C\" fn(c_int) -> f64",
+      "group": "Sound slice",
+      "c_ret": "double",
+      "c_params": "int field",
+      "shim": "s2_usercmd_read"
+    },
+    {
+      "name": "usercmd_write",
+      "alias": "UsercmdWriteFn",
+      "rust": "extern \"C\" fn(c_int, f64)",
+      "group": "Sound slice",
+      "c_ret": "void",
+      "c_params": "int field, double value",
+      "shim": "s2_usercmd_write"
+    },
+    {
+      "name": "usercmd_read_buttons",
+      "alias": "UsercmdReadButtonsFn",
+      "rust": "extern \"C\" fn() -> u64",
+      "group": "Sound slice",
+      "c_ret": "uint64_t",
+      "c_params": "void",
+      "shim": "s2_usercmd_read_buttons"
+    },
+    {
+      "name": "usercmd_write_buttons",
+      "alias": "UsercmdWriteButtonsFn",
+      "rust": "extern \"C\" fn(u64)",
+      "group": "Sound slice",
+      "c_ret": "void",
+      "c_params": "uint64_t mask",
+      "shim": "s2_usercmd_write_buttons"
+    },
+    {
+      "name": "usercmd_clear_subtick",
+      "alias": "UsercmdClearSubtickFn",
+      "rust": "extern \"C\" fn()",
+      "group": "Sound slice",
+      "c_ret": "void",
+      "c_params": "void",
+      "shim": "s2_usercmd_clear_subtick"
+    },
+    {
+      "name": "transmit_set",
+      "alias": "TransmitSetFn",
+      "rust": "extern \"C\" fn(index: std::os::raw::c_int, serial: std::os::raw::c_int, mask: u64) -> std::os::raw::c_int",
+      "group": "checktransmit slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, unsigned long long mask",
+      "shim": "s2_transmit_set"
+    },
+    {
+      "name": "transmit_clear",
+      "alias": "TransmitClearFn",
+      "rust": "extern \"C\" fn(index: std::os::raw::c_int) -> std::os::raw::c_int",
+      "group": "checktransmit slice",
+      "c_ret": "int",
+      "c_params": "int index",
+      "shim": "s2_transmit_clear"
+    },
+    {
+      "name": "transmit_stats",
+      "alias": "TransmitStatsFn",
+      "rust": "extern \"C\" fn(out: *mut u64)",
+      "group": "checktransmit slice",
+      "c_ret": "void",
+      "c_params": "unsigned long long* out",
+      "shim": "s2_transmit_stats"
+    },
+    {
+      "name": "voice_set_muted",
+      "alias": "VoiceSetMutedFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> c_int",
+      "group": "checktransmit slice",
+      "c_ret": "int",
+      "c_params": "int slot, int muted",
+      "shim": "s2_voice_set_muted"
+    },
+    {
+      "name": "voice_get_muted",
+      "alias": "VoiceGetMutedFn",
+      "rust": "extern \"C\" fn(c_int) -> c_int",
+      "group": "checktransmit slice",
+      "c_ret": "int",
+      "c_params": "int slot",
+      "shim": "s2_voice_get_muted"
+    },
+    {
+      "name": "usermsg_hook_sub",
+      "alias": "UsermsgHookSubFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "const char* name, char* canonicalOut, int canonicalLen",
+      "shim": "s2_usermsg_hook_sub"
+    },
+    {
+      "name": "usermsg_hook_unsub",
+      "alias": "UsermsgHookUnsubFn",
+      "rust": "extern \"C\" fn(c_int) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "int id",
+      "shim": "s2_usermsg_hook_unsub"
+    },
+    {
+      "name": "usermsg_hook_read_int",
+      "alias": "UsermsgHookReadIntFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, *mut i64) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "const char* path, long long* out",
+      "shim": "s2_usermsg_hook_read_int"
+    },
+    {
+      "name": "usermsg_hook_read_float",
+      "alias": "UsermsgHookReadFloatFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, *mut f64) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "const char* path, double* out",
+      "shim": "s2_usermsg_hook_read_float"
+    },
+    {
+      "name": "usermsg_hook_read_string",
+      "alias": "UsermsgHookReadStringFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "const char* path, char* buf, int buflen",
+      "shim": "s2_usermsg_hook_read_string"
+    },
+    {
+      "name": "usermsg_hook_has_field",
+      "alias": "UsermsgHookHasFieldFn",
+      "rust": "extern \"C\" fn(*const std::os::raw::c_char) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "const char* path",
+      "shim": "s2_usermsg_hook_has_field"
+    },
+    {
+      "name": "usermsg_hook_recipients",
+      "alias": "UsermsgHookRecipientsFn",
+      "rust": "extern \"C\" fn(*mut u64) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "unsigned long long* outMask",
+      "shim": "s2_usermsg_hook_recipients"
+    },
+    {
+      "name": "usermsg_hook_debug",
+      "alias": "UsermsgHookDebugFn",
+      "rust": "extern \"C\" fn(*mut std::os::raw::c_char, c_int) -> c_int",
+      "group": "UserMessage-interception slice",
+      "c_ret": "int",
+      "c_params": "char* buf, int buflen",
+      "shim": "s2_usermsg_hook_debug"
+    },
+    {
+      "name": "server_build_number",
+      "alias": "ServerBuildNumberFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "Crash-reporter slice — APPENDED after usermsg_hook_debug",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_server_build_number"
+    },
+    {
+      "name": "crash_test_native",
+      "alias": "CrashTestNativeFn",
+      "rust": "extern \"C\" fn(kind: c_int)",
+      "group": "Crash-harness — APPENDED after server_build_number",
+      "c_ret": "void",
+      "c_params": "int kind",
+      "shim": "s2_crash_test_native"
+    },
+    {
+      "name": "ent_resolve",
+      "alias": "EntResolveFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> *mut c_void",
+      "group": "E1 entity-liveness slice",
+      "c_ret": "void*",
+      "c_params": "int index, int serial",
+      "shim": "s2_ent_resolve"
+    },
+    {
+      "name": "ent_identity_flags",
+      "alias": "EntIdentityFlagsFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> i64",
+      "group": "E1 entity-liveness slice",
+      "c_ret": "long long",
+      "c_params": "int index, int serial",
+      "shim": "s2_ent_identity_flags"
+    },
+    {
+      "name": "ent_snapshot",
+      "alias": "EntSnapshotFn",
+      "rust": "extern \"C\" fn(*mut c_int, *mut c_int, c_int) -> c_int",
+      "group": "E1 entity-liveness slice",
+      "c_ret": "int",
+      "c_params": "int* out_indices, int* out_serials, int cap",
+      "shim": "s2_ent_snapshot"
+    },
+    {
+      "name": "engine_call_resolve",
+      "alias": "EngineCallResolveFn",
+      "rust": "extern \"C\" fn(kind: *const c_char, module: *const c_char, pattern: *const c_char, resolve: *const c_char, class_name: *const c_char, vtable_index: c_int, validate_json: *const c_char, reason_out: *mut c_char, reason_cap: c_int) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "const char* kind, const char* module, const char* pattern, const char* resolve, const char* className, int vtableIndex, const char* prologue, char* reasonOut, int reasonCap",
+      "shim": "S2_EngineCallResolve"
+    },
+    {
+      "name": "engine_call_invoke",
+      "alias": "EngineCallInvokeFn",
+      "rust": "extern \"C\" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "int callId, int entIndex, int entSerial, int subObjOff, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut",
+      "shim": "S2_EngineCallInvoke"
+    },
+    {
+      "name": "voice_audible_set",
+      "alias": "VoiceAudibleSetFn",
+      "rust": "extern \"C\" fn(c_int, u64) -> c_int",
+      "group": "Voice-hearability slice",
+      "c_ret": "int",
+      "c_params": "int sender, uint64_t mask",
+      "shim": "s2_voice_audible_set"
+    },
+    {
+      "name": "voice_audible_clear",
+      "alias": "VoiceAudibleClearFn",
+      "rust": "extern \"C\" fn(c_int) -> c_int",
+      "group": "Voice-hearability slice",
+      "c_ret": "int",
+      "c_params": "int sender",
+      "shim": "s2_voice_audible_clear"
+    },
+    {
+      "name": "voice_audible_stats",
+      "alias": "VoiceAudibleStatsFn",
+      "rust": "extern \"C\" fn(*mut u64) -> c_int",
+      "group": "Voice-hearability slice",
+      "c_ret": "int",
+      "c_params": "uint64_t* out",
+      "shim": "s2_voice_audible_stats"
+    },
+    {
+      "name": "client_command",
+      "alias": "ClientCommandFn",
+      "rust": "extern \"C\" fn(slot: c_int, cmd: *const c_char) -> c_int",
+      "group": "client-command slice",
+      "c_ret": "int",
+      "c_params": "int slot, const char* cmd",
+      "shim": "s2_client_command"
+    },
+    {
+      "name": "client_fake_command",
+      "alias": "ClientFakeCommandFn",
+      "rust": "extern \"C\" fn(slot: c_int, cmd: *const c_char) -> c_int",
+      "group": "client-command slice",
+      "c_ret": "int",
+      "c_params": "int slot, const char* cmd",
+      "shim": "s2_client_fake_command"
+    },
+    {
+      "name": "ent_identity_flags_clear",
+      "alias": "EntIdentityFlagsClearFn",
+      "rust": "extern \"C\" fn(c_int, c_int, u32) -> i64",
+      "group": "identity-flag clear",
+      "c_ret": "long long",
+      "c_params": "int index, int serial, unsigned int mask",
+      "shim": "s2_ent_identity_flags_clear"
+    },
+    {
+      "name": "defer_selftest",
+      "alias": "DeferSelftestFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "deferred-dispatch selftest",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_defer_selftest"
+    },
+    {
+      "name": "hook_install",
+      "alias": "HookInstallFn",
+      "rust": "extern \"C\" fn(c_int, c_int, i64, *mut c_char, c_int) -> c_int",
+      "group": "declarative inbound hooks",
+      "c_ret": "int",
+      "c_params": "int hookId, int shape, int64_t addr, char* reasonOut, int reasonCap",
+      "shim": "S2_HookInstall"
+    },
+    {
+      "name": "hook_arm_bypass",
+      "alias": "HookArmBypassFn",
+      "rust": "extern \"C\" fn(c_int)",
+      "group": "declarative inbound hooks",
+      "c_ret": "void",
+      "c_params": "int hookId",
+      "shim": "S2_HookArmBypass"
+    },
+    {
+      "name": "hook_disarm_bypass",
+      "alias": "HookDisarmBypassFn",
+      "rust": "extern \"C\" fn(c_int)",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "void",
+      "c_params": "int hookId",
+      "shim": "S2_HookDisarmBypass"
+    },
+    {
+      "name": "hook_read_f32",
+      "alias": "HookReadF32Fn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, *mut f32) -> c_int",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "int",
+      "c_params": "void* argView, int idx, float* out",
+      "shim": "S2_HookReadF32"
+    },
+    {
+      "name": "hook_read_i32",
+      "alias": "HookReadI32Fn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, *mut i32) -> c_int",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "int",
+      "c_params": "void* argView, int idx, int32_t* out",
+      "shim": "S2_HookReadI32"
+    },
+    {
+      "name": "hook_write_f32",
+      "alias": "HookWriteF32Fn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, f32) -> c_int",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "int",
+      "c_params": "void* argView, int idx, float value",
+      "shim": "S2_HookWriteF32"
+    },
+    {
+      "name": "hook_write_i32",
+      "alias": "HookWriteI32Fn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, i32) -> c_int",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "int",
+      "c_params": "void* argView, int idx, int32_t value",
+      "shim": "S2_HookWriteI32"
+    },
+    {
+      "name": "hook_receiver_handle",
+      "alias": "HookReceiverHandleFn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, *mut u32) -> c_int",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "int",
+      "c_params": "void* argView, uint32_t* outHandle",
+      "shim": "S2_HookReceiverHandle"
+    },
+    {
+      "name": "engine_call_address",
+      "alias": "EngineCallAddressFn",
+      "rust": "extern \"C\" fn(c_int) -> i64",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "int64_t",
+      "c_params": "int callId",
+      "shim": "S2_EngineCallAddress"
+    },
+    {
+      "name": "entity_set_gravity_scale",
+      "alias": "EntitySetGravityScaleFn",
+      "rust": "extern \"C\" fn(c_int, c_int, f32) -> c_int",
+      "group": "Entity-property slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, float scale",
+      "shim": "Shim_EntitySetGravityScale"
+    },
+    {
+      "name": "entity_apply_abs_velocity_impulse",
+      "alias": "EntityApplyAbsVelocityImpulseFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const f32) -> c_int",
+      "group": "Entity-property slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const float* impulse",
+      "shim": "Shim_EntityApplyAbsVelocityImpulse"
+    },
+    {
+      "name": "entity_stop_sound",
+      "alias": "EntityStopSoundFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int",
+      "group": "Entity-property slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* soundName",
+      "shim": "Shim_EntityStopSound"
+    },
+    {
+      "name": "entity_set_body_group_by_name",
+      "alias": "EntitySetBodyGroupByNameFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const std::os::raw::c_char, c_int) -> c_int",
+      "group": "Entity-property slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* name, int group",
+      "shim": "Shim_EntitySetBodyGroupByName"
+    },
+    {
+      "name": "entity_set_model_scale",
+      "alias": "EntitySetModelScaleFn",
+      "rust": "extern \"C\" fn(c_int, c_int, f32) -> c_int",
+      "group": "Entity-property slice",
+      "c_ret": "int",
+      "c_params": "int index, int serial, float scale",
+      "shim": "Shim_EntitySetModelScale"
+    },
+    {
+      "name": "cvar_set",
+      "alias": "CvarSetFn",
+      "rust": "extern \"C\" fn(name: *const c_char, value: *const c_char) -> c_int",
+      "group": "ICvar set — write through ConVarData, not ServerCommand",
+      "c_ret": "int",
+      "c_params": "const char* name, const char* value",
+      "shim": "s2_cvar_set"
+    }
+  ]
+}

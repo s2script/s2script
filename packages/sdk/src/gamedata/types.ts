@@ -1,4 +1,4 @@
-/** Plugin-shippable gamedata. v1 accepts ONLY `signatures` + `calls` (spec §14). */
+/** Plugin-shippable gamedata. v1 accepts `signatures` + `calls` + `hooks`. */
 export const PLATFORM = "linuxsteamrt64" as const;
 
 export type ArgKind = "bool" | "int" | "float" | "string" | "vector" | "entity";
@@ -36,6 +36,32 @@ export interface SignatureTarget { kind: "signature"; name: string }
 export interface VtablePlatform { index: number; validate: { prologue: string } }
 export interface VtableTarget { kind: "vtable"; class: string; [platform: string]: unknown }
 
+/**
+ * The shim's closed inbound-thunk vocabulary. MUST match `SHAPES` in
+ * `core/src/gamedata_hooks.rs` (kept in sync with the shim by `scripts/check-hook-shapes.sh`).
+ * A new shape is a core change; this list is the build-time echo so a typo fails here, not at load.
+ */
+export const HOOK_SHAPES = ["this_void", "this_f32_i32_i32_i32", "this_f32_i32_i64_i64"] as const;
+export type HookShape = (typeof HOOK_SHAPES)[number];
+
+/** Positional arity implied by the shape name (`this_void` → 0; otherwise one slot per `_`-token). */
+export function hookShapeArity(shape: string): number | undefined {
+  if (!(HOOK_SHAPES as readonly string[]).includes(shape)) return undefined;
+  if (shape === "this_void") return 0;
+  return shape.slice("this_".length).split("_").length;
+}
+
+export interface HookDecl {
+  target: (SignatureTarget & { validate?: Record<string, unknown> }) | VtableTarget;
+  shape: HookShape;
+  params?: string[];
+  mutable?: string[];
+  receiver?: { kind?: "none" | "entity"; as?: string };
+  bypassWith?: string;
+  /** Required by the runtime: a hook with none is refused as "nothing could subscribe to it". */
+  expose: { ctx: string };
+}
+
 export interface CallDecl {
   receiver: Receiver;
   target: SignatureTarget | VtableTarget;
@@ -57,4 +83,5 @@ export interface CallDecl {
 export interface PluginGamedata {
   signatures?: Record<string, Record<string, SigSpec>>;
   calls?: Record<string, CallDecl>;
+  hooks?: Record<string, HookDecl>;
 }

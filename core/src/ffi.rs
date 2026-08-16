@@ -92,8 +92,8 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
         if phase == Phase::Post {
             v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
             crate::cookies::dispatch_pending_cached(); // Post, HOST free: fan out queued Cookies.onCached
-            v8host::dispatch_pending_ws_events(); // Post, HOST free: fan out queued WebSocket on* events
-            v8host::dispatch_pending_net_events(); // Post, HOST free: fan out queued net (TCP/UDP) events
+            crate::ws::dispatch_pending_events(); // Post, HOST free: fan out queued WebSocket on* events
+            crate::net::dispatch_pending_events(); // Post, HOST free: fan out queued net (TCP/UDP) events
             v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
             crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
         }
@@ -466,7 +466,12 @@ pub extern "C" fn s2script_core_dispatch_concommand(
             Ok(s) => s,
             Err(_) => return,
         };
-        v8host::dispatch_concommand(name_str, slot as i32, args_str, v8host::ReplySource::from_slot(slot as i32));
+        crate::commands::dispatch_concommand(
+            name_str,
+            slot as i32,
+            args_str,
+            crate::commands::ReplySource::from_slot(slot as i32),
+        );
     });
 }
 
@@ -474,8 +479,8 @@ pub extern "C" fn s2script_core_dispatch_concommand(
 /// Host_Say detour calls this with the speaker's `slot` + the raw message text (CCommand::Arg(1)).
 ///
 /// Returns 1 if the caller should SUPPRESS the chat broadcast (a matched SILENT `/` trigger, OR a raw
-/// `Chat.onMessage` subscriber that returned >= Handled), else 0 (the public `!` trigger and ordinary
-/// chat with no blocking subscriber show).  `teamonly` (0/1) is threaded to the raw-chat subscribers.
+/// `ctx.clients.onSay` subscriber that returned >= Handled), else 0 (the public `!` trigger and ordinary
+/// chat with no blocking subscriber show).  `teamonly` (0/1) is threaded to the unmatched-say subscribers.
 /// `catch_unwind`-wrapped; a null pointer / invalid UTF-8 degrades to 0 (no suppress, never panic
 /// across the FFI boundary per spec §6).
 #[no_mangle]
@@ -486,7 +491,7 @@ pub extern "C" fn s2script_core_dispatch_chat(slot: c_int, text: *const c_char, 
             Ok(s) => s,
             Err(_) => return 0,
         };
-        if v8host::dispatch_chat(slot as i32, text_str, teamonly != 0) { 1 } else { 0 }
+        if crate::commands::dispatch_chat(slot as i32, text_str, teamonly != 0) { 1 } else { 0 }
     })
     .unwrap_or(0)
 }
@@ -502,7 +507,7 @@ pub extern "C" fn s2script_core_dispatch_client_command(slot: c_int, name: *cons
         if name.is_null() || args.is_null() { return 0; }
         let name_str = match unsafe { CStr::from_ptr(name) }.to_str() { Ok(s) => s, Err(_) => return 0 };
         let args_str = match unsafe { CStr::from_ptr(args) }.to_str() { Ok(s) => s, Err(_) => return 0 };
-        if v8host::dispatch_client_command(slot as i32, name_str, args_str) { 1 } else { 0 }
+        if crate::commands::dispatch_client_command(slot as i32, name_str, args_str) { 1 } else { 0 }
     })
     .unwrap_or(0)
 }
@@ -513,7 +518,7 @@ pub extern "C" fn s2script_core_dispatch_command_listeners(slot: c_int, name: *c
         if name.is_null() || args.is_null() { return 0; }
         let name_str = match unsafe { CStr::from_ptr(name) }.to_str() { Ok(s) => s, Err(_) => return 0 };
         let args_str = match unsafe { CStr::from_ptr(args) }.to_str() { Ok(s) => s, Err(_) => return 0 };
-        if v8host::dispatch_command_listeners(slot as i32, name_str, args_str) { 1 } else { 0 }
+        if crate::commands::dispatch_command_listeners(slot as i32, name_str, args_str) { 1 } else { 0 }
     })
     .unwrap_or(0)
 }
