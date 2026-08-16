@@ -375,63 +375,39 @@ struct TopMenuItem {
     on_select: v8::Global<v8::Function>,
 }
 
-/// checktransmit slice: per-plugin entity-visibility rules. owner -> (entindex -> rule).
+/// checktransmit slice: per-plugin entity-visibility rules.
 /// INVARIANT: all owners' entries for one index share ONE serial (enforced in s2_transmit_set —
 /// the op validates the incoming serial is the live one, so different-serial entries are stale
-/// and evicted). The shim holds only the AND-merged mask per index; this map is the policy source
-/// of truth so unload/reset can recompute the merge.
+/// and evicted). The shim holds only the AND-merged mask per index; this table is the policy
+/// source of truth so unload/reset can recompute the merge.
 #[derive(Clone, Copy)]
 struct TransmitRule { serial: i32, mask: u64 }
+impl crate::fold::AndFold for TransmitRule {
+    fn and_fold(self, other: Self) -> Self {
+        Self { serial: other.serial, mask: self.mask & other.mask }
+    }
+}
 thread_local! {
-    static TRANSMIT_RULES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<i32, TransmitRule>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static TRANSMIT_RULES: std::cell::RefCell<crate::fold::FoldTable<i32, TransmitRule>> =
+        std::cell::RefCell::new(crate::fold::FoldTable::new());
+    static VOICE_RULES: std::cell::RefCell<crate::fold::FoldTable<i32, u64>> =
+        std::cell::RefCell::new(crate::fold::FoldTable::new());
 }
 
 /// Recompute the AND-merged mask for `index` across every owner's rule and push it to the shim
 /// (transmit_set), or clear the shim entry when no rule remains (transmit_clear).
 fn transmit_recompute_and_push(index: i32) {
     let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-    let merged = TRANSMIT_RULES.with(|r| {
-        let map = r.borrow();
-        let mut acc: Option<TransmitRule> = None;
-        for rules in map.values() {
-            if let Some(rule) = rules.get(&index) {
-                acc = Some(match acc {
-                    None => *rule,
-                    Some(a) => TransmitRule { serial: rule.serial, mask: a.mask & rule.mask },
-                });
-            }
-        }
-        acc
-    });
-    match merged {
+    match TRANSMIT_RULES.with(|r| r.borrow().merged(&index)) {
         Some(rule) => { if let Some(f) = ops.transmit_set { f(index, rule.serial, rule.mask); } }
         None => { if let Some(f) = ops.transmit_clear { f(index); } }
     }
 }
 
-/// Voice-hearability slice: per-plugin rules. owner -> (senderSlot -> u64 receiver mask), bit r set
-/// = receiver r may hear sender s. The shim holds only the AND-merged mask per sender; this map is
-/// the policy source of truth so unload/reset can recompute the merge. AND means no owner can WIDEN
-/// what another owner restricted (the safe direction for a moderation-adjacent feature).
-thread_local! {
-    static VOICE_RULES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<i32, u64>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
 /// AND-merge every owner's rule for `sender`. `None` when no owner has one — which is distinct from
 /// `Some(0)` ("audible to nobody"), the distinction `s_voiceHasRule` exists for on the shim side.
 fn voice_merged(sender: i32) -> Option<u64> {
-    VOICE_RULES.with(|r| {
-        let map = r.borrow();
-        let mut acc: Option<u64> = None;
-        for rules in map.values() {
-            if let Some(m) = rules.get(&sender) {
-                acc = Some(match acc { None => *m, Some(a) => a & *m });
-            }
-        }
-        acc
-    })
+    VOICE_RULES.with(|r| r.borrow().merged(&sender))
 }
 
 /// Recompute and push to the shim: set the merged mask, or clear when no rule remains.
@@ -445,10 +421,7 @@ fn voice_recompute_and_push(sender: i32) {
 
 /// Unload/resetAll teardown: drop every rule `owner` holds and re-push each sender it touched.
 fn voice_remove_owner(owner: &str) {
-    let touched: Vec<i32> = VOICE_RULES.with(|r| {
-        let mut map = r.borrow_mut();
-        match map.remove(owner) { Some(rules) => rules.keys().copied().collect(), None => Vec::new() }
-    });
+    let touched = VOICE_RULES.with(|r| r.borrow_mut().remove_owner(owner));
     for s in touched { voice_recompute_and_push(s); }
 }
 
@@ -460,14 +433,7 @@ fn voice_remove_owner(owner: &str) {
 /// in the shim; unlike `voice_remove_owner` it crosses owners, because the departing player is not
 /// any one plugin's concern.
 pub(crate) fn voice_clear_slot(sender: i32) {
-    let touched = VOICE_RULES.with(|r| {
-        let mut map = r.borrow_mut();
-        let mut any = false;
-        for rules in map.values_mut() {
-            if rules.remove(&sender).is_some() { any = true; }
-        }
-        any
-    });
+    let touched = VOICE_RULES.with(|r| r.borrow_mut().clear_key(&sender));
     if touched { voice_recompute_and_push(sender); }
 }
 
@@ -475,7 +441,7 @@ pub(crate) fn voice_clear_slot(sender: i32) {
 fn voice_rules_clear_for_test() { VOICE_RULES.with(|r| r.borrow_mut().clear()); }
 #[cfg(test)]
 fn voice_set_rule_for_test(owner: &str, sender: i32, mask: u64) {
-    VOICE_RULES.with(|r| { r.borrow_mut().entry(owner.to_string()).or_default().insert(sender, mask); });
+    VOICE_RULES.with(|r| r.borrow_mut().insert(owner, sender, mask));
 }
 #[cfg(test)]
 fn voice_merged_for_test(sender: i32) -> Option<u64> { voice_merged(sender) }
@@ -549,9 +515,7 @@ fn s2_scope_dispose(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
 
 /// Unload/resetAll teardown: drop every rule owned by `owner`, re-pushing each affected index.
 fn transmit_remove_owner(owner: &str) {
-    let indices: Vec<i32> = TRANSMIT_RULES.with(|r| {
-        r.borrow_mut().remove(owner).map(|m| m.keys().copied().collect()).unwrap_or_default()
-    });
+    let indices = TRANSMIT_RULES.with(|r| r.borrow_mut().remove_owner(owner));
     for i in indices { transmit_recompute_and_push(i); }
 }
 
@@ -2770,15 +2734,7 @@ fn s2_transmit_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         // Candidate merged mask: AND with every OTHER owner's same-serial rule on this index.
         let merged = TRANSMIT_RULES.with(|r| {
-            let map = r.borrow();
-            let mut acc = mask;
-            for (o, rules) in map.iter() {
-                if o == &owner { continue; }
-                if let Some(rule) = rules.get(&index) {
-                    if rule.serial == serial { acc &= rule.mask; }
-                }
-            }
-            acc
+            r.borrow().fold_except(&owner, &index, TransmitRule { serial, mask }, |ru| ru.serial == serial).mask
         });
         let ops = ENGINE_OPS.with(|o| o.get());
         let Some(f) = ops.and_then(|o| o.transmit_set) else { return };
@@ -2787,11 +2743,8 @@ fn s2_transmit_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
             let mut map = r.borrow_mut();
             // Evict stale (different-serial) entries on this index — the op just validated `serial`
             // is the live one, so any other serial in this slot belongs to a dead entity.
-            for rules in map.values_mut() {
-                let stale = rules.get(&index).map_or(false, |ru| ru.serial != serial);
-                if stale { rules.remove(&index); }
-            }
-            map.entry(owner).or_default().insert(index, TransmitRule { serial, mask });
+            map.evict_at(&index, |ru| ru.serial != serial);
+            map.insert(owner, index, TransmitRule { serial, mask });
         });
         rv.set_bool(true);
     }));
@@ -2807,11 +2760,8 @@ fn s2_transmit_reset(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let removed = TRANSMIT_RULES.with(|r| {
             let mut map = r.borrow_mut();
-            match map.get_mut(&owner) {
-                Some(rules) if rules.get(&index).map_or(false, |ru| ru.serial == serial) => {
-                    rules.remove(&index);
-                    true
-                }
+            match map.get(&owner, &index) {
+                Some(ru) if ru.serial == serial => { map.remove(&owner, &index); true }
                 _ => false,
             }
         });
@@ -2869,22 +2819,14 @@ fn s2_voice_audible_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
         }
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         // Candidate merged mask: AND this rule with every OTHER owner's rule for the same sender.
-        let merged = VOICE_RULES.with(|r| {
-            let map = r.borrow();
-            let mut acc = mask;
-            for (o, rules) in map.iter() {
-                if o == &owner { continue; }
-                if let Some(m) = rules.get(&sender) { acc &= *m; }
-            }
-            acc
-        });
+        let merged = VOICE_RULES.with(|r| r.borrow().fold_except(&owner, &sender, mask, |_| true));
         // PUSH FIRST, PERSIST ONLY ON SUCCESS — the s2_transmit_set ordering. Inserting before the
         // push would leave core holding a rule the shim rejected (e.g. voice degraded), so the two
         // would disagree and a later unrelated recompute would silently apply a phantom rule.
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.voice_audible_set else { return };
         if f(sender, merged) == 0 { return; }
-        VOICE_RULES.with(|r| { r.borrow_mut().entry(owner).or_default().insert(sender, mask); });
+        VOICE_RULES.with(|r| r.borrow_mut().insert(owner, sender, mask));
         rv.set_bool(true);
     }));
 }
@@ -2897,10 +2839,7 @@ fn s2_voice_audible_clear(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let sender = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         if !(0..64).contains(&sender) { return; }
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let removed = VOICE_RULES.with(|r| {
-            let mut map = r.borrow_mut();
-            map.get_mut(&owner).map(|rules| rules.remove(&sender).is_some()).unwrap_or(false)
-        });
+        let removed = VOICE_RULES.with(|r| r.borrow_mut().remove(&owner, &sender).is_some());
         if removed { voice_recompute_and_push(sender); }
         rv.set_bool(removed);
     }));
