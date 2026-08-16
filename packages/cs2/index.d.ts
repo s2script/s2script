@@ -17,6 +17,8 @@ export * from "./schema.generated";
 // re-exported from here too, exactly like every other generated cs2 artifact. A new hook's view/ctx
 // interfaces surface automatically; no index.d.ts edit needed.
 export * from "./hooks.generated";
+export { AcquireMethod, AcquireResult } from "./items";
+export type { CanAcquireView, CtxItems } from "./items";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
 export type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
 import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
@@ -185,25 +187,17 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
    * which has jointeam semantics and usually kills). Works on DEAD controllers too (a pure
    * scoreboard/win-condition team move). CAVEAT: the engine MAY respawn the pawn during the call —
    * re-resolve `player.pawn` on the next frame before any pawn write. Game events the engine fires
-   * inside the call do not re-dispatch to JS handlers on that frame (re-entrancy skip). For None (0) /
+   * inside the call run other plugins' handlers before this returns. For None (0) /
    * Spectator (1) this dispatches to `changeTeam` (CSSharp/SwiftlyS2 parity) — prefer `spectate()`.
    * Serial-gated; a no-op if the ref is stale or the signature is unresolved. Bounded 0..3.
    */
   switchTeam(team: number): void;
   /** Respawn this (dead) player via the self-resolved CCSPlayerController::Respawn (byte-sig +
-   *  RTTI-vtable-membership load-validated). QUEUED: the engine call executes on the NEXT engine
-   *  frame, so the resulting player_spawn reaches EVERY plugin's `Events.on` handler — including the
-   *  caller's — rather than being lost to the isolate borrow. Safe from inside event/command
-   *  handlers; no nextFrame wrapping needed.
-   *
-   *  `Events.onPre("player_spawn")` does NOT run for this call, and cannot suppress it. The engine
-   *  fires player_spawn synchronously inside the next-frame drain, i.e. inside the isolate borrow,
-   *  and only `Events.on` (post/notify) subscribers survive that — they are replayed a frame later
-   *  off the deferred-dispatch queue. A pre-hook is not deferrable by construction, so it is skipped.
-   *
-   *  Calling twice for the same player in one frame FROM THIS PLUGIN is idempotent and both calls
-   *  return true (the pending set is per plugin context). Returns false when degraded: the player is
-   *  already alive, the ref is stale, or the Respawn/SetPawn descriptors failed their boot gates. */
+   *  RTTI-vtable-membership load-validated). Synchronous: SetPawn then Respawn on this call;
+   *  `Events.on` / `onPre("player_spawn")` run other plugins before this returns.
+   *  `ctx.players.onRespawn` does not fire (SourceMod `blockhook` / `bypassWith`).
+   *  Returns false when the player is already alive, the ref is stale, or Respawn/SetPawn failed
+   *  their boot gates. */
   respawn(): boolean;
 }
 /**
@@ -357,26 +351,11 @@ export interface GameRulesView {
   /** Extend/shrink the round clock by delta seconds (writes roundTime += seconds). */
   addTimeRemaining(seconds: number): boolean;
   /** Force the round to end with a RoundEndReason (sig-resolved CCSGameRules::TerminateRound).
-   *  QUEUED: executes on the NEXT engine frame, so every plugin's round_end `Events.on` handler —
-   *  including the caller's — fires rather than being lost to the isolate borrow (a state read
-   *  immediately after still sees the old round).
-   *
-   *  Single-slot, latest-wins WITHIN ONE PLUGIN: a second call from this plugin in the same frame
-   *  replaces the first. The pending slot is per plugin CONTEXT, so two plugins calling in the same
-   *  frame each queue their own request.
-   *
-   *  `Events.onPre("round_end")` does NOT run for this call, and cannot suppress it — the engine
-   *  fires round_end synchronously inside the next-frame drain, i.e. inside the isolate borrow, and
-   *  a pre-hook is not deferrable by construction. To intervene in a round ending, subscribe to
-   *  `ctx.gameRules.onTerminateRound` instead: it fires on the ENGINE's own call to
-   *  `CCSGameRules::TerminateRound`, outside the isolate borrow, where a pre-hook can actually run —
-   *  a handler can mutate `delay`/`reason` or return `HookResult.Handled`/`Stop` to cancel the
-   *  termination outright. Note the bypass: calling this method (or `GameRules.terminateRound`)
-   *  does NOT fire `onTerminateRound` — the hook only ever sees engine-originated terminations,
-   *  never a plugin's own JS-issued call (SourceMod's exact `CS_OnTerminateRound` semantic).
-   *
-   *  delay (default 5s) is the engine's pre-restart delay. Returns true if queued; false when
-   *  degraded (unresolved signature, stale proxy, or reason outside 0..22). */
+   *  Synchronous: the engine call runs now; `Events.on` / `onPre("round_end")` run other plugins
+   *  before this returns. `ctx.gameRules.onTerminateRound` does not fire for this call
+   *  (SourceMod `CS_OnTerminateRound` / `blockhook`). To cancel an *engine* round end, subscribe
+   *  to `onTerminateRound`. delay (default 5s) is the engine's pre-restart delay. Returns false
+   *  when degraded (unresolved signature, stale proxy, or reason outside 0..22). */
   terminateRound(reason: number, delay?: number): boolean;
 }
 /** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (liveness-gated

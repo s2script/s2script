@@ -804,7 +804,7 @@ fn s2_entity_create(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
         let cname = match std::ffi::CString::new(name) { Ok(c) => c, Err(_) => return };
         let ops = engine_ops();
         if let Some(func) = ops.and_then(|o| o.entity_create) {
-            let handle = func(cname.as_ptr());
+            let handle = crate::nest::with_outbound(&args, || func(cname.as_ptr()));
             if handle != 0 {
                 let (index, serial) = crate::entity::decode_handle(handle as u32);
                 // The create listener fed the books synchronously via the ffi entry — adoption is the proof.
@@ -855,7 +855,9 @@ fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         rv.set_bool(false);
         let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let ops = engine_ops();
-        if let Some(func) = ops.and_then(|o| o.entity_spawn) { rv.set_bool(func(index, serial) != 0); }
+        if let Some(func) = ops.and_then(|o| o.entity_spawn) {
+            rv.set_bool(crate::nest::with_outbound(&args, || func(index, serial)) != 0);
+        }
     }));
 }
 
@@ -1001,7 +1003,9 @@ fn s2_entity_remove(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
         rv.set_bool(false);
         let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
         let ops = engine_ops();
-        if let Some(func) = ops.and_then(|o| o.entity_remove) { rv.set_bool(func(index, serial) != 0); }
+        if let Some(func) = ops.and_then(|o| o.entity_remove) {
+            rv.set_bool(crate::nest::with_outbound(&args, || func(index, serial)) != 0);
+        }
     }));
 }
 
@@ -1024,10 +1028,10 @@ fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
         let Ok(value_c) = std::ffi::CString::new(value) else { return };
         let ops = engine_ops();
         if let Some(func) = ops.and_then(|o| o.entity_fire_input) {
-            rv.set_bool(func(
+            rv.set_bool(crate::nest::with_outbound(&args, || func(
                 index, serial, input_c.as_ptr(), value_c.as_ptr(),
                 act_idx, act_serial, caller_idx, caller_serial, delay,
-            ) != 0);
+            )) != 0);
         }
     }));
 }
@@ -1067,7 +1071,9 @@ fn s2_entity_spawn_kv(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         let val_ptrs: Vec<*const std::os::raw::c_char> = vals_c.iter().map(|c| c.as_ptr()).collect();
         let ops = engine_ops();
         if let Some(func) = ops.and_then(|o| o.entity_spawn_kv) {
-            rv.set_bool(func(index, serial, n as c_int, key_ptrs.as_ptr(), types_v.as_ptr(), val_ptrs.as_ptr()) != 0);
+            rv.set_bool(crate::nest::with_outbound(&args, || {
+                func(index, serial, n as c_int, key_ptrs.as_ptr(), types_v.as_ptr(), val_ptrs.as_ptr())
+            }) != 0);
         }
     }));
 }

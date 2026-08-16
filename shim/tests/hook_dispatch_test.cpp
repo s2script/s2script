@@ -39,6 +39,14 @@ static void test_shape_vocabulary_is_closed() {
     // the wide one silently gets the truncating thunk back — the exact bug, reintroduced invisibly.
     CHECK(S2_HOOK_SHAPE_THIS_F32_I32_I32_I32 != S2_HOOK_SHAPE_THIS_F32_I32_I64_I64,
           "the narrow and wide 4-arg shapes are distinct ids");
+
+    CHECK(S2Hook_ShapeFromName("this_i64_i32_i64") == S2_HOOK_SHAPE_THIS_I64_I32_I64,
+          "this_i64_i32_i64 resolves");
+    CHECK(std::strcmp(S2Hook_ShapeName(S2_HOOK_SHAPE_THIS_I64_I32_I64),
+                      "this_i64_i32_i64") == 0,
+          "the returning shape round-trips to its own name");
+    CHECK(S2_HOOK_SHAPE_THIS_I64_I32_I64 != S2_HOOK_SHAPE_THIS_F32_I32_I64_I64,
+          "the returning shape is a distinct id");
 }
 
 static void test_bypass_latch_is_one_shot_and_per_hook() {
@@ -146,6 +154,39 @@ static void test_ops_are_injected_not_linked() {
     CHECK(g_dispatchCalls == 1, "SetOps(none) actually clears the op — it is not re-invoked");
 }
 
+static int g_postCalls = 0;
+static int g_lastSkipped = -1;
+static int fake_dispatch_post(int hookId, void*, int skipped) {
+    g_postCalls++;
+    g_lastHookId = hookId;
+    g_lastSkipped = skipped;
+    return 0;
+}
+
+static void test_dispatch_post_is_injected() {
+    S2HookOps ops{};
+    ops.dispatch = &fake_dispatch;
+    ops.dispatch_post = &fake_dispatch_post;
+    S2Hook_SetOps(ops);
+    g_dispatchCalls = 0;
+    g_postCalls = 0;
+    g_lastSkipped = -1;
+    CHECK(S2Hook_DispatchPost(4, nullptr, 1) == 0, "dispatch_post forwards to the injected op");
+    CHECK(g_postCalls == 1 && g_lastHookId == 4 && g_lastSkipped == 1,
+          "and passes the hook id and skipped flag through");
+    S2HookOps none{};
+    S2Hook_SetOps(none);
+    CHECK(S2Hook_DispatchPost(4, nullptr, 1) == 0, "a null dispatch_post op degrades to Continue");
+    CHECK(g_postCalls == 1, "SetOps(none) actually clears dispatch_post");
+}
+
+static void test_most_restrictive_acquire() {
+    CHECK(S2Hook_MostRestrictiveAcquire(0, 0) == 0, "Allow + Allow = Allow");
+    CHECK(S2Hook_MostRestrictiveAcquire(0, 6) == 6, "Allow loses to any deny");
+    CHECK(S2Hook_MostRestrictiveAcquire(6, 0) == 6, "a deny beats a later Allow");
+    CHECK(S2Hook_MostRestrictiveAcquire(2, 6) == 2, "two denys: first wins, no ontology");
+}
+
 int main() {
     test_shape_vocabulary_is_closed();
     test_bypass_latch_is_one_shot_and_per_hook();
@@ -153,6 +194,8 @@ int main() {
     test_bypass_reset_clears_every_latch_and_nothing_else();
     test_collapse_contract();
     test_ops_are_injected_not_linked();
+    test_dispatch_post_is_injected();
+    test_most_restrictive_acquire();
     if (g_fail) { std::cerr << g_fail << " check(s) FAILED\n"; return 1; }
     std::cout << "hook_dispatch_test: all checks passed\n";
     return 0;

@@ -2,12 +2,12 @@ import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
 
 /**
- * Player.respawn() queues CCSPlayerController::Respawn for the next
- * GameFrame, so the resulting player_spawn reaches every plugin's handlers —
- * including this recipe's own listener below. The engine's Respawn honors
- * the game's respawn rules: it no-ops on a competitive mid-round server
- * (players stay dead) and fires in gamemodes that permit respawn (warmup,
- * and TTT-style rules).
+ * Player.respawn() calls CCSPlayerController::Respawn on this call, so the
+ * resulting player_spawn reaches every plugin's handlers — including this
+ * recipe's own listener below — before respawn() returns. The engine's
+ * Respawn honors the game's respawn rules: it no-ops on a competitive
+ * mid-round server (players stay dead) and fires in gamemodes that permit
+ * respawn (warmup, and TTT-style rules).
  *
  *   sm_respawn <slot>   respawn one slot, called from a command handler
  *   sm_respawn_all      respawn every dead in-game player in one dispatch
@@ -38,16 +38,16 @@ export const playerStateRecipe: Recipe = {
       if (!p) { cmd.reply("sm_respawn: no player in slot " + slot); return; }
       const ok = p.respawn();
       cmd.reply("sm_respawn slot=" + slot + " -> " +
-        (ok ? "queued (executes next frame)" : "no-op (already alive / stale ref / degraded descriptor)"));
+        (ok ? "ok" : "no-op (already alive / stale ref / degraded descriptor)"));
     });
 
-    // sm_respawn_all — respawn every dead in-game player in one dispatch (the multi-entry batch proof).
+    // sm_respawn_all — respawn every dead in-game player in one dispatch.
     ctx.commands.register("sm_respawn_all", (cmd) => {
-      let queued = 0, skipped = 0;
+      let ok = 0, skipped = 0;
       for (const p of Player.all()) {
-        if (p.respawn()) queued++; else skipped++;
+        if (p.respawn()) ok++; else skipped++;
       }
-      cmd.reply("sm_respawn_all: queued=" + queued + " skipped=" + skipped);
+      cmd.reply("sm_respawn_all: ok=" + ok + " skipped=" + skipped);
     });
   },
 };

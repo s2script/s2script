@@ -351,7 +351,8 @@ fn s2_event_fire(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let dont = if args.length() >= 1 { args.get(0).boolean_value(scope) } else { false };
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.event_fire else { return };
-        rv.set_bool(func(dont as c_int) != 0);
+        // SourceMod FireEvent: other plugins' on / onPre run before this returns.
+        rv.set_bool(crate::nest::with_outbound(&args, || func(dont as c_int)) != 0);
     }));
 }
 
@@ -365,7 +366,7 @@ fn s2_event_fire_to_client(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.event_fire_to_client else { return };
-        rv.set_bool(func(slot) != 0);
+        rv.set_bool(crate::nest::with_outbound(&args, || func(slot)) != 0);
     }));
 }
 
@@ -394,8 +395,8 @@ pub(crate) fn dispatch_game_event(name: &str) -> Delivery {
 /// `IGameEvent` is ever represented in Rust — no raw pointer is queued on this side.
 pub(crate) fn replay_game_event(name: &str) -> Delivery {
     // Snapshot — releases the EVENT_MUX borrow before any JS runs, so `Events.fire()` from inside a
-    // handler cannot mutate the list being walked (a re-entrant dispatch reports `Deferred` and is
-    // replayed by the shim next frame; the engine-side fire has already happened).
+    // handler cannot mutate the list being walked. Nested fire publishes a nest token and runs
+    // other plugins now; `#63` no-handle inbound still reports `Deferred`.
     let snap = EVENT_MUX.with(|m| m.borrow().snapshot(name));
     let tag = format!("event:{}", name);
     fan_out(&snap, &format!("dispatch_game_event('{}')", name), Instrument::full(&tag), |tc| {

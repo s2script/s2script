@@ -278,6 +278,7 @@ mod tests {
         assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().victim)"), "null");
         // Slice 6.7: cvar_get degrades to "" without the op; Server.getCvar/setCvar wired.
         assert_eq!(eval_in_context_string("p", "String(__s2_cvar_get('sv_gravity'))"), "");
+        assert_eq!(eval_in_context_string("p", "String(__s2_cvar_set('sv_gravity', '800'))"), "false");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.getCvar"), "function");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.setCvar"), "function");
         // reservedslots+basetriggers: server-info natives degrade (max_clients->0, map_name->"", game_time->0)

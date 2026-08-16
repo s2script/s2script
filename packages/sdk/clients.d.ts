@@ -60,13 +60,8 @@ export declare class Client {
    * or a name that is not a registered console **command** (a ConVar such as `mp_friendlyfire` is
    * refused: use `Server.command` for those).
    *
-   * KNOWN LIMITATION: engine commands (`say`, `kill`, …) execute. A command registered by an
-   * s2script plugin is dispatched by the engine, but its JS handler will NOT run — the core holds
-   * the isolate borrow across all JS, so re-entering the dispatcher hits the documented
-   * re-entrancy skip. (This is not a permissions issue: every s2script command is registered
-   * client-executable, which is why a player can type it in their own console.) To invoke another
-   * plugin's behaviour, use a cross-plugin interface rather than faking its command. See
-   * docs/superpowers/specs/2026-07-25-client-command-design.md §12.
+   * Engine commands (`say`, `kill`, …) execute. A command registered by an s2script plugin runs
+   * that plugin's JS handler before this returns.
    *
    * @example
    * client.fakeCommand("say hello");   // as though the player typed it

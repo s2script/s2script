@@ -181,20 +181,13 @@ export default plugin((ctx) => {
     if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { cmd.replyT("Usage Cvar"); return; }
     if (cmd.argCount < 2) { cmd.replyT("Cvar Value", name, Server.getCvar(name)); return; }  // GET
     const value = cmd.argsFrom(1);
-    // SECURITY: setCvar concatenates into a server console command, which splits on ';'. Reject the
-    // console-injection chars so an ADMFLAG.CONVARS admin can't escalate to arbitrary server commands
-    // (e.g. `sm_cvar x "0; sv_cheats 1"`); quote the value so a legit multi-word string cvar is one token.
-    // { and } are rejected too — not for injection, but because "Cvar Set" echoes `value` straight back
-    // through translate's {2} substitution, and __s2_tr_format (core/js/prelude.js) strips braces from
-    // every substituted argument as anti-colour-injection collateral. Without this the confirmation
-    // would misreport what was actually set (e.g. `sm_cvar mp_teamname_1 {clan}` sets "{clan}" but
-    // would echo "set to clan"); rejecting up front keeps the stored and reported values identical.
-    if (/[;"\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return; }
+    // setCvar writes through ICvar (not the console), so `;` is data not a second command.
+    // { and } are still rejected because "Cvar Set" echoes `value` through translate's {2}
+    // substitution and __s2_tr_format strips braces from substituted args.
+    if (/[\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return; }
     console.log("[basecommands] sm_cvar SET " + name + " = " + value + " by slot=" + cmd.callerSlot);
-    Server.setCvar(name, '"' + value + '"');
-    // NOTE: Server.command queues the set for next frame, so an immediate getCvar reads the OLD value —
-    // echo the requested value instead of a stale read-back.
-    cmd.replyT("Cvar Set", name, value);
+    if (!Server.setCvar(name, value)) { cmd.replyT("Invalid Cvar Value"); return; }
+    cmd.replyT("Cvar Set", name, Server.getCvar(name) || value);
   });
 
   // 6.11b — chat triggers (!cmd / /cmd) are handled in the core Host_Say detour; 6.11c — CONSOLE commands

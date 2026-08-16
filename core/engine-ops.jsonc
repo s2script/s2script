@@ -1153,6 +1153,33 @@
       "c_ret": "int",
       "c_params": "int index, int serial, float scale",
       "shim": "Shim_EntitySetModelScale"
+    },
+    {
+      "name": "cvar_set",
+      "alias": "CvarSetFn",
+      "rust": "extern \"C\" fn(name: *const c_char, value: *const c_char) -> c_int",
+      "group": "ICvar set — write through ConVarData, not ServerCommand",
+      "c_ret": "int",
+      "c_params": "const char* name, const char* value",
+      "shim": "s2_cvar_set"
+    },
+    {
+      "name": "hook_read_u16_at_q",
+      "alias": "HookReadU16AtQFn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, c_int, *mut u16) -> c_int",
+      "group": "Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS",
+      "c_ret": "int",
+      "c_params": "void* argView, int qslot, int offset, uint16_t* out",
+      "shim": "S2_HookReadU16AtQ"
+    },
+    {
+      "name": "hook_self_matches_field",
+      "alias": "HookSelfMatchesFieldFn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, c_int, c_int) -> c_int",
+      "group": "Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self",
+      "c_ret": "int",
+      "c_params": "void* argView, int index, int serial, int offset",
+      "shim": "S2_HookSelfMatchesField"
     }
   ]
 }

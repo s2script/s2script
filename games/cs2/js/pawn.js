@@ -210,103 +210,16 @@
     callSwitchTeam(this, t);
   };
 
-  // --- The respawn drain (A5b: moved out of the shim's Hook_GameFrameRespawnDrain, verbatim) ------
-  //
-  // WHY THIS IS DEFERRED AT ALL. The engine's Respawn fires player_spawn SYNCHRONOUSLY. Called
-  // straight from a JS handler it would re-enter core while the isolate borrow is held, and before
-  // the deferred-dispatch queue existed that re-entrant dispatch was SILENTLY DROPPED — every
-  // plugin's player_spawn subscriber missed the event. The shim's answer was a next-frame drain in
-  // C++; ours is the same drain over `nextFrame`, which is where a deferral belongs now that a
-  // re-entrant dispatch is delivered one frame later instead of dropped.
-  //
-  // TWO PROPERTIES BEYOND THE DEFERRAL ITSELF, both live-gated behaviour, both easy to lose:
-  //   * DEDUPE — a double-respawn of the same player in one frame is idempotent, and the second call
-  //     reports SUCCESS (true), not failure. TTT's round-start loop legitimately respawns many
-  //     players in one dispatch, which is also why this is a multi-entry set and not latest-wins.
-  //   * CONSUME BEFORE CALL — the pending set is emptied BEFORE the first engine call, because that
-  //     call re-enters this context (a player_spawn handler may itself call respawn()). Draining a
-  //     list you are still appending to is how you get an unbounded loop inside one frame.
-  //
-  // SCOPE NOTE: this state is per plugin CONTEXT (the prelude is evaluated once per plugin), where
-  // the shim's set was host-global. Two different plugins respawning the same player in one frame
-  // therefore each queue an entry, in two separate pending sets that cannot see each other. The
-  // dedupe above is a WITHIN-PLUGIN guarantee only; cross-plugin, the second engine call is expected
-  // to be skipped by the m_bPawnIsAlive re-check below (the first call should have made it true by
-  // then) — UNVERIFIED, pending the live gate. Do not restate it as a property until it is measured.
-  // Teardown is free for the same reason: the set dies with the context, so there is nothing to
-  // clear at unload.
-  //
-  // PRE-HOOKS DO NOT RUN FOR THE DEFERRED CALL, and this is permanent. The drain below is resolved
-  // from `nextFrame`, whose resolver runs inside core's frame_async_drain — which holds the isolate
-  // borrow across the microtask checkpoint. So the player_spawn the engine fires inside
-  // callRespawn() re-enters core INSIDE that borrow. `Events.on` subscribers are fine (the
-  // deferred-dispatch queue replays them a frame later); `Events.onPre` subscribers are NOT, because
-  // a pre-hook cannot be deferred — its whole contract is answering before the engine proceeds — so
-  // it is silently skipped and any suppression it would have applied is lost. Relocating the drain
-  // does not fix it: ALL JS runs under the borrow. The old shim drain ran in its own GameFrame
-  // SourceHook outside the borrow, so this is a real (today zero-blast-radius) regression, recorded
-  // in the A5 spec §9.2a. Blast radius is zero only for as long as nothing subscribes onPre to
-  // player_spawn.
-  var respawnPending = [];                   // Player[] — refs are books-gated, so holding them is safe
-  var respawnDrainArmed = false;
-  var RESPAWN_PENDING_MAX = 130;             // > 64 slots * controller + margin (the shim's cap, verbatim)
-
-  function drainRespawn() {
-    var batch = respawnPending;
-    respawnPending = [];                     // CONSUME BEFORE CALLING — the calls below re-enter
-    respawnDrainArmed = false;               // ...and a respawn issued from that re-entry arms a NEW frame
-    for (var i = 0; i < batch.length; i++) {
-      var p = batch[i];
-      // Re-gate at drain, not just at enqueue: the controller can die in the intervening frame.
-      if (!p.ref.isValid()) { warn("player_respawn: stale controller at drain — skipped"); continue; }
-      // Re-check aliveness at drain — closes the enqueue->drain TOCTOU (the player may have come
-      // alive in between, including via an earlier entry in THIS batch). A null read means the field
-      // is unresolved, which skips the re-check rather than blocking the respawn.
-      if (p.pawnIsAlive === true) continue;
-      // SetPawn(playerPawn, true, false) THEN Respawn, SAME frame, in that order — SwiftlyS2/CSSharp's
-      // exact sequence. A dead controller's active m_hPawn points at the OBSERVER pawn; SetPawn
-      // re-points it, tears down observer mode and sets the dirty flags. Respawn alone (or a raw
-      // m_hPawn write) only clears the death screen and never spawns — live-gate proven on 2000875.
-      //
-      // The null guard is load-bearing: a stale/absent player-pawn handle must SKIP SetPawn while
-      // Respawn still runs. A `null` entity argument does NOT abort a declared call — it marshals to
-      // nullptr and the call proceeds — so without this the engine would get SetPawn(ctrl, nullptr).
-      var pawn = p.pawn;                     // m_hPlayerPawn, re-read at drain
-      if (pawn) callSetPawn(p, pawn.ref, true, false);   // an `entity` ARG is an EntityRef — see engineCall
-      // The engine Respawn HONOURS the game's respawn rules: it no-ops mid-round on a competitive
-      // server and spawns in gamemodes that permit it (warmup, TTT's own rules). That is correct
-      // behaviour, not a failure — never "retry" it.
-      callRespawn(p);
-    }
-  }
-
-  // player.respawn() — respawn this (dead) player via the self-resolved CCSPlayerController::Respawn
-  // (byte-sig + RTTI-vtable-membership boot-gated; NEVER CSSharp's borrowed vtable index). QUEUED: the
-  // SetPawn+Respawn pair runs on the NEXT frame, so the resulting player_spawn is delivered to every
-  // plugin rather than dropped — safe to call from event/command handlers, no nextFrame wrapping
-  // needed by the caller (TTT's Server.NextWorldUpdate semantics, built in).
-  //
-  // Returns "was this queued", NOT "did the player spawn": true when already pending (the idempotent
-  // second call), false when already alive, the ref is stale, the pending set is full, or either of
-  // the two descriptors this needs is degraded.
+  // player.respawn() — SetPawn then Respawn, same frame (SwiftlyS2/CSSharp sequence). Synchronous:
+  // player_spawn runs other plugins before this returns. A player_spawn handler that respawns again
+  // no-ops on pawnIsAlive. Same-hook skip covers a hook that re-enters itself.
   Player.prototype.respawn = function () {
     if (this.pawnIsAlive === true) return false;
-    // BOTH engine facts or NEITHER. A ready Respawn with a degraded SetPawn must not half-run: on
-    // 2000875 that combination clears the death screen and never spawns, which reads to a player as
-    // a broken server rather than a disabled feature.
     if (!callRespawn || !callSetPawn) return false;
-    if (typeof __s2_next_frame !== "function") return false;   // nothing would drain the queue
-    if (!this.ref.isValid()) return false;                     // stale NOW; re-gated at drain
-    for (var i = 0; i < respawnPending.length; i++) {
-      var q = respawnPending[i].ref;
-      if (q.index === this.ref.index && q.id === this.ref.id) return true;   // dedupe: idempotent
-    }
-    if (respawnPending.length >= RESPAWN_PENDING_MAX) {
-      warn("player_respawn: pending set full (" + RESPAWN_PENDING_MAX + ") — rejected");
-      return false;
-    }
-    respawnPending.push(this);
-    if (!respawnDrainArmed) { respawnDrainArmed = true; __s2_next_frame().then(drainRespawn); }
+    if (!this.ref.isValid()) return false;
+    var pawn = this.pawn;
+    if (pawn) callSetPawn(this, pawn.ref, true, false);
+    callRespawn(this);
     return true;
   };
 
@@ -1071,60 +984,16 @@
     var rt = this.roundTime; if (rt === null) return false;
     return this.setRoundTime(rt + Math.ceil(seconds));
   };
-  // --- The round-end drain (A5b: moved out of the shim's Hook_GameFrameRoundDrain, verbatim) ------
-  //
-  // Same reason as the respawn drain above: TerminateRound fires the round-end event machinery
-  // SYNCHRONOUSLY, so it must not run inside the isolate borrow. SINGLE-SLOT, latest-wins: a second
-  // request in the same frame REPLACES the first (and says so) rather than ending the round twice.
-  // Consume-before-call for the same reason as respawn: the call re-enters gamerules, and a
-  // round_end handler calling terminateRound() again must arm the NEXT frame.
-  //
-  // SCOPE: this slot is per plugin CONTEXT, where the shim's s_pendingTerminate was a host-global
-  // static. "A round ends once" was true of that static and is NOT true of this: two plugins each
-  // calling terminateRound() in the same frame each queue their own request and each drain it, so
-  // the engine call runs twice. Whether cross-plugin dedupe should be restored (and where) is an
-  // open decision — do not paper over it here or in the .d.ts.
-  //
-  // PRE-HOOKS DO NOT RUN FOR THE DEFERRED CALL — same mechanism as the respawn drain above, in
-  // full there: nextFrame resolves inside frame_async_drain, which holds the isolate borrow, so the
-  // round_end the engine fires inside callTerminateRound() re-enters under it. `Events.on`
-  // subscribers are replayed a frame later; `Events.onPre("round_end")` subscribers are skipped and
-  // their suppression is lost. Not fixable by moving the drain. Recorded in the A5 spec §9.2a.
-  var terminatePending = null;               // { view, delay, reason } | null
-  var terminateDrainArmed = false;
-
-  function drainTerminate() {
-    var req = terminatePending;
-    terminatePending = null;                 // consume BEFORE calling (the call re-enters gamerules)
-    terminateDrainArmed = false;
-    if (!req) return;
-    // Re-gate the proxy at drain: it can die between enqueue and drain (a map change is exactly the
-    // case). The m_pGameRules hop itself is the descriptor's `via`, re-resolved at this invoke.
-    if (!req.view.ref.isValid()) { warn("terminate_round: stale gamerules proxy at drain — dropped"); return; }
-    // DELAY FIRST. TTT/CSSharp's reason-first Linux argument order is a managed-marshaller artifact;
-    // the direct C call is (float delay /*xmm0*/, uint32 reason /*esi*/, void* unk3, uint32 unk4).
-    // Swapping them is silent — `reason` would land in xmm0 and `delay` in the reason register.
-    callTerminateRound(req.view, req.delay, req.reason, 0, 0);
-  }
-
-  // Force the round to end (CCSGameRules::TerminateRound). QUEUED: executes on the NEXT frame, so the
-  // synchronous round_end is delivered to every plugin — including this one. true = queued; false =
-  // degraded (unresolved sig / unresolved m_pGameRules / stale proxy / out-of-range reason).
+  // Force the round to end (CCSGameRules::TerminateRound). Synchronous: round_end reaches other
+  // plugins before this returns. onTerminateRound is still bypassed (SourceMod blockhook).
   GameRulesView.prototype.terminateRound = function (reason, delay) {
     var r = reason | 0;
-    // The engine's own bound (`cmp $0x16` = 22 = SurvivalDraw). The in-range legacy holes 2/3/15 pass
-    // through deliberately — the engine's switch handles them.
     if (r < 0 || r > 22) { warn("terminate_round: reason " + r + " out of range 0..22 — rejected"); return false; }
     if (!callTerminateRound) return false;
-    if (typeof __s2_next_frame !== "function") return false;
-    // Kept even though the hop is now the descriptor's `via`: an unresolved m_pGameRules must answer
-    // false HERE, as it always has, rather than reporting "queued" and no-opping a frame later.
     if (!grPath()) return false;
-    if (!this.ref.isValid()) return false;                            // stale proxy NOW; re-gated at drain
-    var d = (delay === undefined || delay === null) ? 5.0 : +delay;   // 5s = TTT parity default
-    if (terminatePending) warn("terminate_round: overwriting a pending request (latest wins)");
-    terminatePending = { view: this, delay: d, reason: r };
-    if (!terminateDrainArmed) { terminateDrainArmed = true; __s2_next_frame().then(drainTerminate); }
+    if (!this.ref.isValid()) return false;
+    var d = (delay === undefined || delay === null) ? 5.0 : +delay;
+    callTerminateRound(this, d, r, 0, 0);
     return true;
   };
   var GameRules = (function () {
@@ -1282,6 +1151,56 @@
       return {
         onRespawn: function (h) {
           reg(viaId(function () { return __s2_hook_on("@s2script/cs2", "onRespawn", h); }));
+        },
+      };
+    },
+    items: function (reg, viaId) {
+      var playerHopWarned = false;
+      function hopPlayer() {
+        if (typeof __s2_hook_self_matches !== "function") return null;
+        var off = __s2_schema_offset("CBasePlayerPawn", "m_pItemServices");
+        if (off < 0) return null;
+        for (var s = 0; s < MAX_PLAYERS; s++) {
+          var pawn = Pawn.forSlot(s);
+          if (pawn && pawn.ref && __s2_hook_self_matches(pawn.ref, off)) {
+            return pawn.controller;
+          }
+        }
+        if (!playerHopWarned) {
+          playerHopWarned = true;
+          console.log("[s2script] WARN: onCanAcquire player hop missed (ItemServices* matched no live pawn) — view.player is null; the hook still fires");
+        }
+        return null;
+      }
+      function readDefIndex() {
+        if (typeof __s2_hook_q_u16 !== "function") return 0;
+        var n = __s2_hook_q_u16(0, "CEconItemView", "m_iItemDefinitionIndex");
+        return typeof n === "number" ? n : 0;
+      }
+      function wrap(h, isPost) {
+        return function (raw) {
+          var view = {
+            get player() { return hopPlayer(); },
+            get defIndex() { return readDefIndex(); },
+            get method() { return raw.method; },
+            get result() { return raw.result; },
+            set result(v) { if (!isPost) raw.result = v; },
+            get skipped() { return isPost ? !!raw.skipped : false; },
+          };
+          return h(view);
+        };
+      }
+      return {
+        onCanAcquire: function (h) {
+          reg(viaId(function () { return __s2_hook_on("@s2script/cs2", "onCanAcquire", wrap(h, false)); }));
+        },
+        onCanAcquirePost: function (h) {
+          reg(viaId(function () {
+            if (typeof __s2_hook_on_post === "function") {
+              return __s2_hook_on_post("@s2script/cs2", "onCanAcquire", wrap(h, true));
+            }
+            return 0;
+          }));
         },
       };
     },

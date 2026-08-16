@@ -141,6 +141,9 @@ pub type EntityApplyAbsVelocityImpulseFn = extern "C" fn(c_int, c_int, *const f3
 pub type EntityStopSoundFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
 pub type EntitySetBodyGroupByNameFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char, c_int) -> c_int;
 pub type EntitySetModelScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
+pub type CvarSetFn = extern "C" fn(name: *const c_char, value: *const c_char) -> c_int;
+pub type HookReadU16AtQFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, *mut u16) -> c_int;
+pub type HookSelfMatchesFieldFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -308,6 +311,12 @@ pub struct S2EngineOps {
     pub entity_stop_sound: Option<EntityStopSoundFn>,
     pub entity_set_body_group_by_name: Option<EntitySetBodyGroupByNameFn>,
     pub entity_set_model_scale: Option<EntitySetModelScaleFn>,
+    // --- ICvar set — write through ConVarData, not ServerCommand ---
+    pub cvar_set: Option<CvarSetFn>,
+    // --- Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS ---
+    pub hook_read_u16_at_q: Option<HookReadU16AtQFn>,
+    // --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self ---
+    pub hook_self_matches_field: Option<HookSelfMatchesFieldFn>,
 }
 
 impl S2EngineOps {

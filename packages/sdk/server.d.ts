@@ -15,16 +15,16 @@ export declare const Server: {
   /** A cvar's current value as a string. `""` if the cvar doesn't exist (or an unsupported type → `"<type>"`). */
   getCvar(name: string): string;
   /**
-   * Set a cvar via the server console (so any type is accepted). SECURITY: this builds and runs a console
-   * command (`<name> <value>`), which the console splits on `;` — treat `value` like `command()` input and
-   * sanitize/quote any untrusted value to avoid command injection. Queued: applies next frame.
+   * Set a cvar through `ICvar` now (SourceMod `SetConVarString`). Not a console command: `;` in
+   * `value` is data, not a second command. `getCvar` and `onCvarChange` see the new value before
+   * this returns. `false` if the cvar does not exist or the string cannot become that type.
    */
-  setCvar(name: string, value: string): void;
+  setCvar(name: string, value: string): boolean;
   /**
    * Register a plugin-owned ConVar (CSSharp FakeConVar / SM CreateConVar parity). Idempotent —
    * re-registering an existing name is a no-op success, and the cvar + its value persist across
    * plugin reloads (SourceMod parity). The shim adds FCVAR_RELEASE (customer-visible); `flags`
-   * are additive raw FCVAR bits. Read the value with `getCvar`; set it with `setCvar`/the console.
+   * are additive raw FCVAR bits. Read the value with `getCvar`; set it with `setCvar`.
    * `min`/`max` apply to numeric types only.
    */
   registerCvar(name: string, opts: {

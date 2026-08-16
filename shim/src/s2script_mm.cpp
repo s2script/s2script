@@ -72,6 +72,7 @@
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
+#include <strings.h> // strcasecmp — cvar_set bool parse
 #include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
 #include <fstream>
 #include <sstream>
@@ -1979,6 +1980,192 @@ static const char* s2_cvar_get(const char* name) {
         default: snprintf(s_cvarBuf, sizeof(s_cvarBuf), "<type%d>", (int)data->GetType()); break;
     }
     return s_cvarBuf;
+}
+
+// cvar_set — ICvar write, same ConVarData layout as cvar_get (no ServerCommand, no `;` split).
+// TypeTraits/SetString are non-inline tier1; we parse + write the value union ourselves, then
+// fire the engine's own change callbacks so onCvarChange and game listeners see the write now.
+// CUtlString is a single `char*` (asserted); we malloc the new buffer and free the old one
+// AFTER the callbacks have copied the previous string.
+struct S2CvarAbs : ConVarRefAbstract {
+    S2CvarAbs(ConVarRef r, ConVarData* d) : ConVarRefAbstract() {
+        m_ConVarAccessIndex = r.GetAccessIndex();
+        m_ConVarRegisteredIndex = r.GetRegisteredIndex();
+        m_ConVarData = d;
+    }
+};
+
+static_assert(sizeof(CUtlString) == sizeof(char*), "CUtlString is a single owning pointer");
+
+static CVValue_t* s2_cvar_slot(ConVarData* data) {
+    const size_t VOFF = sizeof(ConVarData) - sizeof(CVValue_t) * MAX_SPLITSCREEN_CLIENTS;
+    return reinterpret_cast<CVValue_t*>(reinterpret_cast<char*>(data) + VOFF);
+}
+
+static bool s2_cvar_parse(EConVarType ty, const char* value, CVValue_t* out) {
+    if (!value) return false;
+    char* end = nullptr;
+    switch (ty) {
+        case EConVarType_Bool: {
+            if (!strcasecmp(value, "1") || !strcasecmp(value, "true")
+                || !strcasecmp(value, "yes") || !strcasecmp(value, "on")) {
+                out->m_bValue = true;
+                return true;
+            }
+            if (!strcasecmp(value, "0") || !strcasecmp(value, "false")
+                || !strcasecmp(value, "no") || !strcasecmp(value, "off")) {
+                out->m_bValue = false;
+                return true;
+            }
+            return false;
+        }
+        case EConVarType_Int16: {
+            long v = strtol(value, &end, 10);
+            if (end == value) return false;
+            out->m_i16Value = (int16)v;
+            return true;
+        }
+        case EConVarType_UInt16: {
+            unsigned long v = strtoul(value, &end, 10);
+            if (end == value) return false;
+            out->m_u16Value = (uint16)v;
+            return true;
+        }
+        case EConVarType_Int32: {
+            long v = strtol(value, &end, 10);
+            if (end == value) return false;
+            out->m_i32Value = (int32)v;
+            return true;
+        }
+        case EConVarType_UInt32: {
+            unsigned long v = strtoul(value, &end, 10);
+            if (end == value) return false;
+            out->m_u32Value = (uint32)v;
+            return true;
+        }
+        case EConVarType_Int64: {
+            long long v = strtoll(value, &end, 10);
+            if (end == value) return false;
+            out->m_i64Value = (int64)v;
+            return true;
+        }
+        case EConVarType_UInt64: {
+            unsigned long long v = strtoull(value, &end, 10);
+            if (end == value) return false;
+            out->m_u64Value = (uint64)v;
+            return true;
+        }
+        case EConVarType_Float32: {
+            float v = strtof(value, &end);
+            if (end == value) return false;
+            out->m_fl32Value = v;
+            return true;
+        }
+        case EConVarType_Float64: {
+            double v = strtod(value, &end);
+            if (end == value) return false;
+            out->m_fl64Value = v;
+            return true;
+        }
+        case EConVarType_String:
+            return true; // string payload is `value` itself; written separately
+        default:
+            return false;
+    }
+}
+
+static bool s2_cvar_equal(EConVarType ty, const CVValue_t* a, const CVValue_t* b) {
+    switch (ty) {
+        case EConVarType_Bool:    return a->m_bValue == b->m_bValue;
+        case EConVarType_Int16:   return a->m_i16Value == b->m_i16Value;
+        case EConVarType_UInt16:  return a->m_u16Value == b->m_u16Value;
+        case EConVarType_Int32:   return a->m_i32Value == b->m_i32Value;
+        case EConVarType_UInt32:  return a->m_u32Value == b->m_u32Value;
+        case EConVarType_Int64:   return a->m_i64Value == b->m_i64Value;
+        case EConVarType_UInt64:  return a->m_u64Value == b->m_u64Value;
+        case EConVarType_Float32: return a->m_fl32Value == b->m_fl32Value;
+        case EConVarType_Float64: return a->m_fl64Value == b->m_fl64Value;
+        default: return false;
+    }
+}
+
+static void s2_cvar_clamp(ConVarData* data, EConVarType ty, CVValue_t* v) {
+    CVValue_t* mn = data->HasMinValue() ? data->MinValue() : nullptr;
+    CVValue_t* mx = data->HasMaxValue() ? data->MaxValue() : nullptr;
+    if (!mn && !mx) return;
+    switch (ty) {
+        case EConVarType_Int16:
+            if (mn && v->m_i16Value < mn->m_i16Value) v->m_i16Value = mn->m_i16Value;
+            if (mx && v->m_i16Value > mx->m_i16Value) v->m_i16Value = mx->m_i16Value;
+            break;
+        case EConVarType_Int32:
+            if (mn && v->m_i32Value < mn->m_i32Value) v->m_i32Value = mn->m_i32Value;
+            if (mx && v->m_i32Value > mx->m_i32Value) v->m_i32Value = mx->m_i32Value;
+            break;
+        case EConVarType_Int64:
+            if (mn && v->m_i64Value < mn->m_i64Value) v->m_i64Value = mn->m_i64Value;
+            if (mx && v->m_i64Value > mx->m_i64Value) v->m_i64Value = mx->m_i64Value;
+            break;
+        case EConVarType_Float32:
+            if (mn && v->m_fl32Value < mn->m_fl32Value) v->m_fl32Value = mn->m_fl32Value;
+            if (mx && v->m_fl32Value > mx->m_fl32Value) v->m_fl32Value = mx->m_fl32Value;
+            break;
+        case EConVarType_Float64:
+            if (mn && v->m_fl64Value < mn->m_fl64Value) v->m_fl64Value = mn->m_fl64Value;
+            if (mx && v->m_fl64Value > mx->m_fl64Value) v->m_fl64Value = mx->m_fl64Value;
+            break;
+        default: break;
+    }
+}
+
+static int s2_cvar_set(const char* name, const char* value) {
+    if (!s_pCvar || !name || !name[0] || !value) return 0;
+    ConVarRef ref = s_pCvar->FindConVar(name, false);
+    if (!ref.IsValidRef()) return 0;
+    ConVarData* data = s_pCvar->GetConVarData(ref);
+    if (!data) return 0;
+    const EConVarType ty = data->GetType();
+    CVValue_t* curr = s2_cvar_slot(data);
+    if (!curr) return 0;
+
+    CVValue_t neu{};
+    if (!s2_cvar_parse(ty, value, &neu)) return 0;
+    if (ty != EConVarType_String) s2_cvar_clamp(data, ty, &neu);
+
+    char oldBuf[512];
+    oldBuf[0] = '\0';
+    snprintf(oldBuf, sizeof(oldBuf), "%s", s2_cvar_get(name)); // current formatted value
+
+    if (ty == EConVarType_String) {
+        if (strcmp(oldBuf, value) == 0) return 1; // no-op: already that string
+        struct S2UtlPtr { char* p; };
+        auto* slot = reinterpret_cast<S2UtlPtr*>(&curr->m_StringValue);
+        char* oldp = slot->p;
+        const size_t n = strlen(value);
+        char* neu_s = static_cast<char*>(malloc(n + 1));
+        if (!neu_s) return 0;
+        memcpy(neu_s, value, n + 1);
+        slot->p = neu_s;
+        data->IncrementTimesChanged();
+        S2CvarAbs abs(ref, data);
+        s_pCvar->CallChangeCallback(ref, CSplitScreenSlot(0), curr, curr);
+        s_pCvar->CallGlobalChangeCallbacks(&abs, CSplitScreenSlot(0), value, oldBuf);
+        if (oldp) free(oldp);
+        return 1;
+    }
+
+    if (s2_cvar_equal(ty, curr, &neu)) return 1; // no-op
+    if (!s_pCvar->CallFilterCallback(ref, CSplitScreenSlot(0), &neu, curr)) return 0;
+    alignas(CVValue_t) unsigned char prevStore[sizeof(CVValue_t)];
+    memcpy(prevStore, curr, sizeof(CVValue_t));
+    memcpy(curr, &neu, sizeof(CVValue_t));
+    data->IncrementTimesChanged();
+    S2CvarAbs abs(ref, data);
+    s_pCvar->CallChangeCallback(ref, CSplitScreenSlot(0), curr, reinterpret_cast<CVValue_t*>(prevStore));
+    char newBuf[512];
+    snprintf(newBuf, sizeof(newBuf), "%s", s2_cvar_get(name));
+    s_pCvar->CallGlobalChangeCallbacks(&abs, CSplitScreenSlot(0), newBuf, oldBuf);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -4840,10 +5027,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     {
         S2HookOps hookOps{};
         hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
+        hookOps.dispatch_post = &s2script_core_dispatch_hook_post;
         S2Hook_SetOps(hookOps);
         if (!hookOps.dispatch)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
                            "declarative inbound hooks are OFF (shim/core version mismatch)\n");
+        if (!hookOps.dispatch_post)
+            META_CONPRINTF("[s2script] WARN: core exports no inbound-hook POST dispatch entry — "
+                           "onCanAcquirePost will not fire (shim/core version mismatch)\n");
     }
 
     // --- Crash reporter: identity + spool-dir push (fail-off: any miss degrades to "") ---
