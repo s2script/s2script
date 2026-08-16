@@ -1,7 +1,7 @@
 // @s2script/basecomm — SourceMod basecomm: communication control (gag/mute/silence + un-versions).
 //
 //  - GAG (chat): VERIFIED. A gagged speaker's say/say_team is suppressed server-side by returning
-//    HookResult.Handled from Chat.onMessage (the live-proven Host_Say path). Keyed by SteamID so a gag
+//    HookResult.Handled from ctx.clients.onSay (the live-proven Host_Say path). Keyed by SteamID so a gag
 //    doesn't follow a slot to a reconnecting player.
 //  - MUTE (voice): REAL. Flips Client.voiceMuted — the shim's SetClientListening rewrite silences the
 //    sender's outgoing voice for every receiver (the CSSharp/Swiftly mechanism; supersedes the old

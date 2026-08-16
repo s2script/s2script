@@ -9,13 +9,11 @@
 //! shape (a feature owns its state, natives, dispatch and teardown together).
 //!
 //! # The boundary, which is NOT the `__s2_client_*` prefix
-//! `CLIENT_CMD_SUBS`, `__s2_client_command_listen` and `dispatch_command_listeners` deliberately
-//! stayed in `v8host.rs` with the COMMANDS cluster despite the shared prefix. They implement
-//! `Commands.onClientCommand` — a listener over registered ConCommands whose semantics are defined
-//! by contrast with `CONCOMMANDS` ("a matching ConCommand supersedes; a listener observes") — and
-//! `dispatch_client_command` is a `CONCOMMANDS` lookup that calls `dispatch_concommand`. Dragging
-//! them here because they start with `client_` would have put commands code in the clients module.
-//! Prefix is a naming accident; the mux it feeds is what decides the owner.
+//! `CLIENT_CMD_SUBS`, `__s2_client_command_listen` and `dispatch_command_listeners` live in
+//! `crate::commands` despite the shared prefix. They implement `Commands.onClientCommand` — a
+//! listener over registered ConCommands whose semantics are defined by contrast with `CONCOMMANDS`
+//! ("a matching ConCommand supersedes; a listener observes"). Prefix is a naming accident; the
+//! mux it feeds is what decides the owner.
 
 use crate::v8host::{
     engine_ops, fan_out, set_native, subscribe_into, voice_clear_slot, Delivery, Instrument,
@@ -302,9 +300,8 @@ pub(crate) fn register_store() {
 
 // Per-feature tests over the SHARED in-isolate harness (`v8host::frame_tests`) — see `crate::usermsg`.
 //
-// The `Commands.onClientCommand` LISTENER tests stay in `v8host.rs` with the commands cluster, for
-// the same reason their mux did (see this module's header). `client_print_and_chat_degrade_without_ops`
-// also stays: it is a `@s2script/chat` prelude test that happens to touch `__s2_client_print`.
+// `client_print_and_chat_degrade_without_ops` stays: it is a `@s2script/chat` prelude test that
+// happens to touch `__s2_client_print`. Command/listener tests live in `crate::commands`.
 #[cfg(test)]
 mod tests {
     use super::*;

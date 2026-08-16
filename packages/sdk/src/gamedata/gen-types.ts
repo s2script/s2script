@@ -1,4 +1,6 @@
 import type { ArgKind, PluginGamedata, RetKind } from "./types.ts";
+import { emitPluginHookDts } from "../hookgen/emit-dts.ts";
+import type { GamedataHooks } from "../hookgen/model.ts";
 
 // `vector` MUST be the structural {x,y,z} shape, NOT a tuple. Core marshals a vector arg by reading
 // the `x`/`y`/`z` PROPERTIES off the JS value (core/src/v8host.rs, "vector" arm), each defaulting to
@@ -51,4 +53,9 @@ export function generateGamedataTypes(gd: PluginGamedata): string {
     "}",
     "",
   ].join("\n");
+}
+
+/** Emit `.s2script/hooks.d.ts` from the plugin's `hooks` section. Empty section → empty EngineHooks. */
+export function generateHookTypes(gd: PluginGamedata): string {
+  return emitPluginHookDts((gd.hooks ?? {}) as GamedataHooks);
 }

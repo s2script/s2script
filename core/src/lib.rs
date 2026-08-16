@@ -22,6 +22,7 @@
 // `cargo build`, and so no workflow path filter can route around it.
 #![deny(unreachable_patterns)]
 
+mod acquire;
 mod admin;
 mod async_rt;
 mod bans;
@@ -33,8 +34,10 @@ pub mod plugin;
 pub(crate) mod entity;
 pub(crate) mod liveness;
 pub(crate) mod entity_live;
+pub(crate) mod fold;
 mod channels;
 mod client;
+mod commands;
 mod events;
 mod ffi;
 mod gamedata_calls;

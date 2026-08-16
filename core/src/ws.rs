@@ -21,8 +21,8 @@ pub struct WsSignal {
 enum WsCommand {
     Send(String),
     /// JS-initiated close (`__s2_ws_close` -> `ws::close`, owner-checked): the task emits its own
-    /// `Closed` WsSignal so `onClose` fires and the drain's Closed-routing deregisters the conn
-    /// (see the signal-routing step in v8host.rs's `frame_async_drain`).
+    /// `Closed` WsSignal so `onClose` fires and `poll_signals` records a deferred drop
+    /// (`frame_async_drain` calls `drop_conn` after the microtask checkpoint).
     Close,
     /// Ledger-teardown close (`ws::drop_conn`, unconditional — plugin unload / process shutdown):
     /// closes the socket WITHOUT emitting a signal. The registry entry is already removed
@@ -266,6 +266,167 @@ pub fn drop_conn(conn_id: u64) {
 }
 pub fn try_recv_signal() -> Option<WsSignal> {
     engine().sig_rx.lock().ok()?.try_recv().ok()
+}
+
+// ---------------------------------------------------------------------------
+// V8 adapter — natives, mux, pending queue, post-drain dispatch, teardown.
+// The tokio engine above holds no V8 handles. This half owns the isolate-facing
+// surface and routes through `fan_out` so the host isolate stays in `v8host`.
+// ---------------------------------------------------------------------------
+
+use crate::v8host::{current_plugin, fan_out, log_warn, set_native, subscribe_into, Instrument};
+
+thread_local! {
+    static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
+    static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32)>>
+        = std::cell::RefCell::new(Vec::new());
+}
+
+/// Queue a post-drain fan-out. Called from `poll_signals` while HOST is borrowed.
+fn queue_event(conn_id: u64, event: &str, s: String, n: i32) {
+    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, event.to_string(), s, n)));
+}
+
+/// One drain's worth of ws signals. Connect results go back to the host so it can resolve the
+/// connect Promise (needs RESOLVERS). Events are queued here. Terminal drops are returned so the
+/// host can `drop_conn` AFTER the microtask checkpoint.
+pub(crate) struct SignalPoll {
+    pub connects: Vec<(u64, Result<(), String>)>,
+    pub drops: Vec<u64>,
+}
+
+/// Drain the engine channel. The tick only polls — it does not match Message/Errored/Closed.
+pub(crate) fn poll_signals() -> SignalPoll {
+    let mut connects = Vec::new();
+    let mut drops = Vec::new();
+    while let Some(sig) = try_recv_signal() {
+        match sig.kind {
+            WsSignalKind::Connected => connects.push((sig.conn_id, Ok(()))),
+            WsSignalKind::ConnectFailed(e) => {
+                connects.push((sig.conn_id, Err(e)));
+                drops.push(sig.conn_id);
+            }
+            WsSignalKind::Message(t) => queue_event(sig.conn_id, "message", t, 0),
+            WsSignalKind::Errored(e) => queue_event(sig.conn_id, "error", e, 0),
+            WsSignalKind::Closed(code, reason) => {
+                queue_event(sig.conn_id, "close", reason, code as i32);
+                drops.push(sig.conn_id);
+            }
+        }
+    }
+    SignalPoll { connects, drops }
+}
+
+fn ws_owner(scope: &mut v8::PinScope) -> String {
+    current_plugin(scope).unwrap_or_default()
+}
+
+fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let text = args.get(1).to_rust_string_lossy(scope);
+        let owner = ws_owner(scope);
+        if !send(id, &owner, text) {
+            log_warn(&format!(
+                "WARN: __s2_ws_send: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — the message was NOT sent"
+            ));
+        }
+    }));
+}
+
+fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 1 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let owner = ws_owner(scope);
+        if !close(id, &owner) {
+            log_warn(&format!(
+                "WARN: __s2_ws_close: '{owner}' does not own ws conn {id} (or it is already closed) \
+                 — no close was sent"
+            ));
+        }
+    }));
+}
+
+fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+        let event = args.get(1).to_rust_string_lossy(scope);
+        let owner = ws_owner(scope);
+        if !is_owner(id, &owner) {
+            log_warn(&format!(
+                "WARN: __s2_ws_on: '{owner}' does not own ws conn {id} — '{event}' handler NOT \
+                 subscribed and will never fire"
+            ));
+            return;
+        }
+        let key = format!("{id}:{event}");
+        let _ = subscribe_into(scope, &args, &WS_EVENT_MUX, &key, 2);
+    }));
+}
+
+/// Drain queued events after `frame_async_drain` (HOST free). Uses `fan_out` so the isolate
+/// stays in the host. Terminal `close` prunes every subscriber key for that conn.
+pub(crate) fn dispatch_pending_events() {
+    let pending: Vec<(u64, String, String, i32)> =
+        WS_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if pending.is_empty() { return; }
+
+    for (conn_id, event, s, n) in pending {
+        let key = format!("{conn_id}:{event}");
+        let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
+        if !snap.is_empty() {
+            let _ = fan_out(&snap, &format!("dispatch_pending_ws_events('{key}')"), Instrument::none(), |tc| {
+                if event == "close" {
+                    let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
+                    let reason_val: v8::Local<v8::Value> =
+                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
+                    Some(vec![code_val, reason_val])
+                } else {
+                    let s_val: v8::Local<v8::Value> =
+                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
+                    Some(vec![s_val])
+                }
+            });
+        }
+        if event == "close" {
+            WS_EVENT_MUX.with(|m| {
+                let mut mux = m.borrow_mut();
+                for ev in ["message", "close", "error"] {
+                    mux.remove_by_name(&format!("{conn_id}:{ev}"));
+                }
+            });
+        }
+    }
+}
+
+pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    set_native(scope, global_obj, "__s2_ws_send", s2_ws_send);
+    set_native(scope, global_obj, "__s2_ws_close", s2_ws_close);
+    set_native(scope, global_obj, "__s2_ws_on", s2_ws_on);
+}
+
+pub(crate) fn register_store() {
+    crate::owner_stores::register(
+        "WS_EVENT_MUX",
+        Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+        }),
+    );
+}
+
+pub(crate) fn register_singletons() {
+    use crate::process_singletons::ResetPhase::AfterIsolateDrop;
+    crate::process_singletons::register(
+        "WS_EVENT_PENDING", AfterIsolateDrop,
+        Box::new(|| WS_EVENT_PENDING.with(|q| q.borrow_mut().clear())),
+    );
 }
 
 #[cfg(test)]
@@ -550,5 +711,38 @@ mod tests {
             WsSignalKind::ConnectFailed(reason) => reason.contains("reserved"),
             _ => false,
         }));
+    }
+
+    /// The tick only polls. Message/Closed are queued here, not handed back as connect results;
+    /// Closed is also a deferred drop so the host can deregister after the checkpoint.
+    #[test]
+    fn poll_signals_returns_connects_and_queues_events() {
+        while try_recv_signal().is_some() {}
+        WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7701));
+        let tx = &engine().sig_tx;
+        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Connected });
+        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Message("hi".into()) });
+        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Closed(1000, "bye".into()) });
+        let p = poll_signals();
+        assert_eq!(p.connects, vec![(7701, Ok(()))]);
+        assert_eq!(p.drops, vec![7701]);
+        let pending = WS_EVENT_PENDING.with(|q| q.borrow().clone());
+        assert!(pending.iter().any(|e| e.0 == 7701 && e.1 == "message" && e.2 == "hi"));
+        assert!(pending.iter().any(|e| e.0 == 7701 && e.1 == "close" && e.2 == "bye" && e.3 == 1000));
+        WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7701));
+    }
+
+    #[test]
+    fn poll_signals_failed_connect_is_a_drop_without_an_event() {
+        while try_recv_signal().is_some() {}
+        WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7702));
+        let _ = engine().sig_tx.send(WsSignal {
+            conn_id: 7702,
+            kind: WsSignalKind::ConnectFailed("nope".into()),
+        });
+        let p = poll_signals();
+        assert_eq!(p.connects, vec![(7702, Err("nope".into()))]);
+        assert_eq!(p.drops, vec![7702]);
+        assert!(WS_EVENT_PENDING.with(|q| q.borrow().iter().all(|e| e.0 != 7702)));
     }
 }

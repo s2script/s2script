@@ -35,527 +35,10 @@ pub type HookRequestFn = extern "C" fn(descriptor: *const c_char, enable: c_int)
 
 // ---------------------------------------------------------------------------
 // Engine-ops: C-ABI function pointers the shim implements and the core calls.
-//
-// Every Slice-3 engine touchpoint is a C++ call living shim-side; the core only
-// ever sees these opaque C-ABI pointers (no Rust-side C++ vtable dispatch).  This
-// is a `#[repr(C)]` mirror of `S2EngineOps` in shim/include/s2script_core.h; the
-// two must stay in lockstep (contract, not layout — treadmill-checked).
-//
-// All fields are nullable (`Option<extern "C" fn ...>` is the null-optimized FFI
-// representation): a null field degrades the matching native to a safe miss.  Only
-// `schema_offset` is wired in Slice-3 Task 3; Tasks 4–5 fill the remaining fields.
+// Generated from core/engine-ops.jsonc (A7). The table stays ONE whole struct
+// in this module — do not split it across feature files.
 // ---------------------------------------------------------------------------
-pub type SchemaOffsetFn = extern "C" fn(cls: *const c_char, field: *const c_char) -> c_int;
-pub type EntByIndexFn = extern "C" fn(idx: c_int) -> *mut c_void;
-pub type DerefHandleFn = extern "C" fn(handle: c_uint) -> *mut c_void;
-pub type EntStateChangedFn = extern "C" fn(ent: *mut c_void, offset: c_int);
-pub type ConCommandRegisterFn = extern "C" fn(name: *const c_char);
-/// Schema enumeration callbacks + engine-op (5B.1). The shim provides `SchemaEnumerateFn`; core
-/// provides `EmitClassFn`/`EmitFieldFn` as callbacks into the `Catalog` builder. Returns c_int
-/// (NOT bool): 0 = schema not ready / error, non-zero = success.
-pub type EmitClassFn = extern "C" fn(ctx: *mut c_void, name: *const c_char, parent: *const c_char);
-pub type EmitFieldFn = extern "C" fn(
-    ctx: *mut c_void, cls: *const c_char, name: *const c_char, offset: c_int,
-    kind: *const c_char, type_name: *const c_char, inner: *const c_char, size: c_int,
-);
-pub type EmitEnumFn = extern "C" fn(
-    ctx: *mut c_void, enum_name: *const c_char, size: c_int, enumerator: *const c_char, value: i64,
-);
-pub type SchemaEnumerateFn = extern "C" fn(ctx: *mut c_void, emit_class: EmitClassFn, emit_field: EmitFieldFn, emit_enum: EmitEnumFn) -> c_int;
-
-// ---------------------------------------------------------------------------
-// Slice 5D.1: game-event engine-ops (C-ABI; T3's C header must match exactly).
-// All are nullable (Option<...>): a null field degrades to a safe miss.
-// ---------------------------------------------------------------------------
-pub type EventSubscribeFn    = extern "C" fn(name: *const c_char) -> c_int;
-pub type EventUnsubscribeFn  = extern "C" fn(name: *const c_char) -> c_int;
-pub type EventGetIntFn       = extern "C" fn(key: *const c_char) -> i32;
-pub type EventGetFloatFn     = extern "C" fn(key: *const c_char) -> f32;
-pub type EventGetBoolFn      = extern "C" fn(key: *const c_char) -> c_int;      // 0/1
-pub type EventGetStringFn    = extern "C" fn(key: *const c_char) -> *const c_char; // valid during dispatch; copy now
-pub type EventGetUint64Fn    = extern "C" fn(key: *const c_char) -> u64;
-pub type EventGetPlayerSlotFn = extern "C" fn(key: *const c_char) -> i32;       // -1 if absent
-
-// --- Slice 5D.2: engine-identity ops (C-ABI; the C header must match exactly) ---
-pub type ClientValidFn        = extern "C" fn(slot: c_int) -> c_int;
-pub type ClientUseridFn       = extern "C" fn(slot: c_int) -> i32;
-pub type ClientSignonFn       = extern "C" fn(slot: c_int) -> i32;
-pub type ClientNameFn         = extern "C" fn(slot: c_int) -> *const c_char;
-pub type ClientFindByUseridFn = extern "C" fn(userid: c_int) -> i32;
-
-// --- Slice 5D.3: event write/fire ops (C-ABI; the C header must match exactly) ---
-pub type EventSetIntFn    = extern "C" fn(key: *const c_char, value: i32);
-pub type EventSetFloatFn  = extern "C" fn(key: *const c_char, value: f32);
-pub type EventSetBoolFn   = extern "C" fn(key: *const c_char, value: c_int);
-pub type EventSetStringFn = extern "C" fn(key: *const c_char, value: *const c_char);
-pub type EventSetUint64Fn = extern "C" fn(key: *const c_char, value: u64);
-pub type EventCreateFn    = extern "C" fn(name: *const c_char) -> c_int;
-pub type EventFireFn      = extern "C" fn(dont_broadcast: c_int) -> c_int;
-// --- Slice menu: per-client event fire (C-ABI; the C header must match exactly) ---
-pub type EventFireToClientFn = extern "C" fn(slot: c_int) -> c_int;
-
-// --- Slice 5E.2: config ops (C-ABI; the C header must match exactly) ---
-pub type ConfigReadFn  = extern "C" fn(id: *const c_char) -> *const c_char;
-pub type ConfigWriteFn = extern "C" fn(id: *const c_char, content: *const c_char) -> c_int;
-
-// --- Slice 6.1: chat messaging op (C-ABI; the C header must match exactly) ---
-pub type ClientPrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
-
-// --- Slice 6.2: client SteamID op (C-ABI; the C header must match exactly) ---
-pub type ClientSteamidFn = extern "C" fn(slot: c_int) -> *const c_char;
-
-// --- Slice 6.3: client kick op (C-ABI; the C header must match exactly) ---
-pub type ClientKickFn = extern "C" fn(slot: c_int, reason: *const c_char);
-
-// --- Slice 6.4: server command + map-validity ops (C-ABI; the C header must match exactly) ---
-pub type ServerCommandFn  = extern "C" fn(cmd: *const c_char);
-pub type ServerMapValidFn = extern "C" fn(map: *const c_char) -> c_int;
-// Slice 6.6 Stage 2: read/write a field of the current CTakeDamageInfo at a schema-resolved offset.
-pub type DamageReadFloatFn  = extern "C" fn(offset: c_int) -> f32;
-pub type DamageReadIntFn    = extern "C" fn(offset: c_int) -> c_int;
-pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
-pub type DamageVictimFn     = extern "C" fn() -> c_int;   // raw victim CEntityHandle; -1 = none
-pub type CvarGetFn          = extern "C" fn(name: *const c_char) -> *const c_char;   // Slice 6.7: cvar value string
-pub type CvarSetFn          = extern "C" fn(name: *const c_char, value: *const c_char) -> c_int;
-// --- ban-reason sub-project 2: console-print + client-address ops (C-ABI; the C header must match exactly) ---
-pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
-pub type ClientAddressFn      = extern "C" fn(slot: c_int) -> *const c_char;
-// --- reservedslots+basetriggers: server-info ops (C-ABI; the C header must match exactly) ---
-pub type ServerMaxClientsFn = extern "C" fn() -> c_int;          // GetMaxClients(); 0 if unavailable
-pub type ServerMapNameFn    = extern "C" fn() -> *const c_char;  // GetMapName(); "" if unavailable
-pub type ServerGameTimeFn   = extern "C" fn() -> f32;            // GetGlobals()->curtime; 0 if unavailable
-// --- Slice DB: data-dir op (C-ABI; the C header must match exactly) ---
-pub type DbDataDirFn = extern "C" fn() -> *const c_char; // absolute path to <addon>/data, created if absent
-
-// --- Slice nominations: raw configs-dir file read/write (C-ABI; the C header must match exactly).
-// Mirrors ConfigReadFn/ConfigWriteFn but the name INCLUDES its extension (no .json append). ---
-type ConfigReadFileFn  = extern "C" fn(name: *const c_char) -> *const c_char;
-type ConfigWriteFileFn = extern "C" fn(name: *const c_char, content: *const c_char) -> i32;
-
-// --- Ray-trace slice: CNavPhysicsInterface::TraceShape (C-ABI; the C header must match exactly).
-// ENGINE-GENERIC (Source-2 physics; no CS2 names). Mirrors shim/include/s2script_core.h's
-// `S2TraceResult` / `s2_trace_shape_fn` field-for-field — the ABI is layout, not just a contract.
-// Returns 1 and fills `*out` on a completed trace; returns 0 (op unavailable / vtable unresolved)
-// leaving `*out` untouched — degrade-never-crash (the native builds a MISS TraceHit itself).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct S2TraceResult {
-    pub did_hit: c_int,
-    pub fraction: f32,
-    pub endpos: [f32; 3],
-    pub normal: [f32; 3],
-    pub all_solid: c_int,
-    pub hit_ent_handle: c_int, // GetRefEHandle().ToInt() of the hit entity, or -1
-}
-pub type TraceShapeFn = extern "C" fn(
-    start: *const f32,
-    end: *const f32,
-    mins: *const f32,
-    maxs: *const f32,
-    interacts_with: u64,
-    interacts_exclude: u64,
-    ignore_ent_idx: c_int,
-    ignore_ent_serial: c_int,
-    out: *mut S2TraceResult,
-) -> c_int;
-
-// --- Entity-creation lifecycle slice (APPENDED after trace_shape; order is the ABI). ENGINE-GENERIC:
-// create takes a className string (no CS2 semantics implied by the C ABI itself); spawn/teleport/remove
-// take the (index, serial) pair already used by every other serial-gated entity op.
-type EntityCreateFn   = extern "C" fn(*const std::os::raw::c_char) -> c_int;
-type EntitySpawnFn    = extern "C" fn(c_int, c_int) -> c_int;
-type EntityTeleportFn = extern "C" fn(c_int, c_int, *const f32, *const f32, *const f32) -> c_int;
-type EntityRemoveFn   = extern "C" fn(c_int, c_int) -> c_int;
-
-// --- Item slice (APPENDED after entity_remove; order is the ABI). ENGINE-GENERIC: the ops take
-// (idx, serial, offset(s)/index/string) — no CS2 schema/class names in the C ABI itself.
-// (A5b retired the CS2-specific give_named_item/remove_player_item members of this group; they are
-// `calls` descriptors in gamedata/cs2 now. The two survivors keep their original relative order.)
-type EntitySubobjVcallFn    = extern "C" fn(c_int, c_int, c_int, c_int, c_int, c_int) -> c_int;
-type EntityReadHandleVecFn  = extern "C" fn(c_int, c_int, *const c_int, c_int, c_int, c_int, *mut c_int) -> c_int;
-/// Entity-I/O slice: fire an entity input via AddEntityIOEvent. See the C typedef comment
-/// (shim/include/s2script_core.h) for the argument shape.
-type EntityFireInputFn = extern "C" fn(c_int, c_int, *const c_char, *const c_char, c_int, c_int, c_int, c_int, f32) -> c_int;
-
-// --- EKV slice (APPENDED after entity_fire_input; order is the ABI). ENGINE-GENERIC: keys/types/
-// values are caller-supplied parallel arrays (no CS2 semantics in the C ABI itself).
-type EntitySpawnKvFn = extern "C" fn(c_int, c_int, c_int,
-    *const *const c_char, *const c_int, *const *const c_char) -> c_int;
-
-// --- Game-rules + UserMessage slice (APPENDED after entity_spawn_kv; order is the ABI). ENGINE-GENERIC:
-// takes a designer-name string + out-buffers; no CS2 class names in the C ABI itself.
-type EntityFindByClassFn =
-    extern "C" fn(*const std::os::raw::c_char, *mut i32, *mut i32, i32) -> i32;
-
-// --- UserMessage send family (APPENDED after entity_find_by_class; order is the ABI). ENGINE-GENERIC:
-// a named protobuf message + scalar field sets by reflection cpp_type + a send to slots. No CS2 names.
-type UserMessageCreateFn    = extern "C" fn(*const std::os::raw::c_char) -> i32;
-type UserMessageSetIntFn    = extern "C" fn(*const std::os::raw::c_char, i64) -> i32;
-type UserMessageSetFloatFn  = extern "C" fn(*const std::os::raw::c_char, f64) -> i32;
-type UserMessageSetStringFn = extern "C" fn(*const std::os::raw::c_char, *const std::os::raw::c_char) -> i32;
-type UserMessageSetBoolFn   = extern "C" fn(*const std::os::raw::c_char, i32) -> i32;
-type UserMessageSendFn      = extern "C" fn(*const i32, i32) -> i32;
-
-// --- FakeConVar (APPENDED after user_message_send; order is the ABI). ENGINE-GENERIC: a plugin-owned
-// ConVar registered via ICvar::RegisterConVar. No CS2 names — a convar is a Source2 concept.
-type ConvarRegisterFn = unsafe extern "C" fn(
-    *const std::os::raw::c_char, *const std::os::raw::c_char, u64, i32,
-    *const std::os::raw::c_char, *const std::os::raw::c_char, *const std::os::raw::c_char) -> i32;
-
-// --- Translations slice (APPENDED after convar_register; order is the ABI). ENGINE-GENERIC. ---
-type TranslationsReadFn = extern "C" fn(lang: *const c_char, name: *const c_char) -> *const c_char;
-pub type ClientLanguageFn = extern "C" fn(slot: c_int) -> *const c_char;
-
-// --- Zones real-trigger slice (APPENDED after client_language; order is the ABI). ENGINE-GENERIC:
-// takes the (index, serial) pair already used by every other serial-gated entity op.
-type CollisionActivateFn = extern "C" fn(c_int, c_int) -> c_int;
-type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
-// Entity-property slice: five engine-generic setters with no usable schema-write route. Each is
-// serial-gated shim-side and returns 1 on success / 0 if the signature was unresolved or the ref is
-// stale. `impulse` is a 3-float array (the Vector travels by address).
-type EntitySetGravityScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
-type EntityApplyAbsVelocityImpulseFn = extern "C" fn(c_int, c_int, *const f32) -> c_int;
-type EntityStopSoundFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
-type EntitySetBodyGroupByNameFn =
-    extern "C" fn(c_int, c_int, *const std::os::raw::c_char, c_int) -> c_int;
-type EntitySetModelScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
-
-// --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI).
-type EntityListenerInstallFn = extern "C" fn() -> c_int;
-
-// --- entity_name slice (APPENDED after entity_listener_install; order is the ABI).
-type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
-
-// --- Sound slice (APPENDED after entity_name; order is the ABI). ENGINE-GENERIC: a soundevent
-// NAME + a recipient slot set + a resource path are Source2-generic; no CS2 names in the C ABI.
-type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
-type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
-
-// --- Usercmd primitive slice (APPENDED after sound_precache_add; order is the ABI). ENGINE-GENERIC:
-// lazily installs the (Task 3, shim-side) per-tick input-processing detour; takes no CS2 names. Task 2 owns ONLY
-// this one field (the subscribe native's lazy-install call site needs it to compile); Task 3 appends
-// the remaining usercmd_read/write/read_buttons/write_buttons/clear_subtick fields after this one.
-type UsercmdHookInstallFn = extern "C" fn() -> c_int;
-// --- Usercmd primitive slice, Task 3 (APPENDED after usercmd_hook_install; order is the ABI).
-// ENGINE-GENERIC numeric field enum (0 fwd,1 side,2 up,3 pitch,4 yaw,5 roll,6 impulse); the shim alone
-// maps it onto the Source2-shared usercmd.proto numeric fields (the engine-generic enum).
-type UsercmdReadFn         = extern "C" fn(c_int) -> f64;
-type UsercmdWriteFn        = extern "C" fn(c_int, f64);
-type UsercmdReadButtonsFn  = extern "C" fn() -> u64;
-type UsercmdWriteButtonsFn = extern "C" fn(u64);
-type UsercmdClearSubtickFn = extern "C" fn();
-// --- checktransmit slice (APPENDED after usercmd_clear_subtick; order is the ABI). ENGINE-GENERIC:
-// a serial-gated entity index + a u64 viewer-slot mask are Source2-generic; no CS2 names in the C ABI.
-/// checktransmit slice: upsert the merged visibility mask for a serial-gated entity.
-/// Returns 1 on success, 0 on a stale ref / full table / uninstalled hook / disabled descriptor.
-pub type TransmitSetFn = extern "C" fn(index: std::os::raw::c_int, serial: std::os::raw::c_int, mask: u64) -> std::os::raw::c_int;
-/// checktransmit slice: drop the entity's rule entry (1 removed, 0 absent).
-pub type TransmitClearFn = extern "C" fn(index: std::os::raw::c_int) -> std::os::raw::c_int;
-/// checktransmit slice: copy the hot-path counters into out[5] = {snapshots, entries, bitsCleared, nsLast, nsMax}.
-pub type TransmitStatsFn = extern "C" fn(out: *mut u64);
-// --- Voice-control slice (APPENDED after transmit_stats; order is the ABI).
-type VoiceSetMutedFn = extern "C" fn(c_int, c_int) -> c_int;
-type VoiceGetMutedFn = extern "C" fn(c_int) -> c_int;
-
-// UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI). ENGINE-GENERIC:
-// message NAMES and dotted field PATHS are strings, ids/slots are ints — no CS2 identifier crosses.
-type UsermsgHookSubFn        = extern "C" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int;
-type UsermsgHookUnsubFn      = extern "C" fn(c_int) -> c_int;
-type UsermsgHookReadIntFn    = extern "C" fn(*const std::os::raw::c_char, *mut i64) -> c_int;
-type UsermsgHookReadFloatFn  = extern "C" fn(*const std::os::raw::c_char, *mut f64) -> c_int;
-type UsermsgHookReadStringFn = extern "C" fn(*const std::os::raw::c_char, *mut std::os::raw::c_char, c_int) -> c_int;
-type UsermsgHookHasFieldFn   = extern "C" fn(*const std::os::raw::c_char) -> c_int;
-type UsermsgHookRecipientsFn = extern "C" fn(*mut u64) -> c_int;
-type UsermsgHookDebugFn      = extern "C" fn(*mut std::os::raw::c_char, c_int) -> c_int;
-// --- Crash-reporter slice: engine build number (C-ABI; the C header must match exactly). APPENDED after usermsg_hook_debug. ---
-pub type ServerBuildNumberFn = extern "C" fn() -> c_int;
-// --- Crash-harness (dev-only): raise a native fault on command (C-ABI; header must match) ---
-pub type CrashTestNativeFn = extern "C" fn(kind: c_int);
-// --- E1 entity-liveness slice (APPENDED after crash_test_native; order is the ABI). ENGINE-GENERIC:
-// slot-side identity-CHUNK validation — (index, engine_serial) in; instance ptr / identity flags /
-// a live-(index,serial) snapshot out. No game names cross the ABI. `ent_resolve` is the ONLY
-// pointer-yielding resolver core may use after E1 (the s2_deref_handle idiom: liveness decided in
-// system-owned chunk memory, never through the instance).
-pub type EntResolveFn       = extern "C" fn(c_int, c_int) -> *mut c_void;
-pub type EntIdentityFlagsFn = extern "C" fn(c_int, c_int) -> i64;
-/// Clear identity flag bits -> flags AFTER the write, or -1 if not live. CLEAR-ONLY.
-pub type EntIdentityFlagsClearFn = extern "C" fn(c_int, c_int, u32) -> i64;
-pub type EntSnapshotFn      = extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_int;
-
-// --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI). ENGINE-GENERIC:
-// every string crossing here (target kind, module soname, byte pattern, resolver strategy, class
-// name, the validate object) is an OPAQUE plugin-supplied string core never interprets — the same
-// discipline as `schema_offset`'s class/field, so no game identifier is compiled into core (spec §10).
-//
-// `engine_call_resolve`: resolve ONE descriptor against the live binary. Returns a call id >= 0, or
-// -1 having written a human-readable reason into `reason_out` (which core stores verbatim as that
-// descriptor's named degrade reason — spec §12).
-//
-// `validate_json` carries the descriptor's WHOLE `validate` object as serialized JSON. Core does not
-// know the validator vocabulary and must not: it is CLOSED in the shim, which is what dispatches on
-// it, so a mistyped validator degrades one descriptor by name rather than being silently dropped on
-// the way across — and a new validator is a shim + gamedata change with no core diff and no ABI move.
-pub type EngineCallResolveFn = extern "C" fn(
-    kind: *const c_char, module: *const c_char, pattern: *const c_char, resolve: *const c_char,
-    class_name: *const c_char, vtable_index: c_int, validate_json: *const c_char,
-    reason_out: *mut c_char, reason_cap: c_int) -> c_int;
-// `engine_call_invoke`: call a resolved descriptor on a serial-gated entity receiver. Args arrive
-// pre-classified into the two SysV register sequences (`gp`+`gp_kind`, `fp`) with strings/vectors
-// passed indirectly via `strs`/`vecs`; NO raw pointer crosses in either direction (an entity arg is
-// an (index, serial) pair, an entity return is a packed CEntityHandle core runs through the
-// books-gated adopt path). Returns 1 on success (`ret_out` written), 0 on a degrade (stale receiver /
-// unresolved `via` sub-object / bad arg budget) — never a crash.
-pub type EngineCallInvokeFn = extern "C" fn(
-    call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int,
-    gp: *const u64, gp_kind: *const u8, gp_count: c_int,
-    fp: *const f64, fp_count: c_int,
-    strs: *const *const c_char, vecs: *const f32,
-    ret_kind: c_int, ret_out: *mut u64) -> c_int;
-
-// --- Voice-hearability slice (APPENDED after engine_call_invoke; order is the ABI). ENGINE-GENERIC:
-// a sender slot and a u64 receiver bitmask — the shim evaluates the rule on the SetClientListening
-// hot path, so no JS/FFI runs per (receiver, sender) pair. Return convention (spec §7):
-//   voice_audible_set   1 = applied            0 = voice degraded OR sender out of range
-//   voice_audible_clear 1 = a rule was removed 0 = nothing to remove, OR degraded (both collapse to
-//                                                 "no rule is in force afterwards")
-//   voice_audible_stats out[3] = {calls, entries, rewrites}; 1 = written, 0 = null `out`
-type VoiceAudibleSetFn   = extern "C" fn(c_int, u64) -> c_int;
-type VoiceAudibleClearFn = extern "C" fn(c_int) -> c_int;
-type VoiceAudibleStatsFn = extern "C" fn(*mut u64) -> c_int;
-// --- client-command slice (APPENDED after voice_audible_stats; order is the ABI) ---
-// Both return 1 on dispatch, 0 when degraded (interface unacquired, bad slot, empty command, or a
-// CCommand that failed to tokenize) — never a silent no-op.
-pub type ClientCommandFn     = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
-pub type ClientFakeCommandFn = extern "C" fn(slot: c_int, cmd: *const c_char) -> c_int;
-// --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
-// DEV-ONLY. Fires ONE synthetic notify dispatch from inside the caller's borrow so the queue's
-// game-event path — which no natural trigger on a bot-only server can reach — executes end to end.
-// ENGINE-GENERIC by signature: the event name and every field it carries live in the shim, because
-// they are game facts. Returns 1 = deferred + queued, 0 = refused/degraded, -1 = the dispatch was
-// NOT deferred (the isolate was free, so the run proves nothing).
-pub type DeferSelftestFn = extern "C" fn() -> c_int;
-
-// --- declarative inbound hooks (APPENDED after defer_selftest; order is the ABI) ---
-// Implemented in `shim/src/engine_hooks.cpp`; kept signature-identical to the `s2_hook_install_fn` /
-// `s2_hook_arm_bypass_fn` typedefs in `shim/include/s2script_core.h`, which
-// `scripts/check-engine-ops-order.sh` gates against this struct's field order.
-//
-// `hook_install(hookId, shape, addr, reasonOut, reasonCap)` lazily detours `addr` with that hook
-// slot's own compiled thunk for `shape`: 0 = installed (or already was — it is idempotent, so core
-// may call it on every subscribe), -1 with a NAMED reason written into `reasonOut` that core stores
-// verbatim as the hook's degrade reason. `hook_arm_bypass(hookId)` arms the one-shot bypass latch
-// immediately BEFORE core invokes the hook's `bypassWith` descriptor, so our own outbound call does
-// not fire our own hook. ENGINE-GENERIC: the address arrives already resolved and the shape is an id
-// from a closed vocabulary, so no game identifier reaches core.
-//
-// `hook_disarm_bypass(hookId)` clears the latch again immediately AFTER that invoke. It is NOT
-// redundant with the thunk's one-shot take: the take only happens if the outbound call reached the
-// hooked function, and an invoke that returned early (a degraded descriptor, a stale receiver) would
-// leave the latch armed to swallow the next GENUINE engine-driven invocation — spec §10's "clear it
-// on both paths". `engine_call_address(callId)` is the resolved absolute address behind an
-// `engine_call_resolve` id (0 = unknown): a hook resolves through the same descriptor path as a call
-// but then has to patch BYTES, and `hook_install` takes an address. Core treats it as an opaque
-// token and never dereferences it.
-//
-// The five `hook_*_f32/_i32`/`hook_receiver_handle` ops are the BLOCK-SCOPED arg view: `idx` is the
-// descriptor's positional param index, and every one of them is liveness-, bounds- and class-checked
-// shim-side, returning -1 rather than reinterpreting bits. `argView` is a THUNK'S STACK FRAME and is
-// opaque here — core never dereferences it, it only hands it back.
-pub type HookInstallFn = extern "C" fn(c_int, c_int, i64, *mut c_char, c_int) -> c_int;
-pub type HookArmBypassFn = extern "C" fn(c_int);
-pub type HookDisarmBypassFn = extern "C" fn(c_int);
-pub type HookReadF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut f32) -> c_int;
-pub type HookReadI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut i32) -> c_int;
-pub type HookWriteF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, f32) -> c_int;
-pub type HookWriteI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, i32) -> c_int;
-pub type HookReceiverHandleFn = extern "C" fn(*mut std::ffi::c_void, *mut u32) -> c_int;
-pub type EngineCallAddressFn = extern "C" fn(c_int) -> i64;
-
-/// The C-ABI engine-ops table. Field ORDER is the ABI: the shim fills the matching
-/// `struct s2_engine_ops` in `shim/include/s2script_core.h`, so the two declarations must stay
-/// index-for-index identical and must change in the SAME commit.
-///
-/// **CONVENTION, amended in A5b: append-only across a release boundary, not within one.** The
-/// per-field `APPENDED after <field>` markers below record where each slice landed and still forbid
-/// *reordering* — but they never made a field immortal. Core and the shim ship in the same zip and
-/// nothing outside this repo links this table, so a slice that RETIRES an op deletes its field
-/// outright and renumbers the markers that named it. A5b did exactly that for eight CS2-specific
-/// calls (`CommitSuicide`, `ChangeTeam`, `SwitchTeam`, `TerminateRound`, `Respawn`, `SetPawn`,
-/// `GiveNamedItem`, `RemovePlayerItem`), which are now `calls` descriptors in `gamedata/cs2/` served
-/// by the generic `engine_call_resolve`/`engine_call_invoke` pair further down.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct S2EngineOps {
-    pub schema_offset: Option<SchemaOffsetFn>,
-    pub ent_by_index: Option<EntByIndexFn>, // unused since E1 (kept for ABI order)
-    pub deref_handle: Option<DerefHandleFn>, // unused since E1 (kept for ABI order)
-    pub ent_state_changed: Option<EntStateChangedFn>,
-    pub concommand_register: Option<ConCommandRegisterFn>,
-    /// Schema enumeration engine-op (5B.1): the shim walks the SchemaSystem and streams classes/fields
-    /// to core via the C-ABI emit callbacks.  Null → `__s2_schema_dump` degrades to false.
-    pub schema_enumerate: Option<SchemaEnumerateFn>,
-    // --- Slice 5D.1: game-event engine-ops (APPENDED — order is the ABI; do not reorder above) ---
-    pub event_subscribe:     Option<EventSubscribeFn>,
-    pub event_unsubscribe:   Option<EventUnsubscribeFn>,
-    pub event_get_int:       Option<EventGetIntFn>,
-    pub event_get_float:     Option<EventGetFloatFn>,
-    pub event_get_bool:      Option<EventGetBoolFn>,
-    pub event_get_string:    Option<EventGetStringFn>,
-    pub event_get_uint64:    Option<EventGetUint64Fn>,
-    pub event_get_player_slot: Option<EventGetPlayerSlotFn>,
-    // --- Slice 5D.2: engine-identity ops (APPENDED — order is the ABI; do not reorder above) ---
-    pub client_valid:          Option<ClientValidFn>,
-    pub client_userid:         Option<ClientUseridFn>,
-    pub client_signon:         Option<ClientSignonFn>,
-    pub client_name:           Option<ClientNameFn>,
-    pub client_find_by_userid: Option<ClientFindByUseridFn>,
-    // --- Slice 5D.3: event write/fire ops (APPENDED — order is the ABI; do not reorder above) ---
-    pub event_set_int:    Option<EventSetIntFn>,
-    pub event_set_float:  Option<EventSetFloatFn>,
-    pub event_set_bool:   Option<EventSetBoolFn>,
-    pub event_set_string: Option<EventSetStringFn>,
-    pub event_set_uint64: Option<EventSetUint64Fn>,
-    pub event_create:     Option<EventCreateFn>,
-    pub event_fire:       Option<EventFireFn>,
-    // --- Slice 5E.2: config ops (APPENDED after the event ops; order is the ABI; do not reorder above) ---
-    pub config_read:  Option<ConfigReadFn>,
-    pub config_write: Option<ConfigWriteFn>,
-    // --- Slice 6.1: chat messaging op (APPENDED after config ops; order is the ABI; do not reorder above) ---
-    pub client_print: Option<ClientPrintFn>,
-    // --- Slice 6.2: client SteamID op (APPENDED after client_print; order is the ABI; do not reorder above) ---
-    pub client_steamid: Option<ClientSteamidFn>,
-    // --- Slice 6.3: client kick op (APPENDED after client_steamid; order is the ABI; do not reorder above) ---
-    pub client_kick: Option<ClientKickFn>,
-    // --- Slice 6.4: server command + map-validity ops (APPENDED after client_kick; order is the ABI; do not reorder above) ---
-    pub server_command:   Option<ServerCommandFn>,
-    pub server_map_valid: Option<ServerMapValidFn>,
-    pub damage_read_float:  Option<DamageReadFloatFn>,
-    pub damage_read_int:    Option<DamageReadIntFn>,
-    pub damage_write_float: Option<DamageWriteFloatFn>,
-    pub damage_victim:      Option<DamageVictimFn>,
-    pub cvar_get:           Option<CvarGetFn>,
-    // --- ban-reason sub-project 2 (APPENDED after cvar_get; order is the ABI; do not reorder) ---
-    pub client_console_print: Option<ClientConsolePrintFn>,
-    pub client_address:       Option<ClientAddressFn>,
-    // --- reservedslots+basetriggers: server-info ops (APPENDED after client_address; order is the ABI; do not reorder above) ---
-    pub server_max_clients: Option<ServerMaxClientsFn>,
-    pub server_map_name:    Option<ServerMapNameFn>,
-    pub server_game_time:   Option<ServerGameTimeFn>,
-    // --- Slice DB: data-dir op (APPENDED after server_game_time; order is the ABI; do not reorder above) ---
-    pub db_data_dir: Option<DbDataDirFn>,
-    // --- Slice menu: per-client event fire (APPENDED after db_data_dir; order is the ABI; do not reorder above) ---
-    pub event_fire_to_client: Option<EventFireToClientFn>,
-    // --- Slice nominations: raw config-file read/write (APPENDED after event_fire_to_client; order is the ABI) ---
-    pub config_read_file:  Option<ConfigReadFileFn>,
-    pub config_write_file: Option<ConfigWriteFileFn>,
-    // --- Ray-trace slice: CNavPhysicsInterface::TraceShape (APPENDED after config_write_file; order is the ABI) ---
-    pub trace_shape: Option<TraceShapeFn>,
-    // --- Entity-creation lifecycle slice (APPENDED after trace_shape; order is the ABI; do not reorder above) ---
-    pub entity_create:   Option<EntityCreateFn>,
-    pub entity_spawn:    Option<EntitySpawnFn>,
-    pub entity_teleport: Option<EntityTeleportFn>,
-    pub entity_remove:   Option<EntityRemoveFn>,
-    // --- Item slice (APPENDED after entity_remove; order is the ABI; do not reorder above) ---
-    pub entity_subobj_vcall:       Option<EntitySubobjVcallFn>,
-    pub entity_read_handle_vector: Option<EntityReadHandleVecFn>,
-    // --- Entity-I/O slice (APPENDED after entity_read_handle_vector; order is the ABI; do not reorder above) ---
-    pub entity_fire_input: Option<EntityFireInputFn>,
-    // --- EKV slice (APPENDED after entity_fire_input; order is the ABI; do not reorder above) ---
-    pub entity_spawn_kv: Option<EntitySpawnKvFn>,
-    // --- Game-rules + UserMessage slice (APPENDED after entity_spawn_kv; order is the ABI; do not reorder above) ---
-    pub entity_find_by_class: Option<EntityFindByClassFn>,
-    // --- UserMessage send family (APPENDED after entity_find_by_class; order is the ABI; do not reorder above) ---
-    pub user_message_create:     Option<UserMessageCreateFn>,
-    pub user_message_set_int:    Option<UserMessageSetIntFn>,
-    pub user_message_set_float:  Option<UserMessageSetFloatFn>,
-    pub user_message_set_string: Option<UserMessageSetStringFn>,
-    pub user_message_set_bool:   Option<UserMessageSetBoolFn>,
-    pub user_message_send:       Option<UserMessageSendFn>,
-    // --- FakeConVar slice (APPENDED after user_message_send; order is the ABI; do not reorder above) ---
-    pub convar_register: Option<ConvarRegisterFn>,
-    // --- Translations slice (APPENDED after convar_register; order is the ABI; do not reorder above) ---
-    pub translations_read: Option<TranslationsReadFn>,
-    pub client_language:   Option<ClientLanguageFn>,
-    // --- Zones real-trigger slice (APPENDED after client_language; order is the ABI; do not reorder above) ---
-    pub collision_activate: Option<CollisionActivateFn>,
-    // --- Zones real-trigger slice (APPENDED after collision_activate; order is the ABI; do not reorder above) ---
-    pub entity_set_model: Option<EntitySetModelFn>,
-    // --- Entity lifecycle listeners slice (APPENDED after entity_set_model; order is the ABI; do not reorder above) ---
-    pub entity_listener_install: Option<EntityListenerInstallFn>,
-    // --- entity_name slice (APPENDED after entity_listener_install; order is the ABI; do not reorder above) ---
-    pub entity_name: Option<EntityNameFn>,
-    // --- Sound slice (APPENDED after entity_name; order is the ABI; do not reorder above) ---
-    pub sound_emit: Option<SoundEmitFn>,
-    pub sound_precache_add: Option<SoundPrecacheAddFn>,
-    // --- Usercmd primitive slice (APPENDED after sound_precache_add; order is the ABI; do not reorder
-    // above). Task 2 adds ONLY this field; Task 3 appends usercmd_read/write/read_buttons/
-    // write_buttons/clear_subtick after it (do not double-add usercmd_hook_install).
-    pub usercmd_hook_install: Option<UsercmdHookInstallFn>,
-    // --- Usercmd primitive slice, Task 3 (APPENDED after usercmd_hook_install; order is the ABI; do
-    // not reorder above) ---
-    pub usercmd_read:           Option<UsercmdReadFn>,
-    pub usercmd_write:          Option<UsercmdWriteFn>,
-    pub usercmd_read_buttons:   Option<UsercmdReadButtonsFn>,
-    pub usercmd_write_buttons:  Option<UsercmdWriteButtonsFn>,
-    pub usercmd_clear_subtick:  Option<UsercmdClearSubtickFn>,
-    // --- checktransmit slice (APPENDED after usercmd_clear_subtick; order is the ABI; do not reorder above) ---
-    pub transmit_set:   Option<TransmitSetFn>,
-    pub transmit_clear: Option<TransmitClearFn>,
-    pub transmit_stats: Option<TransmitStatsFn>,
-    // Voice-control slice — APPENDED after transmit_stats; order is the ABI.
-    pub voice_set_muted:        Option<VoiceSetMutedFn>,
-    pub voice_get_muted:        Option<VoiceGetMutedFn>,
-    // --- UserMessage-interception slice (APPENDED after voice_get_muted; order is the ABI; do not reorder above) ---
-    pub usermsg_hook_sub:         Option<UsermsgHookSubFn>,
-    pub usermsg_hook_unsub:       Option<UsermsgHookUnsubFn>,
-    pub usermsg_hook_read_int:    Option<UsermsgHookReadIntFn>,
-    pub usermsg_hook_read_float:  Option<UsermsgHookReadFloatFn>,
-    pub usermsg_hook_read_string: Option<UsermsgHookReadStringFn>,
-    pub usermsg_hook_has_field:   Option<UsermsgHookHasFieldFn>,
-    pub usermsg_hook_recipients:  Option<UsermsgHookRecipientsFn>,
-    pub usermsg_hook_debug:       Option<UsermsgHookDebugFn>,
-    // --- Crash-reporter slice — APPENDED after usermsg_hook_debug; order is the ABI; do not reorder above. ---
-    pub server_build_number: Option<ServerBuildNumberFn>,
-    // --- Crash-harness — APPENDED after server_build_number; order is the ABI; do not reorder above. ---
-    pub crash_test_native: Option<CrashTestNativeFn>,
-    // --- E1 entity-liveness slice (APPENDED after crash_test_native; order is the ABI; do not reorder above) ---
-    pub ent_resolve:        Option<EntResolveFn>,
-    pub ent_identity_flags: Option<EntIdentityFlagsFn>,
-    pub ent_snapshot:       Option<EntSnapshotFn>,
-    // --- Plugin-declared engine calls (APPENDED after ent_snapshot; order is the ABI; do not reorder above) ---
-    pub engine_call_resolve: Option<EngineCallResolveFn>,
-    pub engine_call_invoke:  Option<EngineCallInvokeFn>,
-    // --- Voice-hearability slice (APPENDED after engine_call_invoke; order is the ABI; do not reorder above) ---
-    pub voice_audible_set:   Option<VoiceAudibleSetFn>,
-    pub voice_audible_clear: Option<VoiceAudibleClearFn>,
-    pub voice_audible_stats: Option<VoiceAudibleStatsFn>,
-    // --- client-command slice (APPENDED after voice_audible_stats; do not reorder above) ---
-    pub client_command:      Option<ClientCommandFn>,
-    pub client_fake_command: Option<ClientFakeCommandFn>,
-    // --- identity-flag clear (APPENDED after client_fake_command; order is the ABI) ---
-    pub ent_identity_flags_clear: Option<EntIdentityFlagsClearFn>,
-    // --- deferred-dispatch selftest (APPENDED after ent_identity_flags_clear; order is the ABI) ---
-    pub defer_selftest: Option<DeferSelftestFn>,
-    // --- declarative inbound hooks (APPENDED after defer_selftest; order is the ABI) ---
-    pub hook_install: Option<HookInstallFn>,
-    pub hook_arm_bypass: Option<HookArmBypassFn>,
-    // --- declarative inbound hooks, core half (APPENDED after hook_arm_bypass; order is the ABI) ---
-    pub hook_disarm_bypass: Option<HookDisarmBypassFn>,
-    pub hook_read_f32: Option<HookReadF32Fn>,
-    pub hook_read_i32: Option<HookReadI32Fn>,
-    pub hook_write_f32: Option<HookWriteF32Fn>,
-    pub hook_write_i32: Option<HookWriteI32Fn>,
-    pub hook_receiver_handle: Option<HookReceiverHandleFn>,
-    pub engine_call_address: Option<EngineCallAddressFn>,
-    // --- Entity-property slice (APPENDED after engine_call_address; order is the ABI) ---
-    pub entity_set_gravity_scale: Option<EntitySetGravityScaleFn>,
-    pub entity_apply_abs_velocity_impulse: Option<EntityApplyAbsVelocityImpulseFn>,
-    pub entity_stop_sound: Option<EntityStopSoundFn>,
-    pub entity_set_body_group_by_name: Option<EntitySetBodyGroupByNameFn>,
-    pub entity_set_model_scale: Option<EntitySetModelScaleFn>,
-    // --- ICvar set (APPENDED after entity_set_model_scale; order is the ABI) ---
-    pub cvar_set: Option<CvarSetFn>,
-}
+include!("engine_ops.generated.rs");
 
 /// The engine-ops table as copied at init, for the modules outside `v8host` that need an op
 /// (`gamedata_calls`' resolve/invoke). `None` until `set_engine_ops` runs; a null field inside it
@@ -647,20 +130,6 @@ struct ResolverEntry {
     resolver: v8::Global<v8::PromiseResolver>,
 }
 
-/// Net (raw TCP/UDP) Task 2: a queued per-connection event awaiting post-drain fan-out (see
-/// `NET_EVENT_PENDING`/`dispatch_pending_net_events`). Carries raw binary payloads (a TCP inbound
-/// chunk or a UDP datagram + its "host:port" source), unlike ws's text-only pending tuple.
-enum PendingNetEvent {
-    /// TCP inbound chunk → `"<id>:data"` fan-out with `[Uint8Array]`.
-    Data(Vec<u8>),
-    /// UDP inbound datagram → `"<id>:message"` fan-out with `[{host,port}, Uint8Array]`; `from` is
-    /// the source `"host:port"` string.
-    Datagram { from: String, data: Vec<u8> },
-    /// Terminal → `"<id>:close"` fan-out with `[]` (then prune every key for this conn).
-    Closed,
-    /// Mid-stream error → `"<id>:error"` fan-out with `[String]`.
-    Errored(String),
-}
 
 thread_local! {
     static LOGGER: std::cell::Cell<Option<LogFn>> = std::cell::Cell::new(None);
@@ -721,20 +190,6 @@ thread_local! {
     /// `-1` miss cached before the schema was loaded).
     static SCHEMA_OFFSETS: std::cell::RefCell<crate::schema::OffsetCache> =
         std::cell::RefCell::new(crate::schema::OffsetCache::new());
-    /// `name → (owner, generation, Global<Function>)` map for registered ConCommands.  Owner-tracked
-    /// so `dispatch_concommand` runs the handler in the REGISTERING plugin's context (liveness-gated)
-    /// and `unload_plugin` can drop commands owned by the departing plugin.  The shim calls back via
-    /// `s2script_core_dispatch_concommand` (C-ABI) when a registered command fires.  Reset on
-    /// `shutdown` (BEFORE the isolate is dropped — same discipline as `RESOLVERS`).
-    static CONCOMMANDS: std::cell::RefCell<std::collections::HashMap<String, (String, u64, v8::Global<v8::Function>)>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// `name → flags` sidecar for registered ConCommands (Slice 6.16, backing `sm_help` / `Commands.list()`).
-    /// `flags` encodes the required admin bit mask: `0` = anyone, `-1` = console/server-only sentinel,
-    /// else the `ADMFLAG` bit mask (`registerAdmin`). Pure `i64` — NO V8 handles — so it need not be cleared
-    /// before the isolate drops; `__s2_commands_list` joins on live `CONCOMMANDS` keys (a stale meta entry is
-    /// ignored). Dropped per-plugin alongside `CONCOMMANDS` in `unload_plugin`, cleared on `shutdown`.
-    static COMMAND_META: std::cell::RefCell<std::collections::HashMap<String, i64>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Per-plugin `v8::Context` registry, keyed by plugin id — the multi-context path that will
     /// eventually replace the single shared `HOST.context` (Task 5 migrates the natives/dispatch
     /// onto it).  Each `Global<Context>` is stamped with a `PluginId` slot at creation.  ADDED
@@ -778,30 +233,7 @@ thread_local! {
     /// `remove_by_owner` called on unload; reset on shutdown so a re-init starts empty.
     static CONFIG_SUBS: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
-    /// Client-command listener mux: `Commands.onClientCommand(name, h)` subscribers, keyed by the
-    /// COMMAND NAME (like `EVENT_MUX`, unlike `CHAT_MSG_SUBS`'s single un-keyed list).
-    ///
-    /// This is the SourceMod `AddCommandListener` seam, and it exists because `CONCOMMANDS` cannot
-    /// serve it: registering a ConCommand the ENGINE already owns fails outright ("unable to link
-    /// multiple ConCommands named X"), so an engine command like `player_ping`, `jointeam` or `drop`
-    /// was unreachable from a plugin. The shim's ClientCommand hook already passes EVERY command
-    /// name to `dispatch_client_command`, so no shim change is needed — only somewhere to put the
-    /// listeners.
-    ///
-    /// Semantics deliberately INVERT `CONCOMMANDS`: a matching ConCommand supersedes (the engine
-    /// never sees it), whereas a listener OBSERVES and passes through unless it returns
-    /// `>= HookResult.Handled`. Superseding by default would break the very commands this exists to
-    /// observe — hooking `player_ping` would stop the ping marker from ever being placed.
-    /// `remove_by_owner` on unload; reset on shutdown.
-    static CLIENT_CMD_SUBS: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
-    /// Raw-chat subscriber mux (Slice 6.13b): `Chat.onMessage(h)` subscribers, keyed by the constant
-    /// "" (chat has no name dimension — a single un-keyed list). Same EventMux shape/discipline;
-    /// handlers receive `(slot, text, teamonly)` and may return a HookResult (>= Handled suppresses the
-    /// broadcast). The Host_Say detour is always installed, so there is no per-subscribe engine-op and
-    /// no engine-op on empty teardown. `remove_by_owner` on unload; reset on shutdown.
-    static CHAT_MSG_SUBS: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
+    // CLIENT_CMD_SUBS / CHAT_MSG_SUBS / CONCOMMANDS / COMMAND_META moved to `crate::commands`.
     // CLIENT_MUX moved to `crate::client`.
 
     /// Map-start subscribers (clientlist-fakeconvar-onmapstart slice). Fixed key "" (map-start has
@@ -816,29 +248,8 @@ thread_local! {
         = std::cell::RefCell::new(crate::channels::Channels::new());
 
     // COOKIE_CACHED_MUX / _PENDING moved to `crate::cookies`.
+    // WS_EVENT_MUX / WS_EVENT_PENDING moved to `crate::ws`.
 
-    /// WebSocket Task 2: `WebSocket.on*` subscriber mux, keyed `"<conn_id>:<event>"` (event =
-    /// "message"/"close"/"error"). Same EventMux shape/discipline as cookies::COOKIE_CACHED_MUX; fanned out
-    /// post-frame by `dispatch_pending_ws_events` (called from `ffi.rs` AFTER `frame_async_drain()`
-    /// returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
-    static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
-    /// WebSocket Task 2: `(conn_id, event, payload1, payload2)` queued during `frame_async_drain`'s
-    /// signal-routing step, fanned out post-drain (HOST free) by `dispatch_pending_ws_events`. For
-    /// "message"/"error" the 3rd tuple field is the text and the 4th is unused (0); for "close" the
-    /// 3rd is the reason and the 4th is the code.
-    static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32)>> = std::cell::RefCell::new(Vec::new());
-
-    /// Net (raw TCP/UDP) Task 2: `TcpSocket`/`UdpSocket` `on*` subscriber mux, keyed `"<conn_id>:<event>"`
-    /// (event = "data"/"message"/"close"/"error"). Same EventMux shape/discipline as `WS_EVENT_MUX`;
-    /// fanned out post-frame by `dispatch_pending_net_events` (called from `ffi.rs` AFTER
-    /// `frame_async_drain()` returns, so HOST is free). `remove_by_owner` on unload; reset on shutdown.
-    static NET_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
-    /// Net Task 2: `(conn_id, PendingNetEvent)` queued during `frame_async_drain`'s signal-routing step,
-    /// fanned out post-drain (HOST free) by `dispatch_pending_net_events`. Unlike `WS_EVENT_PENDING`'s
-    /// (String, i32) payload, net carries raw binary bytes → a dedicated `PendingNetEvent` enum.
-    static NET_EVENT_PENDING: std::cell::RefCell<Vec<(u64, PendingNetEvent)>> = std::cell::RefCell::new(Vec::new());
 
     /// Entity-I/O slice: `Entity.onOutput(classname, output, handler)` subscriber mux, keyed by the
     /// literal string `"<classname>\0<output>"` (a NUL separator — classnames/outputs never contain one).
@@ -952,6 +363,27 @@ thread_local! {
     static HOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+// Pickup-gate vote collection. Its own block: the one above is at the thread_local_inner! limit.
+thread_local! {
+    /// Called after each collapsing handler with that handler's HookResult. Used by the
+    /// return-value pickup gate to collect per-handler votes (Continue is not a vote).
+    static AFTER_HANDLER: std::cell::Cell<Option<fn(crate::multiplexer::HookResult)>> =
+        const { std::cell::Cell::new(None) };
+
+    /// Live acquire-fold session, save/restored around a nested dispatch.
+    static ACQUIRE: std::cell::RefCell<Option<AcquireSession>> =
+        const { std::cell::RefCell::new(None) };
+
+    /// Post-phase `skipped` flag, published only while `dispatch_hook_post` builds its view.
+    static HOOK_POST_SKIPPED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+struct AcquireSession {
+    view: *mut std::ffi::c_void,
+    votes: Vec<crate::acquire::AcquireVote>,
+    wrote: bool,
+}
+
 /// A registered TopMenu item. `on_select` is invoked in `owner`'s context (liveness-gated by `generation`).
 /// `seq` is a monotonic insertion index — `snapshot` sorts by it for stable, registration-order rendering.
 struct TopMenuItem {
@@ -964,63 +396,39 @@ struct TopMenuItem {
     on_select: v8::Global<v8::Function>,
 }
 
-/// checktransmit slice: per-plugin entity-visibility rules. owner -> (entindex -> rule).
+/// checktransmit slice: per-plugin entity-visibility rules.
 /// INVARIANT: all owners' entries for one index share ONE serial (enforced in s2_transmit_set —
 /// the op validates the incoming serial is the live one, so different-serial entries are stale
-/// and evicted). The shim holds only the AND-merged mask per index; this map is the policy source
-/// of truth so unload/reset can recompute the merge.
+/// and evicted). The shim holds only the AND-merged mask per index; this table is the policy
+/// source of truth so unload/reset can recompute the merge.
 #[derive(Clone, Copy)]
 struct TransmitRule { serial: i32, mask: u64 }
+impl crate::fold::AndFold for TransmitRule {
+    fn and_fold(self, other: Self) -> Self {
+        Self { serial: other.serial, mask: self.mask & other.mask }
+    }
+}
 thread_local! {
-    static TRANSMIT_RULES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<i32, TransmitRule>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static TRANSMIT_RULES: std::cell::RefCell<crate::fold::FoldTable<i32, TransmitRule>> =
+        std::cell::RefCell::new(crate::fold::FoldTable::new());
+    static VOICE_RULES: std::cell::RefCell<crate::fold::FoldTable<i32, u64>> =
+        std::cell::RefCell::new(crate::fold::FoldTable::new());
 }
 
 /// Recompute the AND-merged mask for `index` across every owner's rule and push it to the shim
 /// (transmit_set), or clear the shim entry when no rule remains (transmit_clear).
 fn transmit_recompute_and_push(index: i32) {
     let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-    let merged = TRANSMIT_RULES.with(|r| {
-        let map = r.borrow();
-        let mut acc: Option<TransmitRule> = None;
-        for rules in map.values() {
-            if let Some(rule) = rules.get(&index) {
-                acc = Some(match acc {
-                    None => *rule,
-                    Some(a) => TransmitRule { serial: rule.serial, mask: a.mask & rule.mask },
-                });
-            }
-        }
-        acc
-    });
-    match merged {
+    match TRANSMIT_RULES.with(|r| r.borrow().merged(&index)) {
         Some(rule) => { if let Some(f) = ops.transmit_set { f(index, rule.serial, rule.mask); } }
         None => { if let Some(f) = ops.transmit_clear { f(index); } }
     }
 }
 
-/// Voice-hearability slice: per-plugin rules. owner -> (senderSlot -> u64 receiver mask), bit r set
-/// = receiver r may hear sender s. The shim holds only the AND-merged mask per sender; this map is
-/// the policy source of truth so unload/reset can recompute the merge. AND means no owner can WIDEN
-/// what another owner restricted (the safe direction for a moderation-adjacent feature).
-thread_local! {
-    static VOICE_RULES: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<i32, u64>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
 /// AND-merge every owner's rule for `sender`. `None` when no owner has one — which is distinct from
 /// `Some(0)` ("audible to nobody"), the distinction `s_voiceHasRule` exists for on the shim side.
 fn voice_merged(sender: i32) -> Option<u64> {
-    VOICE_RULES.with(|r| {
-        let map = r.borrow();
-        let mut acc: Option<u64> = None;
-        for rules in map.values() {
-            if let Some(m) = rules.get(&sender) {
-                acc = Some(match acc { None => *m, Some(a) => a & *m });
-            }
-        }
-        acc
-    })
+    VOICE_RULES.with(|r| r.borrow().merged(&sender))
 }
 
 /// Recompute and push to the shim: set the merged mask, or clear when no rule remains.
@@ -1034,10 +442,7 @@ fn voice_recompute_and_push(sender: i32) {
 
 /// Unload/resetAll teardown: drop every rule `owner` holds and re-push each sender it touched.
 fn voice_remove_owner(owner: &str) {
-    let touched: Vec<i32> = VOICE_RULES.with(|r| {
-        let mut map = r.borrow_mut();
-        match map.remove(owner) { Some(rules) => rules.keys().copied().collect(), None => Vec::new() }
-    });
+    let touched = VOICE_RULES.with(|r| r.borrow_mut().remove_owner(owner));
     for s in touched { voice_recompute_and_push(s); }
 }
 
@@ -1049,14 +454,7 @@ fn voice_remove_owner(owner: &str) {
 /// in the shim; unlike `voice_remove_owner` it crosses owners, because the departing player is not
 /// any one plugin's concern.
 pub(crate) fn voice_clear_slot(sender: i32) {
-    let touched = VOICE_RULES.with(|r| {
-        let mut map = r.borrow_mut();
-        let mut any = false;
-        for rules in map.values_mut() {
-            if rules.remove(&sender).is_some() { any = true; }
-        }
-        any
-    });
+    let touched = VOICE_RULES.with(|r| r.borrow_mut().clear_key(&sender));
     if touched { voice_recompute_and_push(sender); }
 }
 
@@ -1064,7 +462,7 @@ pub(crate) fn voice_clear_slot(sender: i32) {
 fn voice_rules_clear_for_test() { VOICE_RULES.with(|r| r.borrow_mut().clear()); }
 #[cfg(test)]
 fn voice_set_rule_for_test(owner: &str, sender: i32, mask: u64) {
-    VOICE_RULES.with(|r| { r.borrow_mut().entry(owner.to_string()).or_default().insert(sender, mask); });
+    VOICE_RULES.with(|r| r.borrow_mut().insert(owner, sender, mask));
 }
 #[cfg(test)]
 fn voice_merged_for_test(sender: i32) -> Option<u64> { voice_merged(sender) }
@@ -1138,9 +536,7 @@ fn s2_scope_dispose(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
 
 /// Unload/resetAll teardown: drop every rule owned by `owner`, re-pushing each affected index.
 fn transmit_remove_owner(owner: &str) {
-    let indices: Vec<i32> = TRANSMIT_RULES.with(|r| {
-        r.borrow_mut().remove(owner).map(|m| m.keys().copied().collect()).unwrap_or_default()
-    });
+    let indices = TRANSMIT_RULES.with(|r| r.borrow_mut().remove_owner(owner));
     for i in indices { transmit_recompute_and_push(i); }
 }
 
@@ -1456,6 +852,35 @@ fn make_timer_promise<'s>(
     promise.into()
 }
 
+/// Shared helper for payload-carrying job natives (`__s2_fetch`, and any later cousin): create a
+/// `PromiseResolver`, tag it with the calling plugin, ledger it as a `Job`, stash it under a fresh
+/// async id, bump `PENDING_JOBS`, reconcile the detour, and return `(id, promise)`.
+///
+/// The caller submits work keyed by `id`; `frame_async_drain` later pops the resolver. RESOLVERS
+/// stay here — modules must not touch the map. A non-plugin / unknown owner is a safe no-op.
+pub(crate) fn begin_job_promise<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> (u64, v8::Local<'s, v8::Value>) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let id = next_async_id();
+    let owner = resolver_owner_tag(scope);
+    if let Some((ref oid, _)) = owner {
+        REGISTRY.with(|r| {
+            if let Some(l) = r.borrow_mut().ledger_mut(oid) {
+                l.record_job(id);
+            }
+        });
+    }
+    RESOLVERS.with(|m| {
+        m.borrow_mut()
+            .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
+    });
+    PENDING_JOBS.with(|c| c.set(c.get() + 1));
+    refresh_detour();
+    (id, promise.into())
+}
+
 /// Native `__s2_delay(ms) -> Promise`.  Resolves after a wall-clock deadline.
 fn s2_delay(
     scope: &mut v8::PinScope,
@@ -1611,98 +1036,6 @@ fn s2_thread_sleep(
     }));
 }
 
-/// Read `obj[name]` as a `String`, or `None` if the property is absent/`null`/`undefined` (a
-/// missing/nullish `options` field should fall back to its default, not stringify to `"undefined"`).
-fn get_str_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str) -> Option<String> {
-    let key = v8::String::new(scope, name)?;
-    let val = obj.get(scope, key.into())?;
-    if val.is_null_or_undefined() {
-        return None;
-    }
-    Some(val.to_rust_string_lossy(scope))
-}
-
-/// Native `__s2_fetch(url, options) -> Promise<rawResponse>` where `rawResponse =
-/// {status, ok, statusText, headers, body}`.  MIRRORS `s2_thread_sleep`'s resolver/ledger/pending
-/// block exactly (a `Job` resource — teardown drops its `RESOLVERS` entry before the context
-/// disposes, and a completion for an unloaded/reloaded plugin is DROPPED by the async-liveness
-/// guard in the drain step, never resolved) but hands off to `crate::http::fetch` (the
-/// process-global tokio+reqwest engine, Task 1) instead of the blocking-sleep worker pool — so the
-/// calling (main/game) thread never blocks on I/O; the request runs off-thread and the Promise
-/// resolves on a LATER `frame_async_drain` via `resolve_fetch`.
-///
-/// `options` (all optional): `method` (default `"GET"`), `headers` (a plain string→string object),
-/// `body` (a string), `timeoutMs` (default 30000). Degrade-never-crash: the whole body runs under
-/// `catch_unwind`; a malformed/absent `options` degrades to the defaults (never throws
-/// synchronously) — the actual network outcome (incl. a 4xx/5xx, which RESOLVES with `ok:false`,
-/// vs. a network/timeout error, which REJECTS) is decided later by `resolve_fetch`.
-fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let url = args.get(0).to_rust_string_lossy(scope);
-        // Parse options (defaults GET / no headers / no body / 30000ms timeout).
-        let mut method = "GET".to_string();
-        let mut headers: Vec<(String, String)> = Vec::new();
-        let mut body: Option<String> = None;
-        let mut timeout_ms = 30_000u64;
-        if let Ok(opts) = v8::Local::<v8::Object>::try_from(args.get(1)) {
-            if let Some(v) = get_str_prop(scope, opts, "method") {
-                method = v;
-            }
-            if let Some(v) = get_str_prop(scope, opts, "body") {
-                body = Some(v);
-            }
-            if let Some(k) = v8::String::new(scope, "timeoutMs") {
-                if let Some(v) = opts.get(scope, k.into()) {
-                    if v.is_number() {
-                        timeout_ms = v.integer_value(scope).unwrap_or(30_000).max(0) as u64;
-                    }
-                }
-            }
-            if let Some(k) = v8::String::new(scope, "headers") {
-                if let Some(hv) = opts.get(scope, k.into()) {
-                    if let Ok(ho) = v8::Local::<v8::Object>::try_from(hv) {
-                        if let Some(names) = ho.get_own_property_names(scope, Default::default()) {
-                            for i in 0..names.length() {
-                                let Some(key) = names.get_index(scope, i) else { continue };
-                                let Some(val) = ho.get(scope, key) else { continue };
-                                headers.push((
-                                    key.to_rust_string_lossy(scope),
-                                    val.to_rust_string_lossy(scope),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-        let id = next_async_id();
-        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
-        let owner = resolver_owner_tag(scope);
-        // Ledger this async job against the CALLING plugin (teardown authority) — a non-plugin/
-        // unknown owner is a safe no-op; no borrow held across a JS call.
-        if let Some((ref oid, _)) = owner {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
-                }
-            });
-        }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
-        crate::http::fetch(
-            id,
-            crate::http::FetchRequest { method, url, headers, body, timeout_ms },
-        );
-        refresh_detour();
-        rv.set(promise.into());
-    }));
-}
-
 // ---------------------------------------------------------------------------
 // WebSocket (client) Task 2: __s2_ws_* natives + signal routing + teardown.
 // Mirrors s2_fetch (the connect native)/resolve_fetch (-> resolve_ws_connect)/
@@ -1827,155 +1160,9 @@ fn ws_owner(scope: &mut v8::PinScope) -> String {
     current_plugin(scope).unwrap_or_default()
 }
 
-fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let text = args.get(1).to_rust_string_lossy(scope);
-        let owner = ws_owner(scope);
-        // `send` reports whether the command reached the connection's task; discarding that made a
-        // send to a dead or unowned conn indistinguishable from a delivered one.
-        if !crate::ws::send(id, &owner, text) {
-            log_warn(&format!(
-                "WARN: __s2_ws_send: '{owner}' does not own ws conn {id} (or it is already closed) \
-                 — the message was NOT sent"
-            ));
-        }
-    }));
-}
 
-/// Native `__s2_ws_close(id)`.  Owner-scoped (mirrors `s2_ws_send`); hands off to `crate::ws::close`
-/// (a non-blocking command send). No return value.
-fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let owner = ws_owner(scope);
-        if !crate::ws::close(id, &owner) {
-            log_warn(&format!(
-                "WARN: __s2_ws_close: '{owner}' does not own ws conn {id} (or it is already closed) \
-                 — no close was sent"
-            ));
-        }
-    }));
-}
 
-/// Native `__s2_ws_on(id, event, handler)` — subscribe a JS fn to a ws connection's event
-/// ("message"/"close"/"error"). MIRRORS `s2_cookie_on_cached` (owner-tracked, keyed mux) but the
-/// mux key is `"<id>:<event>"` (a connection has a name dimension, unlike cookies-cached).
-/// Owner-scoped like `s2_ws_send`/`s2_ws_close`: conn ids are small sequential integers shared
-/// across every async primitive, so WITHOUT this check any co-loaded plugin could subscribe to
-/// (and read) another plugin's inbound WebSocket traffic by guessing/enumerating conn ids — gated
-/// via `crate::ws::is_owner` (a no-op subscribe for a conn this plugin doesn't own, mirroring the
-/// `owner == owner` check `ws::send`/`ws::close` already perform).
-fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let event = args.get(1).to_rust_string_lossy(scope);
-        // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
-        // owns. Resolved here rather than inside the helper because refusal must store no row.
-        // MUST match the fallback `__s2_ws_connect` used when it registered the owner, and the one
-        // `__s2_ws_send`/`__s2_ws_close` use to check it — all four are `unwrap_or_default()`, i.e.
-        // "". This used to be `unwrap_or_else(|| "legacy")` here alone, which meant that whenever
-        // `current_plugin` could not name a plugin, `send` matched the stored owner and `on` did NOT:
-        // the socket worked and the subscription was silently discarded, so the handler never fired
-        // and nothing anywhere said why.
-        let owner = ws_owner(scope);
-        if !crate::ws::is_owner(id, &owner) {
-            // NAMED, not silent. A refused subscribe means this handler will never fire; leaving it
-            // quiet turns a wrong owner into "the network is broken", which is a much longer walk.
-            log_warn(&format!(
-                "WARN: __s2_ws_on: '{owner}' does not own ws conn {id} — '{event}' handler NOT \
-                 subscribed and will never fire"
-            ));
-            return;
-        }
-        let key = format!("{id}:{event}");
-        let _ = subscribe_into(scope, &args, &WS_EVENT_MUX, &key, 2);
-    }));
-}
 
-/// Drain `WS_EVENT_PENDING` and fan each queued `(conn_id, event, s, n)` out to the `WS_EVENT_MUX`
-/// subscribers keyed `"<conn_id>:<event>"` (WebSocket Task 2). Called from `ffi.rs`'s Post-frame
-/// branch AFTER `frame_async_drain()` returns (HOST is free). Mirrors
-/// `cookies::dispatch_pending_cached` verbatim (snapshot, `try_borrow_mut` re-entrancy guard,
-/// per-subscriber liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw),
-/// except the payload carries the event data: for "message"/"error" a single String arg `s`; for
-/// "close" two args `(Number code, String reason)` built from `(s, n)` = `(reason, code)`.
-pub(crate) fn dispatch_pending_ws_events() {
-    let pending: Vec<(u64, String, String, i32)> = WS_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if pending.is_empty() { return; }
-
-    for (conn_id, event, s, n) in pending {
-        let key = format!("{conn_id}:{event}");
-        // Phase 1: snapshot — release WS_EVENT_MUX borrow before entering any context.
-        let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
-
-        // Phase 2: enter each subscriber's context and invoke handler(...).
-        // Skipped when this (conn,event) key has no subscriber — but the terminal-close
-        // prune in Phase 3 still runs, so an onMessage-only conn is pruned on close.
-        if !snap.is_empty() { HOST.with(|h| {
-            // Re-entrancy guard (mirrors cookies::dispatch_pending_cached): expected free here (called
-            // after frame_async_drain returns), but guarded anyway per the shared discipline.
-            let Ok(mut borrow) = h.try_borrow_mut() else { return };
-            let Some(host) = borrow.as_mut() else { return };
-
-            for (owner, generation, handler_g) in &snap {
-                // Liveness check (release REGISTRY borrow before entering context).
-                if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-                // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-                let hs = &mut hs;
-                let ctx_local = v8::Local::new(hs, &g_ctx);
-                let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-                let mut tc_storage = v8::TryCatch::new(scope);
-                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-                let tc = &mut tc;
-
-                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                let func = v8::Local::new(tc, handler_g);
-                let call_result = if event == "close" {
-                    let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
-                    let reason_val: v8::Local<v8::Value> =
-                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                    func.call(tc, recv, &[code_val, reason_val])
-                } else {
-                    let s_val: v8::Local<v8::Value> =
-                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                    func.call(tc, recv, &[s_val])
-                };
-                if call_result.is_none() {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_pending_ws_events('{}'): handler '{}': {}", key, owner, msg));
-                }
-            }
-        }); }
-
-        // Phase 3: on the terminal "close" event, prune every subscriber key for this conn_id
-        // (message/close/error). conn ids are monotonic (next_async_id, never reused), so nothing
-        // ever re-subscribes these keys — without this, a reconnect-on-close loop accumulates dead
-        // EventMux entries + retained JS closure Globals for the plugin's whole uptime. Runs outside
-        // the Phase-2 empty-check so a conn with only onMessage is still pruned. Every teardown path
-        // funnels through Closed: peer close, self-close (WsCommand::Close), stream-end, and read
-        // error (ws.rs emits Closed after Errored). It runs AFTER this close's own fan-out, so any
-        // onClose handler has already been invoked from the snapshot taken above.
-        if event == "close" {
-            WS_EVENT_MUX.with(|m| {
-                let mut mux = m.borrow_mut();
-                for ev in ["message", "close", "error"] {
-                    mux.remove_by_name(&format!("{conn_id}:{ev}"));
-                }
-            });
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Net (raw TCP + UDP client sockets) Task 2: __s2_net_* natives + Uint8Array
@@ -1987,45 +1174,7 @@ pub(crate) fn dispatch_pending_ws_events() {
 // pointer NEVER crosses the boundary).
 // ---------------------------------------------------------------------------
 
-/// Read a native arg as bytes: a `Uint8Array`/any TypedArray/DataView (COPIED out via
-/// `copy_contents`) OR a `string` (UTF-8). Anything else → empty. Never hands a raw backing store to
-/// Rust: `copy_contents` writes into our own owned `Vec` — no view of V8-owned memory escapes.
-fn js_bytes_arg(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<u8> {
-    if val.is_string() {
-        return val.to_rust_string_lossy(scope).into_bytes();
-    }
-    if let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(val) {
-        let len = view.byte_length();
-        let mut buf = vec![0u8; len];
-        let n = view.copy_contents(&mut buf); // copies min(len, view) bytes into our Vec
-        buf.truncate(n);
-        return buf;
-    }
-    Vec::new()
-}
 
-/// Build a JS `Uint8Array` from bytes — a fresh COPY (`bytes.to_vec()`) into a standalone
-/// `ArrayBuffer` that V8 owns (the backing store's deleter frees the Vec). No raw pointer / borrowed
-/// slice crosses into JS. Returns `null` if the typed-array construction fails (defensive).
-fn bytes_to_uint8array<'s>(scope: &mut v8::PinScope<'s, '_>, bytes: &[u8]) -> v8::Local<'s, v8::Value> {
-    if bytes.is_empty() {
-        // A zero-length UDP datagram is a reachable input (net.rs recv_from -> Ok((0, from))
-        // -> Datagram { data: vec![] }); build a fresh 0-length Uint8Array rather than routing
-        // an empty Vec through new_backing_store_from_bytes.
-        let ab = v8::ArrayBuffer::new(scope, 0);
-        return match v8::Uint8Array::new(scope, ab, 0, 0) {
-            Some(u) => u.into(),
-            None => v8::null(scope).into(),
-        };
-    }
-    let store = v8::ArrayBuffer::new_backing_store_from_bytes(bytes.to_vec()).make_shared();
-    let ab = v8::ArrayBuffer::with_backing_store(scope, &store);
-    let len = bytes.len();
-    match v8::Uint8Array::new(scope, ab, 0, len) {
-        Some(u) => u.into(),
-        None => v8::null(scope).into(),
-    }
-}
 
 /// Native `__s2_net_tcp_connect(host, port) -> Promise<connId>`. MIRRORS `s2_ws_connect`'s
 /// resolver/`resolver_owner_tag`/ledger(`record_job` + `record_net_conn`)/`RESOLVERS`/`PENDING_JOBS`/
@@ -2128,173 +1277,10 @@ fn resolve_net_connect(host: &mut Host, entry: &ResolverEntry, id: u64, result: 
     }
 }
 
-/// Native `__s2_net_send(id, data)`. Owner-scoped (a no-op for a conn this plugin doesn't own, or an
-/// absent conn); `data` is marshalled via `js_bytes_arg` (a `Uint8Array`/TypedArray copied out, or a
-/// string as UTF-8). Hands off to `crate::net::send` (a non-blocking channel send). No return value.
-fn s2_net_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let bytes = js_bytes_arg(scope, args.get(1));
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::net::send(id, &owner, bytes);
-    }));
-}
 
-/// Native `__s2_net_send_to(id, host, port, data)` — send a UDP datagram to `host:port`. Owner-scoped
-/// like `s2_net_send`; `data` marshalled via `js_bytes_arg`. Hands off to `crate::net::send_to`.
-fn s2_net_send_to(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 4 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let dhost = args.get(1).to_rust_string_lossy(scope);
-        let port = args.get(2).number_value(scope).unwrap_or(0.0) as u16;
-        let bytes = js_bytes_arg(scope, args.get(3));
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::net::send_to(id, &owner, dhost, port, bytes);
-    }));
-}
 
-/// Native `__s2_net_close(id)`. Owner-scoped (mirrors `s2_net_send`); hands off to `crate::net::close`
-/// (a non-blocking command send that emits a terminal `Closed` signal). No return value.
-fn s2_net_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let owner = current_plugin(scope).unwrap_or_default();
-        crate::net::close(id, &owner);
-    }));
-}
 
-/// Native `__s2_net_on(id, event, handler)` — subscribe a JS fn to a net connection's event
-/// ("data"/"message"/"close"/"error"). MIRRORS `s2_ws_on` EXACTLY (owner-tracked, mux keyed
-/// `"<id>:<event>"`, gated via `crate::net::is_owner` so a co-loaded plugin can't subscribe to
-/// another plugin's inbound socket traffic by guessing conn ids).
-fn s2_net_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let event = args.get(1).to_rust_string_lossy(scope);
-        // Ownership gate BEFORE storing anything: a plugin may only subscribe to a connection it
-        // owns. Resolved here rather than inside the helper because refusal must store no row.
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        if !crate::net::is_owner(id, &owner) { return; }
-        let key = format!("{id}:{event}");
-        let _ = subscribe_into(scope, &args, &NET_EVENT_MUX, &key, 2);
-    }));
-}
 
-/// Drain `NET_EVENT_PENDING` and fan each queued `(conn_id, PendingNetEvent)` out to the
-/// `NET_EVENT_MUX` subscribers keyed `"<conn_id>:<event>"` (Net Task 2). Called from `ffi.rs`'s
-/// Post-frame branch AFTER `frame_async_drain()` returns (HOST is free). MIRRORS
-/// `dispatch_pending_ws_events` verbatim (snapshot / `try_borrow_mut` re-entrancy guard / per-sub
-/// liveness + context clone + HandleScope/ContextScope/TryCatch + WARN-on-throw + the terminal-close
-/// prune), except the payload is RAW BINARY (`bytes_to_uint8array`, a fresh V8-owned copy):
-///   - `Data(b)`            → key `"<id>:data"`,    args `[Uint8Array]`.
-///   - `Datagram{from,data}`→ key `"<id>:message"`, args `[{host,port}, Uint8Array]`.
-///   - `Errored(e)`         → key `"<id>:error"`,   args `[String]`.
-///   - `Closed`             → key `"<id>:close"`,   args `[]` + prune every key for this conn.
-pub(crate) fn dispatch_pending_net_events() {
-    let pending: Vec<(u64, PendingNetEvent)> = NET_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if pending.is_empty() { return; }
-
-    for (conn_id, ev) in pending {
-        // The event-name dimension for the mux key (also the terminal-close discriminator below).
-        let event: &str = match &ev {
-            PendingNetEvent::Data(_) => "data",
-            PendingNetEvent::Datagram { .. } => "message",
-            PendingNetEvent::Closed => "close",
-            PendingNetEvent::Errored(_) => "error",
-        };
-        let key = format!("{conn_id}:{event}");
-        // Phase 1: snapshot — release NET_EVENT_MUX borrow before entering any context.
-        let snap = NET_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
-
-        // Phase 2: enter each subscriber's context and invoke handler(...). Skipped when this
-        // (conn,event) key has no subscriber — but the Phase-3 terminal-close prune still runs.
-        if !snap.is_empty() { HOST.with(|h| {
-            // Re-entrancy guard (mirrors dispatch_pending_ws_events): expected free here (called after
-            // frame_async_drain returns), but guarded anyway per the shared discipline.
-            let Ok(mut borrow) = h.try_borrow_mut() else { return };
-            let Some(host) = borrow.as_mut() else { return };
-
-            for (owner, generation, handler_g) in &snap {
-                // Liveness check (release REGISTRY borrow before entering context).
-                if !REGISTRY.with(|r| r.borrow().is_live(owner, *generation)) { continue; }
-                // Clone the context Global out of PLUGINS (borrow released) so the handler may re-enter.
-                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone())) else { continue; };
-
-                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-                let hs = &mut hs;
-                let ctx_local = v8::Local::new(hs, &g_ctx);
-                let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-                let mut tc_storage = v8::TryCatch::new(scope);
-                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-                let tc = &mut tc;
-
-                let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                let func = v8::Local::new(tc, handler_g);
-                let call_result = match &ev {
-                    PendingNetEvent::Data(b) => {
-                        let arr = bytes_to_uint8array(tc, b);
-                        func.call(tc, recv, &[arr])
-                    }
-                    PendingNetEvent::Datagram { from, data } => {
-                        // Parse "host:port" on the LAST ':' (keeps an IPv6 host intact); a missing
-                        // port → 0. The datagram source is a plain {host, port} object.
-                        let (fhost, fport): (&str, u16) = match from.rsplit_once(':') {
-                            Some((h, p)) => (h, p.parse::<u16>().unwrap_or(0)),
-                            None => (from.as_str(), 0),
-                        };
-                        let from_obj = v8::Object::new(tc);
-                        if let Some(k) = v8::String::new(tc, "host") {
-                            let v: v8::Local<v8::Value> =
-                                v8::String::new(tc, fhost).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                            from_obj.set(tc, k.into(), v);
-                        }
-                        if let Some(k) = v8::String::new(tc, "port") {
-                            let v: v8::Local<v8::Value> = v8::Number::new(tc, fport as f64).into();
-                            from_obj.set(tc, k.into(), v);
-                        }
-                        let from_val: v8::Local<v8::Value> = from_obj.into();
-                        let arr = bytes_to_uint8array(tc, data);
-                        func.call(tc, recv, &[from_val, arr])
-                    }
-                    PendingNetEvent::Errored(e) => {
-                        let s_val: v8::Local<v8::Value> =
-                            v8::String::new(tc, e).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                        func.call(tc, recv, &[s_val])
-                    }
-                    PendingNetEvent::Closed => func.call(tc, recv, &[]),
-                };
-                if call_result.is_none() {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: dispatch_pending_net_events('{}'): handler '{}': {}", key, owner, msg));
-                }
-            }
-        }); }
-
-        // Phase 3: on the terminal "close" event, prune every subscriber key for this conn_id
-        // (data/message/error/close). conn ids are monotonic (next_async_id, never reused), so nothing
-        // ever re-subscribes these keys — without this a reconnect-on-close loop accumulates dead
-        // EventMux entries + retained JS closure Globals. Runs outside the Phase-2 empty-check so a
-        // conn with only onData is still pruned. Every teardown path funnels through Closed (peer
-        // close, self-close, stream-end, and read-error — net.rs emits Closed after Errored). It runs
-        // AFTER this close's own fan-out, so any onClose handler has already been invoked.
-        if matches!(ev, PendingNetEvent::Closed) {
-            NET_EVENT_MUX.with(|m| {
-                let mut mux = m.borrow_mut();
-                for evn in ["data", "message", "error", "close"] {
-                    mux.remove_by_name(&format!("{conn_id}:{evn}"));
-                }
-            });
-        }
-    }
-}
 
 /// Native `__s2_schema_offset(class, field) -> i32`.  Resolves a schema field's byte offset
 /// within a class via the live SchemaSystem (through the shim's `schema_offset` engine-op),
@@ -2433,245 +1419,7 @@ fn s2_handle_adopt(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
     }));
 }
 
-/// Native `__s2_concommand(name: string, fn: (slot: number, argString: string) => void, flags?: number)`.
-/// Stores the JS callback `Global<Function>` keyed by command name in `CONCOMMANDS`, records the optional
-/// admin-flag mask (`flags`, default 0) in `COMMAND_META` (backing `Commands.list()` / `sm_help`), then
-/// calls `ops.concommand_register(name)` to register the raw ConCommand engine-side (shim).
-/// Degrades (WARN) if ops/fn null; `catch_unwind`; does NOT touch `HOST`.
-fn s2_concommand(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 {
-            return;
-        }
-        let name = args.get(0).to_rust_string_lossy(scope);
-        let func_local = match v8::Local::<v8::Function>::try_from(args.get(1)) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
-        let global = v8::Global::new(scope.as_ref(), func_local);
-
-        // Store (owner, generation, Global<Function>) — owner-tracked so dispatch runs in the
-        // registering plugin's context and unload_plugin can retain-drop its commands.
-        let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        CONCOMMANDS.with(|m| m.borrow_mut().insert(name.clone(), (owner, generation, global)));
-
-        // Record the required admin-flag mask (default 0 = anyone) for `Commands.list()` / `sm_help`.
-        let flags = if args.length() >= 3 { args.get(2).integer_value(scope).unwrap_or(0) } else { 0 };
-        COMMAND_META.with(|m| m.borrow_mut().insert(name.clone(), flags));
-
-        // Register the raw ConCommand engine-side via the shim's ops table.
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else {
-            log_warn("WARN: __s2_concommand: no engine ops table");
-            return;
-        };
-        let Some(func) = ops.concommand_register else {
-            log_warn("WARN: __s2_concommand: concommand_register not wired in ops");
-            return;
-        };
-        let Ok(cname) = CString::new(name.as_str()) else { return };
-        func(cname.as_ptr());
-    }));
-}
-
-/// Where a command was invoked from — SM's *reply source*. Decides where `ctx.reply` lands.
-///
-/// Crosses into JS as the command wrapper's 3rd argument (a plain number) and is mapped back to a
-/// string in `__s2cmd_ctx`. Engine-generic: it names invocation channels, never a game concept.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(i32)]
-pub(crate) enum ReplySource {
-    /// The server console or rcon (caller slot -1). Replies go to the server console.
-    Server = 0,
-    /// A player's own developer console — the `ISource2GameClients::ClientCommand` hook.
-    Console = 1,
-    /// A `!`/`/` chat trigger — the `Host_Say` detour.
-    Chat = 2,
-}
-
-impl ReplySource {
-    /// Derive the source for the shared ConCommand trampoline, which carries only a slot: `-1` is
-    /// the server console/rcon; a player slot means a client-run ConCommand that the `ClientCommand`
-    /// hook did not already SUPERCEDE, which is still that player's console — never their chat.
-    pub(crate) fn from_slot(slot: i32) -> Self {
-        if slot < 0 { ReplySource::Server } else { ReplySource::Console }
-    }
-}
-
-/// Dispatch a ConCommand callback to the registered JS function.
-///
-/// Called from `ffi.rs`'s `s2script_core_dispatch_concommand` (C-ABI export), which the shim's
-/// ConCommand trampoline invokes when a registered command fires.
-///
-/// **Re-entrancy discipline:** borrow `CONCOMMANDS`, CLONE the `Global<Function>`, DROP the
-/// borrow — then open a `HOST` scope and call JS.  A command handler may call `__s2_concommand`
-/// again (re-enters `CONCOMMANDS.borrow_mut()`); holding the borrow across the JS call would
-/// panic.  No `CONCOMMANDS` borrow is held across the JS invocation.
-pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str, src: ReplySource) {
-    // Phase 1: clone (owner, gen, Global) out of CONCOMMANDS — release the borrow before JS.
-    // Mirrors dispatch_game_event's snapshot discipline: no CONCOMMANDS borrow held across the call.
-    let entry = CONCOMMANDS.with(|m| m.borrow().get(name).map(|(o, g, f)| (o.clone(), *g, f.clone())));
-    let Some((owner, gen, global)) = entry else { return };
-
-    // Liveness gate: skip if the registering plugin is no longer live at the captured generation.
-    if !REGISTRY.with(|r| r.borrow().is_live(&owner, gen)) { return; }
-
-    // Clone the owner's context out of PLUGINS (borrow released) so the handler may re-enter.
-    let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.context.clone())) else { return };
-
-    // `owner` is an owned String here (unlike the sibling dispatch fns' `&String` from a snapshot
-    // Vec), so the crash guard takes `&owner` — deviation from the plan's literal `owner` (compiles
-    // only via a reference; the plan's other call sites already hold a `&String`).
-    let _crash_guard = crate::crash::breadcrumb::enter_dispatch(&owner, &format!("command:{}", name));
-
-    // Phase 2: enter the OWNER's context and invoke the JS fn.
-    if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
-        let info = unsafe { &*info };
-        let mut storage = unsafe { v8::CallbackScope::new(info) };
-        let mut cs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-        let cs = &mut cs;
-        let ctx_local = v8::Local::new(cs, &g_ctx);
-        let scope = &mut v8::ContextScope::new(cs, ctx_local);
-        let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
-        let slot_val: v8::Local<v8::Value> = v8::Number::new(scope, slot as f64).into();
-        let Some(args_str) = v8::String::new(scope, args) else { return };
-        let src_val: v8::Local<v8::Value> = v8::Integer::new(scope, src as i32).into();
-        let mut tc_storage = v8::TryCatch::new(scope);
-        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-        let tc = &mut tc;
-        let func = v8::Local::new(tc, &global);
-        if func.call(tc, recv, &[slot_val, args_str.into(), src_val]).is_none() {
-            let msg = tc.exception()
-                .map(|e| e.to_rust_string_lossy(&*tc))
-                .unwrap_or_else(|| "handler threw".into());
-            log_warn(&format!("WARN: dispatch_concommand('{}'): {}", name, msg));
-            let stack = tc.stack_trace()
-                .map(|s| s.to_rust_string_lossy(&*tc))
-                .unwrap_or_default();
-            crate::crash::report_js_error(&owner, &format!("command:{}", name), &msg, &stack);
-        }
-        return;
-    }
-    HOST.with(|h| {
-        let Ok(mut borrow) = h.try_borrow_mut() else { return };
-        let Some(host) = borrow.as_mut() else { return };
-
-        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-        let hs = &mut hs;
-        let ctx_local = v8::Local::new(hs, &g_ctx);
-        let scope = &mut v8::ContextScope::new(hs, ctx_local);
-
-        let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
-        let slot_val: v8::Local<v8::Value> = v8::Number::new(scope, slot as f64).into();
-        let Some(args_str) = v8::String::new(scope, args) else { return };
-        let src_val: v8::Local<v8::Value> = v8::Integer::new(scope, src as i32).into();
-
-        let mut tc_storage = v8::TryCatch::new(scope);
-        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-        let tc = &mut tc;
-
-        let func = v8::Local::new(tc, &global);
-        if func.call(tc, recv, &[slot_val, args_str.into(), src_val]).is_none() {
-            let msg = tc.exception()
-                .map(|e| e.to_rust_string_lossy(&*tc))
-                .unwrap_or_else(|| "handler threw".into());
-            log_warn(&format!("WARN: dispatch_concommand('{}'): {}", name, msg));
-            let stack = tc.stack_trace()
-                .map(|s| s.to_rust_string_lossy(&*tc))
-                .unwrap_or_default();
-            crate::crash::report_js_error(&owner, &format!("command:{}", name), &msg, &stack);
-        }
-    });
-}
-
-/// Slice 6.11b: parse a chat line for a command trigger (`!cmd` / `/cmd`) and dispatch it.
-///
-/// Called from `ffi.rs`'s `s2script_core_dispatch_chat` (C-ABI export), which the shim's Host_Say
-/// detour invokes for every player chat message (CS2 fires no usable player_chat game event, so chat
-/// is intercepted at the Host_Say function). Reuses the ConCommand registry + `dispatch_concommand`
-/// so a chat trigger runs the SAME registered handler as the console command, in its owner context,
-/// with the speaker's slot as the caller. SM convention: `!kick` tries `kick`, then falls back to
-/// `sm_kick`. Engine-generic: it only knows names + slots, never a game type.
-///
-/// On a MATCHED command trigger, returns `silent` (suppress iff the trigger was `/`) after dispatching.
-/// Otherwise (not a trigger, empty trigger, or an unmatched trigger) the raw line is delivered to the
-/// `Chat.onMessage` subscribers (Slice 6.13b): each live subscriber gets `(slot, text, teamonly)` and a
-/// return of `>= HookResult.Handled` (2) suppresses the broadcast. No CONCOMMANDS borrow is held across
-/// `dispatch_concommand`. Engine-generic: core passes only slot/text/teamonly, never a game type.
-pub(crate) fn dispatch_chat(slot: i32, text: &str, teamonly: bool) -> bool {
-    let (silent, is_trigger) = match text.as_bytes().first() {
-        Some(b'!') => (false, true),
-        Some(b'/') => (true, true),
-        _ => (false, false),
-    };
-    if is_trigger {
-        let rest = text[1..].trim();
-        if !rest.is_empty() {
-            // Split into command name + argument string (SM: the name is the first whitespace-delimited token).
-            let (name, args) = match rest.find(char::is_whitespace) {
-                Some(i) => (rest[..i].to_string(), rest[i..].trim_start().to_string()),
-                None => (rest.to_string(), String::new()),
-            };
-            // Resolve `name`, else the SM-prefixed `sm_<name>`. Brief immutable borrow, released before dispatch.
-            let sm_name = format!("sm_{}", name);
-            let matched = CONCOMMANDS.with(|m| {
-                let map = m.borrow();
-                if map.contains_key(&name) { Some(name.clone()) }
-                else if map.contains_key(&sm_name) { Some(sm_name) }
-                else { None }
-            });
-            if let Some(cmd) = matched {
-                // Matched command → the command path, exactly as before. Never reach the subscriber loop.
-                dispatch_concommand(&cmd, slot, &args, ReplySource::Chat);
-                return silent;
-            }
-        }
-    }
-    // No !/ command matched → deliver the raw line to the Chat.onMessage subscribers.
-    dispatch_chat_message(slot, text, teamonly)
-}
-
-/// Deliver a raw chat line to the `Chat.onMessage` subscribers (Slice 6.13b). Mirrors
-/// `dispatch_game_event`: snapshot (release the mux borrow), re-entrancy guard, per-subscriber
-/// liveness + context + TryCatch. Each handler is called with `(slot, text, teamonly)`; a return of
-/// `>= HookResult.Handled` (numeric `>= 2`) sets suppress. `undefined`/non-number/throw ⇒ Continue.
-/// Returns true iff any live subscriber requested suppression of the broadcast.
-fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
-    let snap = CHAT_MSG_SUBS.with(|m| m.borrow().snapshot(""));
-    // StopAt::Handled — the DOCUMENTED exception to the ARCHITECTURE.md:78 collapse rule, preserved
-    // verbatim from the hand-rolled loop. A chat line is consumed ONCE: the menu model's "one active
-    // menu per slot" is per-ISOLATE, so a shop menu, a nominate menu and a live vote each believed
-    // they were the only one, and typing "2" picked a shop item AND a map AND cast a ballot in one
-    // keystroke. Claiming the line means nothing after sees it.
-    //
-    // NOTE this is the same shape as the damage bug fixed in this PR, and only the JUSTIFICATION
-    // differs — see the PR discussion. If chat should instead follow the standard rule, the fix is
-    // for menu/vote handlers to return `Stop` rather than `Handled`, not to change it here silently.
-    let result = fan_out_collapsing(
-        &snap,
-        "dispatch_chat: onMessage",
-        Instrument::none(),
-        StopAt::Handled,
-        |tc| {
-            Some(vec![
-                v8::Integer::new(tc, slot).into(),
-                match v8::String::new(tc, text) {
-                    Some(s) => s.into(),
-                    None => v8::undefined(tc).into(),
-                },
-                v8::Boolean::new(tc, teamonly).into(),
-            ])
-        },
-    );
-    result >= HookResult::Handled
-}
-
-/// Deliver a client-lifecycle notification to the `Clients.on*` subscribers for `event` (Clients
+/// Deliver a client-lifecycle notification to the `Clients.on*` subscribers for `event` (Clients)
 /// sub-project). Called from `ffi.rs`'s `s2script_core_dispatch_client_event` (the shim's six lifecycle
 /// hooks pass the event name + slot). Mirrors `dispatch_chat_message`: snapshot (release the mux borrow),
 /// `try_borrow_mut` re-entrancy guard, per-subscriber `is_live` + context clone + HandleScope/
@@ -2998,7 +1746,7 @@ where
             // handler with its arguments silently missing.
             let Some(args) = build_args(tc) else { continue };
             let func = v8::Local::new(tc, handler_g);
-            match func.call(tc, recv, &args) {
+            let hr = match func.call(tc, recv, &args) {
                 None => {
                     let msg = tc
                         .exception()
@@ -3012,6 +1760,7 @@ where
                             .unwrap_or_default();
                         crate::crash::report_js_error(owner, context, &msg, &stack);
                     }
+                    HookResult::Continue
                 }
                 Some(ret) if stop_at != StopAt::Never && ret.is_number() => {
                     // Out-of-range => Continue, NOT Stop. A handler returning a garbage number
@@ -3027,9 +1776,15 @@ where
                     if r > result {
                         result = r;
                     }
+                    r
                 }
-                Some(_) => {}
-            }
+                Some(_) => HookResult::Continue,
+            };
+            AFTER_HANDLER.with(|c| {
+                if let Some(f) = c.get() {
+                    f(hr);
+                }
+            });
         }
         (result, Delivery::Delivered)
     })
@@ -3135,50 +1890,7 @@ pub(crate) fn dispatch_precache() {
 
 
 
-/// Slice 6.11c: dispatch a player's CONSOLE command (from the ClientCommand hook). Unlike chat, the
-/// command name is raw (`sm_say`, not `!sm_say`), so match the EXACT registered name only — never an
-/// `sm_` fallback (that would hijack a real engine command like `say`). Returns true iff a registered
-/// command matched + was dispatched (the caller then SUPERCEDEs so the engine won't also handle it).
-pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool {
-    // Listeners are NOT run here. They are driven from the shim's `DispatchConCommand` hook, which
-    // sees every ConCommand dispatch including the engine's own; running them here as well would
-    // fire each listener twice for any command that reaches both paths.
-    let matched = CONCOMMANDS.with(|m| m.borrow().contains_key(name));
-    if matched {
-        dispatch_concommand(name, slot, args, ReplySource::Console);
-        return true;
-    }
-    false
-}
 
-/// Deliver a client command to the `Commands.onClientCommand(name, …)` listeners.
-///
-/// Mirrors `dispatch_chat_message` exactly: snapshot (releasing the mux borrow before any JS),
-/// `try_borrow_mut` re-entrancy guard, per-subscriber `is_live` + context clone +
-/// HandleScope/ContextScope/TryCatch, WARN on throw. Handlers receive `(slot, args)`; a numeric
-/// return `>= HookResult.Handled` (2) requests suppression. `undefined`/non-number/throw ⇒ Continue,
-/// so a broken listener can never silently eat a command.
-pub(crate) fn dispatch_command_listeners(slot: i32, name: &str, args: &str) -> bool {
-    let snap = CLIENT_CMD_SUBS.with(|m| m.borrow().snapshot(name));
-    // StopAt::Stop: listeners all run and their results OR together — the hand-rolled loop set
-    // `suppress` without ever breaking, which IS the standard collapse rule.
-    let result = fan_out_collapsing(
-        &snap,
-        &format!("dispatch_client_command on '{}'", name),
-        Instrument::none(),
-        StopAt::Stop,
-        |tc| {
-            Some(vec![
-                v8::Integer::new(tc, slot).into(),
-                match v8::String::new(tc, args) {
-                    Some(s) => s.into(),
-                    None => v8::undefined(tc).into(),
-                },
-            ])
-        },
-    );
-    result >= HookResult::Handled
-}
 
 
 /// Shared logging helper for named WARNs in the engine-op natives and the loader.
@@ -4004,37 +2716,8 @@ fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallba
     }));
 }
 
-/// `__s2_chat_on_message(handler)` — subscribe a JS fn to raw player chat (Slice 6.13b). Owner-tracked;
-/// the Host_Say detour is installed at Load, so no per-subscribe engine registration is needed. The
-/// handler receives `(slot, text, teamonly)` at dispatch and may return a HookResult to suppress the
-/// broadcast. Fixed mux key "" (chat has no name dimension); the "first subscriber" signal is ignored
-/// (no per-name engine-op to toggle).
-fn s2_chat_on_message(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        let Some((sub_id, _first)) = subscribe_into(scope, &args, &CHAT_MSG_SUBS, "", 0) else { return };
-        rv.set(v8::Number::new(scope, sub_id as f64).into());
-    }));
-}
 
 
-/// `__s2_client_command_listen(name, handler)` — subscribe a JS fn to a CLIENT COMMAND by name (the
-/// SourceMod `AddCommandListener` seam). Owner-tracked; the shim's ClientCommand hook is installed
-/// unconditionally at Load and already forwards every command name, so there is no per-name
-/// engine-op and no "first subscriber" signal to act on — which is precisely why this works for
-/// commands the ENGINE owns and `__s2_concommand` does not.
-///
-/// The handler receives `(slot, argString)` at dispatch and may return a HookResult; `>= Handled`
-/// suppresses the engine's own handling of that command.
-fn s2_client_command_listen(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let name = args.get(0).to_rust_string_lossy(scope);
-        if name.is_empty() { return; }
-        let Some((sub_id, _first)) = subscribe_into(scope, &args, &CLIENT_CMD_SUBS, &name, 1) else { return };
-        rv.set(v8::Number::new(scope, sub_id as f64).into());
-    }));
-}
 
 
 /// `__s2_map_start_subscribe(handler)` — subscribe a JS fn to the map-start event. Owner-tracked
@@ -4197,15 +2880,7 @@ fn s2_transmit_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         // Candidate merged mask: AND with every OTHER owner's same-serial rule on this index.
         let merged = TRANSMIT_RULES.with(|r| {
-            let map = r.borrow();
-            let mut acc = mask;
-            for (o, rules) in map.iter() {
-                if o == &owner { continue; }
-                if let Some(rule) = rules.get(&index) {
-                    if rule.serial == serial { acc &= rule.mask; }
-                }
-            }
-            acc
+            r.borrow().fold_except(&owner, &index, TransmitRule { serial, mask }, |ru| ru.serial == serial).mask
         });
         let ops = ENGINE_OPS.with(|o| o.get());
         let Some(f) = ops.and_then(|o| o.transmit_set) else { return };
@@ -4214,11 +2889,8 @@ fn s2_transmit_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
             let mut map = r.borrow_mut();
             // Evict stale (different-serial) entries on this index — the op just validated `serial`
             // is the live one, so any other serial in this slot belongs to a dead entity.
-            for rules in map.values_mut() {
-                let stale = rules.get(&index).map_or(false, |ru| ru.serial != serial);
-                if stale { rules.remove(&index); }
-            }
-            map.entry(owner).or_default().insert(index, TransmitRule { serial, mask });
+            map.evict_at(&index, |ru| ru.serial != serial);
+            map.insert(owner, index, TransmitRule { serial, mask });
         });
         rv.set_bool(true);
     }));
@@ -4234,11 +2906,8 @@ fn s2_transmit_reset(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let removed = TRANSMIT_RULES.with(|r| {
             let mut map = r.borrow_mut();
-            match map.get_mut(&owner) {
-                Some(rules) if rules.get(&index).map_or(false, |ru| ru.serial == serial) => {
-                    rules.remove(&index);
-                    true
-                }
+            match map.get(&owner, &index) {
+                Some(ru) if ru.serial == serial => { map.remove(&owner, &index); true }
                 _ => false,
             }
         });
@@ -4296,22 +2965,14 @@ fn s2_voice_audible_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
         }
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         // Candidate merged mask: AND this rule with every OTHER owner's rule for the same sender.
-        let merged = VOICE_RULES.with(|r| {
-            let map = r.borrow();
-            let mut acc = mask;
-            for (o, rules) in map.iter() {
-                if o == &owner { continue; }
-                if let Some(m) = rules.get(&sender) { acc &= *m; }
-            }
-            acc
-        });
+        let merged = VOICE_RULES.with(|r| r.borrow().fold_except(&owner, &sender, mask, |_| true));
         // PUSH FIRST, PERSIST ONLY ON SUCCESS — the s2_transmit_set ordering. Inserting before the
         // push would leave core holding a rule the shim rejected (e.g. voice degraded), so the two
         // would disagree and a later unrelated recompute would silently apply a phantom rule.
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.voice_audible_set else { return };
         if f(sender, merged) == 0 { return; }
-        VOICE_RULES.with(|r| { r.borrow_mut().entry(owner).or_default().insert(sender, mask); });
+        VOICE_RULES.with(|r| r.borrow_mut().insert(owner, sender, mask));
         rv.set_bool(true);
     }));
 }
@@ -4324,10 +2985,7 @@ fn s2_voice_audible_clear(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let sender = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
         if !(0..64).contains(&sender) { return; }
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let removed = VOICE_RULES.with(|r| {
-            let mut map = r.borrow_mut();
-            map.get_mut(&owner).map(|rules| rules.remove(&sender).is_some()).unwrap_or(false)
-        });
+        let removed = VOICE_RULES.with(|r| r.borrow_mut().remove(&owner, &sender).is_some());
         if removed { voice_recompute_and_push(sender); }
         rv.set_bool(removed);
     }));
@@ -4375,26 +3033,6 @@ fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgument
     }));
 }
 
-/// `__s2_commands_list() -> string` — JSON array of `{name, flags}` for `Commands.list()` / `sm_help`.
-/// Joins on live `CONCOMMANDS` keys (a stale `COMMAND_META` entry is ignored); `flags` defaults to 0 if a
-/// command has no meta entry. Degrades to `"[]"` on any error (`catch_unwind`).
-fn s2_commands_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let items: Vec<serde_json::Value> = CONCOMMANDS.with(|c| {
-            COMMAND_META.with(|meta| {
-                let meta = meta.borrow();
-                c.borrow().keys()
-                    .map(|name| serde_json::json!({
-                        "name": name,
-                        "flags": meta.get(name).copied().unwrap_or(0),
-                    }))
-                    .collect()
-            })
-        });
-        let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
-        if let Some(js) = v8::String::new(scope, &json) { rv.set(js.into()); }
-    }));
-}
 
 /// `__s2_topmenu_add_category(name)` — append a category if absent (order = insertion; deduped).
 fn s2_topmenu_add_category(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
@@ -5633,6 +4271,13 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
                     idx
                 )),
             );
+        } else {
+            // A successful write during an acquire session is a vote-eligible `result` write.
+            ACQUIRE.with(|a| {
+                if let Some(s) = a.borrow_mut().as_mut() {
+                    s.wrote = true;
+                }
+            });
         }
     }));
 }
@@ -5665,7 +4310,8 @@ fn build_hook_view<'s>(
             v8::Function::builder(s2_hook_param_get).data(data).build(tc)?.into();
         // No setter at all for a read-only param — `undefined` is how V8 spells "accessor with no
         // setter", which makes an assignment throw under strict mode instead of silently vanishing.
-        let setter: v8::Local<v8::Value> = if plan.writable[i] {
+        let post = HOOK_POST_SKIPPED.with(|c| c.get().is_some());
+        let setter: v8::Local<v8::Value> = if plan.writable[i] && !post {
             v8::Function::builder(s2_hook_param_set).data(data).build(tc)?.into()
         } else {
             v8::undefined(tc).into()
@@ -5705,6 +4351,11 @@ fn build_hook_view<'s>(
         };
         obj.set(tc, key.into(), ent);
     }
+    if let Some(skipped) = HOOK_POST_SKIPPED.with(|c| c.get()) {
+        let key = v8::String::new(tc, "skipped")?;
+        let val: v8::Local<v8::Value> = v8::Boolean::new(tc, skipped).into();
+        obj.set(tc, key.into(), val);
+    }
     Some(vec![obj.into()])
 }
 
@@ -5728,6 +4379,52 @@ fn s2_hook_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut
         let name = args.get(1).to_rust_string_lossy(scope);
         let key = hook_key(&owner, &name);
         let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 2) else { return };
+        if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
+            log_warn(&format!(
+                "WARN: hook_on('{}', '{}'): the detour is not installed, so this handler will not \
+                 fire: {}",
+                owner, name, reason
+            ));
+        }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// `__s2_engine_hook_ready(hookName) -> boolean`. True iff this plugin's descriptor passed every
+/// load-time gate. The owner is the calling context — JS cannot name another plugin.
+fn s2_engine_hook_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 1 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        rv.set_bool(crate::gamedata_hooks::status(&pid, &name) == "available");
+    }));
+}
+
+/// `__s2_engine_hook_status(hookName) -> string`. `"available"`, or the named degrade reason.
+fn s2_engine_hook_status(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(s) = v8::String::new(scope, "unavailable") { rv.set(s.into()); }
+        if args.length() < 1 { return; }
+        let Some(pid) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let status = crate::gamedata_hooks::status(&pid, &name);
+        if let Some(s) = v8::String::new(scope, &status) { rv.set(s.into()); }
+    }));
+}
+
+/// `__s2_engine_hook_on(hookName, handler)` — subscribe this plugin to one of ITS OWN declared
+/// hooks. Same body as `__s2_hook_on`, but the owner is the calling context, never an argument,
+/// so a plugin cannot attach to another owner's detour through `Engine.hook`.
+fn s2_engine_hook_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 2 { return; }
+        let Some(owner) = current_plugin(scope) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        let key = hook_key(&owner, &name);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 1) else { return };
         if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
             log_warn(&format!(
                 "WARN: hook_on('{}', '{}'): the detour is not installed, so this handler will not \
@@ -5794,11 +4491,46 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
             epoch,
         })
     });
+    let is_acquire = plan.shape == 3; // this_i64_i32_i64 — see gamedata_hooks::SHAPES
+    let prev_acq = if is_acquire {
+        ACQUIRE.with(|a| {
+            a.borrow_mut().replace(AcquireSession {
+                view: arg_view,
+                votes: Vec::new(),
+                wrote: false,
+            })
+        })
+    } else {
+        None
+    };
+    let prev_after = if is_acquire {
+        AFTER_HANDLER.with(|c| c.replace(Some(acquire_after_handler)))
+    } else {
+        None
+    };
     let label = format!("dispatch_hook('{}.{}')", owner, name);
     let (result, delivery) =
         fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
             build_hook_view(tc, &plan, arg_view, epoch)
         });
+    if is_acquire {
+        AFTER_HANDLER.with(|c| c.set(prev_after));
+        let session = ACQUIRE.with(|a| {
+            let cur = a.borrow_mut().take();
+            *a.borrow_mut() = prev_acq;
+            cur
+        });
+        if let Some(mut session) = session {
+            crate::acquire::order_votes(&mut session.votes);
+            let (folded, _) = crate::acquire::fold_acquire(&session.votes, None);
+            if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
+                if let Some(w) = ops.hook_write_i32 {
+                    let _ = w(arg_view, 1, folded);
+                    let _ = w(arg_view, 2, if session.votes.is_empty() { 0 } else { 1 });
+                }
+            }
+        }
+    }
     ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
     // Nothing ran. The `Continue` above is still the right answer for the thunk (never a replay —
     // the frame is gone), but the skip is now NAMED instead of silent, and rate-limited to once per
@@ -5807,6 +4539,138 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
         crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
     }
     result as i32
+}
+
+fn acquire_after_handler(hr: HookResult) {
+    ACQUIRE.with(|a| {
+        let mut slot = a.borrow_mut();
+        let Some(s) = slot.as_mut() else { return };
+        let result = hook_param_read(s.view, 1).map(|(v, _)| v as i32).unwrap_or(0);
+        match hr {
+            HookResult::Continue => {
+                s.wrote = false;
+            }
+            HookResult::Changed => {
+                s.votes.push(crate::acquire::AcquireVote { result, skip_original: false });
+                s.wrote = false;
+            }
+            HookResult::Handled | HookResult::Stop => {
+                let r = if s.wrote { result } else { crate::acquire::ACQUIRE_IMPLICIT_DENY };
+                s.votes.push(crate::acquire::AcquireVote { result: r, skip_original: true });
+                s.wrote = false;
+            }
+        }
+    });
+}
+
+/// Post-phase spectator mux. Readonly view. `HookResult` ignored. Always runs if subscribed,
+/// including after a Pre skip (`skipped: true`).
+pub(crate) fn dispatch_hook_post(hook_id: i32, arg_view: *mut std::ffi::c_void, skipped: bool) -> i32 {
+    let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
+    let Some(plan) = crate::gamedata_hooks::plan(&owner, &name) else { return 0 };
+    let snap = HOOK_MUX.with(|m| m.borrow().snapshot(&hook_key_post(&owner, &name)));
+    if snap.is_empty() {
+        return 0;
+    }
+    let epoch = HOOK_EPOCH.with(|e| {
+        let next = e.get().wrapping_add(1);
+        e.set(next);
+        next
+    });
+    let prev = ACTIVE_HOOK.with(|a| {
+        a.borrow_mut().replace(ActiveHook {
+            view: arg_view,
+            owner: owner.clone(),
+            name: name.clone(),
+            epoch,
+        })
+    });
+    let prev_skipped = HOOK_POST_SKIPPED.with(|c| c.replace(Some(skipped)));
+    let label = format!("dispatch_hook_post('{}.{}')", owner, name);
+    let (_, delivery) = fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Never, |tc| {
+        build_hook_view(tc, &plan, arg_view, epoch)
+    });
+    HOOK_POST_SKIPPED.with(|c| c.set(prev_skipped));
+    ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
+    if delivery == Delivery::Deferred {
+        crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
+    }
+    0
+}
+
+fn hook_key_post(owner: &str, name: &str) -> String {
+    format!("{}\u{0}{}\u{0}post", owner, name)
+}
+
+/// `__s2_hook_on_post(owner, hookName, handler)` — subscribe to the Post spectator of a declared hook.
+fn s2_hook_on_post(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_double(0.0);
+        if args.length() < 3 {
+            return;
+        }
+        let owner = hook_owner_id(&args.get(0).to_rust_string_lossy(scope));
+        let name = args.get(1).to_rust_string_lossy(scope);
+        let key = hook_key_post(&owner, &name);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 2) else { return };
+        if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
+            log_warn(&format!(
+                "WARN: hook_on_post('{}', '{}'): the detour is not installed, so this handler will not \
+                 fire: {}",
+                owner, name, reason
+            ));
+        }
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
+/// `__s2_hook_q_u16(qslot, class, field)` — u16 at the live view's q[qslot] + schema offset.
+/// Game package supplies the class/field names; the pointer never crosses to JS.
+fn s2_hook_q_u16(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_undefined();
+        let Some((view, _, _, _)) = active_hook() else { return };
+        if args.length() < 3 {
+            return;
+        }
+        let qslot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let class = args.get(1).to_rust_string_lossy(scope);
+        let field = args.get(2).to_rust_string_lossy(scope);
+        let off = schema_offset_cached(&class, &field);
+        if off < 0 {
+            return;
+        }
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.hook_read_u16_at_q else { return };
+        let mut out: u16 = 0;
+        if f(view, qslot, off, &mut out) != 0 {
+            return;
+        }
+        rv.set_uint32(out as u32);
+    }));
+}
+
+/// `__s2_hook_self_matches(entityRef, offset)` — does this live entity's pointer-at-offset equal
+/// the detour `this`? Used by the game package to hop a services sub-object back to its pawn.
+fn s2_hook_self_matches(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((view, _, _, _)) = active_hook() else { return };
+        if args.length() < 2 {
+            return;
+        }
+        let packed = pack_entity_arg(scope, args.get(0));
+        const NO_ENTITY: u64 = 0xffff_ffff_ffff_ffff;
+        if packed == NO_ENTITY {
+            return;
+        }
+        let index = (packed >> 32) as i32;
+        let serial = packed as u32 as i32;
+        let offset = args.get(1).int32_value(scope).unwrap_or(-1);
+        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
+        let Some(f) = ops.hook_self_matches_field else { return };
+        rv.set_bool(f(view, index, serial, offset) == 1);
+    }));
 }
 
 
@@ -6037,8 +4901,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     crate::entity::install_natives(scope, global_obj);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     set_native(scope, global_obj, "__s2_handle_adopt", s2_handle_adopt);
-    // ConCommand registration.
-    set_native(scope, global_obj, "__s2_concommand", s2_concommand);
+    crate::commands::install_natives(scope, global_obj);
     // Schema dump (5B.1): drives the shim's schema_enumerate op into a Catalog and writes JSON.
     set_native(scope, global_obj, "__s2_schema_dump", s2_schema_dump);
     // Per-context identity probe + the CJS require shim.
@@ -6078,10 +4941,6 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Event write/fire (Slice 5D.3): pre-subscribe/unsubscribe + setters + create/fire.
     // Config live-reload (Slice 5E.2): register an onChange handler for this plugin's config file.
     set_native(scope, global_obj, "__s2_config_on_change", s2_config_on_change);
-    // Chat messaging (Slice 6.1): print a message to one client's chat.
-    // Raw-chat subscriber (Slice 6.13b): register a Chat.onMessage handler.
-    set_native(scope, global_obj, "__s2_chat_on_message", s2_chat_on_message);
-    set_native(scope, global_obj, "__s2_client_command_listen", s2_client_command_listen);
     // Client-lifecycle subscriber (Clients sub-project): register a Clients.on* handler.
     // Map-start subscriber (clientlist-fakeconvar-onmapstart slice): register a Server.onMapStart handler.
     set_native(scope, global_obj, "__s2_map_start_subscribe", s2_map_start_subscribe);
@@ -6116,7 +4975,6 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_usercmd_write_buttons", s2_usercmd_write_buttons);
     set_native(scope, global_obj, "__s2_usercmd_clear_subtick", s2_usercmd_clear_subtick);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
-    set_native(scope, global_obj, "__s2_commands_list", s2_commands_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
     set_native(scope, global_obj, "__s2_plugin_reload", s2_plugin_reload);
     set_native(scope, global_obj, "__s2_plugin_load", s2_plugin_load);
@@ -6143,19 +5001,14 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_db_remote_execute", s2_db_remote_execute);
     set_native(scope, global_obj, "__s2_db_remote_close", s2_db_remote_close);
     // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
-    set_native(scope, global_obj, "__s2_fetch", s2_fetch);
+    crate::http::install_natives(scope, global_obj);
     // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
     set_native(scope, global_obj, "__s2_ws_connect", s2_ws_connect);
-    set_native(scope, global_obj, "__s2_ws_send", s2_ws_send);
-    set_native(scope, global_obj, "__s2_ws_close", s2_ws_close);
-    set_native(scope, global_obj, "__s2_ws_on", s2_ws_on);
+    crate::ws::install_natives(scope, global_obj);
     // Net Task 2: raw TCP/UDP client sockets over the process-global tokio engine (core/src/net.rs).
     set_native(scope, global_obj, "__s2_net_tcp_connect", s2_net_tcp_connect);
     set_native(scope, global_obj, "__s2_net_udp_bind", s2_net_udp_bind);
-    set_native(scope, global_obj, "__s2_net_send", s2_net_send);
-    set_native(scope, global_obj, "__s2_net_send_to", s2_net_send_to);
-    set_native(scope, global_obj, "__s2_net_close", s2_net_close);
-    set_native(scope, global_obj, "__s2_net_on", s2_net_on);
+    crate::net::install_natives(scope, global_obj);
     // TopMenu registry (adminmenu framework): owner-tracked categories/items + post-drain select dispatch.
     set_native(scope, global_obj, "__s2_topmenu_add_category", s2_topmenu_add_category);
     set_native(scope, global_obj, "__s2_topmenu_add_item", s2_topmenu_add_item);
@@ -6218,10 +5071,18 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_game_call_receiverless", s2_game_call_receiverless);
     set_native(scope, global_obj, "__s2_game_call_status", s2_game_call_status);
     set_native(scope, global_obj, "__s2_game_call_invoke", s2_game_call_invoke);
-    // Declarative inbound hooks: the ONE native the generated `ctx` namespaces call. There is no
-    // registration native here either — core registers hook descriptors itself from the same packed
+    // Declarative inbound hooks: `__s2_hook_on` is the game-package subscribe (owner is the first
+    // argument, remapped to the reserved owner id). `__s2_engine_hook_*` is the plugin path —
+    // owner is the calling context, never an argument — so `Engine.hook` cannot name another plugin.
+    // There is no registration native: core registers hook descriptors itself from the packed
     // gamedata, so JS can never declare a detour, only subscribe to a declared one.
     set_native(scope, global_obj, "__s2_hook_on", s2_hook_on);
+    set_native(scope, global_obj, "__s2_engine_hook_ready", s2_engine_hook_ready);
+    set_native(scope, global_obj, "__s2_engine_hook_status", s2_engine_hook_status);
+    set_native(scope, global_obj, "__s2_engine_hook_on", s2_engine_hook_on);
+    set_native(scope, global_obj, "__s2_hook_on_post", s2_hook_on_post);
+    set_native(scope, global_obj, "__s2_hook_q_u16", s2_hook_q_u16);
+    set_native(scope, global_obj, "__s2_hook_self_matches", s2_hook_self_matches);
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -6267,6 +5128,12 @@ pub(crate) fn current_plugin(scope: &mut v8::PinScope) -> Option<String> {
         .get_current_context()
         .get_slot::<PluginId>()
         .map(|p| p.0.clone())
+}
+
+/// The REGISTERING plugin's generation, for owner-tracked stores that live outside this module.
+/// `0` when `id` is not a live plugin context (the shared HOST / `"legacy"` path).
+pub(crate) fn plugin_generation(id: &str) -> u64 {
+    PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.generation)).unwrap_or(0)
 }
 
 /// Isolate-wide promise-reject callback (registered once in `init`). Runs inside V8 while our
@@ -8003,86 +6870,30 @@ pub(crate) fn frame_async_drain() {
             PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
             resolve_db(host, &entry, c.result);
         }
-        // Route completed ws signals (WebSocket Task 2, over core/src/ws.rs's tokio+tungstenite
-        // engine). ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect
-        // Promise INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then`
-        // continuation — which subscribes onMessage — runs THIS frame); Message/Errored/Closed are
-        // queued into WS_EVENT_PENDING and fanned out separately, AFTER this whole drain returns
-        // (dispatch_pending_ws_events, called from ffi.rs, HOST free) — never before the checkpoint.
-        // Deregistering a conn is DEFERRED past the microtask checkpoint below, and that ordering is
-        // load-bearing. `Connected` resolves the connect Promise here, but the plugin's `.then` — the
-        // continuation that calls onMessage/onClose/send — does not run until the checkpoint. If a
-        // terminal signal for the SAME conn is in this batch (a server that dies right after the
-        // handshake sends Connected then Closed(1006)), dropping it here removes it from `conns`
-        // before that continuation runs, so its subscribe fails the ownership gate and its close
-        // event fans out to nobody. The plugin is then left with a Promise that resolved onto a
-        // connection it can neither use nor be told about.
-        let mut deferred_ws_drops: Vec<u64> = Vec::new();
-        let mut deferred_net_drops: Vec<u64> = Vec::new();
-        while let Some(sig) = crate::ws::try_recv_signal() {
-            match sig.kind {
-                crate::ws::WsSignalKind::Connected => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_ws_connect(host, &entry, sig.conn_id, Ok(()));
-                    }
-                }
-                crate::ws::WsSignalKind::ConnectFailed(e) => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_ws_connect(host, &entry, sig.conn_id, Err(e));
-                    }
-                    deferred_ws_drops.push(sig.conn_id);
-                }
-                crate::ws::WsSignalKind::Message(t) => {
-                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "message".into(), t, 0)));
-                }
-                crate::ws::WsSignalKind::Errored(e) => {
-                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "error".into(), e, 0)));
-                }
-                crate::ws::WsSignalKind::Closed(code, reason) => {
-                    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, "close".into(), reason, code as i32)));
-                    deferred_ws_drops.push(sig.conn_id);
-                    // (mux subscribers for this conn are cleaned up when the plugin unloads; a closed
-                    // conn's stale subscribers simply never fire again — acceptable.)
-                }
+        // Poll ws/net. The tick only polls: each module matches its own signal kinds, queues
+        // events internally, and hands back connect results + deferred drops.
+        //
+        // ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect Promise
+        // INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then` —
+        // which subscribes onMessage — runs THIS frame). Events fan out AFTER this drain returns
+        // (`dispatch_pending_*`, HOST free). Deregistering a conn is DEFERRED past the checkpoint.
+        // `Connected` resolves the connect Promise here, but the plugin's `.then` does not run
+        // until the checkpoint. If a terminal signal for the SAME conn is in this batch (a server
+        // that dies right after the handshake sends Connected then Closed(1006)), dropping it here
+        // removes it from `conns` before that continuation runs, so its subscribe fails the
+        // ownership gate and its close event fans out to nobody.
+        let ws = crate::ws::poll_signals();
+        for (id, result) in ws.connects {
+            if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
+                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+                resolve_ws_connect(host, &entry, id, result);
             }
         }
-
-        // Route completed net (raw TCP/UDP) signals (Net Task 2, over core/src/net.rs's tokio engine).
-        // MIRRORS the ws routing above verbatim: Connected/Bound resolve the connect/bind Promise INSIDE
-        // this drain (before the microtask checkpoint, so the plugin's `.then` — which subscribes
-        // onData/onMessage — runs THIS frame); ConnectFailed rejects + drops; Data/Datagram/Errored are
-        // queued into NET_EVENT_PENDING and fanned out post-drain (dispatch_pending_net_events, HOST
-        // free); Closed queues then drops the conn (the drain's single drop_conn/mux-prune driver).
-        while let Some(sig) = crate::net::try_recv_signal() {
-            match sig.kind {
-                crate::net::NetSignalKind::Connected | crate::net::NetSignalKind::Bound => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_net_connect(host, &entry, sig.conn_id, Ok(()));
-                    }
-                }
-                crate::net::NetSignalKind::ConnectFailed(e) => {
-                    if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&sig.conn_id)) {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                        resolve_net_connect(host, &entry, sig.conn_id, Err(e));
-                    }
-                    deferred_net_drops.push(sig.conn_id);
-                }
-                crate::net::NetSignalKind::Data(b) => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Data(b))));
-                }
-                crate::net::NetSignalKind::Datagram { from, data } => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Datagram { from, data })));
-                }
-                crate::net::NetSignalKind::Errored(e) => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Errored(e))));
-                }
-                crate::net::NetSignalKind::Closed => {
-                    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((sig.conn_id, PendingNetEvent::Closed)));
-                    deferred_net_drops.push(sig.conn_id);
-                }
+        let net = crate::net::poll_signals();
+        for (id, result) in net.connects {
+            if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
+                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+                resolve_net_connect(host, &entry, id, result);
             }
         }
 
@@ -8102,8 +6913,8 @@ pub(crate) fn frame_async_drain() {
         // this drain has run, so a `.then` that subscribes to the connection it was just handed has
         // already been able to do so. Dropping earlier is what made a server dying right after the
         // handshake look like a connection that simply never spoke.
-        for id in deferred_ws_drops { crate::ws::drop_conn(id); }
-        for id in deferred_net_drops { crate::net::drop_conn(id); }
+        for id in ws.drops { crate::ws::drop_conn(id); }
+        for id in net.drops { crate::net::drop_conn(id); }
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
@@ -8170,25 +6981,8 @@ pub(crate) fn register_builtin_stores() {
         }),
     );
 
-    // CHAT_MSG_SUBS: the Host_Say detour stays installed for the process lifetime — no follow-up.
-    crate::owner_stores::register(
-        "CHAT_MSG_SUBS",
-        Box::new(|owner| { CHAT_MSG_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { CHAT_MSG_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            CHAT_MSG_SUBS.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
-
-    // CLIENT_CMD_SUBS: the ClientCommand hook stays installed for the process lifetime — no follow-up.
-    crate::owner_stores::register(
-        "CLIENT_CMD_SUBS",
-        Box::new(|owner| { CLIENT_CMD_SUBS.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { CLIENT_CMD_SUBS.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            CLIENT_CMD_SUBS.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    // CHAT_MSG_SUBS + CLIENT_CMD_SUBS + CONCOMMANDS: registered by the feature module.
+    crate::commands::register_stores();
 
     // CLIENT_MUX: registered by the feature module, which owns the mux the callbacks close over.
     crate::client::register_store();
@@ -8216,25 +7010,9 @@ pub(crate) fn register_builtin_stores() {
     // COOKIE_CACHED_MUX: pure post-frame JS dispatch — no engine hook to remove.
     crate::cookies::register_store();
 
-    // WS_EVENT_MUX: pure post-frame JS dispatch — the conns themselves close via the ledger.
-    crate::owner_stores::register(
-        "WS_EVENT_MUX",
-        Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    crate::ws::register_store();
 
-    // NET_EVENT_MUX: pure post-frame JS dispatch — the sockets themselves drop via the ledger.
-    crate::owner_stores::register(
-        "NET_EVENT_MUX",
-        Box::new(|owner| { NET_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { NET_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            NET_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    crate::net::register_store();
 
     // OUTPUT_MUX: the FireOutputInternal detour stays installed for the process lifetime — no follow-up.
     crate::owner_stores::register(
@@ -8328,27 +7106,6 @@ pub(crate) fn register_builtin_stores() {
         }),
     );
 
-    // CONCOMMANDS + COMMAND_META: drop the plugin's registered ConCommands (JS dispatch map only —
-    // the shim's ICvar registration stays) and the flag-meta sidecar. Commands are not scope-able
-    // (ids no-op).
-    crate::owner_stores::register(
-        "CONCOMMANDS",
-        Box::new(|owner| {
-            let dropped_cmds: Vec<String> = CONCOMMANDS.with(|m| {
-                let mut b = m.borrow_mut();
-                let names: Vec<String> = b.iter().filter(|(_, (o, _, _))| o == owner).map(|(n, _)| n.clone()).collect();
-                b.retain(|_, (o, _, _)| o != owner);
-                names
-            });
-            COMMAND_META.with(|m| { let mut b = m.borrow_mut(); for n in &dropped_cmds { b.remove(n); } });
-        }),
-        Box::new(|_ids| {}),
-        Box::new(|| {
-            CONCOMMANDS.with(|m| m.borrow_mut().clear());
-            COMMAND_META.with(|m| m.borrow_mut().clear());
-        }),
-    );
-
     // TOPMENU_ITEMS: drop the plugin's registered items (categories persist once created — SM parity).
     // Not scope-able (ids no-op).
     crate::owner_stores::register(
@@ -8416,8 +7173,8 @@ pub(crate) fn register_process_singletons() {
     reg("FRAME_COUNTER", AfterIsolateDrop, || FRAME_COUNTER.with(|c| c.set(0)));
     // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
     crate::cookies::register_singletons();
-    reg("WS_EVENT_PENDING", AfterIsolateDrop, || WS_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
-    reg("NET_EVENT_PENDING", AfterIsolateDrop, || NET_EVENT_PENDING.with(|q| q.borrow_mut().clear()));
+    crate::ws::register_singletons();
+    crate::net::register_singletons();
     // usermsg name→id resolution caches (the MUX itself is an owner-scoped store). Registered by the
     // feature module — same phase, same position in the order.
     crate::usermsg::register_singletons();
@@ -8886,6 +7643,9 @@ pub(crate) mod frame_tests {
     // The client-lifecycle dispatch moved to `crate::client`; the fan_out and voice tests
     // below still drive it as their vehicle.
     use crate::client::dispatch_client_event;
+    use crate::commands::{dispatch_concommand, ReplySource};
+    use crate::ws::dispatch_pending_events as dispatch_pending_ws_events;
+    use crate::net::dispatch_pending_events as dispatch_pending_net_events;
     use crate::multiplexer::{Phase, HookResult};
     use std::ffi::CStr;
     use std::os::raw::{c_char, c_int};
@@ -9527,49 +8287,7 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// `__s2_concommand` stores the JS callback in CONCOMMANDS; `dispatch_concommand` invokes it
-    /// with (slot, argString) in the REGISTERING PLUGIN'S context (owner-tracked, liveness-gated).
-    /// This test exercises the store + dispatch path without the engine
-    /// (calls `dispatch_concommand` directly, bypassing ConCommand registration).
-    #[test]
-    fn concommand_callback_receives_slot_and_args() {
-        init(dummy_logger()).unwrap();
-        // Register the raw native from a PLUGIN context (dispatch is now owner-tracked; registering
-        // from the shared HOST context would produce owner="legacy" with no REGISTRY entry → skipped).
-        load_body("cc_test", r#"
-            globalThis.__cc = null;
-            __s2_concommand("s2_test", function (slot, args) { globalThis.__cc = slot + ":" + args; });
-        "#, "{}");
-        // Simulate the engine invoking the command (bypasses ConCommand registration):
-        dispatch_concommand("s2_test", 3, "1234", ReplySource::from_slot(3));
-        assert_eq!(eval_in_context_string("cc_test", "String(globalThis.__cc)"), "3:1234");
-        shutdown();
-    }
 
-    /// `__s2_commands_list` returns valid JSON: `[]` when no commands are registered, and a
-    /// `[{name, flags}]` entry (with the flags passed to `__s2_concommand`) once one is registered.
-    /// Mirrors the plugins-list style; exercises the store + list join without the engine.
-    #[test]
-    fn commands_list_returns_name_and_flags() {
-        init(dummy_logger()).unwrap();
-        // Load a plugin whose body: (1) confirms the list is empty BEFORE any registration, then
-        // (2) registers two commands with distinct flag masks (2nd arg is the callback, 3rd is the flags).
-        load_body("cl_test", r#"
-            globalThis.__cl_empty = __s2_commands_list();               // must be "[]" — nothing registered yet
-            __s2_concommand("s2_open", function () {}, 0);              // 0 = anyone
-            __s2_concommand("s2_admin", function () {}, 6);             // an ADMFLAG bit mask
-            var list = JSON.parse(__s2_commands_list());
-            var byName = {};
-            for (var i = 0; i < list.length; i++) { byName[list[i].name] = list[i].flags; }
-            globalThis.__cl = list.length + "|" + byName["s2_open"] + "|" + byName["s2_admin"];
-        "#, "{}");
-        // Empty (valid JSON) before registration, then both commands surface with their flags.
-        assert_eq!(eval_in_context_string("cl_test", "String(globalThis.__cl_empty)"), "[]");
-        assert_eq!(eval_in_context_string("cl_test", "String(globalThis.__cl)"), "2|0|6");
-        // Native still returns valid JSON directly.
-        assert_eq!(eval_in_context_string("cl_test", "typeof __s2_commands_list()"), "string");
-        shutdown();
-    }
 
     /// `load_plugin_js` creates the plugin context (full injected API), wraps the bundle in the CJS
     /// `require`/`module` wrapper, and runs the module body.  This replaces the Slice-3 `load_cs2_file`
@@ -11759,103 +10477,8 @@ pub(crate) mod frame_tests {
         let _ = init(dummy_logger());
         // Wire an ops table whose schema_enumerate is the stub (all other fields None).
         set_engine_ops(Some(S2EngineOps {
-            schema_offset: None, ent_by_index: None, deref_handle: None,
-            ent_state_changed: None, concommand_register: None,
             schema_enumerate: Some(stub_enumerate),
-            event_subscribe: None, event_unsubscribe: None,
-            event_get_int: None, event_get_float: None, event_get_bool: None,
-            event_get_string: None, event_get_uint64: None, event_get_player_slot: None,
-            client_valid: None, client_userid: None, client_signon: None,
-            client_name: None, client_find_by_userid: None,
-            event_set_int: None, event_set_float: None, event_set_bool: None,
-            event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
-            config_read: None, config_write: None,
-            client_print: None,
-            client_steamid: None,
-            client_kick: None,
-            server_command: None,
-            server_map_valid: None,
-            damage_read_float: None,
-            damage_read_int: None,
-            damage_write_float: None,
-            damage_victim: None,
-            cvar_get: None,
-            client_console_print: None,
-            client_address: None,
-            server_max_clients: None,
-            server_map_name: None,
-            server_game_time: None,
-            db_data_dir: None,
-            event_fire_to_client: None,
-            config_read_file: None,
-            config_write_file: None,
-            trace_shape: None,
-            entity_create: None,
-            entity_spawn: None,
-            entity_teleport: None,
-            entity_remove: None,
-            entity_subobj_vcall: None,
-            entity_read_handle_vector: None,
-            entity_fire_input: None,
-            entity_spawn_kv: None,
-            entity_find_by_class: None,
-            user_message_create: None,
-            user_message_set_int: None,
-            user_message_set_float: None,
-            user_message_set_string: None,
-            user_message_set_bool: None,
-            user_message_send: None,
-            convar_register: None,
-            translations_read: None,
-            client_language: None,
-            collision_activate: None,
-            entity_set_model: None,
-            entity_listener_install: None,
-            entity_name: None,
-            sound_emit: None,
-            sound_precache_add: None,
-            usercmd_hook_install: None,
-            usercmd_read: None,
-            usercmd_write: None,
-            usercmd_read_buttons: None,
-            usercmd_write_buttons: None,
-            usercmd_clear_subtick: None,
-            transmit_set: None, transmit_clear: None, transmit_stats: None,
-            voice_set_muted: None,
-            voice_get_muted: None,
-            usermsg_hook_sub: None, usermsg_hook_unsub: None,
-            usermsg_hook_read_int: None, usermsg_hook_read_float: None,
-            usermsg_hook_read_string: None, usermsg_hook_has_field: None,
-            usermsg_hook_recipients: None, usermsg_hook_debug: None,
-            server_build_number: None,
-            crash_test_native: None,
-            ent_resolve: None,
-            ent_identity_flags: None,
-            ent_snapshot: None,
-            engine_call_resolve: None,
-            engine_call_invoke: None,
-            voice_audible_set: None,
-            voice_audible_clear: None,
-            voice_audible_stats: None,
-            client_command: None,
-            client_fake_command: None,
-            ent_identity_flags_clear: None,
-            defer_selftest: None,
-            hook_install: None,
-            hook_arm_bypass: None,
-            hook_disarm_bypass: None,
-            hook_read_f32: None,
-            hook_read_i32: None,
-            hook_write_f32: None,
-            hook_write_i32: None,
-            hook_receiver_handle: None,
-            engine_call_address: None,
-            entity_set_gravity_scale: None,
-            entity_apply_abs_velocity_impulse: None,
-            entity_stop_sound: None,
-            entity_set_body_group_by_name: None,
-            entity_set_model_scale: None,
-            cvar_set: None,
+            ..S2EngineOps::none()
         }));
         create_plugin_context("p");
         let path = std::env::temp_dir().join("s2_schema_test.json");
@@ -12206,6 +10829,41 @@ pub(crate) mod frame_tests {
         assert_eq!(crate::gamedata_hooks::status(plugin, "onX"), "available",
             "{}", crate::gamedata_hooks::status(plugin, "onX"));
         crate::gamedata_hooks::plan(plugin, "onX").expect("ready").hook_id
+    }
+
+    /// `Engine.hook` is the plugin-facing subscribe factory: owner is the calling context (never
+    /// an argument), null when the descriptor is missing, and a successful subscribe actually
+    /// fires on dispatch.
+    #[test]
+    fn engine_hook_factory_uses_the_calling_plugin() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(hook_test_ops()));
+        let hook_id = hook_test_setup("hk_eng");
+        create_plugin_context("hk_eng");
+
+        eval_in_context("hk_eng", r#"
+            var Engine = __s2require("@s2script/sdk/unsafe").Engine;
+            globalThis.__ready = Engine.hook("onX") !== null;
+            globalThis.__status = Engine.hookStatus("onX");
+            globalThis.__missing = Engine.hook("nope") === null;
+            globalThis.__missingStatus = Engine.hookStatus("nope");
+            globalThis.__hit = null;
+            var onX = Engine.hook("onX");
+            onX(function (v) { globalThis.__hit = v.reason; return HookResult.Continue; });
+        "#).unwrap();
+        assert!(eval_in_context_bool("hk_eng", "globalThis.__ready === true"),
+            "Engine.hook('onX') must return a subscribe function when the descriptor is ready");
+        assert_eq!(eval_in_context_string("hk_eng", "String(globalThis.__status)"), "available");
+        assert!(eval_in_context_bool("hk_eng", "globalThis.__missing === true"),
+            "Engine.hook('nope') must be null — an undeclared name is not a callable");
+        assert_eq!(
+            eval_in_context_string("hk_eng", "String(globalThis.__missingStatus)"),
+            "not declared in this owner's gamedata"
+        );
+
+        assert_eq!(dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void), 0);
+        assert!(eval_in_context_bool("hk_eng", "globalThis.__hit === 7"),
+            "Engine.hook subscribe must actually fire (reason mock is 7)");
     }
 
     /// The view is LIVE: reads hit the frame, a `mutable` write reaches the engine's copy, a
@@ -13554,111 +12212,19 @@ pub(crate) mod frame_tests {
     extern "C" fn mock_ev_get_uint64(_k: *const c_char) -> u64 { 999_000_000_000u64 }
     extern "C" fn mock_ev_get_player_slot(_k: *const c_char) -> i32 { 7 }
 
-    /// Build a full mock S2EngineOps table with all event op fields wired to the mock fns above
-    /// and all non-event fields None.  Used by 5D.1 tests that need the event accessor natives.
+    /// Event accessors wired; everything else None. Adding an op does not touch this fixture —
+    /// `S2EngineOps::none()` is generated Default.
     pub(crate) fn mock_event_ops() -> S2EngineOps {
         S2EngineOps {
-            schema_offset: None, ent_by_index: None, deref_handle: None,
-            ent_state_changed: None, concommand_register: None, schema_enumerate: None,
-            event_subscribe:      Some(mock_ev_subscribe),
-            event_unsubscribe:    Some(mock_ev_unsubscribe),
-            event_get_int:        Some(mock_ev_get_int),
-            event_get_float:      Some(mock_ev_get_float),
-            event_get_bool:       Some(mock_ev_get_bool),
-            event_get_string:     Some(mock_ev_get_string),
-            event_get_uint64:     Some(mock_ev_get_uint64),
+            event_subscribe:       Some(mock_ev_subscribe),
+            event_unsubscribe:     Some(mock_ev_unsubscribe),
+            event_get_int:         Some(mock_ev_get_int),
+            event_get_float:       Some(mock_ev_get_float),
+            event_get_bool:        Some(mock_ev_get_bool),
+            event_get_string:      Some(mock_ev_get_string),
+            event_get_uint64:      Some(mock_ev_get_uint64),
             event_get_player_slot: Some(mock_ev_get_player_slot),
-            client_valid: None, client_userid: None, client_signon: None,
-            client_name: None, client_find_by_userid: None,
-            event_set_int: None, event_set_float: None, event_set_bool: None,
-            event_set_string: None, event_set_uint64: None, event_create: None, event_fire: None,
-            config_read: None, config_write: None,
-            client_print: None,
-            client_steamid: None,
-            client_kick: None,
-            server_command: None,
-            server_map_valid: None,
-            damage_read_float: None,
-            damage_read_int: None,
-            damage_write_float: None,
-            damage_victim: None,
-            cvar_get: None,
-            client_console_print: None,
-            client_address: None,
-            server_max_clients: None,
-            server_map_name: None,
-            server_game_time: None,
-            db_data_dir: None,
-            event_fire_to_client: None,
-            config_read_file: None,
-            config_write_file: None,
-            trace_shape: None,
-            entity_create: None,
-            entity_spawn: None,
-            entity_teleport: None,
-            entity_remove: None,
-            entity_subobj_vcall: None,
-            entity_read_handle_vector: None,
-            entity_fire_input: None,
-            entity_spawn_kv: None,
-            entity_find_by_class: None,
-            user_message_create: None,
-            user_message_set_int: None,
-            user_message_set_float: None,
-            user_message_set_string: None,
-            user_message_set_bool: None,
-            user_message_send: None,
-            convar_register: None,
-            translations_read: None,
-            client_language: None,
-            collision_activate: None,
-            entity_set_model: None,
-            entity_listener_install: None,
-            entity_name: None,
-            sound_emit: None,
-            sound_precache_add: None,
-            usercmd_hook_install: None,
-            usercmd_read: None,
-            usercmd_write: None,
-            usercmd_read_buttons: None,
-            usercmd_write_buttons: None,
-            usercmd_clear_subtick: None,
-            transmit_set: None, transmit_clear: None, transmit_stats: None,
-            voice_set_muted: None,
-            voice_get_muted: None,
-            usermsg_hook_sub: None, usermsg_hook_unsub: None,
-            usermsg_hook_read_int: None, usermsg_hook_read_float: None,
-            usermsg_hook_read_string: None, usermsg_hook_has_field: None,
-            usermsg_hook_recipients: None, usermsg_hook_debug: None,
-            server_build_number: None,
-            crash_test_native: None,
-            ent_resolve: None,
-            ent_identity_flags: None,
-            ent_snapshot: None,
-            engine_call_resolve: None,
-            engine_call_invoke: None,
-            voice_audible_set: None,
-            voice_audible_clear: None,
-            voice_audible_stats: None,
-            client_command: None,
-            client_fake_command: None,
-            ent_identity_flags_clear: None,
-            defer_selftest: None,
-            hook_install: None,
-            hook_arm_bypass: None,
-            hook_disarm_bypass: None,
-            hook_read_f32: None,
-            hook_read_i32: None,
-            hook_write_f32: None,
-            hook_write_i32: None,
-            hook_receiver_handle: None,
-            engine_call_address: None,
-            entity_set_gravity_scale: None,
-            entity_apply_abs_velocity_impulse: None,
-            entity_stop_sound: None,
-            entity_set_body_group_by_name: None,
-            entity_set_model_scale: None,
-            cvar_set: None,
+            ..S2EngineOps::none()
         }
     }
 
@@ -14460,500 +13026,24 @@ pub(crate) mod frame_tests {
 
 
 
-    /// `Commands.register` builds a typed ctx (callerSlot/args/argString/reply); reply routes to
-    /// console.log for slot<0, to Chat.toSlot for slot>=0.  Unload drops the command → later
-    /// dispatch is a no-op.  A throwing handler is caught (no panic).
-    ///
-    /// Slice 6.1 Task 2.  Calls `dispatch_concommand` directly (simulates the engine trampoline).
-    #[test]
-    fn command_dispatch_builds_ctx_and_routes_reply() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        // A plugin registers sm_test; capture the ctx it receives.
-        load_body("cmd", r#"
-            var C = __s2pkg_commands.Commands;
-            C.register("sm_test", function (ctx) {
-                globalThis.__seen = ctx.callerSlot + "|" + ctx.args.join(",") + "|" + ctx.argString;
-                // SM-parity arg API (Slice 6.10): arg/argInt/argFloat/argsFrom/argCount.
-                globalThis.__argapi = [ctx.argCount, ctx.arg(0), ctx.argInt(1), ctx.argFloat(1),
-                                        ctx.argsFrom(2), ctx.arg(99), ctx.argInt(99, 7)].join("|");
-                if (ctx.callerSlot < 0) ctx.reply("console-reply");   // routes to console.log
-            });
-        "#, "{}");
-        // Simulate the engine firing the command from the server console (slot -1).
-        dispatch_concommand("sm_test", -1, "foo bar", ReplySource::from_slot(-1));
-        assert_eq!(eval_in_context_string("cmd", "String(globalThis.__seen)"), "-1|foo,bar|foo bar");
-        // The arg API: dispatch "target 42 hello world" and verify typed retrieval.
-        dispatch_concommand("sm_test", -1, "target 42 hello world", ReplySource::from_slot(-1));
-        assert_eq!(eval_in_context_string("cmd", "String(globalThis.__argapi)"),
-                   "4|target|42|42|hello world||7",
-                   "argCount|arg(0)|argInt(1)|argFloat(1)|argsFrom(2)|arg(99)=''|argInt(99,7)=7");
-        assert!(LOG.lock().unwrap().iter().any(|m| m.contains("console-reply")), "console reply routed to log");
-        // A throwing handler is caught (no panic).
-        load_body("cmd2", r#" __s2pkg_commands.Commands.register("sm_boom", function(){ throw new Error("x"); }); "#, "{}");
-        dispatch_concommand("sm_boom", -1, "", ReplySource::from_slot(-1));   // must not panic
-        // Unload drops the command → a later dispatch is a no-op.
-        unload_plugin("cmd");
-        eval_in_context("cmd2", "globalThis.__afterUnload = 'unchanged';").unwrap();
-        dispatch_concommand("sm_test", -1, "again", ReplySource::from_slot(-1));   // cmd is gone → no handler → no-op
-        shutdown();
-    }
 
-    /// Command reply source, PR 1: the explicit reply targets. `replyToConsole` prints to the
-    /// CALLER'S developer console with every C0 control byte stripped (chat colour control bytes
-    /// occupy the C0 range on this engine — including \x09, \x0A and \x0D — so the strip takes the
-    /// whole range with no tab/newline/carriage-return exemption); `replyToChat` goes to their chat
-    /// RAW, one frame later. Both the native and the chat module fn are resolved through
-    /// `globalThis` at call time, so the test stubs them as in-isolate spies.
-    #[test]
-    fn explicit_reply_targets_route_and_strip() {
-        init(dummy_logger()).unwrap();
-        load_body("rt", r#"
-            globalThis.__con = []; globalThis.__cht = [];
-            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
-            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
-            __s2pkg_commands.Commands.register("sm_t", function (ctx) {
-                ctx.replyToConsole("\x04a\x09b\x0Ac");
-                ctx.replyToChat("\x04a\x09b\x0Ac");
-            });
-        "#, "{}");
-        dispatch_concommand("sm_t", 3, "", ReplySource::from_slot(3));
-        // console: immediate, stripped, newline-terminated (matches Client.print).
-        assert_eq!(eval_in_context_string("rt", "globalThis.__con.join(';')"), "3|abc\n");
-        // chat: deferred one frame — nothing has landed yet.
-        assert_eq!(eval_in_context_string("rt", "String(globalThis.__cht.length)"), "0");
-        frame_async_drain();
-        frame_async_drain();
-        // chat: RAW — colour is content the caller owns.
-        assert_eq!(eval_in_context_string("rt", "globalThis.__cht.join(';')"), "3|\u{4}a\u{9}b\u{a}c");
-        shutdown();
-    }
 
-    /// Command reply source, PR 1: at the server console (slot -1) there is no client channel, so
-    /// BOTH explicit targets degrade to the server console (`console.log`, captured in `LOG`) with
-    /// control bytes stripped, and neither throws.
-    #[test]
-    fn explicit_reply_targets_degrade_at_slot_minus_one() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("rd", r#"
-            __s2pkg_commands.Commands.register("sm_d", function (ctx) {
-                ctx.replyToConsole("\x04con-degrade");
-                ctx.replyToChat("\x04chat-degrade");
-            });
-        "#, "{}");
-        dispatch_concommand("sm_d", -1, "", ReplySource::from_slot(-1));   // must not throw
-        let log = LOG.lock().unwrap().clone();
-        assert!(log.iter().any(|l| l.contains("con-degrade")), "replyToConsole at slot -1 → server console");
-        assert!(log.iter().any(|l| l.contains("chat-degrade")), "replyToChat at slot -1 → server console");
-        assert!(!log.iter().any(|l| l.contains('\u{4}')), "control bytes stripped on both degrade paths");
-        shutdown();
-    }
 
-    /// Command reply source, PR 1: the ctx reply methods must survive being DETACHED from the ctx
-    /// object. A plugin that hands `cmd.reply` to a helper as a bare function reference (a real
-    /// pattern in the shipped plugin suite) would otherwise hit an undefined receiver and throw —
-    /// and the dispatch wrapper swallows handler throws, so the reply would silently vanish. The
-    /// methods close over their context instead of depending on `this`.
-    ///
-    /// Driven through the JS `Commands.dispatch` rather than the Rust `dispatch_concommand` so the
-    /// test survives the later commits that change that signature. `reply`'s destination differs
-    /// across those commits (chat before routing lands, the caller's console after), so the
-    /// invariant pinned here is delivery, not channel.
-    #[test]
-    fn reply_methods_survive_being_detached_from_ctx() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("rx", r#"
-            globalThis.__con = []; globalThis.__cht = [];
-            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
-            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
-            var C = __s2pkg_commands.Commands;
-            C.register("sm_x", function (ctx) {
-                var toConsole = ctx.replyToConsole, toChat = ctx.replyToChat, reply = ctx.reply;
-                toConsole("detached-console");   // detached, exactly as plugins/disabled/funvotes does
-                toChat("detached-chat");
-                reply("detached-reply");         // the one that used to depend on `this`
-            });
-            C.dispatch("sm_x", 5, "");           // a PLAYER caller — the slot the receiver bug bit
-            globalThis.__sawAll = function (needle) {
-                return (globalThis.__con.join(";") + ";" + globalThis.__cht.join(";")).indexOf(needle) >= 0;
-            };
-        "#, "{}");
-        frame_async_drain();
-        frame_async_drain();
-        assert_eq!(eval_in_context_string("rx", "String(__sawAll('5|detached-console'))"), "true",
-                   "detached replyToConsole delivered");
-        assert_eq!(eval_in_context_string("rx", "String(__sawAll('5|detached-chat'))"), "true",
-                   "detached replyToChat delivered");
-        assert_eq!(eval_in_context_string("rx", "String(__sawAll('detached-reply'))"), "true",
-                   "detached reply delivered (channel varies by commit; delivery does not)");
-        shutdown();
-    }
 
-    /// Command reply source, PR 2: each dispatch entry point stamps its own `ctx.replySource` —
-    /// the shared ConCommand trampoline (server console / rcon) → "server", the ClientCommand hook
-    /// (a player's own developer console) → "console", the Host_Say chat trigger → "chat".
-    /// `Commands.onClientCommand` — the AddCommandListener seam. The listener must see a command
-    /// NOBODY registered (the whole point: engine-owned names like `player_ping` cannot be
-    /// registered), and must NOT supersede it, so the engine still does its own work.
-    #[test]
-    fn client_command_listener_observes_without_superseding() {
-        init(dummy_logger()).unwrap();
-        load_body("ccl", r#"
-            globalThis.__seen = [];
-            __s2pkg_commands.Commands.onClientCommand("player_ping", function (slot, args) {
-                globalThis.__seen.push(slot + "|" + args);
-            });
-        "#, "{}");
-        // No ConCommand named "player_ping" exists — without the listener mux this returns false
-        // and the handler never runs.
-        let superseded = dispatch_command_listeners(7, "player_ping", "a b");
-        assert_eq!(eval_in_context_string("ccl", "globalThis.__seen.join(',')"), "7|a b",
-                   "listener saw an unregistered (engine-owned) client command");
-        assert!(!superseded, "an observing listener must let the engine handle the command");
-    }
 
-    /// A listener returning `>= HookResult.Handled` suppresses the engine's handling.
-    #[test]
-    fn client_command_listener_can_suppress() {
-        init(dummy_logger()).unwrap();
-        load_body("ccs", r#"
-            __s2pkg_commands.Commands.onClientCommand("drop", function () { return 2; });
-        "#, "{}");
-        assert!(dispatch_command_listeners(3, "drop", ""), "Handled from a listener supersedes");
-        assert!(!dispatch_command_listeners(3, "buy", ""), "an unlistened command is untouched");
-    }
 
-    /// A listener and a registered ConCommand of the same name both run, and the command still
-    /// supersedes on its own account.
-    #[test]
-    fn client_command_listener_coexists_with_a_registered_command() {
-        init(dummy_logger()).unwrap();
-        load_body("ccc", r#"
-            globalThis.__order = [];
-            __s2pkg_commands.Commands.onClientCommand("sm_both", function () { globalThis.__order.push("listener"); });
-            __s2pkg_commands.Commands.register("sm_both", function () { globalThis.__order.push("command"); });
-        "#, "{}");
-        // The two seams are independent: DispatchConCommand drives listeners, the ConCommand
-        // trampoline drives the owning command. Each fires exactly once.
-        assert!(!dispatch_command_listeners(1, "sm_both", ""), "an observing listener does not supersede");
-        assert!(dispatch_client_command(1, "sm_both", ""), "a registered command still supersedes");
-        assert_eq!(eval_in_context_string("ccc", "globalThis.__order.join(',')"), "listener,command",
-                   "each seam fired its own handler exactly once");
-    }
 
-    #[test]
-    fn reply_source_derives_from_entry_point() {
-        init(dummy_logger()).unwrap();
-        load_body("rs", r#"
-            globalThis.__src = "";
-            __s2pkg_commands.Commands.register("sm_s", function (ctx) { globalThis.__src = ctx.replySource; });
-        "#, "{}");
-        dispatch_concommand("sm_s", -1, "", ReplySource::from_slot(-1));
-        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "server");
-        dispatch_client_command(4, "sm_s", "");
-        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "console");
-        dispatch_chat(4, "!s", false);
-        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "chat");
-        // A client-run ConCommand the ClientCommand hook did not SUPERCEDE is still that player's
-        // console, never their chat.
-        dispatch_concommand("sm_s", 4, "", ReplySource::from_slot(4));
-        assert_eq!(eval_in_context_string("rs", "globalThis.__src"), "console");
-        shutdown();
-    }
 
-    /// Command reply source, PR 2: a `Commands.dispatch` with no source (SM's FakeClientCommand
-    /// path) falls back to the slot — the server console at -1, else that player's own console.
-    #[test]
-    fn reply_source_falls_back_to_slot() {
-        init(dummy_logger()).unwrap();
-        load_body("rf", r#"
-            globalThis.__src = "";
-            var C = __s2pkg_commands.Commands;
-            C.register("sm_f", function (ctx) { globalThis.__src = ctx.replySource; });
-            C.dispatch("sm_f", -1, "");   globalThis.__a = globalThis.__src;
-            C.dispatch("sm_f", 4, "");    globalThis.__b = globalThis.__src;
-        "#, "{}");
-        assert_eq!(eval_in_context_string("rf", "globalThis.__a"), "server");
-        assert_eq!(eval_in_context_string("rf", "globalThis.__b"), "console");
-        shutdown();
-    }
 
-    /// Command reply source, PR 3 (THE FIX): `reply` lands in the channel the caller used — the
-    /// server console for "server", the CALLER'S own developer console for "console", their chat
-    /// for "chat". Before this, every reply from a player went to chat, so a player who typed
-    /// `sm_help` at their console got ten lines of pagination spammed into chat instead.
-    #[test]
-    fn reply_routes_by_reply_source() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("rr", r#"
-            globalThis.__con = []; globalThis.__cht = [];
-            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
-            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
-            __s2pkg_commands.Commands.register("sm_r", function (ctx) { ctx.reply("\x04hi-" + ctx.replySource); });
-        "#, "{}");
-        // "server" → the server console (console.log → LOG); no client channel is touched.
-        dispatch_concommand("sm_r", -1, "", ReplySource::from_slot(-1));
-        assert!(LOG.lock().unwrap().iter().any(|l| l.contains("hi-server")), "server source → server console");
-        assert!(!LOG.lock().unwrap().iter().any(|l| l.contains('\u{4}')), "server reply strips control bytes");
-        assert_eq!(eval_in_context_string("rr", "String(globalThis.__con.length)"), "0");
-        // "console" → the caller's own developer console, immediately.
-        dispatch_client_command(6, "sm_r", "");
-        assert_eq!(eval_in_context_string("rr", "globalThis.__con.join(';')"), "6|hi-console\n");
-        // "chat" → their chat, one frame later.
-        dispatch_chat(6, "!r", false);
-        assert_eq!(eval_in_context_string("rr", "String(globalThis.__cht.length)"), "0", "chat reply is deferred");
-        frame_async_drain();
-        frame_async_drain();
-        assert_eq!(eval_in_context_string("rr", "globalThis.__cht.join(';')"), "6|\u{4}hi-chat");
-        // …and the chat trigger did NOT also print to the console.
-        assert_eq!(eval_in_context_string("rr", "globalThis.__con.join(';')"), "6|hi-console\n");
-        shutdown();
-    }
 
-    /// Command reply source, PR 3: `Commands.handleChatTrigger` is the chat-trigger entry point, so
-    /// the command it dispatches must answer in CHAT — not in the caller's console, which is where
-    /// the bare slot fallback would send it once `reply` routes on the source.
-    #[test]
-    fn handle_chat_trigger_replies_to_chat() {
-        init(dummy_logger()).unwrap();
-        load_body("hc", r#"
-            globalThis.__con = []; globalThis.__cht = [];
-            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
-            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
-            var C = __s2pkg_commands.Commands;
-            C.register("sm_h", function (ctx) { ctx.reply("via-" + ctx.replySource); });
-            C.handleChatTrigger(4, "!h");
-        "#, "{}");
-        frame_async_drain();
-        frame_async_drain();
-        assert_eq!(eval_in_context_string("hc", "globalThis.__cht.join(';')"), "4|via-chat");
-        assert_eq!(eval_in_context_string("hc", "String(globalThis.__con.length)"), "0",
-                   "a chat trigger must not answer in the caller's console");
-        shutdown();
-    }
 
-    /// Command reply source, PR 3: the explicit targets IGNORE `replySource` — a chat-triggered
-    /// command can force its answer into the caller's console, and a console-invoked one into chat.
-    #[test]
-    fn explicit_reply_targets_override_source() {
-        init(dummy_logger()).unwrap();
-        load_body("ro", r#"
-            globalThis.__con = []; globalThis.__cht = [];
-            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(msg); };
-            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(msg); };
-            __s2pkg_commands.Commands.register("sm_o", function (ctx) {
-                if (ctx.replySource === "chat") ctx.replyToConsole("forced-console");
-                else ctx.replyToChat("forced-chat");
-            });
-        "#, "{}");
-        dispatch_chat(2, "!o", false);              // source "chat" → forced to the console
-        assert_eq!(eval_in_context_string("ro", "globalThis.__con.join(';')"), "forced-console\n");
-        dispatch_client_command(2, "sm_o", "");     // source "console" → forced to chat
-        frame_async_drain();
-        frame_async_drain();
-        assert_eq!(eval_in_context_string("ro", "globalThis.__cht.join(';')"), "forced-chat");
-        shutdown();
-    }
 
-    /// Command reply source, PR 3: `replyT` routes through `reply`, so it inherits the fix — a
-    /// player who ran the command at their console gets the TRANSLATED line in their console, not
-    /// in chat.
-    #[test]
-    fn replyt_inherits_routing() {
-        init(dummy_logger()).unwrap();
-        load_body("rl", r#"
-            globalThis.__con = [];
-            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(msg); };
-            __s2pkg_translations.Translations.load('c', { Kicked: 'Kicked {1}' });
-            __s2pkg_commands.Commands.register("sm_l", function (ctx) { ctx.replyT('Kicked', 'Bob'); });
-        "#, "{}");
-        dispatch_client_command(7, "sm_l", "");
-        let got = eval_in_context_string("rl", "globalThis.__con.join(';')");
-        assert!(got.contains("Kicked"), "replyT landed in the caller's console, got {:?}", got);
-        shutdown();
-    }
 
-    /// Command reply source, PR 4: `Commands.dispatch` takes an optional trailing reply source, and
-    /// `handleChatTrigger` always dispatches as "chat" — the caller typed it in chat, whatever the
-    /// slot would otherwise imply. An unrecognised token degrades to the slot fallback rather than
-    /// failing the dispatch.
-    #[test]
-    fn commands_dispatch_reply_source_param() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("rp", r#"
-            var C = __s2pkg_commands.Commands;
-            globalThis.__src = "";
-            globalThis.__cht = [];
-            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
-            C.register("sm_p", function (ctx) { globalThis.__src = ctx.replySource; ctx.reply("r-" + ctx.replySource); });
-            C.dispatch("sm_p", 4, "");            globalThis.__a = globalThis.__src;  // default → console
-            C.dispatch("sm_p", 4, "", "chat");    globalThis.__b = globalThis.__src;  // explicit
-            C.dispatch("sm_p", -1, "", "chat");   globalThis.__c = globalThis.__src;  // explicit beats the slot
-            C.handleChatTrigger(4, "!p");         globalThis.__d = globalThis.__src;  // always chat
-            C.handleChatTrigger(4, "/p");          globalThis.__g = globalThis.__src;  // silent trigger → still chat
-            globalThis.__e = String(C.dispatch("sm_p", 4, "", "bogus"));              // unknown token
-            globalThis.__f = globalThis.__src;
-        "#, "{}");
-        assert_eq!(eval_in_context_string("rp", "globalThis.__a"), "console");
-        assert_eq!(eval_in_context_string("rp", "globalThis.__b"), "chat");
-        assert_eq!(eval_in_context_string("rp", "globalThis.__c"), "chat");
-        assert_eq!(eval_in_context_string("rp", "globalThis.__d"), "chat", "handleChatTrigger forces chat");
-        assert_eq!(eval_in_context_string("rp", "globalThis.__g"), "chat",
-                   "the silent / trigger still answers in chat");
-        assert_eq!(eval_in_context_string("rp", "globalThis.__e"), "true", "an unknown token still dispatches");
-        assert_eq!(eval_in_context_string("rp", "globalThis.__f"), "console", "an unknown token falls back to the slot");
-        // The "chat" + slot -1 dispatch (__c) has no chat channel and must degrade to the server
-        // console synchronously, landing on LOG rather than the chat spy.
-        assert!(LOG.lock().unwrap().iter().any(|l| l.contains("r-chat")),
-                 "\"chat\" reply source at slot -1 degrades to the server console");
-        assert_eq!(eval_in_context_string("rp", "String(globalThis.__cht.length)"), "0",
-                   "the -1 + \"chat\" dispatch must not land in the chat spy");
-        shutdown();
-    }
 
-    /// Slice 6.11: chat-trigger parsing + same-context dispatch (a player's "!cmd" runs the command).
-    #[test]
-    fn chat_triggers_parse_and_dispatch() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("ct", r#"
-            var C = __s2pkg_commands.Commands;
-            globalThis.__ran = "";
-            C.register("sm_test", function (ctx) { globalThis.__ran = ctx.callerSlot + ":" + ctx.argString; });
-            globalThis.__p1 = JSON.stringify(C.parseChatTrigger("!kick Bob Smith"));
-            globalThis.__p2 = JSON.stringify(C.parseChatTrigger("/who"));
-            globalThis.__p3 = String(C.parseChatTrigger("hello world"));            // null -> "null"
-            globalThis.__h  = JSON.stringify(C.handleChatTrigger(5, "!test foo bar")); // sm_ prepend -> sm_test
-            globalThis.__hMiss = JSON.stringify(C.handleChatTrigger(5, "!nope x"));   // no such command -> ran:false
-        "#, "{}");
-        assert_eq!(eval_in_context_string("ct", "globalThis.__p1"), r#"{"silent":false,"name":"kick","argString":"Bob Smith"}"#);
-        assert_eq!(eval_in_context_string("ct", "globalThis.__p2"), r#"{"silent":true,"name":"who","argString":""}"#);
-        assert_eq!(eval_in_context_string("ct", "globalThis.__p3"), "null");
-        assert_eq!(eval_in_context_string("ct", "globalThis.__ran"), "5:foo bar", "sm_test dispatched via !test");
-        assert_eq!(eval_in_context_string("ct", "globalThis.__h"), r#"{"silent":false,"ran":true}"#);
-        assert_eq!(eval_in_context_string("ct", "globalThis.__hMiss"), r#"{"silent":false,"ran":false}"#, "trigger consumed even if the command is unknown");
-        shutdown();
-    }
 
-    /// Slice 6.11b: the core Host_Say chat dispatch. `dispatch_chat(slot, text)` parses a !cmd / /cmd
-    /// trigger, dispatches the matching (or `sm_`-prefixed) command in its owner context with the
-    /// speaker's slot, and returns whether to SUPPRESS the broadcast — a matched silent `/` only.
-    /// This is exactly the fn the shim's Host_Say detour calls.
-    #[test]
-    fn chat_dispatch_host_say_parses_and_suppresses() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("hs", r#"
-            var C = __s2pkg_commands.Commands;
-            globalThis.__ran = "";
-            C.register("sm_test", function (ctx) { globalThis.__ran = ctx.callerSlot + ":" + ctx.argString; });
-        "#, "{}");
-        // Public `!test` → dispatches sm_test (sm_ fallback) with slot 5 + args, and NEVER suppresses.
-        assert_eq!(dispatch_chat(5, "!test foo bar", false), false, "! trigger never suppresses");
-        assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "5:foo bar", "!test dispatched sm_test");
-        // Silent `/test` → dispatches AND suppresses (matched silent trigger).
-        eval_in_context("hs", "globalThis.__ran = '';").unwrap();
-        assert_eq!(dispatch_chat(7, "/test", false), true, "matched / trigger suppresses");
-        assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "7:", "/test dispatched with empty args");
-        // Ordinary chat (no trigger char) → no dispatch, no suppress.
-        eval_in_context("hs", "globalThis.__ran = 'untouched';").unwrap();
-        assert_eq!(dispatch_chat(5, "hello world", false), false, "ordinary chat is not a trigger");
-        assert_eq!(eval_in_context_string("hs", "globalThis.__ran"), "untouched", "ordinary chat did not dispatch");
-        // Unknown `/nope` → no command match → NOT suppressed (never swallow a non-command message).
-        assert_eq!(dispatch_chat(5, "/nope", false), false, "unmatched silent trigger is not suppressed");
-        shutdown();
-    }
 
-    /// Slice 6.13b Task 3: the raw-chat subscriber mechanism (`Chat.onMessage`). A non-command chat
-    /// line is delivered to `CHAT_MSG_SUBS` subscribers with `(slot, text, teamonly)`; if a live
-    /// subscriber returns `>= HookResult.Handled` (2) the broadcast is suppressed (`dispatch_chat`
-    /// returns true). `Continue`/`undefined`/non-number → no suppress. A matched command trigger
-    /// takes the command path and never reaches the subscriber loop. Engine-generic: core passes
-    /// only slot/text/teamonly (no game type).
-    #[test]
-    fn chat_message_subscriber_suppresses_on_handled() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("cm", r#"
-            var Chat = __s2pkg_chat.Chat;
-            globalThis.__got = null;
-            globalThis.__block = false;
-            Chat.onMessage(function (slot, text, teamonly) {
-                globalThis.__got = slot + "|" + text + "|" + teamonly;
-                return globalThis.__block ? 2 /*Handled*/ : 0 /*Continue*/;
-            });
-        "#, "{}");
-        // Continue (return 0) → not suppressed; the subscriber still saw slot/text/teamonly.
-        assert_eq!(dispatch_chat(3, "hello world", true), false, "Continue does not suppress");
-        assert_eq!(eval_in_context_string("cm", "globalThis.__got"), "3|hello world|true", "subscriber saw slot/text/teamonly");
-        // Handled (return 2) → suppressed; teamonly=false threads through as `false`.
-        eval_in_context("cm", "globalThis.__block = true;").unwrap();
-        assert_eq!(dispatch_chat(4, "hi again", false), true, ">= Handled suppresses");
-        assert_eq!(eval_in_context_string("cm", "globalThis.__got"), "4|hi again|false", "subscriber saw the second line");
-        // A command trigger with NO subscriber-reachable path: `!nope` doesn't match a command, so it
-        // falls to the raw-chat subscriber loop — the subscriber (blocking) suppresses it too.
-        eval_in_context("cm", "globalThis.__got = 'x';").unwrap();
-        assert_eq!(dispatch_chat(5, "!nope", false), true, "unmatched trigger reaches subscribers (blocking)");
-        assert_eq!(eval_in_context_string("cm", "globalThis.__got"), "5|!nope|false", "unmatched trigger delivered raw to subscriber");
-        shutdown();
-    }
 
-    /// Slice 6.13b Task 3: `__s2_chat_on_message` degrades safely with no engine ops present — the
-    /// native only touches CHAT_MSG_SUBS (no engine-op), so subscribing must not panic, and a
-    /// dispatch with no subscriber-return-value change (handler returns nothing) does not suppress.
-    #[test]
-    fn chat_on_message_native_degrades_without_ops() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();               // no engine ops set
-        create_plugin_context("p");
-        // Subscribing must not throw even with no ops.
-        eval_in_context("p", "__s2_chat_on_message(function (slot, text, teamonly) { /* returns undefined */ });").unwrap();
-        // A handler returning undefined ⇒ Continue ⇒ no suppress.
-        assert_eq!(dispatch_chat(1, "plain line", false), false, "undefined return ⇒ Continue ⇒ no suppress");
-        shutdown();
-    }
 
-    #[test]
-    fn command_trio_server_and_admin_gating() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        load_body("t", r#"
-            var C = __s2pkg_commands.Commands;
-            globalThis.__con = []; globalThis.__cht = [];
-            globalThis.__s2_client_console_print = function (slot, msg) { globalThis.__con.push(slot + "|" + msg); };
-            globalThis.__s2pkg_chat.Chat.toSlot = function (slot, msg) { globalThis.__cht.push(slot + "|" + msg); };
-            C.registerServer("sm_srv", function(ctx){ globalThis.__srv = ctx.callerSlot; });
-            C.registerAdmin("sm_adm", 512 /*CHAT=1<<9*/, function(ctx){ globalThis.__adm = ctx.callerSlot; });
-            // Install a fake admin-check: slot 5 allowed, others denied.
-            globalThis.__s2_admin_check = function(slot, mask){ return slot === 5; };
-        "#, "{}");
-        // registerServer: console (-1) runs; a player (3) denied.
-        dispatch_concommand("sm_srv", -1, "", ReplySource::from_slot(-1)); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "-1");
-        eval_in_context("t", "globalThis.__srv = 'none';").unwrap();
-        dispatch_concommand("sm_srv", 3, "", ReplySource::from_slot(3)); assert_eq!(eval_in_context_string("t", "String(globalThis.__srv)"), "none"); // stayed
-        // registerAdmin: console (-1) = root runs; slot 5 (hook true) runs; slot 3 (hook false) denied.
-        dispatch_concommand("sm_adm", -1, "", ReplySource::from_slot(-1)); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "-1");
-        eval_in_context("t", "globalThis.__adm = 'none';").unwrap();
-        dispatch_concommand("sm_adm", 5, "", ReplySource::from_slot(5)); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "5");
-        eval_in_context("t", "globalThis.__adm = 'none';").unwrap();
-        // The headline live-gate row: a non-admin typing sm_adm at their OWN CONSOLE (the
-        // ClientCommand path — source "console") must be refused IN THAT CONSOLE, never in chat.
-        eval_in_context("t", "globalThis.__con = [];").unwrap();   // isolate from the registerServer denial above
-        dispatch_client_command(3, "sm_adm", "");
-        assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // denied
-        assert_eq!(eval_in_context_string("t", "globalThis.__con.join(';')"), "3|[SM] You do not have access to this command.\n",
-                   "the console-sourced denial lands in the caller's console");
-        assert_eq!(eval_in_context_string("t", "String(globalThis.__cht.length)"), "0",
-                   "the console-sourced denial must not land in chat");
-        // Fail-safe: with NO admin-check hook installed, a player is DENIED (never accidentally granted).
-        eval_in_context("t", "delete globalThis.__s2_admin_check; globalThis.__adm = 'none'; globalThis.__con = [];").unwrap();
-        dispatch_concommand("sm_adm", 3, "", ReplySource::from_slot(3)); assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // no hook → denied
-        shutdown();
-    }
 
     // ---------------------------------------------------------------------------
     // Slice DB Task 3: __s2_sqlite_* natives — round trip (now actor-backed, off-thread) + degrade tests.
@@ -16250,8 +14340,8 @@ pub(crate) mod frame_tests {
             globalThis.__s2pkg_chat.Chat.toSlot = function (s, msg) { sent.push([s, msg]); };
             // capture the onMessage handler the renderer installs
             var chatHandler = null;
-            var realOn = globalThis.__s2pkg_chat.Chat.onMessage;
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            var realOn = globalThis.__s2_chat_on_message;
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             var m = new Menu("Pick"); m.style = MenuStyle.Chat;
             m.addItem("kick", "Kick"); m.addItem("ban", "Ban");
             var got = null; m.onSelect(function (e){ got = e.info; });
@@ -16260,7 +14350,7 @@ pub(crate) mod frame_tests {
             var suppressed = chatHandler(3, "2", false);
             // restore
             globalThis.__s2pkg_chat.Chat.toSlot = realToSlot;
-            globalThis.__s2pkg_chat.Chat.onMessage = realOn;
+            globalThis.__s2_chat_on_message = realOn;
             JSON.stringify({ sentCount: sent.length > 0, picked: got, suppressed: suppressed });
         "#);
         // "2" -> second item "ban"; a matched pick suppresses the chat line (>=2)
@@ -16274,13 +14364,13 @@ pub(crate) mod frame_tests {
         let out = eval_std("mchat2", r#"
             var { Menu, MenuStyle } = globalThis.__s2pkg_menu;
             var chatHandler = null;
-            var realOn = globalThis.__s2pkg_chat.Chat.onMessage;
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            var realOn = globalThis.__s2_chat_on_message;
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             var m = new Menu("P"); m.style = MenuStyle.Chat; m.addItem("a", "A");
             m.display(3, 0);
             var r1 = chatHandler(3, "hello", false);   // not a digit -> pass through (undefined/0)
             var r2 = chatHandler(4, "1", false);        // different slot -> pass through
-            globalThis.__s2pkg_chat.Chat.onMessage = realOn;
+            globalThis.__s2_chat_on_message = realOn;
             JSON.stringify({ r1: r1 == null || r1 < 2, r2: r2 == null || r2 < 2 });
         "#);
         assert_eq!(out, r#"{"r1":true,"r2":true}"#);
@@ -16377,7 +14467,7 @@ pub(crate) mod frame_tests {
         let out = eval_std("vt1", r#"
             var sent = [], chatHandler = null, delayed = [];
             globalThis.__s2pkg_chat.Chat.toAll = function (m) { sent.push(m); };
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
             globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false},{slot:9,isBot:true}]; };
             globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
@@ -16400,7 +14490,7 @@ pub(crate) mod frame_tests {
         let out = eval_std("vt2", r#"
             var chatHandler = null, delayed = [];
             globalThis.__s2pkg_chat.Chat.toAll = function () {};
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
             globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false}]; };
             globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
@@ -16422,7 +14512,7 @@ pub(crate) mod frame_tests {
         let out = eval_std("vt3", r#"
             var chatHandler = null, delayed = [], shows = [], clears = [];
             globalThis.__s2pkg_chat.Chat.toAll = function () {};
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
             globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false}]; };
             globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
@@ -16443,7 +14533,7 @@ pub(crate) mod frame_tests {
         let out = eval_std("vt4", r#"
             var chatHandler = null, delayed = [], calls = 0;
             globalThis.__s2pkg_chat.Chat.toAll = function () {};
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
             globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false}]; };
             globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
@@ -16464,7 +14554,7 @@ pub(crate) mod frame_tests {
         let out = eval_std("vt5", r#"
             var chatHandler = null, delayed = [];
             globalThis.__s2pkg_chat.Chat.toAll = function () {};
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
             globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false}]; };
             globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
@@ -16488,7 +14578,7 @@ pub(crate) mod frame_tests {
         let out = eval_std("vt6", r#"
             var chatHandler = null, disconnectHandler = null, delayed = [], res = null;
             globalThis.__s2pkg_chat.Chat.toAll = function () {};
-            globalThis.__s2pkg_chat.Chat.onMessage = function (fn) { chatHandler = fn; };
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
             globalThis.__s2pkg_clients.Clients.onDisconnect = function (fn) { disconnectHandler = fn; };
             globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false}]; };
             globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };

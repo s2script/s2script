@@ -33,12 +33,9 @@ use std::os::raw::c_char;
 /// The capability the DECLARING owner must have in its manifest AND be operator-allow-listed for
 /// (spec §7). Separate from `gamedata_calls::PERMISSION` on purpose — see rule 2 above.
 ///
-/// V1 SCOPE: the game package is the only declarer that can exist today — it is exempt as
-/// first-party runtime, and `s2s build` refuses both a `hooks` gamedata section and this permission,
-/// so no `.s2sp` can carry one (see the scope note in the spec). The non-exempt branch below is
-/// therefore reachable only from `cargo test` for now, and is KEPT rather than narrowed to match:
-/// the check is correct for the design, the plugin path is a planned follow-up slice, and a
-/// default-deny gate relaxed to fit a temporary scope stops being a gate.
+/// Gates DECLARING a hook. The game package is exempt as first-party runtime. A plugin must
+/// declare this permission in its manifest AND be operator-allow-listed; `s2s build` now accepts
+/// both the `hooks` section and this permission, so the non-exempt branch is the shipping path.
 pub(crate) const PERMISSION: &str = "engine:hooks";
 
 /// The shim's hook-slot budget (`S2_HOOK_MAX` in `shim/src/hook_dispatch.h`). MUST match it: the
@@ -70,6 +67,10 @@ pub(crate) const SHAPES: &[(&str, i32)] = &[
     // "truncate whatever the engine put in that register", which is a live-server SEGV when the
     // thing being truncated is a pointer. See shim/src/hook_dispatch.h.
     ("this_f32_i32_i64_i64", 2),
+    // i32(void* self, int64, int32, int64). The two i64s are opaque pass-through (an item
+    // view pointer and an unknown trailing ptr). JS sees `method` and a writable `result`
+    // (the i32 return), never the pointers. Pickup-gates spec PR1.
+    ("this_i64_i32_i64", 3),
 ];
 
 /// The shape id for a vocabulary name, or `None` for anything outside it.
@@ -1202,6 +1203,8 @@ mod tests {
     fn the_shape_vocabulary_is_pinned() {
         assert_eq!(shape_id("this_void"), Some(0));
         assert_eq!(shape_id("this_f32_i32_i32_i32"), Some(1));
+        assert_eq!(shape_id("this_f32_i32_i64_i64"), Some(2));
+        assert_eq!(shape_id("this_i64_i32_i64"), Some(3));
         assert_eq!(shape_id("this_i32"), None);
         assert_eq!(shape_id(""), None);
     }
