@@ -34,8 +34,13 @@ CS2 gate (below). If Docker is not present in the VM, the last gate in `scripts/
 
 **Live CS2 gate (running s2script on a real server in the VM).** This IS supported in the dev VM —
 s2script is a Metamod plugin, so any behavior involving the engine (hooks, entities, commands,
-players) can only be truly tested here. It is heavy one-time setup, so it is **captured in the VM
-snapshot, not the `npm install` update script**. The pieces (once, already done for the snapshot):
+players) can only be truly tested here. The environment is wired up in
+[`.cursor/environment.json`](.cursor/environment.json): `install` →
+[`scripts/cloud/install.sh`](scripts/cloud/install.sh) (idempotent: npm workspaces + the whole live
+gate below), `start` → [`scripts/cloud/start.sh`](scripts/cloud/start.sh) (per-boot: start dockerd,
+chown `cs2-data`, `compose up -d`), plus a `cs2-server` terminal tailing the server log. Both are
+safe to run by hand. The pieces they automate (heavy, captured in the VM snapshot, NOT re-run per
+boot):
 Docker (no systemd — start the daemon by hand: `sudo dockerd &`, storage-driver `fuse-overlayfs`,
 `iptables-legacy`); `git submodule update --init --recursive`; the sniper build for **loadable**
 binaries (a host `cargo build` links `GLIBC_2.34+` and Metamod refuses it — use
