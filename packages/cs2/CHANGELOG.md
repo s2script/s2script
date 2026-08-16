@@ -1,5 +1,19 @@
 # @s2script/cs2
 
+## 0.14.0
+
+### Minor Changes
+
+- 747f312: Add `ctx.items.onCanAcquire` / `onCanAcquirePost` — a first-class pickup gate over `CCSPlayer_ItemServices::CanAcquire`. Plugins can refuse a pickup (or a `giveNamedItem`) with `AcquireResult` + `HookResult`. The item view is block-scoped scalars, never a pointer.
+
+### Patch Changes
+
+- 747f312: A plugin engine call is visible to other plugins before it returns. `Events.fire` nests `on`/`onPre`. `Player.respawn()` and `GameRules.terminateRound()` run on this call (no next-frame queue). `Server.setCvar` writes through ICvar now (boolean return; `getCvar`/`onCvarChange` see the new value on the same call).
+- Updated dependencies [747f312]
+- Updated dependencies [747f312]
+- Updated dependencies [dd8f333]
+  - @s2script/sdk@0.22.0
+
 ## 0.13.0
 
 ### Minor Changes
