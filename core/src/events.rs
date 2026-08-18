@@ -13,10 +13,10 @@
 //! Extracted from `v8host.rs` under the core-stabilization program — see `crate::usermsg` for the
 //! shape (a feature owns its state, natives, dispatch and teardown together).
 
+use crate::dispatch::{fan_out, fan_out_collapsing, Delivery, Instrument, StopAt};
 use crate::multiplexer::HookResult;
 use crate::v8host::{
-    current_plugin, engine_ops, fan_out, fan_out_collapsing, hook_request, set_native,
-    subscribe_into, Delivery, Instrument, StopAt,
+    current_plugin, engine_ops, hook_request, set_native, subscribe_into,
 };
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;

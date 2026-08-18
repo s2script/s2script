@@ -15,8 +15,9 @@
 //! ("a matching ConCommand supersedes; a listener observes"). Prefix is a naming accident; the
 //! mux it feeds is what decides the owner.
 
+use crate::dispatch::{fan_out, Delivery, Instrument};
 use crate::v8host::{
-    engine_ops, fan_out, set_native, subscribe_into, voice_clear_slot, Delivery, Instrument,
+    engine_ops, set_native, subscribe_into, voice_clear_slot,
 };
 use std::ffi::CString;
 

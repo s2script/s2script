@@ -17,10 +17,10 @@
 //! Outbound `Chat.toSlot`/`toAll` (client print). `Server.command`. TopMenu. Plugin list/load.
 //! `Chat.color`. `S2EngineOps` stays whole in `v8host.rs`.
 
+use crate::dispatch::{fan_out, fan_out_collapsing, Instrument, StopAt};
 use crate::multiplexer::HookResult;
 use crate::v8host::{
-    current_plugin, engine_ops, fan_out, fan_out_collapsing, log_warn, plugin_generation, set_native,
-    subscribe_into, Instrument, StopAt,
+    current_plugin, engine_ops, log_warn, plugin_generation, set_native, subscribe_into,
 };
 use std::ffi::CString;
 

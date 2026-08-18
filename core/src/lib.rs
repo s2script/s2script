@@ -46,6 +46,7 @@ mod http;
 mod loader;
 mod multiplexer;
 mod nest;
+mod dispatch;
 mod net;
 pub mod owner_stores;
 pub mod process_singletons;

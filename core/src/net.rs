@@ -126,7 +126,8 @@ pub fn try_recv_signal() -> Option<NetSignal> { engine().sig_rx.lock().ok()?.try
 // surface and routes through `fan_out` so the host isolate stays in `v8host`.
 // ---------------------------------------------------------------------------
 
-use crate::v8host::{current_plugin, fan_out, log_warn, set_native, subscribe_into, Instrument};
+use crate::dispatch::{fan_out, Instrument};
+use crate::v8host::{current_plugin, log_warn, set_native, subscribe_into};
 
 enum PendingNetEvent {
     Data(Vec<u8>),
