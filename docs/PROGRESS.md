@@ -208,3 +208,17 @@ prologue as a byte literal — REFUSED under `this_f32_i32_i32_i32`, ACCEPTED un
 `mov %rdx,mem` is not evidence about the argument), pass-on-no-evidence, and a view ending
 mid-instruction. Three mutations driven: dropping redefinition tracking, ignoring `REX.W`, and
 shifting the register table each break exactly the tests that should catch them.
+
+### Async Jobs spine (2026-08-18)
+
+Behavior-preserving extraction of the async Jobs spine into `core/src/jobs.rs`. Jobs owns the process-global monotonic async id (never reset), `ResolverEntry`, the resolver map, the pending-job count, timer resolver insertion, immediate `begin_job`, mint-then-`commit_job`, `complete_job` / `drop_if_present`, the owner-generation settle-or-drop protocol, and the process-singleton reset of the map and pending count.
+
+Two begin paths stay distinct: fetch / `threadSleep` / ws / net begin immediately; SQLite and remote DB mint then commit only after a successful submit, so an early reject has no ledger / map / pending / detour flicker. Timers share the id and map but do not increment pending. Engine halves stay in `http.rs` / `ws.rs` / `net.rs` / `db.rs` / `sqldb.rs` and still move only plain data.
+
+`frame_async_drain` is an explicit phase list (timers, threadpool, fetch, DB, WS connects, net connects) using those operations. Connect Promises still settle before the one microtask checkpoint; WS/net drops still wait until after it. `refresh_detour`, rejection flush, crash sweep, and plugin-load finalization keep their historical positions. `Resource::Job` teardown decrements pending only if a resolver was removed.
+
+Isolate/context/liveness/Job-ledger facts go through a narrow `jobs_*` adapter on `v8host` — not a shared owner-context type with Dispatch (this slice branched from `main` and has no `dispatch.rs`). Callback-timer maps stay in `v8host`.
+
+New regressions: generic-job unload (captured id + injected zero-work late complete); WS-connect unload against the local echo handshake (late Connected/Closed consumed); SQLite query unload after commit and before the next drain (the deterministic Jobs-visible window — racing the in-process actor is not reliable); late completion after unload does not enter a disposed context; missing/double completion; ids monotonic across singleton reset. No changeset. Live CS2 gate not required.
+
+Spec: `docs/superpowers/specs/2026-08-18-async-jobs-spine-design.md`. Plan: `docs/superpowers/plans/2026-08-18-async-jobs-spine.md`.

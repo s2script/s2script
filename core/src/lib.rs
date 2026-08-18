@@ -43,6 +43,7 @@ mod ffi;
 mod gamedata_calls;
 mod gamedata_hooks;
 mod http;
+mod jobs;
 mod loader;
 mod multiplexer;
 mod nest;

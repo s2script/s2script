@@ -118,19 +118,6 @@ enum SettleState {
 /// (design spec §5.2, resolved decision #4).
 pub(crate) const LOAD_TIMEOUT_FRAMES: u64 = 1920;
 
-/// A pending async resolver (`Delay`/`NextTick`/`NextFrame`/`threadSleep`) plus the OWNING plugin's
-/// `(id, generation)` captured at creation.  `owner` is `None` for a resolver created from a
-/// non-plugin context (the shared `HOST` context via the C-ABI `eval` surface): such a resolver has
-/// no plugin liveness to check and is always resolved.  For a plugin-owned resolver,
-/// `frame_async_drain` checks `REGISTRY.is_live(id, generation)` before resolving and DROPS it (never
-/// resolves into a disposed/replaced context) if the plugin unloaded or its generation advanced — the
-/// use-after-free killer.  Same id space as the ledger's timer/job ids.
-struct ResolverEntry {
-    owner: Option<(String, u64)>,
-    resolver: v8::Global<v8::PromiseResolver>,
-}
-
-
 thread_local! {
     static LOGGER: std::cell::Cell<Option<LogFn>> = std::cell::Cell::new(None);
     static HOST: std::cell::RefCell<Option<Host>> = std::cell::RefCell::new(None);
@@ -148,19 +135,13 @@ thread_local! {
     /// Boot instant for the breadcrumb's uptime field (set once in `init`).
     static UPTIME_START: std::cell::Cell<Option<Instant>> = std::cell::Cell::new(None);
     /// Pending timer queue (Delay/NextTick/NextFrame).  Holds only `u64` ids; the promise lives
-    /// in `RESOLVERS`.  Borrowed briefly in `make_timer_promise`/`frame_async_drain`/`refresh_detour`;
+    /// in the Jobs resolver map.  Borrowed briefly in `make_timer_promise`/`frame_async_drain`/`refresh_detour`;
     /// NEVER held across `perform_microtask_checkpoint` (a continuation re-enters it).
     static TIMERS: std::cell::RefCell<TimerQueue> = std::cell::RefCell::new(TimerQueue::new());
-    /// `async id → ResolverEntry` (the resolver Global + its owning-plugin `(id, generation)` tag).
-    /// The entry is dropped (removed) when the timer/job fires, when its plugin unloads, or when the
-    /// async-liveness guard drops it (unloaded/reloaded plugin).  Cleared in `shutdown` BEFORE the
-    /// isolate is dropped.  Never held across the checkpoint.
-    static RESOLVERS: std::cell::RefCell<std::collections::HashMap<u64, ResolverEntry>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
-    /// Callback timers (`Timers.after`/`Timers.every`) — distinct from RESOLVERS, which holds
-    /// one-shot Promise resolvers. A callback timer's function must SURVIVE firing when it repeats,
-    /// so it cannot live in a map the drain removes from unconditionally. Keyed by the same
-    /// async-id space as TIMERS/RESOLVERS so ledger teardown reaches all three by one id.
+    /// Callback timers (`Timers.after`/`Timers.every`) — distinct from the Jobs resolver map, which
+    /// holds one-shot Promise resolvers. A callback timer's function must SURVIVE firing when it
+    /// repeats, so it cannot live in a map the drain removes from unconditionally. Keyed by the same
+    /// async-id space as TIMERS/jobs so ledger teardown reaches all three by one id.
     static TIMER_CBS: std::cell::RefCell<std::collections::HashMap<u64, TimerCallback>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Timer ids killed since the last drain step. The drain REMOVES a callback from TIMER_CBS
@@ -176,8 +157,6 @@ thread_local! {
     static PENDING_REJECTS: std::cell::RefCell<std::collections::HashMap<i32, (String, String)>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
 
-    /// Count of in-flight async-FFI jobs (Task 5 populates this); feeds the combined detour predicate.
-    static PENDING_JOBS: std::cell::Cell<usize> = std::cell::Cell::new(0);
     /// Cached view of "is the OnGameFrame detour currently installed?" — the source of truth the
     /// combined lazy-detour reconciles against, so we only call `HOOK_REQUEST` on a real transition.
     static DETOUR_INSTALLED: std::cell::Cell<bool> = std::cell::Cell::new(false);
@@ -195,7 +174,7 @@ thread_local! {
     /// onto it).  Each `Global<Context>` is stamped with a `PluginId` slot at creation.  ADDED
     /// ALONGSIDE `HOST` for this task: the existing single-context path is untouched.  Dropped
     /// (per id in `dispose_plugin_context`, or all in `shutdown`) while the isolate is still alive
-    /// — same discipline as `RESOLVERS`/`CONCOMMANDS`.
+    /// — same discipline as the Jobs resolver map / `CONCOMMANDS`.
     static PLUGINS: std::cell::RefCell<std::collections::HashMap<String, PluginInstance>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Plugin registry (Task 2): generation counter + per-plugin teardown ledger, keyed by the
@@ -561,33 +540,41 @@ pub fn register_injected_package(name: &str, js: &str) {
     INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), js.to_string()));
 }
 
-/// Allocate the next async id (timers + Task-5 jobs share this space).
-/// Monotonic async-id allocator (1-based; 0 is reserved as "none").
-///
-/// PROCESS-GLOBAL, not thread_local — and that is the whole point. These ids key `RESOLVERS`, but
-/// they are ALSO handed to engines that live for the process: the threadpool, http/fetch, and the
-/// ws/net registries. A per-thread counter feeding process-wide registries means two threads mint
-/// the SAME id for unrelated work.
-///
-/// That is not theoretical. libtest runs every `#[test]` on its own thread, so a thread_local counter
-/// restarted at 1 for each test while the threadpool's completion channel carried on across all of
-/// them. A completion from an earlier test arriving during a later one found the later test's
-/// resolver under the same id, removed it, and resolved it with `undefined` — so
-/// `WebSocket.connect(...).then(id => ...)` handed JS `undefined`, the socket wrapper was built with
-/// `id = 0`, and every subsequent native refused it as "does not own ws conn 0". Silent, and only
-/// under load, because it needs a stale completion to land inside another test's poll window.
-///
-/// The comment at the threadpool completion loop ("a stale id from a prior isolate has no entry and
-/// skips this") states the intended rule; a resettable counter is what made it false.
-static NEXT_ASYNC_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-fn next_async_id() -> u64 {
-    NEXT_ASYNC_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
 /// Total in-flight async work: pending timers + pending jobs.  Reads TIMERS (brief borrow).
 fn async_pending() -> usize {
-    TIMERS.with(|t| t.borrow().len()) + PENDING_JOBS.with(|c| c.get())
+    TIMERS.with(|t| t.borrow().len()) + crate::jobs::pending()
+}
+
+// ---------------------------------------------------------------------------
+// Jobs adapter — isolate / context / liveness / ledger facts the Jobs spine
+// needs. Named `jobs_*` so this is a Jobs capability, not a shared
+// owner-context abstraction (Dispatch is a separate slice and is not on this
+// branch). Jobs never names `HOST` / `PLUGINS` / `REGISTRY`.
+// ---------------------------------------------------------------------------
+
+/// The calling plugin's `(id, current generation)` for tagging an async resolver.
+pub(crate) fn jobs_owner_tag(scope: &mut v8::PinScope) -> Option<(String, u64)> {
+    resolver_owner_tag(scope)
+}
+
+/// Ledger a `Job` against `owner`. A missing ledger (unknown owner) is a no-op.
+pub(crate) fn jobs_record_job(owner: &str, id: u64) {
+    REGISTRY.with(|r| {
+        if let Some(l) = r.borrow_mut().ledger_mut(owner) {
+            l.record_job(id);
+        }
+    });
+}
+
+/// Generation-gated liveness. Does not expose `REGISTRY`.
+pub(crate) fn jobs_owner_is_live(owner: &str, generation: u64) -> bool {
+    REGISTRY.with(|r| r.borrow().is_live(owner, generation))
+}
+
+/// Clone a plugin context out of the table so a settle may re-enter `PLUGINS`.
+/// Does not expose `PLUGINS`.
+pub(crate) fn jobs_clone_plugin_context(owner: &str) -> Option<v8::Global<v8::Context>> {
+    PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
 }
 
 /// Combined lazy-detour reconciler.  Desired = any onGameFrame subscriber OR any pending async
@@ -823,15 +810,15 @@ fn resolver_owner_tag(scope: &mut v8::PinScope) -> Option<(String, u64)> {
 }
 
 /// Shared helper for the timer natives: create a `PromiseResolver`, stash its `Global` (tagged with
-/// the owning plugin) under a fresh async id, push the timer, reconcile the detour, and return the
-/// pending promise.
+/// the owning plugin) under a fresh async id in the Jobs map (timers do not increment pending
+/// jobs), push the timer, reconcile the detour, and return the pending promise.
 fn make_timer_promise<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     kind: TimerKind,
 ) -> v8::Local<'s, v8::Value> {
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
-    let id = next_async_id();
+    let id = crate::jobs::next_id();
     // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
     let owner = resolver_owner_tag(scope);
     // Ledger this timer against the CALLING plugin (Task 6's teardown authority).  A non-plugin/
@@ -843,42 +830,10 @@ fn make_timer_promise<'s>(
             }
         });
     }
-    RESOLVERS.with(|m| {
-        m.borrow_mut()
-            .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-    });
+    crate::jobs::insert_timer_resolver(scope, id, resolver, owner);
     TIMERS.with(|t| t.borrow_mut().push(id, kind));
     refresh_detour();
     promise.into()
-}
-
-/// Shared helper for payload-carrying job natives (`__s2_fetch`, and any later cousin): create a
-/// `PromiseResolver`, tag it with the calling plugin, ledger it as a `Job`, stash it under a fresh
-/// async id, bump `PENDING_JOBS`, reconcile the detour, and return `(id, promise)`.
-///
-/// The caller submits work keyed by `id`; `frame_async_drain` later pops the resolver. RESOLVERS
-/// stay here — modules must not touch the map. A non-plugin / unknown owner is a safe no-op.
-pub(crate) fn begin_job_promise<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-) -> (u64, v8::Local<'s, v8::Value>) {
-    let resolver = v8::PromiseResolver::new(scope).unwrap();
-    let promise = resolver.get_promise(scope);
-    let id = next_async_id();
-    let owner = resolver_owner_tag(scope);
-    if let Some((ref oid, _)) = owner {
-        REGISTRY.with(|r| {
-            if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                l.record_job(id);
-            }
-        });
-    }
-    RESOLVERS.with(|m| {
-        m.borrow_mut()
-            .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-    });
-    PENDING_JOBS.with(|c| c.set(c.get() + 1));
-    refresh_detour();
-    (id, promise.into())
 }
 
 /// Native `__s2_delay(ms) -> Promise`.  Resolves after a wall-clock deadline.
@@ -916,7 +871,7 @@ fn s2_timer_create(
         // the frame to make progress on anything else. Refuse it rather than ship a footgun.
         if repeat && ms == 0 { return; }
 
-        let id = next_async_id();
+        let id = crate::jobs::next_id();
         let owner = resolver_owner_tag(scope);
         if let Some((ref oid, _)) = owner {
             REGISTRY.with(|r| {
@@ -1008,31 +963,12 @@ fn s2_thread_sleep(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ms = args.get(0).integer_value(scope).unwrap_or(0);
         let ms = if ms > 0 { ms as u64 } else { 0 };
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-        let id = next_async_id();
-        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
-        let owner = resolver_owner_tag(scope);
-        // Ledger this async-FFI job against the CALLING plugin (read fresh from the current
-        // context).  A non-plugin/unknown owner is a safe no-op; no borrow held across a JS call.
-        if let Some((ref oid, _)) = owner {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
-                }
-            });
-        }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        let (id, promise) = crate::jobs::begin_job(scope);
         pool().submit(id, Box::new(move || {
             std::thread::sleep(std::time::Duration::from_millis(ms));
             Ok(())
         }));
-        refresh_detour();
-        rv.set(promise.into());
+        rv.set(promise);
     }));
 }
 
@@ -1078,32 +1014,21 @@ fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
                 }
             }
         }
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-        let id = next_async_id();
-        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
-        let owner = resolver_owner_tag(scope);
+        let (id, promise) = crate::jobs::begin_job(scope);
         // The SAME derivation send/close/on use to CHECK this owner — see `ws_owner`.
         let owner_string = ws_owner(scope);
-        // Ledger this async job (as a Job, for RESOLVERS/PENDING_JOBS cleanup) AND the connection
-        // itself (as a WsConn, so an unclosed connection is closed at teardown) against the CALLING
-        // plugin — a non-plugin/unknown owner is a safe no-op; no borrow held across a JS call.
-        if let Some((ref oid, _)) = owner {
+        // The Job is already ledgered by begin_job. Also ledger the connection itself (as a
+        // WsConn, so an unclosed connection is closed at teardown) — a non-plugin/unknown
+        // owner is a safe no-op; no borrow held across a JS call.
+        if let Some((ref oid, _)) = resolver_owner_tag(scope) {
             REGISTRY.with(|r| {
                 if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
                     l.record_ws_conn(id);
                 }
             });
         }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
         crate::ws::connect(id, url, owner_string, headers);
-        refresh_detour();
-        rv.set(promise.into());
+        rv.set(promise);
     }));
 }
 
@@ -1112,38 +1037,26 @@ fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
 /// HandleScope/ContextScope preamble exactly, but resolves with the conn-id `Number` on `Ok`
 /// (the plugin's `WebSocket.connect` prelude then wraps it into a handle), or rejects with an
 /// `Error` on `Err` (a connect failure — bad host/port/handshake).
-fn resolve_ws_connect(host: &mut Host, entry: &ResolverEntry, id: u64, result: Result<(), String>) {
-    let g_ctx = match &entry.owner {
-        Some((oid, generation)) => {
-            if !REGISTRY.with(|r| r.borrow().is_live(oid, *generation)) {
-                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
+fn resolve_ws_connect(
+    host: &mut Host,
+    entry: &crate::jobs::ResolverEntry,
+    id: u64,
+    result: Result<(), String>,
+) {
+    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| {
+        match result {
+            Ok(()) => {
+                let id_val = v8::Number::new(scope, id as f64);
+                resolver.resolve(scope, id_val.into());
             }
-            match PLUGINS.with(|p| p.borrow().get(oid).map(|pi| pi.context.clone())) {
-                Some(g) => g,
-                None => return, // context gone (defensive) → drop
+            Err(e) => {
+                let msg = v8::String::new(scope, &e)
+                    .unwrap_or_else(|| v8::String::new(scope, "ws connect error").unwrap());
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
             }
         }
-        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
-    };
-
-    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-    let hs = &mut hs;
-    let ctx_local = v8::Local::new(hs, &g_ctx);
-    let scope = &mut v8::ContextScope::new(hs, ctx_local);
-    let resolver = v8::Local::new(scope, &entry.resolver);
-
-    match result {
-        Ok(()) => {
-            let id_val = v8::Number::new(scope, id as f64);
-            resolver.resolve(scope, id_val.into());
-        }
-        Err(e) => {
-            let msg = v8::String::new(scope, &e).unwrap_or_else(|| v8::String::new(scope, "ws connect error").unwrap());
-            let ex = v8::Exception::error(scope, msg);
-            resolver.reject(scope, ex);
-        }
-    }
+    });
 }
 
 /// Native `__s2_ws_send(id, text)`.  Owner-scoped (a no-op for a conn this plugin doesn't own, or an
@@ -1186,27 +1099,17 @@ fn s2_net_tcp_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let host = args.get(0).to_rust_string_lossy(scope);
         let port = args.get(1).number_value(scope).unwrap_or(0.0) as u16;
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-        let id = next_async_id();
-        let owner = resolver_owner_tag(scope);
+        let (id, promise) = crate::jobs::begin_job(scope);
         let owner_string = current_plugin(scope).unwrap_or_default();
-        if let Some((ref oid, _)) = owner {
+        if let Some((ref oid, _)) = resolver_owner_tag(scope) {
             REGISTRY.with(|r| {
                 if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
                     l.record_net_conn(id);
                 }
             });
         }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
         crate::net::connect_tcp(id, host, port, owner_string);
-        refresh_detour();
-        rv.set(promise.into());
+        rv.set(promise);
     }));
 }
 
@@ -1215,27 +1118,17 @@ fn s2_net_tcp_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 /// the socket is bound, or rejects on a bind failure).
 fn s2_net_udp_bind(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-        let id = next_async_id();
-        let owner = resolver_owner_tag(scope);
+        let (id, promise) = crate::jobs::begin_job(scope);
         let owner_string = current_plugin(scope).unwrap_or_default();
-        if let Some((ref oid, _)) = owner {
+        if let Some((ref oid, _)) = resolver_owner_tag(scope) {
             REGISTRY.with(|r| {
                 if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
                     l.record_net_conn(id);
                 }
             });
         }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
         crate::net::bind_udp(id, owner_string);
-        refresh_detour();
-        rv.set(promise.into());
+        rv.set(promise);
     }));
 }
 
@@ -1243,38 +1136,26 @@ fn s2_net_udp_bind(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgument
 /// in its OWNING plugin's context — a verbatim copy of `resolve_ws_connect` (resolves with the
 /// conn-id `Number` on `Ok`, rejects with an `Error` on `Err` = a connect/bind failure; the
 /// owner-liveness DROP preamble is identical — never resolve into a dead/replaced context).
-fn resolve_net_connect(host: &mut Host, entry: &ResolverEntry, id: u64, result: Result<(), String>) {
-    let g_ctx = match &entry.owner {
-        Some((oid, generation)) => {
-            if !REGISTRY.with(|r| r.borrow().is_live(oid, *generation)) {
-                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
+fn resolve_net_connect(
+    host: &mut Host,
+    entry: &crate::jobs::ResolverEntry,
+    id: u64,
+    result: Result<(), String>,
+) {
+    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| {
+        match result {
+            Ok(()) => {
+                let id_val = v8::Number::new(scope, id as f64);
+                resolver.resolve(scope, id_val.into());
             }
-            match PLUGINS.with(|p| p.borrow().get(oid).map(|pi| pi.context.clone())) {
-                Some(g) => g,
-                None => return, // context gone (defensive) → drop
+            Err(e) => {
+                let msg = v8::String::new(scope, &e)
+                    .unwrap_or_else(|| v8::String::new(scope, "net connect error").unwrap());
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
             }
         }
-        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
-    };
-
-    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-    let hs = &mut hs;
-    let ctx_local = v8::Local::new(hs, &g_ctx);
-    let scope = &mut v8::ContextScope::new(hs, ctx_local);
-    let resolver = v8::Local::new(scope, &entry.resolver);
-
-    match result {
-        Ok(()) => {
-            let id_val = v8::Number::new(scope, id as f64);
-            resolver.resolve(scope, id_val.into());
-        }
-        Err(e) => {
-            let msg = v8::String::new(scope, &e).unwrap_or_else(|| v8::String::new(scope, "net connect error").unwrap());
-            let ex = v8::Exception::error(scope, msg);
-            resolver.reject(scope, ex);
-        }
-    }
+    });
 }
 
 
@@ -5879,22 +5760,9 @@ fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
 
-        let id = next_async_id();
+        let id = crate::jobs::next_id();
         match crate::db::submit_query(id, handle, sql, params, &owner) {
-            Ok(()) => {
-                let job_owner = resolver_owner_tag(scope);
-                if let Some((ref oid, _)) = job_owner {
-                    REGISTRY.with(|r| {
-                        if let Some(l) = r.borrow_mut().ledger_mut(oid) { l.record_job(id); }
-                    });
-                }
-                RESOLVERS.with(|m| {
-                    m.borrow_mut()
-                        .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-                });
-                PENDING_JOBS.with(|c| c.set(c.get() + 1));
-                refresh_detour();
-            }
+            Ok(()) => crate::jobs::commit_job(scope, id, resolver),
             Err(e) => {
                 let msg = v8::String::new(scope, &e).unwrap();
                 let ex = v8::Exception::error(scope, msg);
@@ -5918,22 +5786,9 @@ fn s2_sqlite_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
 
-        let id = next_async_id();
+        let id = crate::jobs::next_id();
         match crate::db::submit_execute(id, handle, sql, params, &owner) {
-            Ok(()) => {
-                let job_owner = resolver_owner_tag(scope);
-                if let Some((ref oid, _)) = job_owner {
-                    REGISTRY.with(|r| {
-                        if let Some(l) = r.borrow_mut().ledger_mut(oid) { l.record_job(id); }
-                    });
-                }
-                RESOLVERS.with(|m| {
-                    m.borrow_mut()
-                        .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-                });
-                PENDING_JOBS.with(|c| c.set(c.get() + 1));
-                refresh_detour();
-            }
+            Ok(()) => crate::jobs::commit_job(scope, id, resolver),
             Err(e) => {
                 let msg = v8::String::new(scope, &e).unwrap();
                 let ex = v8::Exception::error(scope, msg);
@@ -6030,25 +5885,9 @@ fn s2_db_remote_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
             }
         };
 
-        let id = next_async_id();
-        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
-        let job_owner = resolver_owner_tag(scope);
-        // Ledger this async job against the CALLING plugin (teardown authority) — a non-plugin/
-        // unknown owner is a safe no-op; no borrow held across a JS call.
-        if let Some((ref oid, _)) = job_owner {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
-                }
-            });
-        }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        let id = crate::jobs::next_id();
+        crate::jobs::commit_job(scope, id, resolver);
         crate::sqldb::spawn_query(id, pool, sql, params);
-        refresh_detour();
         rv.set(promise.into());
     }));
 }
@@ -6079,25 +5918,9 @@ fn s2_db_remote_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
             }
         };
 
-        let id = next_async_id();
-        // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
-        let job_owner = resolver_owner_tag(scope);
-        // Ledger this async job against the CALLING plugin (teardown authority) — a non-plugin/
-        // unknown owner is a safe no-op; no borrow held across a JS call.
-        if let Some((ref oid, _)) = job_owner {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_job(id);
-                }
-            });
-        }
-        RESOLVERS.with(|m| {
-            m.borrow_mut()
-                .insert(id, ResolverEntry { owner: job_owner, resolver: v8::Global::new(scope.as_ref(), resolver) })
-        });
-        PENDING_JOBS.with(|c| c.set(c.get() + 1));
+        let id = crate::jobs::next_id();
+        crate::jobs::commit_job(scope, id, resolver);
         crate::sqldb::spawn_execute(id, pool, sql, params);
-        refresh_detour();
         rv.set(promise.into());
     }));
 }
@@ -6127,48 +5950,35 @@ fn s2_db_remote_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 /// disposed/replaced context), but resolves with the row array (`query_result_to_js`) or the
 /// `{changes, lastInsertId}` object on `Ok`, or rejects with an `Error` on `Err` (a SQL/connection
 /// failure surfaced by `sqldb::run_query`/`run_execute`).
-fn resolve_db(host: &mut Host, entry: &ResolverEntry, result: Result<crate::db::DbOutcome, String>) {
-    let g_ctx = match &entry.owner {
-        Some((id, generation)) => {
-            if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
-                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
+fn resolve_db(
+    host: &mut Host,
+    entry: &crate::jobs::ResolverEntry,
+    result: Result<crate::db::DbOutcome, String>,
+) {
+    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| {
+        match result {
+            Ok(crate::db::DbOutcome::Query(qr)) => {
+                let v = query_result_to_js(scope, &qr);
+                resolver.resolve(scope, v);
             }
-            match PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) {
-                Some(g) => g,
-                None => return, // context gone (defensive) → drop
+            Ok(crate::db::DbOutcome::Exec(er)) => {
+                let obj = v8::Object::new(scope);
+                let k1 = v8::String::new(scope, "changes").unwrap();
+                let v1 = v8::Number::new(scope, er.changes as f64);
+                let k2 = v8::String::new(scope, "lastInsertId").unwrap();
+                let v2 = v8::Number::new(scope, er.last_insert_id as f64);
+                obj.set(scope, k1.into(), v1.into());
+                obj.set(scope, k2.into(), v2.into());
+                resolver.resolve(scope, obj.into());
+            }
+            Err(e) => {
+                let msg = v8::String::new(scope, &e)
+                    .unwrap_or_else(|| v8::String::new(scope, "db error").unwrap());
+                let ex = v8::Exception::error(scope, msg);
+                resolver.reject(scope, ex);
             }
         }
-        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
-    };
-
-    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-    let hs = &mut hs;
-    let ctx_local = v8::Local::new(hs, &g_ctx);
-    let scope = &mut v8::ContextScope::new(hs, ctx_local);
-    let resolver = v8::Local::new(scope, &entry.resolver);
-
-    match result {
-        Ok(crate::db::DbOutcome::Query(qr)) => {
-            let v = query_result_to_js(scope, &qr);
-            resolver.resolve(scope, v);
-        }
-        Ok(crate::db::DbOutcome::Exec(er)) => {
-            let obj = v8::Object::new(scope);
-            let k1 = v8::String::new(scope, "changes").unwrap();
-            let v1 = v8::Number::new(scope, er.changes as f64);
-            let k2 = v8::String::new(scope, "lastInsertId").unwrap();
-            let v2 = v8::Number::new(scope, er.last_insert_id as f64);
-            obj.set(scope, k1.into(), v1.into());
-            obj.set(scope, k2.into(), v2.into());
-            resolver.resolve(scope, obj.into());
-        }
-        Err(e) => {
-            let msg = v8::String::new(scope, &e).unwrap_or_else(|| v8::String::new(scope, "db error").unwrap());
-            let ex = v8::Exception::error(scope, msg);
-            resolver.reject(scope, ex);
-        }
-    }
+    });
 }
 
 /// The result of STARTING a plugin load (L1 lifecycle v2). The load's TRANSITION (arm → Active, or
@@ -6656,18 +6466,6 @@ pub fn shutdown() {
     crate::process_singletons::reset_all(crate::process_singletons::ResetPhase::AfterIsolateDrop);
 }
 
-/// Resolve one pending async `entry` in its OWNING plugin's context, or DROP it (the async-liveness
-/// guard) if the plugin unloaded or reloaded.
-///
-/// A plugin-tagged entry is resolved only if `REGISTRY.is_live(id, generation)` — otherwise it is
-/// DROPPED (returns without resolving; the `ResolverEntry` — and its `Global<PromiseResolver>` — is
-/// dropped by the caller, releasing the handle while the isolate is still alive, sound even if the
-/// owner's context was already disposed).  This is the use-after-free killer: never resolve a promise
-/// into a disposed/replaced context.  An untagged entry (`owner == None`, a non-plugin/HOST-context
-/// resolver) has no plugin liveness to check and is resolved in the shared `HOST` context.
-///
-/// The owner's `Global<Context>` is cloned out of `PLUGINS` (borrow released) before the resolve; a
-/// resolve does NOT run JS under kExplicit, so no continuation re-enters here.
 /// A repeating-or-one-shot callback timer. `interval_ms` is `Some` for `Timers.every`, in which
 /// case the drain re-arms it after each fire; `None` is a one-shot that is removed after firing.
 struct TimerCallback {
@@ -6713,28 +6511,8 @@ fn fire_timer_cb(host: &mut Host, entry: &TimerCallback) -> bool {
     true
 }
 
-fn resolve_or_drop(host: &mut Host, entry: &ResolverEntry) {
-    let g_ctx = match &entry.owner {
-        Some((id, generation)) => {
-            if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
-                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
-            }
-            match PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) {
-                Some(g) => g,
-                None => return, // context gone (defensive) → drop
-            }
-        }
-        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
-    };
-
-    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-    let hs = &mut hs;
-    let ctx_local = v8::Local::new(hs, &g_ctx);
-    let scope = &mut v8::ContextScope::new(hs, ctx_local);
-    let resolver = v8::Local::new(scope, &entry.resolver);
-    let undef = v8::undefined(scope);
-    resolver.resolve(scope, undef.into());
+fn resolve_or_drop(host: &mut Host, entry: &crate::jobs::ResolverEntry) {
+    crate::jobs::resolve_undefined(&mut host.isolate, &host.context, entry);
 }
 
 /// Resolve (or drop, on the async-liveness guard) a completed `__s2_fetch` job in its OWNING
@@ -6745,29 +6523,10 @@ fn resolve_or_drop(host: &mut Host, entry: &ResolverEntry) {
 /// instead of `resolve_or_drop`'s bare `undefined`.
 fn resolve_fetch(
     host: &mut Host,
-    entry: &ResolverEntry,
+    entry: &crate::jobs::ResolverEntry,
     result: Result<crate::http::FetchResponse, String>,
 ) {
-    let g_ctx = match &entry.owner {
-        Some((id, generation)) => {
-            if !REGISTRY.with(|r| r.borrow().is_live(id, *generation)) {
-                return; // plugin unloaded or reloaded → DROP (do not resolve into a dead context)
-            }
-            match PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone())) {
-                Some(g) => g,
-                None => return, // context gone (defensive) → drop
-            }
-        }
-        None => host.context.clone(), // non-plugin resolver → resolve in the shared HOST context
-    };
-
-    let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-    let hs = &mut hs;
-    let ctx_local = v8::Local::new(hs, &g_ctx);
-    let scope = &mut v8::ContextScope::new(hs, ctx_local);
-    let resolver = v8::Local::new(scope, &entry.resolver);
-
+    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| {
     match result {
         Ok(r) => {
             let obj = v8::Object::new(scope);
@@ -6799,6 +6558,7 @@ fn resolve_fetch(
             resolver.reject(scope, ex);
         }
     }
+    });
 }
 
 /// Per-frame async drain: resolve every due timer + completed job IN ITS OWNING PLUGIN CONTEXT
@@ -6820,7 +6580,7 @@ pub(crate) fn frame_async_drain() {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
 
-        // Resolve due timers using the PRE-increment counter (= drains completed so far).  A
+        // Phase 1: due timers (`take_resolver` — no pending decrement). A
         // `Frame(t)` timer fires when this `frame >= t`; a `Deadline(d)` fires when `now >= d`.
         let frame = FRAME_COUNTER.with(|c| c.get());
         let due = TIMERS.with(|t| t.borrow_mut().due(Instant::now(), frame));
@@ -6844,30 +6604,22 @@ pub(crate) fn frame_async_drain() {
             }
             // Remove the tagged resolver (RESOLVERS borrow released), then resolve-or-drop it in its
             // owner's context.  A None entry means the timer was already dropped (e.g. by unload).
-            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) else { continue };
+            let Some(entry) = crate::jobs::take_resolver(id) else { continue };
             resolve_or_drop(host, &entry);
         }
-        // Resolve completed threadpool jobs.
+        // Phase 2: threadpool. complete_job decrements pending only if the resolver was present.
         while let Some((id, _res)) = pool().try_recv_completed() {
-            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) else { continue };
-            // Only decrement for a resolver we actually held (a job we own — matches the stale-
-            // completion rule): a stale id from a prior isolate has no entry and skips this.
-            PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+            let Some(entry) = crate::jobs::complete_job(id) else { continue };
             resolve_or_drop(host, &entry);
         }
-        // Resolve completed fetch requests (payload-carrying, from the tokio+reqwest engine in
-        // core/src/http.rs; Slice HTTP Task 2). Mirrors the pool-completion loop above exactly,
-        // except the payload is a built Response object (or a rejection) via `resolve_fetch`.
+        // Phase 3: fetch completions (payload-carrying, tokio+reqwest in http.rs).
         while let Some(c) = crate::http::try_recv_completed() {
-            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&c.id)) else { continue };
-            PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
+            let Some(entry) = crate::jobs::complete_job(c.id) else { continue };
             resolve_fetch(host, &entry, c.result);
         }
-        // Remote SQL completions (core/src/sqldb.rs). Mirrors the http loop: pop a completion, remove
-        // its RESOLVERS entry, decrement PENDING_JOBS, resolve/reject (or DROP on the liveness guard).
+        // Phase 4: SQLite + remote SQL completions (shared db completion channel).
         while let Some(c) = crate::db::try_recv_completed() {
-            let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&c.id)) else { continue };
-            PENDING_JOBS.with(|cnt| cnt.set(cnt.get().saturating_sub(1)));
+            let Some(entry) = crate::jobs::complete_job(c.id) else { continue };
             resolve_db(host, &entry, c.result);
         }
         // Poll ws/net. The tick only polls: each module matches its own signal kinds, queues
@@ -6882,17 +6634,17 @@ pub(crate) fn frame_async_drain() {
         // that dies right after the handshake sends Connected then Closed(1006)), dropping it here
         // removes it from `conns` before that continuation runs, so its subscribe fails the
         // ownership gate and its close event fans out to nobody.
+        // Phase 5: WebSocket connect Promises settle before the checkpoint.
         let ws = crate::ws::poll_signals();
         for (id, result) in ws.connects {
-            if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
-                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+            if let Some(entry) = crate::jobs::complete_job(id) {
                 resolve_ws_connect(host, &entry, id, result);
             }
         }
+        // Phase 6: net connect/bind Promises settle before the checkpoint.
         let net = crate::net::poll_signals();
         for (id, result) in net.connects {
-            if let Some(entry) = RESOLVERS.with(|m| m.borrow_mut().remove(&id)) {
-                PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+            if let Some(entry) = crate::jobs::complete_job(id) {
                 resolve_net_connect(host, &entry, id, result);
             }
         }
@@ -7142,7 +6894,7 @@ pub(crate) fn register_process_singletons() {
 
     // Async state: RESOLVERS holds Globals into the isolate, so the handles must be released here.
     reg("TIMERS", BeforeIsolateDrop, || TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new()));
-    reg("RESOLVERS", BeforeIsolateDrop, || RESOLVERS.with(|m| m.borrow_mut().clear()));
+    reg("RESOLVERS", BeforeIsolateDrop, crate::jobs::reset_resolvers);
     reg("TIMER_CBS", BeforeIsolateDrop, || TIMER_CBS.with(|m| m.borrow_mut().clear()));
     reg("TIMER_KILLED", BeforeIsolateDrop, || TIMER_KILLED.with(|k| k.borrow_mut().clear()));
     // PENDING_REJECTS holds only Strings, so drop order vs the isolate is not load-bearing; kept in
@@ -7165,7 +6917,7 @@ pub(crate) fn register_process_singletons() {
     // Per-plugin contexts: each Global<Context> points into the isolate.
     reg("PLUGINS", BeforeIsolateDrop, || PLUGINS.with(|p| p.borrow_mut().clear()));
     reg("REGISTRY", BeforeIsolateDrop, || REGISTRY.with(|r| *r.borrow_mut() = plugin::Registry::new()));
-    reg("PENDING_JOBS", BeforeIsolateDrop, || PENDING_JOBS.with(|c| c.set(0)));
+    reg("PENDING_JOBS", BeforeIsolateDrop, crate::jobs::reset_pending);
     reg("DETOUR_INSTALLED", BeforeIsolateDrop, || DETOUR_INSTALLED.with(|c| c.set(false)));
 
     // ---- AfterIsolateDrop: pure Rust, no V8 handles. ----
@@ -7361,7 +7113,7 @@ fn teardown_ledger_and_dispose(id: &str) {
             match res {
                 plugin::Resource::Timer(tid) => {
                     TIMERS.with(|t| { t.borrow_mut().remove(tid); });
-                    RESOLVERS.with(|m| { m.borrow_mut().remove(&tid); });
+                    let _ = crate::jobs::take_resolver(tid);
                     // A repeating callback timer re-arms itself, so failing to drop it here would
                     // leave it firing into a dead context forever — the ledger is the teardown
                     // authority precisely so this does not depend on the plugin's own cleanup.
@@ -7372,9 +7124,7 @@ fn teardown_ledger_and_dispose(id: &str) {
                     // The worker may still run; its late completion is a no-op (resolver gone).  Drop
                     // the resolver and, for a still-pending job we own, decrement PENDING_JOBS now so
                     // the (guarded) drain decrement does NOT double-count on the late completion.
-                    if RESOLVERS.with(|m| m.borrow_mut().remove(&jid)).is_some() {
-                        PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
-                    }
+                    crate::jobs::drop_if_present(jid);
                 }
                 plugin::Resource::Hook(sid) => {
                     // Already removed by (a); drop defensively (also catches a hook onUnload added
@@ -8333,14 +8083,14 @@ pub(crate) mod frame_tests {
         // Drain any completions left in the process-global pool from earlier tests.
         while pool().try_recv_completed().is_some() {}
         assert_eq!(
-            PENDING_JOBS.with(|c| c.get()),
+            crate::jobs::pending(),
             0,
             "baseline: PENDING_JOBS should be 0 after draining strays"
         );
 
         // Submit a real in-flight job with a long sleep so it stays pending throughout.
         eval_std("p", "threadSleep(1000).then(()=>{});");
-        assert_eq!(PENDING_JOBS.with(|c| c.get()), 1, "PENDING_JOBS should be 1 after submitting real job");
+        assert_eq!(crate::jobs::pending(), 1, "PENDING_JOBS should be 1 after submitting real job");
 
         // Inject a STALE completion for an id that has no resolver (mimics a prior isolate's leftover).
         // This does NOT touch PENDING_JOBS and stores no resolver.
@@ -8353,11 +8103,220 @@ pub(crate) mod frame_tests {
         frame_async_drain();
 
         assert_eq!(
-            PENDING_JOBS.with(|c| c.get()),
+            crate::jobs::pending(),
             1,
             "stale completion must not undercount PENDING_JOBS"
         );
 
+        shutdown();
+    }
+
+    /// Jobs spine: missing complete of a live in-flight job must not decrement, and a second
+    /// complete of an already-taken id must not undercount.
+    #[test]
+    fn missing_and_double_job_completion_do_not_undercount() {
+        init(dummy_logger()).unwrap();
+        while pool().try_recv_completed().is_some() {}
+        eval_std("p", "threadSleep(1000).then(()=>{});");
+        assert_eq!(crate::jobs::pending(), 1);
+        let ids = crate::jobs::resolver_ids();
+        assert_eq!(ids.len(), 1, "exactly one in-flight job resolver");
+        let id = ids[0];
+
+        assert!(crate::jobs::complete_job(9_999_996).is_none());
+        assert_eq!(crate::jobs::pending(), 1, "missing complete must not decrement");
+
+        assert!(crate::jobs::complete_job(id).is_some());
+        assert_eq!(crate::jobs::pending(), 0);
+        assert!(crate::jobs::complete_job(id).is_none());
+        assert_eq!(crate::jobs::pending(), 0, "double complete must not undercount");
+        shutdown();
+    }
+
+    /// Unload a plugin with a generic in-flight job (`threadSleep`). Teardown drops the resolver
+    /// and decrements pending. The original 1000ms sleep cannot be observed on a short wait, so
+    /// this injects a zero-work completion for the *same captured id* through the process-global
+    /// pool, then drains that late completion: pending stays 0 and the disposed context is not
+    /// re-entered.
+    #[test]
+    fn generic_job_unload_mid_flight_drops_and_late_complete_is_noop() {
+        init(dummy_logger()).unwrap();
+        while pool().try_recv_completed().is_some() {}
+        load_body(
+            "jobul",
+            r#"
+            const { threadSleep } = require("@s2script/timers");
+            threadSleep(1000).then(function () { globalThis.__resumed = true; });
+        "#,
+            "{}",
+        );
+        assert_eq!(crate::jobs::pending(), 1, "job is in-flight before unload");
+        let ids = crate::jobs::resolver_ids();
+        assert_eq!(ids.len(), 1, "exactly one in-flight job resolver");
+        let id = ids[0];
+        unload_plugin("jobul");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("jobul")), "context disposed");
+        assert_eq!(crate::jobs::pending(), 0, "teardown decrements pending only once");
+        assert!(crate::jobs::resolver_is_empty(), "resolver removed on Job teardown");
+
+        // Guaranteed stale completion for the captured id. Zero-work so it lands immediately;
+        // waiting 40ms for the original 1000ms threadSleep cannot prove the late-complete path.
+        pool().submit(id, Box::new(|| Ok(())));
+        let mut landed = false;
+        for _ in 0..ASYNC_POLL_TICKS {
+            if let Some((cid, _)) = pool().try_recv_completed() {
+                assert_eq!(cid, id, "injected completion must carry the unloaded job id");
+                landed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(landed, "injected zero-work stale completion never arrived");
+        // Re-inject so `frame_async_drain` consumes a completion for this id
+        // (`complete_job` → None). Same 30ms floor as
+        // `stale_job_completion_does_not_undercount_pending`.
+        pool().submit(id, Box::new(|| Ok(())));
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        frame_async_drain();
+        assert_eq!(crate::jobs::pending(), 0, "late completion must not decrement again");
+        assert!(crate::jobs::resolver_is_empty());
+        assert!(
+            crate::jobs::complete_job(id).is_none(),
+            "drain consumed the late id; a second complete is still a no-op"
+        );
+        assert!(
+            !PLUGINS.with(|p| p.borrow().contains_key("jobul")),
+            "late completion must not resurrect a disposed context"
+        );
+        assert!(
+            eval_in_context("jobul", "globalThis.__resumed").is_err(),
+            "continuation must not run: disposed context is not enterable"
+        );
+        shutdown();
+    }
+
+    /// Unload during an in-flight WebSocket connect against the existing local echo server
+    /// (a completing handshake, not a never-accepted listener / 10s timeout). Unload before the
+    /// first drain; then poll until `poll_signals` consumes the late Connected/Closed (or
+    /// ConnectFailed) and prove the Jobs late-complete path is a no-op.
+    #[test]
+    fn ws_connect_unload_mid_flight_drops_and_late_complete_is_noop() {
+        init(dummy_logger()).unwrap();
+        let port = spawn_local_ws_echo_server();
+        load_body(
+            "wsul",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            __s2_ws_connect("ws://127.0.0.1:{port}/").then(function () {{
+                globalThis.__out = "resolved";
+            }}).catch(function () {{
+                globalThis.__out = "rejected";
+            }});
+        "#,
+                port = port
+            ),
+            "{}",
+        );
+        assert_eq!(crate::jobs::pending(), 1, "ws connect job is in-flight before unload");
+        assert!(!crate::jobs::resolver_is_empty());
+        let ids = crate::jobs::resolver_ids();
+        assert_eq!(ids.len(), 1, "exactly one in-flight ws connect resolver");
+        let id = ids[0];
+        // Unload BEFORE the first drain so the handshake cannot settle into a live context.
+        unload_plugin("wsul");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("wsul")), "context disposed");
+        assert_eq!(crate::jobs::pending(), 0, "Job teardown decrements once");
+        assert!(crate::jobs::resolver_is_empty());
+
+        // Poll the engine until the completing handshake emits Connected/Closed (or
+        // ConnectFailed). Do not drain first — a drain would consume the signal unseen.
+        // This is the echo-server handshake, not the 10s connect timeout.
+        let mut consumed_late = false;
+        for _ in 0..ASYNC_POLL_TICKS {
+            let poll = crate::ws::poll_signals();
+            if !poll.connects.is_empty() || !poll.drops.is_empty() {
+                for (cid, _result) in &poll.connects {
+                    assert_eq!(*cid, id, "late ws signal must be for the unloaded connect");
+                    assert!(
+                        crate::jobs::complete_job(*cid).is_none(),
+                        "late ws complete of a teardown-dropped resolver is a no-op"
+                    );
+                }
+                consumed_late = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            consumed_late,
+            "echo handshake never produced a late Connected/Closed signal (did not wait for the 10s timeout)"
+        );
+        // This test consumed the late poll itself, so drain will not `drop_conn` any
+        // deferred drops from that batch. Unload may also have raced the handshake
+        // insert — drop again so a post-teardown registry entry cannot leak into
+        // later process-global tests. Idempotent if teardown already removed it.
+        crate::ws::drop_conn(id);
+        frame_async_drain();
+        dispatch_pending_ws_events();
+        assert_eq!(crate::jobs::pending(), 0, "late ws signal must not decrement again");
+        assert!(crate::jobs::resolver_is_empty());
+        assert!(
+            !PLUGINS.with(|p| p.borrow().contains_key("wsul")),
+            "late ws signal must not resurrect a disposed context"
+        );
+        assert!(
+            eval_in_context("wsul", "globalThis.__out").is_err(),
+            "continuation must not run: disposed context is not enterable"
+        );
+        shutdown();
+    }
+
+    /// SQLite query unload mid-flight.
+    ///
+    /// The in-process actor can finish the SQL in microseconds, so racing "query still on the
+    /// actor" is inherently nondeterministic. The Jobs-visible in-flight window is deterministic:
+    /// `commit_job` has run (resolver in the map, pending == 1) and we unload *before the next
+    /// drain* applies any completion. That is the same protocol a live mid-query unload hits.
+    #[test]
+    fn sqlite_query_unload_mid_flight_drops_before_drain() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        let name = unique_db_name("job_unload");
+        load_body(
+            "sqlul",
+            &format!(
+                r#"
+            globalThis.__h = 0;
+            __s2_sqlite_open("{name}").then(function (h) {{ globalThis.__h = h; }});
+        "#,
+                name = name
+            ),
+            "{}",
+        );
+        // Open resolves synchronously; one drain runs the .then so we have a handle.
+        frame_async_drain();
+        let handle = read_i32_global_in("sqlul", "__h");
+        assert!(handle > 0, "sqlite open must yield a handle, got {handle}");
+        eval_in_context(
+            "sqlul",
+            &format!(r#"__s2_sqlite_query({handle}, "SELECT 1 AS n", []);"#, handle = handle),
+        )
+        .expect("sqlite query eval");
+        assert_eq!(crate::jobs::pending(), 1, "query committed before drain");
+        assert!(!crate::jobs::resolver_is_empty());
+        unload_plugin("sqlul");
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("sqlul")));
+        assert_eq!(crate::jobs::pending(), 0, "Job teardown decrements once");
+        assert!(crate::jobs::resolver_is_empty());
+        for _ in 0..20 {
+            frame_async_drain();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(crate::jobs::pending(), 0, "late sqlite completion must not decrement again");
+        set_engine_ops(None);
         shutdown();
     }
 
@@ -8697,10 +8656,10 @@ pub(crate) mod frame_tests {
             return new Promise(function(){});
         "#, "{}");
         assert_eq!(plugin_phase("ul"), Some(crate::plugin::Phase::Loading));
-        assert!(!RESOLVERS.with(|m| m.borrow().is_empty()), "the delay timer's resolver is ledgered");
+        assert!(!crate::jobs::resolver_is_empty(), "the delay timer's resolver is ledgered");
         unload_plugin("ul");
         assert!(!PLUGINS.with(|p| p.borrow().contains_key("ul")), "context disposed");
-        assert!(RESOLVERS.with(|m| m.borrow().is_empty()), "partial-ledger walk dropped the delay resolver");
+        assert!(crate::jobs::resolver_is_empty(), "partial-ledger walk dropped the delay resolver");
         assert!(PENDING_HANDOFF.with(|h| h.borrow().get("ul").is_none()), "never Active → no state() capture");
         assert!(LOADING.with(|l| l.borrow().get("ul").is_none()), "LOADING entry dropped");
         shutdown();
