@@ -162,7 +162,7 @@ pub(crate) fn settle_if_live<F>(
     entry: &ResolverEntry,
     settle: F,
 ) where
-    F: for<'s, 'i> FnOnce(&'s mut v8::PinScope<'s, 'i>, v8::Local<'s, v8::PromiseResolver>),
+    F: for<'s, 'i> FnOnce(&mut v8::PinScope<'s, 'i>, v8::Local<'s, v8::PromiseResolver>),
 {
     let g_ctx = match &entry.owner {
         Some((id, generation)) => {
