@@ -181,9 +181,9 @@ pub(crate) fn settle_if_live<F>(
     let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
     let hs = &mut hs;
     let ctx_local = v8::Local::new(hs, &g_ctx);
-    let scope = &mut v8::ContextScope::new(hs, ctx_local);
-    let resolver = v8::Local::new(scope, &entry.resolver);
-    settle(scope, resolver);
+    let mut scope = v8::ContextScope::new(hs, ctx_local);
+    let resolver = v8::Local::new(&mut scope, &entry.resolver);
+    settle(&mut scope, resolver);
 }
 
 /// Resolve with `undefined`, or drop on the liveness guard. Timers and
