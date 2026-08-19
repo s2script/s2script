@@ -26,8 +26,9 @@
 //! (which parses both the struct and the aliases out of `v8host.rs`). Splitting that contract across
 //! per-feature modules would fragment the one declaration the gate exists to keep whole.
 
+use crate::dispatch::{fan_out_collapsing, Instrument, StopAt};
 use crate::v8host::{
-    current_plugin, engine_ops, fan_out_collapsing, set_native, subscribe_into, Instrument, StopAt,
+    current_plugin, engine_ops, set_native, subscribe_into,
 };
 use std::os::raw::c_int;
 

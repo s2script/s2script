@@ -274,7 +274,8 @@ pub fn try_recv_signal() -> Option<WsSignal> {
 // surface and routes through `fan_out` so the host isolate stays in `v8host`.
 // ---------------------------------------------------------------------------
 
-use crate::v8host::{current_plugin, fan_out, log_warn, set_native, subscribe_into, Instrument};
+use crate::dispatch::{fan_out, Instrument};
+use crate::v8host::{current_plugin, log_warn, set_native, subscribe_into};
 
 thread_local! {
     static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>

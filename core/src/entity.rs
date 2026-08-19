@@ -444,9 +444,10 @@ mod tests {
 // The V8 surface — see the module header for why it lives beside the pure half.
 // ---------------------------------------------------------------------------
 
+use crate::dispatch::{fan_out, Delivery, Instrument};
 use crate::v8host::{
-    build_entity_ref, current_plugin, engine_ops, ent_op_serial, fan_out, js_ent_id,
-    schema_offset_cached, set_native, subscribe_into, Delivery, Instrument,
+    build_entity_ref, current_plugin, engine_ops, ent_op_serial, js_ent_id,
+    schema_offset_cached, set_native, subscribe_into,
 };
 use std::os::raw::{c_int, c_void};
 

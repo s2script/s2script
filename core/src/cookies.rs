@@ -108,7 +108,8 @@ pub fn reset() {
 // `crate::usermsg` for the shape.
 // ---------------------------------------------------------------------------
 
-use crate::v8host::{fan_out, set_native, subscribe_into, Instrument};
+use crate::dispatch::{fan_out, Instrument};
+use crate::v8host::{set_native, subscribe_into};
 
 thread_local! {
     /// `Cookies.onCached` subscriber mux, keyed by the constant "" (no name dimension — a single

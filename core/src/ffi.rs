@@ -1,5 +1,6 @@
 use crate::multiplexer::Phase;
-use crate::v8host::{self, Delivery, HookRequestFn, LogFn, S2EngineOps};
+use crate::dispatch::Delivery;
+use crate::v8host::{self, HookRequestFn, LogFn, S2EngineOps};
 use std::os::raw::{c_char, c_int};
 use std::panic::catch_unwind;
 use std::ffi::CStr;
