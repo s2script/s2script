@@ -290,8 +290,8 @@ fn queue_event(conn_id: u64, event: &str, s: String, n: i32) {
 }
 
 /// One drain's worth of ws signals. Connect results go back to the host so it can resolve the
-/// connect Promise (needs RESOLVERS). Events are queued here. Terminal drops are returned so the
-/// host can `drop_conn` AFTER the microtask checkpoint.
+/// connect Promise (needs the Jobs resolver map). Events are queued here. Terminal drops are
+/// returned so the host can `drop_conn` AFTER the microtask checkpoint.
 pub(crate) struct SignalPoll {
     pub connects: Vec<(u64, Result<(), String>)>,
     pub drops: Vec<u64>,

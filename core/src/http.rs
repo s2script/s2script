@@ -4,7 +4,7 @@
 //! async_rt's POOL: a OnceLock, built once, never dropped (survives a Metamod re-init).
 //!
 //! The adapter half (`__s2_fetch`) lives below. Promise resolve stays in `v8host` (`resolve_fetch`)
-//! because it needs RESOLVERS + the host isolate.
+//! because it needs the Jobs resolver map + the host isolate.
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -119,11 +119,11 @@ async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchRes
 
 // ---------------------------------------------------------------------------
 // V8 adapter — `__s2_fetch`. The tokio+reqwest engine above holds no V8 handles.
-// Promise create goes through `begin_job_promise` so RESOLVERS stay in v8host;
-// Promise resolve (`resolve_fetch`) stays there too.
+// Promise create goes through `jobs::begin_job`; Promise resolve (`resolve_fetch`) stays in v8host.
 // ---------------------------------------------------------------------------
 
-use crate::v8host::{begin_job_promise, set_native};
+use crate::jobs::begin_job;
+use crate::v8host::set_native;
 
 fn get_str_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str) -> Option<String> {
     let key = v8::String::new(scope, name)?;
@@ -135,10 +135,9 @@ fn get_str_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str
 }
 
 /// Native `__s2_fetch(url, options) -> Promise<rawResponse>` where `rawResponse =
-/// {status, ok, statusText, headers, body}`. MIRRORS `s2_thread_sleep`'s resolver/ledger/pending
-/// block (via `begin_job_promise` — a `Job` resource) but hands off to `fetch` so the calling
-/// (main/game) thread never blocks on I/O. The Promise resolves on a LATER `frame_async_drain`
-/// via `v8host::resolve_fetch`.
+/// {status, ok, statusText, headers, body}`. Immediate `jobs::begin_job` (a `Job` resource)
+/// then hands off to `fetch` so the calling (main/game) thread never blocks on I/O. The Promise
+/// resolves on a LATER `frame_async_drain` via `v8host::resolve_fetch`.
 ///
 /// `options` (all optional): `method` (default `"GET"`), `headers` (a plain string→string object),
 /// `body` (a string), `timeoutMs` (default 30000). Degrade-never-crash: the whole body runs under
@@ -183,7 +182,7 @@ fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut r
                 }
             }
         }
-        let (id, promise) = begin_job_promise(scope);
+        let (id, promise) = begin_job(scope);
         fetch(id, FetchRequest { method, url, headers, body, timeout_ms });
         rv.set(promise);
     }));
