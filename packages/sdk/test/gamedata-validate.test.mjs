@@ -260,6 +260,59 @@ test("an unknown hook shape is rejected", () => {
   assert.ok(validatePluginGamedata(gd, { permissions: HOOK_PERMS }).some((e) => e.includes("unknown hook shape")));
 });
 
+test("a Windows hook with a stack-position integer arg requires validate.prologue", () => {
+  const gd = structuredClone(hookGd);
+  gd.signatures.Foo = {
+    windows64: {
+      module: "server.dll",
+      pattern: "48 89",
+      resolve: "direct",
+      validate: { "string-xref": "hook identity" },
+    },
+  };
+  gd.hooks.onX.shape = "this_f32_i32_i32_i32";
+  delete gd.hooks.onX.target.validate;
+  const errs = validatePluginGamedata(gd, { permissions: HOOK_PERMS });
+  assert.ok(
+    errs.some((e) => e.includes("windows64") && e.includes("stack-position") && e.includes("validate.prologue")),
+    `expected a named Windows stack-width refusal, got: ${errs.join("; ")}`,
+  );
+});
+
+test("a Windows hook whose integer args stay in registers accepts another validator", () => {
+  const gd = structuredClone(hookGd);
+  gd.signatures.Foo = {
+    windows64: {
+      module: "server.dll",
+      pattern: "48 89",
+      resolve: "direct",
+      validate: { "string-xref": "hook identity" },
+    },
+  };
+  gd.hooks.onX.shape = "this_i64_i32_i64";
+  delete gd.hooks.onX.target.validate;
+  assert.deepEqual(validatePluginGamedata(gd, { permissions: HOOK_PERMS }), []);
+});
+
+test("an inline Windows hook validator cannot borrow an overridden signature prologue", () => {
+  const gd = structuredClone(hookGd);
+  gd.signatures.Foo = {
+    windows64: {
+      module: "server.dll",
+      pattern: "48 89",
+      resolve: "direct",
+      validate: { prologue: "48 89" },
+    },
+  };
+  gd.hooks.onX.shape = "this_f32_i32_i32_i32";
+  gd.hooks.onX.target.validate = { "string-xref": "inline override" };
+  const errs = validatePluginGamedata(gd, { permissions: HOOK_PERMS });
+  assert.ok(
+    errs.some((e) => e.includes("stack-position") && e.includes("validate.prologue")),
+    `the inline validator replaces the inherited one at runtime, got: ${errs.join("; ")}`,
+  );
+});
+
 test("more params than the shape's arity is rejected", () => {
   const gd = structuredClone(hookGd);
   gd.hooks.onX.params = ["a"];

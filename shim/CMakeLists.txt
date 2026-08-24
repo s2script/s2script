@@ -20,6 +20,11 @@ set(S2_PLATFORM_SOURCES
     src/platform/paths_common.cpp
     src/platform/pe_image.cpp)
 if(WIN32)
+    enable_language(ASM_MASM)
+    set(S2_CALL_ABI_SOURCES
+        src/call_abi_win.cpp
+        src/call_abi_win_msvc.asm)
+    set(S2_HOOK_ABI_SOURCE src/hook_abi_win.cpp)
     set(S2_PLATFORM_MEMORY_SOURCE src/platform/memory_win.cpp)
     set(S2_PLATFORM_BACKEND_SOURCES
         src/platform/module_win.cpp
@@ -27,6 +32,8 @@ if(WIN32)
         src/platform/paths_win.cpp)
     set(S2_PLATFORM_IMAGE_SOURCE src/platform/image_win.cpp)
 else()
+    set(S2_CALL_ABI_SOURCES src/call_abi_sysv.cpp)
+    set(S2_HOOK_ABI_SOURCE src/hook_abi_sysv.cpp)
     set(S2_PLATFORM_MEMORY_SOURCE src/platform/memory_linux.cpp)
     set(S2_PLATFORM_BACKEND_SOURCES
         src/platform/module_linux.cpp
@@ -74,6 +81,7 @@ add_library(s2script SHARED
     # Plugin-gamedata slice: plugin-declared engine calls — descriptor resolution (byte signature /
     # RTTI vtable slot + prologue validation + .text range) and the fixed-max-arity SysV invoke.
     src/engine_calls.cpp
+    ${S2_CALL_ABI_SOURCES}
     # A5b: the CLOSED validator vocabulary (prologue / string-xref / vtable-member). Its own TU
     # because engine_calls.cpp cannot be compiled outside the game (it includes the entity system);
     # every outside contact is injected, so shim/tests/call_validate_test.cpp drives the SHIPPED
@@ -90,6 +98,7 @@ add_library(s2script SHARED
     # and the block-scoped arg view. Cannot be unit-tested outside the game (it marshals a receiver
     # through the entity system), which is precisely why the policy lives in the TU above.
     src/engine_hooks.cpp
+    ${S2_HOOK_ABI_SOURCE}
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier1/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
@@ -175,6 +184,21 @@ target_include_directories(call_validate_selftest
 # Engine-free half of declarative inbound hooks (not shipped; run by scripts/ci-native.sh).
 add_executable(hook_dispatch_selftest src/hook_dispatch.cpp tests/hook_dispatch_test.cpp)
 target_include_directories(hook_dispatch_selftest PRIVATE src)
+
+# Native ABI selftest. On Windows this compiles and runs the production MASM outbound bridge and
+# native Microsoft hook thunks; on Linux it covers the selected SysV backends. Keep the Windows
+# C++ caller/callees optimized so the gate exercises release-like register/stack code generation.
+add_executable(abi_selftest
+    tests/abi_test.cpp
+    ${S2_CALL_ABI_SOURCES}
+    ${S2_HOOK_ABI_SOURCE}
+    src/hook_dispatch.cpp)
+target_include_directories(abi_selftest PRIVATE src)
+if(WIN32)
+    target_compile_options(abi_selftest PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/O2>)
+endif()
+enable_testing()
+add_test(NAME abi_selftest COMMAND abi_selftest)
 
 # Detour prologue relocation (not shipped; run by scripts/ci-native.sh via
 # scripts/test-detour-reloc.sh, which adds the sanitizers). This target exists so the test also

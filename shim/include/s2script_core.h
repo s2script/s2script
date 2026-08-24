@@ -26,9 +26,20 @@ typedef void (*s2_hook_request_fn)(const char* descriptor, int enable); /* core 
  * MUST stay byte-identical to `S2_DISPATCH_DEFERRED` in core/src/ffi.rs. */
 #define S2_DISPATCH_DEFERRED (-1000)
 
-/* ops may be null -> all engine natives degrade.  The core copies the struct by
- * value at init; the caller's storage need not outlive the call. */
+/* S2EngineOps is a generated function-pointer ABI: sizeof alone cannot detect a same-sized
+ * signature change. New shims MUST use the versioned entry and pass both constants. */
+#define S2_ENGINE_OPS_ABI_VERSION UINT32_C(2)
+#define S2_CORE_INIT_ABI_MISMATCH (-3)
+
+/* Legacy compatibility entry. `ops == NULL` remains supported for tests/no-engine embedders.
+ * A non-null unversioned table is always rejected with S2_CORE_INIT_ABI_MISMATCH. */
 int  s2script_core_init(s2_log_fn logger, s2_hook_request_fn request_hook, const S2EngineOps* ops);
+/* ops may be null -> all engine natives degrade. The core copies a matching table by value; the
+ * caller's storage need not outlive the call. ABI version and exact struct size are checked before
+ * ops is dereferenced. */
+int  s2script_core_init_v2(s2_log_fn logger, s2_hook_request_fn request_hook,
+                           const S2EngineOps* ops, uint32_t ops_abi_version,
+                           uint32_t ops_struct_size);
 int  s2script_core_eval(const char* utf8_js);
 int  s2script_core_dispatch_game_frame(int phase, int simulating, int first, int last); /* phase 0=Pre,1=Post; returns collapsed HookResult */
 void s2script_core_shutdown(void);

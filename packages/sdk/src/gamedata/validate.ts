@@ -237,6 +237,18 @@ function isNonEmptyObject(v: unknown): v is Record<string, unknown> {
   return v != null && typeof v === "object" && !Array.isArray(v) && Object.keys(v as object).length > 0;
 }
 
+/** Microsoft x64 positions 0..3 have paired GP/XMM registers; position 4+ is stack-only. */
+function hookHasWindowsStackInteger(shape: string): boolean {
+  if (!(HOOK_SHAPES as readonly string[]).includes(shape) || shape === "this_void") return false;
+  const args = shape.slice("this_".length).split("_");
+  return args.slice(3).some((kind) => kind !== "f32");
+}
+
+function hasPrologue(validate: unknown): boolean {
+  const prologue = (validate as Record<string, unknown> | undefined)?.prologue;
+  return typeof prologue === "string" && prologue.length > 0;
+}
+
 /** Grammar for `hooks` — mirrors `scripts/check-call-descriptors.sh` §3b and core `prepare()`. */
 function validateHooks(
   g: Record<string, unknown>,
@@ -376,6 +388,22 @@ function validateHooks(
           `${where}: a hook target MUST carry a non-empty 'validate' (inline, or inherited for every ` +
             `platform; missing: ${missingValidators.join(", ")}) — a wrong detour address overwrites the ` +
             `prologue of whatever is actually there`,
+        );
+      }
+      const windowsSpec = typeof target.name === "string"
+        ? (sigs[target.name]?.windows64 as Record<string, unknown> | undefined)
+        : undefined;
+      // flatten_decl treats an inline target.validate as a whole-object override. Do not combine an
+      // inherited prologue with an inline non-prologue validator here: runtime will not combine them.
+      const effectiveWindowsValidate = Object.hasOwn(target, "validate")
+        ? target.validate
+        : windowsSpec?.validate;
+      if (windowsSpec && typeof shape === "string" && hookHasWindowsStackInteger(shape) &&
+          !hasPrologue(effectiveWindowsValidate)) {
+        errs.push(
+          `${where} platform 'windows64': shape ${JSON.stringify(shape)} has a stack-position ` +
+            `integer argument whose width cannot be inferred from entry registers; it REQUIRES ` +
+            `validate.prologue to identify the exact target before installing the hook`,
         );
       }
     } else if (target.kind === "vtable") {

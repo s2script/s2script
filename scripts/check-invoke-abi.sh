@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fails (exit 1) if the plugin-declared-call invoke thunk's float ABI is wrong.
 #
-# WHY THIS GATE EXISTS. shim/src/engine_calls.cpp calls every declared engine function through ONE
+# WHY THIS GATE EXISTS. shim/src/call_abi_sysv.cpp calls every declared engine function through ONE
 # fixed max-arity prototype (5 GP + 8 xmm, all slots always passed). The arg vocabulary's `float` is
 # 32-bit, and SysV passes a 32-bit float in the LOW 32 bits of an xmm register. If those slots are
 # declared `double`, the register holds a 64-bit double bit pattern and a callee doing `movss` reads
@@ -16,7 +16,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SRC="shim/src/engine_calls.cpp"
+SRC="shim/src/call_abi_sysv.cpp"
 [ -f "$SRC" ] || { echo "check-invoke-abi: missing $SRC" >&2; exit 1; }
 
 TMP="$(mktemp -d)"

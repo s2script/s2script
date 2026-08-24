@@ -1,6 +1,6 @@
 //! Plugin-declared engine calls — the core's half of the plugin-gamedata slice (spec §10, the
 //! "Core" row): the per-plugin descriptor registry, the two-part authorization gate, and the SysV
-//! argument classification the invoke native marshals against.
+//! cross-platform argument classification the invoke native marshals against.
 //!
 //! BOUNDARY (spec §10). Every name in a descriptor — target kind, module, byte pattern, resolver
 //! strategy, class, field, the whole `validate` object — is an OPAQUE plugin-supplied string that crosses core
@@ -69,6 +69,12 @@ pub(crate) const GP_ENTITY: u8 = 1;
 pub(crate) const GP_STRING: u8 = 2;
 pub(crate) const GP_VECTOR: u8 = 3;
 
+/// Declared argument classes in AUTHOR order. This sequence crosses the engine-ops ABI because
+/// Microsoft x64 selects RCX/XMM0, RDX/XMM1, R8/XMM2 and R9/XMM3 by position; the split GP/FP
+/// value streams cannot reconstruct it.
+pub(crate) const ARG_CLASS_GP: u8 = 0;
+pub(crate) const ARG_CLASS_F32: u8 = 1;
+
 /// Return-kind codes. MUST match `engine_calls.cpp`'s `kRet*` enum.
 pub(crate) const RET_VOID: i32 = 0;
 pub(crate) const RET_BOOL: i32 = 1;
@@ -122,25 +128,25 @@ pub(crate) fn gp_kind_of(arg: &str) -> Option<u8> {
     })
 }
 
-/// Split an arg list into its two SysV register sequences: the per-GP-slot kind bytes and the count
-/// of float slots, **preserving order within each class**. Positional interleaving between the
-/// classes is irrelevant to the callee (integer-class and float-class args are assigned from two
-/// independent register sequences), which is what makes one fixed max-arity thunk shim-side able to
-/// call the whole closed v1 vocabulary.
+/// Produce the author-order class sequence plus the split value-stream metadata. SysV consumes the
+/// latter as independent GP/SSE sequences; Microsoft x64 needs the former for positional assignment.
 ///
 /// An arg kind outside the vocabulary is skipped here; `prepare` rejects it with a named reason
 /// BEFORE classification, so a live descriptor never reaches this with an unknown kind.
-pub(crate) fn classify_args(args: &[String]) -> (Vec<u8>, usize) {
+pub(crate) fn classify_args(args: &[String]) -> (Vec<u8>, Vec<u8>, usize) {
+    let mut classes = Vec::new();
     let mut gp_kinds = Vec::new();
     let mut fp_count = 0usize;
     for a in args {
         if a == "float" {
+            classes.push(ARG_CLASS_F32);
             fp_count += 1;
         } else if let Some(k) = gp_kind_of(a) {
+            classes.push(ARG_CLASS_GP);
             gp_kinds.push(k);
         }
     }
-    (gp_kinds, fp_count)
+    (classes, gp_kinds, fp_count)
 }
 
 /// Everything the invoke native needs, cloned out of the registry so the registry borrow is released
@@ -350,7 +356,7 @@ fn prepare(
             return Err(format!("unknown arg kind '{}'", a));
         }
     }
-    let (gp_kinds, fp_count) = classify_args(&args);
+    let (_classes, gp_kinds, fp_count) = classify_args(&args);
     if gp_kinds.len() > MAX_GP_ARGS {
         return Err(format!(
             "too many integer-class args ({} > {})",
@@ -693,8 +699,11 @@ mod tests {
 
     #[test]
     fn arg_classification_splits_int_and_float_slots() {
-        // ["float","int","float"] -> 1 GP slot, 2 float slots, preserving per-class order.
-        let (gp_kinds, fp_count) = classify_args(&["float".into(), "int".into(), "float".into()]);
+        // The positional class sequence is part of the shim ABI on Microsoft x64: unlike SysV,
+        // register number is selected by AUTHOR position rather than by an independent class index.
+        let (classes, gp_kinds, fp_count) =
+            classify_args(&["float".into(), "int".into(), "float".into()]);
+        assert_eq!(classes, vec![ARG_CLASS_F32, ARG_CLASS_GP, ARG_CLASS_F32]);
         assert_eq!(gp_kinds.len(), 1);
         assert_eq!(fp_count, 2);
     }
@@ -702,13 +711,17 @@ mod tests {
     /// Order within each class is what SysV assignment depends on — assert it explicitly.
     #[test]
     fn arg_classification_preserves_order_within_each_class() {
-        let (gp_kinds, fp_count) = classify_args(&[
+        let (classes, gp_kinds, fp_count) = classify_args(&[
             "string".into(),
             "float".into(),
             "entity".into(),
             "vector".into(),
             "float".into(),
         ]);
+        assert_eq!(
+            classes,
+            vec![ARG_CLASS_GP, ARG_CLASS_F32, ARG_CLASS_GP, ARG_CLASS_GP, ARG_CLASS_F32]
+        );
         assert_eq!(gp_kinds, vec![GP_STRING, GP_ENTITY, GP_VECTOR]);
         assert_eq!(fp_count, 2);
     }

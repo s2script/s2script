@@ -383,6 +383,24 @@ static s2validate::ModuleView ViewOver(const uint8_t* buf, std::size_t n) {
     return mv;
 }
 
+// The validator is ABI-neutral: tests inject the Linux/SysV register map explicitly. Platform
+// backend probes in abi_test.cpp assert both this map and the shape-dependent Microsoft map.
+static s2abi::RegisterMap SysVRegisterMap() {
+    s2abi::RegisterMap map{};
+    map.slotOfGpr[7] = 0; map.slotOfGpr[6] = 1; map.slotOfGpr[2] = 2;
+    map.slotOfGpr[1] = 3; map.slotOfGpr[8] = 4; map.slotOfGpr[9] = 5;
+    return map;
+}
+
+static s2validate::ArgUse DecodeArgUse(const uint8_t* p, std::size_t n) {
+    return s2validate::DecodeArgUse(p, n, SysVRegisterMap());
+}
+
+static int ArgWidths(const uint8_t* wide, int count, const s2validate::ModuleView& mv,
+                     const void* fn, char* reason, int reasonCap) {
+    return s2validate::ArgWidths(wide, count, SysVRegisterMap(), mv, fn, reason, reasonCap);
+}
+
 // THE REGRESSION. CCSGameRules::TerminateRound's REAL prologue, byte for byte:
 //   push rbp; mov rbp,rsp; push r15; mov r15d,esi; push r14; lea rsi,[rip+d];
 //   push r13; push r12; push rbx; mov rbx,rdi; sub rsp,0xc8;
@@ -404,14 +422,14 @@ static void test_arg_width_catches_the_terminate_round_truncation() {
     // float delay rides in xmm0 and consumes no integer register. _unused3 is slot 2 = rdx, which
     // the callee stores 64-bit -> REFUSE.
     const uint8_t narrow[4] = { 1, 0, 0, 0 };
-    CHECK(s2validate::ArgWidths(narrow, 4, mv, kTerminateRound, r, sizeof r) == -1,
+    CHECK(ArgWidths(narrow, 4, mv, kTerminateRound, r, sizeof r) == -1,
           "TerminateRound's real prologue is REFUSED under this_f32_i32_i32_i32");
     CHECK(std::strstr(r, "slot 2") != nullptr,
           "and the reason names the offending integer arg slot");
 
     // this_f32_i32_i64_i64: the trailing pair relayed at full width -> accepted.
     const uint8_t wide[4] = { 1, 0, 1, 1 };
-    CHECK(s2validate::ArgWidths(wide, 4, mv, kTerminateRound, r, sizeof r) == 0,
+    CHECK(ArgWidths(wide, 4, mv, kTerminateRound, r, sizeof r) == 0,
           "and ACCEPTED under this_f32_i32_i64_i64 — the shape that actually shipped");
 }
 
@@ -422,7 +440,7 @@ static void test_arg_width_passes_a_clean_32_bit_prologue() {
     char r[256];
     auto mv = ViewOver(code, sizeof code);
     const uint8_t narrow[3] = { 1, 0, 0 };
-    CHECK(s2validate::ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
+    CHECK(ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
           "a prologue that stores its args 32-bit agrees with a 32-bit shape");
     CHECK(std::strstr(r, "no narrowing") != nullptr, "and says what it checked");
 }
@@ -436,7 +454,7 @@ static void test_arg_width_ignores_a_redefined_register() {
     char r[256];
     auto mv = ViewOver(code, sizeof code);
     const uint8_t narrow[3] = { 1, 0, 0 };
-    CHECK(s2validate::ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
+    CHECK(ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
           "a 64-bit store of a REDEFINED register is not evidence about the argument");
 }
 
@@ -445,7 +463,7 @@ static void test_arg_width_passes_when_it_sees_nothing() {
     char r[256];
     auto mv = ViewOver(code, sizeof code);
     const uint8_t narrow[3] = { 1, 0, 0 };
-    CHECK(s2validate::ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
+    CHECK(ArgWidths(narrow, 3, mv, code, r, sizeof r) == 0,
           "a prologue that spills nothing PASSES — absence of evidence is not a failure");
     CHECK(std::strstr(r, "not proof") != nullptr,
           "and the reason refuses to be read as a proof");
@@ -465,7 +483,7 @@ static void test_arg_width_checks_every_param_position() {
         char r[256];
         auto mv = ViewOver(c.code.data(), c.code.size());
         const uint8_t narrow[5] = { 1, 0, 0, 0, 0 };
-        CHECK(s2validate::ArgWidths(narrow, 5, mv, c.code.data(), r, sizeof r) == -1,
+        CHECK(ArgWidths(narrow, 5, mv, c.code.data(), r, sizeof r) == -1,
               std::string("a 64-bit store of ") + c.name + " is refused");
         CHECK(std::strstr(r, ("slot " + std::to_string(c.param)).c_str()) != nullptr,
               std::string("and is attributed to integer arg slot ") + std::to_string(c.param));
@@ -484,7 +502,7 @@ static void test_arg_width_never_reads_past_the_view() {
     std::vector<uint8_t> exact(kTerminateRound, kTerminateRound + cut);
     auto mv = ViewOver(exact.data(), exact.size());
     const uint8_t narrow[4] = { 1, 0, 0, 0 };
-    const int rc = s2validate::ArgWidths(narrow, 4, mv, exact.data(), r, sizeof r);
+    const int rc = ArgWidths(narrow, 4, mv, exact.data(), r, sizeof r);
     CHECK(rc == 0, "a view ending mid-instruction stops cleanly instead of reading past it");
     CHECK(std::strstr(r, "arg-width") != nullptr, "and still renders a verdict rather than garbage");
 }
@@ -499,7 +517,7 @@ static void test_arg_width_survives_a_maximal_prefix_run() {
     char r[256];
     auto mv = ViewOver(prefixes.data(), prefixes.size());
     const uint8_t narrow[3] = { 1, 0, 0 };
-    CHECK(s2validate::ArgWidths(narrow, 3, mv, prefixes.data(), r, sizeof r) == 0,
+    CHECK(ArgWidths(narrow, 3, mv, prefixes.data(), r, sizeof r) == 0,
           "a maximal legacy-prefix run decodes without reading past the decode window");
 }
 
@@ -516,7 +534,7 @@ static void test_arg_width_refuses_a_shape_that_declares_too_few_args() {
     char r[256];
     auto mv = ViewOver(code, sizeof code);
     const uint8_t twoSlots[2] = { 1, 0 };          // this + one param; slot 4 is NOT declared
-    CHECK(s2validate::ArgWidths(twoSlots, 2, mv, code, r, sizeof r) == -1,
+    CHECK(ArgWidths(twoSlots, 2, mv, code, r, sizeof r) == -1,
           "a callee reading an argument the shape does not declare is REFUSED");
     CHECK(std::strstr(r, "slot 4") != nullptr && std::strstr(r, "2 integer arg slot") != nullptr,
           "and the reason names both the missing slot and what the shape declared");
@@ -530,7 +548,7 @@ static void test_arg_width_allows_a_shape_that_declares_more_args_than_the_calle
     char r[256];
     auto mv = ViewOver(code, sizeof code);
     const uint8_t sixSlots[6] = { 1, 0, 0, 0, 0, 0 };
-    CHECK(s2validate::ArgWidths(sixSlots, 6, mv, code, r, sizeof r) == 0,
+    CHECK(ArgWidths(sixSlots, 6, mv, code, r, sizeof r) == 0,
           "declaring MORE arguments than the callee reads is harmless and passes");
 }
 
@@ -542,14 +560,13 @@ static void test_arg_width_stops_at_the_end_of_the_function() {
     char r[256];
     auto mv = ViewOver(code, sizeof code);
     const uint8_t narrow[4] = { 1, 0, 0, 0 };
-    CHECK(s2validate::ArgWidths(narrow, 4, mv, code, r, sizeof r) == 0,
+    CHECK(ArgWidths(narrow, 4, mv, code, r, sizeof r) == 0,
           "a store past the callee's own `ret` is NOT evidence about its arguments");
 }
 
 // The operand-direction case in ISOLATION, asserted on the DECODER rather than through the scan, so
 // a regression names the bug instead of surfacing as a distant false refusal.
 static void test_arg_width_decoder_gets_alu_operand_direction_right() {
-    using s2validate::DecodeArgUse;
     { const uint8_t b[] = {0x48,0x01,0xC2};     // add %rax,%rdx  -> r/m<-r, destination is rdx
       auto u = DecodeArgUse(b, sizeof b);
       CHECK(u.redefines == 2, "ADD r/m,r redefines the r/m operand (rdx), not the source"); }
@@ -572,7 +589,7 @@ static void test_arg_width_stops_at_a_call() {
     char r[256];
     auto mv = ViewOver(code, sizeof code);
     const uint8_t narrow[4] = { 1, 0, 0, 0 };
-    CHECK(s2validate::ArgWidths(narrow, 4, mv, code, r, sizeof r) == 0,
+    CHECK(ArgWidths(narrow, 4, mv, code, r, sizeof r) == 0,
           "a 64-bit spill AFTER a call is a return value, not an argument");
 }
 
@@ -602,13 +619,12 @@ static void test_arg_width_tracks_the_wider_redefinition_set() {
         char r[256];
         auto mv = ViewOver(c.code.data(), c.code.size());
         const uint8_t narrow[4] = { 1, 0, 0, 0 };
-        CHECK(s2validate::ArgWidths(narrow, 4, mv, c.code.data(), r, sizeof r) == 0,
+        CHECK(ArgWidths(narrow, 4, mv, c.code.data(), r, sizeof r) == 0,
               std::string("a spill after `") + c.name + "` is not evidence about the argument");
     }
 }
 
 static void test_arg_width_decoder_reports_redefinitions_and_stores() {
-    using s2validate::DecodeArgUse;
     { const uint8_t b[] = {0x48,0x89,0x55,0xF8};             // mov %rdx,-0x8(%rbp)
       auto u = DecodeArgUse(b, sizeof b);
       CHECK(u.argIndex == 2 && u.wide && u.length == 4, "decodes a 64-bit store of rdx as arg 2"); }

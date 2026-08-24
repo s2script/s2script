@@ -14,15 +14,11 @@
 // pinned build). The whole `validate` object crosses this ABI as JSON and is evaluated by the
 // engine-free call_validate.cpp — see that TU for the closed vocabulary and what each gate proves.
 //
-// THE INVOKE TECHNIQUE. Under SysV x86-64, integer-class and float-class arguments are assigned to
-// two INDEPENDENT register sequences (rdi/rsi/rdx/rcx/r8/r9 and xmm0..7), so positional interleaving
-// between the classes does not matter to the callee. Therefore ONE fixed max-arity prototype can
-// call every descriptor in the closed v1 vocabulary: `this` in rdi plus the 5 remaining GP slots and
-// all 8 xmm slots are ALWAYS passed, and the callee simply reads the prefix its own prototype
-// declares and ignores the rest. That buys the whole closed vocabulary with no hand-written asm and
-// no combinatorial switch — only two casts, selected by RETURN class (rax vs xmm0). This is valid
-// only for NON-VARIADIC callees; variadics (and overloads) are out of scope per spec §4, which is
-// exactly why the vocabulary is closed.
+// THE INVOKE TECHNIQUE lives behind call_abi.h. SysV uses independent GP/SSE streams; Microsoft x64
+// uses the AUTHOR-POSITIONAL class sequence that now crosses the engine-ops ABI. The Windows backend
+// uses one MASM bridge to place raw typed slots exactly (paired GP/XMM registers, shadow space,
+// stack slots, RAX/XMM0 return); it never invents a mismatched C++ function-pointer type.
+// This remains valid only for NON-VARIADIC callees; variadics and overloads are out of scope.
 //
 // LAYERING. Nothing here names a game class/field/function: the plugin's own regenerable gamedata
 // supplies every name as an opaque string that crosses the core untouched (the same discipline as
@@ -30,6 +26,7 @@
 // packed CEntityHandle read off the entity's own identity, which the core then runs through the
 // books-gated __s2_handle_adopt path (spec §4), so a raw pointer can never mint an EntityRef.
 #include "engine_calls.h"
+#include "call_abi.h"
 #include "sigscan.h"
 #include "vtable.h"   // s2vtable::GetVTableByName — RTTI vtable-by-name (CS2 exports no game vtables)
 #include "platform/module.h"
@@ -46,7 +43,7 @@
 #include <entity2/entityinstance.h>   // CEntityInstance::GetRefEHandle (inline; identity-backed)
 
 #include <cstdio>     // snprintf — the degrade-reason string
-#include <cstring>    // strcmp/strstr/memcpy
+#include <cstring>    // strcmp
 #include <string>
 #include <vector>
 
@@ -64,17 +61,12 @@ namespace {
 // compiled into core/ (the check-boundary invariant); s2_schema_offset hardcodes the same soname.
 constexpr const char* kEngineModule = "libserver.so";
 
-// Arg budget (spec §4): `this` consumes the first of SysV's six GP argument registers, so at most 5
-// integer-class args, and at most 8 float args. The SDK's build-time validator rejects a descriptor
-// that exceeds either bound; these are the belt-and-braces runtime guards.
+// Closed-vocabulary budget shared with the core and both ABI backends. The SDK's build-time
+// validator rejects a descriptor that exceeds either class bound; these are runtime backstops.
 // 9 declared integer-class args, plus the optional receiver = 10 integer slots total.
 //
-// SysV passes the first SIX integer-class args in registers (rdi..r9) and SPILLS the rest to the
-// stack. The prototypes below therefore declare ten uint64 slots: the compiler puts slots 7..10 on
-// the stack in order, which is exactly where a callee declaring that many expects them. Raising the
-// budget past six is what lets a static factory taking seven args be declared at all -- with the old
-// limit of five (+ receiver) such a descriptor was rejected at load with "stack-passed args are out
-// of scope".
+// This budget includes stack-passed args; compiler-generated calls in each backend own the register,
+// shadow-space and spill placement.
 constexpr int kMaxGpArgs = 9;
 constexpr int kMaxFpArgs = 8;
 
@@ -203,26 +195,6 @@ int Fail(char* out, int cap, const char* reason) {
     if (out && cap > 0) std::snprintf(out, static_cast<size_t>(cap), "%s", reason);
     return -1;
 }
-
-// The two max-arity prototypes (see THE INVOKE TECHNIQUE above). All 5 GP + 8 xmm slots are always
-// passed; the callee reads only what its real prototype declares.
-//
-// The xmm slots MUST be `float`, not `double`. The arg vocabulary's `float` is 32-bit, and SysV
-// passes a 32-bit float as a float in the LOW 32 bits of the xmm register. Declaring these `double`
-// puts a 64-bit double bit pattern in the register, so a callee doing `movss`/`movd` reads the
-// double's low word: `(double)10.0` is 0x4024000000000000, whose low 32 bits are ZERO, so the callee
-// sees 0.0f. That is a SILENT wrong value — no crash, no diagnostic — and it is exactly the
-// misbehaviour class this slice exists to prevent. Verified by compiled repro; guarded by the
-// float-round-trip test in core/src/gamedata_calls.rs.
-// The receiver is no longer a distinct `void*` parameter: it is simply integer slot 0 when the
-// descriptor HAS a receiver, and the first declared arg when it does not. One prototype serves both,
-// so a receiverless call is not a second code path with its own way to be wrong.
-using FnU64 = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           float, float, float, float, float, float, float, float);
-using FnF32 = float    (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           float, float, float, float, float, float, float, float);
 
 }  // namespace
 
@@ -356,6 +328,7 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
 // never a wild call.
 // ---------------------------------------------------------------------------
 int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
+                        const unsigned char* argClass, int argCount,
                         const uint64_t* gp, const unsigned char* gpKind, int gpCount,
                         const double* fp, int fpCount,
                         const char* const* strs, const float* vecs,
@@ -363,6 +336,8 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     if (retOut) *retOut = 0;
     if (callId < 0 || static_cast<size_t>(callId) >= g_calls.size()) return 0;
     if (retKind < kRetVoid || retKind > kRetEntity) return 0;     // validated BEFORE any call
+    if (argCount < 0 || argCount > kMaxGpArgs + kMaxFpArgs) return 0;
+    if (argCount > 0 && !argClass) return 0;
     if (gpCount < 0 || gpCount > kMaxGpArgs) return 0;
     if (fpCount < 0 || fpCount > kMaxFpArgs) return 0;
     if (gpCount > 0 && (!gp || !gpKind)) return 0;
@@ -376,8 +351,7 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     //
     // entIndex < 0 is the RECEIVERLESS marker (`receiver.kind: "none"` — a static/free engine
     // function, which has no `this` at all). Nothing is resolved and no slot is consumed: the first
-    // declared arg takes rdi. Kept as a sentinel on the existing parameter rather than a new ABI
-    // field so the op signature is unchanged.
+    // declared arg takes position 0. Kept as a sentinel on the existing receiver parameters.
     const bool hasReceiver = entIndex >= 0;
     void* thisPtr = nullptr;
     if (hasReceiver) {
@@ -391,8 +365,8 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     }
 
     uint64_t g[kMaxGpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    // `float`, not `double` — see the FnU64/FnF32 note above. The core hands us f64 across the ABI
-    // (JS numbers are doubles); the narrowing to the engine's 32-bit float happens HERE, once.
+    // The core hands us f64 across the ABI (JS numbers are doubles); narrowing to the engine's
+    // 32-bit `float` happens HERE once, before the selected backend assigns registers/stack slots.
     float    f[kMaxFpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
     for (int i = 0; i < gpCount; i++) {
@@ -430,32 +404,26 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     }
     for (int i = 0; i < fpCount; i++) f[i] = static_cast<float>(fp[i]);   // explicit f64 -> f32 narrow
 
-    // Lay the integer slots out once: receiver first when there is one, then the declared args.
-    uint64_t s_[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    int base = 0;
-    if (hasReceiver) { s_[0] = reinterpret_cast<uint64_t>(thisPtr); base = 1; }
-    for (int i = 0; i < gpCount && (base + i) < 10; i++) s_[base + i] = g[i];
+    s2callabi::InvokeRequest request{};
+    request.fn = fn;
+    request.hasReceiver = hasReceiver;
+    request.receiver = reinterpret_cast<uint64_t>(thisPtr);
+    request.argClasses = argClass;
+    request.argCount = argCount;
+    request.gp = g;
+    request.gpCount = gpCount;
+    request.fp = f;
+    request.fpCount = fpCount;
+    request.retKind = retKind == kRetFloat ? s2callabi::kRetF32 : s2callabi::kRetU64;
+    uint64_t r = 0;
+    if (!s2callabi::Invoke(request, &r)) return 0;
 
-    if (retKind == kRetFloat) {
-        float r = reinterpret_cast<FnF32>(fn)(s_[0], s_[1], s_[2], s_[3], s_[4],
-                                              s_[5], s_[6], s_[7], s_[8], s_[9],
-                                              f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
-        if (retOut) {
-            uint32_t bits = 0;
-            std::memcpy(&bits, &r, sizeof(bits));     // the core reads the low 32 bits as f32
-            *retOut = bits;
-        }
-        return 1;
-    }
-
-    uint64_t r = reinterpret_cast<FnU64>(fn)(s_[0], s_[1], s_[2], s_[3], s_[4],
-                                             s_[5], s_[6], s_[7], s_[8], s_[9],
-                                             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
     if (retOut) {
         switch (retKind) {
             case kRetVoid:   break;                                        // *retOut stays 0
             case kRetBool:   *retOut = (r & 0xff) ? 1 : 0; break;           // al
             case kRetInt:    *retOut = static_cast<uint32_t>(r); break;      // eax; core reads as i32
+            case kRetFloat:   *retOut = r; break;                            // low 32 bits from xmm0
             case kRetEntity: *retOut = EntityHandleFromPtr(reinterpret_cast<void*>(r)); break;
             default:         break;
         }

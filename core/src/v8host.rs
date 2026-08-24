@@ -3265,10 +3265,12 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
             }
         };
 
-        // Marshal the args into the two SysV register sequences, preserving order within each class.
-        // `strs`/`vecs` carry the indirect payloads; a GP slot holds their INDEX (bounded by the slot
-        // count, which is what the shim re-validates).
+        // Marshal values into per-class streams AND retain the declared class sequence in author
+        // order. SysV consumes independent GP/FP sequences; Microsoft x64 selects its paired
+        // GP/XMM register by positional class, so the sequence is an explicit part of the ABI.
+        // `strs`/`vecs` carry indirect payloads; a GP slot holds their INDEX.
         let js_args = v8::Local::<v8::Array>::try_from(args.get(3)).ok();
+        let mut arg_class: Vec<u8> = Vec::new();
         let mut gp: Vec<u64> = Vec::new();
         let mut gp_kind: Vec<u8> = Vec::new();
         let mut fp: Vec<f64> = Vec::new();
@@ -3280,20 +3282,27 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                 if let Some(x) = a.get_index(scope, i as u32) { v = x; }
             }
             match kind.as_str() {
-                "float" => fp.push(v.number_value(scope).unwrap_or(0.0)),
+                "float" => {
+                    arg_class.push(crate::gamedata_calls::ARG_CLASS_F32);
+                    fp.push(v.number_value(scope).unwrap_or(0.0));
+                }
                 "bool" => {
+                    arg_class.push(crate::gamedata_calls::ARG_CLASS_GP);
                     gp.push(if v.boolean_value(scope) { 1 } else { 0 });
                     gp_kind.push(crate::gamedata_calls::GP_SCALAR);
                 }
                 "int" => {
+                    arg_class.push(crate::gamedata_calls::ARG_CLASS_GP);
                     gp.push(v.integer_value(scope).unwrap_or(0) as u64);
                     gp_kind.push(crate::gamedata_calls::GP_SCALAR);
                 }
                 "entity" => {
+                    arg_class.push(crate::gamedata_calls::ARG_CLASS_GP);
                     gp.push(pack_entity_arg(scope, v));
                     gp_kind.push(crate::gamedata_calls::GP_ENTITY);
                 }
                 "string" => {
+                    arg_class.push(crate::gamedata_calls::ARG_CLASS_GP);
                     let s = v.to_rust_string_lossy(scope);
                     // An interior NUL would silently truncate into a DIFFERENT string — no-op instead.
                     let Ok(c) = CString::new(s) else { return };
@@ -3302,6 +3311,7 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                     gp_kind.push(crate::gamedata_calls::GP_STRING);
                 }
                 "vector" => {
+                    arg_class.push(crate::gamedata_calls::ARG_CLASS_GP);
                     let xv = obj_prop(scope, v, "x");
                     let x = xv.and_then(|a| a.number_value(scope)).unwrap_or(0.0) as f32;
                     let yv = obj_prop(scope, v, "y");
@@ -3355,6 +3365,7 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let ok = crate::nest::with_outbound(&args, || {
             func(
                 plan.call_id, index, serial, subobj_off,
+                arg_class.as_ptr(), arg_class.len() as i32,
                 gp.as_ptr(), gp_kind.as_ptr(), gp.len() as i32,
                 fp.as_ptr(), fp.len() as i32,
                 strs.as_ptr(), vecs.as_ptr(),
@@ -8500,9 +8511,9 @@ pub(crate) mod frame_tests {
     }
 
     thread_local! {
-        /// (call_id, first FP arg) recorded by `fake_call_invoke`.
-        static LAST_ENGINE_CALL: std::cell::Cell<(c_int, f64)> =
-            const { std::cell::Cell::new((-1, 0.0)) };
+        /// (call_id, first FP arg, arg count, low two-bit classes in author order).
+        static LAST_ENGINE_CALL: std::cell::Cell<(c_int, f64, c_int, u32)> =
+            const { std::cell::Cell::new((-1, 0.0, 0, 0)) };
     }
 
     extern "C" fn fake_call_resolve(
@@ -8513,13 +8524,20 @@ pub(crate) mod frame_tests {
 
     extern "C" fn fake_call_invoke(
         call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int,
+        arg_class: *const u8, arg_count: c_int,
         _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
         fp: *const f64, fp_count: c_int,
         _strs: *const *const c_char, _vecs: *const f32,
         _ret_kind: c_int, _ret_out: *mut u64,
     ) -> c_int {
         let f0 = if fp_count > 0 && !fp.is_null() { unsafe { *fp } } else { 0.0 };
-        LAST_ENGINE_CALL.with(|c| c.set((call_id, f0)));
+        let mut packed = 0u32;
+        if arg_count > 0 && !arg_class.is_null() {
+            for i in 0..arg_count.min(16) {
+                packed |= unsafe { *arg_class.add(i as usize) as u32 } << (i * 2);
+            }
+        }
+        LAST_ENGINE_CALL.with(|c| c.set((call_id, f0, arg_count, packed)));
         1
     }
 
@@ -8546,7 +8564,7 @@ pub(crate) mod frame_tests {
             r#"{"calls":{"Boom":{"receiver":{"kind":"none"},
                 "target":{"kind":"signature","name":"Bo","module":"libserver.so",
                           "pattern":"55 48","resolve":"direct"},
-                "args":["float"],"returns":"void"}}}"#,
+                "args":["float","int","float"],"returns":"void"}}}"#,
         );
         assert_eq!(
             crate::gamedata_calls::status("gd_owner", "Boom"), "available",
@@ -8556,12 +8574,14 @@ pub(crate) mod frame_tests {
         assert!(eval_in_context_bool("gd_owner",
             r#"typeof __s2require("@s2script/sdk/unsafe").Engine.call("Boom") === "function""#),
             "an authorized plugin's own declared call must still be callable");
-        LAST_ENGINE_CALL.with(|c| c.set((-1, 0.0)));
+        LAST_ENGINE_CALL.with(|c| c.set((-1, 0.0, 0, 0)));
         assert!(eval_in_context_bool("gd_owner",
-            r#"(__s2require("@s2script/sdk/unsafe").Engine.call("Boom")(2.5), true)"#));
-        let (call_id, fp0) = LAST_ENGINE_CALL.with(|c| c.get());
+            r#"(__s2require("@s2script/sdk/unsafe").Engine.call("Boom")(2.5, 7, 4.5), true)"#));
+        let (call_id, fp0, arg_count, classes) = LAST_ENGINE_CALL.with(|c| c.get());
         assert_eq!(call_id, 7, "the resolved call id must reach the engine op");
         assert_eq!(fp0, 2.5, "the declared float arg must survive the dropped pluginId slot");
+        assert_eq!(arg_count, 3, "the author-order class sequence crosses the C ABI");
+        assert_eq!(classes, 0b01_00_01, "float, GP, float remains positional for Microsoft x64");
         set_engine_ops(None);
         shutdown();
     }
@@ -8610,12 +8630,12 @@ pub(crate) mod frame_tests {
             "the game package's descriptors are its own, not the calling plugin's"
         );
         // And the call actually reaches the engine op through the game-scoped invoke.
-        LAST_ENGINE_CALL.with(|c| c.set((-1, 0.0)));
+        LAST_ENGINE_CALL.with(|c| c.set((-1, 0.0, 0, 0)));
         assert!(eval_in_context_bool(
             "gd_consumer",
             r#"(__s2_game_call_invoke("doThing", 0, 0, [1.5]), true)"#
         ));
-        let (call_id, fp0) = LAST_ENGINE_CALL.with(|c| c.get());
+        let (call_id, fp0, _, _) = LAST_ENGINE_CALL.with(|c| c.get());
         assert_eq!(call_id, 7, "the resolved call id must reach the engine op");
         assert_eq!(fp0, 1.5, "the declared float arg must survive the game-scoped marshaller");
         crate::gamedata_calls::drop_plugin(&crate::gamedata_calls::reserved_owner_id("@demo/gamepkg"));
@@ -10405,6 +10425,7 @@ pub(crate) mod frame_tests {
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_degrades(
         _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _ac: *const u8, _an: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,
@@ -10844,6 +10865,7 @@ pub(crate) mod frame_tests {
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_reenters_a_hook(
         _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _ac: *const u8, _an: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,

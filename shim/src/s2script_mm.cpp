@@ -4882,7 +4882,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
-    if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
+    if (s2script_core_init_v2(&s2_logger, &s2_request_hook, &ops,
+                              S2_ENGINE_OPS_ABI_VERSION,
+                              static_cast<uint32_t>(sizeof ops)) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
     }
