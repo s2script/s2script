@@ -2791,10 +2791,18 @@ static std::string PluginsDir() {
 static std::string CrashSpoolDir() {
     std::string root = AddonRoot();
     if (!root.empty()) {
-        std::string spool = root + "/data/crashes";
+        // AddonRoot is UTF-8 on Windows. Decode it through u8path so filesystem operations use
+        // the native wide path; converting a concatenated narrow string through path() corrupts
+        // non-ASCII install locations under the active ANSI code page.
+        std::filesystem::path spool = std::filesystem::u8path(root) / "data" / "crashes";
         std::error_code ec;
         std::filesystem::create_directories(spool, ec);
-        if (!ec && std::filesystem::is_directory(spool, ec)) return spool;
+#if defined(_WIN32)
+        const std::wstring& nativeSpool = spool.native();
+        if (!ec && std::filesystem::is_directory(nativeSpool, ec)) return spool.u8string();
+#else
+        if (!ec && std::filesystem::is_directory(spool, ec)) return spool.string();
+#endif
     }
     return "";
 }
@@ -5017,12 +5025,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                        s2script_core_crash_breadcrumb_size())) {
             META_CONPRINTF("[s2script] crash handler armed (spool %s)\n", spool.c_str());
         } else {
-#if defined(_WIN32)
-            META_CONPRINTF("[s2script] WARN: crash handler NOT armed "
-                           "(temporary Windows no-op; native capture unavailable)\n");
-#else
             META_CONPRINTF("[s2script] WARN: crash handler NOT armed (spool dir unavailable)\n");
-#endif
         }
     }
 

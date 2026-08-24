@@ -37,7 +37,7 @@ if(WIN32)
         src/platform/paths_win.cpp)
     set(S2_PLATFORM_IMAGE_SOURCE src/platform/image_win.cpp)
     set(S2_CORE_SYMBOLS_SOURCE src/core_symbols_win.cpp)
-    set(S2_CRASH_HANDLER_SOURCE src/crash_handler_win_noop.cpp)
+    set(S2_CRASH_HANDLER_SOURCE src/crash_handler_win.cpp)
     set(S2_DETOUR_TEST_ASM_SOURCE tests/detour_test_target_win_msvc.asm)
 else()
     set(S2_CALL_ABI_SOURCES src/call_abi_sysv.cpp)
@@ -108,7 +108,7 @@ add_library(s2script SHARED
     # plain libc malloc/free (verified), NOT g_pMemAlloc. ekv.cpp is the ONLY TU that includes
     # entitykeyvalues.h; everything else sees void*.
     src/ekv.cpp
-    # Crash reporter: Linux Breakpad, or the clearly named temporary Windows fail-off no-op.
+    # Crash reporter: vendored in-process Breakpad on both native platforms.
     ${S2_CRASH_HANDLER_SOURCE}
     # Plugin-gamedata slice: plugin-declared engine calls — descriptor resolution (byte signature /
     # RTTI vtable slot + prologue validation + .text range) and the fixed-max-arity SysV invoke.
@@ -140,14 +140,23 @@ add_library(s2script SHARED
                                              # operators must survive) — list it separately below.
 )
 
-if(NOT WIN32)
-    # --- Crash reporter (Breakpad, vendored) -----------------------------------------------
-    # The Linux client only. Windows deliberately builds crash_handler_win_noop.cpp until the
-    # following crash-reporter task ports Breakpad; that implementation returns false and Load
-    # explicitly reports NOT armed.
+set(BREAKPAD ${CMAKE_SOURCE_DIR}/../third_party/breakpad/src)
+if(WIN32)
+    # --- Crash reporter (Breakpad Windows client, vendored) -------------------------------
+    # Exact in-process ExceptionHandler closure. DbgHelp and Rpcrt4 are intentionally loaded
+    # dynamically by Breakpad itself; all remaining Win32 APIs come from the standard system
+    # libraries. CMAKE_MSVC_RUNTIME_LIBRARY above gives these TUs the same /MT ABI as the shim.
+    add_library(breakpad_client STATIC
+        ${BREAKPAD}/client/windows/handler/exception_handler.cc
+        ${BREAKPAD}/client/windows/crash_generation/crash_generation_client.cc
+        ${BREAKPAD}/common/windows/guid_string.cc
+    )
+    target_include_directories(breakpad_client PUBLIC ${BREAKPAD})
+    target_compile_definitions(breakpad_client PRIVATE UNICODE _UNICODE)
+else()
+    # --- Crash reporter (Breakpad Linux client, vendored) ---------------------------------
     enable_language(ASM)
     find_package(Threads REQUIRED)
-    set(BREAKPAD ${CMAKE_SOURCE_DIR}/../third_party/breakpad/src)
     add_library(breakpad_client STATIC
         ${BREAKPAD}/client/linux/crash_generation/crash_generation_client.cc
         ${BREAKPAD}/client/linux/dump_writer_common/thread_info.cc
@@ -249,7 +258,12 @@ if(WIN32)
 endif()
 
 
-if(NOT WIN32)
+if(WIN32)
+    # Launches a child process that faults after arming the production Windows handler.
+    add_executable(crash_selftest src/crash_selftest_win.cpp src/crash_handler_win.cpp)
+    target_include_directories(crash_selftest PRIVATE src)
+    target_link_libraries(crash_selftest PRIVATE breakpad_client)
+else()
     # The standalone fork-and-crash selftest (not shipped; Linux uses fork/signals).
     add_executable(crash_selftest src/crash_selftest.cpp src/crash_handler.cpp)
     target_include_directories(crash_selftest PRIVATE src)
@@ -358,11 +372,9 @@ else()
 endif()
 target_include_directories(s2script PRIVATE include)
 
-# Crash reporter: link the vendored Breakpad client (its PUBLIC include dir reaches
-# src/crash_handler.cpp during compilation).
-if(NOT WIN32)
-    target_link_libraries(s2script PRIVATE breakpad_client)
-endif()
+# Crash reporter: link the platform's vendored Breakpad client (its PUBLIC include dir reaches
+# the selected crash-handler TU during compilation).
+target_link_libraries(s2script PRIVATE breakpad_client)
 
 # S2_HL2SDK_BUILD: the pinned hl2sdk submodule SHA, stamped into every crash envelope's
 # gamedata.hl2sdk. Resolved at configure time from the vendored checkout (${HL2SDK} is
@@ -419,3 +431,6 @@ add_test(NAME call_validate_selftest COMMAND call_validate_selftest)
 add_test(NAME hook_dispatch_selftest COMMAND hook_dispatch_selftest)
 add_test(NAME detour_reloc_selftest COMMAND detour_reloc_selftest)
 add_test(NAME platform_selftest COMMAND platform_selftest)
+if(WIN32)
+    add_test(NAME crash_selftest COMMAND crash_selftest)
+endif()

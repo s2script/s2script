@@ -1,10 +1,9 @@
 #include "module.h"
 
+#include <cstdio>
 #include <cstring>
 #include <link.h>
 #include <limits>
-#include <sys/mman.h>
-#include <unistd.h>
 #include <utility>
 
 namespace s2platform {
@@ -97,23 +96,33 @@ bool IsExecutableAddress(const void* address) {
 
 bool IsReadableAddress(const void* address, size_t size) {
     if (!address || !size) return false;
-    const long pageSize = sysconf(_SC_PAGESIZE);
-    if (pageSize <= 0) return false;
     const uintptr_t raw = reinterpret_cast<uintptr_t>(address);
     const uintptr_t max = std::numeric_limits<uintptr_t>::max();
-    if (size - 1 > max - raw) return false;
-    const uintptr_t first = raw &
-                            ~static_cast<uintptr_t>(pageSize - 1);
-    const uintptr_t last = (raw + size - 1) &
-                           ~static_cast<uintptr_t>(pageSize - 1);
-    unsigned char resident = 0;
-    for (uintptr_t page = first;;) {
-        if (mincore(reinterpret_cast<void*>(page), static_cast<size_t>(pageSize), &resident) != 0)
-            return false;
-        if (page == last) return true;
-        if (page > max - static_cast<uintptr_t>(pageSize)) return false;
-        page += static_cast<uintptr_t>(pageSize);
+    if (size > max - raw) return false;
+    const uintptr_t end = raw + size;
+
+    FILE* maps = std::fopen("/proc/self/maps", "r");
+    if (!maps) return false;
+    uintptr_t cursor = raw;
+    char line[512];
+    while (std::fgets(line, sizeof(line), maps)) {
+        unsigned long long regionStart = 0;
+        unsigned long long regionEnd = 0;
+        char permissions[5] = {};
+        if (std::sscanf(line, "%llx-%llx %4s", &regionStart, &regionEnd, permissions) != 3)
+            continue;
+        const uintptr_t start = static_cast<uintptr_t>(regionStart);
+        const uintptr_t finish = static_cast<uintptr_t>(regionEnd);
+        if (finish <= cursor) continue;
+        if (start > cursor || permissions[0] != 'r') break;
+        if (finish >= end) {
+            std::fclose(maps);
+            return true;
+        }
+        cursor = finish;
     }
+    std::fclose(maps);
+    return false;
 }
 
 }  // namespace s2platform

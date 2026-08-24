@@ -53,10 +53,76 @@ for archive in ("mathlib.lib", "tier1.lib", "interfaces.lib"):
 require("shim/CMakeLists.txt", "lib/public/win64/tier0.lib", "required tier0 Windows dependency")
 require("shim/CMakeLists.txt", "s2script_core.dll.lib", "Rust core import-library link")
 require("shim/CMakeLists.txt", "s2script_core.dll", "Rust core DLL staging")
-require(
+forbid(
     "shim/CMakeLists.txt",
     "crash_handler_win_noop.cpp",
-    "explicit temporary Windows crash-reporter degradation",
+    "temporary Windows crash-reporter degradation",
+)
+require(
+    "shim/CMakeLists.txt",
+    "src/crash_handler_win.cpp",
+    "Windows crash-reporter implementation",
+)
+for source in (
+    "client/windows/handler/exception_handler.cc",
+    "client/windows/crash_generation/crash_generation_client.cc",
+    "common/windows/guid_string.cc",
+):
+    require("shim/CMakeLists.txt", source, f"minimal Windows Breakpad source {source}")
+for source in (
+    "client/windows/crash_generation/crash_generation_server.cc",
+    "client/windows/crash_generation/minidump_generator.cc",
+    "client/windows/crash_generation/client_info.cc",
+):
+    forbid("shim/CMakeLists.txt", source, f"out-of-process Windows Breakpad source {source}")
+require("shim/CMakeLists.txt", "UNICODE _UNICODE", "wide Windows Breakpad API selection")
+require("shim/CMakeLists.txt", "crash_selftest_win.cpp", "Windows subprocess crash selftest")
+require("shim/CMakeLists.txt", "add_test(NAME crash_selftest", "Windows crash CTest registration")
+require("shim/src/crash_handler_win.cpp", "MultiByteToWideChar", "UTF-8 to wide spool conversion")
+require("shim/src/crash_handler_win.cpp", "CreateFileW", "wide sidecar creation")
+require("shim/src/crash_handler_win.cpp", 'L".dmp.s2meta"', "paired sidecar suffix")
+forbid(
+    "shim/src/crash_handler_win.cpp",
+    "google_breakpad::ExceptionHandler::HANDLER_ALL",
+    "CRT invalid-parameter/purecall interception",
+)
+require(
+    "shim/src/crash_handler_win.cpp",
+    "google_breakpad::ExceptionHandler::HANDLER_EXCEPTION",
+    "top-level Windows exception handler installation",
+)
+require("shim/src/crash_handler_win.cpp", "PreflightCallback", "controlled Breakpad preflight")
+require(
+    "shim/src/crash_handler_win.cpp",
+    "s_handler->WriteMinidump()",
+    "installed-handler operational Breakpad preflight",
+)
+forbid("shim/src/crash_handler_win.cpp", "catch (...)", "unsafe constructor recovery")
+forbid("shim/src/crash_handler_win.cpp", "std::nothrow", "unsafe constructor recovery")
+require("shim/src/crash_handler_win.cpp", "return false;", "prior-handler chaining")
+require("shim/src/crash_selftest_win.cpp", "CreateProcessW", "subprocess crash launch")
+require(
+    "shim/src/crash_selftest_win.cpp",
+    "EXCEPTION_ACCESS_VIOLATION",
+    "access-violation exit verification",
+)
+require(
+    "shim/src/crash_selftest_win.cpp",
+    'L".dmp.s2meta"',
+    "paired Windows sidecar verification",
+)
+require("shim/src/crash_selftest_win.cpp", "S2CrashDisarm()", "disarm restoration exercise")
+require("shim/src/crash_selftest_win.cpp", "RemoveDirectoryW", "temporary spool cleanup")
+require("shim/src/crash_selftest_win.cpp", "DirectoryIsEmpty", "preflight artifact check")
+require(
+    "shim/src/s2script_mm.cpp",
+    "std::filesystem::u8path(root)",
+    "UTF-8 addon-root decoding for the crash spool",
+)
+require(
+    "shim/src/s2script_mm.cpp",
+    "spool.native()",
+    "native-wide Windows crash-spool filesystem path",
 )
 require("shim/src/core_symbols_win.cpp", "GetProcAddress", "optional core export lookup")
 require(
@@ -96,6 +162,11 @@ require("scripts/ci-native-windows.ps1", "target/release/s2script_core.dll", "re
 forbid("scripts/ci-native-windows.ps1", "target/debug/", "debug Windows core artifact")
 forbid("scripts/ci-native-windows.ps1", "S2_CORE_LIB_DIR=debug", "debug Windows core link")
 require("scripts/ci-native-windows.ps1", "ctest", "Windows CTest gate")
+forbid(
+    "shim/src/s2script_mm.cpp",
+    "temporary Windows no-op",
+    "obsolete Windows crash-reporter warning",
+)
 require(
     ".github/workflows/ci-native.yml",
     "windows-latest",

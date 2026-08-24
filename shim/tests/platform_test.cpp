@@ -13,6 +13,13 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
+
 static int g_fail = 0;
 #define CHECK(cond, msg)                                                     \
     do {                                                                     \
@@ -191,6 +198,8 @@ static void test_executable_memory_round_trip() {
     std::memcpy(allocation, code, sizeof(code));
     CHECK(s2platform::ProtectMemory(allocation, size, s2platform::MemoryProtection::ReadExecute),
           "a trampoline transitions from writable to executable");
+    CHECK(s2platform::IsReadableAddress(allocation, sizeof(code)),
+          "read-execute trampoline memory remains readable");
     s2platform::FlushInstructionCache(allocation, sizeof(code));
     using Fn = int (*)();
     CHECK(reinterpret_cast<Fn>(allocation)() == 42,
@@ -200,11 +209,33 @@ static void test_executable_memory_round_trip() {
     s2platform::FreeExecutable(allocation, size);
 }
 
+static void test_execute_only_memory_is_not_readable() {
+    const size_t size = s2platform::PageSize();
+#if defined(_WIN32)
+    void* allocation = VirtualAlloc(
+        nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE);
+    CHECK(allocation != nullptr, "an execute-only Windows page allocates");
+    if (!allocation) return;
+    CHECK(!s2platform::IsReadableAddress(allocation, 1),
+          "PAGE_EXECUTE is not accepted as readable");
+    VirtualFree(allocation, 0, MEM_RELEASE);
+#else
+    void* allocation = mmap(
+        nullptr, size, PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(allocation != MAP_FAILED, "an execute-only Linux page maps");
+    if (allocation == MAP_FAILED) return;
+    CHECK(!s2platform::IsReadableAddress(allocation, 1),
+          "a --xp mapping is not accepted as readable");
+    munmap(allocation, size);
+#endif
+}
+
 int main() {
     test_addon_root_is_derived_without_host_cwd();
     test_synthetic_pe_ranges_and_rtti();
     test_live_linux_module_queries();
     test_executable_memory_round_trip();
+    test_execute_only_memory_is_not_readable();
     if (g_fail) { std::cerr << "\n" << g_fail << " check(s) FAILED\n"; return 1; }
     std::cout << "\nall platform backend checks passed\n";
     return 0;
