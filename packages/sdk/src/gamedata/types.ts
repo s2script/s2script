@@ -1,5 +1,6 @@
 /** Plugin-shippable gamedata. v1 accepts `signatures` + `calls` + `hooks`. */
-export const PLATFORM = "linuxsteamrt64" as const;
+export const SUPPORTED_PLATFORMS = ["linuxsteamrt64", "windows64"] as const;
+export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
 
 export type ArgKind = "bool" | "int" | "float" | "string" | "vector" | "entity";
 export type RetKind = "void" | "bool" | "int" | "float" | "entity";

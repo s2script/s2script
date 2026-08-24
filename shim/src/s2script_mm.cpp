@@ -84,6 +84,12 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(_WIN32)
+static constexpr const char* kS2Platform = "windows64";
+#else
+static constexpr const char* kS2Platform = "linuxsteamrt64";
+#endif
+
 // SourceHook hook declaration: 3 void-return parameters (bool, bool, bool).
 // ISource2Server is confirmed at eiface.h:384; GameFrame at eiface.h:407.
 // IServerGameDLL (used in the s2_sample_mm reference) is a typedef to the same class.
@@ -4182,7 +4188,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // --- Gamedata (owner-scoped; built ONCE per Load, spec §6) ---
     // One helper, run per owner: the owners differ only in name and in who consumes them.
     auto loadOwner = [&](const char* owner, GameConfig& out, std::string& outError) {
-        out = LoadGameConfig(gdRoot, owner, "source2", modDir, "linuxsteamrt64", outError);
+        out = LoadGameConfig(gdRoot, owner, "source2", modDir, kS2Platform, outError);
         if (!outError.empty())
             META_CONPRINTF("[s2script] WARN: %s — %s gamedata degraded\n", outError.c_str(), owner);
         META_CONPRINTF("[s2script] gamedata %s: %zu interfaces, %zu offsets, %zu signatures, "

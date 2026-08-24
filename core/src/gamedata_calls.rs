@@ -54,8 +54,13 @@ pub(crate) fn is_reserved_owner(id: &str) -> bool {
 }
 
 /// The platform id whose nested details the runtime consumes (spec §5, Global Constraints). Exactly
-/// one platform ships today; the key stays explicit so a second one is additive.
+/// one key is selected by each native build; plugin archives may carry both keys.
+#[cfg(target_os = "linux")]
 const PLATFORM: &str = "linuxsteamrt64";
+#[cfg(target_os = "windows")]
+const PLATFORM: &str = "windows64";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+compile_error!("s2script-core supports only Linux and Windows native runtimes");
 
 /// Per-GP-slot arg kind bytes. MUST match `engine_calls.cpp`'s `kArg*` enum — this is an ABI, not a
 /// convention.
@@ -442,6 +447,14 @@ pub(crate) fn flatten_decl(
     decl: &serde_json::Value,
     signatures: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Result<String, String> {
+    flatten_decl_for_platform(decl, signatures, PLATFORM)
+}
+
+fn flatten_decl_for_platform(
+    decl: &serde_json::Value,
+    signatures: Option<&serde_json::Map<String, serde_json::Value>>,
+    platform: &str,
+) -> Result<String, String> {
     let mut out = decl.clone();
     let target = out
         .get_mut("target")
@@ -459,9 +472,9 @@ pub(crate) fn flatten_decl(
                 }
                 let spec = signatures
                     .and_then(|m| m.get(&name))
-                    .and_then(|v| v.get(PLATFORM))
+                    .and_then(|v| v.get(platform))
                     .ok_or_else(|| {
-                        format!("no '{}' entry for signature '{}'", PLATFORM, name)
+                        format!("no '{}' entry for signature '{}'", platform, name)
                     })?;
                 for key in ["module", "pattern", "resolve"] {
                     if let Some(v) = spec.get(key) {
@@ -486,9 +499,9 @@ pub(crate) fn flatten_decl(
         }
         "vtable" => {
             let plat = target
-                .get(PLATFORM)
+                .get(platform)
                 .cloned()
-                .ok_or_else(|| format!("vtable target has no '{}' entry", PLATFORM))?;
+                .ok_or_else(|| format!("vtable target has no '{}' entry", platform))?;
             for key in ["index", "validate"] {
                 if let Some(v) = plat.get(key) {
                     target.insert(key.to_string(), v.clone());
@@ -718,6 +731,28 @@ mod tests {
         assert_eq!(flat["target"]["resolve"], "direct");
     }
 
+    #[test]
+    fn flatten_can_select_the_windows_signature_entry() {
+        let gd: serde_json::Value = serde_json::from_str(
+            r#"{"signatures":{"Ig":{
+                    "linuxsteamrt64":{"module":"libserver.so","pattern":"55 48","resolve":"direct"},
+                    "windows64":{"module":"server.dll","pattern":"48 89","resolve":"lea-disp"}}},
+                "calls":{"ignite":{"receiver":{"kind":"entity"},
+                                   "target":{"kind":"signature","name":"Ig"},
+                                   "args":[],"returns":"void"}}}"#,
+        )
+        .unwrap();
+        let sigs = gd.get("signatures").unwrap().as_object();
+        let decl = gd.get("calls").unwrap().get("ignite").unwrap();
+        let flat: serde_json::Value = serde_json::from_str(
+            &flatten_decl_for_platform(decl, sigs, "windows64").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(flat["target"]["module"], "server.dll");
+        assert_eq!(flat["target"]["pattern"], "48 89");
+        assert_eq!(flat["target"]["resolve"], "lea-disp");
+    }
+
     /// A signature entry's `validate` is lifted WITH its pattern: the two are co-derived from the
     /// same disassembly pass and an operator's `custom/` override replaces the signature entry
     /// whole, so a validator parked in another section would be checked against a pattern it no
@@ -780,6 +815,22 @@ mod tests {
         let flat: serde_json::Value = serde_json::from_str(&flatten_decl(&decl, None).unwrap()).unwrap();
         assert_eq!(flat["target"]["index"], 264);
         assert_eq!(flat["target"]["validate"]["prologue"], "55 48");
+    }
+
+    #[test]
+    fn flatten_can_select_the_windows_vtable_entry() {
+        let decl: serde_json::Value = serde_json::from_str(
+            r#"{"target":{"kind":"vtable","class":"CFoo",
+                 "linuxsteamrt64":{"index":264,"validate":{"prologue":"55 48"}},
+                 "windows64":{"index":271,"validate":{"prologue":"48 89"}}}}"#,
+        )
+        .unwrap();
+        let flat: serde_json::Value = serde_json::from_str(
+            &flatten_decl_for_platform(&decl, None, "windows64").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(flat["target"]["index"], 271);
+        assert_eq!(flat["target"]["validate"]["prologue"], "48 89");
     }
 
     /// The arg/return vocabulary and the SysV budget are enforced with named reasons even though the
