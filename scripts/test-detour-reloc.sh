@@ -28,6 +28,7 @@ fi
 # test binary. It is engine-free (sys/mman and nothing else), so it needs no game to run — and it is
 # the only thing here that exercises the patch, the trampoline layout and the jump back.
 g++ "${flags[@]}" -I third_party/hde -o "$out" \
-    shim/src/detour_reloc.cpp shim/src/detour.cpp third_party/hde/hde64.c \
+    shim/src/detour_reloc.cpp shim/src/detour.cpp shim/src/platform/memory_linux.cpp \
+    third_party/hde/hde64.c \
     shim/tests/detour_reloc_test.cpp
 "$out"

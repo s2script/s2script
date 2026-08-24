@@ -26,6 +26,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "abi_registers.h"
 
 namespace s2validate {
 
@@ -88,9 +89,9 @@ bool Run(const char* validateJson, const ModuleView& mv, const char* module, con
 // THE RULE IS ONE-DIRECTIONAL. Declaring a parameter NARROWER than the engine's truncates it — the
 // thunk reads 32 bits of a 64-bit register and zero-extends on the way back, so a pointer reaches
 // the original with its top half gone and something dereferences it later, far from the hook. That
-// is the live-server SIGSEGV on CCSGameRules::TerminateRound. Declaring it WIDER is harmless: SysV
-// leaves the upper half of a 32-bit argument undefined, so relaying the whole register preserves
-// whatever was actually there. So only narrowing is refused.
+// is the live-server SIGSEGV on CCSGameRules::TerminateRound. Declaring it WIDER is harmless:
+// relaying the whole incoming register preserves whatever the caller supplied. So only narrowing
+// is refused.
 //
 // A callee tells you how wide an argument is by how it STORES it:
 //     mov %esi,%r15d          32-bit — an int
@@ -105,27 +106,26 @@ bool Run(const char* validateJson, const ModuleView& mv, const char* module, con
 
 /// One decoded observation about the instruction at `p`. Exposed for testing.
 struct ArgUse {
-    int          argIndex  = -1;     ///< SysV integer arg STORED to memory (0=this/rdi), else -1
+    int          argIndex  = -1;     ///< mapped integer arg STORED to memory (0=this), else -1
     bool         wide      = false;  ///< REX.W — a 64-bit store
-    int          redefines = -1;     ///< SysV integer arg this instruction OVERWRITES, else -1
+    int          redefines = -1;     ///< mapped integer arg this instruction OVERWRITES, else -1
     bool         terminator = false; ///< ret/jmp/jcc/call — the caller must stop scanning here
     unsigned     length    = 0;      ///< 0 = undecodable; the caller must stop
 };
 
-/// Decode one instruction, reading at most `avail` bytes and never past them.
-ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail);
+/// Decode one instruction, reading at most `avail` bytes and never past them. Register-to-slot
+/// assignment is injected by the selected ABI backend; this TU contains no SysV/MS x64 policy.
+ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail, const s2abi::RegisterMap& registerMap);
 
 /// Walk `fn`'s prologue and refuse a shape that declares a parameter narrower than the callee uses.
 ///
-/// `wide[i]` describes SysV INTEGER ARGUMENT SLOT i — NOT declared param i. Slot 0 is `this`.
+/// `wide[i]` describes flattened INTEGER ARGUMENT SLOT i — NOT declared param i. Slot 0 is `this`.
 /// 0 = the shape relays this slot 32-bit, 1 = 64-bit (or it is a pointer we never narrow, like
 /// `this`).
 ///
-/// Indexed by slot rather than by param BECAUSE FLOAT PARAMS CONSUME NO INTEGER REGISTER. For
-/// `void(this, float, int, int, int)` the integer slots are [this, arg1, arg2, arg3] and the float
-/// rides in xmm0 — so declared param 2 lives in slot 2, not slot 3. Mapping param->slot by position
-/// silently reports the wrong parameter the moment a float appears before it, which is exactly the
-/// shape that motivated this validator. Let the caller, which knows the shape, do the flattening.
+/// Indexed by flattened slot because width policy is about integer values, while `registerMap`
+/// handles each platform's physical assignment (independent class streams on SysV, author positions
+/// on Microsoft x64). Let the selected hook backend, which knows both shape and ABI, provide both.
 ///
 /// The widths arrive as an array rather than a shape id so this TU stays engine-free and the test can
 /// drive it with hand-written widths and no shape enum at all.
@@ -138,7 +138,8 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail);
 ///
 /// Returns 0 on pass (INCLUDING "nothing observed" — `reasonOut` says which), -1 on a mismatch with
 /// a named reason.
-int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* fn,
+int ArgWidths(const uint8_t* wide, int count, const s2abi::RegisterMap& registerMap,
+              const ModuleView& mv, const void* fn,
               char* reasonOut, int reasonCap);
 
 }  // namespace s2validate

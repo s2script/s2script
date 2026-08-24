@@ -311,18 +311,14 @@ constexpr std::size_t kMaxInsn   = 15;   // longest x86-64 instruction
 // window for what the DISASSEMBLER can touch, not for what an instruction can legally be.
 constexpr std::size_t kWindow    = 16 + kMaxInsn;
 
-// x86-64 register number -> SysV INTEGER argument slot, or -1.
-// A table, not a switch: the register numbers are not in argument order (rdi=7 is arg0, rsi=6 is
-// arg1, rdx=2 is arg2...), and a hand-written switch over them is exactly where an off-by-one lives.
-//            rax rcx rdx rbx rsp rbp rsi rdi  r8  r9 r10 r11 r12 r13 r14 r15
-constexpr int kArgOf[16] = {
-             -1,  3,  2, -1, -1, -1,  1,  0,  4,  5, -1, -1, -1, -1, -1, -1 };
-
-int ArgOfReg(int reg) { return (reg >= 0 && reg < 16) ? kArgOf[reg] : -1; }
+int ArgOfReg(const s2abi::RegisterMap& map, int reg) {
+    return reg >= 0 && reg < 16 ? map.slotOfGpr[reg] : -1;
+}
 
 }  // namespace
 
-ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
+ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail,
+                    const s2abi::RegisterMap& registerMap) {
     ArgUse u;
     if (!p || avail == 0) return u;
 
@@ -346,9 +342,9 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
     // its argument spills on our shape (a corpus scan over libserver.so attributed 490 of 3497
     // refusals to stores past the symbol's own size — every one a false refusal of a good hook).
     //
-    // `call` is a terminator for the same reason and one more: it CLOBBERS every SysV integer
-    // argument register, so a 64-bit spill after it is evidence about a return value, not about an
-    // incoming argument. CCSPlayerController_Respawn's real prologue calls out at +0xa.
+    // `call` is a terminator for the same reason and one more: incoming volatile argument registers
+    // are no longer provenance-safe after another call, so a later spill is not evidence about the
+    // original argument. CCSPlayerController_Respawn's real prologue calls out at +0xa.
     if (hs.opcode == 0xC3 || hs.opcode == 0xC2 ||                       // ret
         hs.opcode == 0xE9 || hs.opcode == 0xEB ||                       // jmp rel
         hs.opcode == 0xE8 ||                                            // call rel
@@ -361,19 +357,20 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
 
     if (hs.opcode == 0x89) {                 // MOV r/m, r
         if (hs.modrm_mod != 3) {             // ...to MEMORY: the callee is spilling an argument
-            u.argIndex = ArgOfReg(reg);
+            u.argIndex = ArgOfReg(registerMap, reg);
             u.wide     = hs.rex_w != 0;
         } else {                             // ...to a REGISTER: that register is now redefined
-            u.redefines = ArgOfReg(rm);
+            u.redefines = ArgOfReg(registerMap, rm);
         }
     } else if (hs.opcode == 0x8B) {          // MOV r, r/m  -> reg is redefined
-        u.redefines = ArgOfReg(reg);
+        u.redefines = ArgOfReg(registerMap, reg);
     } else if (hs.opcode >= 0xB8 && hs.opcode <= 0xBF) {   // MOV imm32/64 -> reg
-        u.redefines = ArgOfReg(static_cast<int>(hs.opcode - 0xB8) | (hs.rex_b ? 8 : 0));
+        u.redefines = ArgOfReg(registerMap,
+                              static_cast<int>(hs.opcode - 0xB8) | (hs.rex_b ? 8 : 0));
     } else if (hs.opcode == 0xC7 && hs.modrm_mod == 3) {   // MOV imm32 -> r/m (sign-extended)
         // The SIBLING of the 0xB8 form above. `mov $1,%edx` (0xBA) was tracked and `mov $1,%rdx`
         // (0x48 C7 C2) was not — same semantics, opposite verdict, purely by encoding.
-        u.redefines = ArgOfReg(rm);
+        u.redefines = ArgOfReg(registerMap, rm);
     } else if (hs.opcode == 0x63 || hs.opcode == 0x8D ||   // movslq / lea      -> reg
                hs.opcode == 0x03 || hs.opcode == 0x0B ||   // add / or   (r <- r/m)
                hs.opcode == 0x23 || hs.opcode == 0x2B ||   // and / sub  (r <- r/m)
@@ -381,7 +378,7 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
         // movslq is the CANONICAL encoding of "a 32-bit int argument widened for use as an index" —
         // the shape is right and the hook was being refused. lea and the r<-r/m ALU forms are the
         // rest of the common "compute into an argument register then spill it" shapes.
-        u.redefines = ArgOfReg(reg);
+        u.redefines = ArgOfReg(registerMap, reg);
     } else if (hs.opcode == 0x01 || hs.opcode == 0x09 ||   // add / or   (r/m <- r)
                hs.opcode == 0x21 || hs.opcode == 0x29 ||   // and / sub  (r/m <- r)
                hs.opcode == 0x31) {                        // xor        (r/m <- r)
@@ -390,21 +387,23 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
         // live, which silently weakens every later observation. It hid in the suite because the one
         // test covering it used `xor %edx,%edx`, the degenerate encoding where reg == rm and the
         // direction cannot show.
-        if (hs.modrm_mod == 3) u.redefines = ArgOfReg(rm);   // memory destination kills no register
+        if (hs.modrm_mod == 3)
+            u.redefines = ArgOfReg(registerMap, rm);   // memory destination kills no register
     } else if ((hs.opcode == 0x0F && (hs.opcode2 == 0xB6 || hs.opcode2 == 0xB7 ||
                                       hs.opcode2 == 0xBE || hs.opcode2 == 0xBF))) {
         // movzx/movsx — a PURE KILL: it fully defines `reg` without reading it. Untracked, a later
         // spill of that register was counted as an incoming argument and refused a correct shape.
         // This is the only confirmed false-refusal source found on the real binary (~0.03%).
-        u.redefines = ArgOfReg(reg);
+        u.redefines = ArgOfReg(registerMap, reg);
     } else if (hs.opcode == 0x99) {                        // cqo/cdq — sign-extends rax INTO rdx
-        u.redefines = ArgOfReg(2);                         // rdx
+        u.redefines = ArgOfReg(registerMap, 2);                         // rdx
     } else if (hs.opcode == 0xF7 && (hs.modrm_reg == 4 || hs.modrm_reg == 6 || hs.modrm_reg == 7)) {
-        u.redefines = ArgOfReg(2);                         // mul/div/idiv clobber rdx:rax
+        u.redefines = ArgOfReg(registerMap, 2);            // mul/div/idiv clobber rdx:rax
     } else if (hs.opcode == 0x0F && hs.opcode2 == 0x7E && hs.rex_w) {
-        u.redefines = ArgOfReg(rm);                        // movq %xmm,%r64 — dest is r/m
+        u.redefines = ArgOfReg(registerMap, rm);           // movq %xmm,%r64 — dest is r/m
     } else if (hs.opcode >= 0x58 && hs.opcode <= 0x5F) {   // pop -> reg
-        u.redefines = ArgOfReg(static_cast<int>(hs.opcode - 0x58) | (hs.rex_b ? 8 : 0));
+        u.redefines = ArgOfReg(registerMap,
+                              static_cast<int>(hs.opcode - 0x58) | (hs.rex_b ? 8 : 0));
     }
     // Anything else records no redefinition. That is UNSOUND IN THE SAFE DIRECTION: a missed
     // redefinition can only produce a false FAIL (we mistake a later value for the argument), never
@@ -412,7 +411,8 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
     return u;
 }
 
-int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* fn,
+int ArgWidths(const uint8_t* wide, int count, const s2abi::RegisterMap& registerMap,
+              const ModuleView& mv, const void* fn,
               char* reasonOut, int reasonCap) {
     if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
     if (!wide || count <= 0 || !fn || !mv.text) {
@@ -437,7 +437,7 @@ int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* 
     for (int i = 0; i < kScanInsns && off < static_cast<std::size_t>(kScanBytes); i++) {
         const std::size_t avail = static_cast<std::size_t>(end - (code + off));
         if (avail == 0) break;
-        const ArgUse u = DecodeArgUse(code + off, avail);
+        const ArgUse u = DecodeArgUse(code + off, avail, registerMap);
         if (u.length == 0) break;   // undecodable: stop, do NOT guess
         if (u.terminator) break;    // end of the callee's own flow (or a call that clobbers args)
 

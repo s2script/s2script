@@ -46,6 +46,20 @@ test("packs gamedata.json into the .s2sp and records permissions in the manifest
   assert.ok(JSON.parse(Buffer.from(zip["gamedata.json"]).toString("utf8")).calls.ignite);
 });
 
+test("packing preserves Linux and Windows gamedata variants", async () => {
+  const gd = structuredClone(GD);
+  gd.signatures.Ig.windows64 = {
+    module: "server.dll",
+    pattern: "48 89",
+    resolve: "direct",
+  };
+  const dir = scaffold(gd, ["engine:calls"], OK_BODY);
+  const zip = unzipSync(readFileSync(await buildPlugin(dir)));
+  const packed = JSON.parse(Buffer.from(zip["gamedata.json"]).toString("utf8"));
+  assert.deepEqual(Object.keys(packed.signatures.Ig).sort(), ["linuxsteamrt64", "windows64"]);
+  assert.equal(packed.signatures.Ig.windows64.module, "server.dll");
+});
+
 const HOOK_GD = {
   signatures: { Ig: { linuxsteamrt64: { module: "libserver.so", pattern: "55 48", resolve: "direct" } } },
   hooks: {

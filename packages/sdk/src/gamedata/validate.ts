@@ -1,7 +1,7 @@
 import {
-  ARG_KINDS, RET_KINDS, INT_CLASS_ARGS, MAX_INT_ARGS, MAX_FLOAT_ARGS, PLATFORM,
+  ARG_KINDS, RET_KINDS, INT_CLASS_ARGS, MAX_INT_ARGS, MAX_FLOAT_ARGS, SUPPORTED_PLATFORMS,
   HOOK_SHAPES, hookShapeArity,
-  type ArgKind, type PluginGamedata,
+  type ArgKind, type PluginGamedata, type SupportedPlatform,
 } from "./types.ts";
 
 const ALLOWED_SECTIONS = new Set(["signatures", "calls", "hooks"]);
@@ -35,6 +35,20 @@ const RESOLVE_KINDS = ["direct", "ctor-body-xref", "lea-disp"] as const;
  */
 const KNOWN_PERMISSIONS = ["engine:calls", "engine:hooks"] as const;
 
+function supportedEntries(
+  value: Record<string, unknown> | undefined,
+): Array<[SupportedPlatform, Record<string, unknown>]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const entries: Array<[SupportedPlatform, Record<string, unknown>]> = [];
+  for (const platform of SUPPORTED_PLATFORMS) {
+    const candidate = value[platform];
+    if (candidate != null && typeof candidate === "object" && !Array.isArray(candidate)) {
+      entries.push([platform, candidate as Record<string, unknown>]);
+    }
+  }
+  return entries;
+}
+
 /** Validate a plugin's gamedata. Returns [] when valid; every string is a build-blocking error. */
 export function validatePluginGamedata(gd: unknown, opts: { permissions: string[] }): string[] {
   const errs: string[] = [];
@@ -50,19 +64,27 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
   const sigs = (g.signatures ?? {}) as Record<string, Record<string, unknown>>;
   if (typeof sigs !== "object" || Array.isArray(sigs)) errs.push("signatures must be an object");
   for (const [name, platforms] of Object.entries(sigs)) {
-    const p = (platforms as Record<string, unknown>)?.[PLATFORM] as Record<string, unknown> | undefined;
-    if (!p) { errs.push(`signature '${name}': missing platform '${PLATFORM}'`); continue; }
-    for (const f of ["module", "pattern", "resolve"]) {
-      if (typeof p[f] !== "string" || !(p[f] as string).length) {
-        errs.push(`signature '${name}': '${f}' must be a non-empty string`);
-      }
-    }
-    if (typeof p.resolve === "string" && p.resolve.length &&
-        !(RESOLVE_KINDS as readonly string[]).includes(p.resolve)) {
+    const entries = supportedEntries(platforms as Record<string, unknown>);
+    if (!entries.length) {
       errs.push(
-        `signature '${name}': unknown resolve step ${JSON.stringify(p.resolve)} ` +
-          `(allowed: ${RESOLVE_KINDS.join(", ")})`
+        `signature '${name}': requires at least one supported platform ` +
+          `(${SUPPORTED_PLATFORMS.join(", ")})`,
       );
+      continue;
+    }
+    for (const [platform, p] of entries) {
+      for (const f of ["module", "pattern", "resolve"]) {
+        if (typeof p[f] !== "string" || !(p[f] as string).length) {
+          errs.push(`signature '${name}' platform '${platform}': '${f}' must be a non-empty string`);
+        }
+      }
+      if (typeof p.resolve === "string" && p.resolve.length &&
+          !(RESOLVE_KINDS as readonly string[]).includes(p.resolve)) {
+        errs.push(
+          `signature '${name}' platform '${platform}': unknown resolve step ${JSON.stringify(p.resolve)} ` +
+            `(allowed: ${RESOLVE_KINDS.join(", ")})`
+        );
+      }
     }
   }
 
@@ -125,16 +147,23 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
       else if (!(target.name in sigs)) errs.push(`${where}: target.name '${target.name}' has no entry in 'signatures'`);
     } else if (target.kind === "vtable") {
       if (typeof target.class !== "string") errs.push(`${where}: vtable target requires 'class'`);
-      const plat = target[PLATFORM] as Record<string, unknown> | undefined;
-      if (!plat) {
-        errs.push(`${where}: vtable target missing platform '${PLATFORM}'`);
-      } else {
+      const entries = supportedEntries(target);
+      if (!entries.length) {
+        errs.push(
+          `${where}: vtable target requires at least one supported platform ` +
+            `(${SUPPORTED_PLATFORMS.join(", ")})`,
+        );
+      }
+      for (const [platform, plat] of entries) {
         if (!Number.isInteger(plat.index) || (plat.index as number) < 0) {
-          errs.push(`${where}: vtable index must be a non-negative integer`);
+          errs.push(`${where} platform '${platform}': vtable index must be a non-negative integer`);
         }
         const prologue = (plat.validate as Record<string, unknown> | undefined)?.prologue;
         if (typeof prologue !== "string" || !prologue.length) {
-          errs.push(`${where}: a vtable target REQUIRES validate.prologue (a bare borrowed index is never trusted)`);
+          errs.push(
+            `${where} platform '${platform}': a vtable target REQUIRES validate.prologue ` +
+              `(a bare borrowed index is never trusted)`,
+          );
         }
       }
     } else {
@@ -206,6 +235,18 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
 
 function isNonEmptyObject(v: unknown): v is Record<string, unknown> {
   return v != null && typeof v === "object" && !Array.isArray(v) && Object.keys(v as object).length > 0;
+}
+
+/** Microsoft x64 positions 0..3 have paired GP/XMM registers; position 4+ is stack-only. */
+function hookHasWindowsStackInteger(shape: string): boolean {
+  if (!(HOOK_SHAPES as readonly string[]).includes(shape) || shape === "this_void") return false;
+  const args = shape.slice("this_".length).split("_");
+  return args.slice(3).some((kind) => kind !== "f32");
+}
+
+function hasPrologue(validate: unknown): boolean {
+  const prologue = (validate as Record<string, unknown> | undefined)?.prologue;
+  return typeof prologue === "string" && prologue.length > 0;
 }
 
 /** Grammar for `hooks` — mirrors `scripts/check-call-descriptors.sh` §3b and core `prepare()`. */
@@ -336,27 +377,54 @@ function validateHooks(
       } else if (!(target.name in sigs)) {
         errs.push(`${where}: target.name '${target.name}' has no entry in 'signatures'`);
       }
-      const sigPlat = typeof target.name === "string"
-        ? (sigs[target.name] as Record<string, unknown> | undefined)?.[PLATFORM] as Record<string, unknown> | undefined
-        : undefined;
-      const inherited = sigPlat?.validate;
-      if (!isNonEmptyObject(target.validate) && !isNonEmptyObject(inherited)) {
+      const signaturePlatforms = typeof target.name === "string"
+        ? supportedEntries(sigs[target.name] as Record<string, unknown> | undefined)
+        : [];
+      const missingValidators = signaturePlatforms
+        .filter(([, spec]) => !isNonEmptyObject(spec.validate))
+        .map(([platform]) => platform);
+      if (!isNonEmptyObject(target.validate) && missingValidators.length) {
         errs.push(
-          `${where}: a hook target MUST carry a non-empty 'validate' (inline, or inherited from its named signature) — a wrong detour address overwrites the prologue of whatever is actually there`
+          `${where}: a hook target MUST carry a non-empty 'validate' (inline, or inherited for every ` +
+            `platform; missing: ${missingValidators.join(", ")}) — a wrong detour address overwrites the ` +
+            `prologue of whatever is actually there`,
+        );
+      }
+      const windowsSpec = typeof target.name === "string"
+        ? (sigs[target.name]?.windows64 as Record<string, unknown> | undefined)
+        : undefined;
+      // flatten_decl treats an inline target.validate as a whole-object override. Do not combine an
+      // inherited prologue with an inline non-prologue validator here: runtime will not combine them.
+      const effectiveWindowsValidate = Object.hasOwn(target, "validate")
+        ? target.validate
+        : windowsSpec?.validate;
+      if (windowsSpec && typeof shape === "string" && hookHasWindowsStackInteger(shape) &&
+          !hasPrologue(effectiveWindowsValidate)) {
+        errs.push(
+          `${where} platform 'windows64': shape ${JSON.stringify(shape)} has a stack-position ` +
+            `integer argument whose width cannot be inferred from entry registers; it REQUIRES ` +
+            `validate.prologue to identify the exact target before installing the hook`,
         );
       }
     } else if (target.kind === "vtable") {
       if (typeof target.class !== "string") errs.push(`${where}: vtable target requires 'class'`);
-      const plat = target[PLATFORM] as Record<string, unknown> | undefined;
-      if (!plat) {
-        errs.push(`${where}: vtable target missing platform '${PLATFORM}'`);
-      } else {
+      const entries = supportedEntries(target);
+      if (!entries.length) {
+        errs.push(
+          `${where}: vtable target requires at least one supported platform ` +
+            `(${SUPPORTED_PLATFORMS.join(", ")})`,
+        );
+      }
+      for (const [platform, plat] of entries) {
         if (!Number.isInteger(plat.index) || (plat.index as number) < 0) {
-          errs.push(`${where}: vtable index must be a non-negative integer`);
+          errs.push(`${where} platform '${platform}': vtable index must be a non-negative integer`);
         }
         const prologue = (plat.validate as Record<string, unknown> | undefined)?.prologue;
         if (typeof prologue !== "string" || !prologue.length) {
-          errs.push(`${where}: a vtable target REQUIRES validate.prologue (a bare borrowed index is never trusted)`);
+          errs.push(
+            `${where} platform '${platform}': a vtable target REQUIRES validate.prologue ` +
+              `(a bare borrowed index is never trusted)`,
+          );
         }
       }
     } else {

@@ -42,12 +42,16 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
                          const char* validateJson, char* reasonOut, int reasonCap);
 
 // Invoke a resolved descriptor on a serial-gated entity receiver.
+// argClass is the declared argument-class sequence in AUTHOR order: 0=GP, 1=f32. Microsoft x64
+// assigns its paired GP/XMM registers by this position, so the two split value arrays are not enough
+// to reconstruct the call. gpKind remains the materialization kind for each GP-class value.
 // gpKind[i]: 0=scalar, 1=entity((uint64)index<<32|serial), 2=string(index into strs),
 //            3=vector(index into vecs, 3 floats each)
 // retKind: 0=void 1=bool 2=int 3=float 4=entity
 // Returns 1 on success (retOut written), 0 on degrade (stale receiver, unresolved `via` sub-object,
 // bad arg budget, unknown kind) — never a crash.
 int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
+                        const unsigned char* argClass, int argCount,
                         const uint64_t* gp, const unsigned char* gpKind, int gpCount,
                         const double* fp, int fpCount,
                         const char* const* strs, const float* vecs,

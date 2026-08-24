@@ -114,7 +114,7 @@ typedef void* (*s2_ent_resolve_fn)(int index, int serial);
 typedef long long (*s2_ent_identity_flags_fn)(int index, int serial);
 typedef int (*s2_ent_snapshot_fn)(int* out_indices, int* out_serials, int cap);
 typedef int (*s2_engine_call_resolve_fn)(const char* kind, const char* module, const char* pattern, const char* resolve, const char* className, int vtableIndex, const char* prologue, char* reasonOut, int reasonCap);
-typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial, int subObjOff, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut);
+typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial, int subObjOff, const unsigned char* argClass, int argCount, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut);
 typedef int (*s2_voice_audible_set_fn)(int sender, uint64_t mask);
 typedef int (*s2_voice_audible_clear_fn)(int sender);
 typedef int (*s2_voice_audible_stats_fn)(uint64_t* out);

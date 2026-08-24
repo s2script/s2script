@@ -24,6 +24,54 @@ use std::ffi::CStr;
 /// way. (It is still C-truthy, which is why no entry whose result is consumed as a boolean may ever
 /// be made deferrable — none are.)
 pub const S2_DISPATCH_DEFERRED: c_int = -1000;
+/// Version of the `S2EngineOps` byte layout accepted by `s2script_core_init_v2`.
+///
+/// Bump this whenever any generated field type, order, or meaning changes. The struct byte size
+/// alone cannot detect same-sized signature changes.
+pub const S2_ENGINE_OPS_ABI_VERSION: u32 = 2;
+/// Named refusal returned before any core state changes when the engine-ops contract does not match.
+pub const S2_CORE_INIT_ABI_MISMATCH: c_int = -3;
+/// Windows could not pin the core DLL for the process lifetime, so initializing V8 would be unsafe.
+pub const S2_CORE_INIT_PIN_FAILED: c_int = -4;
+
+#[cfg(target_os = "windows")]
+mod resident {
+    use std::ffi::c_void;
+
+    const GET_MODULE_HANDLE_EX_FLAG_PIN: u32 = 0x0000_0001;
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x0000_0004;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleExW(
+            flags: u32,
+            module_name_or_address: *const u16,
+            module: *mut *mut c_void,
+        ) -> i32;
+    }
+
+    /// Pin the image containing this entry point. Windows has no ELF `NODELETE` equivalent at link
+    /// time; `GET_MODULE_HANDLE_EX_FLAG_PIN` makes the module non-unloadable until process exit.
+    pub fn pin_current_module() -> bool {
+        let mut module = std::ptr::null_mut();
+        let anchor = super::s2script_core_init_v2 as *const () as *const u16;
+        unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                anchor,
+                &mut module,
+            ) != 0
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod resident {
+    #[inline]
+    pub fn pin_current_module() -> bool {
+        true
+    }
+}
 
 /// Map a `Delivery` onto the C-ABI dispatch result. `Delivered` is `0` — the value every one of
 /// these entries returned (as `void`) before the deferred-dispatch queue existed.
@@ -35,20 +83,19 @@ fn deferral_code(d: Delivery) -> c_int {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn s2script_core_init(
+fn init_with_ops(
     logger: Option<LogFn>,
     request_hook: Option<HookRequestFn>,
-    ops: *const S2EngineOps,
+    ops: Option<S2EngineOps>,
 ) -> c_int {
+    if !resident::pin_current_module() {
+        return S2_CORE_INIT_PIN_FAILED;
+    }
     catch_unwind(|| {
         crate::crash::panic_hook::install();
         v8host::set_hook_request(request_hook);
-        // Copy the engine-ops table by value: the shim passes a pointer to a stack-local struct
-        // that dies when its Load() returns, so we must NOT retain the pointer.  Null → no ops
-        // (every engine native degrades to a safe miss).  Stored before the logger guard so the
-        // ops are in place even if init bails.
-        let ops = if ops.is_null() { None } else { Some(unsafe { *ops }) };
+        // Already copied by the ABI-gated entry point: the shim's stack-local table dies when Load
+        // returns, so no raw pointer may reach host state.
         v8host::set_engine_ops(ops);
         let Some(logger) = logger else { return -2 };
         match v8host::init(logger) {
@@ -57,6 +104,44 @@ pub extern "C" fn s2script_core_init(
         }
     })
     .unwrap_or(-99)
+}
+
+/// Legacy init is retained for null-ops tests and old no-engine embedders only.
+///
+/// A non-null table is unversioned, so accepting it after a field signature change would copy a
+/// same-sized but incompatible function-pointer layout. Refuse it before touching any core state.
+#[no_mangle]
+pub extern "C" fn s2script_core_init(
+    logger: Option<LogFn>,
+    request_hook: Option<HookRequestFn>,
+    ops: *const S2EngineOps,
+) -> c_int {
+    if !ops.is_null() {
+        return S2_CORE_INIT_ABI_MISMATCH;
+    }
+    init_with_ops(logger, request_hook, None)
+}
+
+/// Versioned shim → core initialization handshake.
+///
+/// Both the semantic version and exact byte size must match before the table is dereferenced or
+/// copied. This rejects old/new shim-core mixtures even when a changed function pointer keeps the
+/// struct's total size unchanged.
+#[no_mangle]
+pub extern "C" fn s2script_core_init_v2(
+    logger: Option<LogFn>,
+    request_hook: Option<HookRequestFn>,
+    ops: *const S2EngineOps,
+    ops_abi_version: u32,
+    ops_struct_size: u32,
+) -> c_int {
+    if ops_abi_version != S2_ENGINE_OPS_ABI_VERSION
+        || ops_struct_size as usize != std::mem::size_of::<S2EngineOps>()
+    {
+        return S2_CORE_INIT_ABI_MISMATCH;
+    }
+    let copied = if ops.is_null() { None } else { Some(unsafe { *ops }) };
+    init_with_ops(logger, request_hook, copied)
 }
 
 #[no_mangle]
@@ -729,7 +814,7 @@ mod tests {
         assert!(!(0..=3).contains(&S2_DISPATCH_DEFERRED), "must be outside the HookResult range");
         // The catch_unwind fallbacks (0, and -99 for game_frame), the header's "unavailable" idiom
         // (-1), and the init/eval error codes (-1, -2, -3, -99).
-        for reserved in [0, -1, -2, -3, -99] {
+        for reserved in [0, -1, -2, -3, -4, -99] {
             assert_ne!(S2_DISPATCH_DEFERRED, reserved as c_int);
         }
         // Negative on purpose: shim code shaped `if (r >= 2) MRES_SUPERCEDE` must FAIL that test, so
@@ -740,6 +825,12 @@ mod tests {
         // And the mapping the C ABI actually ships.
         assert_eq!(deferral_code(Delivery::Deferred), S2_DISPATCH_DEFERRED);
         assert_eq!(deferral_code(Delivery::Delivered), 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn current_core_image_can_be_pinned_for_process_lifetime() {
+        assert!(resident::pin_current_module());
     }
 
     #[test]
@@ -774,6 +865,59 @@ mod tests {
             "got: {:?}",
             got
         );
+    }
+
+    #[test]
+    fn versioned_init_accepts_only_the_exact_engine_ops_contract() {
+        let ops = S2EngineOps::default();
+        let size = std::mem::size_of::<S2EngineOps>() as u32;
+
+        assert_eq!(
+            s2script_core_init_v2(
+                Some(test_logger),
+                None,
+                &ops,
+                S2_ENGINE_OPS_ABI_VERSION,
+                size,
+            ),
+            0,
+        );
+        s2script_core_shutdown();
+
+        assert_eq!(
+            s2script_core_init_v2(
+                Some(test_logger),
+                None,
+                &ops,
+                S2_ENGINE_OPS_ABI_VERSION + 1,
+                size,
+            ),
+            S2_CORE_INIT_ABI_MISMATCH,
+        );
+        assert_eq!(
+            s2script_core_init_v2(
+                Some(test_logger),
+                None,
+                &ops,
+                S2_ENGINE_OPS_ABI_VERSION,
+                size - 1,
+            ),
+            S2_CORE_INIT_ABI_MISMATCH,
+        );
+    }
+
+    #[test]
+    fn legacy_init_rejects_non_null_engine_ops_but_keeps_null_test_mode() {
+        let ops = S2EngineOps::default();
+        assert_eq!(
+            s2script_core_init(Some(test_logger), None, &ops),
+            S2_CORE_INIT_ABI_MISMATCH,
+        );
+        assert_eq!(
+            s2script_core_init(Some(test_logger), None, std::ptr::null()),
+            0,
+        );
+        s2script_core_shutdown();
     }
 
     #[test]

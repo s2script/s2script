@@ -45,7 +45,9 @@ std::size_t S2Defer_QueuedCount() { return s_queue.size(); }
 std::size_t S2Defer_BatchCount()  { return s_batch.size(); }
 bool        S2Defer_Draining()    { return s_draining; }
 
+#if defined(__GNUC__) || defined(__clang__)
 __attribute__((format(printf, 1, 2)))
+#endif
 static void Logf(const char* fmt, ...) {
     if (!s_ops.log) return;
     char line[512];

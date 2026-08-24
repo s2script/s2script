@@ -33,8 +33,8 @@
 // FRAME that crosses the C ABI, so "is this the currently-live view?" cannot be answered from the
 // pointer's own contents — a retained pointer into a since-reused frame would read a plausible
 // `shape` out of whatever now occupies those bytes and turn S2_HookWriteI32 into a 4-byte write
-// primitive into a dead frame. Each thunk therefore publishes its view in g_activeView for exactly
-// the duration of its dispatch, and every accessor requires the caller's pointer to BE that view.
+// primitive into a dead frame. The selected hook ABI backend therefore publishes its view for
+// exactly the duration of dispatch, and every accessor requires the caller's pointer to BE that view.
 // The shim's usual block-scoped-static idiom (s_currentDamageInfo & co, nulled after dispatch)
 // solves the same problem for objects the shim owns; this is that idiom applied to a frame pointer
 // the caller holds.
@@ -47,11 +47,10 @@
 #include "engine_calls.h"   // S2_EntityHandleFromPtr — the books-first receiver -> CEntityHandle pack
 #include "call_validate.h"   // the arg-width check: does the SHAPE match the callee's machine code?
 #include "hook_dispatch.h"
+#include "hook_abi.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdio>
-#include <utility>
 
 namespace {
 
@@ -74,325 +73,10 @@ Installed g_hooks[S2_HOOK_MAX];
 // params exist and what CLASS each one is, so a stale generated binding asking for an i32 where the
 // shape has an f32 fails by -1 instead of reinterpreting the bits.
 // ---------------------------------------------------------------------------
-// kParamI64 is the OPAQUE PASS-THROUGH class: a parameter carried at full register width because we
-// do not know what it is. It has no accessor and no `params` entry, so JS can neither read nor write
-// it — its only job is to be handed back to the original function unchanged (see hook_dispatch.h on
-// why narrowing one of these segfaulted a live server).
-enum ParamClass : unsigned char { kParamF32 = 0, kParamI32 = 1, kParamI64 = 2 };
-struct ParamSlot { ParamClass cls; unsigned char slot; };
-
-// Sized to the WIDEST shape in the vocabulary; each shape's table is static_asserted to fit, so
-// adding a shape that needs more storage fails to COMPILE rather than writing past the view.
-constexpr int kViewF32Slots = 1;
-constexpr int kViewI32Slots = 3;
-constexpr int kViewI64Slots = 2;
-
-struct ArgView {
-    int     hookId = -1;
-    int     shape  = -1;
-    void*   self   = nullptr;
-    float   f[kViewF32Slots] = {};
-    int32_t i[kViewI32Slots] = {};
-    int64_t q[kViewI64Slots] = {};   // opaque pass-through; never surfaced to JS
-};
-
-// THE LIVENESS TOKEN. The one view a thunk is currently dispatching, or null between dispatches. An
-// accessor accepts ONLY this exact pointer, so a view retained past its dispatch fails by -1 instead
-// of reading (or writing) a stack frame that has since been reused. It is a save/restore, not a
-// set/clear: a handler can make the engine call another hooked function, and the inner dispatch must
-// hand the outer one its view back — clearing to null would silently disable the outer frame's
-// accessors for the rest of its dispatch. Single-threaded (the game thread drives every detour), so
-// a plain pointer is the whole mechanism.
-const void* g_activeView = nullptr;
-
-// S2_HOOK_SHAPE_THIS_VOID has no params at all; the array exists only because a zero-length array is
-// not standard C++, and InfoFor() reports count 0 so no index can ever reach it.
-constexpr ParamSlot kParamsThisVoid[] = { { kParamF32, 0 } };
-// S2_HOOK_SHAPE_THIS_F32_I32_I32_I32 — void(void* self, float, int, int, int).
-constexpr ParamSlot kParamsThisF32I32I32I32[] = {
-    { kParamF32, 0 },
-    { kParamI32, 0 },
-    { kParamI32, 1 },
-    { kParamI32, 2 },
-};
-
-// S2_HOOK_SHAPE_THIS_F32_I32_I64_I64 — void(void* self, float, int, int64_t, int64_t).
-// Only the first TWO are addressable params; the trailing pair are opaque pass-through and are
-// deliberately absent from this table, so no accessor index can ever reach them.
-constexpr ParamSlot kParamsThisF32I32I64I64[] = {
-    { kParamF32, 0 },
-    { kParamI32, 0 },
-};
-
-// S2_HOOK_SHAPE_THIS_I64_I32_I64 — i32(void* self, int64, int32, int64).
-// Addressable: method (i32 slot 0), result (i32 slot 1, the RETURN — not an ABI arg),
-// and voted (i32 slot 2, core-only: set when a handler's HookResult is a vote).
-// The two i64s are opaque pass-through (item view + unknown).
-constexpr ParamSlot kParamsThisI64I32I64[] = {
-    { kParamI32, 0 },
-    { kParamI32, 1 },
-    { kParamI32, 2 },
-};
-
-struct ShapeInfo { const ParamSlot* params; int count; };
-
-
-
-
-// An unknown shape yields count 0, so every accessor index fails: an out-of-vocabulary shape can
-// never be read as if it were shape 0, whose wrong ABI is exactly what hook_dispatch.h warns about.
-// constexpr so the fits-the-view proof below can be structural rather than hand-maintained.
-constexpr ShapeInfo InfoFor(int shape) {
-    switch (shape) {
-        case S2_HOOK_SHAPE_THIS_VOID:            return { kParamsThisVoid, 0 };
-        case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kParamsThisF32I32I32I32, 4 };
-        case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kParamsThisF32I32I64I64, 2 };
-        case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kParamsThisI64I32I64, 3 };
-        default:                                 return { nullptr, 0 };
-    }
-}
-
-// EVERY shape's params fit the view — checked over the whole id space InfoFor can describe, not per
-// shape by hand. A new shape is only reachable once it is added to InfoFor, and the moment it is,
-// this assert covers it; there is no separate line for its author to forget. That is what lets the
-// accessors index v->f[]/v->i[] with the table's slot and no runtime bound: the bound is proven
-// here, for all shapes, at compile time.
-constexpr bool ShapeFitsView(int shape) {
-    const ShapeInfo si = InfoFor(shape);
-    for (int k = 0; k < si.count; k++) {
-        const int limit = (si.params[k].cls == kParamF32)   ? kViewF32Slots
-                          : (si.params[k].cls == kParamI64) ? kViewI64Slots
-                                                            : kViewI32Slots;
-        if (static_cast<int>(si.params[k].slot) >= limit) return false;
-    }
-    return true;
-}
-constexpr bool AllShapesFitView(int upTo) {
-    for (int s = 0; s <= upTo; s++)
-        if (!ShapeFitsView(s)) return false;
-    return true;
-}
-// 255 is a deliberate over-scan of the shape id space: a shape InfoFor does not know yields count 0
-// and passes trivially, so the bound costs nothing and cannot be outgrown by a new enumerator.
-static_assert(AllShapesFitView(255),
-              "a shape's params do not fit the ArgView — widen kViewF32Slots/kViewI32Slots");
-
-// THE SHAPE'S TRUE INTEGER-ARGUMENT WIDTHS, slot by slot (slot 0 = `this`, always a pointer).
-//
-// SEPARATE from the ParamSlot tables above, and that separation is the point: those describe what JS
-// can ADDRESS, not what the ABI passes. An opaque kParamI64 has NO ParamSlot entry by design, so
-// deriving widths from them omitted it entirely — the arg-width validator's `kParamI64` branch was
-// dead code, and the shipped shape only checked out because its opaque slots happen to be TRAILING.
-// A shape with a non-trailing opaque i64 would shift every later slot, declaring the pointer narrow
-// (refusing a correct hook) and pushing the genuinely narrow slot out of range (never checking it).
-//
-// A float consumes NO integer slot — it rides in xmm0 — which is why this cannot be positional over
-// the declared params either. Written out per shape so it says exactly what the ABI does.
-struct ShapeAbi { const uint8_t* wide; int slots; };
-
-constexpr uint8_t kAbiThisVoid[]         = { 1 };             // (this)
-constexpr uint8_t kAbiThisF32I32I32I32[] = { 1, 0, 0, 0 };    // (this, [f32], i32, i32, i32)
-constexpr uint8_t kAbiThisF32I32I64I64[] = { 1, 0, 1, 1 };    // (this, [f32], i32, i64, i64)
-constexpr uint8_t kAbiThisI64I32I64[]    = { 1, 1, 0, 1 };    // (this, i64, i32, i64)
-
-constexpr ShapeAbi AbiFor(int shape) {
-    switch (shape) {
-        case S2_HOOK_SHAPE_THIS_VOID:            return { kAbiThisVoid,         1 };
-        case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kAbiThisF32I32I32I32, 4 };
-        case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kAbiThisF32I32I64I64, 4 };
-        case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kAbiThisI64I32I64,    4 };
-        default:                                 return { nullptr, 0 };
-    }
-}
-
-// A shape's ABI table must cover at least every ADDRESSABLE non-float param plus `this`. It may
-// cover MORE (the opaque slots InfoFor deliberately omits) — that asymmetry is the whole reason both
-// tables exist, so the assert is one-sided on purpose. A new shape that forgets its ABI row fails to
-// COMPILE rather than being silently checked against a shorter array.
-constexpr int AddressableIntSlots(int shape) {
-    const ShapeInfo si = InfoFor(shape);
-    int n = 1;
-    for (int k = 0; k < si.count; k++)
-        if (si.params[k].cls != kParamF32) n++;
-    return n;
-}
-constexpr bool AbiCoversShape(int shape) {
-    return AbiFor(shape).slots == 0 || AbiFor(shape).slots >= AddressableIntSlots(shape);
-}
-static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_VOID),            "this_void: ABI row too short");
-static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I32_I32), "narrow 4-arg: ABI row too short");
-static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I64_I64), "wide 4-arg: ABI row too short");
-static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_I64_I32_I64),     "canaquire: ABI row too short");
-
-
-// ---------------------------------------------------------------------------
-// The thunks: one instantiation per (shape, hook slot).
-// ---------------------------------------------------------------------------
-using ThisVoidFn           = void (*)(void*);
-using ThisF32I32I32I32Fn   = void (*)(void*, float, int32_t, int32_t, int32_t);
-using ThisF32I32I64I64Fn   = void (*)(void*, float, int32_t, int64_t, int64_t);
-using ThisI64I32I64Fn      = int32_t (*)(void*, int64_t, int32_t, int64_t);
-
-// `orig` is null only in the window between s2detour patching the prologue and publishing the
-// trampoline — unreachable on the single-threaded game thread, but guarded rather than assumed.
-template <int Id>
-void Thunk_ThisVoid(void* self) {
-    const ThisVoidFn orig = reinterpret_cast<ThisVoidFn>(g_hooks[Id].orig);
-    if (S2Hook_BypassTake(Id)) { if (orig) orig(self); return; }
-
-    ArgView v;
-    v.hookId = Id;
-    v.shape  = S2_HOOK_SHAPE_THIS_VOID;
-    v.self   = self;
-
-    const void* const prevView = g_activeView;
-    g_activeView = &v;
-    const int r = S2Hook_Dispatch(Id, &v);
-    g_activeView = prevView;   // the view dies with this frame; nothing may reach it after here
-
-    if (S2Hook_Suppresses(r)) return;
-    if (orig) orig(self);
-}
-
-template <int Id>
-void Thunk_ThisF32I32I32I32(void* self, float a0, int32_t a1, int32_t a2, int32_t a3) {
-    const ThisF32I32I32I32Fn orig = reinterpret_cast<ThisF32I32I32I32Fn>(g_hooks[Id].orig);
-    if (S2Hook_BypassTake(Id)) { if (orig) orig(self, a0, a1, a2, a3); return; }
-
-    ArgView v;
-    v.hookId = Id;
-    v.shape  = S2_HOOK_SHAPE_THIS_F32_I32_I32_I32;
-    v.self   = self;
-    v.f[0]   = a0;
-    v.i[0]   = a1;
-    v.i[1]   = a2;
-    v.i[2]   = a3;
-
-    const void* const prevView = g_activeView;
-    g_activeView = &v;
-    const int r = S2Hook_Dispatch(Id, &v);
-    g_activeView = prevView;   // the view dies with this frame; nothing may reach it after here
-
-    if (S2Hook_Suppresses(r)) return;
-    // Read back OUT of the view — a handler's writes to `mutable` params reach the engine here.
-    if (orig) orig(self, v.f[0], v.i[0], v.i[1], v.i[2]);
-}
-
-template <int Id>
-void Thunk_ThisF32I32I64I64(void* self, float a0, int32_t a1, int64_t a2, int64_t a3) {
-    const ThisF32I32I64I64Fn orig = reinterpret_cast<ThisF32I32I64I64Fn>(g_hooks[Id].orig);
-    if (S2Hook_BypassTake(Id)) { if (orig) orig(self, a0, a1, a2, a3); return; }
-
-    ArgView v;
-    v.hookId = Id;
-    v.shape  = S2_HOOK_SHAPE_THIS_F32_I32_I64_I64;
-    v.self   = self;
-    v.f[0]   = a0;
-    v.i[0]   = a1;
-    // FULL WIDTH, straight through. No accessor reaches q[], so these cannot be read or written from
-    // JS — they exist only to be returned to the engine bit-for-bit. Truncating one of these to 32
-    // bits is what segfaulted a live server; see hook_dispatch.h.
-    v.q[0]   = a2;
-    v.q[1]   = a3;
-
-    const void* const prevView = g_activeView;
-    g_activeView = &v;
-    const int r = S2Hook_Dispatch(Id, &v);
-    g_activeView = prevView;   // the view dies with this frame; nothing may reach it after here
-
-    if (S2Hook_Suppresses(r)) return;
-    if (orig) orig(self, v.f[0], v.i[0], v.q[0], v.q[1]);
-}
-
-template <int Id>
-int32_t Thunk_ThisI64I32I64(void* self, int64_t item, int32_t method, int64_t unknown) {
-    const ThisI64I32I64Fn orig = reinterpret_cast<ThisI64I32I64Fn>(g_hooks[Id].orig);
-    if (S2Hook_BypassTake(Id)) { return orig ? orig(self, item, method, unknown) : 0; }
-
-    ArgView v;
-    v.hookId = Id;
-    v.shape  = S2_HOOK_SHAPE_THIS_I64_I32_I64;
-    v.self   = self;
-    v.i[0]   = method;   // addressable: method
-    v.i[1]   = 0;        // addressable: result, seed Allowed
-    v.i[2]   = 0;        // addressable: voted (core sets when a handler's result is a vote)
-    v.q[0]   = item;     // opaque CEconItemView*
-    v.q[1]   = unknown;  // opaque trailing ptr
-
-    const void* const prevView = g_activeView;
-    g_activeView = &v;
-    const int hr = S2Hook_Dispatch(Id, &v);
-    const bool skip = S2Hook_Suppresses(hr);
-    const int32_t plugin = v.i[1];
-    const bool voted = v.i[2] != 0; // core sets this when a handler writes `result`
-    int32_t out;
-    if (skip) {
-        out = voted ? plugin : 1; // implicit InvalidItem if Handled without a write
-    } else {
-        const int32_t engine = orig ? orig(self, v.q[0], v.i[0], v.q[1]) : 0;
-        out = voted ? S2Hook_MostRestrictiveAcquire(plugin, engine) : engine;
-    }
-    v.i[1] = out;
-    S2Hook_DispatchPost(Id, &v, skip ? 1 : 0);
-    g_activeView = prevView;
-    return out;
-}
-
-// The tables. One entry per hook slot, materialised at COMPILE time by expanding an index_sequence
-// over the templates above — so every slot's thunk address is a link-time constant and the id it
-// carries is an immediate, not a lookup. (A template template parameter cannot bind a FUNCTION
-// template, which is why this is two small builders rather than one generic one.)
-constexpr std::size_t kHookSlots = static_cast<std::size_t>(S2_HOOK_MAX);
-
-template <std::size_t... Is>
-constexpr std::array<ThisVoidFn, sizeof...(Is)> MakeThisVoidTable(std::index_sequence<Is...>) {
-    return {{ &Thunk_ThisVoid<static_cast<int>(Is)>... }};
-}
-template <std::size_t... Is>
-constexpr std::array<ThisF32I32I32I32Fn, sizeof...(Is)>
-MakeThisF32I32I32I32Table(std::index_sequence<Is...>) {
-    return {{ &Thunk_ThisF32I32I32I32<static_cast<int>(Is)>... }};
-}
-
-template <std::size_t... Is>
-constexpr std::array<ThisF32I32I64I64Fn, sizeof...(Is)>
-MakeThisF32I32I64I64Table(std::index_sequence<Is...>) {
-    return {{ &Thunk_ThisF32I32I64I64<static_cast<int>(Is)>... }};
-}
-template <std::size_t... Is>
-constexpr std::array<ThisI64I32I64Fn, sizeof...(Is)>
-MakeThisI64I32I64Table(std::index_sequence<Is...>) {
-    return {{ &Thunk_ThisI64I32I64<static_cast<int>(Is)>... }};
-}
-
-constexpr auto kThisVoidThunks = MakeThisVoidTable(std::make_index_sequence<kHookSlots>{});
-constexpr auto kThisF32I32I64I64Thunks =
-    MakeThisF32I32I64I64Table(std::make_index_sequence<kHookSlots>{});
-constexpr auto kThisF32I32I32I32Thunks =
-    MakeThisF32I32I32I32Table(std::make_index_sequence<kHookSlots>{});
-constexpr auto kThisI64I32I64Thunks =
-    MakeThisI64I32I64Table(std::make_index_sequence<kHookSlots>{});
-static_assert(kThisVoidThunks.size() == kHookSlots, "thunk table must cover every hook slot");
-static_assert(kThisF32I32I32I32Thunks.size() == kHookSlots, "thunk table must cover every hook slot");
-static_assert(kThisI64I32I64Thunks.size() == kHookSlots, "thunk table must cover every hook slot");
-
-// The slot's own thunk for `shape`, or null when the shape has no compiled thunk (a NAMED install
-// failure — the closed vocabulary and the compiled set must never drift apart silently).
-void* ThunkFor(int shape, int hookId) {
-    if (hookId < 0 || hookId >= S2_HOOK_MAX) return nullptr;
-    switch (shape) {
-        case S2_HOOK_SHAPE_THIS_VOID:
-            return reinterpret_cast<void*>(kThisVoidThunks[static_cast<std::size_t>(hookId)]);
-        case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32:
-            return reinterpret_cast<void*>(kThisF32I32I32I32Thunks[static_cast<std::size_t>(hookId)]);
-        case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64:
-            return reinterpret_cast<void*>(kThisF32I32I64I64Thunks[static_cast<std::size_t>(hookId)]);
-        case S2_HOOK_SHAPE_THIS_I64_I32_I64:
-            return reinterpret_cast<void*>(kThisI64I32I64Thunks[static_cast<std::size_t>(hookId)]);
-        default:
-            return nullptr;
-    }
-}
+// ShapeInfo and its fit-to-view proof live with the selected ABI backend. Keeping one table is
+// critical: the thunk that populates a slot and the accessor that reads it must share metadata.
+constexpr int kViewI64Slots = s2hookabi::kViewI64Slots;
+using ArgView = s2hookabi::ArgView;
 
 int Fail(char* out, int cap, const char* reason) {
     if (out && cap > 0) std::snprintf(out, static_cast<size_t>(cap), "%s", reason);
@@ -408,13 +92,10 @@ int Fail(char* out, int cap, const char* reason) {
 // The guard is exact instead of approximate, there is no width constant to keep in sync with
 // detour.cpp, and because it is injected it is drivable from shim/tests/detour_reloc_test.cpp.
 
-ArgView* ViewOf(void* argView) { return static_cast<ArgView*>(argView); }
-
 // The gate every accessor shares: a non-null view that IS the live one. Returns null otherwise, so
 // a stale or forged pointer fails by -1 and never reaches v->shape.
 ArgView* LiveViewOf(void* argView) {
-    if (!argView || argView != g_activeView) return nullptr;
-    return ViewOf(argView);
+    return s2hookabi::LiveViewOf(argView);
 }
 
 }  // namespace
@@ -473,19 +154,19 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
     // pointer, and the resulting SIGSEGV landed ~374KB away in an unrelated function. Checked HERE,
     // at the moment we commit to patching, and refused by name like every other install failure.
     //
-    // Flattened to SysV INTEGER slots, not declared params: a float rides in xmm0 and consumes no
-    // integer register, so `void(this, float, int, int, int)` occupies integer slots
-    // [this, arg1, arg2, arg3]. Slot 0 is `this` — always a pointer, never narrowed.
+    // The selected backend supplies both flattened integer widths and its physical register map.
+    // SysV uses independent class streams; Microsoft x64's map depends on author position.
     char argWidthNote[160] = "arg-width: not run";
     {
-        const ShapeAbi abi = AbiFor(shape);
+        const s2hookabi::ValidatorSpec abi = s2hookabi::ValidatorFor(shape);
         const unsigned char *text = nullptr, *lo = nullptr, *hi = nullptr;
         std::size_t textSize = 0;
         if (abi.wide &&
             S2_ModuleViewForAddress(reinterpret_cast<const void*>(target), &text, &textSize, &lo, &hi)) {
             s2validate::ModuleView mv;
             mv.text = text; mv.textSize = textSize; mv.lo = lo; mv.hi = hi;
-            if (s2validate::ArgWidths(abi.wide, abi.slots, mv, reinterpret_cast<const void*>(target),
+            if (s2validate::ArgWidths(abi.wide, abi.slots, abi.registerMap, mv,
+                                      reinterpret_cast<const void*>(target),
                                       argWidthNote, static_cast<int>(sizeof argWidthNote)) != 0)
                 return Fail(reasonOut, reasonCap, argWidthNote);
         }
@@ -493,7 +174,7 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
         // range check already passed, so this is a defensive miss, not evidence of a bad target.
     }
 
-    void* thunk = ThunkFor(shape, hookId);
+    void* thunk = s2hookabi::ThunkFor(shape, hookId);
     if (!thunk) {
         char buf[128];
         std::snprintf(buf, sizeof buf, "no compiled thunk for shape '%s'", shapeName);
@@ -509,6 +190,7 @@ int S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int rea
         s2detour::Install(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), thunk, &orig,
                           &S2_AddressIsExecutable);
     if (!inst.ok) return Fail(reasonOut, reasonCap, inst.reason ? inst.reason : "detour install refused");
+    s2hookabi::SetOriginal(hookId, orig);
 
     // On SUCCESS the reason buffer carries an informational note instead of staying empty: which
     // tier ran is the difference between a 5-byte and a 14-byte patch, and nobody should have to
@@ -539,7 +221,7 @@ void S2_HookDisarmBypass(int hookId) {
 // Forget every installed hook. One operation with s2detour::RemoveAll() — see engine_hooks.h.
 void S2_HookResetAll(void) {
     for (int i = 0; i < S2_HOOK_MAX; i++) g_hooks[i] = Installed{};
-    g_activeView = nullptr;   // no frame survives a teardown
+    s2hookabi::Reset();       // no original trampoline or stack view survives teardown
     // ...and neither does a LATCH. Only the thunk clears one, so an armed-but-never-taken latch (an
     // outbound invoke that degraded before reaching the hooked function) survives unload — and slot
     // ids are reused on reload, so the next load's first genuine engine-driven call to that id would
@@ -555,9 +237,9 @@ void S2_HookResetAll(void) {
 int S2_HookReadF32(void* argView, int idx, float* out) {
     const ArgView* v = LiveViewOf(argView);
     if (!v || !out) return -1;
-    const ShapeInfo si = InfoFor(v->shape);
+    const s2hookabi::ShapeInfo si = s2hookabi::InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
-    if (si.params[idx].cls != kParamF32) return -1;
+    if (si.params[idx].cls != s2hookabi::kParamF32) return -1;
     *out = v->f[si.params[idx].slot];
     return 0;
 }
@@ -565,9 +247,9 @@ int S2_HookReadF32(void* argView, int idx, float* out) {
 int S2_HookReadI32(void* argView, int idx, int32_t* out) {
     const ArgView* v = LiveViewOf(argView);
     if (!v || !out) return -1;
-    const ShapeInfo si = InfoFor(v->shape);
+    const s2hookabi::ShapeInfo si = s2hookabi::InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
-    if (si.params[idx].cls != kParamI32) return -1;
+    if (si.params[idx].cls != s2hookabi::kParamI32) return -1;
     *out = v->i[si.params[idx].slot];
     return 0;
 }
@@ -575,9 +257,9 @@ int S2_HookReadI32(void* argView, int idx, int32_t* out) {
 int S2_HookWriteF32(void* argView, int idx, float value) {
     ArgView* v = LiveViewOf(argView);
     if (!v) return -1;
-    const ShapeInfo si = InfoFor(v->shape);
+    const s2hookabi::ShapeInfo si = s2hookabi::InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
-    if (si.params[idx].cls != kParamF32) return -1;
+    if (si.params[idx].cls != s2hookabi::kParamF32) return -1;
     v->f[si.params[idx].slot] = value;
     return 0;
 }
@@ -585,9 +267,9 @@ int S2_HookWriteF32(void* argView, int idx, float value) {
 int S2_HookWriteI32(void* argView, int idx, int32_t value) {
     ArgView* v = LiveViewOf(argView);
     if (!v) return -1;
-    const ShapeInfo si = InfoFor(v->shape);
+    const s2hookabi::ShapeInfo si = s2hookabi::InfoFor(v->shape);
     if (idx < 0 || idx >= si.count) return -1;
-    if (si.params[idx].cls != kParamI32) return -1;
+    if (si.params[idx].cls != s2hookabi::kParamI32) return -1;
     v->i[si.params[idx].slot] = value;
     return 0;
 }

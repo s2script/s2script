@@ -18,6 +18,9 @@ bash scripts/check-core-boundary.sh
 echo "== test-boundary-nameleak.sh =="
 bash scripts/test-boundary-nameleak.sh
 
+echo "== check-windows-build.py (host-neutral Windows build contract) =="
+python3 scripts/check-windows-build.py
+
 echo "== test-sigscan.sh =="
 bash scripts/test-sigscan.sh
 
@@ -39,6 +42,9 @@ bash scripts/test-hook-dispatch.sh
 echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
 bash scripts/test-detour-reloc.sh
 
+echo "== test-platform.sh (Linux backends + synthetic PE/RTTI) =="
+bash scripts/test-platform.sh
+
 echo "== check-hook-shapes.sh (inbound hook shape name/id table: core == shim) =="
 bash scripts/check-hook-shapes.sh
 
@@ -47,6 +53,9 @@ bash scripts/check-defer-selftest-gate.sh
 
 echo "== test-call-validate.sh (the descriptor validators: both gates must REJECT) =="
 bash scripts/test-call-validate.sh
+
+echo "== test-abi.sh (SysV + Microsoft x64 call/thunk/register-map probes) =="
+bash scripts/test-abi.sh
 
 echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
 bash scripts/check-gamedata-owners.sh

@@ -24,17 +24,16 @@ on:
       - 'third_party/**'
       - 'licenses/**'
       - 'LICENSE'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'packages/sdk/**'
       - 'packages/*/LICENSE-*'
       - 'scripts/ci-native.sh'
+      - 'scripts/ci-native-windows.ps1'
+      - 'scripts/check-windows-build.py'
       - 'scripts/gen-licenses.sh'
-      - 'scripts/check-licenses-generated.sh'
-      - 'scripts/check-core-boundary.sh'
-      - 'scripts/check-core-names.sh'
-      - 'scripts/test-boundary-nameleak.sh'
-      - 'scripts/test-sigscan.sh'
-      - 'scripts/test-gamedata.sh'
-      - 'scripts/check-gamedata-owners.sh'
-      - 'scripts/check-gamedata-sigs.sh'
+      - 'scripts/check-*.sh'
+      - 'scripts/test-*.sh'
       - 'scripts/lib/**'
       - '.github/workflows/ci-native.yml'
   push:
@@ -50,17 +49,16 @@ on:
       - 'third_party/**'
       - 'licenses/**'
       - 'LICENSE'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'packages/sdk/**'
       - 'packages/*/LICENSE-*'
       - 'scripts/ci-native.sh'
+      - 'scripts/ci-native-windows.ps1'
+      - 'scripts/check-windows-build.py'
       - 'scripts/gen-licenses.sh'
-      - 'scripts/check-licenses-generated.sh'
-      - 'scripts/check-core-boundary.sh'
-      - 'scripts/check-core-names.sh'
-      - 'scripts/test-boundary-nameleak.sh'
-      - 'scripts/test-sigscan.sh'
-      - 'scripts/test-gamedata.sh'
-      - 'scripts/check-gamedata-owners.sh'
-      - 'scripts/check-gamedata-sigs.sh'
+      - 'scripts/check-*.sh'
+      - 'scripts/test-*.sh'
       - 'scripts/lib/**'
       - '.github/workflows/ci-native.yml'
 
@@ -92,3 +90,21 @@ jobs:
       - uses: hendrikmuhs/ccache-action@v1
       - name: native gate suite
         run: bash scripts/ci-native.sh
+
+  native-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: windows-msvc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Windows native gate suite
+        shell: pwsh
+        run: ./scripts/ci-native-windows.ps1

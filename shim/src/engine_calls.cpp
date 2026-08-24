@@ -14,15 +14,11 @@
 // pinned build). The whole `validate` object crosses this ABI as JSON and is evaluated by the
 // engine-free call_validate.cpp — see that TU for the closed vocabulary and what each gate proves.
 //
-// THE INVOKE TECHNIQUE. Under SysV x86-64, integer-class and float-class arguments are assigned to
-// two INDEPENDENT register sequences (rdi/rsi/rdx/rcx/r8/r9 and xmm0..7), so positional interleaving
-// between the classes does not matter to the callee. Therefore ONE fixed max-arity prototype can
-// call every descriptor in the closed v1 vocabulary: `this` in rdi plus the 5 remaining GP slots and
-// all 8 xmm slots are ALWAYS passed, and the callee simply reads the prefix its own prototype
-// declares and ignores the rest. That buys the whole closed vocabulary with no hand-written asm and
-// no combinatorial switch — only two casts, selected by RETURN class (rax vs xmm0). This is valid
-// only for NON-VARIADIC callees; variadics (and overloads) are out of scope per spec §4, which is
-// exactly why the vocabulary is closed.
+// THE INVOKE TECHNIQUE lives behind call_abi.h. SysV uses independent GP/SSE streams; Microsoft x64
+// uses the AUTHOR-POSITIONAL class sequence that now crosses the engine-ops ABI. The Windows backend
+// uses one MASM bridge to place raw typed slots exactly (paired GP/XMM registers, shadow space,
+// stack slots, RAX/XMM0 return); it never invents a mismatched C++ function-pointer type.
+// This remains valid only for NON-VARIADIC callees; variadics and overloads are out of scope.
 //
 // LAYERING. Nothing here names a game class/field/function: the plugin's own regenerable gamedata
 // supplies every name as an opaque string that crosses the core untouched (the same discipline as
@@ -30,8 +26,10 @@
 // packed CEntityHandle read off the entity's own identity, which the core then runs through the
 // books-gated __s2_handle_adopt path (spec §4), so a raw pointer can never mint an EntityRef.
 #include "engine_calls.h"
+#include "call_abi.h"
 #include "sigscan.h"
 #include "vtable.h"   // s2vtable::GetVTableByName — RTTI vtable-by-name (CS2 exports no game vtables)
+#include "platform/module.h"
 // The CLOSED validator vocabulary (prologue / string-xref / vtable-member). It lives in its own
 // engine-free TU so shim/tests/call_validate_test.cpp can drive the SHIPPED gates over a synthetic
 // module image — this TU cannot be compiled outside the game (it includes the entity system), and a
@@ -44,9 +42,8 @@
 #include <entity2/entitysystem.h>
 #include <entity2/entityinstance.h>   // CEntityInstance::GetRefEHandle (inline; identity-backed)
 
-#include <link.h>     // dl_iterate_phdr, ElfW
 #include <cstdio>     // snprintf — the degrade-reason string
-#include <cstring>    // strcmp/strstr/memcpy
+#include <cstring>    // strcmp
 #include <string>
 #include <vector>
 
@@ -61,20 +58,19 @@ namespace {
 
 // The engine's server module. Used when a descriptor names no module (the "vtable" target kind
 // carries a class, not a module). Kept HERE rather than in the core so no module/game identifier is
-// compiled into core/ (the check-boundary invariant); s2_schema_offset hardcodes the same soname.
+// compiled into core/ (the check-boundary invariant).
+#if defined(_WIN32)
+constexpr const char* kEngineModule = "server.dll";
+#else
 constexpr const char* kEngineModule = "libserver.so";
+#endif
 
-// Arg budget (spec §4): `this` consumes the first of SysV's six GP argument registers, so at most 5
-// integer-class args, and at most 8 float args. The SDK's build-time validator rejects a descriptor
-// that exceeds either bound; these are the belt-and-braces runtime guards.
+// Closed-vocabulary budget shared with the core and both ABI backends. The SDK's build-time
+// validator rejects a descriptor that exceeds either class bound; these are runtime backstops.
 // 9 declared integer-class args, plus the optional receiver = 10 integer slots total.
 //
-// SysV passes the first SIX integer-class args in registers (rdi..r9) and SPILLS the rest to the
-// stack. The prototypes below therefore declare ten uint64 slots: the compiler puts slots 7..10 on
-// the stack in order, which is exactly where a callee declaring that many expects them. Raising the
-// budget past six is what lets a static factory taking seven args be declared at all -- with the old
-// limit of five (+ receiver) such a descriptor was rejected at load with "stack-passed args are out
-// of scope".
+// This budget includes stack-passed args; compiler-generated calls in each backend own the register,
+// shadow-space and spill placement.
 constexpr int kMaxGpArgs = 9;
 constexpr int kMaxFpArgs = 8;
 
@@ -101,55 +97,10 @@ std::vector<ResolvedCall> g_calls;   // the returned call id is the index; entri
                                      // (an id stays valid for the process; the core's registry owns
                                      // per-plugin lifetime and drops its own table on unload)
 
-// ---------------------------------------------------------------------------
-// Module lookup. A per-TU copy of s2script_mm.cpp's FindModuleText (which is file-static there):
-// pick the LARGEST PF_X segment across ALL loaded modules whose soname contains `soname`, because
-// Metamod:Source inserts its own thin libserver.so proxy via the gameinfo SearchPath whose path ALSO
-// contains the substring — stopping at the first match grabs the ~95 KB proxy instead of the real
-// ~25 MB game module (Slice 5D.2). vtable.cpp keeps the same local copy for the same TU-boundary
-// reason.
-//
-// ONE walk yields BOTH views, deliberately: the .text segment (where a resolved function must live)
-// and the winning module's FULL mapped [lo, hi) LOAD extent (where a rip-relative string target
-// legitimately lives — .rodata sits BELOW the PF_X base, so `string-xref` MUST range-guard against
-// the whole mapping). Deriving them in one pass means the two can never disagree about which module
-// won, which is the failure mode two hand-copied phdr walks invite.
-// ---------------------------------------------------------------------------
-struct ModText {
-    const uint8_t* text = nullptr;   // largest PF_X segment of the winning module
-    size_t         size = 0;
-    const uint8_t* lo   = nullptr;   // full mapped LOAD extent of that SAME module
-    const uint8_t* hi   = nullptr;
-};
+using ModText = s2platform::ModuleView;
 
 ModText FindModuleText(const char* soname) {
-    struct Ctx { const char* name; size_t bestX; ModText out; } ctx{ soname, 0, {} };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
-        size_t maxX = 0;
-        const uint8_t* text = nullptr;
-        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) {
-                maxX = ph.p_filesz;
-                text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-            }
-            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
-            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
-        }
-        if (maxX > c->bestX) {   // largest PF_X wins, module-wide — the metamod proxy loses
-            c->bestX    = maxX;
-            c->out.text = text;
-            c->out.size = maxX;
-            c->out.lo   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
-            c->out.hi   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
-        }
-        return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the game module
-    }, &ctx);
-    return ctx.out;
+    return s2platform::FindModule(soname);
 }
 
 // The IsAddressInServerText guard, generalized to the descriptor's own module: a resolved
@@ -159,16 +110,14 @@ ModText FindModuleText(const char* soname) {
 // distinguishable in the reason string: "outside .text" means the pattern computed off the map, a
 // validator failure means it computed a real in-range function and it is the WRONG one).
 bool InModuleText(const ModText& mt, const void* fn) {
-    if (!mt.text || !fn) return false;
-    const uint8_t* p = static_cast<const uint8_t*>(fn);
-    return p >= mt.text && p < mt.text + mt.size;
+    return mt.ContainsExecutable(fn);
 }
 
 // Hand the (engine-free) validator TU the module's two views.
 s2validate::ModuleView ViewOf(const ModText& mt) {
     s2validate::ModuleView mv;
     mv.text     = mt.text;
-    mv.textSize = mt.size;
+    mv.textSize = mt.textSize;
     mv.lo       = mt.lo;
     mv.hi       = mt.hi;
     return mv;
@@ -251,26 +200,6 @@ int Fail(char* out, int cap, const char* reason) {
     return -1;
 }
 
-// The two max-arity prototypes (see THE INVOKE TECHNIQUE above). All 5 GP + 8 xmm slots are always
-// passed; the callee reads only what its real prototype declares.
-//
-// The xmm slots MUST be `float`, not `double`. The arg vocabulary's `float` is 32-bit, and SysV
-// passes a 32-bit float as a float in the LOW 32 bits of the xmm register. Declaring these `double`
-// puts a 64-bit double bit pattern in the register, so a callee doing `movss`/`movd` reads the
-// double's low word: `(double)10.0` is 0x4024000000000000, whose low 32 bits are ZERO, so the callee
-// sees 0.0f. That is a SILENT wrong value — no crash, no diagnostic — and it is exactly the
-// misbehaviour class this slice exists to prevent. Verified by compiled repro; guarded by the
-// float-round-trip test in core/src/gamedata_calls.rs.
-// The receiver is no longer a distinct `void*` parameter: it is simply integer slot 0 when the
-// descriptor HAS a receiver, and the first declared arg when it does not. One prototype serves both,
-// so a receiverless call is not a second code path with its own way to be wrong.
-using FnU64 = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           float, float, float, float, float, float, float, float);
-using FnF32 = float    (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                           float, float, float, float, float, float, float, float);
-
 }  // namespace
 
 // The books-first pointer -> handle pack, exposed for engine_hooks.cpp's receiver surfacing (a
@@ -287,26 +216,14 @@ void* S2_ResolveEntity(int index, int serial) {
 // InModuleText's rule, re-asked WITHOUT a module name, for a caller that holds only a resolved
 // address (engine_hooks.cpp, which must never patch bytes it cannot prove are code). Module-agnostic
 // on purpose: a hook target may live in whichever module its descriptor named, and this TU is the
-// one that already owns the phdr walk — a second copy of it in engine_hooks.cpp would also drag the
+// one that already owns the platform query — a second copy in engine_hooks.cpp would also drag the
 // question of "which module?" somewhere that has no answer to it.
 //
-// Note this walks EVERY module's every PF_X PT_LOAD segment, rather than FindModuleText's
-// largest-PF_X-of-one-soname: the question here is containment, not identification, so the
+// This checks every module's executable ranges, rather than FindModuleText's
+// largest-executable-range-of-one-name: the question here is containment, not identification, so the
 // metamod-proxy tie-break that rule exists for does not apply.
 int S2_AddressIsExecutable(const void* addr) {
-    if (!addr) return 0;
-    struct Ctx { uintptr_t a; bool hit; } ctx{ reinterpret_cast<uintptr_t>(addr), false };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X)) continue;
-            const uintptr_t lo = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
-            if (c->a >= lo && c->a < lo + ph.p_memsz) { c->hit = true; return 1; }   // stop the walk
-        }
-        return 0;
-    }, &ctx);
-    return ctx.hit ? 1 : 0;
+    return s2platform::IsExecutableAddress(addr) ? 1 : 0;
 }
 
 // The module views behind an address: the PF_X segment that CONTAINS it, plus the module's full
@@ -315,34 +232,12 @@ int S2_AddressIsExecutable(const void* addr) {
 int S2_ModuleViewForAddress(const void* addr, const unsigned char** outText, std::size_t* outSize,
                             const unsigned char** outLo, const unsigned char** outHi) {
     if (!addr || !outText || !outSize || !outLo || !outHi) return 0;
-    struct Ctx {
-        uintptr_t a; bool hit;
-        uintptr_t text, textEnd, lo, hi;
-    } ctx{ reinterpret_cast<uintptr_t>(addr), false, 0, 0, 0, 0 };
-
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        uintptr_t lo = 0, hi = 0, text = 0, textEnd = 0;
-        bool contains = false;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            const uintptr_t s = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
-            const uintptr_t e = s + ph.p_memsz;
-            if (lo == 0 || s < lo) lo = s;
-            if (e > hi) hi = e;
-            if ((ph.p_flags & PF_X) && c->a >= s && c->a < e) { contains = true; text = s; textEnd = e; }
-        }
-        if (!contains) return 0;               // not this module — keep walking
-        c->hit = true; c->text = text; c->textEnd = textEnd; c->lo = lo; c->hi = hi;
-        return 1;                              // found it — stop
-    }, &ctx);
-
-    if (!ctx.hit) return 0;
-    *outText = reinterpret_cast<const unsigned char*>(ctx.text);
-    *outSize = static_cast<std::size_t>(ctx.textEnd - ctx.text);
-    *outLo   = reinterpret_cast<const unsigned char*>(ctx.lo);
-    *outHi   = reinterpret_cast<const unsigned char*>(ctx.hi);
+    s2platform::ModuleView view;
+    if (!s2platform::ModuleViewForAddress(addr, &view)) return 0;
+    *outText = view.text;
+    *outSize = view.textSize;
+    *outLo   = view.lo;
+    *outHi   = view.hi;
     return 1;
 }
 
@@ -376,16 +271,17 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
         std::vector<int> pat = s2sig::ParsePattern(pattern);
         if (pat.empty()) return Fail(reasonOut, reasonCap, "malformed signature pattern");
         // Rule 2: uniqueness, not just presence — an ambiguous pattern is as unusable as a missing one.
-        int matches = s2sig::CountPattern(mt.text, mt.size, pat, 2);
+        int matches = s2sig::CountPattern(mt.text, mt.textSize, pat, 2);
         if (matches == 0) return Fail(reasonOut, reasonCap, "signature did not match this build");
         if (matches > 1)  return Fail(reasonOut, reasonCap, "signature is ambiguous (>1 match — tighten it)");
-        int64_t matchOff  = s2sig::FindPattern(mt.text, mt.size, pat);
+        int64_t matchOff  = s2sig::FindPattern(mt.text, mt.textSize, pat);
         int64_t targetOff = matchOff;                       // "direct": the match IS the target
         const char* res = (resolve && resolve[0]) ? resolve : "direct";
         if (std::strcmp(res, "ctor-body-xref") == 0) {
-            targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
+            targetOff = s2sig::ResolveCtorXref(mt.text, mt.textSize, matchOff);
         } else if (std::strcmp(res, "lea-disp") == 0) {
-            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, /*dispOff=*/3, /*instrLen=*/7);
+            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.textSize, matchOff,
+                                              /*dispOff=*/3, /*instrLen=*/7);
         } else if (std::strcmp(res, "direct") != 0) {
             return Fail(reasonOut, reasonCap, "unknown resolve strategy");
         }
@@ -436,6 +332,7 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
 // never a wild call.
 // ---------------------------------------------------------------------------
 int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
+                        const unsigned char* argClass, int argCount,
                         const uint64_t* gp, const unsigned char* gpKind, int gpCount,
                         const double* fp, int fpCount,
                         const char* const* strs, const float* vecs,
@@ -443,6 +340,8 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     if (retOut) *retOut = 0;
     if (callId < 0 || static_cast<size_t>(callId) >= g_calls.size()) return 0;
     if (retKind < kRetVoid || retKind > kRetEntity) return 0;     // validated BEFORE any call
+    if (argCount < 0 || argCount > kMaxGpArgs + kMaxFpArgs) return 0;
+    if (argCount > 0 && !argClass) return 0;
     if (gpCount < 0 || gpCount > kMaxGpArgs) return 0;
     if (fpCount < 0 || fpCount > kMaxFpArgs) return 0;
     if (gpCount > 0 && (!gp || !gpKind)) return 0;
@@ -456,8 +355,7 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     //
     // entIndex < 0 is the RECEIVERLESS marker (`receiver.kind: "none"` — a static/free engine
     // function, which has no `this` at all). Nothing is resolved and no slot is consumed: the first
-    // declared arg takes rdi. Kept as a sentinel on the existing parameter rather than a new ABI
-    // field so the op signature is unchanged.
+    // declared arg takes position 0. Kept as a sentinel on the existing receiver parameters.
     const bool hasReceiver = entIndex >= 0;
     void* thisPtr = nullptr;
     if (hasReceiver) {
@@ -471,8 +369,8 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     }
 
     uint64_t g[kMaxGpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    // `float`, not `double` — see the FnU64/FnF32 note above. The core hands us f64 across the ABI
-    // (JS numbers are doubles); the narrowing to the engine's 32-bit float happens HERE, once.
+    // The core hands us f64 across the ABI (JS numbers are doubles); narrowing to the engine's
+    // 32-bit `float` happens HERE once, before the selected backend assigns registers/stack slots.
     float    f[kMaxFpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
     for (int i = 0; i < gpCount; i++) {
@@ -510,32 +408,26 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     }
     for (int i = 0; i < fpCount; i++) f[i] = static_cast<float>(fp[i]);   // explicit f64 -> f32 narrow
 
-    // Lay the integer slots out once: receiver first when there is one, then the declared args.
-    uint64_t s_[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    int base = 0;
-    if (hasReceiver) { s_[0] = reinterpret_cast<uint64_t>(thisPtr); base = 1; }
-    for (int i = 0; i < gpCount && (base + i) < 10; i++) s_[base + i] = g[i];
+    s2callabi::InvokeRequest request{};
+    request.fn = fn;
+    request.hasReceiver = hasReceiver;
+    request.receiver = reinterpret_cast<uint64_t>(thisPtr);
+    request.argClasses = argClass;
+    request.argCount = argCount;
+    request.gp = g;
+    request.gpCount = gpCount;
+    request.fp = f;
+    request.fpCount = fpCount;
+    request.retKind = retKind == kRetFloat ? s2callabi::kRetF32 : s2callabi::kRetU64;
+    uint64_t r = 0;
+    if (!s2callabi::Invoke(request, &r)) return 0;
 
-    if (retKind == kRetFloat) {
-        float r = reinterpret_cast<FnF32>(fn)(s_[0], s_[1], s_[2], s_[3], s_[4],
-                                              s_[5], s_[6], s_[7], s_[8], s_[9],
-                                              f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
-        if (retOut) {
-            uint32_t bits = 0;
-            std::memcpy(&bits, &r, sizeof(bits));     // the core reads the low 32 bits as f32
-            *retOut = bits;
-        }
-        return 1;
-    }
-
-    uint64_t r = reinterpret_cast<FnU64>(fn)(s_[0], s_[1], s_[2], s_[3], s_[4],
-                                             s_[5], s_[6], s_[7], s_[8], s_[9],
-                                             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
     if (retOut) {
         switch (retKind) {
             case kRetVoid:   break;                                        // *retOut stays 0
             case kRetBool:   *retOut = (r & 0xff) ? 1 : 0; break;           // al
             case kRetInt:    *retOut = static_cast<uint32_t>(r); break;      // eax; core reads as i32
+            case kRetFloat:   *retOut = r; break;                            // low 32 bits from xmm0
             case kRetEntity: *retOut = EntityHandleFromPtr(reinterpret_cast<void*>(r)); break;
             default:         break;
         }

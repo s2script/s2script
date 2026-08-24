@@ -1,6 +1,6 @@
 //! Plugin-declared engine calls — the core's half of the plugin-gamedata slice (spec §10, the
 //! "Core" row): the per-plugin descriptor registry, the two-part authorization gate, and the SysV
-//! argument classification the invoke native marshals against.
+//! cross-platform argument classification the invoke native marshals against.
 //!
 //! BOUNDARY (spec §10). Every name in a descriptor — target kind, module, byte pattern, resolver
 //! strategy, class, field, the whole `validate` object — is an OPAQUE plugin-supplied string that crosses core
@@ -54,8 +54,13 @@ pub(crate) fn is_reserved_owner(id: &str) -> bool {
 }
 
 /// The platform id whose nested details the runtime consumes (spec §5, Global Constraints). Exactly
-/// one platform ships today; the key stays explicit so a second one is additive.
+/// one key is selected by each native build; plugin archives may carry both keys.
+#[cfg(target_os = "linux")]
 const PLATFORM: &str = "linuxsteamrt64";
+#[cfg(target_os = "windows")]
+const PLATFORM: &str = "windows64";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+compile_error!("s2script-core supports only Linux and Windows native runtimes");
 
 /// Per-GP-slot arg kind bytes. MUST match `engine_calls.cpp`'s `kArg*` enum — this is an ABI, not a
 /// convention.
@@ -63,6 +68,12 @@ pub(crate) const GP_SCALAR: u8 = 0;
 pub(crate) const GP_ENTITY: u8 = 1;
 pub(crate) const GP_STRING: u8 = 2;
 pub(crate) const GP_VECTOR: u8 = 3;
+
+/// Declared argument classes in AUTHOR order. This sequence crosses the engine-ops ABI because
+/// Microsoft x64 selects RCX/XMM0, RDX/XMM1, R8/XMM2 and R9/XMM3 by position; the split GP/FP
+/// value streams cannot reconstruct it.
+pub(crate) const ARG_CLASS_GP: u8 = 0;
+pub(crate) const ARG_CLASS_F32: u8 = 1;
 
 /// Return-kind codes. MUST match `engine_calls.cpp`'s `kRet*` enum.
 pub(crate) const RET_VOID: i32 = 0;
@@ -117,25 +128,25 @@ pub(crate) fn gp_kind_of(arg: &str) -> Option<u8> {
     })
 }
 
-/// Split an arg list into its two SysV register sequences: the per-GP-slot kind bytes and the count
-/// of float slots, **preserving order within each class**. Positional interleaving between the
-/// classes is irrelevant to the callee (integer-class and float-class args are assigned from two
-/// independent register sequences), which is what makes one fixed max-arity thunk shim-side able to
-/// call the whole closed v1 vocabulary.
+/// Produce the author-order class sequence plus the split value-stream metadata. SysV consumes the
+/// latter as independent GP/SSE sequences; Microsoft x64 needs the former for positional assignment.
 ///
 /// An arg kind outside the vocabulary is skipped here; `prepare` rejects it with a named reason
 /// BEFORE classification, so a live descriptor never reaches this with an unknown kind.
-pub(crate) fn classify_args(args: &[String]) -> (Vec<u8>, usize) {
+pub(crate) fn classify_args(args: &[String]) -> (Vec<u8>, Vec<u8>, usize) {
+    let mut classes = Vec::new();
     let mut gp_kinds = Vec::new();
     let mut fp_count = 0usize;
     for a in args {
         if a == "float" {
+            classes.push(ARG_CLASS_F32);
             fp_count += 1;
         } else if let Some(k) = gp_kind_of(a) {
+            classes.push(ARG_CLASS_GP);
             gp_kinds.push(k);
         }
     }
-    (gp_kinds, fp_count)
+    (classes, gp_kinds, fp_count)
 }
 
 /// Everything the invoke native needs, cloned out of the registry so the registry borrow is released
@@ -345,7 +356,7 @@ fn prepare(
             return Err(format!("unknown arg kind '{}'", a));
         }
     }
-    let (gp_kinds, fp_count) = classify_args(&args);
+    let (_classes, gp_kinds, fp_count) = classify_args(&args);
     if gp_kinds.len() > MAX_GP_ARGS {
         return Err(format!(
             "too many integer-class args ({} > {})",
@@ -442,6 +453,14 @@ pub(crate) fn flatten_decl(
     decl: &serde_json::Value,
     signatures: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Result<String, String> {
+    flatten_decl_for_platform(decl, signatures, PLATFORM)
+}
+
+fn flatten_decl_for_platform(
+    decl: &serde_json::Value,
+    signatures: Option<&serde_json::Map<String, serde_json::Value>>,
+    platform: &str,
+) -> Result<String, String> {
     let mut out = decl.clone();
     let target = out
         .get_mut("target")
@@ -459,9 +478,9 @@ pub(crate) fn flatten_decl(
                 }
                 let spec = signatures
                     .and_then(|m| m.get(&name))
-                    .and_then(|v| v.get(PLATFORM))
+                    .and_then(|v| v.get(platform))
                     .ok_or_else(|| {
-                        format!("no '{}' entry for signature '{}'", PLATFORM, name)
+                        format!("no '{}' entry for signature '{}'", platform, name)
                     })?;
                 for key in ["module", "pattern", "resolve"] {
                     if let Some(v) = spec.get(key) {
@@ -486,9 +505,9 @@ pub(crate) fn flatten_decl(
         }
         "vtable" => {
             let plat = target
-                .get(PLATFORM)
+                .get(platform)
                 .cloned()
-                .ok_or_else(|| format!("vtable target has no '{}' entry", PLATFORM))?;
+                .ok_or_else(|| format!("vtable target has no '{}' entry", platform))?;
             for key in ["index", "validate"] {
                 if let Some(v) = plat.get(key) {
                     target.insert(key.to_string(), v.clone());
@@ -680,8 +699,11 @@ mod tests {
 
     #[test]
     fn arg_classification_splits_int_and_float_slots() {
-        // ["float","int","float"] -> 1 GP slot, 2 float slots, preserving per-class order.
-        let (gp_kinds, fp_count) = classify_args(&["float".into(), "int".into(), "float".into()]);
+        // The positional class sequence is part of the shim ABI on Microsoft x64: unlike SysV,
+        // register number is selected by AUTHOR position rather than by an independent class index.
+        let (classes, gp_kinds, fp_count) =
+            classify_args(&["float".into(), "int".into(), "float".into()]);
+        assert_eq!(classes, vec![ARG_CLASS_F32, ARG_CLASS_GP, ARG_CLASS_F32]);
         assert_eq!(gp_kinds.len(), 1);
         assert_eq!(fp_count, 2);
     }
@@ -689,13 +711,17 @@ mod tests {
     /// Order within each class is what SysV assignment depends on — assert it explicitly.
     #[test]
     fn arg_classification_preserves_order_within_each_class() {
-        let (gp_kinds, fp_count) = classify_args(&[
+        let (classes, gp_kinds, fp_count) = classify_args(&[
             "string".into(),
             "float".into(),
             "entity".into(),
             "vector".into(),
             "float".into(),
         ]);
+        assert_eq!(
+            classes,
+            vec![ARG_CLASS_GP, ARG_CLASS_F32, ARG_CLASS_GP, ARG_CLASS_GP, ARG_CLASS_F32]
+        );
         assert_eq!(gp_kinds, vec![GP_STRING, GP_ENTITY, GP_VECTOR]);
         assert_eq!(fp_count, 2);
     }
@@ -716,6 +742,28 @@ mod tests {
         assert_eq!(flat["target"]["pattern"], "55 48");
         assert_eq!(flat["target"]["module"], "m.so");
         assert_eq!(flat["target"]["resolve"], "direct");
+    }
+
+    #[test]
+    fn flatten_can_select_the_windows_signature_entry() {
+        let gd: serde_json::Value = serde_json::from_str(
+            r#"{"signatures":{"Ig":{
+                    "linuxsteamrt64":{"module":"libserver.so","pattern":"55 48","resolve":"direct"},
+                    "windows64":{"module":"server.dll","pattern":"48 89","resolve":"lea-disp"}}},
+                "calls":{"ignite":{"receiver":{"kind":"entity"},
+                                   "target":{"kind":"signature","name":"Ig"},
+                                   "args":[],"returns":"void"}}}"#,
+        )
+        .unwrap();
+        let sigs = gd.get("signatures").unwrap().as_object();
+        let decl = gd.get("calls").unwrap().get("ignite").unwrap();
+        let flat: serde_json::Value = serde_json::from_str(
+            &flatten_decl_for_platform(decl, sigs, "windows64").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(flat["target"]["module"], "server.dll");
+        assert_eq!(flat["target"]["pattern"], "48 89");
+        assert_eq!(flat["target"]["resolve"], "lea-disp");
     }
 
     /// A signature entry's `validate` is lifted WITH its pattern: the two are co-derived from the
@@ -780,6 +828,22 @@ mod tests {
         let flat: serde_json::Value = serde_json::from_str(&flatten_decl(&decl, None).unwrap()).unwrap();
         assert_eq!(flat["target"]["index"], 264);
         assert_eq!(flat["target"]["validate"]["prologue"], "55 48");
+    }
+
+    #[test]
+    fn flatten_can_select_the_windows_vtable_entry() {
+        let decl: serde_json::Value = serde_json::from_str(
+            r#"{"target":{"kind":"vtable","class":"CFoo",
+                 "linuxsteamrt64":{"index":264,"validate":{"prologue":"55 48"}},
+                 "windows64":{"index":271,"validate":{"prologue":"48 89"}}}}"#,
+        )
+        .unwrap();
+        let flat: serde_json::Value = serde_json::from_str(
+            &flatten_decl_for_platform(&decl, None, "windows64").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(flat["target"]["index"], 271);
+        assert_eq!(flat["target"]["validate"]["prologue"], "48 89");
     }
 
     /// The arg/return vocabulary and the SysV budget are enforced with named reasons even though the

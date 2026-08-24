@@ -959,10 +959,10 @@
     {
       "name": "engine_call_invoke",
       "alias": "EngineCallInvokeFn",
-      "rust": "extern \"C\" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int",
+      "rust": "extern \"C\" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, arg_class: *const u8, arg_count: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int",
       "group": "Plugin-declared engine calls",
       "c_ret": "int",
-      "c_params": "int callId, int entIndex, int entSerial, int subObjOff, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut",
+      "c_params": "int callId, int entIndex, int entSerial, int subObjOff, const unsigned char* argClass, int argCount, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut",
       "shim": "S2_EngineCallInvoke"
     },
     {

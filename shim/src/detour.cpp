@@ -1,9 +1,7 @@
 #include "detour.h"
 #include "detour_reloc.h"
+#include "platform/memory.h"
 
-#include <sys/mman.h>
-#include <unistd.h>
-#include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -22,73 +20,8 @@ struct Patch {
 
 std::vector<Patch> g_patches;
 
-// Set once, when the kernel proves it does not honour MAP_FIXED_NOREPLACE (pre-4.17, where the flag
-// is silently treated as a plain hint). Latched rather than re-probed: the answer cannot change
-// within a process, and re-probing means another speculative mapping every call.
-bool g_noFixedNoReplace = false;
-
 // See SetForceFarTierForTest. Always false in a shipped process.
 bool g_forceFarTier = false;
-
-bool Protect(void* addr, size_t len, int prot) {
-    const long pg = sysconf(_SC_PAGESIZE);
-    const uintptr_t a = reinterpret_cast<uintptr_t>(addr);
-    const uintptr_t start = a & ~static_cast<uintptr_t>(pg - 1);
-    const uintptr_t end = (a + len + static_cast<uintptr_t>(pg) - 1) & ~static_cast<uintptr_t>(pg - 1);
-    return mprotect(reinterpret_cast<void*>(start), end - start, prot) == 0;
-}
-
-// Map exactly at `addr` or not at all. MAP_FIXED_NOREPLACE is what makes a /proc/self/maps scan
-// unnecessary: another thread mapping into our chosen gap makes this fail with EEXIST rather than
-// silently clobbering it, and we just try the next candidate.
-void* TryMapAt(uintptr_t addr, size_t size) {
-    const int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
-#ifdef MAP_FIXED_NOREPLACE
-    if (!g_noFixedNoReplace) {
-        void* p = mmap(reinterpret_cast<void*>(addr), size, prot,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-        if (p != MAP_FAILED) {
-            if (reinterpret_cast<uintptr_t>(p) == addr) return p;
-            munmap(p, size);              // honoured as a plain hint => flag unimplemented; latch it
-            g_noFixedNoReplace = true;
-            return nullptr;
-        }
-        if (errno == EINVAL) g_noFixedNoReplace = true;   // flag unknown to this kernel
-        return nullptr;
-    }
-#endif
-    void* p = mmap(reinterpret_cast<void*>(addr), size, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    return p == MAP_FAILED ? nullptr : p;                 // caller range-checks what it got
-}
-
-// A page within rel32 reach of `target`, or null. Probing candidates outward beats parsing
-// /proc/self/maps: the kernel is the authority on what is free, the answer cannot go stale between
-// the read and the map, and there is no parser to get wrong.
-void* AllocNear(uintptr_t target, size_t size) {
-    if (g_forceFarTier) return nullptr;
-    const uintptr_t pg = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
-    const uintptr_t base = target & ~(pg - 1);
-    const int64_t   kReach = 0x7FFF0000LL;   // just under 2GB, with room for the encodings
-    const uintptr_t kStep  = 1u << 20;       // 1MB — inter-library gaps are far larger than this
-
-    for (uintptr_t d = kStep; d < static_cast<uintptr_t>(kReach); d += kStep) {
-        for (int above = 0; above < 2; above++) {
-            if (!above && d > base) continue;                       // would underflow
-            const uintptr_t cand = above ? base + d : base - d;
-            if (cand < 0x10000) continue;                           // never the low guard pages
-            void* p = TryMapAt(cand, size);
-            if (!p) continue;
-            const int64_t delta = static_cast<int64_t>(reinterpret_cast<uintptr_t>(p)) -
-                                  static_cast<int64_t>(target);
-            if (delta > -kReach && delta < kReach) return p;
-            // Only reachable on the plain-hint fallback path, where the kernel places the mapping
-            // wherever it likes. It will keep doing that, so stop probing rather than spin.
-            munmap(p, size);
-            return nullptr;
-        }
-    }
-    return nullptr;
-}
 
 InstallResult Fail(const char* reason) {
     InstallResult r;
@@ -105,7 +38,8 @@ InstallResult Install(void* target, void* handler, void** origTrampoline,
     uint8_t* const  code        = reinterpret_cast<uint8_t*>(target);
     const uintptr_t targetAddr  = reinterpret_cast<uintptr_t>(code);
     const uintptr_t handlerAddr = reinterpret_cast<uintptr_t>(handler);
-    const size_t    pageSize    = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    const size_t    pageSize    = s2platform::PageSize();
+    if (!pageSize) return Fail("platform page size is unavailable");
 
     // Both tiers take one page. The page holds, in order:
     //
@@ -127,14 +61,16 @@ InstallResult Install(void* target, void* handler, void** origTrampoline,
     bool        near  = false;
 
     // ---- Tier 1: a near page + a 5-byte E9. ---------------------------------------------------
-    if (void* nearPage = AllocNear(targetAddr, pageSize)) {
+    if (void* nearPage = g_forceFarTier
+            ? nullptr
+            : s2platform::AllocateExecutableNear(targetAddr, pageSize)) {
         built = BuildTrampolineBody(code, targetAddr, kJmpRel32,
                                     body, reinterpret_cast<uintptr_t>(nearPage), isExecutable);
         if (built.ok) {
             tramp = nearPage;
             near  = true;
         } else {
-            munmap(nearPage, pageSize);
+            s2platform::FreeExecutable(nearPage, pageSize);
             // This refusal is about the INSTRUCTIONS, and tier 2 steals a superset of these bytes,
             // so it cannot do better. Report tier 1's reason rather than a misleading tier-2 one.
             return Fail(built.reason);
@@ -143,12 +79,11 @@ InstallResult Install(void* target, void* handler, void** origTrampoline,
 
     // ---- Tier 2: a page anywhere + a 14-byte absolute jump. -----------------------------------
     if (!tramp) {
-        void* p = mmap(nullptr, pageSize, PROT_READ | PROT_WRITE | PROT_EXEC,
-                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (p == MAP_FAILED) return Fail("trampoline allocation failed");
+        void* p = s2platform::AllocateExecutable(pageSize);
+        if (!p) return Fail("trampoline allocation failed");
         built = BuildTrampolineBody(code, targetAddr, kJmpAbs,
                                     body, reinterpret_cast<uintptr_t>(p), isExecutable);
-        if (!built.ok) { munmap(p, pageSize); return Fail(built.reason); }
+        if (!built.ok) { s2platform::FreeExecutable(p, pageSize); return Fail(built.reason); }
         tramp = p;
     }
 
@@ -157,6 +92,7 @@ InstallResult Install(void* target, void* handler, void** origTrampoline,
     std::memcpy(page, body, static_cast<size_t>(built.emitted));
     WriteAbsJmp(page + built.emitted, targetAddr + static_cast<uintptr_t>(built.steal));
     WriteAbsJmp(page + built.emitted + kJmpAbs, handlerAddr);
+    s2platform::FlushInstructionCache(page, pageSize);
 
     // ---- Patch the target. Nothing above this line has touched it. ----------------------------
     Patch p{};
@@ -166,8 +102,9 @@ InstallResult Install(void* target, void* handler, void** origTrampoline,
     p.trampSize  = pageSize;
     std::memcpy(p.orig, code, static_cast<size_t>(built.steal));
 
-    if (!Protect(code, static_cast<size_t>(built.steal), PROT_READ | PROT_WRITE | PROT_EXEC)) {
-        munmap(tramp, pageSize);
+    if (!s2platform::ProtectMemory(code, static_cast<size_t>(built.steal),
+                                   s2platform::MemoryProtection::ReadWriteExecute)) {
+        s2platform::FreeExecutable(tramp, pageSize);
         return Fail("could not make the patch site writable");
     }
 
@@ -177,8 +114,9 @@ InstallResult Install(void* target, void* handler, void** origTrampoline,
         if (!WriteRelJmp(code, targetAddr, island)) {
             // AllocNear proved the page is in range, so this cannot fire — but restore rather than
             // leave a half-written prologue if it ever does.
-            Protect(code, static_cast<size_t>(built.steal), PROT_READ | PROT_EXEC);
-            munmap(tramp, pageSize);
+            s2platform::ProtectMemory(code, static_cast<size_t>(built.steal),
+                                      s2platform::MemoryProtection::ReadExecute);
+            s2platform::FreeExecutable(tramp, pageSize);
             return Fail("near trampoline is out of rel32 range (allocator disagreement)");
         }
         patchLen = kJmpRel32;
@@ -189,7 +127,9 @@ InstallResult Install(void* target, void* handler, void** origTrampoline,
     // NOP the tail. Never executed — control leaves at the jump — but it keeps a disassembler, and
     // anyone reading a crash dump, from seeing half an instruction.
     for (int i = patchLen; i < built.steal; ++i) code[i] = 0x90;
-    Protect(code, static_cast<size_t>(built.steal), PROT_READ | PROT_EXEC);
+    s2platform::FlushInstructionCache(code, static_cast<size_t>(built.steal));
+    s2platform::ProtectMemory(code, static_cast<size_t>(built.steal),
+                              s2platform::MemoryProtection::ReadExecute);
 
     g_patches.push_back(p);
     *origTrampoline = tramp;
@@ -205,11 +145,14 @@ void SetForceFarTierForTest(bool on) { g_forceFarTier = on; }
 
 void RemoveAll() {
     for (auto& p : g_patches) {
-        if (Protect(p.target, static_cast<size_t>(p.origLen), PROT_READ | PROT_WRITE | PROT_EXEC)) {
+        if (s2platform::ProtectMemory(p.target, static_cast<size_t>(p.origLen),
+                                      s2platform::MemoryProtection::ReadWriteExecute)) {
             std::memcpy(p.target, p.orig, static_cast<size_t>(p.origLen));
-            Protect(p.target, static_cast<size_t>(p.origLen), PROT_READ | PROT_EXEC);
+            s2platform::FlushInstructionCache(p.target, static_cast<size_t>(p.origLen));
+            s2platform::ProtectMemory(p.target, static_cast<size_t>(p.origLen),
+                                      s2platform::MemoryProtection::ReadExecute);
         }
-        munmap(p.trampoline, p.trampSize);
+        s2platform::FreeExecutable(p.trampoline, p.trampSize);
     }
     g_patches.clear();
 }

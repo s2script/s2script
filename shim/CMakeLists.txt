@@ -4,20 +4,80 @@ project(s2script_shim C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+    # Match upstream Metamod's release ABI (/MT; /MTd for an explicit Debug configuration) and
+    # apply it to the shim, vendored SDK TUs, and every native selftest.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # SDK paths (relative to shim/ source dir, so go up one level to repo root)
 set(HL2SDK ${CMAKE_SOURCE_DIR}/../third_party/hl2sdk)
 set(MMS    ${CMAKE_SOURCE_DIR}/../third_party/metamod-source)
 set(AMTL   ${MMS}/third_party/amtl)
 
-# Cargo profile directory the resident core (libs2script_core.so) was built into. `make shim` and
+# Cargo profile directory the resident core library was built into. `make shim` and
 # scripts/build-sniper.sh always build core as --release, so this defaults to "release" and is
-# unaffected. CI's cheap PR build compiles core in debug (no --release, much faster) and passes
-# -DS2_CORE_LIB_DIR=debug at configure time so the shim links the matching artifact.
-set(S2_CORE_LIB_DIR "release" CACHE STRING "cargo profile dir the core .so was built into (release|debug)")
+# unaffected. Linux CI's cheap PR build compiles core in debug and selects that profile explicitly;
+# Windows CI builds and links Release artifacts to exercise the deployable MSVC configuration.
+set(S2_CORE_LIB_DIR "release" CACHE STRING "cargo profile dir holding the core DLL/shared library")
+
+set(S2_PLATFORM_SOURCES
+    src/platform/paths_common.cpp
+    src/platform/pe_image.cpp)
+if(WIN32)
+    enable_language(ASM_MASM)
+    set(S2_CALL_ABI_SOURCES
+        src/call_abi_win.cpp
+        src/call_abi_win_msvc.asm)
+    set(S2_HOOK_ABI_SOURCE src/hook_abi_win.cpp)
+    set(S2_PLATFORM_MEMORY_SOURCE src/platform/memory_win.cpp)
+    set(S2_PLATFORM_BACKEND_SOURCES
+        src/platform/module_win.cpp
+        ${S2_PLATFORM_MEMORY_SOURCE}
+        src/platform/paths_win.cpp)
+    set(S2_PLATFORM_IMAGE_SOURCE src/platform/image_win.cpp)
+    set(S2_CORE_SYMBOLS_SOURCE src/core_symbols_win.cpp)
+    set(S2_CRASH_HANDLER_SOURCE src/crash_handler_win.cpp)
+    set(S2_DETOUR_TEST_ASM_SOURCE tests/detour_test_target_win_msvc.asm)
+else()
+    set(S2_CALL_ABI_SOURCES src/call_abi_sysv.cpp)
+    set(S2_HOOK_ABI_SOURCE src/hook_abi_sysv.cpp)
+    set(S2_PLATFORM_MEMORY_SOURCE src/platform/memory_linux.cpp)
+    set(S2_PLATFORM_BACKEND_SOURCES
+        src/platform/module_linux.cpp
+        ${S2_PLATFORM_MEMORY_SOURCE}
+        src/platform/paths_linux.cpp)
+    set(S2_PLATFORM_IMAGE_SOURCE src/platform/image_linux.cpp)
+    set(S2_CORE_SYMBOLS_SOURCE src/core_symbols_linux.cpp)
+    set(S2_CRASH_HANDLER_SOURCE src/crash_handler.cpp)
+endif()
+list(APPEND S2_PLATFORM_SOURCES
+    ${S2_PLATFORM_BACKEND_SOURCES}
+    ${S2_PLATFORM_IMAGE_SOURCE}
+    ${S2_CORE_SYMBOLS_SOURCE})
+
+# Build the exact protobuf revision whose headers the shim compiles against. The historical
+# HL2SDK win64/2015 archive was produced by a different MSVC toolset/CRT and is not ABI-safe to
+# mix into this binary.
+if(WIN32)
+    set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(protobuf_BUILD_CONFORMANCE OFF CACHE BOOL "" FORCE)
+    set(protobuf_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(protobuf_BUILD_PROTOC_BINARIES OFF CACHE BOOL "" FORCE)
+    set(protobuf_BUILD_LIBPROTOC OFF CACHE BOOL "" FORCE)
+    set(protobuf_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
+    set(protobuf_WITH_ZLIB OFF CACHE BOOL "" FORCE)
+    set(protobuf_MSVC_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+    add_subdirectory(
+        ${HL2SDK}/thirdparty/protobuf-3.21.8
+        ${CMAKE_BINARY_DIR}/protobuf-3.21.8
+        EXCLUDE_FROM_ALL)
+endif()
 
 add_library(s2script SHARED
     src/s2script_mm.cpp
+    ${S2_PLATFORM_SOURCES}
     # Entity lifecycle listeners slice: the isolated IEntityListener TU (mirrors ekv.cpp's isolation
     # discipline — the only new TU that includes entity2/entitysystem.h for the listener interface).
     src/entity_listener.cpp
@@ -48,11 +108,12 @@ add_library(s2script SHARED
     # plain libc malloc/free (verified), NOT g_pMemAlloc. ekv.cpp is the ONLY TU that includes
     # entitykeyvalues.h; everything else sees void*.
     src/ekv.cpp
-    # Crash-reporter slice: Breakpad arming + the async-signal-safe .s2meta sidecar writer.
-    src/crash_handler.cpp
+    # Crash reporter: vendored in-process Breakpad on both native platforms.
+    ${S2_CRASH_HANDLER_SOURCE}
     # Plugin-gamedata slice: plugin-declared engine calls — descriptor resolution (byte signature /
     # RTTI vtable slot + prologue validation + .text range) and the fixed-max-arity SysV invoke.
     src/engine_calls.cpp
+    ${S2_CALL_ABI_SOURCES}
     # A5b: the CLOSED validator vocabulary (prologue / string-xref / vtable-member). Its own TU
     # because engine_calls.cpp cannot be compiled outside the game (it includes the entity system);
     # every outside contact is injected, so shim/tests/call_validate_test.cpp drives the SHIPPED
@@ -69,6 +130,7 @@ add_library(s2script SHARED
     # and the block-scoped arg view. Cannot be unit-tested outside the game (it marshals a receiver
     # through the entity system), which is precisely why the policy lives in the TU above.
     src/engine_hooks.cpp
+    ${S2_HOOK_ABI_SOURCE}
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier1/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
@@ -78,54 +140,56 @@ add_library(s2script SHARED
                                              # operators must survive) — list it separately below.
 )
 
-# --- Crash reporter (Breakpad, vendored) ---------------------------------------------------
-# The Linux client only: exception_handler + the in-process minidump writer. Compiled as a
-# static lib with the SAME Valve ABI define as the shim; linked into s2script.so (gc-sections
-# drops the unused microdump/core-dump paths). Verified to build under Steam Runtime 3
-# (glibc 2.31) in the rust:bullseye sniper container.
-enable_language(ASM)
-# Breakpad's guid_creator uses pthread_once. On the Steam-Runtime-3 sniper toolchain (glibc 2.31)
-# pthread is a separate library (host glibc >= 2.34 folds it into libc), so link it explicitly and
-# let it propagate (PUBLIC) to both s2script.so and the crash_selftest executable.
-find_package(Threads REQUIRED)
 set(BREAKPAD ${CMAKE_SOURCE_DIR}/../third_party/breakpad/src)
-add_library(breakpad_client STATIC
-    ${BREAKPAD}/client/linux/crash_generation/crash_generation_client.cc
-    ${BREAKPAD}/client/linux/dump_writer_common/thread_info.cc
-    ${BREAKPAD}/client/linux/dump_writer_common/ucontext_reader.cc
-    ${BREAKPAD}/client/linux/handler/exception_handler.cc
-    ${BREAKPAD}/client/linux/handler/minidump_descriptor.cc
-    ${BREAKPAD}/client/linux/log/log.cc
-    ${BREAKPAD}/client/linux/microdump_writer/microdump_writer.cc
-    ${BREAKPAD}/client/linux/minidump_writer/linux_dumper.cc
-    ${BREAKPAD}/client/linux/minidump_writer/linux_ptrace_dumper.cc
-    ${BREAKPAD}/client/linux/minidump_writer/minidump_writer.cc
-    ${BREAKPAD}/client/linux/minidump_writer/pe_file.cc
-    ${BREAKPAD}/client/minidump_file_writer.cc
-    ${BREAKPAD}/common/convert_UTF.cc
-    ${BREAKPAD}/common/md5.cc
-    ${BREAKPAD}/common/string_conversion.cc
-    ${BREAKPAD}/common/linux/breakpad_getcontext.S
-    ${BREAKPAD}/common/linux/elf_core_dump.cc
-    ${BREAKPAD}/common/linux/elfutils.cc
-    ${BREAKPAD}/common/linux/file_id.cc
-    ${BREAKPAD}/common/linux/guid_creator.cc
-    ${BREAKPAD}/common/linux/linux_libc_support.cc
-    ${BREAKPAD}/common/linux/memory_mapped_file.cc
-    ${BREAKPAD}/common/linux/safe_readlink.cc
-)
-target_include_directories(breakpad_client PUBLIC ${BREAKPAD})
-target_link_libraries(breakpad_client PUBLIC Threads::Threads)
-set_target_properties(breakpad_client PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_definitions(breakpad_client PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
-# Breakpad's memory_allocator.h uses std::max_align_t but only includes <stddef.h> (which declares
-# ::max_align_t, not the std:: one). Newer host libstdc++ pulls std::max_align_t in transitively, but
-# the Steam-Runtime-3 sniper toolchain (bullseye gcc 10) does not — force-include <cstddef> so the
-# vendored source compiles unpatched on both. (The submodule stays pristine.)
-target_compile_options(breakpad_client PRIVATE
-    -ffunction-sections -fdata-sections
-    # C++ only — the .S assembly TU (breakpad_getcontext.S) must not force-include a C++ header.
-    "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstddef>")
+if(WIN32)
+    # --- Crash reporter (Breakpad Windows client, vendored) -------------------------------
+    # Exact in-process ExceptionHandler closure. DbgHelp and Rpcrt4 are intentionally loaded
+    # dynamically by Breakpad itself; all remaining Win32 APIs come from the standard system
+    # libraries. CMAKE_MSVC_RUNTIME_LIBRARY above gives these TUs the same /MT ABI as the shim.
+    add_library(breakpad_client STATIC
+        ${BREAKPAD}/client/windows/handler/exception_handler.cc
+        ${BREAKPAD}/client/windows/crash_generation/crash_generation_client.cc
+        ${BREAKPAD}/common/windows/guid_string.cc
+    )
+    target_include_directories(breakpad_client PUBLIC ${BREAKPAD})
+    target_compile_definitions(breakpad_client PRIVATE UNICODE _UNICODE)
+else()
+    # --- Crash reporter (Breakpad Linux client, vendored) ---------------------------------
+    enable_language(ASM)
+    find_package(Threads REQUIRED)
+    add_library(breakpad_client STATIC
+        ${BREAKPAD}/client/linux/crash_generation/crash_generation_client.cc
+        ${BREAKPAD}/client/linux/dump_writer_common/thread_info.cc
+        ${BREAKPAD}/client/linux/dump_writer_common/ucontext_reader.cc
+        ${BREAKPAD}/client/linux/handler/exception_handler.cc
+        ${BREAKPAD}/client/linux/handler/minidump_descriptor.cc
+        ${BREAKPAD}/client/linux/log/log.cc
+        ${BREAKPAD}/client/linux/microdump_writer/microdump_writer.cc
+        ${BREAKPAD}/client/linux/minidump_writer/linux_dumper.cc
+        ${BREAKPAD}/client/linux/minidump_writer/linux_ptrace_dumper.cc
+        ${BREAKPAD}/client/linux/minidump_writer/minidump_writer.cc
+        ${BREAKPAD}/client/linux/minidump_writer/pe_file.cc
+        ${BREAKPAD}/client/minidump_file_writer.cc
+        ${BREAKPAD}/common/convert_UTF.cc
+        ${BREAKPAD}/common/md5.cc
+        ${BREAKPAD}/common/string_conversion.cc
+        ${BREAKPAD}/common/linux/breakpad_getcontext.S
+        ${BREAKPAD}/common/linux/elf_core_dump.cc
+        ${BREAKPAD}/common/linux/elfutils.cc
+        ${BREAKPAD}/common/linux/file_id.cc
+        ${BREAKPAD}/common/linux/guid_creator.cc
+        ${BREAKPAD}/common/linux/linux_libc_support.cc
+        ${BREAKPAD}/common/linux/memory_mapped_file.cc
+        ${BREAKPAD}/common/linux/safe_readlink.cc
+    )
+    target_include_directories(breakpad_client PUBLIC ${BREAKPAD})
+    target_link_libraries(breakpad_client PUBLIC Threads::Threads)
+    set_target_properties(breakpad_client PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_compile_definitions(breakpad_client PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+    target_compile_options(breakpad_client PRIVATE
+        -ffunction-sections -fdata-sections
+        "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstddef>")
+endif()
 
 # Tokenizer selftest for our CCommand::Tokenize (not shipped; run by scripts/ci-native.sh).
 add_executable(ccommand_selftest src/ccommand_selftest.cpp src/ccommand_tokenize.cpp)
@@ -155,21 +219,57 @@ target_include_directories(call_validate_selftest
 add_executable(hook_dispatch_selftest src/hook_dispatch.cpp tests/hook_dispatch_test.cpp)
 target_include_directories(hook_dispatch_selftest PRIVATE src)
 
+# Native ABI selftest. On Windows this compiles and runs the production MASM outbound bridge and
+# native Microsoft hook thunks; on Linux it covers the selected SysV backends. Keep the Windows
+# C++ caller/callees optimized so the gate exercises release-like register/stack code generation.
+add_executable(abi_selftest
+    tests/abi_test.cpp
+    ${S2_CALL_ABI_SOURCES}
+    ${S2_HOOK_ABI_SOURCE}
+    src/hook_dispatch.cpp)
+target_include_directories(abi_selftest PRIVATE src)
+if(WIN32)
+    target_compile_options(abi_selftest PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/O2>)
+endif()
+enable_testing()
+add_test(NAME abi_selftest COMMAND abi_selftest)
+
 # Detour prologue relocation (not shipped; run by scripts/ci-native.sh via
 # scripts/test-detour-reloc.sh, which adds the sanitizers). This target exists so the test also
 # builds under the ordinary cmake configuration.
 add_executable(detour_reloc_selftest
-    src/detour_reloc.cpp src/detour.cpp
-    ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c tests/detour_reloc_test.cpp)
+    src/detour_reloc.cpp src/detour.cpp ${S2_PLATFORM_MEMORY_SOURCE}
+    ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c tests/detour_reloc_test.cpp
+    ${S2_DETOUR_TEST_ASM_SOURCE})
 target_include_directories(detour_reloc_selftest
     PRIVATE src ${CMAKE_SOURCE_DIR}/../third_party/hde)
 
+# OS-neutral platform contract + the real Linux backends. The synthetic PE image makes PE range
+# parsing and MSVC RTTI lookup testable in the Linux gate.
+add_executable(platform_selftest
+    tests/platform_test.cpp
+    src/platform/paths_common.cpp
+    src/platform/pe_image.cpp
+    ${S2_PLATFORM_BACKEND_SOURCES})
+target_include_directories(platform_selftest PRIVATE src)
+target_link_libraries(platform_selftest PRIVATE ${CMAKE_DL_LIBS})
+if(WIN32)
+    target_link_libraries(platform_selftest PRIVATE Psapi)
+endif()
 
-# The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).
-add_executable(crash_selftest src/crash_selftest.cpp src/crash_handler.cpp)
-target_include_directories(crash_selftest PRIVATE src)
-target_link_libraries(crash_selftest PRIVATE breakpad_client)
-target_compile_definitions(crash_selftest PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+
+if(WIN32)
+    # Launches a child process that faults after arming the production Windows handler.
+    add_executable(crash_selftest src/crash_selftest_win.cpp src/crash_handler_win.cpp)
+    target_include_directories(crash_selftest PRIVATE src)
+    target_link_libraries(crash_selftest PRIVATE breakpad_client)
+else()
+    # The standalone fork-and-crash selftest (not shipped; Linux uses fork/signals).
+    add_executable(crash_selftest src/crash_selftest.cpp src/crash_handler.cpp)
+    target_include_directories(crash_selftest PRIVATE src)
+    target_link_libraries(crash_selftest PRIVATE breakpad_client)
+    target_compile_definitions(crash_selftest PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+endif()
 
 target_include_directories(s2script PRIVATE
     src
@@ -193,43 +293,87 @@ target_include_directories(s2script PRIVATE
     ${CMAKE_SOURCE_DIR}/../third_party/hde
 )
 
-# Source 2 / CS2 build defines.
-# META_NO_HL2SDK: keeps ISmmPlugin.h from pulling in HL2SDK types;
-#   the PLUGIN_EXPOSE macro then emits a plain extern-"C" CreateInterface symbol.
-# _GLIBCXX_USE_CXX11_ABI=0: matches Valve's prebuilt ABI (needed if we ever link tier0/tier1).
+# Source 2 / CS2 build defines. Keep these aligned with the pinned Metamod
+# hl2sdk-manifests/SdkHelpers.ambuild + manifests/cs2.json.
 target_compile_definitions(s2script PRIVATE
-    LINUX
-    _LINUX
-    POSIX
-    COMPILER_GCC
+    SOURCE_ENGINE=25
+    GAME_DLL
+    RAD_TELEMETRY_DISABLED
     PLATFORM_64BITS
+    X64BITS
+    META_IS_SOURCE2
     META_NO_HL2SDK
-    _FILE_OFFSET_BITS=64
-    _GLIBCXX_USE_CXX11_ABI=0
-    stricmp=strcasecmp
-    strnicmp=strncasecmp
-    _stricmp=strcasecmp
-    _vsnprintf=vsnprintf
 )
-
-target_compile_options(s2script PRIVATE
-    -m64
-    -fvisibility=hidden
-)
+if(WIN32)
+    target_compile_definitions(s2script PRIVATE
+        WIN32
+        WIN64
+        _WINDOWS
+        COMPILER_MSVC
+        COMPILER_MSVC64
+        _CRT_SECURE_NO_DEPRECATE
+        _CRT_SECURE_NO_WARNINGS
+        _CRT_NONSTDC_NO_DEPRECATE)
+    target_compile_options(s2script PRIVATE /W3 /Zi)
+    target_link_options(s2script PRIVATE /SUBSYSTEM:WINDOWS)
+else()
+    target_compile_definitions(s2script PRIVATE
+        LINUX
+        _LINUX
+        POSIX
+        GNUC
+        COMPILER_GCC
+        _FILE_OFFSET_BITS=64
+        _GLIBCXX_USE_CXX11_ABI=0
+        stricmp=strcasecmp
+        strnicmp=strncasecmp
+        _stricmp=strcasecmp
+        _vsnprintf=vsnprintf)
+    target_compile_options(s2script PRIVATE -m64 -fvisibility=hidden)
+endif()
 
 # Link the resident Rust core (built by `cargo build --release`).
 # libprotobuf.a (Slice 6.1c): the vendored, self-contained protobuf 3.21.8 static lib — provides the
 # reflection symbols (Descriptor::FindFieldByName / Reflection::Set*) for client_print's SayText2 send.
 # Self-contained (no undefined deps), so it does NOT reintroduce the tier1 dlopen cascade (5D.1). Built
 # with Valve's ABI (_GLIBCXX_USE_CXX11_ABI=0, set above), matching the game's in-process runtime.
-target_link_libraries(s2script PRIVATE
-    ${CMAKE_SOURCE_DIR}/../target/${S2_CORE_LIB_DIR}/libs2script_core.so
-    ${HL2SDK}/lib/linux64/release/libprotobuf.a
-)
+if(WIN32)
+    set(S2_CORE_DLL
+        "${CMAKE_SOURCE_DIR}/../target/${S2_CORE_LIB_DIR}/s2script_core.dll")
+    set(S2_CORE_IMPORT_LIB
+        "${CMAKE_SOURCE_DIR}/../target/${S2_CORE_LIB_DIR}/s2script_core.dll.lib")
+    # Cargo has historically left MSVC's side-effect import library under deps/ even while copying
+    # the DLL to the profile root. Accept both layouts, but fail at configure time with a named
+    # diagnostic rather than surfacing an opaque LINK1104 later.
+    if(NOT EXISTS "${S2_CORE_IMPORT_LIB}")
+        set(S2_CORE_IMPORT_LIB
+            "${CMAKE_SOURCE_DIR}/../target/${S2_CORE_LIB_DIR}/deps/s2script_core.dll.lib")
+    endif()
+    if(NOT EXISTS "${S2_CORE_DLL}" OR NOT EXISTS "${S2_CORE_IMPORT_LIB}")
+        message(FATAL_ERROR
+            "Rust core artifacts are missing; run cargo build for profile '${S2_CORE_LIB_DIR}' first "
+            "(need s2script_core.dll and s2script_core.dll.lib)")
+    endif()
+    target_link_libraries(s2script PRIVATE
+        ${S2_CORE_IMPORT_LIB}
+        protobuf::libprotobuf
+        ${HL2SDK}/lib/public/win64/tier0.lib
+        legacy_stdio_definitions
+        kernel32
+        Psapi)
+    add_custom_command(TARGET s2script POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${S2_CORE_DLL}" "$<TARGET_FILE_DIR:s2script>/s2script_core.dll"
+        COMMENT "Staging the resident Rust core DLL beside s2script.dll")
+else()
+    target_link_libraries(s2script PRIVATE
+        ${CMAKE_SOURCE_DIR}/../target/${S2_CORE_LIB_DIR}/libs2script_core.so
+        ${HL2SDK}/lib/linux64/release/libprotobuf.a)
+endif()
 target_include_directories(s2script PRIVATE include)
 
-# Crash reporter: link the vendored Breakpad client (its PUBLIC include dir reaches
-# src/crash_handler.cpp during compilation).
+# Crash reporter: link the platform's vendored Breakpad client (its PUBLIC include dir reaches
+# the selected crash-handler TU during compilation).
 target_link_libraries(s2script PRIVATE breakpad_client)
 
 # S2_HL2SDK_BUILD: the pinned hl2sdk submodule SHA, stamped into every crash envelope's
@@ -246,15 +390,17 @@ target_compile_definitions(s2script PRIVATE S2_HL2SDK_BUILD="${S2_HL2SDK_SHA}")
 # EKV slice: split the SDK TUs into per-function sections and GC unreachable ones at link time,
 # so never-called KV3 paths (ToString/CBufferString/CUtlBuffer serialization, V_StringTo* array
 # conversion, GetEHandle->FindFirstEntityHandleByName) drop their undefined symbol references.
-set_source_files_properties(
-    src/ekv.cpp
-    ${HL2SDK}/entity2/entitykeyvalues.cpp
-    ${HL2SDK}/tier1/keyvalues3.cpp
-    # NOTE: memoverride.cpp is deliberately EXCLUDED here — its global operator new/delete must
-    # NOT be gc-sectioned away (they're the whole point). It compiles WITHOUT these flags.
-    PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections"
-)
-target_link_options(s2script PRIVATE -Wl,--gc-sections)
+if(NOT WIN32)
+    set_source_files_properties(
+        src/ekv.cpp
+        ${HL2SDK}/entity2/entitykeyvalues.cpp
+        ${HL2SDK}/tier1/keyvalues3.cpp
+        # NOTE: memoverride.cpp is deliberately EXCLUDED here — its global operator new/delete must
+        # NOT be gc-sectioned away (they're the whole point). It compiles WITHOUT these flags.
+        PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections"
+    )
+    target_link_options(s2script PRIVATE -Wl,--gc-sections)
+endif()
 
 # EKV slice: memoverride.cpp needs MEMOVERRIDE_MODULE defined (it stringifies the value into
 # g_pszModule via MKSTRING) — only relevant for the debug-allocator-attribution build (unused
@@ -268,7 +414,23 @@ set_source_files_properties(${HL2SDK}/public/tier0/memoverride.cpp PROPERTIES
 set_target_properties(s2script PROPERTIES
     PREFIX ""
     OUTPUT_NAME "s2script"
-    BUILD_RPATH "$ORIGIN"
-    INSTALL_RPATH "$ORIGIN"
-    BUILD_WITH_INSTALL_RPATH TRUE
 )
+if(NOT WIN32)
+    set_target_properties(s2script PROPERTIES
+        BUILD_RPATH "$ORIGIN"
+        INSTALL_RPATH "$ORIGIN"
+        BUILD_WITH_INSTALL_RPATH TRUE)
+endif()
+
+# CMake/CTest is the portable native-test entry point used by the Windows runner. The Linux gate
+# still runs sanitizer-specialized shell wrappers in addition to these ordinary builds.
+add_test(NAME ccommand_selftest COMMAND ccommand_selftest)
+add_test(NAME gamedata_selftest COMMAND gamedata_selftest)
+add_test(NAME defer_queue_selftest COMMAND defer_queue_selftest)
+add_test(NAME call_validate_selftest COMMAND call_validate_selftest)
+add_test(NAME hook_dispatch_selftest COMMAND hook_dispatch_selftest)
+add_test(NAME detour_reloc_selftest COMMAND detour_reloc_selftest)
+add_test(NAME platform_selftest COMMAND platform_selftest)
+if(WIN32)
+    add_test(NAME crash_selftest COMMAND crash_selftest)
+endif()
