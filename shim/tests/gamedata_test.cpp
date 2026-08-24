@@ -5,6 +5,8 @@
 // itself stays nlohmann-free on purpose.
 #include "../third_party/json.hpp"
 #include <cassert>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -31,8 +33,13 @@ static void put(const fs::path& p, const std::string& body) {
 struct TempRoot {
     fs::path path;
     TempRoot() {
-        char tmpl[] = "/tmp/s2gd_XXXXXX";
-        path = mkdtemp(tmpl);
+        static std::atomic<unsigned long long> sequence{0};
+        const auto stamp = std::chrono::high_resolution_clock::now()
+                               .time_since_epoch().count();
+        path = fs::temp_directory_path() /
+               ("s2gd_" + std::to_string(stamp) + "_" +
+                std::to_string(sequence.fetch_add(1)));
+        fs::create_directories(path);
     }
     ~TempRoot() { std::error_code ec; fs::remove_all(path, ec); }
 };

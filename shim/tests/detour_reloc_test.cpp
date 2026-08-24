@@ -6,8 +6,8 @@
 // wrong displacement is a failing assertion rather than a wrong global read on a game server.
 #include "../src/detour_reloc.h"
 #include "../src/detour.h"
+#include "../src/platform/memory.h"
 
-#include <sys/mman.h>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -169,22 +169,6 @@ static int64_t g_global = 0;
 // at all, and .bss neighbours are adjacent where the stack is gigabytes away under ASLR.
 static uint8_t g_src[16] = {0x48,0x8B,0x05, 0,0,0,0, 0xC3};
 
-// A page within rel32 reach of `anchor` — the test's own miniature of detour.cpp's AllocNear. An
-// mmap(nullptr) page can land anywhere, and if it lands >2GB from g_global the relocation this test
-// exists to check is not representable and the test silently skips. Which it did.
-static void* MapNear(uintptr_t anchor) {
-    for (uintptr_t d = 0x100000; d < 0x40000000ULL; d += 0x100000) {
-        void* p = mmap(reinterpret_cast<void*>(anchor + d), 4096,
-                       PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (p == MAP_FAILED) continue;
-        const int64_t delta = static_cast<int64_t>(reinterpret_cast<uintptr_t>(p)) -
-                              static_cast<int64_t>(anchor);
-        if (delta > -0x7FFF0000LL && delta < 0x7FFF0000LL) return p;
-        munmap(p, 4096);
-    }
-    return nullptr;
-}
-
 static void test_relocated_code_actually_behaves_the_same() {
     // mov rax,[rip+disp32] ; ret   — reads g_global through a rip-relative operand.
     const uintptr_t srcAddr = reinterpret_cast<uintptr_t>(g_src);
@@ -195,7 +179,9 @@ static void test_relocated_code_actually_behaves_the_same() {
     const int32_t d32 = static_cast<int32_t>(disp);
     std::memcpy(g_src + 3, &d32, 4);
 
-    void* page = MapNear(reinterpret_cast<uintptr_t>(&g_global));
+    const size_t pageSize = s2platform::PageSize();
+    void* page = s2platform::AllocateExecutableNear(
+        reinterpret_cast<uintptr_t>(&g_global), pageSize);
     CHECK(page != nullptr, "a test page was mapped within rel32 of the global");
     if (!page) return;
     uint8_t* const src = g_src;
@@ -213,7 +199,7 @@ static void test_relocated_code_actually_behaves_the_same() {
 
     g_global = 0x1234;
     CHECK(reinterpret_cast<Fn>(page)() == 0x1234, "and it tracks the global, rather than a stale copy");
-    munmap(page, 4096);
+    s2platform::FreeExecutable(page, pageSize);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -324,6 +310,7 @@ static void test_jump_encoders() {
 //    like emitting at this optimisation level — a 4-byte compiler prologue would steal into the next
 //    function and make the test a coin flip.
 extern "C" int64_t s2_detour_test_target(int64_t x);
+#if !defined(_MSC_VER)
 __asm__(
     ".text\n"
     ".globl s2_detour_test_target\n"
@@ -338,6 +325,7 @@ __asm__(
     "  pop %rbp\n"
     "  ret\n"
     ".size s2_detour_test_target,.-s2_detour_test_target\n");
+#endif
 
 static int64_t (*g_origTarget)(int64_t) = nullptr;
 static int     g_handlerCalls = 0;

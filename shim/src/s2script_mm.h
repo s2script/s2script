@@ -1,4 +1,5 @@
 #pragma once
+#include <playerslot.h>
 #include <ISmmPlugin.h>
 
 // ISource2Server is forward-declared here; full definition (eiface.h) is
@@ -7,11 +8,10 @@ class ISource2Server;
 // IGameEvent is forward-declared here; full definition (igameevents.h) is
 // included only in s2script_mm.cpp where the SourceHook machinery lives.
 class IGameEvent;
-// Forward-declared for the ClientCommand hook (Slice 6.11c); full definitions
-// (eiface.h / convar.h / playerslot.h) live in s2script_mm.cpp.
+// Forward-declared for the ClientCommand hook (Slice 6.11c); CPlayerSlot is the one SDK type that
+// must be complete before ISmmPlugin.h when META_IS_SOURCE2 is enabled.
 class ISource2GameClients;
 class CCommand;
-class CPlayerSlot;
 // Forward-declared for the DispatchConCommand listener hook (the AddCommandListener seam); full
 // definitions (convar.h) live in s2script_mm.cpp. `ConCommandRef` is passed BY VALUE, so the
 // declaration below is enough here only because the definition is in scope at the point of use.

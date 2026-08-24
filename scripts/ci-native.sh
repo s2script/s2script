@@ -18,6 +18,9 @@ bash scripts/check-core-boundary.sh
 echo "== test-boundary-nameleak.sh =="
 bash scripts/test-boundary-nameleak.sh
 
+echo "== check-windows-build.py (host-neutral Windows build contract) =="
+python3 scripts/check-windows-build.py
+
 echo "== test-sigscan.sh =="
 bash scripts/test-sigscan.sh
 

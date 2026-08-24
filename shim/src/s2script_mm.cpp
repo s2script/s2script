@@ -51,8 +51,7 @@
 
 #include <igamesystem.h>          // model precache: CBaseGameSystem + EventBuildGameSessionManifest_t
 #include <igamesystemfactory.h>   // model precache: CGameSystemStaticFactory / CBaseGameSystemFactory
-#include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
-#include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
+#include <sys/stat.h>   // stat/_stat64 — crash-reporter gamedata mtime
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
@@ -63,15 +62,18 @@
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
 #include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
+#include "core_symbols.h"   // Optional core entries: ELF weak refs / explicit Windows lookup
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
 #include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
 #include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
 #include <cstring>
 #include <cstdio>
+#include <chrono>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
 #include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
+#if !defined(_WIN32)
 #include <strings.h> // strcasecmp — cvar_set bool parse
-#include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
+#endif
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -84,9 +86,44 @@
 
 #if defined(_WIN32)
 static constexpr const char* kS2Platform = "windows64";
+static constexpr const char* kS2ServerModule = "server.dll";
 #else
 static constexpr const char* kS2Platform = "linuxsteamrt64";
+static constexpr const char* kS2ServerModule = "libserver.so";
 #endif
+
+static int S2CaseCompare(const char* left, const char* right) {
+#if defined(_WIN32)
+    return _stricmp(left, right);
+#else
+    return strcasecmp(left, right);
+#endif
+}
+
+static uint64_t S2PopCount64(uint64_t value) {
+    uint64_t count = 0;
+    while (value) {
+        value &= value - 1;
+        ++count;
+    }
+    return count;
+}
+
+static uint64_t S2MonotonicNs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+static long long S2FileMtime(const std::string& path) {
+#if defined(_WIN32)
+    struct _stat64 value{};
+    return _stat64(path.c_str(), &value) == 0 ? static_cast<long long>(value.st_mtime) : 0;
+#else
+    struct stat value{};
+    return stat(path.c_str(), &value) == 0 ? static_cast<long long>(value.st_mtime) : 0;
+#endif
+}
 
 // SourceHook hook declaration: 3 void-return parameters (bool, bool, bool).
 // ISource2Server is confirmed at eiface.h:384; GameFrame at eiface.h:407.
@@ -287,10 +324,9 @@ static int schema_find_field(CSchemaClassInfo* info, const char* field, int dept
 static int s2_schema_offset(const char* cls, const char* field) {
     if (!s_pSchemaSystem || !cls || !field) return -1;
 
-    // Resolve the class in the server-module scope, then the global scope (a class may be in either).
-    // "libserver.so" is the CS2 Linux server module SONAME (recon Q1 [LC]; confirmed live in the T7 gate).
-    // TODO: gamedata key if the module name ever varies across games/platforms.
-    CSchemaSystemTypeScope* srvScope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
+    // Resolve the class in the platform-selected server-module scope, then the global scope.
+    CSchemaSystemTypeScope* srvScope =
+        s_pSchemaSystem->FindTypeScopeForModule(kS2ServerModule);
     CSchemaClassInfo* info = srvScope ? srvScope->FindRawClassBinding(cls) : nullptr;
     if (!info) {
         CSchemaSystemTypeScope* gScope = s_pSchemaSystem->GlobalTypeScope();
@@ -1806,7 +1842,7 @@ static int s2_voice_audible_clear(int sender) {
 static int s2_voice_audible_stats(uint64_t* out) {
     if (!out) return 0;
     out[0] = s_voiceCalls;
-    out[1] = (uint64_t)__builtin_popcountll(s_voiceHasRule);
+    out[1] = S2PopCount64(s_voiceHasRule);
     out[2] = s_voiceRewrites;
     return 1;
 }
@@ -2011,13 +2047,13 @@ static bool s2_cvar_parse(EConVarType ty, const char* value, CVValue_t* out) {
     char* end = nullptr;
     switch (ty) {
         case EConVarType_Bool: {
-            if (!strcasecmp(value, "1") || !strcasecmp(value, "true")
-                || !strcasecmp(value, "yes") || !strcasecmp(value, "on")) {
+            if (!S2CaseCompare(value, "1") || !S2CaseCompare(value, "true")
+                || !S2CaseCompare(value, "yes") || !S2CaseCompare(value, "on")) {
                 out->m_bValue = true;
                 return true;
             }
-            if (!strcasecmp(value, "0") || !strcasecmp(value, "false")
-                || !strcasecmp(value, "no") || !strcasecmp(value, "off")) {
+            if (!S2CaseCompare(value, "0") || !S2CaseCompare(value, "false")
+                || !S2CaseCompare(value, "no") || !S2CaseCompare(value, "off")) {
                 out->m_bValue = false;
                 return true;
             }
@@ -2599,7 +2635,8 @@ static void schema_type_to_kind(CSchemaType* t, const char** kind,
 static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field,
                             s2_emit_enum_fn emit_enum) noexcept {
     if (!s_pSchemaSystem) return 0;
-    CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
+    CSchemaSystemTypeScope* scope =
+        s_pSchemaSystem->FindTypeScopeForModule(kS2ServerModule);
     if (!scope) scope = s_pSchemaSystem->GlobalTypeScope();
     if (!scope) return 0;
 
@@ -2754,10 +2791,10 @@ static std::string PluginsDir() {
 static std::string CrashSpoolDir() {
     std::string root = AddonRoot();
     if (!root.empty()) {
-        std::string data = root + "/data";
-        std::string spool = data + "/crashes";
-        mkdir(data.c_str(), 0755);            // EEXIST is fine
-        if (mkdir(spool.c_str(), 0755) == 0 || errno == EEXIST) return spool;
+        std::string spool = root + "/data/crashes";
+        std::error_code ec;
+        std::filesystem::create_directories(spool, ec);
+        if (!ec && std::filesystem::is_directory(spool, ec)) return spool;
     }
     return "";
 }
@@ -3073,7 +3110,7 @@ static bool IsAddressInServerText(void* fn) {
     // loaded module through the platform backend on every call.
     static const uint8_t* s_text = nullptr;
     static size_t          s_textSize = 0;
-    if (!s_text) { ModText mt = FindModuleText("libserver.so"); s_text = mt.text; s_textSize = mt.size; }
+    if (!s_text) { ModText mt = FindModuleText(kS2ServerModule); s_text = mt.text; s_textSize = mt.size; }
     const uint8_t* f = reinterpret_cast<const uint8_t*>(fn);
     return s_text && f >= s_text && f < s_text + s_textSize;
 }
@@ -3145,7 +3182,7 @@ static void ArmDeferredEventDuplication() {
     const int idxFree = VTableSlotOfPmf(&IGameEventManager2::FreeEvent);
     // The manager's vptr must itself land inside libserver.so's mapping (a vtable lives in
     // .data.rel.ro, NOT .text) and the two slots must be fully inside it, before we read either.
-    ModBounds mb = FindModuleBounds("libserver.so");
+    ModBounds mb = FindModuleBounds(kS2ServerModule);
     void** vt = *reinterpret_cast<void***>(s_pGameEventManager);
     const uint8_t* vtb = reinterpret_cast<const uint8_t*>(vt);
     const char* why = nullptr;
@@ -3153,12 +3190,12 @@ static void ArmDeferredEventDuplication() {
     if (idxDup < 0 || idxFree < 0)          { ok = false; why = "DuplicateEvent/FreeEvent are no longer plain virtuals in the SDK header"; }
     else if (idxFree != idxDup + 1)         { ok = false; why = "DuplicateEvent/FreeEvent are no longer adjacent slots"; }
     else if (!mb.lo || vtb < mb.lo || vtb + (idxFree + 1) * sizeof(void*) > mb.hi) {
-        ok = false; why = "IGameEventManager2 vptr outside libserver.so's mapping";
+        ok = false; why = "IGameEventManager2 vptr outside the server module mapping";
     }
     void* fnDup  = ok ? vt[idxDup]  : nullptr;
     void* fnFree = ok ? vt[idxFree] : nullptr;
     if (ok && !(IsAddressInServerText(fnDup) && IsAddressInServerText(fnFree))) {
-        ok = false; why = "resolved slot outside libserver .text (header drift — see docs/re-strategy.md)";
+        ok = false; why = "resolved slot outside server module .text (header drift — see docs/re-strategy.md)";
     }
     GamedataResult("IGameEventManager2_DuplicateEvent+FreeEvent", ok, why);
     if (ok) {
@@ -3585,7 +3622,7 @@ static int s2_session_manifest_add(const char* path) {
 static bool InstallGameSystem(int64_t smpFirstOffset) {
     if (s_pGameSystemFactory) return true;
     if (smpFirstOffset == s2sig::kFail) return false;
-    ModText mt = FindModuleText("libserver.so");
+    ModText mt = FindModuleText(kS2ServerModule);
     if (!mt.text) return false;
     CBaseGameSystemFactory::sm_pFirst =
         reinterpret_cast<CBaseGameSystemFactory**>(const_cast<uint8_t*>(mt.text) + smpFirstOffset);
@@ -3663,14 +3700,14 @@ static bool WriteVtableSlot(void** vt, int idx, void* fn) {
 static void InstallPrecacheHook() {
     if (s_precacheHookInstalled) return;
     if (s_precacheVtblIdx < 0) return;   // the offsets-block GamedataResult already recorded the absent key
-    void** vt = s2vtable::GetVTableByName("libserver.so", "CGameRulesGameSystem");
+    void** vt = s2vtable::GetVTableByName(kS2ServerModule, "CGameRulesGameSystem");
     if (!vt) {
         META_CONPRINTF("[s2script] WARN: precache — CGameRulesGameSystem RTTI vtable not found; onPrecache OFF\n");
         return;
     }
     void* slotFn = vt[s_precacheVtblIdx];
     if (!IsAddressInServerText(slotFn)) {   // a stale/wrong index could point anywhere
-        META_CONPRINTF("[s2script] WARN: precache — OnPrecacheResource vtbl[%d]=%p out of libserver .text; onPrecache OFF\n",
+        META_CONPRINTF("[s2script] WARN: precache — OnPrecacheResource vtbl[%d]=%p out of server module .text; onPrecache OFF\n",
                        s_precacheVtblIdx, slotFn);
         return;
     }
@@ -4820,10 +4857,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // is gamedata and validated below). Unresolved -> s_pTraceShape stays null -> the
         // trace_shape op degrades to a no-op (never a crash).
         {
-            void** vt = s2vtable::GetVTableByName("libserver.so", "CNavPhysicsInterface");
+            void** vt = s2vtable::GetVTableByName(kS2ServerModule, "CNavPhysicsInterface");
             if (!vt) {
                 GamedataResult("CNavPhysicsInterface (RTTI vtable)", false,
-                               "RTTI typeinfo/vtable not found in libserver.so — regenerate");
+                               "RTTI typeinfo/vtable not found in the server module — regenerate");
             } else {
                 auto oit = s_gdCore.offsets.find("CNavPhysicsInterface_TraceShape");
                 if (oit == s_gdCore.offsets.end() || oit->second < 0) {
@@ -4835,7 +4872,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     // Validate the resolved slot lands inside libserver.so's own executable range
                     // (Rule 2 parity with ResolveSigValidated) — a borrowed/stale index could point
                     // anywhere; a wrong-but-in-range value would otherwise crash on first call.
-                    ModText svt = FindModuleText("libserver.so");
+                    ModText svt = FindModuleText(kS2ServerModule);
                     const uint8_t* f = reinterpret_cast<const uint8_t*>(fn);
                     if (fn && svt.text && f >= svt.text && f < svt.text + svt.size) {
                         s_pTraceShape = reinterpret_cast<s2trace::TraceShapeFn>(fn);
@@ -4844,7 +4881,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                        idx, fn);
                     } else {
                         GamedataResult("CNavPhysicsInterface_TraceShape", false,
-                                       "resolved fn ptr outside libserver.so .text — stale index");
+                                       "resolved fn ptr outside server module .text — stale index");
                         META_CONPRINTF("[s2script] trace: MISSING (resolved slot out of range)\n");
                     }
                 }
@@ -4882,10 +4919,17 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
     // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
     // to lazily install the SourceHook detour once a script subscribes.
-    if (s2script_core_init_v2(&s2_logger, &s2_request_hook, &ops,
-                              S2_ENGINE_OPS_ABI_VERSION,
-                              static_cast<uint32_t>(sizeof ops)) != 0) {
-        META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
+    const int coreInit = s2script_core_init_v2(
+        &s2_logger, &s2_request_hook, &ops, S2_ENGINE_OPS_ABI_VERSION,
+        static_cast<uint32_t>(sizeof ops));
+    if (coreInit != 0) {
+        if (coreInit == S2_CORE_INIT_PIN_FAILED) {
+            META_CONPRINTF("[s2script] ERROR: V8 core init refused: Windows could not pin "
+                           "s2script_core.dll for process lifetime (plugin stays loaded)\n");
+        } else {
+            META_CONPRINTF("[s2script] ERROR: V8 core init failed (%d; plugin stays loaded for "
+                           "diagnosis)\n", coreInit);
+        }
         return true; // degrade, do not fail the load (spec §7)
     }
 
@@ -4894,9 +4938,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // (a hook is only detoured when core calls hook_install, which needs a loaded plugin), and a
     // failed init returns above, leaving dispatch unset so any stale detour degrades to Continue.
     {
+        const S2OptionalCoreEntries optional = S2ResolveOptionalCoreEntries();
         S2HookOps hookOps{};
-        hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
-        hookOps.dispatch_post = &s2script_core_dispatch_hook_post;
+        hookOps.dispatch = optional.dispatch;
+        hookOps.dispatch_post = optional.dispatchPost;
         S2Hook_SetOps(hookOps);
         if (!hookOps.dispatch)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
@@ -4938,9 +4983,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             for (const auto& name : o.cfg->filesLoaded) {
                 const std::string p = gdRoot + "/" + o.name + "/" + name;
                 gdBytes += slurp(p);
-                struct stat fst{};
-                if (stat(p.c_str(), &fst) == 0 && (long long)fst.st_mtime > newest)
-                    newest = (long long)fst.st_mtime;
+                const long long mtime = S2FileMtime(p);
+                if (mtime > newest) newest = mtime;
             }
             gdOverrides += o.cfg->overridden.size();
         }
@@ -4973,7 +5017,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                        s2script_core_crash_breadcrumb_size())) {
             META_CONPRINTF("[s2script] crash handler armed (spool %s)\n", spool.c_str());
         } else {
+#if defined(_WIN32)
+            META_CONPRINTF("[s2script] WARN: crash handler NOT armed "
+                           "(temporary Windows no-op; native capture unavailable)\n");
+#else
             META_CONPRINTF("[s2script] WARN: crash handler NOT armed (spool dir unavailable)\n");
+#endif
         }
     }
 
@@ -5697,8 +5746,7 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
     }
     if (s_transmitLayoutState != 1 || s_transmitTable.empty()) RETURN_META(MRES_IGNORED);
 
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    const uint64_t startedNs = S2MonotonicNs();
     // Entries outer, infos inner: serial-gate each entry ONCE per snapshot (a single lookup — no
     // TOCTOU window inside the snapshot), then apply to every client's bitvec. A failed resolve
     // means the entity is gone FOREVER (serials never come back), so the entry is evicted —
@@ -5732,9 +5780,7 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
         }
         ++it;
     }
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull
-                + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+    const uint64_t ns = S2MonotonicNs() - startedNs;
     s_transmitNsLast = ns;
     if (ns > s_transmitNsMax) s_transmitNsMax = ns;
     RETURN_META(MRES_IGNORED);

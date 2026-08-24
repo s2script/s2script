@@ -31,6 +31,47 @@ pub const S2_DISPATCH_DEFERRED: c_int = -1000;
 pub const S2_ENGINE_OPS_ABI_VERSION: u32 = 2;
 /// Named refusal returned before any core state changes when the engine-ops contract does not match.
 pub const S2_CORE_INIT_ABI_MISMATCH: c_int = -3;
+/// Windows could not pin the core DLL for the process lifetime, so initializing V8 would be unsafe.
+pub const S2_CORE_INIT_PIN_FAILED: c_int = -4;
+
+#[cfg(target_os = "windows")]
+mod resident {
+    use std::ffi::c_void;
+
+    const GET_MODULE_HANDLE_EX_FLAG_PIN: u32 = 0x0000_0001;
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x0000_0004;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleExW(
+            flags: u32,
+            module_name_or_address: *const u16,
+            module: *mut *mut c_void,
+        ) -> i32;
+    }
+
+    /// Pin the image containing this entry point. Windows has no ELF `NODELETE` equivalent at link
+    /// time; `GET_MODULE_HANDLE_EX_FLAG_PIN` makes the module non-unloadable until process exit.
+    pub fn pin_current_module() -> bool {
+        let mut module = std::ptr::null_mut();
+        let anchor = super::s2script_core_init_v2 as *const () as *const u16;
+        unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                anchor,
+                &mut module,
+            ) != 0
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod resident {
+    #[inline]
+    pub fn pin_current_module() -> bool {
+        true
+    }
+}
 
 /// Map a `Delivery` onto the C-ABI dispatch result. `Delivered` is `0` — the value every one of
 /// these entries returned (as `void`) before the deferred-dispatch queue existed.
@@ -47,6 +88,9 @@ fn init_with_ops(
     request_hook: Option<HookRequestFn>,
     ops: Option<S2EngineOps>,
 ) -> c_int {
+    if !resident::pin_current_module() {
+        return S2_CORE_INIT_PIN_FAILED;
+    }
     catch_unwind(|| {
         crate::crash::panic_hook::install();
         v8host::set_hook_request(request_hook);
@@ -770,7 +814,7 @@ mod tests {
         assert!(!(0..=3).contains(&S2_DISPATCH_DEFERRED), "must be outside the HookResult range");
         // The catch_unwind fallbacks (0, and -99 for game_frame), the header's "unavailable" idiom
         // (-1), and the init/eval error codes (-1, -2, -3, -99).
-        for reserved in [0, -1, -2, -3, -99] {
+        for reserved in [0, -1, -2, -3, -4, -99] {
             assert_ne!(S2_DISPATCH_DEFERRED, reserved as c_int);
         }
         // Negative on purpose: shim code shaped `if (r >= 2) MRES_SUPERCEDE` must FAIL that test, so
@@ -781,6 +825,12 @@ mod tests {
         // And the mapping the C ABI actually ships.
         assert_eq!(deferral_code(Delivery::Deferred), S2_DISPATCH_DEFERRED);
         assert_eq!(deferral_code(Delivery::Delivered), 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn current_core_image_can_be_pinned_for_process_lifetime() {
+        assert!(resident::pin_current_module());
     }
 
     #[test]

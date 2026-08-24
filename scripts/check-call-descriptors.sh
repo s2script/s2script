@@ -73,7 +73,9 @@ RET_KINDS = set(re.findall(r'"([a-z]+)"', fn_body(CORE_SRC, 'pub(crate) fn ret_c
 PREPARE = fn_body(CORE_SRC, 'fn prepare(', 'receiver')
 RECEIVER_KINDS = set(re.findall(r'rkind\s*!=\s*"([a-z]+)"', PREPARE))
 
-FLATTEN = fn_body(CORE_SRC, 'fn flatten_decl(', 'target')
+# Platform selection split the public wrapper from the implementation that owns the closed target
+# vocabulary. Derive from that implementation so adding Windows does not silently empty the gate.
+FLATTEN = fn_body(CORE_SRC, 'fn flatten_decl_for_platform(', 'target')
 TARGET_KINDS = set(re.findall(r'^\s{8}"([a-z]+)" =>', FLATTEN, re.M))
 
 def rust_const(name):

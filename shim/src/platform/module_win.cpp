@@ -73,6 +73,22 @@ bool ParseModule(HMODULE module, ModuleView* out) {
     return true;
 }
 
+bool IsReadableProtection(DWORD protection) {
+    switch (protection & 0xff) {
+        case PAGE_READONLY:
+        case PAGE_READWRITE:
+        case PAGE_WRITECOPY:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        case PAGE_NOACCESS:
+        case PAGE_EXECUTE:
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 ModuleView FindModule(const char* name) {
@@ -124,7 +140,8 @@ bool IsReadableAddress(const void* address, size_t size) {
     while (cursor < end) {
         MEMORY_BASIC_INFORMATION info{};
         if (!VirtualQuery(reinterpret_cast<const void*>(cursor), &info, sizeof(info)) ||
-            info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            info.State != MEM_COMMIT || (info.Protect & PAGE_GUARD) ||
+            !IsReadableProtection(info.Protect)) {
             return false;
         }
         const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;

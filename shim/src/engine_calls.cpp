@@ -58,8 +58,12 @@ namespace {
 
 // The engine's server module. Used when a descriptor names no module (the "vtable" target kind
 // carries a class, not a module). Kept HERE rather than in the core so no module/game identifier is
-// compiled into core/ (the check-boundary invariant); s2_schema_offset hardcodes the same soname.
+// compiled into core/ (the check-boundary invariant).
+#if defined(_WIN32)
+constexpr const char* kEngineModule = "server.dll";
+#else
 constexpr const char* kEngineModule = "libserver.so";
+#endif
 
 // Closed-vocabulary budget shared with the core and both ABI backends. The SDK's build-time
 // validator rejects a descriptor that exceeds either class bound; these are runtime backstops.

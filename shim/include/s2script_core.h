@@ -30,6 +30,7 @@ typedef void (*s2_hook_request_fn)(const char* descriptor, int enable); /* core 
  * signature change. New shims MUST use the versioned entry and pass both constants. */
 #define S2_ENGINE_OPS_ABI_VERSION UINT32_C(2)
 #define S2_CORE_INIT_ABI_MISMATCH (-3)
+#define S2_CORE_INIT_PIN_FAILED (-4)
 
 /* Legacy compatibility entry. `ops == NULL` remains supported for tests/no-engine embedders.
  * A non-null unversioned table is always rejected with S2_CORE_INIT_ABI_MISMATCH. */
@@ -181,16 +182,15 @@ int s2script_core_dispatch_usermsg(const char* name, int id);
  * points at can outlive the dispatch. Returns the collapsed HookResult (0 Continue .. 3 Stop); the
  * thunk suppresses the original engine call entirely when >= Handled (2).
  *
- * DECLARED WEAK ON PURPOSE. The shim and the core are two separate .so files. A non-weak reference to
- * a core entry the resident libs2script_core.so does not define is an undefined symbol at dlopen,
- * which takes down the WHOLE addon — every plugin, on a live server — and that is the one failure mode
- * this project refuses (degrade per-descriptor, never crash globally). Weak makes a mismatched pair
- * resolve to null instead; S2Hook_SetOps then receives a null dispatch, S2Hook_Dispatch returns
- * Continue, and Load logs the miss BY NAME. */
+ * Optional/version-tolerant entries. Linux declares these weak: a mismatched pair resolves to null
+ * instead of failing dlopen. PE/COFF has no equivalent weak-import contract, so Windows resolves the
+ * names explicitly from the already-loaded core DLL (core_symbols_win.cpp). */
+#if !defined(_WIN32)
 int s2script_core_dispatch_hook(int hookId, void* argView) __attribute__((weak));
 /* Post-phase spectator mux for a returning inbound hook (CanAcquire). `skipped` is 1 when Pre
  * suppressed the original. Weak for the same reason as dispatch_hook. */
 int s2script_core_dispatch_hook_post(int hookId, void* argView, int skipped) __attribute__((weak));
+#endif
 /* Retained for shim link-compatibility; now a no-op (game JS is provided via
  * s2script_core_register_package instead).  Safe to call; does nothing. */
 void s2script_core_load_cs2(const char* path);
