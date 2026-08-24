@@ -39,6 +39,9 @@ bash scripts/test-hook-dispatch.sh
 echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
 bash scripts/test-detour-reloc.sh
 
+echo "== test-platform.sh (Linux backends + synthetic PE/RTTI) =="
+bash scripts/test-platform.sh
+
 echo "== check-hook-shapes.sh (inbound hook shape name/id table: core == shim) =="
 bash scripts/check-hook-shapes.sh
 

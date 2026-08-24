@@ -16,8 +16,29 @@ set(AMTL   ${MMS}/third_party/amtl)
 # -DS2_CORE_LIB_DIR=debug at configure time so the shim links the matching artifact.
 set(S2_CORE_LIB_DIR "release" CACHE STRING "cargo profile dir the core .so was built into (release|debug)")
 
+set(S2_PLATFORM_SOURCES
+    src/platform/paths_common.cpp
+    src/platform/pe_image.cpp)
+if(WIN32)
+    set(S2_PLATFORM_MEMORY_SOURCE src/platform/memory_win.cpp)
+    set(S2_PLATFORM_BACKEND_SOURCES
+        src/platform/module_win.cpp
+        ${S2_PLATFORM_MEMORY_SOURCE}
+        src/platform/paths_win.cpp)
+    set(S2_PLATFORM_IMAGE_SOURCE src/platform/image_win.cpp)
+else()
+    set(S2_PLATFORM_MEMORY_SOURCE src/platform/memory_linux.cpp)
+    set(S2_PLATFORM_BACKEND_SOURCES
+        src/platform/module_linux.cpp
+        ${S2_PLATFORM_MEMORY_SOURCE}
+        src/platform/paths_linux.cpp)
+    set(S2_PLATFORM_IMAGE_SOURCE src/platform/image_linux.cpp)
+endif()
+list(APPEND S2_PLATFORM_SOURCES ${S2_PLATFORM_BACKEND_SOURCES} ${S2_PLATFORM_IMAGE_SOURCE})
+
 add_library(s2script SHARED
     src/s2script_mm.cpp
+    ${S2_PLATFORM_SOURCES}
     # Entity lifecycle listeners slice: the isolated IEntityListener TU (mirrors ekv.cpp's isolation
     # discipline — the only new TU that includes entity2/entitysystem.h for the listener interface).
     src/entity_listener.cpp
@@ -159,10 +180,23 @@ target_include_directories(hook_dispatch_selftest PRIVATE src)
 # scripts/test-detour-reloc.sh, which adds the sanitizers). This target exists so the test also
 # builds under the ordinary cmake configuration.
 add_executable(detour_reloc_selftest
-    src/detour_reloc.cpp src/detour.cpp
+    src/detour_reloc.cpp src/detour.cpp ${S2_PLATFORM_MEMORY_SOURCE}
     ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c tests/detour_reloc_test.cpp)
 target_include_directories(detour_reloc_selftest
     PRIVATE src ${CMAKE_SOURCE_DIR}/../third_party/hde)
+
+# OS-neutral platform contract + the real Linux backends. The synthetic PE image makes PE range
+# parsing and MSVC RTTI lookup testable in the Linux gate.
+add_executable(platform_selftest
+    tests/platform_test.cpp
+    src/platform/paths_common.cpp
+    src/platform/pe_image.cpp
+    ${S2_PLATFORM_BACKEND_SOURCES})
+target_include_directories(platform_selftest PRIVATE src)
+target_link_libraries(platform_selftest PRIVATE ${CMAKE_DL_LIBS})
+if(WIN32)
+    target_link_libraries(platform_selftest PRIVATE Psapi)
+endif()
 
 
 # The standalone fork-and-crash selftest (not shipped; run manually + in the sniper container).
@@ -226,6 +260,9 @@ target_link_libraries(s2script PRIVATE
     ${CMAKE_SOURCE_DIR}/../target/${S2_CORE_LIB_DIR}/libs2script_core.so
     ${HL2SDK}/lib/linux64/release/libprotobuf.a
 )
+if(WIN32)
+    target_link_libraries(s2script PRIVATE Psapi)
+endif()
 target_include_directories(s2script PRIVATE include)
 
 # Crash reporter: link the vendored Breakpad client (its PUBLIC include dir reaches

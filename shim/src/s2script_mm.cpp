@@ -49,18 +49,16 @@
 // GetMapName / GetGlobals()->curtime (typed vtable calls; the compiler derives the index).
 #include <iserver.h>
 
-#include <dlfcn.h>    // dladdr
-#include <libgen.h>   // dirname
-#include <link.h>       // dl_iterate_phdr, ElfW
-#include <sys/mman.h>   // mprotect — Sound slice: patch the CGameRulesGameSystem vtable slot (precache)
 #include <igamesystem.h>          // model precache: CBaseGameSystem + EventBuildGameSessionManifest_t
 #include <igamesystemfactory.h>   // model precache: CGameSystemStaticFactory / CBaseGameSystemFactory
 #include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
 #include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
-#include <unistd.h>     // sysconf(_SC_PAGESIZE) — the mprotect page span
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
+#include "platform/memory.h"
+#include "platform/module.h"
+#include "platform/paths.h"
 #include "trace.h"    // Ray-trace slice: Ray_t/CTraceFilterEx/CGameTrace + the TraceShape call
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
@@ -2688,7 +2686,7 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
 
 // ---------------------------------------------------------------------------
 // GamedataRoot / DetectModDir: resolve the gamedata tree and the mod directory relative to the
-// plugin .so via dladdr, so both work regardless of the server's working directory.
+// loaded shim module, so both work regardless of the server's working directory.
 //
 // Expected layout: <game>/csgo/addons/s2script/bin/linuxsteamrt64/s2script.so
 //   dirname x1 -> .../bin/linuxsteamrt64
@@ -2702,19 +2700,7 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
 // which matters because the gamedata load happens first in Load().
 // ---------------------------------------------------------------------------
 static std::string AddonRoot() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&AddonRoot), &info) && info.dli_fname) {
-        char buf[4096];
-        // dirname mutates the buffer in-place; copy each time.
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir;
-    }
-    return std::string();
+    return s2platform::AddonRoot(reinterpret_cast<const void*>(&AddonRoot));
 }
 
 static std::string GamedataRoot() {
@@ -2727,17 +2713,11 @@ static std::string GamedataRoot() {
 static std::string DetectModDir() {
     std::string root = AddonRoot();
     if (root.empty()) return std::string();
-    char buf[4096];
-    snprintf(buf, sizeof buf, "%s", root.c_str());
-    std::string dir = dirname(buf);                 // addons
-    snprintf(buf, sizeof buf, "%s", dir.c_str());
-    dir = dirname(buf);                             // the mod directory
-    snprintf(buf, sizeof buf, "%s", dir.c_str());
-    return std::string(basename(buf));              // "csgo"
+    return std::filesystem::path(root).parent_path().parent_path().filename().string();
 }
 
 // ---------------------------------------------------------------------------
-// Cs2JsPath: resolve pawn.js relative to the plugin .so via dladdr (mirrors
+// Cs2JsPath: resolve pawn.js relative to the loaded shim module (mirrors
 // GamedataRoot).  Expected layout (three dirname steps from the .so):
 //   addons/s2script/bin/linuxsteamrt64/s2script.so
 //     dirname ×1 → bin/linuxsteamrt64
@@ -2746,23 +2726,14 @@ static std::string DetectModDir() {
 //   + /js/pawn.js
 // ---------------------------------------------------------------------------
 static std::string Cs2JsPath() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&Cs2JsPath), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir + "/js/pawn.js";
-    }
+    std::string root = AddonRoot();
+    if (!root.empty()) return root + "/js/pawn.js";
     // Fallback: relative to the server's cwd (mirrors the GamedataRoot fallback).
     return "addons/s2script/js/pawn.js";
 }
 
 // ---------------------------------------------------------------------------
-// PluginsDir: resolve the plugins directory relative to the plugin .so via dladdr
+// PluginsDir: resolve the plugins directory relative to the loaded shim module
 // (mirrors Cs2JsPath / GamedataRoot).  Expected layout:
 //   addons/s2script/bin/linuxsteamrt64/s2script.so
 //     dirname ×1 → bin/linuxsteamrt64
@@ -2771,33 +2742,19 @@ static std::string Cs2JsPath() {
 //   + /plugins
 // ---------------------------------------------------------------------------
 static std::string PluginsDir() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&PluginsDir), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir + "/plugins";
-    }
+    std::string root = AddonRoot();
+    if (!root.empty()) return root + "/plugins";
     // Fallback: relative to the server's cwd.
     return "addons/s2script/plugins";
 }
 
-// CrashSpoolDir: addons/s2script/data/crashes, resolved relative to the plugin .so via dladdr
+// CrashSpoolDir: addons/s2script/data/crashes, resolved relative to the loaded shim module
 // (mirrors PluginsDir). Created (mkdir -p equivalent, two levels) if absent; "" on any failure
 // (fail-off — crash reporting then stays disarmed).
 static std::string CrashSpoolDir() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&CrashSpoolDir), &info) && info.dli_fname) {
-        std::string dir(info.dli_fname);
-        // The .so lives at addons/s2script/bin/linuxsteamrt64/s2script.so — 3 dirname steps reach
-        // the addon root (mirrors s2_db_data_dir()/PluginsDir()). ONE step lands the spool under
-        // bin/ (a :ro mount in docker-compose) → mkdir fails → silent fail-off. Must be 3.
-        for (int i = 0; i < 3; i++) dir = dir.substr(0, dir.find_last_of('/'));
-        std::string data = dir + "/data";
+    std::string root = AddonRoot();
+    if (!root.empty()) {
+        std::string data = root + "/data";
         std::string spool = data + "/crashes";
         mkdir(data.c_str(), 0755);            // EEXIST is fine
         if (mkdir(spool.c_str(), 0755) == 0 || errno == EEXIST) return spool;
@@ -2806,7 +2763,7 @@ static std::string CrashSpoolDir() {
 }
 
 // ---------------------------------------------------------------------------
-// ConfigPath: resolve addons/s2script/configs/<sanitized id>.json via dladdr
+// ConfigPath: resolve addons/s2script/configs/<sanitized id>.json relative to the shim
 // (mirrors PluginsDir).  Non-[A-Za-z0-9._-] chars in `id` are replaced with '_'.
 // ---------------------------------------------------------------------------
 static std::string ConfigPath(const char* id) {
@@ -2821,17 +2778,8 @@ static std::string ConfigPath(const char* id) {
             safe_id += '_';
         }
     }
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&ConfigPath), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir + "/configs/" + safe_id + ".json";
-    }
+    std::string root = AddonRoot();
+    if (!root.empty()) return root + "/configs/" + safe_id + ".json";
     // Fallback: relative to the server's cwd.
     return "addons/s2script/configs/" + safe_id + ".json";
 }
@@ -2867,15 +2815,8 @@ static std::string ConfigFilePath(const char* name) {
         safe += ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
                  || c == '.' || c == '_' || c == '-') ? c : '_';
     }
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&ConfigFilePath), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf); snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);             snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);
-        return dir + "/configs/" + safe;
-    }
+    std::string root = AddonRoot();
+    if (!root.empty()) return root + "/configs/" + safe;
     return "addons/s2script/configs/" + safe;
 }
 static std::string s_configFileReadBuf;
@@ -2905,17 +2846,8 @@ static std::string TranslationsPath(const char* lang, const char* name) {
         o += ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='.'||c=='_'||c=='-') ? c : '_'; } return o; };
     std::string safeLang = lang ? sani(lang) : "";
     std::string safeName = sani(name);
-    Dl_info info;
-    std::string root;
-    if (dladdr(reinterpret_cast<void*>(&TranslationsPath), &info) && info.dli_fname) {
-        char buf[4096]; snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf); snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);             snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);
-        root = dir + "/translations/";
-    } else {
-        root = "addons/s2script/translations/";
-    }
+    std::string root = AddonRoot();
+    root = root.empty() ? "addons/s2script/translations/" : root + "/translations/";
     if (!safeLang.empty()) root += safeLang + "/";
     return root + safeName + ".phrases.json";
 }
@@ -2934,26 +2866,13 @@ static const char* s2_client_language(int slot) {
 
 // ---------------------------------------------------------------------------
 // db_data_dir (Slice DB): absolute path to addons/s2script/data, created if absent. Resolved
-// relative to the plugin .so via dladdr (mirrors ConfigPath's dirname ×3 walk to the addon root),
+// relative to the loaded shim module (mirrors ConfigPath's walk to the addon root),
 // sibling of the configs/ dir.
 // ---------------------------------------------------------------------------
 static std::string s_dbDataDirBuf;
 static const char* s2_db_data_dir(void) {
-    Dl_info info;
-    std::string dir;
-    if (dladdr(reinterpret_cast<void*>(&s2_db_data_dir), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string d = dirname(buf);               // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", d.c_str());
-        d = dirname(buf);                            // bin
-        snprintf(buf, sizeof buf, "%s", d.c_str());
-        d = dirname(buf);                            // s2script addon root
-        dir = d + "/data";
-    } else {
-        // Fallback: relative to the server's cwd.
-        dir = "addons/s2script/data";
-    }
+    std::string root = AddonRoot();
+    std::string dir = root.empty() ? "addons/s2script/data" : root + "/data";
     std::error_code ec; std::filesystem::create_directories(dir, ec);
     s_dbDataDirBuf = dir;
     return s_dbDataDirBuf.c_str();
@@ -2997,31 +2916,13 @@ static void s2_request_hook(const char* descriptor, int enable) {
 
 // ---------------------------------------------------------------------------
 // FindModuleText (Slice 5D.2): locate the largest executable segment of a loaded module by soname
-// substring. Returns {nullptr, 0} if not found. Live-only (dl_iterate_phdr); the pure
+// substring. Returns {nullptr, 0} if not found. Live-only (platform module enumeration); the pure
 // match/extract is sigscan.
 // ---------------------------------------------------------------------------
 struct ModText { const uint8_t* text; size_t size; };
 static ModText FindModuleText(const char* soname) {
-    // Pick the LARGEST executable segment across ALL loaded modules whose soname contains `soname`.
-    // Why "all + largest" and not "first match": Metamod:Source inserts its own thin libserver.so
-    // proxy (csgo/addons/metamod/.../libserver.so, ~95 KB) via the gameinfo SearchPath, whose path
-    // ALSO contains the "libserver.so" substring. Stopping at the first substring match grabbed that
-    // proxy (no game code) instead of the real ~25 MB game module. The real game module's .text
-    // dwarfs the proxy's, so largest-PF_X-segment-wins selects it robustly (found live, de_inferno).
-    struct Ctx { const char* name; ModText out; } ctx{ soname, { nullptr, 0 } };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;  // not a match; keep scanning
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X) && ph.p_filesz > c->out.size) {
-                c->out.text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-                c->out.size = ph.p_filesz;                       // largest PF_X seg across all matches
-            }
-        }
-        return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
-    }, &ctx);
-    return ctx.out;
+    const s2platform::ModuleView view = s2platform::FindModule(soname);
+    return {view.text, view.textSize};
 }
 
 // Full mapped [lo, hi) LOAD extent of the SAME module FindModuleText selects (largest-PF_X-wins,
@@ -3030,27 +2931,8 @@ static ModText FindModuleText(const char* soname) {
 // range-guarded against the whole mapping before it is read.
 struct ModBounds { const uint8_t* lo; const uint8_t* hi; };
 static ModBounds FindModuleBounds(const char* soname) {
-    struct Ctx { const char* name; size_t bestX; ModBounds out; } ctx{ soname, 0, { nullptr, nullptr } };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
-        size_t maxX = 0;
-        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) maxX = ph.p_filesz;
-            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
-            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
-        }
-        if (maxX > c->bestX) {   // same winner rule as FindModuleText: largest PF_X segment
-            c->bestX = maxX;
-            c->out.lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
-            c->out.hi = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
-        }
-        return 0;
-    }, &ctx);
-    return ctx.out;
+    const s2platform::ModuleView view = s2platform::FindModule(soname);
+    return {view.lo, view.hi};
 }
 
 // ---------------------------------------------------------------------------
@@ -3188,7 +3070,7 @@ static bool IsAddressInServerText(void* fn) {
     if (!fn) return false;
     // libserver.so's .text range is fixed after load; cache it on first use so the per-frame
     // entity_teleport hot path (a beam.update per held-E player each frame) does NOT re-walk every
-    // loaded module via dl_iterate_phdr on every call.
+    // loaded module through the platform backend on every call.
     static const uint8_t* s_text = nullptr;
     static size_t          s_textSize = 0;
     if (!s_text) { ModText mt = FindModuleText("libserver.so"); s_text = mt.text; s_textSize = mt.size; }
@@ -3289,16 +3171,10 @@ static void ArmDeferredEventDuplication() {
     }
 }
 
-// Fault-free "is this address readable" probe: mincore() reports ENOMEM iff the range is unmapped,
-// so it answers the question without a signal handler and without a /proc/self/maps walk. The
-// caller has already required 8-alignment, and a page size is a multiple of 8, so the one aligned
-// word read below cannot straddle into an unprobed page.
+// Fault-free "is this address readable" probe. The platform backend checks mapping state without
+// touching the candidate; the caller has already required pointer alignment.
 static bool IsPointerReadable(const void* p) {
-    const long pageSize = sysconf(_SC_PAGESIZE);
-    if (pageSize <= 0) return false;
-    const uintptr_t page = reinterpret_cast<uintptr_t>(p) & ~static_cast<uintptr_t>(pageSize - 1);
-    unsigned char vec = 0;
-    return mincore(reinterpret_cast<void*>(page), static_cast<size_t>(pageSize), &vec) == 0;
+    return s2platform::IsReadableAddress(p, sizeof(void*));
 }
 
 // Stage 2 of the DuplicateEvent validation: does the slot we resolved BEHAVE like DuplicateEvent?
@@ -3636,19 +3512,7 @@ static PrecacheAddResourceFn_t s_pPrecacheAddResource = nullptr;
 // stack object whose vtable's AddResource lives in a different module, so the libserver-only check
 // rejected every add (observed live: slot0=0x7fd0c059ec40, inText=0) and the call never ran.
 static bool IsAddressInAnyModuleText(void* fn) {
-    if (!fn) return false;
-    struct Ctx { const uint8_t* p; bool hit; } ctx{ reinterpret_cast<const uint8_t*>(fn), false };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X)) continue;
-            const uint8_t* lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-            if (c->p >= lo && c->p < lo + ph.p_memsz) { c->hit = true; return 1; }  // stop scanning
-        }
-        return 0;
-    }, &ctx);
-    return ctx.hit;
+    return s2platform::IsExecutableAddress(fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -3780,17 +3644,14 @@ static void Detour_OnPrecacheResource(void* thisptr, void* pManifest) {
 // saved original).
 static bool WriteVtableSlot(void** vt, int idx, void* fn) {
     void** slot = &vt[idx];
-    long pg = sysconf(_SC_PAGESIZE);
-    if (pg <= 0) return false;
-    uintptr_t a = reinterpret_cast<uintptr_t>(slot);
-    uintptr_t pageStart = a & ~static_cast<uintptr_t>(pg - 1);
-    size_t span = (a + sizeof(void*)) - pageStart;
-    // The mprotect(RW) / pointer-write / mprotect(R) sequence below is NOT atomic, but it is safe here:
+    // The writable / pointer-write / read-only sequence below is NOT atomic, but it is safe here:
     // both callers (InstallPrecacheHook in Load(), the restore in Unload()) and the game systems that
     // dispatch through this vtable run on the main game thread only — there is no concurrent reader.
-    if (mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ | PROT_WRITE) != 0) return false;
+    if (!s2platform::ProtectMemory(slot, sizeof(void*),
+                                   s2platform::MemoryProtection::ReadWrite)) return false;
     *slot = fn;
-    mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ);   // best-effort restore
+    s2platform::ProtectMemory(slot, sizeof(void*),
+                              s2platform::MemoryProtection::ReadOnly);   // best-effort restore
     return true;
 }
 

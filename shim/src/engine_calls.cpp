@@ -32,6 +32,7 @@
 #include "engine_calls.h"
 #include "sigscan.h"
 #include "vtable.h"   // s2vtable::GetVTableByName — RTTI vtable-by-name (CS2 exports no game vtables)
+#include "platform/module.h"
 // The CLOSED validator vocabulary (prologue / string-xref / vtable-member). It lives in its own
 // engine-free TU so shim/tests/call_validate_test.cpp can drive the SHIPPED gates over a synthetic
 // module image — this TU cannot be compiled outside the game (it includes the entity system), and a
@@ -44,7 +45,6 @@
 #include <entity2/entitysystem.h>
 #include <entity2/entityinstance.h>   // CEntityInstance::GetRefEHandle (inline; identity-backed)
 
-#include <link.h>     // dl_iterate_phdr, ElfW
 #include <cstdio>     // snprintf — the degrade-reason string
 #include <cstring>    // strcmp/strstr/memcpy
 #include <string>
@@ -101,55 +101,10 @@ std::vector<ResolvedCall> g_calls;   // the returned call id is the index; entri
                                      // (an id stays valid for the process; the core's registry owns
                                      // per-plugin lifetime and drops its own table on unload)
 
-// ---------------------------------------------------------------------------
-// Module lookup. A per-TU copy of s2script_mm.cpp's FindModuleText (which is file-static there):
-// pick the LARGEST PF_X segment across ALL loaded modules whose soname contains `soname`, because
-// Metamod:Source inserts its own thin libserver.so proxy via the gameinfo SearchPath whose path ALSO
-// contains the substring — stopping at the first match grabs the ~95 KB proxy instead of the real
-// ~25 MB game module (Slice 5D.2). vtable.cpp keeps the same local copy for the same TU-boundary
-// reason.
-//
-// ONE walk yields BOTH views, deliberately: the .text segment (where a resolved function must live)
-// and the winning module's FULL mapped [lo, hi) LOAD extent (where a rip-relative string target
-// legitimately lives — .rodata sits BELOW the PF_X base, so `string-xref` MUST range-guard against
-// the whole mapping). Deriving them in one pass means the two can never disagree about which module
-// won, which is the failure mode two hand-copied phdr walks invite.
-// ---------------------------------------------------------------------------
-struct ModText {
-    const uint8_t* text = nullptr;   // largest PF_X segment of the winning module
-    size_t         size = 0;
-    const uint8_t* lo   = nullptr;   // full mapped LOAD extent of that SAME module
-    const uint8_t* hi   = nullptr;
-};
+using ModText = s2platform::ModuleView;
 
 ModText FindModuleText(const char* soname) {
-    struct Ctx { const char* name; size_t bestX; ModText out; } ctx{ soname, 0, {} };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
-        size_t maxX = 0;
-        const uint8_t* text = nullptr;
-        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) {
-                maxX = ph.p_filesz;
-                text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-            }
-            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
-            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
-        }
-        if (maxX > c->bestX) {   // largest PF_X wins, module-wide — the metamod proxy loses
-            c->bestX    = maxX;
-            c->out.text = text;
-            c->out.size = maxX;
-            c->out.lo   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
-            c->out.hi   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
-        }
-        return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the game module
-    }, &ctx);
-    return ctx.out;
+    return s2platform::FindModule(soname);
 }
 
 // The IsAddressInServerText guard, generalized to the descriptor's own module: a resolved
@@ -159,16 +114,14 @@ ModText FindModuleText(const char* soname) {
 // distinguishable in the reason string: "outside .text" means the pattern computed off the map, a
 // validator failure means it computed a real in-range function and it is the WRONG one).
 bool InModuleText(const ModText& mt, const void* fn) {
-    if (!mt.text || !fn) return false;
-    const uint8_t* p = static_cast<const uint8_t*>(fn);
-    return p >= mt.text && p < mt.text + mt.size;
+    return mt.ContainsExecutable(fn);
 }
 
 // Hand the (engine-free) validator TU the module's two views.
 s2validate::ModuleView ViewOf(const ModText& mt) {
     s2validate::ModuleView mv;
     mv.text     = mt.text;
-    mv.textSize = mt.size;
+    mv.textSize = mt.textSize;
     mv.lo       = mt.lo;
     mv.hi       = mt.hi;
     return mv;
@@ -287,26 +240,14 @@ void* S2_ResolveEntity(int index, int serial) {
 // InModuleText's rule, re-asked WITHOUT a module name, for a caller that holds only a resolved
 // address (engine_hooks.cpp, which must never patch bytes it cannot prove are code). Module-agnostic
 // on purpose: a hook target may live in whichever module its descriptor named, and this TU is the
-// one that already owns the phdr walk — a second copy of it in engine_hooks.cpp would also drag the
+// one that already owns the platform query — a second copy in engine_hooks.cpp would also drag the
 // question of "which module?" somewhere that has no answer to it.
 //
-// Note this walks EVERY module's every PF_X PT_LOAD segment, rather than FindModuleText's
-// largest-PF_X-of-one-soname: the question here is containment, not identification, so the
+// This checks every module's executable ranges, rather than FindModuleText's
+// largest-executable-range-of-one-name: the question here is containment, not identification, so the
 // metamod-proxy tie-break that rule exists for does not apply.
 int S2_AddressIsExecutable(const void* addr) {
-    if (!addr) return 0;
-    struct Ctx { uintptr_t a; bool hit; } ctx{ reinterpret_cast<uintptr_t>(addr), false };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X)) continue;
-            const uintptr_t lo = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
-            if (c->a >= lo && c->a < lo + ph.p_memsz) { c->hit = true; return 1; }   // stop the walk
-        }
-        return 0;
-    }, &ctx);
-    return ctx.hit ? 1 : 0;
+    return s2platform::IsExecutableAddress(addr) ? 1 : 0;
 }
 
 // The module views behind an address: the PF_X segment that CONTAINS it, plus the module's full
@@ -315,34 +256,12 @@ int S2_AddressIsExecutable(const void* addr) {
 int S2_ModuleViewForAddress(const void* addr, const unsigned char** outText, std::size_t* outSize,
                             const unsigned char** outLo, const unsigned char** outHi) {
     if (!addr || !outText || !outSize || !outLo || !outHi) return 0;
-    struct Ctx {
-        uintptr_t a; bool hit;
-        uintptr_t text, textEnd, lo, hi;
-    } ctx{ reinterpret_cast<uintptr_t>(addr), false, 0, 0, 0, 0 };
-
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        uintptr_t lo = 0, hi = 0, text = 0, textEnd = 0;
-        bool contains = false;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            const uintptr_t s = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
-            const uintptr_t e = s + ph.p_memsz;
-            if (lo == 0 || s < lo) lo = s;
-            if (e > hi) hi = e;
-            if ((ph.p_flags & PF_X) && c->a >= s && c->a < e) { contains = true; text = s; textEnd = e; }
-        }
-        if (!contains) return 0;               // not this module — keep walking
-        c->hit = true; c->text = text; c->textEnd = textEnd; c->lo = lo; c->hi = hi;
-        return 1;                              // found it — stop
-    }, &ctx);
-
-    if (!ctx.hit) return 0;
-    *outText = reinterpret_cast<const unsigned char*>(ctx.text);
-    *outSize = static_cast<std::size_t>(ctx.textEnd - ctx.text);
-    *outLo   = reinterpret_cast<const unsigned char*>(ctx.lo);
-    *outHi   = reinterpret_cast<const unsigned char*>(ctx.hi);
+    s2platform::ModuleView view;
+    if (!s2platform::ModuleViewForAddress(addr, &view)) return 0;
+    *outText = view.text;
+    *outSize = view.textSize;
+    *outLo   = view.lo;
+    *outHi   = view.hi;
     return 1;
 }
 
@@ -376,16 +295,17 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
         std::vector<int> pat = s2sig::ParsePattern(pattern);
         if (pat.empty()) return Fail(reasonOut, reasonCap, "malformed signature pattern");
         // Rule 2: uniqueness, not just presence — an ambiguous pattern is as unusable as a missing one.
-        int matches = s2sig::CountPattern(mt.text, mt.size, pat, 2);
+        int matches = s2sig::CountPattern(mt.text, mt.textSize, pat, 2);
         if (matches == 0) return Fail(reasonOut, reasonCap, "signature did not match this build");
         if (matches > 1)  return Fail(reasonOut, reasonCap, "signature is ambiguous (>1 match — tighten it)");
-        int64_t matchOff  = s2sig::FindPattern(mt.text, mt.size, pat);
+        int64_t matchOff  = s2sig::FindPattern(mt.text, mt.textSize, pat);
         int64_t targetOff = matchOff;                       // "direct": the match IS the target
         const char* res = (resolve && resolve[0]) ? resolve : "direct";
         if (std::strcmp(res, "ctor-body-xref") == 0) {
-            targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
+            targetOff = s2sig::ResolveCtorXref(mt.text, mt.textSize, matchOff);
         } else if (std::strcmp(res, "lea-disp") == 0) {
-            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, /*dispOff=*/3, /*instrLen=*/7);
+            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.textSize, matchOff,
+                                              /*dispOff=*/3, /*instrLen=*/7);
         } else if (std::strcmp(res, "direct") != 0) {
             return Fail(reasonOut, reasonCap, "unknown resolve strategy");
         }

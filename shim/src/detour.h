@@ -1,4 +1,4 @@
-// Minimal self-contained x86-64 Linux inline detour (Slice 6.6; two-tier since the relocation slice).
+// Minimal self-contained x86-64 inline detour (Slice 6.6; two-tier since the relocation slice).
 //
 // Overwrites a function prologue with a jump to a handler, relocating the stolen prologue into an
 // mmap'd trampoline (+ a jump back). Two tiers, cheapest first — the structure SourceMod gets from
@@ -14,7 +14,8 @@
 // rest BY NAME rather than corrupting it. The byte-level half lives in detour_reloc.{h,cpp} so it
 // can be tested without patching a live engine function.
 //
-// x86 has a coherent icache, so no explicit flush is needed.
+// Allocation, page protection, and instruction-cache synchronization live behind the platform
+// backend; decoding and relocation remain shared.
 #pragma once
 
 #include <cstdint>
