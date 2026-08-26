@@ -78,7 +78,9 @@ Installed g_hooks[S2_HOOK_MAX];
 // do not know what it is. It has no accessor and no `params` entry, so JS can neither read nor write
 // it — its only job is to be handed back to the original function unchanged (see hook_dispatch.h on
 // why narrowing one of these segfaulted a live server).
-enum ParamClass : unsigned char { kParamF32 = 0, kParamI32 = 1, kParamI64 = 2 };
+// kParamStr is TEXT copied into the view by the thunk (see ArgView::s). Like kParamI64 it is not
+// an f32/i32 slot, but unlike it, it IS surfaced — through hook_read_str rather than an accessor.
+enum ParamClass : unsigned char { kParamF32 = 0, kParamI32 = 1, kParamI64 = 2, kParamStr = 3 };
 struct ParamSlot { ParamClass cls; unsigned char slot; };
 
 // Sized to the WIDEST shape in the vocabulary; each shape's table is static_asserted to fit, so
@@ -87,6 +89,14 @@ constexpr int kViewF32Slots = 1;
 constexpr int kViewI32Slots = 3;
 constexpr int kViewI64Slots = 2;
 
+// A hook param that is TEXT. The engine hands these as pointers, and a pointer cannot be surfaced
+// through the i32/f32 accessors — narrowing one is the documented segfault. So the thunk COPIES the
+// bytes into the view while the frame is alive, and JS reads the copy. Fixed capacity, always
+// NUL-terminated: a button id is an author-chosen identifier, not user input, and a name longer
+// than this is a design error in the layout rather than something to allocate for.
+constexpr int kViewStrSlots = 2;
+constexpr int kViewStrCap   = 128;
+
 struct ArgView {
     int     hookId = -1;
     int     shape  = -1;
@@ -94,6 +104,7 @@ struct ArgView {
     float   f[kViewF32Slots] = {};
     int32_t i[kViewI32Slots] = {};
     int64_t q[kViewI64Slots] = {};   // opaque pass-through; never surfaced to JS
+    char    s[kViewStrSlots][kViewStrCap] = {};   // copied text params (see above)
 };
 
 // THE LIVENESS TOKEN. The one view a thunk is currently dispatching, or null between dispatches. An
@@ -134,6 +145,18 @@ constexpr ParamSlot kParamsThisI64I32I64[] = {
     { kParamI32, 2 },
 };
 
+// S2_HOOK_SHAPE_THIS_I64_I64_I64 — void(void* self, int64, int64, int64).
+//
+// Nothing is addressable through the i32/f32 accessors: all three args are pointers. The two that
+// matter reach JS by other routes instead —
+//   * WHO clicked: the thunk points the view's `self` at the CCSPlayerController argument, so the
+//     existing receiver path books-gates it into an EntityRef. No new machinery.
+//   * WHICH button: copied into string slot 0 and read back through hook_read_str.
+// The layout pointer is carried at full width and never surfaced (kParamI64's whole purpose).
+constexpr ParamSlot kParamsThisI64I64I64[] = {
+    { kParamStr, 0 },
+};
+
 struct ShapeInfo { const ParamSlot* params; int count; };
 
 
@@ -148,6 +171,7 @@ constexpr ShapeInfo InfoFor(int shape) {
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kParamsThisF32I32I32I32, 4 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kParamsThisF32I32I64I64, 2 };
         case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kParamsThisI64I32I64, 3 };
+        case S2_HOOK_SHAPE_THIS_I64_I64_I64:     return { kParamsThisI64I64I64, 1 };
         default:                                 return { nullptr, 0 };
     }
 }
@@ -162,6 +186,7 @@ constexpr bool ShapeFitsView(int shape) {
     for (int k = 0; k < si.count; k++) {
         const int limit = (si.params[k].cls == kParamF32)   ? kViewF32Slots
                           : (si.params[k].cls == kParamI64) ? kViewI64Slots
+                          : (si.params[k].cls == kParamStr) ? kViewStrSlots
                                                             : kViewI32Slots;
         if (static_cast<int>(si.params[k].slot) >= limit) return false;
     }
@@ -194,6 +219,7 @@ constexpr uint8_t kAbiThisVoid[]         = { 1 };             // (this)
 constexpr uint8_t kAbiThisF32I32I32I32[] = { 1, 0, 0, 0 };    // (this, [f32], i32, i32, i32)
 constexpr uint8_t kAbiThisF32I32I64I64[] = { 1, 0, 1, 1 };    // (this, [f32], i32, i64, i64)
 constexpr uint8_t kAbiThisI64I32I64[]    = { 1, 1, 0, 1 };    // (this, i64, i32, i64)
+constexpr uint8_t kAbiThisI64I64I64[]    = { 1, 1, 1, 1 };    // (this, i64, i64, i64)
 
 constexpr ShapeAbi AbiFor(int shape) {
     switch (shape) {
@@ -201,6 +227,7 @@ constexpr ShapeAbi AbiFor(int shape) {
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kAbiThisF32I32I32I32, 4 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kAbiThisF32I32I64I64, 4 };
         case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kAbiThisI64I32I64,    4 };
+        case S2_HOOK_SHAPE_THIS_I64_I64_I64:     return { kAbiThisI64I64I64,    4 };
         default:                                 return { nullptr, 0 };
     }
 }
@@ -232,6 +259,7 @@ using ThisVoidFn           = void (*)(void*);
 using ThisF32I32I32I32Fn   = void (*)(void*, float, int32_t, int32_t, int32_t);
 using ThisF32I32I64I64Fn   = void (*)(void*, float, int32_t, int64_t, int64_t);
 using ThisI64I32I64Fn      = int32_t (*)(void*, int64_t, int32_t, int64_t);
+using ThisI64I64I64Fn      = void    (*)(void*, int64_t, int64_t, int64_t);
 
 // `orig` is null only in the window between s2detour patching the prologue and publishing the
 // trampoline — unreachable on the single-threaded game thread, but guarded rather than assumed.
@@ -276,6 +304,60 @@ void Thunk_ThisF32I32I32I32(void* self, float a0, int32_t a1, int32_t a2, int32_
     if (S2Hook_Suppresses(r)) return;
     // Read back OUT of the view — a handler's writes to `mutable` params reach the engine here.
     if (orig) orig(self, v.f[0], v.i[0], v.i[1], v.i[2]);
+}
+
+// S2_HOOK_SHAPE_THIS_I64_I64_I64 — void(this, i64, i64, i64).
+//
+// Written for CCSCustomHudLayout's HUD-click receiver:
+//     (pulse binding /*rdi, unused by the engine itself*/, CCSPlayerController* clicker /*rsi*/,
+//      CCSCustomHudLayout* layout /*rdx*/, const std::string* buttonId /*rcx*/)
+//
+// TWO DELIBERATE CHOICES HERE.
+//
+// 1. `v.self` is pointed at the CLICKER, not at `self`. The engine's own rdi is a pulse-binding
+//    object that is not an entity and that the receiver overwrites immediately anyway (it walks a
+//    list and passes each node as `this`). Aiming the view's receiver at the controller instead
+//    means the EXISTING books-gated receiver path turns it into an EntityRef with no new machinery
+//    — `receiver: { kind: "entity", as: "player" }` in the descriptor and JS gets a real player.
+//    The original is still called with the untouched `self`, so the engine sees no difference.
+//
+// 2. The button id is COPIED, not pointed at. It arrives as a libstdc++ std::string whose data
+//    pointer is the first 8 bytes; both that pointer and the string itself die when this frame
+//    returns. Copying into the view is what makes it safe to read from JS at all.
+template <int Id>
+void Thunk_ThisI64I64I64(void* self, int64_t a0, int64_t a1, int64_t a2) {
+    const ThisI64I64I64Fn orig = reinterpret_cast<ThisI64I64I64Fn>(g_hooks[Id].orig);
+    if (S2Hook_BypassTake(Id)) { if (orig) orig(self, a0, a1, a2); return; }
+
+    ArgView v;
+    v.hookId = Id;
+    v.shape  = S2_HOOK_SHAPE_THIS_I64_I64_I64;
+    v.self   = reinterpret_cast<void*>(a0);   // the CLICKER — see (1) above
+    v.q[0]   = a0;                            // full width, straight back to the engine
+    v.q[1]   = a1;
+    v.q[2]   = a2;
+
+    // std::string (libstdc++): the data pointer is the first word. Guard every hop — a receiver
+    // firing with a null or garbage argument must degrade to an empty id, never fault the game.
+    v.s[0][0] = '\0';
+    if (a2) {
+        const char* const* pp = reinterpret_cast<const char* const*>(a2);
+        const char* text = *pp;
+        if (text) {
+            int n = 0;
+            while (n < kViewStrCap - 1 && text[n] != '\0') { v.s[0][n] = text[n]; n++; }
+            v.s[0][n] = '\0';
+        }
+    }
+
+    const void* const prevView = g_activeView;
+    g_activeView = &v;
+    const int r = S2Hook_Dispatch(Id, &v);
+    S2Hook_DispatchPost(Id, &v, S2Hook_Suppresses(r) ? 1 : 0);
+    g_activeView = prevView;
+
+    if (S2Hook_Suppresses(r)) return;
+    orig ? orig(self, v.q[0], v.q[1], v.q[2]) : void();
 }
 
 template <int Id>
@@ -365,6 +447,12 @@ MakeThisI64I32I64Table(std::index_sequence<Is...>) {
     return {{ &Thunk_ThisI64I32I64<static_cast<int>(Is)>... }};
 }
 
+template <std::size_t... Is>
+constexpr std::array<ThisI64I64I64Fn, sizeof...(Is)>
+MakeThisI64I64I64Table(std::index_sequence<Is...>) {
+    return {{ &Thunk_ThisI64I64I64<static_cast<int>(Is)>... }};
+}
+
 constexpr auto kThisVoidThunks = MakeThisVoidTable(std::make_index_sequence<kHookSlots>{});
 constexpr auto kThisF32I32I64I64Thunks =
     MakeThisF32I32I64I64Table(std::make_index_sequence<kHookSlots>{});
@@ -372,9 +460,12 @@ constexpr auto kThisF32I32I32I32Thunks =
     MakeThisF32I32I32I32Table(std::make_index_sequence<kHookSlots>{});
 constexpr auto kThisI64I32I64Thunks =
     MakeThisI64I32I64Table(std::make_index_sequence<kHookSlots>{});
+constexpr auto kThisI64I64I64Thunks =
+    MakeThisI64I64I64Table(std::make_index_sequence<kHookSlots>{});
 static_assert(kThisVoidThunks.size() == kHookSlots, "thunk table must cover every hook slot");
 static_assert(kThisF32I32I32I32Thunks.size() == kHookSlots, "thunk table must cover every hook slot");
 static_assert(kThisI64I32I64Thunks.size() == kHookSlots, "thunk table must cover every hook slot");
+static_assert(kThisI64I64I64Thunks.size() == kHookSlots, "thunk table must cover every hook slot");
 
 // The slot's own thunk for `shape`, or null when the shape has no compiled thunk (a NAMED install
 // failure — the closed vocabulary and the compiled set must never drift apart silently).
@@ -389,6 +480,8 @@ void* ThunkFor(int shape, int hookId) {
             return reinterpret_cast<void*>(kThisF32I32I64I64Thunks[static_cast<std::size_t>(hookId)]);
         case S2_HOOK_SHAPE_THIS_I64_I32_I64:
             return reinterpret_cast<void*>(kThisI64I32I64Thunks[static_cast<std::size_t>(hookId)]);
+        case S2_HOOK_SHAPE_THIS_I64_I64_I64:
+            return reinterpret_cast<void*>(kThisI64I64I64Thunks[static_cast<std::size_t>(hookId)]);
         default:
             return nullptr;
     }
@@ -569,6 +662,26 @@ int S2_HookReadI32(void* argView, int idx, int32_t* out) {
     if (idx < 0 || idx >= si.count) return -1;
     if (si.params[idx].cls != kParamI32) return -1;
     *out = v->i[si.params[idx].slot];
+    return 0;
+}
+
+// Read a TEXT param out of the live view. Same liveness + class gating as the scalar readers: a
+// view retained past its dispatch, a bad index, or a param that is not text all fail by -1 rather
+// than handing back a stale or misinterpreted buffer.
+//
+// `out` is always NUL-terminated on success, and the copy is bounded by the SMALLER of the caller's
+// capacity and the view's — the string in the view is already NUL-terminated by the thunk, so this
+// cannot run off the end even if `cap` lies.
+int S2_HookReadStr(void* argView, int idx, char* out, int cap) {
+    const ArgView* v = LiveViewOf(argView);
+    if (!v || !out || cap <= 0) return -1;
+    const ShapeInfo si = InfoFor(v->shape);
+    if (idx < 0 || idx >= si.count) return -1;
+    if (si.params[idx].cls != kParamStr) return -1;
+    const char* src = v->s[si.params[idx].slot];
+    int n = 0;
+    while (n < cap - 1 && n < kViewStrCap - 1 && src[n] != '\0') { out[n] = src[n]; n++; }
+    out[n] = '\0';
     return 0;
 }
 

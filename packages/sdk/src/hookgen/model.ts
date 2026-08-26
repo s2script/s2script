@@ -11,11 +11,14 @@
 
 /** The on-disk shape of one `hooks.<name>` entry, restricted to what the generator reads. */
 export interface RawHookDecl {
+  /** The ABI shape name. Codegen needs it because a param's TYPE comes from the shape, not from the
+   *  `params` list (which carries only names) — see STRING_PARAMS in emit-dts.ts. */
+  shape?: string;
   params?: string[];
   mutable?: string[];
   receiver?: { kind?: string; as?: string };
   expose?: { ctx?: string; handwritten?: boolean };
-  // target/shape/bypassWith/validate are read by the runtime and the grammar gate, not by codegen.
+  // target/bypassWith/validate are read by the runtime and the grammar gate, not by codegen.
 }
 
 export type GamedataHooks = Record<string, RawHookDecl>;
@@ -31,6 +34,8 @@ export interface HookParamDescriptor {
 export interface HookDescriptor {
   /** The hook's gamedata key (e.g. "onTerminateRound") — also the generated ctx method name. */
   name: string;
+  /** The ABI shape name, verbatim. Decides each param's emitted TYPE. */
+  shape: string;
   /** The exported view interface name (e.g. "OnTerminateRoundView"). */
   viewIface: string;
   /** Positional params, in author order. Empty for a nullary shape (e.g. `this_void`). */
@@ -62,7 +67,7 @@ function hookDescriptor(name: string, decl: RawHookDecl): HookDescriptor {
   const mutableSet = new Set(decl.mutable ?? []);
   const params: HookParamDescriptor[] = paramNames.map((p) => ({ name: p, mutable: mutableSet.has(p) }));
   const receiverAs = decl.receiver?.kind === "entity" ? decl.receiver.as ?? null : null;
-  return { name, viewIface: `${capitalize(name)}View`, params, receiverAs };
+  return { name, shape: decl.shape ?? "", viewIface: `${capitalize(name)}View`, params, receiverAs };
 }
 
 /** Flat list of every declared hook, for the plugin-side `Engine.hook` types. Unlike

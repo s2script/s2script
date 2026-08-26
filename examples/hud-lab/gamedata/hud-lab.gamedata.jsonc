@@ -1,0 +1,246 @@
+{
+  // hud-lab's OWN gamedata — the Tier-B half of the new custom-HUD API.
+  //
+  // ┌───────────────────────────────────────────────────────────────────────────────────────────┐
+  // │ ALL FOUR CALLS ARE WITHDRAWN. THE SIGNATURES BELOW ARE CORRECT; CALLING THEM IS NOT SAFE. │
+  // └───────────────────────────────────────────────────────────────────────────────────────────┘
+  //
+  // A `calls` block used to live here and it CRASHED A LIVE SERVER. Keeping the story, because the
+  // signature being right is exactly what made the crash possible.
+  //
+  // WHAT HAPPENED. `SetHasClassForPlayer` was resolved correctly (va 0x1312b30 on build 24916958,
+  // reached from the named cs_script thunk, structurally confirmed) and armed. The first in-game
+  // `sm_hud_class panel1 myclass 1 @me` segfaulted the server. The crash reporter's breadcrumb named
+  // it exactly: culprit `@demo/hud-lab`, dispatch `command:sm_hud_class`.
+  //
+  // WHY. The arguments are `CUtlString`, NOT `const char*`. The name-lookup helper the setter calls
+  // (va 0x130ae00) opens with:
+  //
+  //     130ae29:  mov rcx, QWORD PTR [rsi]      ; rsi is the panelId argument -- DEREFERENCED
+  //     130ae33:  test rcx,rcx
+  //     130ae36:  je   ...                      ; NULL is handled; garbage is not
+  //
+  // i.e. it treats the argument as a `CUtlString*` — a `char**` — and loads the inner pointer.
+  // s2script's `"string"` arg kind marshals a raw `char*`, so the engine read the first eight bytes
+  // of the ASCII text "panel1" (0x0031_6C65_6E61_70) as a pointer and followed it. Non-NULL, so the
+  // helper's own null guard did not save it.
+  //
+  // WHY THIS IS NOT A GAMEDATA FIX. The declared arg vocabulary is closed:
+  // `bool | int | float | string | vector | entity` (packages/sdk/src/gamedata/types.ts). None of
+  // them is "pointer to a CUtlString", and JS has no way to build one — there is no 64-bit int kind
+  // to smuggle an address through either. The descriptor cannot be written correctly TODAY, so no
+  // descriptor is written at all: an armed call that segfaults is strictly worse than an absent one.
+  //
+  // WHAT WOULD UNBLOCK IT. A core change, not a plugin change — either a `utlstring` arg kind that
+  // wraps the marshalled `char*` in a temporary `CUtlString` before the call, or a first-class HUD
+  // capability in the game package. Until then `sm_hud_class` / `sm_hud_var` refuse by design and
+  // say why. See src/demohud.ts for the HUD that DOES work today.
+  //
+  // The signatures stay because they are hard-won and correct — re-deriving them costs an hour, and
+  // whoever adds the `utlstring` kind will want them. They are inert: nothing references them.
+  //
+  // RE-DERIVING AFTER THE NEXT UPDATE:
+  //   1. `grep -ac SetHasClassForPlayer libserver.so` to confirm the binding still exists.
+  //   2. Find code xrefs to that string. They are RIP-relative (`lea reg,[rip+disp32]`), so the
+  //      address never appears as an absolute pointer — solve `disp + p == target - delta - 4`
+  //      in one pass over the executable segments. NOTE: those xrefs land in ARGUMENT-CHECK ERROR
+  //      MESSAGES, not a registration table. The enclosing function is the cs_script THUNK.
+  //   3. Take the thunk call that follows its argument conversions.
+  //   4. Confirm structurally: the callee must bounds-check its slot against
+  //      m_vecPlayerLayoutStates (`cmp esi,[rdi+0x790]`) and index it as `slot*0x1a0 + [rbx+0x798]`
+  //      — which also re-confirms offset 1936 and sizeof(state)==416.
+  //   5. The two `ForPlayer` setters are byte-identical for 67 bytes; they diverge at +0x43 on
+  //      argument width — `45 89 C6` (mov r14d,r8d, the int status) is SetHasClassForPlayer,
+  //      `4D 89 C6` (mov r14,r8, a pointer) is SetDialogVariableStringForPlayer.
+  //
+  "signatures": {
+    // An impossible pattern: `DE AD BE EF` repeated will not appear at a function entry in
+    // libserver.so, so `resolve: direct` finds zero matches and the descriptor degrades by name.
+    // Keeping four separate entries (rather than one shared stub) means that when you derive the
+    // real patterns you fill them in independently and arm the calls one at a time.
+    // ─── The HUD CLICK receiver. Self-resolved against build 24916958. ────────────────────────
+    //
+    // CCSCustomHudLayout's click dispatcher. Its args are
+    //     (pulse binding /*rdi*/, CCSPlayerController* clicker /*rsi*/,
+    //      CCSCustomHudLayout* layout /*rdx*/, const std::string* buttonId /*rcx*/)
+    // and the body walks a linked list of registered receivers, calling each through vtable slot
+    // +0x120 with (node, clicker, layout, buttonId) and following +0x18 to the next.
+    //
+    // IDENTITY, structurally: rdi is never read — it is overwritten with the list node on the first
+    // instruction of the loop — while rsi/rdx/rcx are saved into r14/r13/r12 and re-passed. That
+    // shape (ignore arg0, relay three pointers to every listener) is what a Pulse binding receiver
+    // looks like, and there is exactly one such function reachable from the CustomHudClicked
+    // binding strings.
+    //
+    // PROVENANCE: the pattern came from the cs2-customhud project (GitLab, cs2-server-plugins),
+    // which derived it by tracing the CCSCustomHudLayout_API Pulse name strings. It is NOT taken on
+    // trust — it was re-scanned against OUR libserver.so and matches EXACTLY ONCE, at va 0xb2bcb0,
+    // and the disassembly above was read back to confirm the argument registers. Re-verify both on
+    // every CS2 update; a borrowed constant that still matches is still borrowed until you check.
+    "CCSCustomHudLayout_CustomHudClickedReceiver": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D ? ? ? ? 48 85 DB 74 27 49 89 F6 49 89 D5 49 89 CC 48 8B 03 48 89 DF 4C 89 E1 4C 89 EA 4C 89 F6 FF 90 20 01 00 00 48 8B 5B 18 48 85 DB 75 E2 5B 41 5C 41 5D 41 5E 5D C3",
+        "resolve": "direct",
+        // DELIBERATE OPT-OUT, not an oversight. The framework honours an empty validator and WARNs
+        // at boot, which is the right trade here: the two validator kinds this repo has are
+        // `string-xref` and `vtable-member`, and this function is neither — it references no string
+        // literal (it walks a receiver list) and it is not reached through a vtable slot.
+        //
+        // The validator vocabulary is `prologue` / `string-xref` / `vtable-member`, and the last two
+        // do not apply: this function references no string literal (it walks a receiver list through
+        // a global) and is not reached through a vtable slot.
+        //
+        // So `prologue` it is — and it is worth being straight about what that buys. It re-checks
+        // the resolved address at EVERY load, which catches the treadmill case where the pattern
+        // matches something else after an update. It does NOT add independent evidence today: these
+        // bytes are a prefix of the pattern above, so a fresh match trivially satisfies it.
+        //
+        // The real gate is the pattern itself: 71 bytes covering the WHOLE function, including its
+        // distinctive tail (`call [rax+0x120]` per list node, `mov rbx,[rbx+0x18]` to the next). It
+        // was re-scanned against our own libserver.so and matches EXACTLY ONCE, and the
+        // disassembly was read back to confirm the argument registers. A whole-body pattern is a
+        // much narrower claim than a bare prologue, which is why a bare prologue would not be
+        // acceptable here and this is.
+        "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D" }
+      }
+    },
+    "CCSCustomHudLayout_SetHasClass": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "DE AD BE EF DE AD BE EF DE AD BE EF DE AD BE EF",
+        "resolve": "direct"
+      }
+    },
+    // ─── SELF-RESOLVED against build 24916958's libserver.so. Not borrowed. ───────────────────
+    //
+    // CCSCustomHudLayout::SetHasClassForPlayer(int playerSlot /*esi*/, CUtlString panelId /*rdx*/,
+    //                                          CUtlString className /*rcx*/, int status /*r8d*/)
+    // va 0x1312b30, build 24916958.
+    //
+    // IDENTITY IS STRUCTURAL, not a name guess. Three independent things agree:
+    //
+    //  1. REACHED FROM THE BINDING. The cs_script thunk at va 0xb41cd0 carries the literal
+    //     "SetHasClassForPlayer" in its argument-check error paths, converts its JS arguments, and
+    //     tail-calls THIS function at 0xb41e8c.
+    //  2. IT INDEXES THE RIGHT FIELD. Its first real instruction is
+    //         cmp esi, DWORD PTR [rdi+0x790]   ; 0x790 == 1928+8 == 1936 == m_vecPlayerLayoutStates
+    //     i.e. it bounds-checks the player slot against m_vecPlayerLayoutStates.Count() and
+    //     early-returns — which independently CONFIRMS src/offsets.ts's 1936.
+    //  3. ITS 4th ARG IS 32-BIT. At +0x43 it does `45 89 C6` (mov r14d,r8d). Its near-twin at
+    //     va 0x1312120 is byte-identical for 67 bytes and then does `4D 89 C6` (mov r14,r8) — a
+    //     64-bit move, i.e. a pointer. An int 4th arg is EHudPanelClassStatus_t; a pointer 4th arg
+    //     is the dialog-variable VALUE string. That one byte is what separates the two, and it is
+    //     why the pattern below runs all the way to +0x46 instead of stopping at the prologue.
+    //
+    // The 18th byte is masked: it is `sub rsp,IMM`, whose frame size is the most build-volatile
+    // thing in the prologue. Validated UNIQUE with the mask applied — exactly one whole-file match.
+    "CCSCustomHudLayout_SetHasClassForPlayer": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 90 07 00 00 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 45 89 C6",
+        "resolve": "direct"
+      }
+    },
+    "CCSCustomHudLayout_SetDialogVariableString": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "DE AD BE EF DE AD BE EF DE AD BE EF DE AD BE EC",
+        "resolve": "direct"
+      }
+    },
+    // ─── SELF-RESOLVED against build 24916958's libserver.so. Not borrowed. ───────────────────
+    //
+    // CCSCustomHudLayout::SetDialogVariableStringForPlayer(int playerSlot /*esi*/,
+    //     CUtlString panelId /*rdx*/, CUtlString variableName /*rcx*/, CUtlString value /*r8*/)
+    // va 0x1312120, build 24916958.
+    //
+    // The near-twin of SetHasClassForPlayer above: byte-identical for 67 bytes (same slot
+    // bounds-check against m_vecPlayerLayoutStates at +0x790), diverging only at +0x43 where it
+    // moves its 4th argument as a full 64-bit register (`4D 89 C6`) rather than a 32-bit one —
+    // a pointer, i.e. the value STRING, not an enum.
+    //
+    // Its identity is therefore established by ELIMINATION plus that argument width, one step
+    // weaker than SetHasClassForPlayer's (which is additionally reached from a named thunk). It is
+    // the only other function in the binary with this shape, and the only other `ForPlayer` HUD
+    // setter the update added. Confirm the effect in-game before trusting it: sm_hud_var should
+    // move m_vecDialogVariableStrings' count, which sm_hud_status prints.
+    "CCSCustomHudLayout_SetDialogVariableStringForPlayer": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 90 07 00 00 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 4D 89 C6",
+        "resolve": "direct"
+      }
+    }
+  },
+
+  "calls": {
+    // RE-ARMED against the new `utlstring` arg kind (core + shim change).
+    //
+    // The withdrawal note above stands as history: these were armed with `"string"`, which passes a
+    // raw char*, and the callee dereferences its argument as a `CUtlString*` — that segfaulted a
+    // live server. `utlstring` marshals the SAME buffer and then has the shim pass the address of a
+    // call-scoped `{ char* }` temporary, which is exactly what `CUtlString` is
+    // (hl2sdk public/tier1/utlstring.h: `char* m_pString`, one member).
+    //
+    // Only the two `ForPlayer` variants are declared: they are the ones whose addresses are
+    // structurally confirmed. The globals are still unlocated.
+    "setHasClassForPlayer": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSCustomHudLayout_SetHasClassForPlayer" },
+      "args": ["int", "utlstring", "utlstring", "int"],
+      "argNames": ["playerSlot", "panelId", "className", "status"],
+      "returns": "void"
+    },
+
+    // Arg order and widths are read off the callee, not guessed: the thunk loads esi (slot), rdx and
+    // rcx (the two CUtlStrings) and r8 — and this one moves r8 as a FULL 64-bit register
+    // (`4D 89 C6`), i.e. a pointer, which is why the 4th arg is a utlstring here and an int above.
+    "setDialogVariableStringForPlayer": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSCustomHudLayout_SetDialogVariableStringForPlayer" },
+      "args": ["int", "utlstring", "utlstring", "utlstring"],
+      "argNames": ["playerSlot", "panelId", "variableName", "value"],
+      "returns": "void"
+    }
+  },
+
+  // ── Instance.OnCustomHudClicked: NOW DECLARED, as the hook below. ───────────────────────────
+  //
+  // This was written off once as unreachable, and that was wrong. The reasoning went: clicks arrive
+  // as CS_UM_CustomHudClicked (id 390), an INBOUND user message; `UserMessages.onPre` is outbound
+  // only; therefore no plugin can see a click. The first two facts are true and the conclusion did
+  // not follow — it only ruled out the USER-MESSAGE route.
+  //
+  // Valve also exposes the click through a Pulse binding receiver, a plain C++ function, which is
+  // detourable like anything else. That is `CCSCustomHudLayout_CustomHudClickedReceiver` above.
+  // Credit to the cs2-customhud project for finding it first.
+
+  "hooks": {
+    // ctx.hud.onCustomHudClicked(handler) — fires when a player clicks a button in a
+    // custom_hud_layout panel.
+    //
+    // SHAPE. `this_i64_i64_i64` was added to the vocabulary for this (core + shim). Every argument
+    // is a pointer, so no existing shape fits: `this_i64_i32_i64`'s middle slot is i32, and
+    // narrowing a pointer is the exact bug hook_dispatch.h documents as a live SEGV.
+    //
+    // RECEIVER. The thunk deliberately aims the view's receiver at the CLICKER (the rsi argument)
+    // rather than at the detour's own `this`, which is a pulse-binding object the engine overwrites
+    // immediately anyway. So `player` is a books-gated EntityRef for the controller that clicked —
+    // no new machinery, just the existing receiver path pointed somewhere useful.
+    //
+    // PARAMS. One: the button id, as text. It arrives as a std::string that dies with the frame, so
+    // the thunk copies it into the arg view and JS reads the copy.
+    //
+    // NO bypassWith: this is an observer. Suppressing it would stop the click reaching every OTHER
+    // registered receiver, including the map's own cs_script — which is how the zoo map's Dismiss
+    // button works. Return Continue.
+    "onCustomHudClicked": {
+      "target": { "kind": "signature", "name": "CCSCustomHudLayout_CustomHudClickedReceiver" },
+      "shape": "this_i64_i64_i64",
+      "params": ["buttonId"],
+      "receiver": { "kind": "entity", "as": "player" },
+      "expose": { "ctx": "hud" }
+    }
+  }
+}

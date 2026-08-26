@@ -1,0 +1,29 @@
+{
+  "name": "@demo/hud-lab",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "dependencies": {
+    "@s2script/sdk": "^0.1.0",
+    "@s2script/cs2": "^0.5.0"
+  },
+  "s2script": {
+    "gamedata": "gamedata/hud-lab.gamedata.jsonc",
+    "permissions": [
+      "engine:calls",
+      "engine:hooks"
+    ],
+    "config": {
+      "layout": {
+        "type": "string",
+        "default": "",
+        "description": "Layout asset name written to the custom_hud_layout entity's `layout` keyvalue on sm_hud_create. Empty = create the entity with no layout (still exercises spawn + state writes). Live-reloadable: edit and re-run sm_hud_create."
+      },
+      "auto_show": {
+        "type": "bool",
+        "default": true,
+        "description": "Show the panel automatically when a player becomes active, mirroring Valve's OnPlayerActivate -> ShowWelcome. Requires a layout entity to already exist (sm_hud_create)."
+      }
+    }
+  }
+}

@@ -12,7 +12,7 @@ const VECTOR_TS = "{ readonly x: number; readonly y: number; readonly z: number 
 
 const ARG_TS: Record<ArgKind, string> = {
   bool: "boolean", int: "number", float: "number",
-  string: "string", vector: VECTOR_TS,
+  string: "string", utlstring: "string", vector: VECTOR_TS,
   entity: "EntityRef | null",
 };
 const RET_TS: Record<RetKind, string> = {

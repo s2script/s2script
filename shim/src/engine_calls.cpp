@@ -92,7 +92,8 @@ constexpr uint64_t kInvalidEntityHandle = S2_ENTITY_HANDLE_NONE;
 constexpr size_t kMaxCalls = 1024;
 
 // gpKind values — must match the Rust side's classify_args (0 scalar, 1 entity, 2 string, 3 vector).
-enum : unsigned char { kArgScalar = 0, kArgEntity = 1, kArgString = 2, kArgVector = 3 };
+enum : unsigned char { kArgScalar = 0, kArgEntity = 1, kArgString = 2, kArgVector = 3,
+                       kArgUtlString = 4 };
 // retKind values — must match the core's return vocabulary.
 enum { kRetVoid = 0, kRetBool = 1, kRetInt = 2, kRetFloat = 3, kRetEntity = 4 };
 
@@ -471,6 +472,10 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     }
 
     uint64_t g[kMaxGpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    // Backing storage for `utlstring` args: one call-scoped CUtlString per GP slot. A
+    // CUtlString is a single `char*`, so a uint64_t slot IS one, and `&utl[i]` is a valid
+    // `CUtlString*`. Declared next to `g` so its lifetime is visibly the call's.
+    uint64_t utl[kMaxGpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     // `float`, not `double` — see the FnU64/FnF32 note above. The core hands us f64 across the ABI
     // (JS numbers are doubles); the narrowing to the engine's 32-bit float happens HERE, once.
     float    f[kMaxFpArgs] = { 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -495,6 +500,21 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
                 // length does not cross the ABI. The buffer is valid only for THIS call (spec §4).
                 if (!strs || gp[i] >= static_cast<uint64_t>(gpCount)) return 0;
                 g[i] = reinterpret_cast<uint64_t>(strs[gp[i]]);
+                break;
+            }
+            case kArgUtlString: {
+                // CUtlString is exactly `{ char* m_pString }` (hl2sdk public/tier1/utlstring.h), and
+                // it is taken BY ADDRESS. So the temporary IS the pointer: park the char* in a
+                // call-scoped slot and hand the callee that slot's address.
+                //
+                // The slot lives in `utl`, which is a local of THIS function, so it outlives the
+                // call below and dies with it — matching the `strs` buffers' documented lifetime
+                // (valid only for this call). Never heap-allocated: a callee that took ownership
+                // and freed it would corrupt the engine's heap, and a stack address makes that
+                // failure immediate and obvious rather than silent.
+                if (!strs || gp[i] >= static_cast<uint64_t>(gpCount)) return 0;
+                utl[i] = reinterpret_cast<uint64_t>(strs[gp[i]]);
+                g[i] = reinterpret_cast<uint64_t>(&utl[i]);
                 break;
             }
             case kArgVector: {

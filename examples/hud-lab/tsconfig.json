@@ -1,0 +1,4 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src", ".s2script/gamedata.d.ts", ".s2script/hooks.d.ts", "../../packages/sdk/globals.d.ts"]
+}

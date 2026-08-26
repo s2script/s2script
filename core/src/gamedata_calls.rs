@@ -63,6 +63,10 @@ pub(crate) const GP_SCALAR: u8 = 0;
 pub(crate) const GP_ENTITY: u8 = 1;
 pub(crate) const GP_STRING: u8 = 2;
 pub(crate) const GP_VECTOR: u8 = 3;
+/// A `CUtlString` argument: same buffer as GP_STRING, but the shim passes the ADDRESS of a
+/// call-scoped `{ char* }` temporary rather than the `char*` itself. Mirrors `kArgUtlString`
+/// in engine_calls.cpp — this is an ABI.
+pub(crate) const GP_UTLSTRING: u8 = 4;
 
 /// Return-kind codes. MUST match `engine_calls.cpp`'s `kRet*` enum.
 pub(crate) const RET_VOID: i32 = 0;
@@ -112,6 +116,7 @@ pub(crate) fn gp_kind_of(arg: &str) -> Option<u8> {
         "bool" | "int" => GP_SCALAR,
         "entity" => GP_ENTITY,
         "string" => GP_STRING,
+        "utlstring" => GP_UTLSTRING,
         "vector" => GP_VECTOR,
         _ => return None,
     })
