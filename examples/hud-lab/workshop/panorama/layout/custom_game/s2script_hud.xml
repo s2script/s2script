@@ -1,0 +1,120 @@
+<!--
+  s2script HUD kit — a GENERIC client-side surface driven entirely from the server.
+
+  WHY IT LOOKS LIKE THIS. Nothing can render on a client that is not already on that client, so a
+  server plugin cannot invent panels at runtime. What it CAN do is toggle CSS classes and set dialog
+  variables on panels that already exist. So this file deliberately ships a fixed set of slots with
+  no content of its own: every string is a dialog variable, and every visual state is a class.
+
+  The server drives it with exactly two engine calls (both armed in
+  examples/hud-lab/gamedata/hud-lab.gamedata.jsonc):
+
+      SetHasClassForPlayer(slot, panelId, className, status)   -> show/hide/restyle
+      SetDialogVariableStringForPlayer(slot, panelId, var, s)  -> text
+
+  DIALOG VARIABLES are referenced as {s:name} and are set with
+  `SetDialogVariableString(panelId, variableName, value)` — note the FIRST argument is a panelId, so
+  every element carrying a {s:} must have its own `id` for the server to aim at. A variable that has
+  never been set renders empty, so every slot below is safe to leave untouched.
+
+  ELEMENT VOCABULARY is closed. Valve's point_script.d.ts (shipped in
+  content/csgo_addons/cs_script_demo/maps/scripts/) states the supported set exactly:
+      <Panel>  id, class, hittest
+      <Label>  id, class, hittest, text
+      <Image>  id, class, hittest, src
+      <Button> id, class
+  "Styling with css is supported. Events and client side scripting are not supported."
+  Nothing else is legal — this kit deliberately uses only Panel/Label/Button.
+
+  PANEL IDS are the addressing scheme — they are what you pass as `panelId`. Keep them stable:
+  renaming one silently breaks every server calling it.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/custom_game/s2script_hud.css" />
+	</styles>
+
+	<Panel class="s2-root">
+
+		<!-- ============================================================================
+		     CENTER DIALOG — the modal-style panel: kicker, title, body, four buttons.
+		     NOT hidden here. Valve's own layouts declare no hide class in the markup: a panel does
+		     not render for a player until that player has PER-PLAYER STATE on the layout, so
+		     "default visible" shows nothing until the server pushes an entry. Declaring a hide
+		     class in the XML instead would mean asking the engine to REMOVE a markup-declared
+		     class, which is not the same operation as clearing a per-player one.
+		     ============================================================================ -->
+		<Panel id="s2_dialog" class="s2-dialog">
+			<Label id="s2_dialog_kicker" class="s2-kicker" text="{s:kicker}" />
+			<Label id="s2_dialog_title"  class="s2-title"  text="{s:title}" />
+			<Label id="s2_dialog_body"   class="s2-body"   text="{s:body}" />
+
+			<Panel class="s2-actions">
+				<!-- Real <Button> elements: clicks DO reach the server, via a detour on
+				     CCSCustomHudLayout's click receiver, delivered as (player, buttonId). The id
+				     here IS the buttonId the server-side handler receives. -->
+				<Button id="s2_btn_0" class="s2-button"><Label id="s2_btn_0_text" class="s2-button-text" text="{s:btn0}" /></Button>
+				<Button id="s2_btn_1" class="s2-button"><Label id="s2_btn_1_text" class="s2-button-text" text="{s:btn1}" /></Button>
+				<Button id="s2_btn_2" class="s2-button"><Label id="s2_btn_2_text" class="s2-button-text" text="{s:btn2}" /></Button>
+				<Button id="s2_btn_3" class="s2-button"><Label id="s2_btn_3_text" class="s2-button-text" text="{s:btn3}" /></Button>
+			</Panel>
+		</Panel>
+
+		<!-- ============================================================================
+		     CORNER READOUTS — four independent always-on slots (scoreboard, timer, stats,
+		     objective). Separate panels rather than one, so a server can use any subset.
+		     ============================================================================ -->
+		<Panel id="s2_hud_tl" class="s2-corner s2-tl">
+			<Label id="s2_hud_tl_head" class="s2-corner-head" text="{s:tl_head}" />
+			<Label id="s2_hud_tl_body" class="s2-corner-body" text="{s:tl_body}" />
+		</Panel>
+		<Panel id="s2_hud_tr" class="s2-corner s2-tr">
+			<Label id="s2_hud_tr_head" class="s2-corner-head" text="{s:tr_head}" />
+			<Label id="s2_hud_tr_body" class="s2-corner-body" text="{s:tr_body}" />
+		</Panel>
+		<Panel id="s2_hud_bl" class="s2-corner s2-bl">
+			<Label id="s2_hud_bl_head" class="s2-corner-head" text="{s:bl_head}" />
+			<Label id="s2_hud_bl_body" class="s2-corner-body" text="{s:bl_body}" />
+		</Panel>
+		<Panel id="s2_hud_br" class="s2-corner s2-br">
+			<Label id="s2_hud_br_head" class="s2-corner-head" text="{s:br_head}" />
+			<Label id="s2_hud_br_body" class="s2-corner-body" text="{s:br_body}" />
+		</Panel>
+
+		<!-- ============================================================================
+		     CENTER BANNER — a single wide line for announcements.
+		     ============================================================================ -->
+		<Panel id="s2_banner" class="s2-banner">
+			<Label id="s2_banner_text" class="s2-banner-text" text="{s:banner}" />
+		</Panel>
+
+		<!-- ============================================================================
+		     LIST — eight generic rows. This is the menu surface: set each row's text and
+		     apply s2-row-active to whichever one is the cursor.
+		     ============================================================================ -->
+		<Panel id="s2_list" class="s2-list">
+			<Label id="s2_list_title" class="s2-list-title" text="{s:list_title}" />
+			<Label id="s2_row_0" class="s2-row" text="{s:row0}" />
+			<Label id="s2_row_1" class="s2-row" text="{s:row1}" />
+			<Label id="s2_row_2" class="s2-row" text="{s:row2}" />
+			<Label id="s2_row_3" class="s2-row" text="{s:row3}" />
+			<Label id="s2_row_4" class="s2-row" text="{s:row4}" />
+			<Label id="s2_row_5" class="s2-row" text="{s:row5}" />
+			<Label id="s2_row_6" class="s2-row" text="{s:row6}" />
+			<Label id="s2_row_7" class="s2-row" text="{s:row7}" />
+			<Label id="s2_list_foot" class="s2-list-foot" text="{s:list_foot}" />
+		</Panel>
+
+		<!-- ============================================================================
+		     PROGRESS — a meter driven by width classes (s2-w0 .. s2-w10), because a server
+		     can only toggle classes, never set a style property directly.
+		     ============================================================================ -->
+		<Panel id="s2_meter" class="s2-meter">
+			<Label id="s2_meter_label" class="s2-meter-label" text="{s:meter_label}" />
+			<Panel class="s2-meter-track">
+				<Panel id="s2_meter_fill" class="s2-meter-fill s2-w0" />
+			</Panel>
+		</Panel>
+
+	</Panel>
+</root>

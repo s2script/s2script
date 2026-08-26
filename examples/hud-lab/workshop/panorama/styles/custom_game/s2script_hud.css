@@ -1,0 +1,168 @@
+/*
+  s2script HUD kit — stylesheet.
+
+  THE CONSTRAINT THAT SHAPES THIS FILE: a server plugin can only toggle CSS CLASSES
+  (SetHasClassForPlayer) and set dialog-variable STRINGS (SetDialogVariableStringForPlayer). It
+  cannot set a style property. So anything that needs to vary at runtime must be pre-enumerated as
+  a class here — that is why there are colour, size and width families below rather than one rule
+  with a parameter.
+
+  Every visual state a server might want is therefore a class it can add or remove. Adding a new
+  one later means re-publishing the workshop item, so it is worth over-providing now.
+*/
+
+/* ---------------------------------------------------------------- root + shared visibility --- */
+
+.s2-root { width: 100%; height: 100%; }
+
+/*
+  Hiding is opacity + a transition rather than `visibility: collapse`, so show/hide fades instead of
+  popping. A collapsed panel also stops laying out, which makes a re-show jump — opacity keeps the
+  geometry stable.
+*/
+.s2-hidden { opacity: 0.0; }
+
+/* -------------------------------------------------------------------------- centre dialog --- */
+
+.s2-dialog {
+	width: 640px;
+	horizontal-align: center;
+	vertical-align: center;
+	flow-children: down;
+	padding: 28px;
+	background-color: #10161de8;
+	border: 1px solid #5db2d1cc;
+	box-shadow: #000000aa 0px 0px 30px 0px;
+	transition-property: opacity;
+	transition-duration: 0.12s;
+	opacity: 1.0;
+}
+.s2-kicker { color: #d9aa45ff; font-size: 14px; font-weight: bold; letter-spacing: 1px; margin-bottom: 8px; }
+.s2-title  { color: #f4f7f8ff; font-size: 34px; font-weight: bold; margin-bottom: 12px; }
+.s2-body   { color: #a9bfcbff; font-size: 18px; margin-bottom: 24px; }
+
+.s2-actions { flow-children: right; }
+.s2-button {
+	min-width: 150px;
+	padding: 10px 16px;
+	margin-right: 10px;
+	background-color: #20313ddd;
+	border: 1px solid #78a7ba88;
+	transition-property: background-color, border;
+	transition-duration: 0.1s;
+}
+.s2-button-text { color: #eaf4f7ff; font-size: 16px; horizontal-align: center; }
+/* A button with no label set should not occupy space — the server leaves unused slots empty. */
+.s2-button-empty { visibility: collapse; }
+
+/* ------------------------------------------------------------------------- corner readouts --- */
+
+.s2-corner {
+	width: 300px;
+	padding: 12px 14px;
+	flow-children: down;
+	background-color: #0d1219cc;
+	border-left: 3px solid #5db2d1cc;
+	transition-property: opacity;
+	transition-duration: 0.12s;
+	opacity: 1.0;
+}
+.s2-tl { horizontal-align: left;  vertical-align: top;    margin: 90px 0px 0px 20px; }
+.s2-tr { horizontal-align: right; vertical-align: top;    margin: 90px 20px 0px 0px; }
+.s2-bl { horizontal-align: left;  vertical-align: bottom; margin: 0px 0px 140px 20px; }
+.s2-br { horizontal-align: right; vertical-align: bottom; margin: 0px 20px 140px 0px; }
+.s2-corner-head { color: #d9aa45ff; font-size: 13px; font-weight: bold; letter-spacing: 1px; }
+.s2-corner-body { color: #e8f0f4ff; font-size: 20px; }
+
+/* -------------------------------------------------------------------------------- banner --- */
+
+.s2-banner {
+	horizontal-align: center;
+	vertical-align: top;
+	margin-top: 140px;
+	padding: 10px 26px;
+	background-color: #10161de0;
+	border: 1px solid #5db2d199;
+	transition-property: opacity;
+	transition-duration: 0.12s;
+	opacity: 1.0;
+}
+.s2-banner-text { color: #f4f7f8ff; font-size: 24px; font-weight: bold; }
+
+/* ---------------------------------------------------------------------------------- list --- */
+
+.s2-list {
+	width: 420px;
+	horizontal-align: right;
+	vertical-align: center;
+	margin-right: 40px;
+	padding: 18px;
+	flow-children: down;
+	background-color: #0d1219e8;
+	border: 1px solid #5db2d1aa;
+	transition-property: opacity;
+	transition-duration: 0.12s;
+	opacity: 1.0;
+}
+.s2-list-title { color: #d9aa45ff; font-size: 20px; font-weight: bold; margin-bottom: 10px; }
+.s2-row        { color: #c3d4dcff; font-size: 17px; padding: 4px 6px; }
+.s2-list-foot  { color: #6b7f89ff; font-size: 13px; margin-top: 10px; }
+/* Cursor / selection states — applied per row by the server. */
+.s2-row-active   { color: #ffffffff; background-color: #266b8bcc; }
+.s2-row-disabled { color: #55656dff; }
+.s2-row-empty    { visibility: collapse; }
+
+/* --------------------------------------------------------------------------------- meter --- */
+
+.s2-meter {
+	width: 420px;
+	horizontal-align: center;
+	vertical-align: bottom;
+	margin-bottom: 200px;
+	flow-children: down;
+	transition-property: opacity;
+	transition-duration: 0.12s;
+	opacity: 1.0;
+}
+.s2-meter-label { color: #e8f0f4ff; font-size: 16px; margin-bottom: 6px; }
+.s2-meter-track { width: 100%; height: 14px; background-color: #0d1219cc; border: 1px solid #5db2d188; }
+.s2-meter-fill  { height: 100%; background-color: #4ade80ff; transition-property: width; transition-duration: 0.15s; }
+/*
+  Width is a CLASS FAMILY, not a property: the server has no way to write a style value, so a meter
+  has to be quantised. Ten percent steps is the useful granularity for a HUD bar.
+*/
+.s2-w0 { width: 0%; }   .s2-w1 { width: 10%; }  .s2-w2 { width: 20%; }
+.s2-w3 { width: 30%; }  .s2-w4 { width: 40%; }  .s2-w5 { width: 50%; }
+.s2-w6 { width: 60%; }  .s2-w7 { width: 70%; }  .s2-w8 { width: 80%; }
+.s2-w9 { width: 90%; }  .s2-w10 { width: 100%; }
+
+/* ------------------------------------------------------------------- runtime colour states --- */
+/*
+  Applied to any panel. Kept generic (not per-panel) so one class works everywhere and the server
+  does not need to know which slot it is talking to.
+*/
+.s2-accent-gold  { border: 1px solid #d9aa45ff; }
+.s2-accent-red   { border: 1px solid #f87171ff; }
+.s2-accent-green { border: 1px solid #4ade80ff; }
+.s2-accent-blue  { border: 1px solid #6cb4eeff; }
+
+.s2-text-white { color: #ffffffff; }
+.s2-text-gold  { color: #d9aa45ff; }
+.s2-text-red   { color: #f87171ff; }
+.s2-text-green { color: #4ade80ff; }
+.s2-text-blue  { color: #6cb4eeff; }
+.s2-text-grey  { color: #8a9aa3ff; }
+
+.s2-fill-red   { background-color: #f87171ff; }
+.s2-fill-amber { background-color: #facc15ff; }
+.s2-fill-green { background-color: #4ade80ff; }
+
+/* Size tiers, for reusing one slot at different emphases. */
+.s2-sm { font-size: 14px; }
+.s2-md { font-size: 20px; }
+.s2-lg { font-size: 28px; }
+.s2-xl { font-size: 40px; }
+
+/* Attention states. */
+.s2-dim   { opacity: 0.45; }
+.s2-flash { background-color: #d9aa4533; }

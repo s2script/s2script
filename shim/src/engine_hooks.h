@@ -42,6 +42,9 @@ void S2_HookResetAll(void);
 // frame. Return 0 on success, -1 on a bad index or a null view.
 int  S2_HookReadF32 (void* argView, int idx, float* out);
 int  S2_HookReadI32 (void* argView, int idx, int32_t* out);
+// Text params (see the kParamStr note in engine_hooks.cpp): copies the view's NUL-terminated
+// copy into `out`, bounded by `cap`. -1 on a dead view, bad index, or a non-text param.
+int  S2_HookReadStr (void* argView, int idx, char* out, int cap);
 int  S2_HookWriteF32(void* argView, int idx, float value);
 int  S2_HookWriteI32(void* argView, int idx, int32_t value);
 

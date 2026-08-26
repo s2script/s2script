@@ -1074,6 +1074,18 @@
       "shim": "S2_HookReadI32"
     },
     {
+      // Text params. The engine hands strings as pointers that die with the thunk's frame, so the
+      // thunk copies the bytes into the view and this reads the COPY. Appended after hook_read_i32:
+      // field order is the ABI, so a new op goes on the end, never in the middle.
+      "name": "hook_read_str",
+      "alias": "HookReadStrFn",
+      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, *mut std::ffi::c_char, c_int) -> c_int",
+      "group": "declarative inbound hooks, core half",
+      "c_ret": "int",
+      "c_params": "void* argView, int idx, char* out, int cap",
+      "shim": "S2_HookReadStr"
+    },
+    {
       "name": "hook_write_f32",
       "alias": "HookWriteF32Fn",
       "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, f32) -> c_int",
