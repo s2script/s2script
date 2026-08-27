@@ -8,11 +8,6 @@
     "@s2script/cs2": "^0.5.0"
   },
   "s2script": {
-    "gamedata": "gamedata/hud-lab.gamedata.jsonc",
-    "permissions": [
-      "engine:calls",
-      "engine:hooks"
-    ],
     "config": {
       "layout": {
         "type": "string",
@@ -22,7 +17,7 @@
       "auto_show": {
         "type": "bool",
         "default": true,
-        "description": "Show the panel automatically when a player becomes active, mirroring Valve's OnPlayerActivate -> ShowWelcome. Requires a layout entity to already exist (sm_hud_create)."
+        "description": "Show the shipped s2script_hud kit automatically when a player becomes active. Requires MultiAddonManager + workshop addon 3790153369."
       }
     }
   }

@@ -30,7 +30,7 @@ const coreSrc = readdirSync(coreSrcDir, { withFileTypes: true, recursive: true }
 // omitting activity.js and csitem.generated.js — while carrying a comment about how hand-kept lists
 // drift. Derive it, and fail loudly if the derivation stops working.
 const packager = readFileSync(new URL("scripts/package-addon.sh", root), "utf8");
-const catLine = packager.match(/cat (games\/cs2\/js\/\S+(?: games\/cs2\/js\/\S+)*) >/);
+const catLine = packager.match(/cat (games\/cs2\/js\/\S+(?: games\/cs2\/js\/\S+)*)\s*>/);
 if (!catLine) {
   throw new Error("games/cs2/js/eslint.config.mjs: could not find the prelude `cat` line in " +
                   "scripts/package-addon.sh — this config can no longer tell which files ship");

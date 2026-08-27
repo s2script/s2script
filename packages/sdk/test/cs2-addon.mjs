@@ -17,7 +17,7 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 /** Parse package-addon.sh's `cat games/cs2/js/… > …/pawn.js` line into its ordered file list. */
 function bundleFiles() {
   const sh = readFileSync(join(repo, "scripts/package-addon.sh"), "utf8");
-  const line = sh.split("\n").find((l) => /^\s*cat\s+games\/cs2\/js\/.*\bpawn\.js\b\s*>/.test(l));
+  const line = sh.split("\n").find((l) => /^\s*cat\s+games\/cs2\/js\/.*\bpawn\.js\b.*>/.test(l));
   if (!line) throw new Error("cs2-addon: no `cat games/cs2/js/… > …/pawn.js` line in scripts/package-addon.sh");
   const files = line.slice(0, line.indexOf(">")).match(/games\/cs2\/js\/[\w.-]+\.js/g) || [];
   if (!files.length) throw new Error("cs2-addon: parsed no game js files from package-addon.sh");

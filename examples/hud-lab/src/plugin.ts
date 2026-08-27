@@ -8,8 +8,8 @@
  * what is not, so that after an update you can tell the three cases apart on a live server:
  *
  *   TIER A  reachable today  — raw offset writes, entity I/O, game events, generated schema fields
- *   TIER B  needs a signature — the networked-vector setters (see gamedata/hud-lab.gamedata.jsonc)
- *   TIER C  needs a core change — inbound CS_UM_CustomHudClicked has no plugin-level path at all
+ *   TIER B  ctx.ui / game.cs2 — promoted HUD engine calls (SetHasClass/DialogVariable/InputCapture)
+ *   TIER C  resolved — inbound clicks via ctx.ui.onCustomHudClicked (game-package hook)
  *
  * `sm_hud_status` prints all three. Start there.
  *
@@ -42,7 +42,6 @@
 import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { config } from "@s2script/sdk/config";
-import { Engine } from "@s2script/sdk/unsafe";
 import { Chat } from "@s2script/sdk/chat";
 import { Player, Pawn } from "@s2script/cs2";
 import type { CommandInvocation } from "@s2script/sdk/commands";
@@ -52,8 +51,6 @@ import * as camera from "./camera";
 import * as bomb from "./bomb";
 import * as movement from "./movement";
 import * as menus from "./menus";
-import * as tierb from "./tierb";
-import * as panelctl from "./panelctl";
 import { DemoHud, sendOnce } from "./demohud";
 import { LAYOUT, STATE, LAYOUT_SIZE, globalStateField } from "./offsets";
 import {
@@ -70,56 +67,30 @@ const TAG = "[hud-lab]";
 const EYE_HEIGHT = 64;
 
 export default plugin((ctx) => {
-  const calls = tierb.resolveAll();
   const log = (line: string): void => console.log(`${TAG} ${line}`);
 
-  // The working HUD. One shared per-frame subscription, armed only while someone is watching.
+  /** Shipped workshop kit driven through the game-package ctx.ui API. */
+  const kitHud = ctx.ui.hud();
+
+  kitHud.onClick("s2_btn_3", (slot) => {
+    kitHud.hide(slot, "s2_dialog");
+    Chat.toSlot(slot, "[hud] dismissed");
+  });
+
+  ctx.ui.onCustomHudClicked((view) => {
+    const ref = view.player;
+    const who = ref
+      ? Player.all().find((p) => p.ref.index === ref.index && p.ref.id === ref.id) ?? null
+      : null;
+    const slot = who?.slot ?? -1;
+    const name = who?.playerName ?? (slot >= 0 ? `slot ${slot}` : "<unknown>");
+    log(`RAW CLICK button="${view.buttonId}" by ${name} (slot ${slot})`);
+  });
+
+  // The working centre-panel HTML HUD (separate from custom_hud_layout).
   const hud = new DemoHud(ctx);
 
-  // Say at load why the HUD setters are unreachable — an operator should learn this from the boot
-  // log, not from a command that appears to do nothing.
-  for (const line of tierb.statusLines(calls)) log(line);
-
   bomb.install(ctx, log);
-
-  // ── HUD CLICKS ───────────────────────────────────────────────────────────────────────────────
-  // The last missing piece: a real click on a real HUD button, delivered server-side.
-  //
-  // `Engine.hook` returns null when the descriptor failed a load-time gate (signature miss, no
-  // operator allow-list entry), so this is guarded once here rather than at the callback.
-  const onClick = Engine.hook("onCustomHudClicked");
-  console.log(`${TAG} onCustomHudClicked -> ${Engine.hookStatus("onCustomHudClicked")}`);
-  if (onClick) {
-    onClick((view) => {
-      // `player` is the CONTROLLER that clicked, books-gated by the framework — the thunk aims the
-      // receiver at the click's own argument rather than at the detour's `this`.
-      // There is no Player.fromEntity, so match the receiver's entity index against the connected
-      // controllers. Index+id together, not index alone: a recycled slot must not impersonate the
-      // clicker.
-      const ref = view.player;
-      const who = ref
-        ? Player.all().find((p) => p.ref.index === ref.index && p.ref.id === ref.id) ?? null
-        : null;
-      const slot = who?.slot ?? -1;
-      const name = who?.playerName ?? (slot >= 0 ? `slot ${slot}` : "<unknown>");
-      log(`CLICK button="${view.buttonId}" by ${name} (slot ${slot})`);
-      if (slot >= 0) {
-        Chat.toSlot(slot, `[hud] you clicked: ${view.buttonId}`);
-        // ACT on it. On a stock map there is no cs_script to respond, so the dialog stays up
-        // unless we hide it ourselves — which is exactly what Valve's own handler does
-        // (OnCustomHudClicked -> HideWelcome). This is the whole point of having the hook.
-        const ref = layout.preferred();
-        if (ref && view.buttonId === panelctl.ZOO_WELCOME.buttonId) {
-          const err = panelctl.hide(calls, ref, slot, panelctl.ZOO_WELCOME);
-          log(err ? `  hide refused: ${err}` : `  dismissed for slot ${slot}`);
-        }
-      }
-      // NO HookResult returned — this is an observer. Suppressing would stop the click reaching
-      // every other registered receiver, including the map's own cs_script (which is what makes
-      // the zoo map's Dismiss button actually dismiss).
-    });
-  }
-
 
   // ── Map start ───────────────────────────────────────────────────────────────────────────────
   // Auto-creation is OFF by default: a bad `layout` value would then run on every map load, and a
@@ -154,14 +125,11 @@ export default plugin((ctx) => {
 
     cmd.reply(`  demo HUD viewers: ${hud.count}`);
 
-    cmd.reply(`${TAG} ── TIER B (armed via the utlstring arg kind) ──`);
-    for (const line of tierb.statusLines(calls)) cmd.reply(line);
-
-    cmd.reply(`${TAG} ── TIER C (needs a core change) ──`);
-    cmd.reply("  Instance.OnCustomHudClicked / CS_UM_CustomHudClicked (id 390): UNREACHABLE.");
-    cmd.reply("  UserMessages.onPre is outbound-only, and the inbound-hook shape vocabulary has no");
-    cmd.reply("  two-slot `this_i64` for a (this, const Msg&) handler. Button clicks cannot be");
-    cmd.reply("  observed by any plugin until core grows an inbound-usermessage capability.");
+    cmd.reply(`${TAG} ── TIER B (ctx.ui / game.cs2) ──`);
+    cmd.reply("  layout: panorama/layout/custom_game/s2script_hud.xml");
+    cmd.reply("  addons: 3790153369 (MultiAddonManager)");
+    cmd.reply(`${TAG} ── TIER C (ctx.ui.onCustomHudClicked) ──`);
+    cmd.reply("  ARMED via game-package hook — use sm_kit / sm_hud_show, then click s2_btn_*");
   });
 
   // ── Offset verification ─────────────────────────────────────────────────────────────────────
@@ -281,26 +249,17 @@ export default plugin((ctx) => {
   // ── Tier B: classes and dialog variables ────────────────────────────────────────────────────
   ctx.commands.registerAdmin("sm_hud_class", ADMFLAG.ROOT, (cmd) => {
     if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_class <panelId> <className> <1|0|-1> [target]`); return; }
-    const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout — run sm_hud_create first`); return; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
-    const err = tierb.setHasClass(calls, ref, slot, cmd.arg(0), cmd.arg(1), tierb.parseClassStatus(cmd.arg(2)));
-    if (err) { cmd.reply(`${TAG} ${err}`); return; }
-    const info = readLayoutInfo(ref);
-    cmd.reply(`${TAG} setHasClassForPlayer(slot ${slot}, "${cmd.arg(0)}", "${cmd.arg(1)}", ${cmd.arg(2)})`);
-    cmd.reply(`  panelIds=${info.panelIds} classNames=${info.classNames} — a RISING count means the engine interned our name`);
+    const status = parseClassStatus(cmd.arg(2));
+    const err = kitHud.setClass(slot, cmd.arg(0), cmd.arg(1), status === 1);
+    cmd.reply(err ? `${TAG} ${err}` : `${TAG} setClass slot ${slot} "${cmd.arg(0)}" "${cmd.arg(1)}" -> ${status}`);
   });
 
   ctx.commands.registerAdmin("sm_hud_var", ADMFLAG.ROOT, (cmd) => {
     if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_var <panelId> <variableName> <value> [target]`); return; }
-    const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout — run sm_hud_create first`); return; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
-    const err = tierb.setDialogVariable(calls, ref, slot, cmd.arg(0), cmd.arg(1), cmd.argsFrom(2));
-    if (err) { cmd.reply(`${TAG} ${err}`); return; }
-    const info = readLayoutInfo(ref);
-    cmd.reply(`${TAG} setDialogVariableStringForPlayer(slot ${slot}, "${cmd.arg(0)}", "${cmd.arg(1)}", "${cmd.argsFrom(2)}")`);
-    cmd.reply(`  dialogVars=${info.dialogVariableNames} — a RISING count means the engine interned our variable`);
+    const err = kitHud.setText(slot, cmd.arg(0), cmd.argsFrom(2));
+    cmd.reply(err ? `${TAG} ${err}` : `${TAG} setText slot ${slot} "${cmd.arg(0)}"`);
   });
 
   // ── Tier A: the SetHUDVisibility entity input ───────────────────────────────────────────────
@@ -419,65 +378,36 @@ export default plugin((ctx) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_kit needs an in-game caller`); return; }
     const slot = cmd.callerSlot;
 
-    // Always target OUR entity, never a map-authored one — layout.preferred() favours the map's,
-    // which is what made an earlier "success" actually be Valve's panel rather than ours.
-    let ref = layout.ownEntity();
-    if (!ref) {
-      const created = layout.create(panelctl.S2_KIT.layout);
-      if (created.error) { cmd.reply(`${TAG} ${created.error}`); return; }
-      ref = created.ref;
-      cmd.reply(`${TAG} created entity #${ref?.index} -> ${panelctl.S2_KIT.layout}`);
-    }
-    if (!ref) { cmd.reply(`${TAG} no layout entity`); return; }
+    kitHud.setText(slot, "s2_dialog_title", "s2script kit");
+    kitHud.setText(slot, "s2_dialog_kicker", "LIVE");
+    kitHud.setText(slot, "s2_dialog_body", `driven via ctx.ui for ${Player.fromSlot(slot)?.playerName ?? "you"}`);
+    kitHud.setText(slot, "s2_btn_0_text", "Alpha");
+    kitHud.setText(slot, "s2_btn_1_text", "Bravo");
+    kitHud.setText(slot, "s2_btn_2_text", "Charlie");
+    kitHud.setText(slot, "s2_btn_3_text", "Close");
+    kitHud.setMeter(slot, "meter", 50);
 
-    // Dialog variables: the last untested mechanism. Each targets a panel id from our own markup.
-    const vars: Array<[string, string, string]> = [
-      ["s2_dialog_title", "title", "s2script kit"],
-      ["s2_dialog_kicker", "kicker", "LIVE"],
-      ["s2_dialog_body", "body", `driven from the server for ${Player.fromSlot(slot)?.playerName ?? "you"}`],
-      ["s2_btn_0_text", "btn0", "Alpha"],
-      ["s2_btn_1_text", "btn1", "Bravo"],
-      ["s2_btn_2_text", "btn2", "Charlie"],
-      ["s2_btn_3_text", "btn3", "Close"],
-    ];
-    let set = 0;
-    for (const [panelId, name, value] of vars) {
-      const err = tierb.setDialogVariable(calls, ref, slot, panelId, name, value);
-      if (err) { cmd.reply(`${TAG} setDialogVariable(${panelId}) refused: ${err}`); break; }
-      set++;
-    }
-    cmd.reply(`${TAG} set ${set}/${vars.length} dialog variable(s)`);
-
-    // Input capture: without it there is no cursor and no click detection at all.
-    const capErr = setPlayerInputCapture(ref, slot, true);
-    cmd.reply(capErr ? `${TAG} input capture refused: ${capErr}` : `${TAG} input capture ON — buttons should be clickable`);
-    cmd.reply(`${TAG} click a button; ids are s2_btn_0..s2_btn_3`);
+    const err = kitHud.show(slot, "s2_dialog", { cursor: true });
+    cmd.reply(err ? `${TAG} show refused: ${err}` : `${TAG} kit visible — click s2_btn_0..s2_btn_3`);
   });
 
-  // ── Show / hide a panel: the sequence that actually works ───────────────────────────────────
   ctx.commands.registerAdmin("sm_hud_show", ADMFLAG.GENERIC, (cmd) => {
-    const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout — run sm_hud_create first`); return; }
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
-    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_show [target]  (needs an in-game caller or a slot)`); return; }
-    const err = panelctl.show(calls, ref, slot, panelctl.ZOO_WELCOME);
+    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_show [target]`); return; }
+    const err = kitHud.show(slot, "s2_dialog", { cursor: true });
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} shown for slot ${slot} (class cleared + cursor on)`);
   });
 
   ctx.commands.registerAdmin("sm_hud_hide", ADMFLAG.GENERIC, (cmd) => {
-    const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout — run sm_hud_create first`); return; }
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_hide [target]`); return; }
-    const err = panelctl.hide(calls, ref, slot, panelctl.ZOO_WELCOME);
+    const err = kitHud.hide(slot, "s2_dialog");
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} hidden for slot ${slot}`);
   });
 
-  // Auto-show on spawn, the way Valve's script does it (OnPlayerActivate -> ShowWelcome).
   ctx.clients.onActive((client) => {
-    const ref = layout.preferred();
-    if (!ref || !config.getBool("auto_show")) return;
-    const err = panelctl.show(calls, ref, client.slot, panelctl.ZOO_WELCOME);
+    if (!config.getBool("auto_show")) return;
+    const err = kitHud.show(client.slot, "s2_dialog", { cursor: true });
     log(err ? `auto-show refused for slot ${client.slot}: ${err}` : `auto-shown for slot ${client.slot}`);
   });
 
@@ -509,17 +439,15 @@ export default plugin((ctx) => {
   });
 
   ctx.commands.registerAdmin("sm_hud_cursor", ADMFLAG.GENERIC, (cmd) => {
-    const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world`); return; }
     const slot = cmd.argCount > 1 ? cmd.argInt(1, cmd.callerSlot) : cmd.callerSlot;
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_cursor <0|1> [slot]`); return; }
     if (cmd.argCount === 0) {
-      cmd.reply(`${TAG} slot ${slot} inputCapture=${readPlayerInputCapture(ref, slot)} (per-player), global=${isInputCaptureEnabled(ref)}`);
+      cmd.reply(`${TAG} usage: sm_hud_cursor <0|1> [slot]`);
       return;
     }
     const on = cmd.arg(0) === "1" || cmd.arg(0).toLowerCase() === "on";
-    const err = setPlayerInputCapture(ref, slot, on);
-    cmd.reply(err ? `${TAG} refused: ${err}` : `${TAG} slot ${slot} inputCapture -> ${on} (mouse cursor ${on ? "ON" : "off"})`);
+    const err = kitHud.cursor(slot, on);
+    cmd.reply(err ? `${TAG} refused: ${err}` : `${TAG} slot ${slot} cursor -> ${on}`);
   });
 
   ctx.commands.registerAdmin("sm_hud_toggle", ADMFLAG.GENERIC, (cmd) => {
@@ -584,6 +512,13 @@ export default plugin((ctx) => {
     const pawn = Pawn.forSlot(cmd.callerSlot);
     if (!pawn?.isValid) { cmd.reply(`${TAG} you have no live pawn`); return null; }
     return pawn;
+  }
+
+  /** Parse EHudPanelClassStatus_t token for sm_hud_class diagnostics. */
+  function parseClassStatus(token: string): number {
+    if (token === "-1" || token.toLowerCase() === "undefined") return -1;
+    const on = token === "1" || token.toLowerCase() === "true" || token.toLowerCase() === "on";
+    return on ? 1 : 0;
   }
 
   /**

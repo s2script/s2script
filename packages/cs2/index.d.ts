@@ -17,6 +17,15 @@ export * from "./schema.generated";
 // re-exported from here too, exactly like every other generated cs2 artifact. A new hook's view/ctx
 // interfaces surface automatically; no index.d.ts edit needed.
 export * from "./hooks.generated";
+export type {
+  CtxUi,
+  Hud,
+  HudResult,
+  LayoutDescriptor,
+  LayoutSlot,
+  OnCustomHudClickedView,
+} from "./ui";
+export { DEFAULT_HUD_DESCRIPTOR } from "./ui";
 export { AcquireMethod, AcquireResult } from "./items";
 export type { CanAcquireView, CtxItems } from "./items";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
