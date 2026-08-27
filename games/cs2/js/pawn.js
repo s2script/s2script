@@ -54,7 +54,7 @@
       return __s2_game_call_invoke(name, ref.index, ref.id, args);
     };
   }
-  // The eight descriptors gamedata/cs2/game.cs2.jsonc declares, resolved ONCE here. Resolution is a
+  // The eleven descriptors gamedata/cs2/game.cs2.jsonc declares, resolved ONCE here. Resolution is a
   // load-time fact — the shim resolves + validates every descriptor at Load and never retries — so a
   // per-call `engineCall()` would re-derive the same answer on every slay(). Each is a plain callable
   // or `null`; the typed wrappers below test for null and degrade to their documented no-op/false,
