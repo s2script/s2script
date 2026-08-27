@@ -20,7 +20,7 @@
 // this file (scripts/check-gamedata-owners.sh enforces it).
 // Target: CS2 — "game": "csgo".
 //
-// WHAT LIVES HERE (A5b). The eight CS2-specific engine calls that used to be hand-wired as core
+// WHAT LIVES HERE (A5b). The CS2-specific engine calls that used to be hand-wired as core
 // `S2EngineOps` fields plus a bespoke block in shim/src/s2script_mm.cpp are declared here instead:
 // each is a `signatures` entry (the byte pattern + its semantic validator) plus a `calls`
 // descriptor (the receiver / arg / return marshalling contract). Core registers them at Load under
