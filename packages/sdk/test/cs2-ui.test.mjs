@@ -151,6 +151,7 @@ test("setHasClassForPlayer arg order and enum status int", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   const err = hud.show(0, "s2_dialog");
   assert.equal(err, null);
@@ -164,6 +165,7 @@ test("setDialogVariableStringForPlayer arg order", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   hud.setText(0, "s2_dialog_title", "hello");
   assert.equal(h.invokes[0].name, "setDialogVariableStringForPlayer");
@@ -175,6 +177,7 @@ test("setInputCaptureEnabledForPlayer on show with cursor", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   hud.show(0, "s2_dialog", { cursor: true });
   assert.deepEqual(h.invokes.map((i) => i.name), [
@@ -206,6 +209,7 @@ test("degraded setHasClassForPlayer returns named reason", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   const err = hud.show(0, "s2_dialog");
   assert.match(err, /unavailable/);
@@ -216,27 +220,45 @@ test("no entity spawn before active-client readiness", () => {
   const h = makeHost({ signon: 2 });
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
+  ui.createLayout();
   const hud = ui.hud();
   const err = hud.show(0, "s2_dialog");
   assert.match(err, /not ready/);
   assert.equal(h.created.length, 0);
 });
 
-test("find-or-create is idempotent by targetname", () => {
+test("createLayout is idempotent by targetname", () => {
   const existing = [];
   const h = makeHost({ entities: existing });
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   hud.show(0, "s2_dialog");
   assert.equal(h.created.length, 1);
   const first = h.created[0];
   existing.push(first);
   h.invokes.length = 0;
+  ui.createLayout();
   hud.show(0, "s2_dialog");
-  assert.equal(h.created.length, 1);
+  assert.equal(h.created.length, 1, "a second createLayout must find the existing entity");
   assert.equal(h.invokes[0].index, first.index);
+});
+
+test("a DRIVE never creates the entity — it degrades", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  h.fireActive(0);
+  const hud = ui.hud();
+  // Creating a custom_hud_layout from inside a frame or event dispatch segfaults the server.
+  // Lazily creating it on first draw made that hazard depend on which plugin drew first, so a
+  // drive with no layout must report a reason instead of spawning one.
+  const err = hud.show(0, "s2_dialog");
+  assert.match(err, /unavailable|not ready/);
+  assert.equal(h.created.length, 0, "a drive must never spawn the layout entity");
+  assert.equal(h.invokes.length, 0);
 });
 
 test("setPool overflow refuses without invoke", () => {
@@ -244,6 +266,7 @@ test("setPool overflow refuses without invoke", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   const err = hud.setPool(0, "rows", new Array(9).fill(["x"]));
   assert.match(err, /paginate/);
@@ -255,6 +278,7 @@ test("setPool uses per-slot vars", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   hud.setPool(0, "rows", [["a"], ["b"]]);
   const varCalls = h.invokes.filter((i) => i.name === "setDialogVariableStringForPlayer");
@@ -267,6 +291,7 @@ test("setMeter(50) applies s2-w5 and clears previous step", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   hud.setMeter(0, "meter", 20);
   hud.setMeter(0, "meter", 50);
@@ -283,6 +308,7 @@ test("cursor lease released across two panels on same layout", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   hud.show(0, "s2_dialog", { cursor: true });
   hud.show(0, "s2_banner", { cursor: true });
@@ -300,6 +326,7 @@ test("disabled button blocks dispatchClick", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   let fired = false;
   hud.onClick("s2_btn_0", () => { fired = true; });
@@ -313,6 +340,7 @@ test("click resolves exact index+id match", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   let slot = -1;
   hud.onClick("s2_btn_0", (s) => { slot = s; });
@@ -327,6 +355,7 @@ test("button id collision throws", () => {
   const h = makeHost();
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
+  ui.createLayout();
   const hud = ui.hud();
   hud.onClick("s2_btn_0", () => {});
   assert.throws(() => hud.onClick("s2_btn_0", () => {}), /conflicting handler/);
@@ -336,6 +365,7 @@ test("one lazy click subscription per plugin context", () => {
   const h = makeHost();
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
+  ui.createLayout();
   const hud = ui.hud();
   hud.onClick("s2_btn_0", () => {});
   ui.onCustomHudClicked(() => {});
@@ -357,6 +387,7 @@ test("map reset clears entity cache and readiness", () => {
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
+  ui.createLayout();
   const hud = ui.hud();
   hud.show(0, "s2_dialog");
   assert.equal(h.created.length, 1);
