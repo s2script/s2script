@@ -1,14 +1,27 @@
 /** Plugin-shippable gamedata. v1 accepts `signatures` + `calls` + `hooks`. */
 export const PLATFORM = "linuxsteamrt64" as const;
 
-export type ArgKind = "bool" | "int" | "float" | "string" | "vector" | "entity";
+export type ArgKind = "bool" | "int" | "float" | "string" | "utlstring" | "vector" | "entity";
 export type RetKind = "void" | "bool" | "int" | "float" | "entity";
 
-export const ARG_KINDS: readonly ArgKind[] = ["bool", "int", "float", "string", "vector", "entity"];
+/**
+ * `utlstring` is `string`'s sibling for callees that take `CUtlString`, not `const char*`.
+ *
+ * `CUtlString` is a single-pointer struct (`{ char* m_pString }` — hl2sdk
+ * public/tier1/utlstring.h), and it is passed BY ADDRESS, so a callee expecting one dereferences
+ * the argument to reach the text. Declaring such a parameter as `string` hands it the text itself;
+ * the callee then reads the first eight ASCII bytes as a pointer and follows them. That is not a
+ * crash you get to debug politely — it segfaulted a live CS2 server (see
+ * examples/hud-lab/gamedata/hud-lab.gamedata.jsonc).
+ *
+ * Marshalling is identical to `string` up to the last step: the same NUL-terminated buffer is
+ * built, then the shim wraps its pointer in a call-scoped temporary and passes THAT address.
+ */
+export const ARG_KINDS: readonly ArgKind[] = ["bool", "int", "float", "string", "utlstring", "vector", "entity"];
 export const RET_KINDS: readonly RetKind[] = ["void", "bool", "int", "float", "entity"];
 
 /** Everything except `float` occupies an integer register under SysV. */
-export const INT_CLASS_ARGS: ReadonlySet<ArgKind> = new Set<ArgKind>(["bool", "int", "string", "vector", "entity"]);
+export const INT_CLASS_ARGS: ReadonlySet<ArgKind> = new Set<ArgKind>(["bool", "int", "string", "utlstring", "vector", "entity"]);
 /** `this` consumes rdi, leaving 5 GP argument registers. */
 /**
  * Declared integer-class args. Mirrors `kMaxGpArgs` (shim) and `MAX_GP_ARGS` (core) — an ABI.
@@ -41,7 +54,7 @@ export interface VtableTarget { kind: "vtable"; class: string; [platform: string
  * `core/src/gamedata_hooks.rs` (kept in sync with the shim by `scripts/check-hook-shapes.sh`).
  * A new shape is a core change; this list is the build-time echo so a typo fails here, not at load.
  */
-export const HOOK_SHAPES = ["this_void", "this_f32_i32_i32_i32", "this_f32_i32_i64_i64", "this_i64_i32_i64"] as const;
+export const HOOK_SHAPES = ["this_void", "this_f32_i32_i32_i32", "this_f32_i32_i64_i64", "this_i64_i32_i64", "this_i64_i64_i64"] as const;
 export type HookShape = (typeof HOOK_SHAPES)[number];
 
 /** Positional arity implied by the shape name (`this_void` → 0; otherwise one slot per `_`-token). */

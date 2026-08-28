@@ -30,7 +30,7 @@ const coreSrc = readdirSync(coreSrcDir, { withFileTypes: true, recursive: true }
 // omitting activity.js and csitem.generated.js — while carrying a comment about how hand-kept lists
 // drift. Derive it, and fail loudly if the derivation stops working.
 const packager = readFileSync(new URL("scripts/package-addon.sh", root), "utf8");
-const catLine = packager.match(/cat (games\/cs2\/js\/\S+(?: games\/cs2\/js\/\S+)*) >/);
+const catLine = packager.match(/cat (games\/cs2\/js\/\S+(?: games\/cs2\/js\/\S+)*)\s*>/);
 if (!catLine) {
   throw new Error("games/cs2/js/eslint.config.mjs: could not find the prelude `cat` line in " +
                   "scripts/package-addon.sh — this config can no longer tell which files ship");
@@ -69,17 +69,23 @@ export default [
     // node (`scripts/check-activity-test.sh`), so its `typeof module !== "undefined"` guard and its
     // test file legitimately reference CommonJS globals. Scoped narrowly rather than adding them to
     // the prelude's own globals, where they would mask a real `require` creeping into raw-context code.
-    files: ["activity.js", "activity.test.js"],
+    //
+    // components.test.js is here for the same reason, but note that components.js itself is NOT:
+    // it is prelude-only, so a `require` creeping into it must still fail this lint.
+    files: ["activity.js", "activity.test.js", "components.test.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
-      globals: { module: "readonly", require: "readonly", exports: "readonly", globalThis: "readonly" },
+      globals: {
+        module: "readonly", require: "readonly", exports: "readonly", globalThis: "readonly",
+        __dirname: "readonly",
+      },
     },
     rules: { "no-undef": "error", "no-unused-vars": ["error", { args: "none", caughtErrors: "none" }] },
   },
   {
     files: ["**/*.js"],
-    ignores: ["activity.js", "activity.test.js"],
+    ignores: ["activity.js", "activity.test.js", "components.test.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",

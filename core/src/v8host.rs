@@ -3293,13 +3293,20 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                     gp.push(pack_entity_arg(scope, v));
                     gp_kind.push(crate::gamedata_calls::GP_ENTITY);
                 }
-                "string" => {
+                // `string` and `utlstring` build the SAME buffer and differ only in the kind byte:
+                // the shim passes the char* directly for one, and the address of a call-scoped
+                // `{ char* }` temporary (a CUtlString) for the other.
+                "string" | "utlstring" => {
                     let s = v.to_rust_string_lossy(scope);
                     // An interior NUL would silently truncate into a DIFFERENT string — no-op instead.
                     let Ok(c) = CString::new(s) else { return };
                     strs_owned.push(c);
                     gp.push((strs_owned.len() - 1) as u64);
-                    gp_kind.push(crate::gamedata_calls::GP_STRING);
+                    gp_kind.push(if kind == "utlstring" {
+                        crate::gamedata_calls::GP_UTLSTRING
+                    } else {
+                        crate::gamedata_calls::GP_STRING
+                    });
                 }
                 "vector" => {
                     let xv = obj_prop(scope, v, "x");
@@ -3713,18 +3720,40 @@ fn rebound_reason(idx: i32, what: &str) -> String {
 /// shim owns each shape's param layout and class-checks every accessor, so asking it is the only
 /// answer that cannot drift. `f32` is tried first; a class mismatch is a clean -1 there, never a
 /// reinterpretation of the bits.
-fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<(f64, bool)> {
+/// What a hook param turned out to be. The shape's table decides — each reader rejects a param
+/// whose class is not its own, so exactly one of these can succeed for a given index.
+enum HookParamValue {
+    /// `is_float` preserves the reader's class so the WRITE path can keep refusing values the
+    /// param cannot represent (an f32 overflow, an out-of-range i32) instead of coercing them.
+    Num { value: f64, is_float: bool },
+    Text(String),
+}
+
+fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<HookParamValue> {
     let ops = ENGINE_OPS.with(|o| o.get())?;
     if let Some(f) = ops.hook_read_f32 {
         let mut out: f32 = 0.0;
         if f(view, idx, &mut out) == 0 {
-            return Some((out as f64, true));
+            return Some(HookParamValue::Num { value: out as f64, is_float: true });
         }
     }
     if let Some(f) = ops.hook_read_i32 {
         let mut out: i32 = 0;
         if f(view, idx, &mut out) == 0 {
-            return Some((out as f64, false));
+            return Some(HookParamValue::Num { value: out as f64, is_float: false });
+        }
+    }
+    // Text params. The buffer matches the view's own capacity; the shim always NUL-terminates and
+    // bounds the copy by BOTH capacities, so a short read here can only truncate, never overrun.
+    if let Some(f) = ops.hook_read_str {
+        let mut buf = [0i8; 128];
+        if f(view, idx, buf.as_mut_ptr(), buf.len() as c_int) == 0 {
+            let bytes: Vec<u8> = buf
+                .iter()
+                .take_while(|c| **c != 0)
+                .map(|c| *c as u8)
+                .collect();
+            return Some(HookParamValue::Text(String::from_utf8_lossy(&bytes).into_owned()));
         }
     }
     None
@@ -3750,7 +3779,13 @@ fn s2_hook_param_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
             HookAccess::Live { view, owner, name, idx } => (view, owner, name, idx),
         };
         match hook_param_read(view, idx) {
-            Some((v, _)) => rv.set_double(v),
+            Some(HookParamValue::Num { value, .. }) => rv.set_double(value),
+            Some(HookParamValue::Text(t)) => {
+                match v8::String::new(scope, &t) {
+                    Some(js) => rv.set(js.into()),
+                    None => return,
+                }
+            }
             None => crate::gamedata_hooks::note_miss(
                 &owner,
                 &name,
@@ -3802,10 +3837,15 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
             // 1e300 is a perfectly finite f64 whose `as f32` is `f32::INFINITY` — so finiteness
             // alone would let `view.delay = scale * base` overflow into `+inf`, hand that to the
             // engine, and report a SUCCESSFUL write. A silently wrong value is worse than a refusal.
-            Some((_, true)) if !value.is_finite() || value.abs() > f32::MAX as f64 => None,
-            Some((_, false)) if !(value >= i32::MIN as f64 && value <= i32::MAX as f64) => None,
-            Some((_, true)) => ops.and_then(|o| o.hook_write_f32).map(|f| f(view, idx, value as f32)),
-            Some((_, false)) => ops.and_then(|o| o.hook_write_i32).map(|f| f(view, idx, value as i32)),
+            Some(HookParamValue::Num { is_float: true, .. })
+                if !value.is_finite() || value.abs() > f32::MAX as f64 => None,
+            Some(HookParamValue::Num { is_float: false, .. })
+                if !(value >= i32::MIN as f64 && value <= i32::MAX as f64) => None,
+            Some(HookParamValue::Num { is_float: true, .. }) => ops.and_then(|o| o.hook_write_f32).map(|f| f(view, idx, value as f32)),
+            Some(HookParamValue::Num { is_float: false, .. }) => ops.and_then(|o| o.hook_write_i32).map(|f| f(view, idx, value as i32)),
+            // A text param is read-only: there is nowhere to put a written string that the engine
+            // would ever look at (the view holds a COPY made after the engine handed the pointer over).
+            Some(HookParamValue::Text(_)) => None,
             None => None,
         };
         if ok != Some(0) {
@@ -4093,7 +4133,12 @@ fn acquire_after_handler(hr: HookResult) {
     ACQUIRE.with(|a| {
         let mut slot = a.borrow_mut();
         let Some(s) = slot.as_mut() else { return };
-        let result = hook_param_read(s.view, 1).map(|(v, _)| v as i32).unwrap_or(0);
+        // Param 1 of the acquire shape is an i32; a text param here would mean the shape table
+        // and this call site disagree, so treat anything else as 0 rather than guessing.
+        let result = match hook_param_read(s.view, 1) {
+            Some(HookParamValue::Num { value, .. }) => value as i32,
+            _ => 0,
+        };
         match hr {
             HookResult::Continue => {
                 s.wrote = false;

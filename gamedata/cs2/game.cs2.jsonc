@@ -20,7 +20,7 @@
 // this file (scripts/check-gamedata-owners.sh enforces it).
 // Target: CS2 — "game": "csgo".
 //
-// WHAT LIVES HERE (A5b). The eight CS2-specific engine calls that used to be hand-wired as core
+// WHAT LIVES HERE (A5b). The CS2-specific engine calls that used to be hand-wired as core
 // `S2EngineOps` fields plus a bespoke block in shim/src/s2script_mm.cpp are declared here instead:
 // each is a `signatures` entry (the byte pattern + its semantic validator) plus a `calls`
 // descriptor (the receiver / arg / return marshalling contract). Core registers them at Load under
@@ -258,7 +258,83 @@
         "pattern": "55 48 89 E5 41 54 49 89 FC 53 48 89 F3 E8 ? ? ? ? 48 39 C3",
         "resolve": "direct"
       }
-    }  },
+    },
+
+    // ─── CCSCustomHudLayout HUD setters (2026-08-25 custom_hud_layout slice) ───────────────────
+    //
+    // CCSCustomHudLayout::SetHasClassForPlayer(int playerSlot /*esi*/, CUtlString panelId /*rdx*/,
+    //     CUtlString className /*rcx*/, int status /*r8d*/)
+    //
+    // Self-resolved against build 24916958's libserver.so (see examples/hud-lab for the full RE
+    // story). The callee bounds-checks slot against m_vecPlayerLayoutStates at +0x790 and diverges
+    // from its near-twin SetDialogVariableStringForPlayer at +0x43 (`45 89 C6` = mov r14d,r8d).
+    // Args 2–3 are CUtlString*, NOT const char* — the `utlstring` arg kind is load-bearing.
+    "CCSCustomHudLayout_SetHasClassForPlayer": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 90 07 00 00 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 45 89 C6",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53" }
+      }
+    },
+
+    // CCSCustomHudLayout::SetDialogVariableStringForPlayer(int playerSlot /*esi*/,
+    //     CUtlString panelId /*rdx*/, CUtlString variableName /*rcx*/, CUtlString value /*r8*/)
+    //
+    // Near-twin of SetHasClassForPlayer; diverges at +0x43 with `4D 89 C6` (mov r14,r8) — a pointer
+    // 4th arg (the value string), not an int status enum.
+    "CCSCustomHudLayout_SetDialogVariableStringForPlayer": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 90 07 00 00 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 4D 89 C6",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53" }
+      }
+    },
+
+    // CCSCustomHudLayout::SetInputCaptureEnabled(int playerSlot /*esi*/, bool enabled /*edx*/)
+    //
+    // Per-player mouse capture for a layout. Structurally: bounds-check slot against
+    // m_vecPlayerLayoutStates at +0x790, then `imul slot, 0x1a0` (sizeof CCSCustomHudLayoutState ==
+    // 416) and write m_bInputCaptureEnabled on that state. Pattern from cs2-customhud (ModSharp PoC),
+    // re-scanned as a DIRECT entry (the published pattern included a leading cmp/jge prefix).
+    "CCSCustomHudLayout_SetInputCaptureEnabledForPlayer": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        // RE-DERIVED for build 24957633. The previous pattern assumed a standard prologue and never
+        // matched: this function puts the SLOT BOUNDS CHECK *BEFORE* `push rbp`, so it does not
+        // start with 55 48 89 E5 at all —
+        //     3B B7 90 07 00 00   cmp esi,[rdi+0x790]   ; slot vs m_vecPlayerLayoutStates count
+        //     0F 8D ....          jge <return>
+        //     55 48 89 E5         push rbp; mov rbp,rsp
+        //     41 89 D4            mov r12d,edx          ; the bool
+        //     48 69 DB 98 01 00 00 imul rbx,rbx,0x198   ; sizeof(CCSCustomHudLayoutState) == 408
+        //     48 03 9F 98 07 00 00 add rbx,[rdi+0x798]  ; states data pointer
+        //     3A 53 34            cmp dl,[rbx+0x34]     ; m_bInputCaptureEnabled at +52
+        //
+        // NOTE THE TWO SCHEMA CHANGES this build carries, both visible above and both confirmed
+        // against the sibling setters: the state stride moved 416 -> 408 (0x1a0 -> 0x198) and
+        // m_bInputCaptureEnabled moved 48 -> 52. Any raw-offset code using the old values now writes
+        // to the wrong field — which is exactly why this is an engine CALL and not a memory poke.
+        //
+        // Whole-body pattern through the field access; validated UNIQUE (one whole-file match).
+        "pattern": "3B B7 90 07 00 00 0F 8D ? ? ? ? 55 48 89 E5 41 55 41 54 41 89 D4 53 48 63 DE 48 69 DB 98 01 00 00 48 83 EC ? 48 03 9F 98 07 00 00 3A 53 34",
+        "resolve": "direct",
+        "validate": { "prologue": "3B B7 90 07 00 00 0F 8D" }
+      }
+    },
+
+    // CCSCustomHudLayout click receiver — Pulse binding fan-out for CS_UM_CustomHudClicked.
+    // Whole-function pattern (71 bytes) verified UNIQUE @ va 0xb2bcb0 on build 24916958.
+    "CCSCustomHudLayout_CustomHudClickedReceiver": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D ? ? ? ? 48 85 DB 74 27 49 89 F6 49 89 D5 49 89 CC 48 8B 03 48 89 DF 4C 89 E1 4C 89 EA 4C 89 F6 FF 90 20 01 00 00 48 8B 5B 18 48 85 DB 75 E2 5B 41 5C 41 5D 41 5E 5D C3",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D" }
+      }
+    }
+  },
   // The declarative half. Each entry is the MARSHALLING CONTRACT for one of the signatures above:
   // what supplies `this`, the SysV arg kinds in author order, and the return kind. `argNames` is
   // documentary only (the runtime never reads it) — it is what makes the generated call site
@@ -388,6 +464,30 @@
       "args": ["entity"],
       "argNames": ["weapon"],
       "returns": "bool"
+    },
+
+    // ctx.ui — custom_hud_layout per-player class / dialog-variable / input-capture setters.
+    // CUtlString args use the `utlstring` kind (see CCSCustomHudLayout_SetHasClassForPlayer above).
+    "setHasClassForPlayer": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSCustomHudLayout_SetHasClassForPlayer" },
+      "args": ["int", "utlstring", "utlstring", "int"],
+      "argNames": ["playerSlot", "panelId", "className", "status"],
+      "returns": "void"
+    },
+    "setDialogVariableStringForPlayer": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSCustomHudLayout_SetDialogVariableStringForPlayer" },
+      "args": ["int", "utlstring", "utlstring", "utlstring"],
+      "argNames": ["playerSlot", "panelId", "variableName", "value"],
+      "returns": "void"
+    },
+    "setInputCaptureEnabledForPlayer": {
+      "receiver": { "kind": "entity" },
+      "target": { "kind": "signature", "name": "CCSCustomHudLayout_SetInputCaptureEnabledForPlayer" },
+      "args": ["int", "bool"],
+      "argNames": ["playerSlot", "enabled"],
+      "returns": "void"
     }
   },
 
@@ -462,6 +562,16 @@
       "params": ["method", "result"],
       "mutable": ["result"],
       "expose": { "ctx": "items", "handwritten": true }
+    },
+
+    // ctx.ui.onCustomHudClicked — observer only. The handwritten wrapper in games/cs2/js/ui.js
+    // always returns Continue so map cs_script handlers (e.g. zoo Dismiss) still run.
+    "onCustomHudClicked": {
+      "target": { "kind": "signature", "name": "CCSCustomHudLayout_CustomHudClickedReceiver" },
+      "shape": "this_i64_i64_i64",
+      "params": ["buttonId"],
+      "receiver": { "kind": "entity", "as": "player" },
+      "expose": { "ctx": "ui", "handwritten": true }
     }
   }
 }

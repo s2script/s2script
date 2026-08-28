@@ -1,0 +1,18 @@
+<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:generic:version{7412167c-06e9-4698-aff2-e63eb59037e7} -->
+{
+	// IsPlayable=false makes this a pure CONTENT addon: it mounts alongside whatever map the
+	// server is running instead of being hosted AS a map. The trade is delivery — a content addon
+	// is not auto-downloaded by +host_workshop_map (that mechanism looks for maps INSIDE the addon
+	// and leaves the server idle when there are none), so clients must have it subscribed.
+	//
+	// Ship a SECOND item with IsPlayable=true and a stub map if you want zero-friction
+	// auto-download; the panorama files below are identical in both.
+	IsPlayable = false
+
+	Panorama =
+	{
+		// Without this the custom_game layout path is not searched and m_strLayout never resolves.
+		AllowCustomGameUI = true
+		AddonLayoutPath = "panorama/layout/custom_game/"
+	}
+}

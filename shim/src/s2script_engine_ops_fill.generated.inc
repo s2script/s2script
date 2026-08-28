@@ -149,6 +149,7 @@
     ops.hook_disarm_bypass = &S2_HookDisarmBypass;
     ops.hook_read_f32 = &S2_HookReadF32;
     ops.hook_read_i32 = &S2_HookReadI32;
+    ops.hook_read_str = &S2_HookReadStr;
     ops.hook_write_f32 = &S2_HookWriteF32;
     ops.hook_write_i32 = &S2_HookWriteI32;
     ops.hook_receiver_handle = &S2_HookReceiverHandle;

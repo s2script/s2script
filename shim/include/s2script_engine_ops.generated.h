@@ -127,6 +127,7 @@ typedef void (*s2_hook_arm_bypass_fn)(int hookId);
 typedef void (*s2_hook_disarm_bypass_fn)(int hookId);
 typedef int (*s2_hook_read_f32_fn)(void* argView, int idx, float* out);
 typedef int (*s2_hook_read_i32_fn)(void* argView, int idx, int32_t* out);
+typedef int (*s2_hook_read_str_fn)(void* argView, int idx, char* out, int cap);
 typedef int (*s2_hook_write_f32_fn)(void* argView, int idx, float value);
 typedef int (*s2_hook_write_i32_fn)(void* argView, int idx, int32_t value);
 typedef int (*s2_hook_receiver_handle_fn)(void* argView, uint32_t* outHandle);
@@ -291,6 +292,7 @@ typedef struct {
     s2_hook_disarm_bypass_fn hook_disarm_bypass;
     s2_hook_read_f32_fn hook_read_f32;
     s2_hook_read_i32_fn hook_read_i32;
+    s2_hook_read_str_fn hook_read_str;
     s2_hook_write_f32_fn hook_write_f32;
     s2_hook_write_i32_fn hook_write_i32;
     s2_hook_receiver_handle_fn hook_receiver_handle;

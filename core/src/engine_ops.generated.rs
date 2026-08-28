@@ -132,6 +132,7 @@ pub type HookArmBypassFn = extern "C" fn(c_int);
 pub type HookDisarmBypassFn = extern "C" fn(c_int);
 pub type HookReadF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut f32) -> c_int;
 pub type HookReadI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut i32) -> c_int;
+pub type HookReadStrFn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut std::ffi::c_char, c_int) -> c_int;
 pub type HookWriteF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, f32) -> c_int;
 pub type HookWriteI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, i32) -> c_int;
 pub type HookReceiverHandleFn = extern "C" fn(*mut std::ffi::c_void, *mut u32) -> c_int;
@@ -301,6 +302,7 @@ pub struct S2EngineOps {
     pub hook_disarm_bypass: Option<HookDisarmBypassFn>,
     pub hook_read_f32: Option<HookReadF32Fn>,
     pub hook_read_i32: Option<HookReadI32Fn>,
+    pub hook_read_str: Option<HookReadStrFn>,
     pub hook_write_f32: Option<HookWriteF32Fn>,
     pub hook_write_i32: Option<HookWriteI32Fn>,
     pub hook_receiver_handle: Option<HookReceiverHandleFn>,

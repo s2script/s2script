@@ -22,6 +22,7 @@ enum S2HookShape {
     S2_HOOK_SHAPE_THIS_F32_I32_I32_I32 = 1,  // void(void* self, float, int, int, int)
     S2_HOOK_SHAPE_THIS_F32_I32_I64_I64 = 2,  // void(void* self, float, int, int64, int64)
     S2_HOOK_SHAPE_THIS_I64_I32_I64     = 3,  // i32(void* self, int64, int32, int64) — CanAcquire
+    S2_HOOK_SHAPE_THIS_I64_I64_I64     = 4,  // void(void* self, int64, int64, int64) — HUD click
 };
 
 // WIDTH IS NOT A DETAIL — IT IS THE WHOLE CONTRACT (learned from a live SEGV).

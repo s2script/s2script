@@ -11,12 +11,26 @@ const HEADER =
 /** One hook's view interface: `mutable` params are writable (plain), everything else — including a
  *  surfaced receiver, which is never itself mutable — is `readonly`. Mirrors the hand-written
  *  `DamageInfo` view in `packages/sdk/damage.d.ts` (mutable `damage` is plain; the rest `readonly`). */
+/**
+ * Params that are TEXT rather than a number, keyed by shape and positional index.
+ *
+ * A descriptor's `params` list carries only NAMES — the types come from the shape, because the
+ * shape is what fixes each slot's class in the shim. Every shape's params were scalars until
+ * `this_i64_i64_i64` (the HUD-click receiver), whose one surfaced param is a `std::string` the
+ * thunk copies into the arg view. Emitting that as `number` would typecheck and then hand a handler
+ * a string at runtime, so the mapping lives here rather than being inferred.
+ */
+const STRING_PARAMS: Readonly<Record<string, ReadonlySet<number>>> = {
+  this_i64_i64_i64: new Set([0]),
+};
+
 function emitViewIface(h: HookDescriptor): string[] {
   const out = [`export interface ${h.viewIface} {`];
-  for (const p of h.params) {
+  const strings = STRING_PARAMS[h.shape] ?? new Set<number>();
+  h.params.forEach((p, i) => {
     const mod = p.mutable ? "" : "readonly ";
-    out.push(`  ${mod}${p.name}: number;`);
-  }
+    out.push(`  ${mod}${p.name}: ${strings.has(i) ? "string" : "number"};`);
+  });
   if (h.receiverAs !== null) {
     out.push(`  readonly ${h.receiverAs}: EntityRef | null;`);
   }
