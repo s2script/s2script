@@ -59,6 +59,9 @@ bash scripts/check-examples-coverage.sh
 echo "== check-activity-test.sh =="
 bash scripts/check-activity-test.sh
 
+echo "== check-components-test.sh =="
+bash scripts/check-components-test.sh
+
 echo "== check-colors-test.sh (colour-tag expander) =="
 bash scripts/check-colors-test.sh
 

@@ -39,8 +39,13 @@
 
 /** Total `sizeof(CCSCustomHudLayout)` per the dump. Used as the probe's bounds check. */
 export const LAYOUT_SIZE = 2768;
-/** Total `sizeof(CCSCustomHudLayoutState)` per the dump. */
-export const STATE_SIZE = 416;
+/** `sizeof(CCSCustomHudLayoutState)`.
+ *
+ * CHANGED IN BUILD 24957633: 416 -> 408. Read straight out of the engine's own arithmetic
+ * (`imul rbx,rbx,0x198` in SetInputCaptureEnabled and both ForPlayer setters), not from a dump.
+ * `m_bInputCaptureEnabled` moved 48 -> 52 in the same update. This is precisely the failure mode
+ * offsets.ts warns about: the numbers here are borrowed constants and an update moved them. */
+export const STATE_SIZE = 408;   // 0x198 — was 416 (0x1a0) before build 24957633
 
 /**
  * Field offsets on the CCSCustomHudLayout ENTITY itself.
@@ -74,7 +79,7 @@ export const LAYOUT = {
  */
 export const STATE = {
   /** `bool m_bInputCaptureEnabled` — the one directly writable scalar in the whole HUD surface. */
-  inputCaptureEnabled: 48,
+  inputCaptureEnabled: 52,   // 0x34 — was 48 before build 24957633
   /** `CNetworkUtlVectorBase<HUDPanelHasClass_t> m_vecHasClasses` (size 24). Read-only here:
    *  growing a networked CUtlVector needs the engine's own setter (see the gamedata's Tier-B calls). */
   vecHasClasses: 56,

@@ -115,6 +115,30 @@ that dialog is the entire validation channel in this pipeline.
 A pure-CSS hover reveal needs **no server call at all**, and generalises to any hover-to-reveal
 pattern — row detail, hover cards. It is the only client-side interactivity available.
 
+## Hard caps — the one that will bite at scale
+
+`CCSCustomHudLayout` interns every name the server references into three networked vectors, and all
+three are capped. `server.dll`:
+
+```
+The maximum number of panel ids has been reached, no more can be referenced.
+The maximum number of class names has been reached, no more can be referenced.
+The maximum number of dialog variables has been reached, no more can be referenced.
+```
+
+**The cap is on what the SERVER references, not what the layout declares.** A panel you never touch
+is free. A name is interned the first time you pass it to a setter and holds a slot forever. So a
+large layout costs nothing; a chatty server does. `SetDialogVariableString` interns **both** its
+panelId and its variableName, into separate vectors.
+
+The ceiling is **1024 per vector** (`CMP dword [...], 1024` + `JL` past the warning, so it fires at
+>= 1024). Generous alone, but shared by every plugin on the entity — bespoke per-plugin layouts
+consume it multiplicatively and hit the wall around plugin 14.
+
+**Never generate names dynamically.** `row_{page}_{i}` will exhaust the budget; reuse a fixed pool of
+ids and change their content instead. And the vectors belong to the **entity**, so one entity
+driving two layouts pays for both.
+
 ## Consequences for the server-side API
 
 **Zebra striping should be `:nth-child`, not server-set classes.** That removes per-row bookkeeping
@@ -138,3 +162,47 @@ nearest 5%, and clears the previous step first.
 
 **`disabled` is cosmetic.** `.s2-btn-disabled` greys a button; the click still arrives. Enforcement
 is server-side — `Hud.setDisabled()` does both.
+
+## Clamping untrusted text
+
+Player-typed text that reaches an admin's screen (a report reason, a nickname) must not be able to
+push the surrounding UI around. The clamp is a **fixed-height wrapper** — `.s2-clampbox`, `height:
+62px` — and that height is the load-bearing part. It bounds the region; the overflow policy only
+decides what happens at the boundary.
+
+`overflow: squish squish` and `text-overflow: ellipsis` are written explicitly on the box, but both
+are Panorama **defaults** ("Children are squished to fit within the panel's bounds if needed
+(default)"; "We default to ellipsis, which is contrary to the normal CSS spec"). So they are
+reinforcement, not the mechanism: if the parser rejected either declaration the behaviour would
+fall back to itself. The mitigation is not one declaration away from vanishing.
+
+One open question, worth observing rather than pre-empting: whether `squish` **clips** the label or
+**compresses** it. "Squished to fit" is ambiguous, and for text those differ — clipped-with-ellipsis
+is wanted; scaled-down-to-fit is legible but lets an author shrink an admin's reading of their own
+UI. Either way the panel keeps its bounds, so the failure actually being guarded against — a wall of
+text shoving the verdict buttons off screen — cannot happen. If it does compress, the fix is
+`text-overflow: shrink min( 10px ) ellipsis` (shrink to a floor, then ellipsise the remainder).
+
+Escaping still happens server-side before the value is ever set; the clamp is the second layer, not
+the first.
+
+## Reveal synchronously; animate only on the way out
+
+Showing a panel must not depend on a later callback. Clear any `*-out` (fade/transform) class
+FIRST, then clear the hide class, in the same call. Acquire the cursor LAST, after it is visible.
+
+The asymmetry is the point:
+
+- A failed **hide** leaves the panel on screen — loud, obvious, self-reporting.
+- A failed **reveal** leaves a panel that is present, sized, capturing input, and at `opacity: 0` —
+  completely invisible, with no error client-side or server-side, and indistinguishable from an
+  addon that never loaded.
+
+So exit animations are safe and entry animations are not. Clearing the `*-out` class before
+un-hiding also means a panel left transparent by an older build recovers on its next open instead
+of staying stuck.
+
+Structure belongs in markup (`.s2-sheet`, `.s2-li`, `.s2-toast`, `.s2-hudbadge` and the layout
+classes); the SERVER should only ever drive **state** — the hide class, `*-out`, selection,
+disabled, variants and width modifiers. Asserting a structural class from the server doubles the
+interned class-name count for no gain, and it masks a stylesheet that is not loading at all.

@@ -301,9 +301,26 @@
     "CCSCustomHudLayout_SetInputCaptureEnabledForPlayer": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 55 41 54 41 89 D4 53 48 63 DE 48 69 DB A0 01 00 00 48 83 EC ?",
+        // RE-DERIVED for build 24957633. The previous pattern assumed a standard prologue and never
+        // matched: this function puts the SLOT BOUNDS CHECK *BEFORE* `push rbp`, so it does not
+        // start with 55 48 89 E5 at all —
+        //     3B B7 90 07 00 00   cmp esi,[rdi+0x790]   ; slot vs m_vecPlayerLayoutStates count
+        //     0F 8D ....          jge <return>
+        //     55 48 89 E5         push rbp; mov rbp,rsp
+        //     41 89 D4            mov r12d,edx          ; the bool
+        //     48 69 DB 98 01 00 00 imul rbx,rbx,0x198   ; sizeof(CCSCustomHudLayoutState) == 408
+        //     48 03 9F 98 07 00 00 add rbx,[rdi+0x798]  ; states data pointer
+        //     3A 53 34            cmp dl,[rbx+0x34]     ; m_bInputCaptureEnabled at +52
+        //
+        // NOTE THE TWO SCHEMA CHANGES this build carries, both visible above and both confirmed
+        // against the sibling setters: the state stride moved 416 -> 408 (0x1a0 -> 0x198) and
+        // m_bInputCaptureEnabled moved 48 -> 52. Any raw-offset code using the old values now writes
+        // to the wrong field — which is exactly why this is an engine CALL and not a memory poke.
+        //
+        // Whole-body pattern through the field access; validated UNIQUE (one whole-file match).
+        "pattern": "3B B7 90 07 00 00 0F 8D ? ? ? ? 55 48 89 E5 41 55 41 54 41 89 D4 53 48 63 DE 48 69 DB 98 01 00 00 48 83 EC ? 48 03 9F 98 07 00 00 3A 53 34",
         "resolve": "direct",
-        "validate": { "prologue": "55 48 89 E5 41 55 41 54 41 89 D4 53" }
+        "validate": { "prologue": "3B B7 90 07 00 00 0F 8D" }
       }
     },
 

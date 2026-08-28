@@ -382,12 +382,38 @@
             var cached = entityByResource[desc.resource];
             return cached && cached.isValid() ? cached : null;
           },
+          /**
+           * Resolve the layout entity for a DRIVE. Never creates one.
+           *
+           * Creating a `custom_hud_layout` from inside an engine dispatch segfaults the server.
+           * We hit this twice: once auto-creating at `OnMapStart`, and again when a plugin's first
+           * drive landed inside `OnGameFrame` (a TTT round start, via tickCountdown -> beginRound
+           * -> a traitor badge). The second was the same bug wearing different clothes — removing
+           * the map-start auto-create only moved the hazard to whichever dispatch happened to
+           * drive first, which is worse, because it made the crash depend on plugin timing.
+           *
+           * So drives resolve-or-degrade, and creation is explicit via `createEntity` below. A
+           * plugin that has not created its layout gets `notReadyReason()` back from every drive
+           * and the framework keeps running, which is the documented contract.
+           */
           ensureEntity: function (desc) {
             if (!ready) return null;
             var cached = entityByResource[desc.resource];
             if (cached && cached.isValid()) return cached;
             var existing = this.findEntity(desc);
             if (existing) { entityByResource[desc.resource] = existing; return existing; }
+            return null;
+          },
+
+          /**
+           * Explicitly spawn the layout entity. Call from a CONSOLE COMMAND, never from a frame,
+           * event or entity dispatch — spawning on command is the only path we have evidence
+           * works, and both reference implementations do it that way.
+           */
+          createEntity: function (desc) {
+            if (!ready) return null;
+            var already = this.ensureEntity(desc);
+            if (already) return already;
             var vxmlErr = rejectVxml(desc.resource);
             if (vxmlErr) return null;
             var ref = entityApi().createEntity(HUD_CLASS, {
@@ -451,6 +477,19 @@
             hudByResource[desc.resource] = makeHud(desc, ctxState(), installClickHook);
           }
           return hudByResource[desc.resource];
+        },
+        /**
+         * Spawn the layout entity for `descriptor` (default descriptor if omitted).
+         *
+         * MUST be called from a console command. Spawning a `custom_hud_layout` from inside a
+         * frame, event or entity dispatch segfaults the server — see `ensureEntity`. Returns null
+         * on success, or a human-readable reason, like any other drive call.
+         */
+        createLayout: function (descriptor) {
+          var desc = validateDescriptor(descriptor || DEFAULT_DESCRIPTOR);
+          var st = ctxState();
+          var ref = st.createEntity(desc);
+          return ref ? null : st.notReadyReason();
         },
         onCustomHudClicked: function (handler) {
           installClickHook();

@@ -44,6 +44,8 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 import { config } from "@s2script/sdk/config";
 import { Chat } from "@s2script/sdk/chat";
 import { Player, Pawn } from "@s2script/cs2";
+import { LIVE_HUD, LIVE_PANELS } from "./livehud";
+import { LiveDemo } from "./livedemo";
 import type { CommandInvocation } from "@s2script/sdk/commands";
 
 import * as layout from "./layout";
@@ -374,6 +376,112 @@ export default plugin((ctx) => {
   // One command that exercises everything still unproven: create the entity against our workshop
   // addon, set dialog variables (the {s:} binding is untested), and turn on input capture so the
   // buttons become clickable and the click hook can fire.
+  // ── sm_live — drive the PRODUCTION layout (s2script_hud_live.xml) ────────────────────────────
+  //
+  // This is the one to look at. Unlike the probe, every slot is a {s:} binding, so it renders as an
+  // empty frame until filled — which is exactly why this command fills it before revealing it.
+  const liveHud = ctx.ui.hud(LIVE_HUD);
+  liveHud.onClick("motd_ok", (slot) => {
+    liveHud.hide(slot, LIVE_PANELS.motd);
+    liveHud.cursor(slot, false);
+    Chat.toSlot(slot, "[hud] MOTD dismissed");
+    log(`motd_ok clicked by slot ${slot} -> hidden, cursor released`);
+  });
+
+  // ── The live demo: HUD driven by real game state ─────────────────────────────────────────────
+  const demo = new LiveDemo(liveHud, log);
+
+  // Kill feed from the real event. `player_death` carries the slots; the weapon is a string field.
+  ctx.events.on("player_death", (ev) => {
+    if (demo.count === 0) return;                       // nobody watching — do no work at all
+    const aSlot = ev.getPlayerSlot("attacker");
+    const vSlot = ev.getPlayerSlot("userid");
+    demo.pushKill({
+      attacker: aSlot >= 0 ? (Player.fromSlot(aSlot)?.playerName ?? `slot ${aSlot}`) : "world",
+      weapon: ev.getString("weapon").replace(/^weapon_/, ""),
+      victim: vSlot >= 0 ? (Player.fromSlot(vSlot)?.playerName ?? `slot ${vSlot}`) : "?",
+      headshot: ev.getBool("headshot"),
+    });
+  });
+
+  // A disconnecting player must not leave diff-cache entries behind.
+  ctx.clients.onDisconnect((client) => { demo.stop(client.slot); demo.forget(client.slot); });
+
+  // Collapse the live layout for every player as they become active. The panels default VISIBLE in
+  // the markup, so without this they render (empty) the moment anything touches the layout for that
+  // player — which is why the HUD appeared before anyone ran sm_hud.
+  ctx.clients.onActive((client) => { demo.hideAll(client.slot); });
+
+  ctx.commands.registerAdmin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return; }
+    // Spawn the layout HERE, in a command dispatch. Drives no longer create it: doing that
+    // from a frame dispatch segfaulted a live server.
+    const spawn = ctx.ui.createLayout();
+    if (spawn !== null) { cmd.reply(`${TAG} ${spawn}`); return; }
+    const slot = cmd.callerSlot;
+    const arg = cmd.arg(0).toLowerCase();
+    const want = arg === "" ? !demo.has(slot) : (arg === "1" || arg === "on");
+    if (want) {
+      demo.start(slot);
+      cmd.reply(`${TAG} live HUD ON — round clock, scoreboard, your K/D, kill feed. ${demo.count} viewer(s)`);
+      cmd.reply(`${TAG} sm_motd for the interactive panel; sm_hud off to stop`);
+    } else {
+      demo.stop(slot);
+      cmd.reply(`${TAG} live HUD off`);
+    }
+  });
+
+  ctx.commands.registerAdmin("sm_motd", ADMFLAG.GENERIC, (cmd) => {
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_motd needs an in-game caller`); return; }
+    const slot = cmd.callerSlot;
+    const name = Player.fromSlot(slot)?.playerName ?? `slot ${slot}`;
+    const errs: string[] = [];
+    const put = (r: string | null) => { if (r) errs.push(r); };
+
+    // Scoreboard + timer — always-on chrome.
+    put(liveHud.set(slot, "timer_label", "ROUND"));
+    put(liveHud.set(slot, "timer_value", "1:42"));
+    put(liveHud.setMeter(slot, "timer", 70));
+    put(liveHud.set(slot, "team_ct_name", "COUNTER-TERRORISTS"));
+    put(liveHud.set(slot, "team_ct_score", "7"));
+    put(liveHud.set(slot, "team_t_name", "TERRORISTS"));
+    put(liveHud.set(slot, "team_t_score", "5"));
+
+    // Player card.
+    put(liveHud.set(slot, "pcard_name", name));
+    put(liveHud.set(slot, "pcard_meta", "driven live by s2script"));
+    put(liveHud.set(slot, "pcard_badge_t", "MVP"));
+    put(liveHud.set(slot, "pcard_k", "18"));
+    put(liveHud.set(slot, "pcard_d", "9"));
+    put(liveHud.set(slot, "pcard_a", "4"));
+    put(liveHud.set(slot, "pcard_hs", "61%"));
+    put(liveHud.set(slot, "pcard_form_label", "LAST 5"));
+
+    // One kill-feed row, and reveal it (rows start collapsed).
+    put(liveHud.set(slot, "feed_0_a", name));
+    put(liveHud.set(slot, "feed_0_w", "ak47"));
+    put(liveHud.set(slot, "feed_0_v", "bot Kadeem"));
+    put(liveHud.set(slot, "feed_0_t", "HS"));
+    put(liveHud.show(slot, LIVE_PANELS.feed[0]));
+
+    // MOTD — the interactive part. Reveal it and take the cursor so its button is clickable.
+    put(liveHud.set(slot, "motd_title", "s2script HUD"));
+    put(liveHud.set(slot, "motd_sub", "server-driven Panorama"));
+    put(liveHud.set(slot, "motd_h0", "Layout"));
+    put(liveHud.set(slot, "motd_p0", "workshop addon 3790153369, mounted per-client"));
+    put(liveHud.set(slot, "motd_h1", "Drive"));
+    put(liveHud.set(slot, "motd_p1", "ctx.ui — SetHasClass / SetDialogVariableString"));
+    put(liveHud.set(slot, "motd_h2", "Clicks"));
+    put(liveHud.set(slot, "motd_p2", "CustomHudClickedReceiver detour -> ctx.ui.onCustomHudClicked"));
+    put(liveHud.set(slot, "motd_note", "click OK to dismiss"));
+    put(liveHud.set(slot, "motd_ok_t", "OK"));
+    put(liveHud.show(slot, LIVE_PANELS.motd, { cursor: true }));
+
+    cmd.reply(errs.length
+      ? `${TAG} ${errs.length} call(s) refused; first: ${errs[0]}`
+      : `${TAG} live HUD driven for ${name} — click OK to dismiss`);
+  });
+
   ctx.commands.registerAdmin("sm_kit", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_kit needs an in-game caller`); return; }
     const slot = cmd.callerSlot;
