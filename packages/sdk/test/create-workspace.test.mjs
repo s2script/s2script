@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const packagesDir = join(here, "..", "..");
 
 function tmp(prefix) {
-  return mkdtempSync(join(tmpdir(), prefix));
+  // realpath, because on macOS `tmpdir()` is `/var/...` while `process.cwd()` reports the
+  // canonical `/private/var/...`. Any test that chdir's into the temp dir and then compares a
+  // CLI-reported path against this one fails on that difference alone — and only on macOS, since
+  // Linux CI has no such symlink. Resolving here keeps local green meaning CI green.
+  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 }
 
 /** Capture console.log lines, restoring the original in `finally`. */

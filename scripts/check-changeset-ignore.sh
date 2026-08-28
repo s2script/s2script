@@ -25,7 +25,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-node --experimental-strip-types --no-warnings --input-type=module -e "$(cat <<'NODE'
+node --experimental-strip-types --no-warnings --input-type=module <<'NODE'
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -80,4 +80,3 @@ if (stale.length > 0) {
 console.error(`  Edit ${CONFIG_PATH}'s "ignore" array to match.`);
 process.exit(1);
 NODE
-)"

@@ -4,7 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Names of all packages whose manifest lives under games/
-mapfile -t GAME_PKGS < <(
+# `read -r` loop rather than `mapfile`: mapfile is bash 4+, and macOS still ships bash 3.2,
+# so this gate could not run locally at all. CI-only gates defeat the point of a gate.
+GAME_PKGS=()
+while IFS= read -r __line; do [ -n "$__line" ] && GAME_PKGS+=("$__line"); done < <(
   cargo metadata --format-version 1 --no-deps \
   | python3 -c 'import sys,json; m=json.load(sys.stdin); [print(p["name"]) for p in m["packages"] if "/games/" in p["manifest_path"]]'
 )

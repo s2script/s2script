@@ -47,9 +47,26 @@ gate_instance_name() {
 # True (0) when nothing on the host listens on $1 and no container publishes it.
 # NOTE: written as if/then rather than `grep -q … && return 1` — under `set -e` the latter
 # makes the whole compound return non-zero when grep finds nothing, exiting the script.
+# Listening-socket listing, whichever tool this host has. `ss` is Linux-only (iproute2); on macOS
+# it does not exist, and because the old implementation swallowed that with `2>/dev/null` every
+# port looked free. That is the dangerous direction for this check — its whole job is to stop the
+# gate binding a port something else is already serving on.
+gate_listeners() {
+  if command -v ss >/dev/null 2>&1; then ss -tuln 2>/dev/null; return 0; fi
+  if command -v lsof >/dev/null 2>&1; then lsof -nP -iTCP -sTCP:LISTEN -iUDP 2>/dev/null; return 0; fi
+  if command -v netstat >/dev/null 2>&1; then netstat -an 2>/dev/null | grep -i listen; return 0; fi
+  return 1
+}
+
 gate_port_free() {
   local p="$1"
-  if ss -tuln 2>/dev/null | grep -qE "[:.]${p}([[:space:]]|$)"; then return 1; fi
+  local listeners
+  if ! listeners="$(gate_listeners)"; then
+    # Fail CLOSED. No way to tell means we must not claim the port.
+    echo "gate: no ss/lsof/netstat available — cannot verify port ${p} is free" >&2
+    return 1
+  fi
+  if printf '%s\n' "$listeners" | grep -qE "[:.]${p}([[:space:]]|$)"; then return 1; fi
   if docker ps --format '{{.Ports}}' 2>/dev/null | grep -qE "(^|[^0-9])${p}->"; then return 1; fi
   return 0
 }

@@ -18,8 +18,12 @@ cd "$(dirname "$0")/.."
 # gate was written) — that map is the authoritative list of what's importable,
 # but reading it back out of package.json here would mean parsing JSON in bash
 # for no gain, so the filename glob stands in for it.
-mapfile -t modules < <(
-  find packages/sdk -maxdepth 1 -name '*.d.ts' -printf '%f\n' \
+# `read -r` loop rather than `mapfile`: mapfile is bash 4+, and macOS still ships bash 3.2,
+# so this gate could not run locally at all. CI-only gates defeat the point of a gate.
+modules=()
+while IFS= read -r __line; do [ -n "$__line" ] && modules+=("$__line"); done < <(
+  # `-exec basename` rather than `-printf`: -printf is a GNU extension that BSD/macOS find lacks.
+  find packages/sdk -maxdepth 1 -name '*.d.ts' -exec basename {} \; \
     | sed 's/\.d\.ts$//' \
     | grep -vx -e globals \
     | sort

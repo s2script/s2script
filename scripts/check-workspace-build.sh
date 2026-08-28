@@ -25,7 +25,11 @@ if [ ! -f "$WS/package.json" ]; then
     exit 1
 fi
 
-node --experimental-strip-types --no-warnings --input-type=module -e "$(cat <<'NODE'
+# Inside the repo, not $TMPDIR: the module imports bare specifiers (fflate, the SDK sources), and
+# Node resolves those from the FILE's directory upward — a /tmp file finds no node_modules.
+GATE_JS="./.s2-workspace-gate.$$.mjs"
+trap 'rm -f "$GATE_JS"' EXIT
+cat > "$GATE_JS" <<'NODE'
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
@@ -36,7 +40,7 @@ const { buildWorkspace, formatBuildFailures } = await import("./packages/sdk/src
 const { resolveSiblingContracts } = await import("./packages/sdk/src/workspace/siblings.ts");
 const { localContractPath } = await import("./packages/sdk/src/contracts.ts");
 
-const wsDir = resolve(process.argv[1]);
+const wsDir = resolve(process.env.S2_WS_DIR);
 const fail = (msg) => { console.error(`FAIL: ${msg}`); process.exitCode = 1; };
 const manifestOf = (s2sp) => JSON.parse(strFromU8(unzipSync(readFileSync(s2sp))["manifest.json"]));
 const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -121,4 +125,4 @@ if (pairs === 0) {
 if (process.exitCode) process.exit(1);
 console.log(`PASS: workspace build + ${pairs} sibling contract(s) resolved in place`);
 NODE
-)" "$WS"
+S2_WS_DIR="$WS" node --experimental-strip-types --no-warnings "$GATE_JS"
