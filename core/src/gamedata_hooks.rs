@@ -71,12 +71,15 @@ pub(crate) const SHAPES: &[(&str, i32)] = &[
     // view pointer and an unknown trailing ptr). JS sees `method` and a writable `result`
     // (the i32 return), never the pointers. Pickup-gates spec PR1.
     ("this_i64_i32_i64", 3),
-    // void(this, i64, i64, i64) — three FULL-WIDTH pointer args. Added for
-    // CCSCustomHudLayout's HUD-click receiver, whose args are (pulse binding, CCSPlayerController*,
-    // CCSCustomHudLayout*, const std::string* buttonId). Every one is a pointer, so there is no
-    // shape above that can carry it: `this_i64_i32_i64`'s middle slot is i32, and narrowing a
-    // pointer is the exact bug documented in shim/src/hook_dispatch.h that segfaulted a live
-    // server. See that comment before ever reaching for a narrower shape again.
+    // void(this, i64, i64, i64) — three FULL-WIDTH pointer args. Added for a game package's
+    // UI-click receiver, whose four arguments are all pointers (a script binding, a player
+    // controller, the layout entity, and a `const std::string*`). Because every one is a pointer
+    // there is no shape above that can carry it: `this_i64_i32_i64`'s middle slot is i32, and
+    // narrowing a pointer is the exact bug documented in shim/src/hook_dispatch.h that segfaulted
+    // a live server. See that comment before ever reaching for a narrower shape again.
+    //
+    // The concrete class and method names live in the game package's gamedata, never here — core
+    // knows shapes, not games.
     ("this_i64_i64_i64", 4),
 ];
 
