@@ -70,7 +70,11 @@ npm run changeset && npm run version-packages && npm run release    # @s2script/
 
 **A slice is one branch and one PR.** Plain `git` + `gh pr create`, squash-merged. The PR is as
 big as the slice is — don't split a slice into a chain of dependent PRs, and don't batch two
-slices into one. Graphite and stacked PRs are retired; there is no `gt`.
+slices into one. **Graphite is retired; there is no `gt`.** GitHub's own stacking is fine and is
+the way to ship several INDEPENDENT slices at once: rebase each branch onto the one below and set
+each PR's base to its parent, so every diff shows only its own slice. Merge bottom-up, retargeting
+upward as each lands. That is not the same thing as splitting one slice into a chain — each entry
+in a stack must still be atomic and pass `make ci` on its own.
 
 Branch naming: `<area>/<terse-change>` — e.g. `ci/consolidation`, `docs/readme-front-door`.
 
