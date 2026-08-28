@@ -17,7 +17,10 @@ done
 # fail on a perfectly good workspace. Everything else passes through untouched — a plugin that
 # merely LIVES inside a workspace still typechecks as itself, which is what keeps the repo's own
 # plugins/*/ entries here after the plugins/ tree became a workspace.
-mapfile -t targets < <(node --experimental-strip-types --no-warnings -e "
+# `read -r` loop rather than `mapfile`: mapfile is bash 4+, and macOS still ships bash 3.2,
+# so this gate could not run locally at all. CI-only gates defeat the point of a gate.
+targets=()
+while IFS= read -r __line; do [ -n "$__line" ] && targets+=("$__line"); done < <(node --experimental-strip-types --no-warnings -e "
   import('./packages/sdk/src/workspace/workspace.ts').then(({ findWorkspaceRoot, loadWorkspace }) => {
     const { relative, resolve } = require('node:path');
     for (const d of process.argv.slice(1)) {
