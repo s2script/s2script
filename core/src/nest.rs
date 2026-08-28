@@ -22,18 +22,52 @@ thread_local! {
     static NEST: RefCell<Vec<*const FunctionCallbackInfo>> = const { RefCell::new(Vec::new()) };
 }
 
-/// rusty_v8 149.4.0: `FunctionCallbackArguments { info, data: Option<Local>, length: Option<i32> }`
-/// is not `repr(C)` and does not expose `info`. `data` starts as `None` (a null word). Scan
-/// pointer-sized slots for the first non-null — that is `info` (`&FunctionCallbackInfo`).
+/// Byte offset of the `info` field inside `FunctionCallbackArguments`, discovered once at runtime.
+///
+/// rusty_v8 149.4.0 declares
+/// `FunctionCallbackArguments { info: &FunctionCallbackInfo, data: Option<Local>, length: Option<int> }`
+/// with no `repr(C)`, so field order is the compiler's choice and is not part of the crate's
+/// contract — it can change with a rustc or crate bump.
+///
+/// This used to guess: take the first non-null word and publish it as `info`. When the compiler
+/// put `data` or `length` first, we published a non-pointer as a `FunctionCallbackInfo`,
+/// `fan_out_inner` built a `CallbackScope` from it, and `GetIsolate()` dereferenced it at `+0x28`.
+/// Observed on a live server as `SIGSEGV` reading `0x00007fff00000028` with
+/// `rdi = 0x00007fff00000000` — a value with its whole low half zeroed, i.e. not a pointer.
+///
+/// So do not guess and do not pattern-match on what a pointer "looks like" either: build an
+/// `args` from a pointer we already know, via the crate's own public constructor, and record which
+/// word it landed in. That is exact for whatever layout this build actually chose.
+fn info_offset() -> Option<usize> {
+    static OFFSET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        // A real owned allocation, so the reference we hand the constructor points at live memory.
+        // Nothing ever reads through it as a `FunctionCallbackInfo`; it is only ever compared.
+        let probe: Box<[usize; 8]> = Box::new([0; 8]);
+        let raw = Box::into_raw(probe);
+        let want = raw as usize;
+        let found = {
+            let args = FunctionCallbackArguments::from_function_callback_info(unsafe {
+                &*(raw as *const FunctionCallbackInfo)
+            });
+            let base = &args as *const FunctionCallbackArguments as *const usize;
+            // 4 words covers `info` + `data` + `length` plus any tail padding.
+            (0..4).find(|i| unsafe { *base.add(*i) } == want)
+        };
+        unsafe { drop(Box::from_raw(raw)) };
+        found
+    })
+}
+
+/// The current native's `FunctionCallbackInfo`, or null if the layout probe failed.
+///
+/// Null publishes an empty nest frame, which sends `fan_out_inner` down the documented skip/defer
+/// path — the same one an engine-inbound call with no live `FunctionCallbackInfo` takes. Losing
+/// nesting is a graceful degrade; dereferencing a guess is not.
 fn info_ptr(args: &FunctionCallbackArguments<'_>) -> *const FunctionCallbackInfo {
+    let Some(off) = info_offset() else { return std::ptr::null() };
     let base = args as *const FunctionCallbackArguments as *const usize;
-    for i in 0..4 {
-        let w = unsafe { *base.add(i) };
-        if w != 0 {
-            return w as *const FunctionCallbackInfo;
-        }
-    }
-    std::ptr::null()
+    unsafe { *base.add(off) as *const FunctionCallbackInfo }
 }
 
 /// RAII push of the current native's `FunctionCallbackInfo` for the engine FFI window.
