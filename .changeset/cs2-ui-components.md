@@ -21,10 +21,11 @@ are three separate 1024s and a combined total is wrong in both directions.
 
 Also in this change:
 
-- `ctx.ui.createLayout()` spawns the layout entity explicitly. Drives no longer
-  create one implicitly: creating a `custom_hud_layout` from inside a frame or
-  event dispatch segfaults the server, and lazily creating it on first draw made
-  that hazard depend on which plugin happened to draw first.
+- `ctx.ui.createLayout()` / `components().ensure()` spawn the layout entity
+  once a client is active — from player-join, a game event, a command, or any
+  other post-ready callback. `hud()` / `components()` also spawn at that point.
+  OnMapStart is still too early (the world is not up). A drive never creates
+  the entity as a side-effect of paint.
 - `Modal.cursor()`, `select()` and the `detail()` callback all speak ABSOLUTE
   indices, matching `onPick`. They previously mixed absolute and page-relative,
   so "act on the selection" operated on the wrong row on every page but the

@@ -84,9 +84,10 @@ export interface CtxUi {
   /**
    * Spawn the layout entity for `descriptor`. Returns null on success, or a reason.
    *
-   * **Call this from a console command only.** Spawning a `custom_hud_layout` from inside a frame,
-   * event or entity dispatch segfaults the server — proven twice. Until a layout exists, every
-   * drive call degrades to a reason string rather than creating one implicitly.
+   * Call from player-join (`ctx.clients.onActive`), a game event, a command, or any other callback
+   * after a client is active. `hud()` / {@link CtxUi.components} also spawn at that point, so
+   * this is only needed to force a spawn before the first of those calls. OnMapStart is still
+   * too early — wait for an active client. Idempotent.
    */
   createLayout(descriptor?: LayoutDescriptor): HudResult;
 
@@ -196,9 +197,8 @@ export interface ToastSpec {
 export interface Components {
   readonly descriptor: LayoutDescriptor;
   /**
-   * Spawn the pool's layout entity. **Console command only** — see {@link CtxUi.createLayout}.
-   * Until it succeeds, every draw degrades and nothing renders, so a plugin stays playable
-   * without its HUD.
+   * Spawn the pool's layout entity. Same timing as {@link CtxUi.createLayout}.
+   * `components()` also spawns once a client is active.
    */
   ensure(): HudResult;
   /** The underlying primitive, for anything the library does not cover. */
