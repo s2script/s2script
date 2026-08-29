@@ -1,5 +1,48 @@
 # @s2script/cs2
 
+## 0.14.0
+
+### Minor Changes
+
+- e74edfd: Add `ctx.ui.components()` — a shared, pooled Panorama component library.
+
+  `ctx.ui.hud()` drives panel ids that some `.xml` declares, so using it directly
+  means authoring and publishing your own workshop layout before you can draw a
+  row. `components()` is the library over that primitive: plugins describe data
+  (rows, titles, handlers) and never touch an id. Paging, selection, per-player
+  state and the reveal are handled for them.
+
+  This also keeps plugins inside an engine limit. `CCSCustomHudLayout` interns
+  every panel id, class name and dialog variable the server references into three
+  networked vectors, each capped at 1024, and those vectors belong to the ENTITY —
+  every plugin shares them. Private per-plugin layouts consume that budget
+  multiplicatively and fail late, when the Nth plugin loads. A shared pool is
+  interned once and reused, so cost tracks what is on screen rather than plugin
+  count. `Components.budget()` reports the three counts separately, because they
+  are three separate 1024s and a combined total is wrong in both directions.
+
+  Also in this change:
+
+  - `ctx.ui.createLayout()` spawns the layout entity explicitly. Drives no longer
+    create one implicitly: creating a `custom_hud_layout` from inside a frame or
+    event dispatch segfaults the server, and lazily creating it on first draw made
+    that hazard depend on which plugin happened to draw first.
+  - `Modal.cursor()`, `select()` and the `detail()` callback all speak ABSOLUTE
+    indices, matching `onPick`. They previously mixed absolute and page-relative,
+    so "act on the selection" operated on the wrong row on every page but the
+    first — silently, and only once a list was long enough to page.
+
+- e74edfd: Add lifecycle-bound `ctx.ui` custom HUD API with promoted engine calls (`setHasClassForPlayer`, `setDialogVariableStringForPlayer`, `setInputCaptureEnabledForPlayer`) and `onCustomHudClicked` hook. Ships default `s2script_hud.xml` descriptor for workshop addon 3790153369.
+- 747f312: Add `ctx.items.onCanAcquire` / `onCanAcquirePost` — a first-class pickup gate over `CCSPlayer_ItemServices::CanAcquire`. Plugins can refuse a pickup (or a `giveNamedItem`) with `AcquireResult` + `HookResult`. The item view is block-scoped scalars, never a pointer.
+
+### Patch Changes
+
+- 747f312: A plugin engine call is visible to other plugins before it returns. `Events.fire` nests `on`/`onPre`. `Player.respawn()` and `GameRules.terminateRound()` run on this call (no next-frame queue). `Server.setCvar` writes through ICvar now (boolean return; `getCvar`/`onCvarChange` see the new value on the same call).
+- Updated dependencies [747f312]
+- Updated dependencies [747f312]
+- Updated dependencies [dd8f333]
+  - @s2script/sdk@0.22.0
+
 ## 0.13.0
 
 ### Minor Changes
