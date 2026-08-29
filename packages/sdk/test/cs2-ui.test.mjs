@@ -246,20 +246,43 @@ test("createLayout is idempotent by targetname", () => {
   assert.equal(h.invokes[0].index, first.index);
 });
 
-test("a DRIVE never creates the entity — it degrades", () => {
+test("hud() after an active client spawns the layout", () => {
   const h = makeHost();
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
   const hud = ui.hud();
-  // Creating a custom_hud_layout from inside a frame or event dispatch segfaults the server.
-  // Lazily creating it on first draw made that hazard depend on which plugin drew first, so a
-  // drive with no layout must report a reason instead of spawning one.
   const err = hud.show(0, "s2_dialog");
-  assert.match(err, /unavailable|not ready/);
-  assert.equal(h.created.length, 0, "a drive must never spawn the layout entity");
-  assert.equal(h.invokes.length, 0);
+  assert.equal(err, null);
+  assert.equal(h.created.length, 1, "hud() must spawn once a client is active");
+  assert.equal(h.invokes.length, 1);
 });
+
+test("hud() before join, then onActive, spawns without createLayout", () => {
+  const h = makeHost({ signon: 2 });
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  const hud = ui.hud();
+  assert.equal(h.created.length, 0, "no spawn before an active client");
+  h.fireActive(0);
+  const err = hud.show(0, "s2_dialog");
+  assert.equal(err, null);
+  assert.equal(h.created.length, 1, "player-join must spawn layouts registered at load");
+});
+
+test("createLayout from onActive spawns", () => {
+  const h = makeHost({ signon: 2 });
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  h.ctx.__s2pkg_clients.Clients.onActive(() => {
+    const err = ui.createLayout();
+    assert.equal(err, null);
+  });
+  assert.equal(h.created.length, 0);
+  h.fireActive(0);
+  assert.equal(h.created.length, 1);
+});
+
 
 test("setPool overflow refuses without invoke", () => {
   const h = makeHost();
@@ -391,9 +414,13 @@ test("map reset clears entity cache and readiness", () => {
   const hud = ui.hud();
   hud.show(0, "s2_dialog");
   assert.equal(h.created.length, 1);
+  for (const e of h.created) e.live = false;
   h.fireMapStart();
   const err = hud.show(0, "s2_dialog");
   assert.match(err, /not ready/);
+  h.fireActive(0);
+  assert.equal(hud.show(0, "s2_dialog"), null);
+  assert.equal(h.created.length, 2, "the next player-join must respawn the layout");
 });
 
 test("onCustomHudClicked wrapper returns Continue", () => {

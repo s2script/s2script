@@ -95,14 +95,8 @@ export default plugin((ctx) => {
   bomb.install(ctx, log);
 
   // ── Map start ───────────────────────────────────────────────────────────────────────────────
-  // Auto-creation is OFF by default: a bad `layout` value would then run on every map load, and a
-  // spawn failure at map start is far harder to read than one at a command prompt.
-  // NO auto-create at OnMapStart. Tried it; it SEGFAULTED the server, immediately after
-  // "[s2script] map start" with the crash breadcrumb naming this plugin. Spawning a
-  // custom_hud_layout that early is not safe — the entity/resource systems are still coming up.
-  //
-  // Both working reference implementations (cs2-customhud, CustomHudProbeSW2) spawn on COMMAND for
-  // the same reason. `sm_hud_create` is the supported path.
+  // Do not spawn a custom_hud_layout from OnMapStart — the world is not up yet. ctx.ui waits
+  // for an active client, then spawns any layout registered via hud() / createLayout.
 
   // ── Status ──────────────────────────────────────────────────────────────────────────────────
   ctx.commands.registerAdmin("sm_hud_status", ADMFLAG.GENERIC, (cmd) => {
@@ -414,8 +408,6 @@ export default plugin((ctx) => {
 
   ctx.commands.registerAdmin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return; }
-    // Spawn the layout HERE, in a command dispatch. Drives no longer create it: doing that
-    // from a frame dispatch segfaulted a live server.
     const spawn = ctx.ui.createLayout();
     if (spawn !== null) { cmd.reply(`${TAG} ${spawn}`); return; }
     const slot = cmd.callerSlot;

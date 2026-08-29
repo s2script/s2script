@@ -329,6 +329,7 @@
     ui: function (reg, viaId) {
       var ready = false;
       var entityByResource = {};
+      var registered = {};
       var hudByResource = {};
       var buttonHandlers = {};
       var rawClickHandlers = [];
@@ -341,24 +342,40 @@
           : "world not ready — wait for an active client before driving HUDs";
       }
 
+      function remember(desc) {
+        registered[desc.resource] = desc;
+      }
+
+      function spawnRegistered() {
+        if (!ready) return;
+        var st = ctxState();
+        for (var res in registered) {
+          if (Object.prototype.hasOwnProperty.call(registered, res)) {
+            st.createEntity(registered[res]);
+          }
+        }
+      }
+
+      function becomeReady() {
+        ready = true;
+        spawnRegistered();
+      }
+
       function markReadyIfActive() {
         var all = clientsApi().all();
         for (var i = 0; i < all.length; i++) {
-          if (all[i].signonState === SIGNON_ACTIVE) { ready = true; return; }
+          if (all[i].signonState === SIGNON_ACTIVE) { becomeReady(); return; }
         }
       }
 
       function resetForMap() {
         ready = false;
         entityByResource = {};
-        for (var key in hudByResource) {
-          if (Object.prototype.hasOwnProperty.call(hudByResource, key)) delete hudByResource[key];
-        }
       }
 
       reg(viaId(function () { serverApi().onMapStart(resetForMap); }));
       reg(viaId(function () {
-        clientsApi().onActive(function () { ready = true; });
+        clientsApi().onActive(function () { becomeReady(); });
         clientsApi().onDisconnect(function (client) {
           for (var res in hudByResource) {
             if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
@@ -382,20 +399,7 @@
             var cached = entityByResource[desc.resource];
             return cached && cached.isValid() ? cached : null;
           },
-          /**
-           * Resolve the layout entity for a DRIVE. Never creates one.
-           *
-           * Creating a `custom_hud_layout` from inside an engine dispatch segfaults the server.
-           * We hit this twice: once auto-creating at `OnMapStart`, and again when a plugin's first
-           * drive landed inside `OnGameFrame` (a TTT round start, via tickCountdown -> beginRound
-           * -> a traitor badge). The second was the same bug wearing different clothes — removing
-           * the map-start auto-create only moved the hazard to whichever dispatch happened to
-           * drive first, which is worse, because it made the crash depend on plugin timing.
-           *
-           * So drives resolve-or-degrade, and creation is explicit via `createEntity` below. A
-           * plugin that has not created its layout gets `notReadyReason()` back from every drive
-           * and the framework keeps running, which is the documented contract.
-           */
+          /** Resolve the layout entity for a drive. Creation happens in createEntity, not here. */
           ensureEntity: function (desc) {
             if (!ready) return null;
             var cached = entityByResource[desc.resource];
@@ -406,9 +410,9 @@
           },
 
           /**
-           * Explicitly spawn the layout entity. Call from a CONSOLE COMMAND, never from a frame,
-           * event or entity dispatch — spawning on command is the only path we have evidence
-           * works, and both reference implementations do it that way.
+           * Spawn the layout entity once the world has an active client. Safe from player-join,
+           * game events, commands, and hud() after that point. OnMapStart is still too early —
+           * becomeReady waits for a SIGNON_ACTIVE client.
            */
           createEntity: function (desc) {
             if (!ready) return null;
@@ -473,20 +477,23 @@
         hud: function (descriptor) {
           var desc = validateDescriptor(descriptor || DEFAULT_DESCRIPTOR);
           maybePrintMamBanner(desc);
+          remember(desc);
           if (!hudByResource[desc.resource]) {
             hudByResource[desc.resource] = makeHud(desc, ctxState(), installClickHook);
           }
+          if (ready) ctxState().createEntity(desc);
           return hudByResource[desc.resource];
         },
         /**
          * Spawn the layout entity for `descriptor` (default descriptor if omitted).
          *
-         * MUST be called from a console command. Spawning a `custom_hud_layout` from inside a
-         * frame, event or entity dispatch segfaults the server — see `ensureEntity`. Returns null
-         * on success, or a human-readable reason, like any other drive call.
+         * Call from player-join, a game event, a command, or any other callback after a client
+         * is active. Returns null on success, or a reason (the world is not ready yet, or spawn
+         * failed). Idempotent. `hud()` / `components()` also spawn once a client is active.
          */
         createLayout: function (descriptor) {
           var desc = validateDescriptor(descriptor || DEFAULT_DESCRIPTOR);
+          remember(desc);
           var st = ctxState();
           var ref = st.createEntity(desc);
           return ref ? null : st.notReadyReason();

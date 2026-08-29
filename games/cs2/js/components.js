@@ -491,10 +491,9 @@
       descriptor: LIB_DESCRIPTOR,
       hud: hud,
       /**
-       * Spawn the pool's layout entity. Call from a CONSOLE COMMAND only — spawning from a frame
-       * or event dispatch segfaults the server. Until this succeeds every draw below degrades to
-       * a reason string and nothing renders, which is deliberate: a plugin should stay playable
-       * without its HUD.
+       * Spawn the pool's layout entity. Same timing as `createLayout` — player-join, events,
+       * commands, or any post-ready callback. `components()` also spawns once a client is active,
+       * so this is only needed to force a spawn before the first `hud()` / `components()` call.
        */
       ensure: function () { return hudApi.createLayout(descriptor || LIB_DESCRIPTOR); },
       modal: modal,
