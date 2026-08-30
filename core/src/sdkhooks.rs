@@ -26,6 +26,7 @@ thread_local! {
     static HOOKS: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
 fn packed_handle(index: i32, serial: i32) -> i32 {
     let bits = crate::entity::HANDLE_ENTRY_BITS;
     ((serial as u32) << bits | ((index as u32) & ((1u32 << bits) - 1))) as i32
