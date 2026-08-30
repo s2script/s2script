@@ -44,6 +44,12 @@ ruleTester.run("no-floating-promise-in-factory", noFloatingPromiseInFactory, {
      export default plugin((ctx) => {
        ctx.events.on("round_start", () => { Database.open("prefs"); });
      });`,
+    // OnPluginStart — awaited.
+    `import { Database } from "@s2script/sdk/db";
+     export async function OnPluginStart(): Promise<void> {
+       const db = await Database.open("prefs");
+       void db;
+     }`,
   ],
   invalid: [
     {
@@ -63,6 +69,13 @@ ruleTester.run("no-floating-promise-in-factory", noFloatingPromiseInFactory, {
                Database.open("prefs").then((db) => db.query("x"));
                ctx.events.on("round_start", () => {});
              });`,
+      errors: [{ messageId: "floating" }],
+    },
+    {
+      code: `import { Database } from "@s2script/sdk/db";
+             export async function OnPluginStart(): Promise<void> {
+               Database.open("prefs");
+             }`,
       errors: [{ messageId: "floating" }],
     },
   ],

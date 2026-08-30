@@ -6,9 +6,10 @@
 // dropped, so b never ran at all.
 //
 // Every line is prefixed [DDQ-A] so `docker logs | grep DDQ` reads as a transcript.
-import { plugin } from "@s2script/sdk/plugin";
 import { Events } from "@s2script/sdk/events";
 import { Player } from "@s2script/cs2";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 // The deferred-dispatch selftest native. DELIBERATELY not in @s2script/sdk's .d.ts and never will
 // be: core installs it only in a process started with S2_DEFER_SELFTEST set, so in any normal
@@ -16,14 +17,14 @@ import { Player } from "@s2script/cs2";
 // the code below has to prove it is there before calling it — which is also the gate's first check.
 declare const __s2_defer_selftest: (() => number) | undefined;
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[DDQ-A] ${m}`);
   L("loaded");
 
   // A frame counter, so the log proves WHEN the deferred delivery lands relative to the defer.
   // The spec says one frame later (§4) — not the same frame, and not never.
   let frame = 0;
-  ctx.server.onGameFrame(() => { frame += 1; });
+  hook.gameFrame(() => { frame += 1; });
 
   // ------------------------------------------------------------------ check 1 + 2
   // The outer handler fires an inner event from INSIDE a dispatch. The engine dispatches that
@@ -49,7 +50,7 @@ export default plugin((ctx) => {
 
   let armedSlay = false;
   // The slay happens INSIDE this handler, i.e. inside dispatch_game_event's borrow.
-  ctx.events.on("player_changename", () => {
+  hook.event("player_changename", () => {
     if (!armedSlay) return;
     armedSlay = false;
     const victim = Player.all().find((p) => (p.pawn?.health ?? 0) > 0);
@@ -59,13 +60,13 @@ export default plugin((ctx) => {
     L("slay: returned — player_death should have deferred");
   });
 
-  ctx.events.on("round_start", () => {
+  hook.event("round_start", () => {
     L(`round_start at frame=${frame}`);
     fireInner("round_start");
   });
 
   // On-demand trigger, so the gate does not depend on waiting for a round.
-  ctx.commands.registerServer("ddq_fire", () => {
+  command.server("ddq_fire", () => {
     // Fired from a command handler — also inside a dispatch, so also a re-entrancy.
     fireInner("ddq_fire command");
   });
@@ -75,7 +76,7 @@ export default plugin((ctx) => {
   // fan_out's per-handler TryCatch, so the only observable failure is a leak — which shows up as
   // the server's RSS climbing across repeated ddq_throw, not as an error. Fire a burst so a leak
   // would be measurable.
-  ctx.commands.registerServer("ddq_throw", () => {
+  command.server("ddq_throw", () => {
     L(`throw-path burst of 20 at frame=${frame}`);
     for (let i = 0; i < 20; i++) {
       Events.fire("player_changename", { userid: 0, oldname: `throw-${i}`, newname: "throw" });
@@ -88,7 +89,7 @@ export default plugin((ctx) => {
   // that fires an event synchronously — which is exactly Respawn/TerminateRound in A5b. slay() is
   // CommitSuicide, and it fires player_death inline, so calling it from INSIDE an event handler
   // reproduces that shape today, without waiting for A5b.
-  ctx.commands.registerServer("ddq_slay", () => {
+  command.server("ddq_slay", () => {
     const victims = Player.all().filter((p) => (p.pawn?.health ?? 0) > 0);
     L(`ddq_slay: ${victims.length} live pawn(s) at frame=${frame}`);
     if (victims.length === 0) return;
@@ -112,7 +113,7 @@ export default plugin((ctx) => {
   // gated on S2_DEFER_SELFTEST, in the same spirit as S2_DAMAGE_SELFTEST. This command is its only
   // caller: being inside a JS native is what puts core in the borrow the selftest needs.
   let selftests = 0;
-  ctx.commands.registerServer("ddq_selftest", (c) => {
+  command.server("ddq_selftest", (c) => {
     if (typeof __s2_defer_selftest !== "function") {
       const m = "ddq_selftest: native ABSENT — the server was not started with S2_DEFER_SELFTEST set";
       L(m);
@@ -132,11 +133,11 @@ export default plugin((ctx) => {
     c.reply(`ddq_selftest #${selftests}: ${r} — ${verdict}`);
   });
 
-  ctx.commands.registerServer("ddq_report", () => {
+  command.server("ddq_report", () => {
     L(`REPORT fired=${fired} selftests=${selftests} frame=${frame}`);
   });
+}
 
-  return {
-    onUnload() { L(`unloading (fired=${fired})`); },
-  };
-});
+export function OnPluginEnd(): void {
+  console.log("[DDQ-A] unloading");
+}

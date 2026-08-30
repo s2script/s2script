@@ -1,9 +1,9 @@
-import { plugin } from "@s2script/sdk/plugin";
+import { publish } from "@s2script/sdk/plugin";
 
 const NAME = ["@demo", "dynamic"].join("/");
 
-export default plugin((ctx) => {
-  ctx.publish(NAME, {
+export function OnPluginStart(): void {
+  publish(NAME, {
     ping: () => 1,
   });
-});
+}

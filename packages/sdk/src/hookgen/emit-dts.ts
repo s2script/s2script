@@ -53,12 +53,14 @@ export function emitHookDts(model: CtxNamespace[]): string {
     }
   }
 
-  for (const { ctxIface, hooks } of model) {
+  for (const { ctxIface, hooks, ns } of model) {
     out.push(`export interface ${ctxIface} {`);
     for (const h of hooks) {
       out.push(`  ${h.name}(handler: (view: ${h.viewIface}) => HookResultValue | void): void;`);
     }
     out.push("}", "");
+    out.push(`export declare const ${ns}: ${ctxIface};`);
+    out.push("");
   }
 
   out.push('declare module "@s2script/sdk/plugin" {');

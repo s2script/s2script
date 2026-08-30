@@ -15,7 +15,7 @@
  * `defuser` on OnBombDefuse are deprecated, so the watcher reads the userid slot instead and does
  * not depend on either field.
  */
-import type { PluginContext } from "@s2script/sdk/plugin";
+import { hook } from "@s2script/sdk/plugin";
 import { Entity } from "@s2script/sdk/entity";
 import type { EntityRef } from "@s2script/sdk/entity";
 import { wrapEntity, Player, CsItem } from "@s2script/cs2";
@@ -50,9 +50,9 @@ export function setWatching(on: boolean): boolean {
  * and ledgered, so toggling subscriptions per command would churn the ledger for no benefit. The
  * flag gates the LOGGING, not the subscription.
  */
-export function install(ctx: PluginContext, log: (line: string) => void): void {
+export function install(log: (line: string) => void): void {
   for (const name of WATCHED_EVENTS) {
-    ctx.events.on(name, (ev) => {
+    hook.event(name, (ev) => {
       if (!watching) return;
       const slot = ev.getPlayerSlot("userid");
       const who = slot >= 0 ? (Player.fromSlot(slot)?.playerName ?? `slot ${slot}`) : "<none>";

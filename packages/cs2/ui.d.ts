@@ -1,6 +1,6 @@
 /**
  * ctx.ui — lifecycle-bound custom HUD types. Runtime lives in games/cs2/js/ui.js (injected).
- * Import types and the default descriptor from `@s2script/cs2`; drive panels via `ctx.ui.hud()`.
+ * Import types and the default descriptor from `@s2script/cs2`; drive panels via `ui.hud()`.
  */
 import type { HookResultValue } from "@s2script/sdk/events";
 import type { EntityRef } from "@s2script/sdk/entity";
@@ -105,6 +105,9 @@ declare module "@s2script/sdk/plugin" {
     readonly ui: CtxUi;
   }
 }
+
+/** Load-window custom HUD API. Same object as the former `ctx.ui`. Throws after settle. */
+export declare const ui: CtxUi;
 
 // ── component library ─────────────────────────────────────────────────────────────────────────
 // `ctx.ui.hud()` is the primitive: it drives ids some .xml declares, so using it directly means

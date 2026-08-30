@@ -1,5 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * Writable movement-services fields — `pawn.movementServices` gained setters for a curated
@@ -17,7 +19,7 @@ export const movementRecipe: Recipe = {
   name: "movement",
   describe: "writable movement fields: sm_speed <slot> <mult>, sm_movement <slot>",
 
-  register(ctx) {
+  register() {
     // Remember each slot's original maxspeed so sm_speed can restore it, rather than assuming
     // 260 — the base value depends on the active weapon.
     const original = new Map<number, number>();
@@ -25,7 +27,7 @@ export const movementRecipe: Recipe = {
     let sample: { slot: number; remaining: number; ticks: number; peak: number;
                   peakByPos: number; last: { x: number; y: number } | null } | null = null;
 
-    ctx.commands.register("sm_movement", (cmd) => {
+    command("sm_movement", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const pawn = slot >= 0 ? Player.fromSlot(slot)?.pawn : null;
       const ms = pawn?.movementServices;
@@ -37,7 +39,7 @@ export const movementRecipe: Recipe = {
 
     // The live gate: bots move under server-side movement code, so a maxspeed change is
     // observable on hardware without a human client.
-    ctx.commands.register("sm_speed", (cmd) => {
+    command("sm_speed", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const mult = parseFloat(cmd.arg(1) ?? "");
       if (slot < 0 || slot > 63 || !isFinite(mult) || mult <= 0) {
@@ -59,7 +61,7 @@ export const movementRecipe: Recipe = {
     // sm_speedsample <slot> <ticks> — peak horizontal speed over N frames. Reading maxspeed back
     // only proves the write stuck in memory; this proves the ENGINE acts on it, which is the whole
     // claim. Bots move under server-side movement code, so no human client is needed.
-    ctx.commands.register("sm_speedsample", (cmd) => {
+    command("sm_speedsample", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const ticks = Math.min(Math.max(cmd.argInt(1, 128), 1), 2048);
       if (slot < 0 || slot > 63) { cmd.reply("[cookbook] usage: sm_speedsample <slot 0-63> [ticks]"); return; }
@@ -72,7 +74,7 @@ export const movementRecipe: Recipe = {
     // Registered ONCE at load — the framework refuses a frame registration from inside a command
     // handler ("registration outside the load window"), and rightly so: it would leak a handler
     // per invocation. The command only flips `sampling`.
-    ctx.server.onGameFrame(() => {
+    hook.gameFrame(() => {
       if (!sampling || !sample) return;
       const pawn = Player.fromSlot(sample.slot)?.pawn;
       const v = pawn?.absVelocity;

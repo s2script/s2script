@@ -1,5 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { config } from "@s2script/sdk/config";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * A plugin declares its config under `s2script.config` in package.json — see this cookbook's own
@@ -16,12 +17,12 @@ import { config } from "@s2script/sdk/config";
 export const configRecipe: Recipe = {
   name: "config",
   describe: "read the plugin's operator-editable config file, live-reloadable (sm_config)",
-  register(ctx) {
-    ctx.config.onChange(() => {
+  register() {
+    config.onChange(() => {
       console.log("[cookbook] config changed — greeting=" + JSON.stringify(config.getString("greeting")));
     });
 
-    ctx.commands.register("sm_config", (cmd) => {
+    command("sm_config", (cmd) => {
       cmd.reply("greeting = " + JSON.stringify(config.getString("greeting")));
       cmd.reply("edit the materialized config file, save, then re-run sm_config to see it live-reload");
     });

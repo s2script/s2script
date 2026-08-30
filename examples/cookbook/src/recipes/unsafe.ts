@@ -2,6 +2,7 @@ import type { Recipe } from "../recipe.ts";
 import { Engine } from "@s2script/sdk/unsafe";
 import { Entity } from "@s2script/sdk/entity";
 import { Player } from "@s2script/cs2";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * `@s2script/sdk/unsafe` — call an engine function the core does not wrap, declared in this plugin's
@@ -26,13 +27,13 @@ import { Player } from "@s2script/cs2";
 export const unsafeRecipe: Recipe = {
   name: "unsafe",
   describe: "plugin-declared engine calls (cb_unsafe / cb_unsafe_burn)",
-  register(ctx) {
+  register() {
     // Resolved ONCE, at load. `ignite` is declared in this plugin's gamedata; `s2s build` generated
     // its type into .s2script/gamedata.d.ts, so the argument list below is typechecked at build time.
     const ignite = Engine.call("ignite");
     console.log(`[cookbook] unsafe: ignite -> ${Engine.status("ignite")}`);
 
-    ctx.commands.register("cb_unsafe", (cmd) => {
+    command("cb_unsafe", (cmd) => {
       const status = Engine.status("ignite");
       cmd.reply(
         ignite
@@ -42,7 +43,7 @@ export const unsafeRecipe: Recipe = {
       );
     });
 
-    ctx.commands.register("cb_unsafe_burn", (cmd) => {
+    command("cb_unsafe_burn", (cmd) => {
       if (!ignite) {
         cmd.reply(`[cookbook] unsafe: ignite unavailable (${Engine.status("ignite")})`);
         return;

@@ -5,12 +5,12 @@
 // on disk — no `s2s add`, no vendored copy, no lockfile. Re-run `s2s build` after editing
 // libs/greeter/src/index.ts and the change is picked up immediately, exactly like editing this
 // file's own source.
-import { plugin } from "@s2script/sdk/plugin";
 import { greet } from "@ws-example/greeter";
+import { command } from "@s2script/sdk/commands";
 
-export default plugin((ctx) => {
-  ctx.commands.register("sm_greet", (cmd) => {
+export function OnPluginStart(): void {
+  command("sm_greet", (cmd) => {
     const name = cmd.argsFrom(0) || "world";
     cmd.reply(greet(name));
   });
-});
+}

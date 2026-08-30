@@ -1,9 +1,9 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { Api } from "../api";
+import { publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const impl: Api = {
     nominate(_map: string): void {},
   };
-  ctx.publish("@fixture/ik-mapchooser", impl);
-});
+  publish("@fixture/ik-mapchooser", impl);
+}

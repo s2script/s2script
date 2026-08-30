@@ -25,8 +25,8 @@ export type {
   LayoutSlot,
   OnCustomHudClickedView,
 } from "./ui";
-export { DEFAULT_HUD_DESCRIPTOR } from "./ui";
-export { AcquireMethod, AcquireResult } from "./items";
+export { DEFAULT_HUD_DESCRIPTOR, ui } from "./ui";
+export { AcquireMethod, AcquireResult, items } from "./items";
 export type { CanAcquireView, CtxItems } from "./items";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
 export type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";

@@ -6,12 +6,13 @@
 //   sm_crashtest panic  — Rust panic: recovered by catch_unwind, REPORTED by the panic hook
 //   sm_crashtest js     — synchronous JS throw from this handler (kind=js incident)
 //   sm_crashtest reject — unhandled promise rejection (kind=js incident, "unhandled-rejection")
-import { plugin } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 declare function __s2_crash_test(kind: string): boolean;
+declare function __s2_crash_test(kind: string): boolean;
 
-export default plugin((ctx) => {
-  ctx.commands.registerServer("sm_crashtest", (cmd) => {
+export function OnPluginStart(): void {
+  command.server("sm_crashtest", (cmd) => {
     const kind = cmd.args[0] ?? "";
     console.log(`[crash-test] sm_crashtest ${kind}`);
     if (kind === "js") {
@@ -30,4 +31,4 @@ export default plugin((ctx) => {
     cmd.reply("usage: sm_crashtest <segv|abort|panic|js|reject>");
   });
   console.log("[crash-test] armed: sm_crashtest <segv|abort|panic|js|reject>");
-});
+}

@@ -5827,9 +5827,9 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                     .map(|v| v.is_function())
                     .unwrap_or(false);
                 let reason = if has_legacy {
-                    "legacy plugin shape (export onLoad) - rebuild with @s2script/sdk >= 0.2: export default plugin(factory)"
+                    "legacy plugin shape (export onLoad) - rebuild with @s2script/sdk: export function OnPluginStart"
                 } else {
-                    "no plugin() factory or export function OnPluginStart"
+                    "no export function OnPluginStart"
                 };
                 log_warn(&format!("WARN: load('{}'): {}", id, reason));
                 crate::crash::report_js_error(id, "load", reason, "");
@@ -8737,6 +8737,92 @@ pub(crate) mod frame_tests {
         assert_eq!(plugin_phase("sdkbar"), Some(crate::plugin::Phase::Active));
         dispatch_concommand("sm_x", -1, "", ReplySource::from_slot(-1));
         assert_eq!(eval_in_context_string("sdkbar", "String(globalThis.__slot)"), "-1");
+        shutdown();
+    }
+
+    /// `previous()` + `OnPluginState` round-trip a value across a same-id reload (no plugin() factory).
+    #[test]
+    fn on_plugin_state_and_previous_roundtrip() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "prevpub",
+            r#"
+            module.exports.OnPluginStart = function () {
+                var p = globalThis.__s2_require("@s2script/sdk/plugin");
+                var prev = p.previous();
+                globalThis.__seen = prev ? prev.n : -1;
+                globalThis.__id = p.pluginId();
+                globalThis.__previous = p.previous;
+            };
+            module.exports.OnPluginState = function () { return { n: 7 }; };
+            "#,
+            "{}",
+        );
+        assert_eq!(plugin_phase("prevpub"), Some(crate::plugin::Phase::Active));
+        assert_eq!(eval_in_context_string("prevpub", "String(globalThis.__seen)"), "-1", "first load: no previous");
+        assert_eq!(eval_in_context_string("prevpub", "String(globalThis.__id)"), "prevpub");
+        unload_plugin("prevpub");
+        load_plugin_js(
+            "prevpub",
+            r#"
+            module.exports.OnPluginStart = function () {
+                var p = globalThis.__s2_require("@s2script/sdk/plugin");
+                var prev = p.previous();
+                globalThis.__seen = prev ? prev.n : -1;
+            };
+            module.exports.OnPluginState = function () { return { n: 7 }; };
+            "#,
+            "{}",
+        );
+        assert_eq!(eval_in_context_string("prevpub", "String(globalThis.__seen)"), "7", "reload sees OnPluginState via previous()");
+        shutdown();
+    }
+
+    /// hook.create / hook.gameFrame register during OnPluginStart and throw after settle.
+    #[test]
+    fn hook_create_and_game_frame_register_during_on_plugin_start() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "hookmore",
+            r#"
+            module.exports.OnPluginStart = function () {
+                var p = globalThis.__s2_require("@s2script/sdk/plugin");
+                p.hook.create("*", function () { globalThis.__created = (globalThis.__created|0)+1; });
+                p.hook.gameFrame(function () { globalThis.__frames = (globalThis.__frames|0)+1; });
+                globalThis.__hook = p.hook;
+            };
+            "#,
+            "{}",
+        );
+        assert_eq!(plugin_phase("hookmore"), Some(crate::plugin::Phase::Active));
+        let threw = eval_in_context_string(
+            "hookmore",
+            r#"
+            (function () {
+                try { globalThis.__hook.create("*", function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+            "#,
+        );
+        assert!(
+            threw.contains("outside the load window"),
+            "hook.create after settle must throw, got: {}",
+            threw
+        );
+        let frame_threw = eval_in_context_string(
+            "hookmore",
+            r#"
+            (function () {
+                try { globalThis.__hook.gameFrame(function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+            "#,
+        );
+        assert!(
+            frame_threw.contains("outside the load window"),
+            "hook.gameFrame after settle must throw, got: {}",
+            frame_threw
+        );
         shutdown();
     }
 

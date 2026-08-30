@@ -13,13 +13,15 @@ export type Phrases = Record<string, string>;
  * for it automatically, the same rule SourceMod's `LoadTranslations` enforces:
  *
  * @example
- * export default plugin((ctx) => {
- *   ctx.translations.load("basecomm", "common");
- *   ctx.commands.registerAdmin("sm_gag", ADMFLAG.CHAT, (cmd) => {
+ * import { command, translations } from "@s2script/sdk";
+ * import { ADMFLAG } from "@s2script/sdk";
+ * export function OnPluginStart(): void {
+ *   translations.load("basecomm", "common");
+ *   command.admin("sm_gag", ADMFLAG.CHAT, (cmd) => {
  *     cmd.replyT("Usage Gag");                                  // key-checked
  *     Chat.toSlot(p.slot, Translations.translate(p.slot, "Gagged Player", n));
  *   });
- * });
+ * }
  *
  * Keys are checked against the files that plugin loads — see `@s2script/sdk/phrases`.
  */

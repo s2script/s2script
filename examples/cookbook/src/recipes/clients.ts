@@ -1,6 +1,8 @@
 import type { Recipe } from "../recipe.ts";
 import { Clients } from "@s2script/sdk/clients";
 import { Player } from "@s2script/cs2";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * @s2script/clients — the engine-generic client handle: six lifecycle events
@@ -15,29 +17,29 @@ import { Player } from "@s2script/cs2";
 export const clientsRecipe: Recipe = {
   name: "clients",
   describe: "list connected clients + lifecycle state (sm_clients) and onVoice (sm_voice / sm_voice verbose)",
-  register(ctx) {
+  register() {
     let voiceVerbose = false;
     // --- lifecycle listeners: fire for clients connecting AFTER Active. To
     // cover already-connected clients, seed explicitly with Clients.all() —
     // there is no framework replay of these events.
-    ctx.clients.onConnect((c) => {
+    hook.connect((c) => {
       console.log(`[cookbook] clients connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} ip=${c.ip}`);
       c.print("s2script cookbook: connected");
       console.log(`[cookbook] kickWithReason surface: typeof=${typeof c.kickWithReason}`);
     });
-    ctx.clients.onPutInServer((c) =>
+    hook.putInServer((c) =>
       console.log(`[cookbook] clients putInServer slot=${c.slot} name=${c.name}`));
-    ctx.clients.onActive((c) =>
+    hook.active((c) =>
       console.log(`[cookbook] clients active slot=${c.slot} name=${c.name}`));
-    ctx.clients.onFullyConnect((c) =>
+    hook.fullyConnect((c) =>
       console.log(`[cookbook] clients fullyConnect slot=${c.slot} name=${c.name}`));
-    ctx.clients.onDisconnect((c) =>
+    hook.disconnect((c) =>
       console.log(`[cookbook] clients disconnect slot=${c.slot} name=${c.name} steamId=${c.steamId}`));
-    ctx.clients.onSettingsChanged((c) =>
+    hook.settingsChanged((c) =>
       console.log(`[cookbook] clients settingsChanged slot=${c.slot} name=${c.name}`));
 
     // sm_clients — snapshot every currently-connected client (bots included).
-    ctx.commands.register("sm_clients", (cmd) => {
+    command("sm_clients", (cmd) => {
       const all = Clients.all();
       cmd.reply(`${all.length} connected client(s):`);
       for (const c of all) {
@@ -46,7 +48,7 @@ export const clientsRecipe: Recipe = {
     });
 
     // --- voice: lazy mute-on-talk for DEAD players, unmute on spawn/round_end.
-    ctx.clients.onVoice((c) => {
+    hook.voice((c) => {
       if (voiceVerbose) {
         console.log("[cookbook] clients onVoice slot=" + c.slot + " name=" + c.name + " muted=" + c.voiceMuted);
       }
@@ -60,13 +62,13 @@ export const clientsRecipe: Recipe = {
       }
     });
 
-    ctx.events.on("player_spawn", (ev) => { // clear on respawn
+    hook.event("player_spawn", (ev) => { // clear on respawn
       const slot = ev.getPlayerSlot("userid");
       const c = Clients.fromSlot(slot);
       if (c && c.voiceMuted) { c.voiceMuted = false; console.log("[cookbook] voice unmuted slot " + slot + " on spawn"); }
     });
 
-    ctx.events.on("round_end", () => { // clear all at round end
+    hook.event("round_end", () => { // clear all at round end
       for (const c of Clients.all()) if (c.voiceMuted) c.voiceMuted = false;
       console.log("[cookbook] voice round_end — unmuted all");
     });
@@ -75,7 +77,7 @@ export const clientsRecipe: Recipe = {
     //   sm_clientcmd — ClientCommand: asks the CLIENT to run it, so it does nothing on a bot.
     //   sm_fakecmd   — FakeClientCommand: the SERVER processes it as if the client sent it, so it
     //                  DOES work on bots, and reaches command handlers including our own.
-    ctx.commands.register("sm_clientcmd", (cmd) => {
+    command("sm_clientcmd", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const rest = cmd.argsFrom(1);
       if (slot < 0 || slot > 63 || !rest) {
@@ -89,7 +91,7 @@ export const clientsRecipe: Recipe = {
         (c.isBot ? " (bot — expect no visible effect: no console)" : ""));
     });
 
-    ctx.commands.register("sm_fakecmd", (cmd) => {
+    command("sm_fakecmd", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const rest = cmd.argsFrom(1);
       if (slot < 0 || slot > 63 || !rest) {
@@ -107,7 +109,7 @@ export const clientsRecipe: Recipe = {
 
     // sm_voice verbose — toggle the per-packet onVoice log (see the toggle note above).
     // sm_voice <slot> <0|1> — set/read the mute flag directly, without needing voice traffic.
-    ctx.commands.register("sm_voice", (cmd) => {
+    command("sm_voice", (cmd) => {
       if (cmd.arg(0) === "verbose") {
         voiceVerbose = !voiceVerbose;
         cmd.reply("[cookbook] voice verbose logging = " + (voiceVerbose ? "on" : "off"));

@@ -1,5 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { WebSocket } from "@s2script/sdk/ws";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * WebSockets run off-thread on the shared tokio runtime; callbacks are
@@ -9,11 +11,11 @@ import { WebSocket } from "@s2script/sdk/ws";
 export const wsRecipe: Recipe = {
   name: "ws",
   describe: "connect a websocket without blocking the tick (sm_ws)",
-  register(ctx) {
+  register() {
     let frames = 0;
-    ctx.server.onGameFrame(() => { frames += 1; });
+    hook.gameFrame(() => { frames += 1; });
 
-    ctx.commands.register("sm_ws", (cmd) => {
+    command("sm_ws", (cmd) => {
       const start = frames;
       cmd.reply("connecting…");
       WebSocket.connect("wss://ws.postman-echo.com/raw")

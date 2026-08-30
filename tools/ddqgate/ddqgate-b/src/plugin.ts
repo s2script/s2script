@@ -9,17 +9,18 @@
 //   - seq/frame/tag non-default -> DuplicateEvent preserved the payload (a lost event would replay
 //                                 against a dead s_currentEvent and read every field as its default)
 //   - its frame vs a's frame -> the one-frame delivery the spec promises (§4)
-import { plugin } from "@s2script/sdk/plugin";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[DDQ-B] ${m}`);
   L("loaded");
 
   let frame = 0;
-  ctx.server.onGameFrame(() => { frame += 1; });
+  hook.gameFrame(() => { frame += 1; });
 
   let seen = 0, thrown = 0, selftests = 0;
-  ctx.events.on("player_changename", (e) => {
+  hook.event("player_changename", (e) => {
     const oldname = e.getString("oldname");
     const newname = e.getString("newname");
 
@@ -66,16 +67,16 @@ export default plugin((ctx) => {
   // The deferred delivery that matters: player_death fired by an engine call made from inside a
   // dispatch. A lost payload reads userid=0 here.
   let deaths = 0;
-  ctx.events.on("player_death", (e) => {
+  hook.event("player_death", (e) => {
     deaths += 1;
     L(`player_death #${deaths}: userid=${e.getInt("userid")} attacker=${e.getInt("attacker")} weapon="${e.getString("weapon")}" nowFrame=${frame}`);
   });
 
-  ctx.commands.registerServer("ddq_report_b", () => {
+  command.server("ddq_report_b", () => {
     L(`REPORT seen=${seen} selftests=${selftests} thrown=${thrown} deaths=${deaths} frame=${frame}`);
   });
+}
 
-  return {
-    onUnload() { L(`unloading (seen=${seen} selftests=${selftests} thrown=${thrown})`); },
-  };
-});
+export function OnPluginEnd(): void {
+  console.log("[DDQ-B] unloading");
+}

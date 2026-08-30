@@ -1,5 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { fetch } from "@s2script/sdk/http";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * fetch() runs off-thread on the shared tokio runtime and resolves back on a
@@ -10,11 +12,11 @@ import { fetch } from "@s2script/sdk/http";
 export const httpRecipe: Recipe = {
   name: "http",
   describe: "fire concurrent fetch()es without blocking the tick (sm_http)",
-  register(ctx) {
+  register() {
     let frames = 0;
-    ctx.server.onGameFrame(() => { frames += 1; });
+    hook.gameFrame(() => { frames += 1; });
 
-    ctx.commands.register("sm_http", (cmd) => {
+    command("sm_http", (cmd) => {
       const start = frames;
       const N = 10;
       cmd.reply(`firing ${N} concurrent fetches…`);

@@ -2,12 +2,12 @@
 //
 // Drives the six checks in docs/superpowers/specs/2026-08-14-pickup-gates-design.md §8.
 // Prefix [PICKUPGATE] so `docker logs | grep PICKUPGATE` reads as a transcript.
-import { plugin } from "@s2script/sdk/plugin";
 import { HookResult } from "@s2script/sdk/events";
-import { AcquireResult, CsItem, Player } from "@s2script/cs2";
+import { AcquireResult, CsItem, Player, items } from "@s2script/cs2";
+import { command } from "@s2script/sdk/commands";
 // AcquireResult is types-only (@s2script/cs2 ships no runtime). Numeric values match the enum.
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[PICKUPGATE] ${m}`);
   L("loaded");
 
@@ -19,7 +19,7 @@ export default plugin((ctx) => {
   // one-shot mode is not stolen by the AK AlreadyOwned spam.
   const TARGET = 28;
 
-  ctx.items.onCanAcquire((acq) => {
+  items.onCanAcquire((acq) => {
     pre += 1;
     if (acq.defIndex !== TARGET && mode === "observe") return;
     L(`onCanAcquire #${pre}: defIndex=${acq.defIndex} method=${acq.method} result=${acq.result} player=${acq.player ? acq.player.slot : "null"} skipped=${acq.skipped}`);
@@ -40,25 +40,25 @@ export default plugin((ctx) => {
     return HookResult.Continue;
   });
 
-  ctx.items.onCanAcquirePost((acq) => {
+  items.onCanAcquirePost((acq) => {
     post += 1;
     if (acq.defIndex !== TARGET) return;
     lastSkipped = acq.skipped;
     L(`onCanAcquirePost #${post}: defIndex=${acq.defIndex} result=${acq.result} skipped=${acq.skipped}`);
   });
 
-  ctx.commands.registerServer("pickup_report", () => {
+  command.server("pickup_report", () => {
     L(`REPORT pre=${pre} post=${post} lastSkipped=${lastSkipped}`);
   });
-  ctx.commands.registerServer("pickup_deny", () => {
+  command.server("pickup_deny", () => {
     mode = "deny";
     L("armed: next CanAcquire returns Handled + InvalidItem");
   });
-  ctx.commands.registerServer("pickup_reenter", () => {
+  command.server("pickup_reenter", () => {
     mode = "reenter";
     L("armed: next CanAcquire calls giveNamedItem from inside the handler");
   });
-  ctx.commands.registerServer("pickup_give", () => {
+  command.server("pickup_give", () => {
     const players = Player.all();
     const p = players[0];
     const pawn = p?.pawn;
@@ -68,6 +68,8 @@ export default plugin((ctx) => {
       L(`pickup_give: giveNamedItem returned ${w ? "weapon" : "null"}`);
     }
   });
+}
 
-  return { onUnload() { L(`unloading (pre=${pre} post=${post})`); } };
-});
+export function OnPluginEnd(): void {
+  console.log("[PICKUPGATE] unloading");
+}

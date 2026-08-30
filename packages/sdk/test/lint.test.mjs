@@ -10,19 +10,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 const packagesDir = join(here, "..", "..");
 const fx = (n) => join(here, "fixtures", n);
 
-test("lintPlugin flags a ctx escape against the REAL sdk .d.ts (no stub drift)", async () => {
+test("lintPlugin flags a floating promise in OnPluginStart against the REAL sdk .d.ts (no stub drift)", async () => {
   const dir = fx("lint-violation");
   const tc = typecheckPlugin(dir, { packagesDir });
   assert.ok(tc.ok, "fixture must typecheck — the violation is lint-only");
   const r = await lintPlugin(dir, tc.program);
   assert.equal(r.ok, false);
-  assert.match(r.output, /no-ctx-escape/);
+  assert.match(r.output, /no-floating-promise-in-factory/);
 });
 
 test("s2s build refuses a lint violation (no .s2sp), passes a clean plugin", async () => {
   await assert.rejects(
     () => buildPlugin(fx("lint-violation"), packagesDir),
-    /lint failed[\s\S]*no-ctx-escape/,
+    /lint failed[\s\S]*no-floating-promise-in-factory/,
   );
   // The hello fixture is clean: build (which now lints) must still succeed.
   const out = await buildPlugin(fx("hello"), packagesDir);

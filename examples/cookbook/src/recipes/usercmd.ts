@@ -2,6 +2,8 @@ import type { Recipe } from "../recipe.ts";
 import type { UserCmdView } from "@s2script/sdk/usercmd";
 import { Pawn } from "@s2script/cs2";
 import { HookResult } from "@s2script/sdk/events";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 type Mode = "off" | "jump" | "side" | "block";
 const IN_JUMP = 2n; // buttons is a bigint
@@ -24,12 +26,12 @@ const IN_JUMP = 2n; // buttons is a bigint
 export const usercmdRecipe: Recipe = {
   name: "usercmd",
   describe: "read/modify/block a player's per-tick input (sm_usercmd off|jump|side|block|verbose)",
-  register(ctx) {
+  register() {
     const modeBySlot = new Map<number, Mode>();
     let logN = 0;
     let verbose = false;
 
-    ctx.clients.onRunCmd((cmd: UserCmdView, info: { slot: number }) => {
+    hook.runcmd((cmd: UserCmdView, info: { slot: number }) => {
       const slot = info.slot;
       // Read proof (throttled ~1/64 cmds): all 7 fields + cross-check buttons against the SCHEMA source
       // (pawn.buttons = m_pButtonStates[0], a different read path) and the decoded slot vs the pawn's.
@@ -58,7 +60,7 @@ export const usercmdRecipe: Recipe = {
       return HookResult.Continue;
     });
 
-    ctx.commands.register("sm_usercmd", (cmd) => {
+    command("sm_usercmd", (cmd) => {
       const arg = cmd.argsFrom(0).trim();
       if (arg === "verbose") {
         verbose = !verbose;

@@ -9,11 +9,11 @@
  *   sm_ec_status        report every declared call and why it is (or is not) available
  *   sm_ec_burn <target> set a player on fire via the declared CBaseModelEntity::Ignite
  */
-import { plugin } from "@s2script/sdk/plugin";
 import { Engine } from "@s2script/sdk/unsafe";
 import { Entity } from "@s2script/sdk/entity";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { Player } from "@s2script/cs2";
+import { command } from "@s2script/sdk/commands";
 
 /** How long a burn lasts, in seconds. Passed as the call's `flFlameLifetime` float. */
 const BURN_SECONDS = 10.0;
@@ -27,7 +27,7 @@ const BURN_SECONDS = 10.0;
  */
 const IGNITE_FLAGS = 4;
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   // ── Resolve ONCE, at load ────────────────────────────────────────────────────────────────────
   // `Engine.call` returns a plain callable, or null if the descriptor failed a load-time gate:
   // the signature did not match this build, a `prologue` validator rejected the target, there is no
@@ -51,7 +51,7 @@ export default plugin((ctx) => {
     console.error("[engine-call-demo] UNEXPECTED: the negative fixture resolved; the prologue guard is not working");
   }
 
-  ctx.commands.registerAdmin("sm_ec_status", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_ec_status", ADMFLAG.GENERIC, (cmd) => {
     cmd.reply(`[engine-call-demo] ignite: ${Engine.status("ignite")}`);
     cmd.reply(`[engine-call-demo] dropActiveWeaponRejected (expected to fail): ${Engine.status("dropActiveWeaponRejected")}`);
     if (!ignite) {
@@ -62,7 +62,7 @@ export default plugin((ctx) => {
     }
   });
 
-  ctx.commands.registerAdmin("sm_ec_burn", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_ec_burn", ADMFLAG.SLAY, (cmd) => {
     if (!ignite) {
       cmd.reply(`[engine-call-demo] sm_ec_burn unavailable: ${Engine.status("ignite")}`);
       return;
@@ -94,4 +94,4 @@ export default plugin((ctx) => {
         (after > before ? "(EFFECT CONFIRMED)" : "(NO EFFECT — the call resolved but did nothing)")
     );
   });
-});
+}

@@ -9,7 +9,7 @@
  *
  *   TIER A  reachable today  — raw offset writes, entity I/O, game events, generated schema fields
  *   TIER B  ctx.ui / game.cs2 — promoted HUD engine calls (SetHasClass/DialogVariable/InputCapture)
- *   TIER C  resolved — inbound clicks via ctx.ui.onCustomHudClicked (game-package hook)
+ *   TIER C  resolved — inbound clicks via ui.onCustomHudClicked (game-package hook)
  *
  * `sm_hud_status` prints all three. Start there.
  *
@@ -39,11 +39,10 @@
  *   sm_hud_menu [chat|center]                  SourceMod menu feature test
  *   sm_buymenu [chat|center]                   categorised buy menu
  */
-import { plugin } from "@s2script/sdk/plugin";
 import { ADMFLAG } from "@s2script/sdk/admin";
 import { config } from "@s2script/sdk/config";
 import { Chat } from "@s2script/sdk/chat";
-import { Player, Pawn } from "@s2script/cs2";
+import { Player, Pawn, ui } from "@s2script/cs2";
 import { LIVE_HUD, LIVE_PANELS } from "./livehud";
 import { LiveDemo } from "./livedemo";
 import type { CommandInvocation } from "@s2script/sdk/commands";
@@ -55,6 +54,8 @@ import * as movement from "./movement";
 import * as menus from "./menus";
 import { DemoHud, sendOnce } from "./demohud";
 import { LAYOUT, STATE, LAYOUT_SIZE, globalStateField } from "./offsets";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 import {
   readLayoutInfo, isInputCaptureEnabled, setInputCaptureEnabled, dumpWindow, probeLayout,
   readPlayerClasses, setPlayerClassStatus, playerStateCount,
@@ -68,18 +69,18 @@ const TAG = "[hud-lab]";
  *  that "the view did not change" is a real signal instead of an obvious offset. */
 const EYE_HEIGHT = 64;
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const log = (line: string): void => console.log(`${TAG} ${line}`);
 
   /** Shipped workshop kit driven through the game-package ctx.ui API. */
-  const kitHud = ctx.ui.hud();
+  const kitHud = ui.hud();
 
   kitHud.onClick("s2_btn_3", (slot) => {
     kitHud.hide(slot, "s2_dialog");
     Chat.toSlot(slot, "[hud] dismissed");
   });
 
-  ctx.ui.onCustomHudClicked((view) => {
+  ui.onCustomHudClicked((view) => {
     const ref = view.player;
     const who = ref
       ? Player.all().find((p) => p.ref.index === ref.index && p.ref.id === ref.id) ?? null
@@ -90,16 +91,16 @@ export default plugin((ctx) => {
   });
 
   // The working centre-panel HTML HUD (separate from custom_hud_layout).
-  const hud = new DemoHud(ctx);
+  const hud = new DemoHud();
 
-  bomb.install(ctx, log);
+  bomb.install(log);
 
   // ── Map start ───────────────────────────────────────────────────────────────────────────────
   // Do not spawn a custom_hud_layout from OnMapStart — the world is not up yet. ctx.ui waits
   // for an active client, then spawns any layout registered via hud() / createLayout.
 
   // ── Status ──────────────────────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_status", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_status", ADMFLAG.GENERIC, (cmd) => {
     cmd.reply(`${TAG} ── TIER A (reachable today) ──`);
     const all = layout.findAll();
     cmd.reply(`  custom_hud_layout entities in world: ${all.length}`);
@@ -124,12 +125,12 @@ export default plugin((ctx) => {
     cmd.reply(`${TAG} ── TIER B (ctx.ui / game.cs2) ──`);
     cmd.reply("  layout: panorama/layout/custom_game/s2script_hud.xml");
     cmd.reply("  addons: 3790153369 (MultiAddonManager)");
-    cmd.reply(`${TAG} ── TIER C (ctx.ui.onCustomHudClicked) ──`);
+    cmd.reply(`${TAG} ── TIER C (ui.onCustomHudClicked) ──`);
     cmd.reply("  ARMED via game-package hook — use sm_kit / sm_hud_show, then click s2_btn_*");
   });
 
   // ── Offset verification ─────────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_probe", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_probe", ADMFLAG.ROOT, (cmd) => {
     const ref = layout.preferred();
     if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world — run sm_hud_create first`); return; }
     // Default window brackets the global state, the field this plugin actually writes.
@@ -145,7 +146,7 @@ export default plugin((ctx) => {
   // plugin reads by name already matches (layout pointer set, playerStates=12, same counts), so the
   // difference — whatever makes the client draw one and ignore the other — is in a field this
   // plugin has no name for. This finds it without needing one.
-  ctx.commands.registerAdmin("sm_hud_diff", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_diff", ADMFLAG.ROOT, (cmd) => {
     const all = layout.findAll();
     const mine = all.find((e) => e.name === layout.OWNED_TARGETNAME);
     const theirs = all.find((e) => e.name !== layout.OWNED_TARGETNAME);
@@ -186,7 +187,7 @@ export default plugin((ctx) => {
   });
 
   // ── Layout entity lifecycle ─────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_create", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_create", ADMFLAG.ROOT, (cmd) => {
     const name = cmd.argCount > 0 ? cmd.argsFrom(0) : config.getString("layout");
     const result = layout.create(name);
     if (result.error) { cmd.reply(`${TAG} ${result.error}`); return; }
@@ -211,7 +212,7 @@ export default plugin((ctx) => {
     if (!info.probe.ok) cmd.reply(`  PROBE FAILED: ${info.probe.reasons.join("; ")}`);
   });
 
-  ctx.commands.registerAdmin("sm_hud_list", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_list", ADMFLAG.GENERIC, (cmd) => {
     const all = layout.findAll();
     if (all.length === 0) { cmd.reply(`${TAG} no custom_hud_layout entities`); return; }
     for (const ref of all) {
@@ -225,12 +226,12 @@ export default plugin((ctx) => {
     }
   });
 
-  ctx.commands.registerAdmin("sm_hud_remove", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_remove", ADMFLAG.ROOT, (cmd) => {
     cmd.reply(`${TAG} removed ${layout.removeOwned()} plugin-created layout entit(ies)`);
   });
 
   // ── Tier A: input capture ───────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_capture", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_capture", ADMFLAG.ROOT, (cmd) => {
     const ref = layout.preferred();
     if (!ref) { cmd.reply(`${TAG} no custom_hud_layout — run sm_hud_create first`); return; }
     if (cmd.argCount === 0) {
@@ -243,7 +244,7 @@ export default plugin((ctx) => {
   });
 
   // ── Tier B: classes and dialog variables ────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_class", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_class", ADMFLAG.ROOT, (cmd) => {
     if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_class <panelId> <className> <1|0|-1> [target]`); return; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
     const status = parseClassStatus(cmd.arg(2));
@@ -251,7 +252,7 @@ export default plugin((ctx) => {
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} setClass slot ${slot} "${cmd.arg(0)}" "${cmd.arg(1)}" -> ${status}`);
   });
 
-  ctx.commands.registerAdmin("sm_hud_var", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_var", ADMFLAG.ROOT, (cmd) => {
     if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_var <panelId> <variableName> <value> [target]`); return; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
     const err = kitHud.setText(slot, cmd.arg(0), cmd.argsFrom(2));
@@ -259,7 +260,7 @@ export default plugin((ctx) => {
   });
 
   // ── Tier A: the SetHUDVisibility entity input ───────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_visible", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_hud_visible", ADMFLAG.SLAY, (cmd) => {
     if (cmd.argCount < 2) { cmd.reply(`${TAG} usage: sm_hud_visible <target> <0|1>`); return; }
     const on = cmd.arg(1) === "1";
     let n = 0;
@@ -273,7 +274,7 @@ export default plugin((ctx) => {
   });
 
   // ── Camera ──────────────────────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_cam_create", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_cam_create", ADMFLAG.ROOT, (cmd) => {
     const pawn = requireCallerPawn(cmd);
     if (!pawn) return;
     const origin = pawn.origin;
@@ -283,7 +284,7 @@ export default plugin((ctx) => {
     cmd.reply(result.error ? `${TAG} ${result.error}` : `${TAG} created cs_player_camera #${result.ref?.index}`);
   });
 
-  ctx.commands.registerAdmin("sm_cam_enable", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_cam_enable", ADMFLAG.ROOT, (cmd) => {
     const pawn = requireCallerPawn(cmd);
     if (!pawn) return;
     const cam = camera.findAll()[0];
@@ -293,7 +294,7 @@ export default plugin((ctx) => {
     cmd.reply(`${TAG} ${on ? "Enable" : "Disable"} queued=${queued} — an unknown input queues then drops silently, so judge by your view, not this line`);
   });
 
-  ctx.commands.registerAdmin("sm_cam_angles", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_cam_angles", ADMFLAG.ROOT, (cmd) => {
     const pawn = requireCallerPawn(cmd);
     if (!pawn) return;
     const cam = camera.findAll()[0];
@@ -302,17 +303,17 @@ export default plugin((ctx) => {
     cmd.reply(`${TAG} ${camera.PROBED_INPUTS.controlAngles} queued=${queued} (probe — input name is a guess)`);
   });
 
-  ctx.commands.registerAdmin("sm_cam_remove", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_cam_remove", ADMFLAG.ROOT, (cmd) => {
     cmd.reply(`${TAG} removed ${camera.removeOwned()} plugin-created camera(s)`);
   });
 
   // ── Bomb ────────────────────────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_bomb_watch", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_bomb_watch", ADMFLAG.GENERIC, (cmd) => {
     const on = cmd.argCount === 0 ? !bomb.isWatching() : cmd.arg(0) === "1";
     cmd.reply(`${TAG} bomb watch ${bomb.setWatching(on) ? "ON" : "off"} — logging ${bomb.WATCHED_EVENTS.join(", ")}`);
   });
 
-  ctx.commands.registerAdmin("sm_bomb_info", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_bomb_info", ADMFLAG.GENERIC, (cmd) => {
     const info = bomb.readBomb();
     if (!info.found) { cmd.reply(`${TAG} no weapon_c4 in the world`); return; }
     cmd.reply(
@@ -322,13 +323,13 @@ export default plugin((ctx) => {
     cmd.reply("  GetPlantFinishTime ~ armedTime; there is no m_flPlantStartTime field — cs_script derives it.");
   });
 
-  ctx.commands.registerAdmin("sm_bomb_abort", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_bomb_abort", ADMFLAG.SLAY, (cmd) => {
     const result = bomb.abortPlant();
     cmd.reply(result.reason ? `${TAG} ${result.reason}` : `${TAG} AbortPlant queued=${result.queued} — confirm with sm_bomb_info (startedArming should clear)`);
   });
 
   // ── Movement ────────────────────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_movetype", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_movetype", ADMFLAG.SLAY, (cmd) => {
     const pattern = cmd.argCount > 0 ? cmd.arg(0) : "@me";
     const targets = Player.target(pattern, cmd.callerSlot);
     if (targets.length === 0) { cmd.reply(`${TAG} no matching players`); return; }
@@ -356,12 +357,12 @@ export default plugin((ctx) => {
   });
 
   // ── Menus ───────────────────────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_menu", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_menu", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud_menu needs an in-game caller`); return; }
     menus.showDemo(cmd.callerSlot, menus.parseStyle(cmd.arg(0)), log);
   });
 
-  ctx.commands.registerAdmin("sm_buymenu", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_buymenu", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_buymenu needs an in-game caller`); return; }
     menus.showBuyMenu(cmd.callerSlot, menus.parseStyle(cmd.arg(0)), log);
   });
@@ -374,7 +375,7 @@ export default plugin((ctx) => {
   //
   // This is the one to look at. Unlike the probe, every slot is a {s:} binding, so it renders as an
   // empty frame until filled — which is exactly why this command fills it before revealing it.
-  const liveHud = ctx.ui.hud(LIVE_HUD);
+  const liveHud = ui.hud(LIVE_HUD);
   liveHud.onClick("motd_ok", (slot) => {
     liveHud.hide(slot, LIVE_PANELS.motd);
     liveHud.cursor(slot, false);
@@ -386,7 +387,7 @@ export default plugin((ctx) => {
   const demo = new LiveDemo(liveHud, log);
 
   // Kill feed from the real event. `player_death` carries the slots; the weapon is a string field.
-  ctx.events.on("player_death", (ev) => {
+  hook.event("player_death", (ev) => {
     if (demo.count === 0) return;                       // nobody watching — do no work at all
     const aSlot = ev.getPlayerSlot("attacker");
     const vSlot = ev.getPlayerSlot("userid");
@@ -399,16 +400,16 @@ export default plugin((ctx) => {
   });
 
   // A disconnecting player must not leave diff-cache entries behind.
-  ctx.clients.onDisconnect((client) => { demo.stop(client.slot); demo.forget(client.slot); });
+  hook.disconnect((client) => { demo.stop(client.slot); demo.forget(client.slot); });
 
   // Collapse the live layout for every player as they become active. The panels default VISIBLE in
   // the markup, so without this they render (empty) the moment anything touches the layout for that
   // player — which is why the HUD appeared before anyone ran sm_hud.
-  ctx.clients.onActive((client) => { demo.hideAll(client.slot); });
+  hook.active((client) => { demo.hideAll(client.slot); });
 
-  ctx.commands.registerAdmin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return; }
-    const spawn = ctx.ui.createLayout();
+    const spawn = ui.createLayout();
     if (spawn !== null) { cmd.reply(`${TAG} ${spawn}`); return; }
     const slot = cmd.callerSlot;
     const arg = cmd.arg(0).toLowerCase();
@@ -423,7 +424,7 @@ export default plugin((ctx) => {
     }
   });
 
-  ctx.commands.registerAdmin("sm_motd", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_motd", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_motd needs an in-game caller`); return; }
     const slot = cmd.callerSlot;
     const name = Player.fromSlot(slot)?.playerName ?? `slot ${slot}`;
@@ -464,7 +465,7 @@ export default plugin((ctx) => {
     put(liveHud.set(slot, "motd_h1", "Drive"));
     put(liveHud.set(slot, "motd_p1", "ctx.ui — SetHasClass / SetDialogVariableString"));
     put(liveHud.set(slot, "motd_h2", "Clicks"));
-    put(liveHud.set(slot, "motd_p2", "CustomHudClickedReceiver detour -> ctx.ui.onCustomHudClicked"));
+    put(liveHud.set(slot, "motd_p2", "CustomHudClickedReceiver detour -> ui.onCustomHudClicked"));
     put(liveHud.set(slot, "motd_note", "click OK to dismiss"));
     put(liveHud.set(slot, "motd_ok_t", "OK"));
     put(liveHud.show(slot, LIVE_PANELS.motd, { cursor: true }));
@@ -474,7 +475,7 @@ export default plugin((ctx) => {
       : `${TAG} live HUD driven for ${name} — click OK to dismiss`);
   });
 
-  ctx.commands.registerAdmin("sm_kit", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_kit", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_kit needs an in-game caller`); return; }
     const slot = cmd.callerSlot;
 
@@ -491,21 +492,21 @@ export default plugin((ctx) => {
     cmd.reply(err ? `${TAG} show refused: ${err}` : `${TAG} kit visible — click s2_btn_0..s2_btn_3`);
   });
 
-  ctx.commands.registerAdmin("sm_hud_show", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_show", ADMFLAG.GENERIC, (cmd) => {
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_show [target]`); return; }
     const err = kitHud.show(slot, "s2_dialog", { cursor: true });
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} shown for slot ${slot} (class cleared + cursor on)`);
   });
 
-  ctx.commands.registerAdmin("sm_hud_hide", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_hide", ADMFLAG.GENERIC, (cmd) => {
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_hide [target]`); return; }
     const err = kitHud.hide(slot, "s2_dialog");
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} hidden for slot ${slot}`);
   });
 
-  ctx.clients.onActive((client) => {
+  hook.active((client) => {
     if (!config.getBool("auto_show")) return;
     const err = kitHud.show(client.slot, "s2_dialog", { cursor: true });
     log(err ? `auto-show refused for slot ${client.slot}: ${err}` : `auto-shown for slot ${client.slot}`);
@@ -517,7 +518,7 @@ export default plugin((ctx) => {
   // the HUDPanelHasClass_t entry exists and its m_eClassStatus is a plain int32 — so showing and
   // hiding a REAL Valve HUD panel is a raw write through two pointer hops. No CUtlString, no
   // engine call, none of the ABI problem that crashed the server.
-  ctx.commands.registerAdmin("sm_hud_states", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_states", ADMFLAG.GENERIC, (cmd) => {
     const ref = layout.preferred();
     if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world`); return; }
     cmd.reply(`${TAG} #${ref.index} playerStates=${playerStateCount(ref)}`);
@@ -538,7 +539,7 @@ export default plugin((ctx) => {
     if (shown === 0) cmd.reply("  no slot has a class entry yet — join the map and let its script apply one");
   });
 
-  ctx.commands.registerAdmin("sm_hud_cursor", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_cursor", ADMFLAG.GENERIC, (cmd) => {
     const slot = cmd.argCount > 1 ? cmd.argInt(1, cmd.callerSlot) : cmd.callerSlot;
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_cursor <0|1> [slot]`); return; }
     if (cmd.argCount === 0) {
@@ -550,7 +551,7 @@ export default plugin((ctx) => {
     cmd.reply(err ? `${TAG} refused: ${err}` : `${TAG} slot ${slot} cursor -> ${on}`);
   });
 
-  ctx.commands.registerAdmin("sm_hud_toggle", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_toggle", ADMFLAG.GENERIC, (cmd) => {
     const ref = layout.preferred();
     if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world`); return; }
     const slot = cmd.argCount > 0 ? cmd.argInt(0, cmd.callerSlot) : cmd.callerSlot;
@@ -570,7 +571,7 @@ export default plugin((ctx) => {
   });
 
   // ── The HUD that works ───────────────────────────────────────────────────────────────────────
-  ctx.commands.registerAdmin("sm_hud_demo", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_demo", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud_demo needs an in-game caller`); return; }
     const arg = cmd.arg(0).toLowerCase();
     const want = arg === "" ? !hud.has(cmd.callerSlot) : arg === "1" || arg === "on";
@@ -586,7 +587,7 @@ export default plugin((ctx) => {
     }
   });
 
-  ctx.commands.registerAdmin("sm_hud_demo_all", ADMFLAG.ROOT, (cmd) => {
+  command.admin("sm_hud_demo_all", ADMFLAG.ROOT, (cmd) => {
     const on = cmd.arg(0) !== "0" && cmd.arg(0).toLowerCase() !== "off";
     if (!on) { hud.hideAll(); cmd.reply(`${TAG} demo HUD cleared for everyone`); return; }
     let n = 0;
@@ -594,7 +595,7 @@ export default plugin((ctx) => {
     cmd.reply(`${TAG} demo HUD ON for ${n} player(s)`);
   });
 
-  ctx.commands.registerAdmin("sm_hud_say", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_hud_say", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.argCount === 0) { cmd.reply(`${TAG} usage: sm_hud_say <text>  (one-shot centre-panel message)`); return; }
     const text = cmd.argsFrom(0);
     // Deliberately NOT escaped: this is the command for trying centre-panel markup by hand
@@ -636,4 +637,4 @@ export default plugin((ctx) => {
     const targets = Player.target(token, cmd.callerSlot);
     return targets.length > 0 ? targets[0].slot : -1;
   }
-});
+}

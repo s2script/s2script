@@ -1,6 +1,6 @@
-import { plugin } from "@s2script/sdk/plugin";
 import { label } from "@fixture/util";
+import { command } from "@s2script/sdk/commands";
 
-export default plugin((ctx) => {
-  ctx.commands.register("fixture_ws", (cmd) => { cmd.reply(label()); });
-});
+export function OnPluginStart(): void {
+  command("fixture_ws", (cmd) => { cmd.reply(label()); });
+}

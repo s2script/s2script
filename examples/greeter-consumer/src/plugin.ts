@@ -9,19 +9,19 @@
 // api.d.ts that s2s build hashes into manifest.compiledAgainst, so a drifted
 // contract is refused at load rather than marshalled across. Refresh with:
 //   cp examples/greeter-plugin/api.d.ts examples/greeter-consumer/.s2script/types/@demo/greeter/index.d.ts
-import { plugin } from "@s2script/sdk/plugin";
 import type { Greeter } from "@demo/greeter";
+import { hook, use } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   console.log("[consumer] onLoad");
-  const greeter = ctx.use<Greeter>("@demo/greeter");
+  const greeter = use<Greeter>("@demo/greeter");
 
   // A forwarded event from the producer.
   greeter.on("greeted", (p: { slot: number; tick: number }) =>
     console.log(`[consumer] event greeted: slot=${p.slot} tick=${p.tick}`));
 
   let ticks = 0;
-  ctx.server.onGameFrame(() => {
+  hook.gameFrame(() => {
     if (ticks++ % 256 !== 0) return;
     try {
       console.log(`[consumer] greet -> ${greeter.greet(0)}`);
@@ -37,4 +37,4 @@ export default plugin((ctx) => {
       console.log(`[consumer] degraded (producer unloaded?): ${String(e)}`);
     }
   });
-});
+}

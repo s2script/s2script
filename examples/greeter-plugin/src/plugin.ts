@@ -8,11 +8,11 @@
 //
 // Carry 64-bit values as decimal strings: a BigInt throws and silently drops
 // the whole payload.
-import { plugin } from "@s2script/sdk/plugin";
 import { Pawn } from "@s2script/cs2";
 import type { Greeter } from "../api";
+import { hook, publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   console.log("[greeter] onLoad — publishing @demo/greeter");
 
   // Typed against the contract: tsc fails the build if this drifts from api.d.ts.
@@ -31,11 +31,11 @@ export default plugin((ctx) => {
     },
   };
 
-  const handle = ctx.publish("@demo/greeter", impl);
+  const handle = publish("@demo/greeter", impl);
 
   // Forwarded events: the consumer's on("greeted") fires from here.
   let ticks = 0;
-  ctx.server.onGameFrame(() => {
+  hook.gameFrame(() => {
     if (ticks++ % 256 === 0) handle.emit("greeted", { slot: 0, tick: ticks });
   });
-});
+}

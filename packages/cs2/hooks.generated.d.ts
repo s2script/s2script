@@ -15,9 +15,13 @@ export interface CtxGameRules {
   onTerminateRound(handler: (view: OnTerminateRoundView) => HookResultValue | void): void;
 }
 
+export declare const gameRules: CtxGameRules;
+
 export interface CtxPlayers {
   onRespawn(handler: (view: OnRespawnView) => HookResultValue | void): void;
 }
+
+export declare const players: CtxPlayers;
 
 declare module "@s2script/sdk/plugin" {
   interface PluginContext {

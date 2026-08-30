@@ -1784,7 +1784,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   globalThis.__s2pkg_votes = { Vote: Vote };
 
-  // --- L1 lifecycle v2: the plugin() artifact + load-scoped ctx (design spec §1/§3/§4) ---
+  // --- L1 lifecycle v2: load-scoped ctx + internal plugin() artifact (isolate tests) ---
   // The SDK's @s2script/sdk/plugin subpath resolves (via the existing @s2script/ strip) to this.
   globalThis.__s2pkg_plugin = { plugin: function (factory) { return { __s2plugin: 1, factory: factory }; } };
 
@@ -1965,6 +1965,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   command.server = function (name, handler) {
     __s2_load_ctx_or_throw("command.server()").commands.registerServer(name, handler);
   };
+  command.onClientCommand = function (name, handler) {
+    __s2_load_ctx_or_throw("command.onClientCommand()").commands.onClientCommand(name, handler);
+  };
   var hook = {
     damage: function (h) { __s2_load_ctx_or_throw("hook.damage()").entities.onDamage(h); },
     event: function (name, handler, phase) {
@@ -1975,6 +1978,72 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     output: function (classname, output, handler) {
       __s2_load_ctx_or_throw("hook.output()").entities.onOutput(classname, output, handler);
     },
+    create: function (className, handler) {
+      __s2_load_ctx_or_throw("hook.create()").entities.onCreate(className, handler);
+    },
+    spawn: function (className, handler) {
+      __s2_load_ctx_or_throw("hook.spawn()").entities.onSpawn(className, handler);
+    },
+    delete: function (className, handler) {
+      __s2_load_ctx_or_throw("hook.delete()").entities.onDelete(className, handler);
+    },
+    precache: function (handler) {
+      __s2_load_ctx_or_throw("hook.precache()").server.onPrecache(handler);
+    },
+    gameFrame: function (fn, opts) {
+      __s2_load_ctx_or_throw("hook.gameFrame()").server.onGameFrame(fn, opts);
+    },
+    mapStart: function (handler) {
+      __s2_load_ctx_or_throw("hook.mapStart()").server.onMapStart(handler);
+    },
+    runcmd: function (handler) {
+      __s2_load_ctx_or_throw("hook.runcmd()").clients.onRunCmd(handler);
+    },
+    connect: function (handler) {
+      __s2_load_ctx_or_throw("hook.connect()").clients.onConnect(handler);
+    },
+    putInServer: function (handler) {
+      __s2_load_ctx_or_throw("hook.putInServer()").clients.onPutInServer(handler);
+    },
+    active: function (handler) {
+      __s2_load_ctx_or_throw("hook.active()").clients.onActive(handler);
+    },
+    fullyConnect: function (handler) {
+      __s2_load_ctx_or_throw("hook.fullyConnect()").clients.onFullyConnect(handler);
+    },
+    disconnect: function (handler) {
+      __s2_load_ctx_or_throw("hook.disconnect()").clients.onDisconnect(handler);
+    },
+    settingsChanged: function (handler) {
+      __s2_load_ctx_or_throw("hook.settingsChanged()").clients.onSettingsChanged(handler);
+    },
+    voice: function (handler) {
+      __s2_load_ctx_or_throw("hook.voice()").clients.onVoice(handler);
+    },
+    cookiesCached: function (handler) {
+      __s2_load_ctx_or_throw("hook.cookiesCached()").clients.onCookiesCached(handler);
+    },
+    say: function (handler) {
+      __s2_load_ctx_or_throw("hook.say()").clients.onSay(handler);
+    },
+  };
+  function previous() { return __s2_load_ctx_or_throw("previous()").previous; }
+  function pluginId() { return __s2_load_ctx_or_throw("pluginId()").id; }
+  // Game-package ctx namespaces (ui / gameRules / players / items) as load-window
+  // proxies. Call-time lookup so the object is importable before OnPluginStart.
+  globalThis.__s2_game_ns = function (name) {
+    return new Proxy({}, {
+      get: function (_t, prop) {
+        if (typeof prop !== "string") return undefined;
+        var ctx = __s2_load_ctx_or_throw(name);
+        var ns = ctx[name];
+        if (!ns) {
+          throw new Error("s2script: '" + name + "' is not on this plugin's load ctx (no game package contribution)");
+        }
+        var v = ns[prop];
+        return typeof v === "function" ? v.bind(ns) : v;
+      },
+    });
   };
   function publish(name, impl) { return __s2_load_ctx_or_throw("publish()").publish(name, impl); }
   function use(name) { return __s2_load_ctx_or_throw("use()").use(name); }
@@ -1999,6 +2068,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_plugin.createScope = createScope;
   globalThis.__s2pkg_plugin.topmenu = topmenu;
   globalThis.__s2pkg_plugin.translations = translations;
+  globalThis.__s2pkg_plugin.previous = previous;
+  globalThis.__s2pkg_plugin.pluginId = pluginId;
   // Root barrel: `__s2require("@s2script/sdk")` strips to `__s2pkg_sdk`. Copy each
   // capability's named exports (command/hook are already bound). First writer wins
   // on a colliding key so events' HookResult beats the usercmd duplicate. Unsafe,
@@ -2084,6 +2155,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
             },
           };
           if (typeof prevState === "function") hooks.state = prevState;
+        }
+        if (typeof exp.OnPluginState === "function") {
+          if (!hooks) hooks = {};
+          hooks.state = exp.OnPluginState;
         }
       } catch (e) { fail(e); return; }
       if (startOut && typeof startOut.then === "function") {

@@ -1,6 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Database } from "@s2script/sdk/db";
 import { Cookies } from "@s2script/sdk/cookies";
+import { command } from "@s2script/sdk/commands";
 
 declare function __s2_cookie_load(steamid: string, name: string, value: string, updated?: number): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
@@ -18,8 +19,8 @@ const FAKE_OFFLINE = "76561199888888888";  // authid_boots — persisted ONLY by
 export const cookiesRecipe: Recipe = {
   name: "cookies",
   describe: "cookie cache+DB round-trip, offline setAuthId, empty-string, getTime (sm_cookies)",
-  register(ctx) {
-    ctx.commands.register("sm_cookies", async (cmd) => {
+  register() {
+    command("sm_cookies", async (cmd) => {
       try {
         const db = await Database.open("clientprefs");
         await db.execute("CREATE TABLE IF NOT EXISTS cookies (steamid TEXT, name TEXT, value TEXT, updated INTEGER, PRIMARY KEY (steamid, name))");

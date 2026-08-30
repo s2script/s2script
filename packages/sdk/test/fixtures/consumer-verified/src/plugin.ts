@@ -1,9 +1,10 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { Greeter } from "@demo/greeter";
+import { command } from "@s2script/sdk/commands";
+import { use } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
-  const g = ctx.use<Greeter>("@demo/greeter");
-  ctx.commands.register("greet_me", (cmd) => {
+export function OnPluginStart(): void {
+  const g = use<Greeter>("@demo/greeter");
+  command("greet_me", (cmd) => {
     cmd.reply(g.greet("world"));
   });
-});
+}

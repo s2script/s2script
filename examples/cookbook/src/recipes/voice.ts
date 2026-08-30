@@ -1,6 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Voice } from "@s2script/sdk/voice";
 import { Player } from "@s2script/cs2";
+import { command } from "@s2script/sdk/commands";
 
 /** Highest slot the hearability mask can address (the receiver set is a uint64). */
 const MAX_SLOT = 63;
@@ -23,8 +24,8 @@ const MAX_SLOT = 63;
 export const voiceRecipe: Recipe = {
   name: "voice",
   describe: "per-pair voice hearability (sm_voice_only / _solo / _reset / _stats)",
-  register(ctx) {
-    ctx.commands.register("sm_voice_only", (cmd) => {
+  register() {
+    command("sm_voice_only", (cmd) => {
       const sender = cmd.argInt(0, -1);
       const receiver = cmd.argInt(1, -1);
       if (sender < 0 || sender > MAX_SLOT || receiver < 0 || receiver > MAX_SLOT) {
@@ -39,7 +40,7 @@ export const voiceRecipe: Recipe = {
       );
     });
 
-    ctx.commands.register("sm_voice_solo", (cmd) => {
+    command("sm_voice_solo", (cmd) => {
       const keep = cmd.argInt(0, -1);
       if (keep < 0 || keep > MAX_SLOT) {
         cmd.reply(`[cookbook] usage: sm_voice_solo <slot 0-${MAX_SLOT}>`);
@@ -55,12 +56,12 @@ export const voiceRecipe: Recipe = {
       cmd.reply(`[cookbook] voice: silenced ${silenced} sender(s); slot ${keep} still audible`);
     });
 
-    ctx.commands.register("sm_voice_reset", (cmd) => {
+    command("sm_voice_reset", (cmd) => {
       Voice.resetAll();
       cmd.reply("[cookbook] voice: dropped this plugin's hearability rules");
     });
 
-    ctx.commands.register("sm_voice_stats", (cmd) => {
+    command("sm_voice_stats", (cmd) => {
       const s = Voice.stats();
       if (!s) { cmd.reply("[cookbook] voice: stats unavailable (shim predates this capability)"); return; }
       // `rewrites` counts hearability denials ONLY — a basecomm gag does not move it, so this stays a

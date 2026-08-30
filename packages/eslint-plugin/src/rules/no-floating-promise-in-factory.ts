@@ -1,12 +1,13 @@
 /**
- * no-floating-promise-in-factory (north-star §5.3): the load window closes when the factory's
+ * no-floating-promise-in-factory (north-star §5.3): the load window closes when OnPluginStart /
+ * a leftover plugin() factory settles — an unawaited promise started there races arm-at-Active.
  * promise settles — an unawaited promise started in the factory races arm-at-Active (init not
  * done when handlers arm; a failure can't fail the load). Scoped to statements whose innermost
  * function IS the factory: handlers/helpers are outside this rule's contract.
  */
 import ts from "typescript";
 import { ESLintUtils, type TSESTree } from "@typescript-eslint/utils";
-import { findFactory, isFunctionNode, type FactoryNode } from "../plugin-factory.ts";
+import { findLoadWindow, isFunctionNode, type FactoryNode } from "../plugin-factory.ts";
 
 const createRule = ESLintUtils.RuleCreator(
   (name) =>
@@ -31,17 +32,17 @@ export const noFloatingPromiseInFactory = createRule({
     type: "problem",
     docs: {
       description:
-        "a promise discarded inside the plugin factory races arm-at-Active; await it or void it explicitly",
+        "a promise discarded inside OnPluginStart (or a leftover plugin() factory) races arm-at-Active; await it or void it explicitly",
     },
     messages: {
       floating:
-        "floating promise in the plugin factory: the load window closes when the factory settles, so this async work is not covered by it — `await` it (or `void` it only if it genuinely must not gate the load).",
+        "floating promise in OnPluginStart: the load window closes when it settles, so this async work is not covered by it — `await` it (or `void` it only if it genuinely must not gate the load).",
     },
     schema: [],
   },
   defaultOptions: [],
   create(context) {
-    const factory: FactoryNode | null = findFactory(context.sourceCode.ast);
+    const factory: FactoryNode | null = findLoadWindow(context.sourceCode.ast);
     if (factory === null) return {};
     const services = ESLintUtils.getParserServices(context);
     const checker = services.program.getTypeChecker();

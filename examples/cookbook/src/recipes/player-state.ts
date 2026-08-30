@@ -1,5 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * Player.respawn() calls CCSPlayerController::Respawn on this call, so the
@@ -15,8 +17,8 @@ import { Player } from "@s2script/cs2";
 export const playerStateRecipe: Recipe = {
   name: "player-state",
   describe: "respawn a player and observe the resulting player_spawn (sm_respawn / sm_respawn_all)",
-  register(ctx) {
-    ctx.events.on("player_spawn", (e) => {
+  register() {
+    hook.event("player_spawn", (e) => {
       const slot = e.getPlayerSlot("userid");
       const p = Player.fromSlot(slot);
       const pawn = p ? p.pawn : null;
@@ -27,12 +29,12 @@ export const playerStateRecipe: Recipe = {
       );
     });
 
-    ctx.events.on("player_death", (e) => {
+    hook.event("player_death", (e) => {
       console.log("[cookbook] player-state: player_death slot=" + e.getPlayerSlot("userid"));
     });
 
     // sm_respawn <slot> — single-target respawn from a command handler.
-    ctx.commands.register("sm_respawn", (cmd) => {
+    command("sm_respawn", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const p = slot >= 0 ? Player.fromSlot(slot) : null;
       if (!p) { cmd.reply("sm_respawn: no player in slot " + slot); return; }
@@ -42,7 +44,7 @@ export const playerStateRecipe: Recipe = {
     });
 
     // sm_respawn_all — respawn every dead in-game player in one dispatch.
-    ctx.commands.register("sm_respawn_all", (cmd) => {
+    command("sm_respawn_all", (cmd) => {
       let ok = 0, skipped = 0;
       for (const p of Player.all()) {
         if (p.respawn()) ok++; else skipped++;

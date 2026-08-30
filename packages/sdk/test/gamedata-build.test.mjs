@@ -32,9 +32,8 @@ const GD = {
   calls: { ignite: { receiver: { kind: "entity" }, target: { kind: "signature", name: "Ig" },
                      args: ["float"], returns: "void" } },
 };
-const OK_BODY = `import { plugin } from "@s2script/sdk/plugin";
-import { Engine } from "@s2script/sdk/unsafe";
-export default plugin(() => { const f = Engine.call("ignite"); void f; });`;
+const OK_BODY = `import { Engine } from "@s2script/sdk/unsafe";
+export function OnPluginStart(): void { const f = Engine.call("ignite"); void f; }`;
 
 test("packs gamedata.json into the .s2sp and records permissions in the manifest", async () => {
   const dir = scaffold(GD, ["engine:calls"], OK_BODY);
@@ -56,9 +55,8 @@ const HOOK_GD = {
     },
   },
 };
-const HOOK_BODY = `import { plugin } from "@s2script/sdk/plugin";
-import { Engine } from "@s2script/sdk/unsafe";
-export default plugin(() => { const h = Engine.hook("onX"); if (h) h(() => {}); });`;
+const HOOK_BODY = `import { Engine } from "@s2script/sdk/unsafe";
+export function OnPluginStart(): void { const h = Engine.hook("onX"); if (h) h(() => {}); }`;
 
 test("writes .s2script/hooks.d.ts and typechecks Engine.hook", async () => {
   const dir = scaffold(HOOK_GD, ["engine:hooks"], HOOK_BODY);
@@ -72,9 +70,8 @@ test("a hooks section without the permission fails the build", async () => {
 });
 
 test("Engine.hook on an undeclared name fails the typecheck gate", async () => {
-  const body = `import { plugin } from "@s2script/sdk/plugin";
-import { Engine } from "@s2script/sdk/unsafe";
-export default plugin(() => { Engine.hook("nope"); });`;
+  const body = `import { Engine } from "@s2script/sdk/unsafe";
+export function OnPluginStart(): void { Engine.hook("nope"); }`;
   const dir = scaffold(HOOK_GD, ["engine:hooks"], body);
   await assert.rejects(() => buildPlugin(dir), /TS2345|not assignable/);
 });
@@ -91,9 +88,8 @@ test("a calls section without the permission fails the build", async () => {
 });
 
 test("a wrong arg count fails the typecheck gate", async () => {
-  const body = `import { plugin } from "@s2script/sdk/plugin";
-import { Engine } from "@s2script/sdk/unsafe";
-export default plugin(() => { const f = Engine.call("ignite"); if (f) f(null as never, 1, 2); });`;
+  const body = `import { Engine } from "@s2script/sdk/unsafe";
+export function OnPluginStart(): void { const f = Engine.call("ignite"); if (f) f(null as never, 1, 2); }`;
   const dir = scaffold(GD, ["engine:calls"], body);
   // The matcher matters: a bare assert.rejects() passes for ANY rejection, including the TS2345
   // "not assignable to 'never'" you get when the augmentation is DEAD. Requiring the arity error
@@ -105,7 +101,7 @@ test("a plugin with no gamedata key still builds and packs no gamedata.json", as
   const dir = mkdtempSync(join(tmpdir(), "s2gd-"));
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@demo/plain", version: "0.1.0", main: "src/plugin.ts", s2script: {} }));
-  writeFileSync(join(dir, "src", "plugin.ts"), `import { plugin } from "@s2script/sdk/plugin";\nexport default plugin(() => {});`);
+  writeFileSync(join(dir, "src", "plugin.ts"), `export function OnPluginStart(): void {}`);
   const zip = unzipSync(readFileSync(await buildPlugin(dir)));
   assert.equal(zip["gamedata.json"], undefined);
 });
@@ -124,7 +120,7 @@ test("removing gamedata deletes the stale generated .d.ts", async () => {
   delete pkg.s2script.permissions;
   writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
   writeFileSync(join(dir, "src", "plugin.ts"),
-    `import { plugin } from "@s2script/sdk/plugin";\nexport default plugin(() => {});`);
+    `export function OnPluginStart(): void {}`);
 
   const out = await buildPlugin(dir);
   assert.ok(!existsSync(gen),

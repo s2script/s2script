@@ -23,6 +23,7 @@
  * number of `<br>`-separated rows. Exceed the budget and rows push off the bottom of the screen.
  */
 import { Events } from "@s2script/sdk/events";
+import { hook } from "@s2script/sdk/plugin";
 import { Player, GameRules } from "@s2script/cs2";
 import type { Pawn as PawnType } from "@s2script/cs2";
 
@@ -149,11 +150,11 @@ function render(m: HudModel): string {
 export class DemoHud {
   private readonly viewers = new Set<number>();
 
-  constructor(ctx: { server: { onGameFrame(fn: () => void, opts?: { priority?: "high" | "normal" | "low" | "monitor"; phase?: "pre" | "post" }): void } }) {
+  constructor() {
     // "post" phase: the model reads fields the engine re-derives during simulation (health after
     // damage, movetype after a move). Reading in "pre" would paint last tick's values.
     // "low" priority: a HUD must never delay gameplay work in the same frame.
-    ctx.server.onGameFrame(() => this.tick(), { phase: "post", priority: "low" });
+    hook.gameFrame(() => this.tick(), { phase: "post", priority: "low" });
   }
 
   /** Whether `slot` currently has the HUD up. */

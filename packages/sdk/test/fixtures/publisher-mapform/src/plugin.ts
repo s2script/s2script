@@ -1,7 +1,7 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { Contract } from "../api";
+import { publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const impl: Contract = {
     ping(): boolean {
       return true;
@@ -9,5 +9,5 @@ export default plugin((ctx) => {
   };
   // Code publishes exactly the authored interface name, so reconciliation passes; the authored
   // "^1.0.0" RANGE is what the build rejects (a range needs the registry — spec §4.6, §10).
-  ctx.publish("@community/contract", impl);
-});
+  publish("@community/contract", impl);
+}

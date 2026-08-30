@@ -1,5 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Net } from "@s2script/sdk/net";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 const dec = (b: Uint8Array) => Array.from(b).map((c) => String.fromCharCode(c)).join("");
 
@@ -19,9 +21,9 @@ const A2S_INFO = new Uint8Array([
 export const netRecipe: Recipe = {
   name: "net",
   describe: "TCP + UDP round trip without blocking the tick (sm_net)",
-  register(ctx) {
+  register() {
     let frames = 0;
-    ctx.server.onGameFrame(() => { frames += 1; });
+    hook.gameFrame(() => { frames += 1; });
 
     async function tcp(): Promise<void> {
       try {
@@ -60,7 +62,7 @@ export const netRecipe: Recipe = {
       } catch (e) { console.log(`[cookbook] net UDP failed: ${e}`); }
     }
 
-    ctx.commands.register("sm_net", (cmd) => {
+    command("sm_net", (cmd) => {
       cmd.reply("firing TCP + UDP round trips…");
       tcp();
       a2s();

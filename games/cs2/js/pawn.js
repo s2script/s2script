@@ -1206,6 +1206,14 @@
     },
   };
 
+  // Load-window free APIs: import { gameRules, players, items } from "@s2script/cs2".
+  // Proxies look up the current plugin's merged ctx at call time (same window as command()).
+  if (typeof globalThis.__s2_game_ns === "function") {
+    globalThis.__s2pkg_cs2.gameRules = globalThis.__s2_game_ns("gameRules");
+    globalThis.__s2pkg_cs2.players = globalThis.__s2_game_ns("players");
+    globalThis.__s2pkg_cs2.items = globalThis.__s2_game_ns("items");
+  }
+
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
   // game package supplies the value IN; core never knows the game). Best-effort: absent natives
   // (an older core) degrade silently.

@@ -1,8 +1,8 @@
-import { plugin } from "@s2script/sdk/plugin";
 import { greet } from "@fixture/greetlib";
+import { command } from "@s2script/sdk/commands";
 
-export default plugin((ctx) => {
-  ctx.commands.register("ws_library_test", (cmd) => {
+export function OnPluginStart(): void {
+  command("ws_library_test", (cmd) => {
     cmd.reply(greet("world"));
   });
-});
+}

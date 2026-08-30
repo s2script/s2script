@@ -55,12 +55,12 @@ test("scanPluginProgram collects free publish/use/tryUse from @s2script/sdk/plug
   writeFileSync(join(tmp, "api.d.ts"), "export declare function ping(): number;\n");
   writeFileSync(
     join(tmp, "src", "plugin.ts"),
-    `import { plugin, publish, use, tryUse } from "@s2script/sdk/plugin";
-export default plugin(() => {
+    `import { publish, use, tryUse } from "@s2script/sdk/plugin";
+export function OnPluginStart(): void {
   publish("@demo/scan-free", { ping: () => 1 });
   use("@demo/greeter");
   tryUse("@demo/extra");
-});
+}
 `,
   );
   try {

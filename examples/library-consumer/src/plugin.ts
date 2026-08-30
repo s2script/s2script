@@ -6,16 +6,16 @@
 // straight into this plugin's plugin.js at `s2s build` time. There is no `require("@example/
 // base64")` anywhere in the output for the host to resolve; by the time this plugin loads, the
 // codec is just more of this file.
-import { plugin } from "@s2script/sdk/plugin";
 import { encode, decode } from "@example/base64";
+import { command } from "@s2script/sdk/commands";
 
-export default plugin((ctx) => {
-  ctx.commands.register("sm_b64", (cmd) => {
+export function OnPluginStart(): void {
+  command("sm_b64", (cmd) => {
     const input = cmd.argsFrom(0);
     cmd.reply(input ? `${input} -> ${encode(input)}` : "usage: sm_b64 <text>");
   });
 
-  ctx.commands.register("sm_unb64", (cmd) => {
+  command("sm_unb64", (cmd) => {
     const input = cmd.argsFrom(0);
     try {
       cmd.reply(decode(input));
@@ -23,4 +23,4 @@ export default plugin((ctx) => {
       cmd.reply(`not base64: ${(e as Error).message}`);
     }
   });
-});
+}

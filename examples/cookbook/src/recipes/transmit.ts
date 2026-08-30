@@ -2,6 +2,7 @@ import type { Recipe } from "../recipe.ts";
 import { createEntity, EntityRef } from "@s2script/sdk/entity";
 import { Transmit } from "@s2script/sdk/transmit";
 import { Player } from "@s2script/cs2";
+import { command } from "@s2script/sdk/commands";
 
 const ALL_SLOTS: number[] = [];
 for (let i = 0; i < 64; i++) ALL_SLOTS.push(i);
@@ -22,11 +23,11 @@ for (let i = 0; i < 64; i++) ALL_SLOTS.push(i);
 export const transmitRecipe: Recipe = {
   name: "transmit",
   describe: "per-client entity visibility rules (sm_transmit / _hide / _only / _show / _stats)",
-  register(ctx) {
+  register() {
     let prop: EntityRef | null = null;
     let boundSlot = -1;
 
-    ctx.commands.register("sm_transmit", (cmd) => {
+    command("sm_transmit", (cmd) => {
       // Find the first connected human (bots report steamId "0") with a live pawn.
       let origin: { x: number; y: number; z: number } | null = null;
       for (const p of Player.allConnected()) {
@@ -50,7 +51,7 @@ export const transmitRecipe: Recipe = {
         " pos=" + Math.round(origin.x) + "," + Math.round(origin.y) + "," + Math.round(origin.z + 72));
     });
 
-    ctx.commands.register("sm_transmit_hide", (cmd) => {
+    command("sm_transmit_hide", (cmd) => {
       if (!prop || !prop.isValid()) { cmd.reply("[cookbook] transmit: no live prop — sm_transmit first"); return; }
       const slot = cmd.argInt(0, boundSlot);
       if (slot < 0 || slot >= 64) { cmd.reply("[cookbook] usage: sm_transmit_hide <slot 0-63>"); return; }
@@ -58,7 +59,7 @@ export const transmitRecipe: Recipe = {
       cmd.reply("[cookbook] transmit: hide from slot " + slot + " -> " + ok);
     });
 
-    ctx.commands.register("sm_transmit_only", (cmd) => {
+    command("sm_transmit_only", (cmd) => {
       if (!prop || !prop.isValid()) { cmd.reply("[cookbook] transmit: no live prop — sm_transmit first"); return; }
       const slot = cmd.argInt(0, boundSlot);
       if (slot < 0 || slot >= 64) { cmd.reply("[cookbook] usage: sm_transmit_only <slot 0-63>"); return; }
@@ -66,12 +67,12 @@ export const transmitRecipe: Recipe = {
       cmd.reply("[cookbook] transmit: visible ONLY to slot " + slot + " -> " + ok);
     });
 
-    ctx.commands.register("sm_transmit_show", (cmd) => {
+    command("sm_transmit_show", (cmd) => {
       if (!prop) { cmd.reply("[cookbook] transmit: no prop"); return; }
       cmd.reply("[cookbook] transmit: reset -> " + Transmit.reset(prop));
     });
 
-    ctx.commands.register("sm_transmit_stats", (cmd) => {
+    command("sm_transmit_stats", (cmd) => {
       const s = Transmit.stats();
       if (!s) { cmd.reply("[cookbook] transmit: stats unavailable (capability off)"); return; }
       cmd.reply("[cookbook] transmit: snapshots=" + s.snapshots + " entries=" + s.entries +

@@ -1,9 +1,10 @@
 /**
- * @s2script/sdk/plugin — the typed plugin artifact: `plugin(factory)`, the load-scoped `PluginContext`,
- * and `Scope`. NO runtime code: the engine injects the implementation at load time
- * (`__s2pkg_plugin`, resolved via the existing `@s2script/sdk/*` prefix strip).
+ * @s2script/sdk/plugin — load-window authoring (`hook`, `publish`, `translations`, `Scope`)
+ * and the internal load-scoped {@link PluginContext} types. NO runtime code: the engine injects
+ * the implementation at load time (`__s2pkg_plugin`).
  *
- * See docs/superpowers/specs/2026-07-20-L1-lifecycle-v2-design.md §1-§3 for the full contract.
+ * The plugin artifact is `export function OnPluginStart` (plus optional named publics).
+ * See docs/superpowers/specs/2026-08-30-drop-plugin-factory-design.md.
  */
 import type { GameEvent, HookResultValue } from "./events";
 import type { Client } from "./clients";
@@ -30,7 +31,7 @@ export interface CtxEvents {
 }
 /**
  * Handlers fire for clients that connect AFTER Active. To cover already-connected clients, seed
- * explicitly in the factory: `for (const c of Clients.all()) { … }` — there is no framework
+ * explicitly in OnPluginStart: `for (const c of Clients.all()) { … }` — there is no framework
  * replay (replaying `onConnect` for pre-existing clients would fire auth/ban/reservation logic
  * out of its real order).
  */
@@ -76,7 +77,6 @@ export interface CtxEntities {
 }
 /** Per-frame + map/precache hooks on this plugin's load-scope ({@link PluginContext.server}). */
 export interface CtxServer {
-  /** Run `fn` every game frame. @param opts - `priority` orders it within the frame (`monitor` runs last, read-only). */
   /**
    * Run `fn` every game frame.
    *
@@ -175,8 +175,9 @@ export interface Scope {
 }
 
 /**
- * The load-scoped context passed to a plugin's {@link PluginFactory}. Its sub-objects register every
- * subscription; all registration is load-window only (buffered, armed at Active).
+ * The load-scoped context the host builds for one plugin load. Public authoring uses
+ * {@link hook} / {@link command} / named publics instead of receiving this object.
+ * {@link Scope} reuses the same subscription namespaces.
  */
 export interface PluginContext {
   /** This plugin's id (manifest `id`). */
@@ -201,7 +202,7 @@ export interface PluginContext {
   readonly topmenu: CtxTopMenu;
   /** Publish this plugin's manifest-declared interface. Buffered; goes live at Active. */
   publish<T extends object>(name: string, impl: T): PublishHandle;
-  /** Resolve a HARD dep (must be in `pluginDependencies`). Immediate — the proxy is callable inside the factory. */
+  /** Resolve a HARD dep (must be in `pluginDependencies`). Immediate — the proxy is callable during OnPluginStart. */
   use<T extends object>(name: string): InterfaceHandle<T>;
   /** Resolve an OPTIONAL dep (must be in `optionalPluginDependencies`); null while unpublished. */
   tryUse<T extends object>(name: string): InterfaceHandle<T> | null;
@@ -209,50 +210,21 @@ export interface PluginContext {
   createScope(): Scope;
 }
 
-/** Optional lifecycle hooks a {@link PluginFactory} may return to participate in unload + hot-reload. */
+/** Optional lifecycle hooks a plugin may return to participate in unload + hot-reload.
+ *  Public authoring uses `export function OnPluginEnd` / `OnPluginState` instead. */
 export interface PluginHooks {
   /** Best-effort cleanup at unload (the ledger remains the teardown authority). */
   onUnload?(): void;
-  /** Hot-reload handoff capture; JSON-serialized (EntityRef-aware) and revived as the next instance's ctx.previous. */
+  /** Hot-reload handoff capture; JSON-serialized (EntityRef-aware) and revived as the next instance's {@link previous}. */
   state?(): unknown;
 }
-/**
- * A plugin's body: called once at load with the {@link PluginContext}, optionally returning
- * {@link PluginHooks}. May be async (the load waits for it to settle).
- */
-export type PluginFactory = (ctx: PluginContext) => void | PluginHooks | Promise<void | PluginHooks>;
-/** The opaque artifact {@link plugin} returns; a module may `export default` it to be a valid plugin.
- *  `export function OnPluginStart` is the other valid artifact (no default export required). */
-export interface PluginDefinition {
-  /** Brand tag proving this object came from {@link plugin} (host-checked at load). */
-  readonly __s2plugin: 1;
-}
-/**
- * Define a plugin from its factory. `export default` the result — the host calls the factory once at load.
- * Alternative: `export function OnPluginStart()` (SourceMod-shaped publics; no `plugin()` wrapper).
- * Either form is a valid artifact; both may appear (factory first, then publics).
- *
- * Optional named exports the host subscribes if present: `OnPluginEnd`, `OnGameFrame`,
- * `OnMapStart`, `OnMapEnd`, `OnConfigsExecuted`, `OnAllPluginsLoaded`,
- * `OnClientConnected`, `OnClientPutInServer`, `OnClientActive`, `OnClientPostAdminCheck`,
- * `OnClientDisconnect`, `OnClientSayCommand`. Missing export = the host does not subscribe.
- * @example
- * import { plugin } from "@s2script/sdk/plugin";
- * // examples/greeter-plugin/src/plugin.ts:8
- * export default plugin((ctx) => {
- *   const handle = ctx.publish("@demo/greeter", impl);
- *   ctx.server.onGameFrame(() => handle.emit("greeted", { slot: 0 }));
- * });
- */
-export declare function plugin(factory: PluginFactory): PluginDefinition;
 
 /**
- * Load-window damage (and later, other) hooks bound to the current factory / `OnPluginStart` ctx.
- * Throws after settle — the same window as {@link command}.
+ * The load-window subscription surface. Throws after settle — the same window as {@link command}.
  *
- * @example
- * import { hook } from "@s2script/sdk/plugin";
- * export default plugin(() => { hook.damage((info) => { info.damage = info.damage / 2; }); });
+ * Named publics (`OnGameFrame`, `OnClientConnected`, …) remain the SourceMod-shaped path for a
+ * single plugin module. Use `hook.*` when registering from `OnPluginStart` (cookbook recipes,
+ * multiple subscriptions with options).
  */
 export declare const hook: {
   /** Damage pre-hook (SDKHooks-equivalent): same contract as {@link CtxEntities.onDamage}. */
@@ -266,7 +238,55 @@ export declare const hook: {
   output(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
   /** TopMenu contribution. Same object as the {@link topmenu} export. */
   readonly topmenu: CtxTopMenu;
+  /** Entity created (not yet spawned). `className` is a match, or `"*"` for all. */
+  create(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /** Entity spawned (post-`DispatchSpawn`). */
+  spawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /** Entity is being deleted; the ref goes stale right after. */
+  delete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /** Precache window — register models/sounds to precache for the current map. */
+  precache(handler: (pc: PrecacheContext) => void): void;
+  /**
+   * Run `fn` every game frame. Prefer this over `export function OnGameFrame` when you need
+   * `phase` / `priority` (HUD paint in `"post"`).
+   */
+  gameFrame(
+    fn: () => void,
+    opts?: { priority?: "high" | "normal" | "low" | "monitor"; phase?: "pre" | "post" },
+  ): void;
+  /** A new map became live; `mapName` is the BSP name. */
+  mapStart(handler: (mapName: string) => void): void;
+  /** Per-tick usercmd hook (SM `OnPlayerRunCmd`). */
+  runcmd(handler: (cmd: UserCmdView, info: { slot: number }) => HookResultValue | void): void;
+  /** A client began connecting (pre-auth). */
+  connect(handler: (client: Client) => void | Promise<void>): void;
+  /** A client's entity was put in the server. */
+  putInServer(handler: (client: Client) => void | Promise<void>): void;
+  /** A client became fully active. */
+  active(handler: (client: Client) => void | Promise<void>): void;
+  /** A client finished authenticating (Steam ticket validated). */
+  fullyConnect(handler: (client: Client) => void | Promise<void>): void;
+  /** A client disconnected. */
+  disconnect(handler: (client: Client) => void): void;
+  /** A client's convars/settings changed. */
+  settingsChanged(handler: (client: Client) => void): void;
+  /** A client sent a voice packet (per-frame while speaking). */
+  voice(handler: (client: Client) => void): void;
+  /** A client's persisted cookies finished loading. */
+  cookiesCached(handler: (client: Client) => void): void;
+  /** A client sent chat: return a {@link HookResultValue} to suppress it. */
+  say(handler: (slot: number, text: string, teamonly: boolean) => HookResultValue | void): void;
 };
+
+/**
+ * The revived hot-reload handoff (the previous instance's `OnPluginState` return), or `undefined`.
+ * Load-window only.
+ */
+export declare function previous(): unknown;
+/**
+ * This plugin's id (manifest `id`). Load-window only.
+ */
+export declare function pluginId(): string;
 
 /**
  * Allocate a disposable subscription scope. Load-window only — same contract as

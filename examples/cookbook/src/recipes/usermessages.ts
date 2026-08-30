@@ -1,6 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { UserMessages } from "@s2script/sdk/usermessages";
 import { HookResult, type HookResultValue } from "@s2script/sdk/events";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * UserMessages.onPre intercepts an outbound user message before delivery:
@@ -17,7 +18,7 @@ import { HookResult, type HookResultValue } from "@s2script/sdk/events";
 export const usermessagesRecipe: Recipe = {
   name: "usermessages",
   describe: "intercept RadioText + FireBullets user messages, typed reads + suppress (sm_usermsg)",
-  register(ctx) {
+  register() {
     let blockRadio = false; // blanket-blocks ALL radio text
     let blockShots = false;
 
@@ -40,7 +41,7 @@ export const usermessagesRecipe: Recipe = {
       if (blockShots) return HookResult.Handled;
     });
 
-    ctx.commands.register("sm_usermsg", (cmd) => {
+    command("sm_usermsg", (cmd) => {
       const what = cmd.arg(0), on = cmd.arg(1) !== "0";
       if (what === "radio") blockRadio = on;
       else if (what === "shots") blockShots = on;

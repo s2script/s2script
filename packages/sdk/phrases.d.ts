@@ -6,13 +6,14 @@
  * from the phrase files you load.
  *
  * @example
- * export default plugin((ctx) => {
- *   ctx.translations.load("basecomm", "common");
+ * import { translations } from "@s2script/sdk";
+ * export function OnPluginStart(): void {
+ *   translations.load("basecomm", "common");
  *
  *   cmd.replyT("Usage Gag");            // ok — in translations/basecomm.phrases.json
  *   cmd.replyT("No matching players");  // ok — in translations/common.phrases.json
  *   cmd.replyT("Usage Gagg");           // compile error — no such key in either
- * });
+ * }
  *
  * ## Writing phrases
  *
@@ -29,7 +30,7 @@
  *
  * ## How the checking works
  *
- * The build reads your `ctx.translations.load(...)` call and writes `src/phrases.generated.d.ts`,
+ * The build reads your `translations.load(...)` call and writes `src/phrases.generated.d.ts`,
  * filling in {@link PhraseKeys} with the keys of exactly those files. Load a file and its keys
  * become valid; don't, and they don't — so a forgotten `load` is a compile error rather than raw key
  * text printed to a player at runtime. SourceMod enforces the same rule, but only when it happens.

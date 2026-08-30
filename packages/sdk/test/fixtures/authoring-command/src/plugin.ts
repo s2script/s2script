@@ -1,14 +1,14 @@
-import { plugin, hook } from "@s2script/sdk/plugin";
+import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 import type { CommandInvocation } from "@s2script/sdk/commands";
 import type { DamageInfo } from "@s2script/sdk/damage";
 import type { HookResultValue } from "@s2script/sdk/events";
 import { ADMFLAG } from "@s2script/sdk/admin";
 
-export default plugin(() => {
+export function OnPluginStart(): void {
   command.admin("sm_kick", ADMFLAG.KICK, kick);
   hook.damage(halve);
-});
+}
 
 function kick(cmd: CommandInvocation): HookResultValue | void {
   cmd.reply("kicked");
