@@ -87,8 +87,10 @@ export type Command = CommandInvocation;
 
 /**
  * A command callback: the parsed invocation, plus an optional {@link HookResultValue}.
- * Omit the return (`void`) to continue — the same as returning {@link HookResult}.Continue.
- * Engine SUPERCEDE-on-Continue is not this API; chat `!` vs `/` suppress is unchanged.
+ * SourceMod `Plugin_Handled` is {@link HookResult}.Handled — return it from a command you own
+ * (usage errors included; the command was still consumed). Omit the return (`void`) to continue —
+ * the same as returning {@link HookResult}.Continue. Engine SUPERCEDE-on-Continue is not this API;
+ * chat `!` vs `/` suppress is unchanged.
  */
 export type CommandHandler = (
   cmd: CommandInvocation,
@@ -106,7 +108,10 @@ export type CommandHandler = (
  * export function OnPluginStart(): void {
  *   command.admin("sm_kick", ADMFLAG.KICK, kick);
  * }
- * function kick(cmd: CommandInvocation): HookResultValue | void { cmd.reply("kicked"); }
+ * function kick(cmd: CommandInvocation): HookResultValue {
+ *   cmd.reply("kicked");
+ *   return HookResult.Handled;
+ * }
  */
 export declare const command: {
   (name: string, handler: CommandHandler): void;
