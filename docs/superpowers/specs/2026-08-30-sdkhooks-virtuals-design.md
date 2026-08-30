@@ -334,6 +334,16 @@ type in `SDKHookType` without the degrade-or-dispatch path in the same PR.
 
 ## Out of scope
 
+- **SDKTools** ([wiki](https://wiki.alliedmods.net/SDKTools_(SourceMod_Scripting))) — different product,
+  not this stack. SDKHooks is inbound per-entity virtuals + two natives. SDKTools is outbound SDK
+  calls (BinTools/`SDKCall`), helper natives, sound, and tempents. We already replaced the spine:
+  `Engine.call` + gamedata `calls` is `PrepSDKCall`/`SDKCall`; `EntityRef.teleport` / `setModel` /
+  `acceptInput` / `createEntity` / `Entity.findByClass` / `pawn.giveNamedItem` / `Sound.emit` /
+  `@s2script/sdk/trace` / schema accessors cover the helpers that used to live in
+  `sdktools_functions.inc`. Remaining SDKTools-shaped gaps (classic `TE_*` tempents if CS2 still has
+  an `ITempEnts` equivalent; `IgniteEntity`) are their own slices, not a `SDKTools` namespace bolted
+  onto this catalog. Do not stand up `gamedata/sdktools/` for the same owners-gate reason as
+  `gamedata/sdkhooks/`.
 - DHooks / plugin-authored detour layouts
 - `SDKHookEx` as a second name
 - `Action` / `HookResult as Action`
