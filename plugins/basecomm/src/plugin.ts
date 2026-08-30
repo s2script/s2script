@@ -9,7 +9,7 @@
 //    scoreboard indicator only. Keyed by SteamID and re-asserted on putinserver so a mute survives a
 //    reconnect. sm_silence = gag + mute.
 
-import { command, hook, translations, ADMFLAG, HookResult, Clients, Translations } from "@s2script/sdk";
+import { command, topmenu, translations, ADMFLAG, HookResult, Clients, Translations } from "@s2script/sdk";
 import type { Client, PhraseKey, HookResultValue } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
 
@@ -79,7 +79,7 @@ export function OnPluginStart(): void {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  hook.topmenu.addItem("Player Commands", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
+  topmenu.addItem("Player Commands", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
     onSelect: adminSlot => pickPlayer(adminSlot, t => setGag(t, true)) });
 
   console.log("[basecomm] onLoad - gag/ungag/mute/unmute/silence/unsilence registered");

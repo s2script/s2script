@@ -17,6 +17,8 @@ capability inventory + current focus in `CLAUDE.md`.
 
 ## Current state (full history)
 
+**`hook.events.on` / `onPre` (2026-08-30) — COMPLETE offline.** Game-event listen is `hook.events.on(name, fn)` (post) and `hook.events.onPre(name, fn)` (pre; `Handled`/`Stop` suppress the client broadcast). The old `hook.event(name, fn, phase?)` overload is gone. `topmenu` is a free load-window export only — it is not a `hook` subject. Stacked on nest-hook-subjects. Isolate tests: `hook.events.on` / `onPre` / `topmenu` throw after settle.
+
 **Nest `hook` by subject (2026-08-30) — COMPLETE offline.** `hook` is `hook.client` / `hook.entity` / `hook.server` (plus top-level `hook.event` / `hook.topmenu`). Client lifecycle still maps to Source 2 mux names (`connect` / `putinserver` / `active` / `fullyconnect` / `disconnect` / `settingschanged`) plus voice, cookies, say, and usercmd. `hook.client.onFullyConnected` is the public name for engine `fullyconnect` (SM analog `OnClientPostAdminCheck`). Flat aliases deleted (0.x minor). Isolate tests: nested paths throw after settle.
 
 **Drop `plugin()` dual authoring (2026-08-30) — COMPLETE offline.** Public plugins author `export function OnPluginStart` plus load-window free APIs (`hook.*`, `previous()`, `pluginId()`, `command.onClientCommand`) and named publics. `plugin()` / `PluginFactory` / `PluginDefinition` are deleted from `@s2script/sdk` types (0.x minor). Internal load ctx and `{ __s2plugin: 1, factory }` remain for isolate `load_body`. CS2 `ui` / `gameRules` / `players` / `items` are load-window exports. In-repo examples, tools, cookbook, and SDK fixtures migrated. Isolate tests: `previous()`+`OnPluginState` round-trip; `hook.create`/`hook.gameFrame` throw after settle.

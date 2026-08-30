@@ -50,7 +50,7 @@ export function OnPluginStart(): void {
 
   let armedSlay = false;
   // The slay happens INSIDE this handler, i.e. inside dispatch_game_event's borrow.
-  hook.event("player_changename", () => {
+  hook.events.on("player_changename", () => {
     if (!armedSlay) return;
     armedSlay = false;
     const victim = Player.all().find((p) => (p.pawn?.health ?? 0) > 0);
@@ -60,7 +60,7 @@ export function OnPluginStart(): void {
     L("slay: returned — player_death should have deferred");
   });
 
-  hook.event("round_start", () => {
+  hook.events.on("round_start", () => {
     L(`round_start at frame=${frame}`);
     fireInner("round_start");
   });

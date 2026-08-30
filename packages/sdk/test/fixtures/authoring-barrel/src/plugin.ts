@@ -1,6 +1,7 @@
 import {
   command,
   hook,
+  topmenu,
   HookResult,
   ADMFLAG,
   Admin,
@@ -14,7 +15,7 @@ import type { Command, Client, DamageInfo } from "@s2script/sdk";
 export function OnPluginStart(): void {
   command.admin("sm_kick", ADMFLAG.KICK, kick);
   hook.entity.onDamage(halve);
-  hook.topmenu.addItem("Server Commands", {
+  topmenu.addItem("Server Commands", {
     id: "demo:map",
     name: "Change Map",
     flags: ADMFLAG.CHANGEMAP,

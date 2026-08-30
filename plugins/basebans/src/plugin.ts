@@ -13,7 +13,7 @@
 //  immediately; OnClientConnected is the RECONNECT enforcement + is where a 3rd party would query
 //  their own ban store instead of ours.
 
-import { command, hook, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations } from "@s2script/sdk";
+import { command, topmenu, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations } from "@s2script/sdk";
 import type { Client } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
 
@@ -138,9 +138,9 @@ export function OnPluginStart(): void {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  hook.topmenu.addItem("Player Commands", { id: "basebans:kick", name: Translations.translate(-1, "Kick Item"), flags: ADMFLAG.KICK,
+  topmenu.addItem("Player Commands", { id: "basebans:kick", name: Translations.translate(-1, "Kick Item"), flags: ADMFLAG.KICK,
     onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick(Translations.translate(t.slot, "Kick By Admin"))) });
-  hook.topmenu.addItem("Player Commands", { id: "basebans:ban", name: Translations.translate(-1, "Ban Item"), flags: ADMFLAG.BAN,
+  topmenu.addItem("Player Commands", { id: "basebans:ban", name: Translations.translate(-1, "Ban Item"), flags: ADMFLAG.BAN,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       const sid = t.steamId, uid = t.userId, name = t.playerName || "player";
       if (!sid || sid === "0") {   // bot / unauthenticated — never ban (sm_ban parity: a "0" entry is shared)

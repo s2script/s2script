@@ -276,6 +276,17 @@ export interface HookServer {
   onMapStart(handler: (mapName: string) => void): void;
 }
 
+/** Load-window game-event subscriptions. Same contracts as {@link CtxEvents}. */
+export interface HookEvents {
+  /** Post-phase (`ctx.events.on`). The {@link GameEvent} is valid only synchronously. */
+  on(name: string, handler: (ev: GameEvent) => void): void;
+  /**
+   * Pre-phase (`ctx.events.onPre`). Return {@link HookResultValue} `Handled`/`Stop` to suppress
+   * the client broadcast. The {@link GameEvent} is valid only synchronously.
+   */
+  onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
+}
+
 /**
  * The load-window subscription surface. Throws after settle — the same window as {@link command}.
  *
@@ -284,13 +295,8 @@ export interface HookServer {
  * recipes, multiple subscriptions with options).
  */
 export declare const hook: {
-  /**
-   * Game-event subscription. Default is post (`ctx.events.on`). Pass `"pre"` for `onPre`
-   * (`Handled`/`Stop` suppress the client broadcast). The {@link GameEvent} is valid only synchronously.
-   */
-  event(name: string, handler: (ev: GameEvent) => HookResultValue | void, phase?: "pre" | "post"): void;
-  /** TopMenu contribution. Same object as the {@link topmenu} export. */
-  readonly topmenu: CtxTopMenu;
+  /** Game-event catalog. Pre vs post is `on` / `onPre`, not a phase flag. */
+  readonly events: HookEvents;
   /** Client lifecycle, chat, voice, and usercmd. */
   readonly client: HookClient;
   /** Entity create/spawn/delete, I/O, and damage. */

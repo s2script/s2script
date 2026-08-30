@@ -1,4 +1,4 @@
-import { command, hook, translations, ADMFLAG, Translations } from "@s2script/sdk";
+import { command, topmenu, translations, ADMFLAG, Translations } from "@s2script/sdk";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
@@ -91,9 +91,9 @@ export function OnPluginStart(): void {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  hook.topmenu.addItem("Player Commands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
+  topmenu.addItem("Player Commands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slapPlayer(t, 5)) });   // menu default: 5 damage + knockback
-  hook.topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
+  topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slayPlayer(t)) });
 
   console.log("[playercommands] onLoad — slap/slay/rename registered");

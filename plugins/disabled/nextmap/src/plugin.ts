@@ -127,7 +127,7 @@ export function OnPluginStart(): void {
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the
                 // rotation before the first map-end — nextmap owns this, independent of nominations.
 
-  hook.event("round_end", () => {
+  hook.events.on("round_end", () => {
     if (changing) return;
     roundsPlayed++;
     const max = parseInt(Server.getCvar("mp_maxrounds"), 10);

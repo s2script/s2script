@@ -3,7 +3,7 @@
 // It shows the four things every plugin does:
 //   1. export function OnPluginStart            — runs once at load
 //   2. register a command                      — command("sm_hello", …)
-//   3. subscribe to a game event               — hook.event
+//   3. subscribe to a game event               — hook.events.on
 //   4. survive a hot reload                    — OnPluginState / previous()
 //
 // Build it:   npx @s2script/sdk build examples/hello-plugin
@@ -28,7 +28,7 @@ export function OnPluginStart(): void {
     cmd.reply(`hello! I have greeted ${greeted} spawns since first load.`);
   });
 
-  hook.event("player_spawn", (ev) => {
+  hook.events.on("player_spawn", (ev) => {
     greeted += 1;
     const player = Player.fromSlot(ev.getPlayerSlot("userid"));
     console.log(`[hello] spawn #${greeted}: ${player?.playerName ?? "unknown"}`);
