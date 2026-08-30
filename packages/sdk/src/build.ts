@@ -319,7 +319,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     platform: "neutral",
     format: "cjs",
     external,
-    target: "es2020",
+    target: "es2024",
     // platform:"neutral" defaults mainFields to EMPTY, so a workspace-sibling package that
     // declares `main` (rather than `exports`) fails to resolve with an undiagnosable error.
     // Set it explicitly so a monorepo plugin bundles whichever field the author wrote.

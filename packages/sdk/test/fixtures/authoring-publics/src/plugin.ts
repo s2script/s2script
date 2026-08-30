@@ -6,6 +6,8 @@ import type { HookResultValue } from "@s2script/sdk/events";
 import { ADMFLAG } from "@s2script/sdk/admin";
 
 export function OnPluginStart(): void {
+  // ES2024 lib proof — Object.groupBy is in ES2024; the typecheck gate must accept it.
+  void Object.groupBy(["kicked", "halved"], (s) => s.length);
   translations.load("common");
   command.admin("sm_kick", ADMFLAG.KICK, kick);
   hook.damage(halve);
