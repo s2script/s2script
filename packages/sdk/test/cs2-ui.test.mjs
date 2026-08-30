@@ -204,6 +204,23 @@ test("rejects .vxml resource extension", () => {
   );
 });
 
+test("hud() throw prefix is ui.hud, not ctx.ui", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  assert.throws(
+    () => ui.hud({
+      addons: [],
+      resource: "panorama/layout/custom_game/x.xml",
+      hideClass: "h",
+      text: {},
+      buttons: [],
+      meters: {},
+    }),
+    /^Error: ui\.hud: descriptor\.addons must be a non-empty string array$/,
+  );
+});
+
 test("degraded setHasClassForPlayer returns named reason", () => {
   const h = makeHost({ ready: BASE_CALLS.filter((n) => n !== "setHasClassForPlayer") });
   const ui = h.armPlugin();
