@@ -1,4 +1,3 @@
-import type { Recipe } from "../recipe.ts";
 import { CsItem, Pawn } from "@s2script/cs2";
 import { Server, command, HookResult } from "@s2script/sdk";
 
@@ -24,64 +23,63 @@ function livePawns(): Array<{ slot: number; pawn: NonNullable<ReturnType<typeof 
  * sm_weapon info|refill|disarm|nofire — the Weapon entity object + pawn fire
  *   control.
  */
-export const itemsRecipe: Recipe = {
-  name: "items",
-  describe: "give/strip/enumerate items (sm_items) and weapon-specific control (sm_weapon)",
-  register() {
-    command("sm_items", (cmd) => {
-      const sub = cmd.arg(0) || "weapons";
-      if (sub === "give") {
-        const weapon = cmd.arg(1) || CsItem.AK47;
-        let n = 0;
-        for (const { pawn } of livePawns()) {
-          const w = pawn.giveNamedItem(weapon);
-          if (w && w.isValid()) n++;
-        }
-        cmd.reply("[items] gave " + weapon + " to " + n + " player(s)");
-      } else if (sub === "strip") {
-        let n = 0;
-        for (const { pawn } of livePawns()) { if (pawn.stripWeapons()) n++; }
-        cmd.reply("[items] stripped " + n + " player(s)");
-      } else if (sub === "drop") {
-        let n = 0;
-        for (const { pawn } of livePawns()) { if (pawn.dropActiveWeapon()) n++; }
-        cmd.reply("[items] dropped for " + n + " player(s)");
-      } else {
-        for (const { slot, pawn } of livePawns()) {
-          cmd.reply("[items] " + slot + " has " + pawn.weapons.length + " weapon(s)");
-        }
-      }
-      return HookResult.Handled;
-    });
+export const name = "items";
+export const describe = "give/strip/enumerate items (sm_items) and weapon-specific control (sm_weapon)";
 
-    command("sm_weapon", (cmd) => {
-      const sub = cmd.arg(0) || "info";
-      if (sub === "refill") {
-        let n = 0;
-        for (const { pawn } of livePawns()) {
-          const w = pawn.activeWeapon;
-          if (w && w.setAmmo(90)) n++;
-        }
-        cmd.reply("[wpn] refilled clip1=90 on " + n + " active weapon(s)");
-      } else if (sub === "disarm") {
-        let n = 0;
-        for (const { pawn } of livePawns()) { if (pawn.disarm()) n++; }
-        cmd.reply("[wpn] disarmed " + n + " player(s)");
-      } else if (sub === "nofire") {
-        const secs = cmd.args[1] ? Number(cmd.args[1]) : 5;
-        const now = Server.gameTime;
-        for (const { slot, pawn } of livePawns()) {
-          const ok = pawn.blockFiring(secs);
-          cmd.reply("[wpn] slot=" + slot + " blockFiring(" + secs + ")=" + ok + " nextAttack=" + pawn.nextAttack + " gameTime=" + now);
-        }
-      } else {
-        for (const { slot, pawn } of livePawns()) {
-          const w = pawn.activeWeapon;
-          const active = w ? "ref#" + w.ref.index + " clip1=" + w.clip1 + "/" + w.clip2 + " paint=" + w.paintKit : "none";
-          cmd.reply("[wpn] slot=" + slot + " active=" + active + " count=" + pawn.weapons.length);
-        }
+export function OnPluginStart(): void {
+  command("sm_items", (cmd) => {
+    const sub = cmd.arg(0) || "weapons";
+    if (sub === "give") {
+      const weapon = cmd.arg(1) || CsItem.AK47;
+      let n = 0;
+      for (const { pawn } of livePawns()) {
+        const w = pawn.giveNamedItem(weapon);
+        if (w && w.isValid()) n++;
       }
-      return HookResult.Handled;
-    });
-  },
-};
+      cmd.reply("[items] gave " + weapon + " to " + n + " player(s)");
+    } else if (sub === "strip") {
+      let n = 0;
+      for (const { pawn } of livePawns()) { if (pawn.stripWeapons()) n++; }
+      cmd.reply("[items] stripped " + n + " player(s)");
+    } else if (sub === "drop") {
+      let n = 0;
+      for (const { pawn } of livePawns()) { if (pawn.dropActiveWeapon()) n++; }
+      cmd.reply("[items] dropped for " + n + " player(s)");
+    } else {
+      for (const { slot, pawn } of livePawns()) {
+        cmd.reply("[items] " + slot + " has " + pawn.weapons.length + " weapon(s)");
+      }
+    }
+    return HookResult.Handled;
+  });
+
+  command("sm_weapon", (cmd) => {
+    const sub = cmd.arg(0) || "info";
+    if (sub === "refill") {
+      let n = 0;
+      for (const { pawn } of livePawns()) {
+        const w = pawn.activeWeapon;
+        if (w && w.setAmmo(90)) n++;
+      }
+      cmd.reply("[wpn] refilled clip1=90 on " + n + " active weapon(s)");
+    } else if (sub === "disarm") {
+      let n = 0;
+      for (const { pawn } of livePawns()) { if (pawn.disarm()) n++; }
+      cmd.reply("[wpn] disarmed " + n + " player(s)");
+    } else if (sub === "nofire") {
+      const secs = cmd.args[1] ? Number(cmd.args[1]) : 5;
+      const now = Server.gameTime;
+      for (const { slot, pawn } of livePawns()) {
+        const ok = pawn.blockFiring(secs);
+        cmd.reply("[wpn] slot=" + slot + " blockFiring(" + secs + ")=" + ok + " nextAttack=" + pawn.nextAttack + " gameTime=" + now);
+      }
+    } else {
+      for (const { slot, pawn } of livePawns()) {
+        const w = pawn.activeWeapon;
+        const active = w ? "ref#" + w.ref.index + " clip1=" + w.clip1 + "/" + w.clip2 + " paint=" + w.paintKit : "none";
+        cmd.reply("[wpn] slot=" + slot + " active=" + active + " count=" + pawn.weapons.length);
+      }
+    }
+    return HookResult.Handled;
+  });
+}

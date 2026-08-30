@@ -1,65 +1,65 @@
 import type { Recipe } from "../recipe.ts";
-import { adminRecipe } from "./admin.ts";
-import { chatRecipe } from "./chat.ts";
-import { clientsRecipe } from "./clients.ts";
-import { configRecipe } from "./config.ts";
-import { consoleRecipe } from "./console.ts";
-import { contractsRecipe } from "./contracts.ts";
-import { cookiesRecipe } from "./cookies.ts";
-import { damageRecipe } from "./damage.ts";
-import { dbRecipe } from "./db.ts";
-import { eventsRecipe } from "./events.ts";
-import { gamerulesRecipe } from "./gamerules.ts";
-import { httpRecipe } from "./http.ts";
-import { itemsRecipe } from "./items.ts";
-import { menuRecipe } from "./menu.ts";
-import { movementRecipe } from "./movement.ts";
-import { netRecipe } from "./net.ts";
-import { playerStateRecipe } from "./player-state.ts";
-import { serverRecipe } from "./server.ts";
-import { soundRecipe } from "./sound.ts";
-import { teamRecipe } from "./team.ts";
-import { timersRecipe } from "./timers.ts";
-import { traceRecipe } from "./trace.ts";
-import { translationsRecipe } from "./translations.ts";
-import { unsafeRecipe } from "./unsafe.ts";
-import { transmitRecipe } from "./transmit.ts";
-import { usercmdRecipe } from "./usercmd.ts";
-import { usermessagesRecipe } from "./usermessages.ts";
-import { voiceRecipe } from "./voice.ts";
-import { wsRecipe } from "./ws.ts";
-import { zonesRecipe } from "./zones.ts";
+import * as admin from "./admin.ts";
+import * as chat from "./chat.ts";
+import * as clients from "./clients.ts";
+import * as config from "./config.ts";
+import * as consoleRecipe from "./console.ts";
+import * as contracts from "./contracts.ts";
+import * as cookies from "./cookies.ts";
+import * as damage from "./damage.ts";
+import * as db from "./db.ts";
+import * as events from "./events.ts";
+import * as gamerules from "./gamerules.ts";
+import * as http from "./http.ts";
+import * as items from "./items.ts";
+import * as menu from "./menu.ts";
+import * as movement from "./movement.ts";
+import * as net from "./net.ts";
+import * as playerState from "./player-state.ts";
+import * as server from "./server.ts";
+import * as sound from "./sound.ts";
+import * as team from "./team.ts";
+import * as timers from "./timers.ts";
+import * as trace from "./trace.ts";
+import * as translations from "./translations.ts";
+import * as unsafe from "./unsafe.ts";
+import * as transmit from "./transmit.ts";
+import * as usercmd from "./usercmd.ts";
+import * as usermessages from "./usermessages.ts";
+import * as voice from "./voice.ts";
+import * as ws from "./ws.ts";
+import * as zones from "./zones.ts";
 
-/** Every recipe the cookbook registers. Add new ones here. */
+/** Every recipe the cookbook fans out. Add new ones here. */
 export const RECIPES: readonly Recipe[] = [
-  adminRecipe,
-  chatRecipe,
-  clientsRecipe,
-  configRecipe,
+  admin,
+  chat,
+  clients,
+  config,
   consoleRecipe,
-  contractsRecipe,
-  cookiesRecipe,
-  damageRecipe,
-  dbRecipe,
-  eventsRecipe,
-  gamerulesRecipe,
-  httpRecipe,
-  itemsRecipe,
-  menuRecipe,
-  movementRecipe,
-  netRecipe,
-  playerStateRecipe,
-  serverRecipe,
-  soundRecipe,
-  teamRecipe,
-  timersRecipe,
-  traceRecipe,
-  translationsRecipe,
-  transmitRecipe,
-  unsafeRecipe,
-  usercmdRecipe,
-  usermessagesRecipe,
-  voiceRecipe,
-  wsRecipe,
-  zonesRecipe,
+  contracts,
+  cookies,
+  damage,
+  db,
+  events,
+  gamerules,
+  http,
+  items,
+  menu,
+  movement,
+  net,
+  playerState,
+  server,
+  sound,
+  team,
+  timers,
+  trace,
+  translations,
+  transmit,
+  unsafe,
+  usercmd,
+  usermessages,
+  voice,
+  ws,
+  zones,
 ];

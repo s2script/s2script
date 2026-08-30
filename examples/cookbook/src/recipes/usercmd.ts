@@ -1,4 +1,3 @@
-import type { Recipe } from "../recipe.ts";
 import { HookResult, command } from "@s2script/sdk";
 import type { UserCmdView } from "@s2script/sdk";
 import { Pawn } from "@s2script/cs2";
@@ -24,10 +23,10 @@ let verbose = false;
  *                         line/sec/player; loading the cookbook must not spam the console on its
  *                         own, same reasoning as recipes/damage.ts defaulting its effect off)
  */
-export const usercmdRecipe: Recipe = {
-  name: "usercmd",
-  describe: "read/modify/block a player's per-tick input (sm_usercmd off|jump|side|block|verbose)",
-  onPlayerRunCmd(cmd: UserCmdView, info: { slot: number }) {
+export const name = "usercmd";
+export const describe = "read/modify/block a player's per-tick input (sm_usercmd off|jump|side|block|verbose)";
+
+export function OnPlayerRunCmd(cmd: UserCmdView, info: { slot: number }) {
     const slot = info.slot;
     if (verbose && (logN++ & 0x3f) === 0) {
       const schemaBtn = Pawn.forSlot(slot)?.buttons ?? -1;
@@ -50,20 +49,20 @@ export const usercmdRecipe: Recipe = {
       return HookResult.Handled;
     }
     return HookResult.Continue;
-  },
-  register() {
-    command("sm_usercmd", (cmd) => {
-      const arg = cmd.argsFrom(0).trim();
-      if (arg === "verbose") {
-        verbose = !verbose;
-        cmd.reply(`usercmd verbose logging = ${verbose ? "on" : "off"}`);
-        return HookResult.Handled;
-      }
-      if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return HookResult.Handled; }
-      const mode: Mode = arg === "jump" || arg === "side" || arg === "block" ? arg : "off";
-      modeBySlot.set(cmd.callerSlot, mode);
-      cmd.reply(`usercmd mode = ${mode}`);
+  }
+
+export function OnPluginStart(): void {
+  command("sm_usercmd", (cmd) => {
+    const arg = cmd.argsFrom(0).trim();
+    if (arg === "verbose") {
+      verbose = !verbose;
+      cmd.reply(`usercmd verbose logging = ${verbose ? "on" : "off"}`);
       return HookResult.Handled;
-    });
-  },
-};
+    }
+    if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return HookResult.Handled; }
+    const mode: Mode = arg === "jump" || arg === "side" || arg === "block" ? arg : "off";
+    modeBySlot.set(cmd.callerSlot, mode);
+    cmd.reply(`usercmd mode = ${mode}`);
+    return HookResult.Handled;
+  });
+}

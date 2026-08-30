@@ -1,4 +1,3 @@
-import type { Recipe } from "../recipe.ts";
 import { Translations, command, HookResult } from "@s2script/sdk";
 
 /**
@@ -6,27 +5,26 @@ import { Translations, command, HookResult } from "@s2script/sdk";
  * translations/<code>/<name>.phrases.json overrides it per language, and a
  * missing key falls back to the seed. cmd.replyT reads the caller's language.
  */
-export const translationsRecipe: Recipe = {
-  name: "translations",
-  describe: "seed phrases, positional {1} formatting, and a language switch (sm_translations)",
-  register() {
-    Translations.load("trdemo", { Greeting: "Hello {1}", Bye: "Goodbye {1}", OnlyEn: "English only" });
+export const name = "translations";
+export const describe = "seed phrases, positional {1} formatting, and a language switch (sm_translations)";
 
-    command("sm_translations", (cmd) => {
-      // default (root / English) — slot -1 uses the server default ("" = root)
-      console.log(`[cookbook] translations en: ${Translations.translate(-1, "Greeting", "world")}`);       // Hello world
-      console.log(`[cookbook] translations en missing-key: ${Translations.translate(-1, "Nope")}`);         // Nope (fallback)
+export function OnPluginStart(): void {
+  Translations.load("trdemo", { Greeting: "Hello {1}", Bye: "Goodbye {1}", OnlyEn: "English only" });
 
-      // switch the server default to German -> reads translations/de/trdemo.phrases.json, which
-      // SHIPS in the addon (scripts/package-addon.sh copies translations/). This is the only
-      // language file in the repo and exists to exercise the <code>/ read path end to end.
-      Translations.setDefaultLanguage("de");
-      console.log(`[cookbook] translations de: ${Translations.translate(-1, "Greeting", "world")}`);        // Hallo world (from de file)
-      console.log(`[cookbook] translations de fallback-to-seed: ${Translations.translate(-1, "OnlyEn")}`);  // English only (de miss -> seed)
-      Translations.setDefaultLanguage("");
+  command("sm_translations", (cmd) => {
+    // default (root / English) — slot -1 uses the server default ("" = root)
+    console.log(`[cookbook] translations en: ${Translations.translate(-1, "Greeting", "world")}`);       // Hello world
+    console.log(`[cookbook] translations en missing-key: ${Translations.translate(-1, "Nope")}`);         // Nope (fallback)
 
-      cmd.replyT("Greeting", "admin");
-      return HookResult.Handled;
-    });
-  },
-};
+    // switch the server default to German -> reads translations/de/trdemo.phrases.json, which
+    // SHIPS in the addon (scripts/package-addon.sh copies translations/). This is the only
+    // language file in the repo and exists to exercise the <code>/ read path end to end.
+    Translations.setDefaultLanguage("de");
+    console.log(`[cookbook] translations de: ${Translations.translate(-1, "Greeting", "world")}`);        // Hallo world (from de file)
+    console.log(`[cookbook] translations de fallback-to-seed: ${Translations.translate(-1, "OnlyEn")}`);  // English only (de miss -> seed)
+    Translations.setDefaultLanguage("");
+
+    cmd.replyT("Greeting", "admin");
+    return HookResult.Handled;
+  });
+}

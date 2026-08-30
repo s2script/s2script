@@ -1,4 +1,3 @@
-import type { Recipe } from "../recipe.ts";
 import { ADMFLAG, command, HookResult } from "@s2script/sdk";
 
 /**
@@ -21,25 +20,24 @@ import { ADMFLAG, command, HookResult } from "@s2script/sdk";
  * ADMFLAG's bits are SourceMod-parity: GENERIC is the baseline "is an admin" flag;
  * KICK/BAN/SLAY/etc. are narrower per-action flags a real command would pick instead.
  */
-export const adminRecipe: Recipe = {
-  name: "admin",
-  describe: "command vs command.server vs command.admin (sm_adminflags / sm_adminflags_server / sm_adminflags_gated)",
-  register() {
-    command("sm_adminflags", (cmd) => {
-      cmd.reply("sm_adminflags: anyone can run this (command()). Now try sm_adminflags_server from " +
-        "an in-game console (refused) vs the SERVER console (works), and sm_adminflags_gated as a non-admin " +
-        "(refused, no code here decided that).");
-      return HookResult.Handled;
-    });
+export const name = "admin";
+export const describe = "command vs command.server vs command.admin (sm_adminflags / sm_adminflags_server / sm_adminflags_gated)";
 
-    command.server("sm_adminflags_server", (cmd) => {
-      cmd.reply("sm_adminflags_server: reached the handler — this command only exists for the server console/rcon.");
-      return HookResult.Handled;
-    });
+export function OnPluginStart(): void {
+  command("sm_adminflags", (cmd) => {
+    cmd.reply("sm_adminflags: anyone can run this (command()). Now try sm_adminflags_server from " +
+      "an in-game console (refused) vs the SERVER console (works), and sm_adminflags_gated as a non-admin " +
+      "(refused, no code here decided that).");
+    return HookResult.Handled;
+  });
 
-    command.admin("sm_adminflags_gated", ADMFLAG.GENERIC, (cmd) => {
-      cmd.reply("sm_adminflags_gated: you passed the ADMFLAG.GENERIC gate (or you're the server console).");
-      return HookResult.Handled;
-    });
-  },
-};
+  command.server("sm_adminflags_server", (cmd) => {
+    cmd.reply("sm_adminflags_server: reached the handler — this command only exists for the server console/rcon.");
+    return HookResult.Handled;
+  });
+
+  command.admin("sm_adminflags_gated", ADMFLAG.GENERIC, (cmd) => {
+    cmd.reply("sm_adminflags_gated: you passed the ADMFLAG.GENERIC gate (or you're the server console).");
+    return HookResult.Handled;
+  });
+}

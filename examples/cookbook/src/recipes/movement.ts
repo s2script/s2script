@@ -1,4 +1,3 @@
-import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
 import { command, HookResult } from "@s2script/sdk";
 
@@ -19,77 +18,75 @@ let sampling = false;
 let sample: { slot: number; remaining: number; ticks: number; peak: number;
               peakByPos: number; last: { x: number; y: number } | null } | null = null;
 
-export const movementRecipe: Recipe = {
-  name: "movement",
-  describe: "writable movement fields: sm_speed <slot> <mult>, sm_movement <slot>",
+export const name = "movement";
+export const describe = "writable movement fields: sm_speed <slot> <mult>, sm_movement <slot>";
 
-  onGameFrame() {
-    if (!sampling || !sample) return;
-    const pawn = Player.fromSlot(sample.slot)?.pawn;
-    const v = pawn?.absVelocity;
-    if (v) sample.peak = Math.max(sample.peak, Math.hypot(v.x, v.y));
-    const o = pawn?.origin;
-    if (o) {
-      if (sample.last) {
-        const d = Math.hypot(o.x - sample.last.x, o.y - sample.last.y) * 64;
-        sample.peakByPos = Math.max(sample.peakByPos, d);
-      }
-      sample.last = { x: o.x, y: o.y };
+export function OnGameFrame(): void {
+  if (!sampling || !sample) return;
+  const pawn = Player.fromSlot(sample.slot)?.pawn;
+  const v = pawn?.absVelocity;
+  if (v) sample.peak = Math.max(sample.peak, Math.hypot(v.x, v.y));
+  const o = pawn?.origin;
+  if (o) {
+    if (sample.last) {
+      const d = Math.hypot(o.x - sample.last.x, o.y - sample.last.y) * 64;
+      sample.peakByPos = Math.max(sample.peakByPos, d);
     }
-    if (--sample.remaining <= 0) {
-      sampling = false;
-      console.log(`[cookbook] movement slot=${sample.slot} over ${sample.ticks} frames: ` +
-        `peak absVelocity=${sample.peak.toFixed(1)} u/s, peak by position delta=` +
-        `${sample.peakByPos.toFixed(1)} u/s`);
+    sample.last = { x: o.x, y: o.y };
+  }
+  if (--sample.remaining <= 0) {
+    sampling = false;
+    console.log(`[cookbook] movement slot=${sample.slot} over ${sample.ticks} frames: ` +
+      `peak absVelocity=${sample.peak.toFixed(1)} u/s, peak by position delta=` +
+      `${sample.peakByPos.toFixed(1)} u/s`);
+  }
+}
+
+export function OnPluginStart(): void {
+  command("sm_movement", (cmd) => {
+    const slot = cmd.argInt(0, -1);
+    const pawn = slot >= 0 ? Player.fromSlot(slot)?.pawn : null;
+    const ms = pawn?.movementServices;
+    if (!ms) { cmd.reply(`[cookbook] movement: no live pawn/movementServices for slot ${slot}`); return HookResult.Handled; }
+    cmd.reply(
+      `[cookbook] movement slot=${slot} maxspeed=${ms.maxspeed} stamina=${ms.stamina} ` +
+      `friction=${ms.surfaceFriction} ducked=${ms.ducked} duckAmount=${ms.duckAmount}`);
+    return HookResult.Handled;
+  });
+
+  // The live gate: bots move under server-side movement code, so a maxspeed change is
+  // observable on hardware without a human client.
+  command("sm_speed", (cmd) => {
+    const slot = cmd.argInt(0, -1);
+    const mult = parseFloat(cmd.arg(1) ?? "");
+    if (slot < 0 || slot > 63 || !isFinite(mult) || mult <= 0) {
+      cmd.reply("[cookbook] usage: sm_speed <slot 0-63> <multiplier>   (1 = restore)");
+      return HookResult.Handled;
     }
-  },
+    const ms = Player.fromSlot(slot)?.pawn?.movementServices;
+    if (!ms) { cmd.reply(`[cookbook] movement: no live pawn for slot ${slot}`); return HookResult.Handled; }
 
-  register() {
-    command("sm_movement", (cmd) => {
-      const slot = cmd.argInt(0, -1);
-      const pawn = slot >= 0 ? Player.fromSlot(slot)?.pawn : null;
-      const ms = pawn?.movementServices;
-      if (!ms) { cmd.reply(`[cookbook] movement: no live pawn/movementServices for slot ${slot}`); return HookResult.Handled; }
-      cmd.reply(
-        `[cookbook] movement slot=${slot} maxspeed=${ms.maxspeed} stamina=${ms.stamina} ` +
-        `friction=${ms.surfaceFriction} ducked=${ms.ducked} duckAmount=${ms.duckAmount}`);
-      return HookResult.Handled;
-    });
+    const base = original.get(slot) ?? ms.maxspeed;
+    if (base === null) { cmd.reply(`[cookbook] movement: maxspeed unreadable for slot ${slot}`); return HookResult.Handled; }
+    original.set(slot, base);
 
-    // The live gate: bots move under server-side movement code, so a maxspeed change is
-    // observable on hardware without a human client.
-    command("sm_speed", (cmd) => {
-      const slot = cmd.argInt(0, -1);
-      const mult = parseFloat(cmd.arg(1) ?? "");
-      if (slot < 0 || slot > 63 || !isFinite(mult) || mult <= 0) {
-        cmd.reply("[cookbook] usage: sm_speed <slot 0-63> <multiplier>   (1 = restore)");
-        return HookResult.Handled;
-      }
-      const ms = Player.fromSlot(slot)?.pawn?.movementServices;
-      if (!ms) { cmd.reply(`[cookbook] movement: no live pawn for slot ${slot}`); return HookResult.Handled; }
+    const before = ms.maxspeed;
+    ms.maxspeed = base * mult;          // <- the write this slice exists for
+    cmd.reply(`[cookbook] movement slot=${slot} maxspeed ${before} -> ${ms.maxspeed} (base ${base} x ${mult})`);
+    return HookResult.Handled;
+  });
 
-      const base = original.get(slot) ?? ms.maxspeed;
-      if (base === null) { cmd.reply(`[cookbook] movement: maxspeed unreadable for slot ${slot}`); return HookResult.Handled; }
-      original.set(slot, base);
-
-      const before = ms.maxspeed;
-      ms.maxspeed = base * mult;          // <- the write this slice exists for
-      cmd.reply(`[cookbook] movement slot=${slot} maxspeed ${before} -> ${ms.maxspeed} (base ${base} x ${mult})`);
-      return HookResult.Handled;
-    });
-
-    // sm_speedsample <slot> <ticks> — peak horizontal speed over N frames. Reading maxspeed back
-    // only proves the write stuck in memory; this proves the ENGINE acts on it, which is the whole
-    // claim. Bots move under server-side movement code, so no human client is needed.
-    command("sm_speedsample", (cmd) => {
-      const slot = cmd.argInt(0, -1);
-      const ticks = Math.min(Math.max(cmd.argInt(1, 128), 1), 2048);
-      if (slot < 0 || slot > 63) { cmd.reply("[cookbook] usage: sm_speedsample <slot 0-63> [ticks]"); return HookResult.Handled; }
-      if (sampling) { cmd.reply("[cookbook] movement: a sample is already running"); return HookResult.Handled; }
-      sample = { slot, remaining: ticks, ticks, peak: 0, peakByPos: 0, last: null };
-      sampling = true;
-      cmd.reply(`[cookbook] movement: sampling slot ${slot} for ${ticks} frames…`);
-      return HookResult.Handled;
-    });
-  },
-};
+  // sm_speedsample <slot> <ticks> — peak horizontal speed over N frames. Reading maxspeed back
+  // only proves the write stuck in memory; this proves the ENGINE acts on it, which is the whole
+  // claim. Bots move under server-side movement code, so no human client is needed.
+  command("sm_speedsample", (cmd) => {
+    const slot = cmd.argInt(0, -1);
+    const ticks = Math.min(Math.max(cmd.argInt(1, 128), 1), 2048);
+    if (slot < 0 || slot > 63) { cmd.reply("[cookbook] usage: sm_speedsample <slot 0-63> [ticks]"); return HookResult.Handled; }
+    if (sampling) { cmd.reply("[cookbook] movement: a sample is already running"); return HookResult.Handled; }
+    sample = { slot, remaining: ticks, ticks, peak: 0, peakByPos: 0, last: null };
+    sampling = true;
+    cmd.reply(`[cookbook] movement: sampling slot ${slot} for ${ticks} frames…`);
+    return HookResult.Handled;
+  });
+}

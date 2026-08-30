@@ -1,4 +1,3 @@
-import type { Recipe } from "../recipe.ts";
 import { config, command, HookResult } from "@s2script/sdk";
 
 /**
@@ -13,18 +12,17 @@ import { config, command, HookResult } from "@s2script/sdk";
  * edits the file live, and re-reading inside that handler is how a plugin picks up the edit
  * without a restart (see plugins/antiflood for a config-driven plugin doing exactly this).
  */
-export const configRecipe: Recipe = {
-  name: "config",
-  describe: "read the plugin's operator-editable config file, live-reloadable (sm_config)",
-  register() {
-    config.onChange(() => {
-      console.log("[cookbook] config changed — greeting=" + JSON.stringify(config.getString("greeting")));
-    });
+export const name = "config";
+export const describe = "read the plugin's operator-editable config file, live-reloadable (sm_config)";
 
-    command("sm_config", (cmd) => {
-      cmd.reply("greeting = " + JSON.stringify(config.getString("greeting")));
-      cmd.reply("edit the materialized config file, save, then re-run sm_config to see it live-reload");
-      return HookResult.Handled;
-    });
-  },
-};
+export function OnPluginStart(): void {
+  config.onChange(() => {
+    console.log("[cookbook] config changed — greeting=" + JSON.stringify(config.getString("greeting")));
+  });
+
+  command("sm_config", (cmd) => {
+    cmd.reply("greeting = " + JSON.stringify(config.getString("greeting")));
+    cmd.reply("edit the materialized config file, save, then re-run sm_config to see it live-reload");
+    return HookResult.Handled;
+  });
+}
