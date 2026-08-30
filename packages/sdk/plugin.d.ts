@@ -223,21 +223,21 @@ export interface PluginHooks {
  * Named publics the host finds on `module.exports` (missing export = not subscribed):
  *
  * Plugin: `OnPluginStart` / `OnPluginEnd` / `OnPluginState` / `OnAllPluginsLoaded` / `OnConfigsExecuted`
- * Map/frame: `OnMapStart(map)` / `OnMapEnd()` / `OnGameFrame()` / `OnGameFramePost()` / `OnPrecache(pc)`
+ * Map/frame: `OnMapStart(map)` / `OnMapEnd()` / `OnGameFrame()` / `OnPrecache(pc)`
  * Client: `OnClientConnected` / `PutInServer` / `Active` / `PostAdminCheck` / `Disconnect` /
  *   `SayCommand` / `SettingsChanged` / `Voice` / `CookiesCached` / `OnPlayerRunCmd`
  * Entity: `OnEntityCreated` / `OnEntitySpawned` / `OnEntityDestroyed` / `OnTakeDamage`
  *
- * `OnGameFramePost` is phase `"post"` (HUD paint after simulation). Filtered entity I/O is
- * {@link onOutput}, not a public — SourceMod `HookEntityOutput`.
+ * `OnGameFrame` is SourceMod's public (before simulation). Post-simulation paint is
+ * {@link Scope}'s `server.onGameFrame(fn, { phase: "post" })` — Metamod's post hook, not a SM public.
+ * Filtered entity I/O is {@link onOutput}, not a public — SourceMod `HookEntityOutput`.
  */
 
 /**
  * Game-event catalog. Load-window only — throws after settle (same window as {@link command}).
  *
  * `hook.on` is post-fire; `hook.onPre` is pre (`Handled`/`Stop` suppress the client broadcast).
- * The {@link GameEvent} is valid only synchronously. Frame phase is `export function OnGameFramePost`,
- * not a flag on `hook`.
+ * The {@link GameEvent} is valid only synchronously.
  */
 export declare const hook: {
   /** Post-phase (`ctx.events.on`). */

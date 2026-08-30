@@ -2075,7 +2075,6 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var startOut;
       try {
         if (typeof exp.OnGameFrame === "function") ctx.server.onGameFrame(exp.OnGameFrame);
-        if (typeof exp.OnGameFramePost === "function") ctx.server.onGameFrame(exp.OnGameFramePost, { phase: "post" });
         if (typeof exp.OnPrecache === "function") ctx.server.onPrecache(exp.OnPrecache);
         var hasMapStart = typeof exp.OnMapStart === "function";
         var hasMapEnd = typeof exp.OnMapEnd === "function";

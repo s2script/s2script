@@ -633,11 +633,6 @@ export function OnPluginStart(): void {
   }
 }
 
-/** Post-simulation paint: health/movetype after the engine re-derives them this tick. */
-export function OnGameFramePost(): void {
-  hud.tick();
-}
-
 /** A disconnecting player must not leave diff-cache entries behind. */
 export function OnClientDisconnect(client: Client): void {
   demo.stop(client.slot);

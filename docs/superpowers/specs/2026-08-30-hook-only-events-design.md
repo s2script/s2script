@@ -28,7 +28,6 @@ export function OnPluginEnd(): void {}
 export function OnMapStart(map: string): void {}
 export function OnMapEnd(): void {}
 export function OnGameFrame(): void {}
-export function OnGameFramePost(): void {} // phase "post" (HUD paint)
 export function OnClientPostAdminCheck(client: Client): void {}
 export function OnTakeDamage(info: DamageInfo): void { info.damage /= 2; }
 ```
@@ -52,9 +51,10 @@ This slice adds:
 | `OnEntityDestroyed(entity, className)` | `ctx.entities.onDelete("*", …)` |
 | `OnTakeDamage(info)` | `ctx.entities.onDamage` |
 | `OnPrecache(pc)` | `ctx.server.onPrecache` |
-| `OnGameFramePost()` | `ctx.server.onGameFrame(fn, { phase: "post" })` |
 
 Missing export = not subscribed. Class-name filters for create/spawn/delete happen in the handler (SM `OnEntityCreated`).
+
+SourceMod has only `OnGameFrame` (before simulation). There is no `OnGameFramePre` / `OnGameFramePost`. Post-simulation paint is `createScope().server.onGameFrame(fn, { phase: "post" })` — the Metamod post hook, not a named public.
 
 ## `onOutput` stays a free function
 
@@ -69,4 +69,3 @@ One plugin module can export each public once. Recipes grow optional callbacks (
 - Typed catalog event-name generics
 - Engine SUPERCEDE-on-Continue
 - Per-entity SDKHook handles
-- Frame `priority` on `OnGameFramePost` (default `"normal"`)

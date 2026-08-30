@@ -8822,7 +8822,8 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// Named publics OnGameFrame / OnGameFramePost / OnTakeDamage subscribe at load.
+    /// Named publics OnGameFrame / OnTakeDamage subscribe at load.
+    /// Post-simulation frame is createScope().server.onGameFrame({ phase: "post" }), not a SM public.
     /// hook.on still throws after settle.
     #[test]
     fn named_publics_frame_and_hook_on_throw_after_settle() {
@@ -8833,9 +8834,9 @@ pub(crate) mod frame_tests {
             module.exports.OnPluginStart = function () {
                 var p = globalThis.__s2_require("@s2script/sdk/plugin");
                 globalThis.__hook = p.hook;
+                p.createScope().server.onGameFrame(function () { globalThis.__post = (globalThis.__post|0)+1; }, { phase: "post" });
             };
             module.exports.OnGameFrame = function () { globalThis.__frames = (globalThis.__frames|0)+1; };
-            module.exports.OnGameFramePost = function () { globalThis.__post = (globalThis.__post|0)+1; };
             module.exports.OnTakeDamage = function () { globalThis.__dmg = (globalThis.__dmg|0)+1; };
             "#,
             "{}",
