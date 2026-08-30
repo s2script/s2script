@@ -1,5 +1,5 @@
 /**
- * ctx.ui — offline tests over the real shipped CS2 addon bundle (see cs2-addon.mjs).
+ * `ui` — offline tests over the real shipped CS2 addon bundle (see cs2-addon.mjs).
  */
 import { test } from "node:test";
 import assert from "node:assert";

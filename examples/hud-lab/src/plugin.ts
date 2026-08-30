@@ -8,7 +8,7 @@
  * what is not, so that after an update you can tell the three cases apart on a live server:
  *
  *   TIER A  reachable today  — raw offset writes, entity I/O, game events, generated schema fields
- *   TIER B  ctx.ui / game.cs2 — promoted HUD engine calls (SetHasClass/DialogVariable/InputCapture)
+ *   TIER B  ui / @s2script/cs2 — promoted HUD engine calls (SetHasClass/DialogVariable/InputCapture)
  *   TIER C  resolved — inbound clicks via ui.onCustomHudClicked (game-package hook)
  *
  * `sm_hud_status` prints all three. Start there.
@@ -75,7 +75,7 @@ let demo!: LiveDemo;
 const EYE_HEIGHT = 64;
 
 export function OnPluginStart(): void {
-  /** Shipped workshop kit driven through the game-package ctx.ui API. */
+  /** Shipped workshop kit driven through the game-package `ui` API. */
   kitHud = ui.hud();
 
   kitHud.onClick("s2_btn_3", (slot) => {
@@ -99,7 +99,7 @@ export function OnPluginStart(): void {
   bomb.install(log);
 
   // ── Map start ───────────────────────────────────────────────────────────────────────────────
-  // Do not spawn a custom_hud_layout from OnMapStart — the world is not up yet. ctx.ui waits
+  // Do not spawn a custom_hud_layout from OnMapStart — the world is not up yet. `ui` waits
   // for an active client, then spawns any layout registered via hud() / createLayout.
 
   // ── Status ──────────────────────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ export function OnPluginStart(): void {
 
     cmd.reply(`  demo HUD viewers: ${hud.count}`);
 
-    cmd.reply(`${TAG} ── TIER B (ctx.ui / game.cs2) ──`);
+    cmd.reply(`${TAG} ── TIER B (ui / @s2script/cs2) ──`);
     cmd.reply("  layout: panorama/layout/custom_game/s2script_hud.xml");
     cmd.reply("  addons: 3790153369 (MultiAddonManager)");
     cmd.reply(`${TAG} ── TIER C (ui.onCustomHudClicked) ──`);
@@ -479,7 +479,7 @@ export function OnPluginStart(): void {
     put(liveHud.set(slot, "motd_h0", "Layout"));
     put(liveHud.set(slot, "motd_p0", "workshop addon 3790153369, mounted per-client"));
     put(liveHud.set(slot, "motd_h1", "Drive"));
-    put(liveHud.set(slot, "motd_p1", "ctx.ui — SetHasClass / SetDialogVariableString"));
+    put(liveHud.set(slot, "motd_p1", "ui.hud — SetHasClass / SetDialogVariableString"));
     put(liveHud.set(slot, "motd_h2", "Clicks"));
     put(liveHud.set(slot, "motd_p2", "CustomHudClickedReceiver detour -> ui.onCustomHudClicked"));
     put(liveHud.set(slot, "motd_note", "click OK to dismiss"));
@@ -498,7 +498,7 @@ export function OnPluginStart(): void {
 
     kitHud.setText(slot, "s2_dialog_title", "s2script kit");
     kitHud.setText(slot, "s2_dialog_kicker", "LIVE");
-    kitHud.setText(slot, "s2_dialog_body", `driven via ctx.ui for ${Player.fromSlot(slot)?.playerName ?? "you"}`);
+    kitHud.setText(slot, "s2_dialog_body", `driven via ui.hud() for ${Player.fromSlot(slot)?.playerName ?? "you"}`);
     kitHud.setText(slot, "s2_btn_0_text", "Alpha");
     kitHud.setText(slot, "s2_btn_1_text", "Bravo");
     kitHud.setText(slot, "s2_btn_2_text", "Charlie");

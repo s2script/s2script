@@ -1,6 +1,6 @@
-// node:test suite for games/cs2/js/components.js — the ctx.ui.components() library.
+// node:test suite for games/cs2/js/components.js — the ui.components() library.
 //
-// components.js is an ES5 IIFE that decorates the host's ctx.ui factory, so it cannot be
+// components.js is an ES5 IIFE that decorates the host's ui factory, so it cannot be
 // `require`d. It is evaluated against a stub host that records every drive call, which is what
 // lets these assertions check the CLASS NAMES and the intern accounting rather than just that
 // nothing threw. A parse check would not have caught the missing-function bug this suite found.

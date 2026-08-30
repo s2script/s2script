@@ -1,6 +1,6 @@
 /**
- * ctx.ui — lifecycle-bound custom HUD types. Runtime lives in games/cs2/js/ui.js (injected).
- * Import types and the default descriptor from `@s2script/cs2`; drive panels via `ui.hud()`.
+ * `ui` — lifecycle-bound custom HUD types. Runtime lives in games/cs2/js/ui.js (injected).
+ * Import `{ ui }` from `@s2script/cs2`; drive panels via `ui.hud()`.
  */
 import type { HookResultValue } from "@s2script/sdk/events";
 import type { EntityRef } from "@s2script/sdk/entity";
@@ -106,12 +106,15 @@ declare module "@s2script/sdk/plugin" {
   }
 }
 
-/** Load-window custom HUD API. Same object as the former `ctx.ui`. Throws after settle. */
+/**
+ * Load-window custom HUD API (`import { ui } from "@s2script/cs2"`). Throws after settle.
+ * Runtime still hangs the same object off the load ctx; authors import `ui`, not `ctx.ui`.
+ */
 export declare const ui: CtxUi;
 
 // ── component library ─────────────────────────────────────────────────────────────────────────
-// `ctx.ui.hud()` is the primitive: it drives ids some .xml declares, so using it directly means
-// authoring and publishing your own workshop layout. `ctx.ui.components()` is the library — a
+// `ui.hud()` is the primitive: it drives ids some .xml declares, so using it directly means
+// authoring and publishing your own workshop layout. `ui.components()` is the library — a
 // shared pool of generic panels every plugin drives with DATA instead of ids.
 //
 // Prefer it. Beyond the ergonomics, the engine caps how many distinct panel ids, class names and
