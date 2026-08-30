@@ -1,5 +1,5 @@
 #pragma once
-// Per-entity SDKHooks VP hooks (wiki Touch family). Reads gamedata/sdkhooks, never s_gdCore.
+// Per-entity SDKHooks VP hooks (wiki Touch + lifecycle families). Reads gamedata/sdkhooks, never s_gdCore.
 // See docs/superpowers/specs/2026-08-30-sdkhooks-virtuals-design.md.
 struct GameConfig;
 

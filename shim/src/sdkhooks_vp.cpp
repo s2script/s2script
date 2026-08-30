@@ -1,6 +1,9 @@
 // Per-entity SDKHooks VP hooks — SourceMod SH_ADD_MANUALHOOK, not process-wide detours.
 //
-// Touch / StartTouch / EndTouch / Blocked share the ABI `void (CEntityInstance *pOther)`.
+// Touch family: `void (CEntityInstance *pOther)`.
+// Lifecycle: this-void (Spawn/Think/PreThink/PostThink/VPhysicsUpdate/GroundEntChangedPost),
+// Use `(CEntityInstance *activator, CEntityInstance *caller, int useType, float value)`,
+// GetMaxHealth `int()`, ShouldCollide `bool(int,int)`, CanBeAutobalanced `bool()`.
 // Slots are derived at Load from gamedata/sdkhooks signatures + vtable-member, never shipped
 // as borrowed offsets. Missing/failed rows leave the type unconfigured: s2_sdkhook_vp_add
 // returns 0 and SDKHook returns false.
@@ -29,15 +32,35 @@ PLUGIN_GLOBALVARS();
 
 // Wiki type names — the gamedata keys AND the strings core passes as `type`. Must stay
 // quoted here so scripts/check-gamedata-owners.sh sees the extension owner name them.
-static const char* kStartTouch = "StartTouch";
-static const char* kTouch      = "Touch";
-static const char* kEndTouch   = "EndTouch";
-static const char* kBlocked    = "Blocked";
+static const char* kStartTouch             = "StartTouch";
+static const char* kTouch                  = "Touch";
+static const char* kEndTouch               = "EndTouch";
+static const char* kBlocked                = "Blocked";
+static const char* kSpawn                  = "Spawn";
+static const char* kThink                  = "Think";
+static const char* kPreThink               = "PreThink";
+static const char* kPostThink              = "PostThink";
+static const char* kUse                    = "Use";
+static const char* kGetMaxHealth           = "GetMaxHealth";
+static const char* kShouldCollide          = "ShouldCollide";
+static const char* kVPhysicsUpdate         = "VPhysicsUpdate";
+static const char* kGroundEntChangedPost   = "GroundEntChangedPost";
+static const char* kCanBeAutobalanced      = "CanBeAutobalanced";
 
 SH_DECL_MANUALHOOK1_void(MHook_StartTouch, 0, 0, 0, CEntityInstance *);
 SH_DECL_MANUALHOOK1_void(MHook_Touch,      0, 0, 0, CEntityInstance *);
 SH_DECL_MANUALHOOK1_void(MHook_EndTouch,   0, 0, 0, CEntityInstance *);
 SH_DECL_MANUALHOOK1_void(MHook_Blocked,    0, 0, 0, CEntityInstance *);
+SH_DECL_MANUALHOOK0_void(MHook_Spawn, 0, 0, 0);
+SH_DECL_MANUALHOOK0_void(MHook_Think, 0, 0, 0);
+SH_DECL_MANUALHOOK0_void(MHook_PreThink, 0, 0, 0);
+SH_DECL_MANUALHOOK0_void(MHook_PostThink, 0, 0, 0);
+SH_DECL_MANUALHOOK4_void(MHook_Use, 0, 0, 0, CEntityInstance *, CEntityInstance *, int, float);
+SH_DECL_MANUALHOOK0(MHook_GetMaxHealth, 0, 0, 0, int);
+SH_DECL_MANUALHOOK2(MHook_ShouldCollide, 0, 0, 0, bool, int, int);
+SH_DECL_MANUALHOOK0_void(MHook_VPhysicsUpdate, 0, 0, 0);
+SH_DECL_MANUALHOOK0_void(MHook_GroundEntChanged, 0, 0, 0);
+SH_DECL_MANUALHOOK0(MHook_CanBeAutobalanced, 0, 0, 0, bool);
 
 namespace {
 
@@ -86,18 +109,50 @@ bool InModuleText(const ModText& mt, const void* fn) {
     return p >= mt.text && p < mt.text + mt.size;
 }
 
-enum class Kind { StartTouch, Touch, EndTouch, Blocked };
+enum class Kind {
+    StartTouch,
+    Touch,
+    EndTouch,
+    Blocked,
+    Spawn,
+    Think,
+    PreThink,
+    PostThink,
+    Use,
+    GetMaxHealth,
+    ShouldCollide,
+    VPhysicsUpdate,
+    GroundEntChanged,
+    CanBeAutobalanced,
+};
+constexpr int kKindCount = static_cast<int>(Kind::CanBeAutobalanced) + 1;
 
 bool ParseKind(const char* type, Kind* out) {
     if (!type || !out) return false;
-    if (std::strcmp(type, kStartTouch) == 0) { *out = Kind::StartTouch; return true; }
-    if (std::strcmp(type, kTouch)      == 0) { *out = Kind::Touch;      return true; }
-    if (std::strcmp(type, kEndTouch)   == 0) { *out = Kind::EndTouch;   return true; }
-    if (std::strcmp(type, kBlocked)    == 0) { *out = Kind::Blocked;    return true; }
+    if (std::strcmp(type, kStartTouch) == 0)           { *out = Kind::StartTouch;        return true; }
+    if (std::strcmp(type, kTouch) == 0)                { *out = Kind::Touch;             return true; }
+    if (std::strcmp(type, kEndTouch) == 0)             { *out = Kind::EndTouch;          return true; }
+    if (std::strcmp(type, kBlocked) == 0)              { *out = Kind::Blocked;           return true; }
+    if (std::strcmp(type, kSpawn) == 0)                { *out = Kind::Spawn;             return true; }
+    if (std::strcmp(type, kThink) == 0)                { *out = Kind::Think;             return true; }
+    if (std::strcmp(type, kPreThink) == 0)             { *out = Kind::PreThink;          return true; }
+    if (std::strcmp(type, kPostThink) == 0)            { *out = Kind::PostThink;         return true; }
+    if (std::strcmp(type, kUse) == 0)                  { *out = Kind::Use;               return true; }
+    if (std::strcmp(type, kGetMaxHealth) == 0)         { *out = Kind::GetMaxHealth;      return true; }
+    if (std::strcmp(type, kShouldCollide) == 0)        { *out = Kind::ShouldCollide;     return true; }
+    if (std::strcmp(type, kVPhysicsUpdate) == 0)       { *out = Kind::VPhysicsUpdate;    return true; }
+    if (std::strcmp(type, kGroundEntChangedPost) == 0) { *out = Kind::GroundEntChanged;  return true; }
+    if (std::strcmp(type, kCanBeAutobalanced) == 0)    { *out = Kind::CanBeAutobalanced; return true; }
     return false;
 }
 
-int s_slot[4] = { -1, -1, -1, -1 };   // indexed by Kind; -1 = not configured
+int s_slot[kKindCount] = {
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+};
+
+void ClearSlots() {
+    for (int i = 0; i < kKindCount; i++) s_slot[i] = -1;
+}
 
 struct VpKey {
     void* ptr;
@@ -117,12 +172,31 @@ struct VpInst {
 };
 std::map<VpKey, VpInst> g_installed;
 
+int PackEnt(CEntityInstance* p) {
+    return p ? static_cast<int>(p->GetRefEHandle().ToInt()) : -1;
+}
+
 int DispatchTouch(const char* wiki, int post, CEntityInstance* self, CEntityInstance* other) {
     if (!self) return 0;
     CEntityHandle h = self->GetRefEHandle();
-    int otherH = other ? static_cast<int>(other->GetRefEHandle().ToInt()) : -1;
     return s2script_core_dispatch_sdkhook_touch(
-        h.GetEntryIndex(), h.GetSerialNumber(), otherH, post, wiki);
+        h.GetEntryIndex(), h.GetSerialNumber(), PackEnt(other), post, wiki);
+}
+
+int DispatchThis(const char* wiki, int post, CEntityInstance* self) {
+    if (!self) return 0;
+    CEntityHandle h = self->GetRefEHandle();
+    return s2script_core_dispatch_sdkhook_this(
+        h.GetEntryIndex(), h.GetSerialNumber(), post, wiki);
+}
+
+int DispatchUse(const char* wiki, int post, CEntityInstance* self,
+                CEntityInstance* act, CEntityInstance* caller, int useType, float value) {
+    if (!self) return 0;
+    CEntityHandle h = self->GetRefEHandle();
+    return s2script_core_dispatch_sdkhook_use(
+        h.GetEntryIndex(), h.GetSerialNumber(), PackEnt(act), PackEnt(caller),
+        useType, value, post, wiki);
 }
 
 }  // namespace
@@ -164,6 +238,102 @@ static void Hook_BlockedPost(CEntityInstance* pOther) {
     RETURN_META(MRES_IGNORED);
 }
 
+static void Hook_Spawn() {
+    int r = DispatchThis(kSpawn, 0, META_IFACEPTR(CEntityInstance));
+    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_SpawnPost() {
+    DispatchThis("SpawnPost", 1, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_Think() {
+    int r = DispatchThis(kThink, 0, META_IFACEPTR(CEntityInstance));
+    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_ThinkPost() {
+    DispatchThis("ThinkPost", 1, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_PreThink() {
+    DispatchThis(kPreThink, 0, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_PreThinkPost() {
+    DispatchThis("PreThinkPost", 1, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_PostThink() {
+    DispatchThis(kPostThink, 0, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_PostThinkPost() {
+    DispatchThis("PostThinkPost", 1, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_VPhysicsUpdate() {
+    DispatchThis(kVPhysicsUpdate, 0, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_VPhysicsUpdatePost() {
+    DispatchThis("VPhysicsUpdatePost", 1, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_GroundEntChangedPost() {
+    DispatchThis(kGroundEntChangedPost, 1, META_IFACEPTR(CEntityInstance));
+    RETURN_META(MRES_IGNORED);
+}
+
+static void Hook_Use(CEntityInstance* act, CEntityInstance* caller, int useType, float value) {
+    int r = DispatchUse(kUse, 0, META_IFACEPTR(CEntityInstance), act, caller, useType, value);
+    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
+    RETURN_META(MRES_IGNORED);
+}
+static void Hook_UsePost(CEntityInstance* act, CEntityInstance* caller, int useType, float value) {
+    DispatchUse("UsePost", 1, META_IFACEPTR(CEntityInstance), act, caller, useType, value);
+    RETURN_META(MRES_IGNORED);
+}
+
+static int Hook_GetMaxHealth() {
+    CEntityInstance* self = META_IFACEPTR(CEntityInstance);
+    int maxH = 0;
+    if (self) {
+        maxH = SH_MCALL(self, MHook_GetMaxHealth)();
+        CEntityHandle h = self->GetRefEHandle();
+        int hr = s2script_core_dispatch_sdkhook_getmaxhealth(
+            h.GetEntryIndex(), h.GetSerialNumber(), &maxH);
+        if (hr >= 2) RETURN_META_VALUE(MRES_SUPERCEDE, maxH);
+    }
+    RETURN_META_VALUE(MRES_IGNORED, maxH);
+}
+
+static bool Hook_ShouldCollide(int collisionGroup, int contentsMask) {
+    CEntityInstance* self = META_IFACEPTR(CEntityInstance);
+    bool orig = true;
+    if (self) {
+        orig = SH_MCALL(self, MHook_ShouldCollide)(collisionGroup, contentsMask);
+        CEntityHandle h = self->GetRefEHandle();
+        int r = s2script_core_dispatch_sdkhook_shouldcollide(
+            h.GetEntryIndex(), h.GetSerialNumber(), collisionGroup, contentsMask, orig ? 1 : 0);
+        RETURN_META_VALUE(MRES_SUPERCEDE, r != 0);
+    }
+    RETURN_META_VALUE(MRES_IGNORED, orig);
+}
+
+static bool Hook_CanBeAutobalanced() {
+    CEntityInstance* self = META_IFACEPTR(CEntityInstance);
+    bool orig = true;
+    if (self) {
+        orig = SH_MCALL(self, MHook_CanBeAutobalanced)();
+        CEntityHandle h = self->GetRefEHandle();
+        int r = s2script_core_dispatch_sdkhook_canbeautobalanced(
+            h.GetEntryIndex(), h.GetSerialNumber(), orig ? 1 : 0);
+        RETURN_META_VALUE(MRES_SUPERCEDE, r != 0);
+    }
+    RETURN_META_VALUE(MRES_IGNORED, orig);
+}
+
 static int AddManual(Kind kind, void* p, int post) {
     switch (kind) {
     case Kind::StartTouch:
@@ -178,20 +348,75 @@ static int AddManual(Kind kind, void* p, int post) {
     case Kind::Blocked:
         return post ? SH_ADD_MANUALHOOK(MHook_Blocked, p, SH_STATIC(Hook_BlockedPost), true)
                     : SH_ADD_MANUALHOOK(MHook_Blocked, p, SH_STATIC(Hook_Blocked), false);
+    case Kind::Spawn:
+        return post ? SH_ADD_MANUALHOOK(MHook_Spawn, p, SH_STATIC(Hook_SpawnPost), true)
+                    : SH_ADD_MANUALHOOK(MHook_Spawn, p, SH_STATIC(Hook_Spawn), false);
+    case Kind::Think:
+        return post ? SH_ADD_MANUALHOOK(MHook_Think, p, SH_STATIC(Hook_ThinkPost), true)
+                    : SH_ADD_MANUALHOOK(MHook_Think, p, SH_STATIC(Hook_Think), false);
+    case Kind::PreThink:
+        return post ? SH_ADD_MANUALHOOK(MHook_PreThink, p, SH_STATIC(Hook_PreThinkPost), true)
+                    : SH_ADD_MANUALHOOK(MHook_PreThink, p, SH_STATIC(Hook_PreThink), false);
+    case Kind::PostThink:
+        return post ? SH_ADD_MANUALHOOK(MHook_PostThink, p, SH_STATIC(Hook_PostThinkPost), true)
+                    : SH_ADD_MANUALHOOK(MHook_PostThink, p, SH_STATIC(Hook_PostThink), false);
+    case Kind::Use:
+        return post ? SH_ADD_MANUALHOOK(MHook_Use, p, SH_STATIC(Hook_UsePost), true)
+                    : SH_ADD_MANUALHOOK(MHook_Use, p, SH_STATIC(Hook_Use), false);
+    case Kind::GetMaxHealth:
+        return SH_ADD_MANUALHOOK(MHook_GetMaxHealth, p, SH_STATIC(Hook_GetMaxHealth), false);
+    case Kind::ShouldCollide:
+        return SH_ADD_MANUALHOOK(MHook_ShouldCollide, p, SH_STATIC(Hook_ShouldCollide), false);
+    case Kind::VPhysicsUpdate:
+        return post ? SH_ADD_MANUALHOOK(MHook_VPhysicsUpdate, p, SH_STATIC(Hook_VPhysicsUpdatePost), true)
+                    : SH_ADD_MANUALHOOK(MHook_VPhysicsUpdate, p, SH_STATIC(Hook_VPhysicsUpdate), false);
+    case Kind::GroundEntChanged:
+        return SH_ADD_MANUALHOOK(MHook_GroundEntChanged, p, SH_STATIC(Hook_GroundEntChangedPost), true);
+    case Kind::CanBeAutobalanced:
+        return SH_ADD_MANUALHOOK(MHook_CanBeAutobalanced, p, SH_STATIC(Hook_CanBeAutobalanced), false);
     }
     return 0;
 }
 
+static void Reconfigure(Kind kind, int slot) {
+    switch (kind) {
+    case Kind::StartTouch:        SH_MANUALHOOK_RECONFIGURE(MHook_StartTouch, slot, 0, 0); break;
+    case Kind::Touch:             SH_MANUALHOOK_RECONFIGURE(MHook_Touch, slot, 0, 0); break;
+    case Kind::EndTouch:          SH_MANUALHOOK_RECONFIGURE(MHook_EndTouch, slot, 0, 0); break;
+    case Kind::Blocked:           SH_MANUALHOOK_RECONFIGURE(MHook_Blocked, slot, 0, 0); break;
+    case Kind::Spawn:             SH_MANUALHOOK_RECONFIGURE(MHook_Spawn, slot, 0, 0); break;
+    case Kind::Think:             SH_MANUALHOOK_RECONFIGURE(MHook_Think, slot, 0, 0); break;
+    case Kind::PreThink:          SH_MANUALHOOK_RECONFIGURE(MHook_PreThink, slot, 0, 0); break;
+    case Kind::PostThink:         SH_MANUALHOOK_RECONFIGURE(MHook_PostThink, slot, 0, 0); break;
+    case Kind::Use:               SH_MANUALHOOK_RECONFIGURE(MHook_Use, slot, 0, 0); break;
+    case Kind::GetMaxHealth:      SH_MANUALHOOK_RECONFIGURE(MHook_GetMaxHealth, slot, 0, 0); break;
+    case Kind::ShouldCollide:     SH_MANUALHOOK_RECONFIGURE(MHook_ShouldCollide, slot, 0, 0); break;
+    case Kind::VPhysicsUpdate:    SH_MANUALHOOK_RECONFIGURE(MHook_VPhysicsUpdate, slot, 0, 0); break;
+    case Kind::GroundEntChanged:  SH_MANUALHOOK_RECONFIGURE(MHook_GroundEntChanged, slot, 0, 0); break;
+    case Kind::CanBeAutobalanced: SH_MANUALHOOK_RECONFIGURE(MHook_CanBeAutobalanced, slot, 0, 0); break;
+    }
+}
+
 void S2SdkhooksVpLoad(const GameConfig& gd) {
-    s_slot[0] = s_slot[1] = s_slot[2] = s_slot[3] = -1;
+    ClearSlots();
     g_installed.clear();
 
     struct Row { const char* name; Kind kind; };
     const Row rows[] = {
-        { kStartTouch, Kind::StartTouch },
-        { kTouch,      Kind::Touch },
-        { kEndTouch,   Kind::EndTouch },
-        { kBlocked,    Kind::Blocked },
+        { kStartTouch,           Kind::StartTouch },
+        { kTouch,                Kind::Touch },
+        { kEndTouch,             Kind::EndTouch },
+        { kBlocked,              Kind::Blocked },
+        { kSpawn,                Kind::Spawn },
+        { kThink,                Kind::Think },
+        { kPreThink,             Kind::PreThink },
+        { kPostThink,            Kind::PostThink },
+        { kUse,                  Kind::Use },
+        { kGetMaxHealth,         Kind::GetMaxHealth },
+        { kShouldCollide,        Kind::ShouldCollide },
+        { kVPhysicsUpdate,       Kind::VPhysicsUpdate },
+        { kGroundEntChangedPost, Kind::GroundEntChanged },
+        { kCanBeAutobalanced,    Kind::CanBeAutobalanced },
     };
 
     s2validate::Ops vops;
@@ -259,12 +484,7 @@ void S2SdkhooksVpLoad(const GameConfig& gd) {
             S2GamedataResult(row.name, false, "sig-resolved address is not a vtable slot");
             continue;
         }
-        switch (row.kind) {
-        case Kind::StartTouch: SH_MANUALHOOK_RECONFIGURE(MHook_StartTouch, slot, 0, 0); break;
-        case Kind::Touch:      SH_MANUALHOOK_RECONFIGURE(MHook_Touch,      slot, 0, 0); break;
-        case Kind::EndTouch:   SH_MANUALHOOK_RECONFIGURE(MHook_EndTouch,   slot, 0, 0); break;
-        case Kind::Blocked:    SH_MANUALHOOK_RECONFIGURE(MHook_Blocked,    slot, 0, 0); break;
-        }
+        Reconfigure(row.kind, slot);
         s_slot[static_cast<int>(row.kind)] = slot;
         char ok[64];
         std::snprintf(ok, sizeof ok, "%s (slot %d)", row.name, slot);
@@ -277,7 +497,7 @@ void S2SdkhooksVpUnload() {
         if (kv.second.hook_id) SH_REMOVE_HOOK_ID(kv.second.hook_id);
     }
     g_installed.clear();
-    s_slot[0] = s_slot[1] = s_slot[2] = s_slot[3] = -1;
+    ClearSlots();
 }
 
 extern "C" int s2_sdkhook_vp_add(int index, int serial, const char* type, int post) {
