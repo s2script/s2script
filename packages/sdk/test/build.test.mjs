@@ -248,7 +248,7 @@ function collidingNameFixture(depField) {
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(
     join(dir, "src", "plugin.ts"),
-    'import { plugin } from "@s2script/sdk/plugin";\n\nexport default plugin(() => {});\n',
+    'export function OnPluginStart(): void {}\n',
   );
   return dir;
 }
@@ -293,7 +293,7 @@ test("buildPlugin refuses an @s2script/*-scoped s2script.libraries entry", async
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(
     join(dir, "src", "plugin.ts"),
-    'import { plugin } from "@s2script/sdk/plugin";\n\nexport default plugin(() => {});\n',
+    'export function OnPluginStart(): void {}\n',
   );
   await assert.rejects(() => buildPlugin(dir, packagesDir), /reserved/);
 });

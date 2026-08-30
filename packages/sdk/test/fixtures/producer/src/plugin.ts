@@ -1,7 +1,7 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { Greeter } from "../api";
+import { publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const impl: Greeter = { greet: (n: number) => `hi ${n}` };
-  ctx.publish("@demo/greeter", impl);
-});
+  publish("@demo/greeter", impl);
+}

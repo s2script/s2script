@@ -1,5 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { after, every, delay, type Timer } from "@s2script/sdk/timers";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * @s2script/timers — cancellable callback timers (SourceMod `CreateTimer` / `KillTimer`).
@@ -12,17 +13,17 @@ export const timersRecipe: Recipe = {
   name: "timers",
   describe: "cancellable timers: sm_timer_once, sm_timer_repeat <ms>, sm_timer_stop, sm_timer_status",
 
-  register(ctx) {
+  register() {
     let ticker: Timer | null = null;
     let ticks = 0;
 
-    ctx.commands.register("sm_timer_once", (cmd) => {
+    command("sm_timer_once", (cmd) => {
       const ms = cmd.argInt(0, 3000);
       const t = after(ms, () => console.log(`[cookbook] timers: one-shot fired after ${ms}ms`));
       cmd.reply(`[cookbook] timers: armed a one-shot for ${ms}ms (alive=${t.alive})`);
     });
 
-    ctx.commands.register("sm_timer_repeat", (cmd) => {
+    command("sm_timer_repeat", (cmd) => {
       const ms = Math.max(cmd.argInt(0, 1000), 1);
       ticker?.kill();                       // kill() is idempotent, so no alive-check needed
       ticks = 0;
@@ -35,17 +36,17 @@ export const timersRecipe: Recipe = {
       cmd.reply(`[cookbook] timers: repeating every ${ms}ms, self-kills after 5 ticks`);
     });
 
-    ctx.commands.register("sm_timer_stop", (cmd) => {
+    command("sm_timer_stop", (cmd) => {
       const killed = ticker?.kill() ?? false;
       cmd.reply(`[cookbook] timers: kill() -> ${killed} (false = already dead; it is idempotent)`);
     });
 
-    ctx.commands.register("sm_timer_status", (cmd) => {
+    command("sm_timer_status", (cmd) => {
       cmd.reply(`[cookbook] timers: ticks=${ticks} alive=${ticker?.alive ?? false}`);
     });
 
     // A 0ms repeat would re-arm every drain and starve the frame, so it throws rather than degrade.
-    ctx.commands.register("sm_timer_zero", (cmd) => {
+    command("sm_timer_zero", (cmd) => {
       try {
         every(0, () => {});
         cmd.reply("[cookbook] timers: UNEXPECTED — every(0) should have thrown");
@@ -55,7 +56,7 @@ export const timersRecipe: Recipe = {
     });
 
     // delay() still exists for the await-able case; shown so the two are contrasted in one place.
-    ctx.commands.register("sm_timer_delay", (cmd) => {
+    command("sm_timer_delay", (cmd) => {
       cmd.reply("[cookbook] timers: awaiting delay(1000)…");
       delay(1000).then(() => console.log("[cookbook] timers: delay(1000) resolved (not cancellable)"));
     });

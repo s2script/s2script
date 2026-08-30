@@ -1,11 +1,11 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { Publisher } from "../api";
+import { publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const impl: Publisher = {
     ping(): boolean {
       return true;
     },
   };
-  ctx.publish("@demo/publisher", impl);
-});
+  publish("@demo/publisher", impl);
+}

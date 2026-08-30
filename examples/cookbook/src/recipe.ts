@@ -1,8 +1,6 @@
-import type { PluginContext } from "@s2script/sdk/plugin";
-
 /**
  * One cookbook recipe: a self-contained demonstration of a single API,
- * registered under the cookbook's shared plugin context.
+ * registered from the cookbook's OnPluginStart.
  *
  * Recipes must be side-effect-light at registration — register commands and
  * subscriptions, do not start work. Commands are prefixed `sm_` so the whole
@@ -14,5 +12,5 @@ export interface Recipe {
   /** One line shown by `sm_list`. */
   readonly describe: string;
   /** Register this recipe's commands and subscriptions. */
-  register(ctx: PluginContext): void;
+  register(): void;
 }

@@ -251,7 +251,7 @@ function tempLibraryWorkspace() {
   );
   writeFileSync(
     join(pluginDir, "src", "plugin.ts"),
-    'import { plugin } from "@s2script/sdk/plugin";\n\nexport default plugin(() => {});\n',
+    'export function OnPluginStart(): void {}\n',
   );
 
   return root;

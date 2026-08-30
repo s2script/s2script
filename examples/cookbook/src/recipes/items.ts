@@ -1,6 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { CsItem, Pawn } from "@s2script/cs2";
 import { Server } from "@s2script/sdk/server";
+import { command } from "@s2script/sdk/commands";
 
 // Acts on every LIVE pawn via Pawn.forSlot rather than SM-style Player.target()
 // name/team resolution — the client-list offsets that back target()/allConnected()
@@ -27,8 +28,8 @@ function livePawns(): Array<{ slot: number; pawn: NonNullable<ReturnType<typeof 
 export const itemsRecipe: Recipe = {
   name: "items",
   describe: "give/strip/enumerate items (sm_items) and weapon-specific control (sm_weapon)",
-  register(ctx) {
-    ctx.commands.register("sm_items", (cmd) => {
+  register() {
+    command("sm_items", (cmd) => {
       const sub = cmd.arg(0) || "weapons";
       if (sub === "give") {
         const weapon = cmd.arg(1) || CsItem.AK47;
@@ -53,7 +54,7 @@ export const itemsRecipe: Recipe = {
       }
     });
 
-    ctx.commands.register("sm_weapon", (cmd) => {
+    command("sm_weapon", (cmd) => {
       const sub = cmd.arg(0) || "info";
       if (sub === "refill") {
         let n = 0;

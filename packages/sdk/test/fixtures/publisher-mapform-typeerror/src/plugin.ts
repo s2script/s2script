@@ -1,7 +1,7 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { Contract } from "../api";
+import { publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const impl: Contract = {
     ping(): boolean {
       return true;
@@ -11,5 +11,5 @@ export default plugin((ctx) => {
   // derivation), so the old "range rejected BEFORE typecheck" fail-fast ordering no longer exists.
   // This fixture typechecks clean and publishes exactly the authored interface name, so the RANGE
   // "^1.0.0" is what the build rejects — surfaced as "is a RANGE", never as "typecheck failed".
-  ctx.publish("@community/contract", impl);
-});
+  publish("@community/contract", impl);
+}

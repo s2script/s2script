@@ -1,11 +1,11 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { Greeter } from "../api";
+import { publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const impl: Greeter = {
     greet(name: string): string {
       return `hello ${name}`;
     },
   };
-  ctx.publish("@fixture/ws-greeter", impl);
-});
+  publish("@fixture/ws-greeter", impl);
+}

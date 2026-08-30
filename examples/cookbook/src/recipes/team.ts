@@ -1,6 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
 import { delay } from "@s2script/sdk/timers";
+import { command } from "@s2script/sdk/commands";
 
 // Two different operations, easy to confuse:
 //   changeTeam  — the engine's ChangeTeam: jointeam semantics, usually kills the pawn
@@ -12,9 +13,9 @@ const TEAM_NAME = (t: number | null | undefined): string =>
 export const teamRecipe: Recipe = {
   name: "team",
   describe: "changeTeam (sm_changeteam spectest|unspec) vs switchTeam (sm_switchteam switchtest|deadtest|revealtest)",
-  register(ctx) {
+  register() {
     // --- changeTeam: jointeam semantics, usually kills the pawn ------------
-    ctx.commands.register("sm_changeteam", (cmd) => {
+    command("sm_changeteam", (cmd) => {
       const sub = cmd.arg(0) || "spectest";
 
       if (sub === "unspec") {
@@ -47,7 +48,7 @@ export const teamRecipe: Recipe = {
     });
 
     // --- switchTeam: non-lethal, keeps the player alive and armed ----------
-    ctx.commands.register("sm_switchteam", (cmd) => {
+    command("sm_switchteam", (cmd) => {
       const sub = cmd.arg(0) || "switchtest";
 
       if (sub === "deadtest") {

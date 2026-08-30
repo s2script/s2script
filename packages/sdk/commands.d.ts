@@ -103,9 +103,9 @@ export type CommandHandler = (
  * @example
  * import { command } from "@s2script/sdk/commands";
  * import { ADMFLAG } from "@s2script/sdk/admin";
- * export default plugin(() => {
+ * export function OnPluginStart(): void {
  *   command.admin("sm_kick", ADMFLAG.KICK, kick);
- * });
+ * }
  * function kick(cmd: CommandInvocation): HookResultValue | void { cmd.reply("kicked"); }
  */
 export declare const command: {
@@ -114,6 +114,14 @@ export declare const command: {
   admin(name: string, flags: number, handler: CommandHandler): void;
   /** Register a server-only command (console/rcon, not client-runnable). */
   server(name: string, handler: CommandHandler): void;
+  /**
+   * Observe an existing CLIENT command by name — SourceMod's `AddCommandListener`.
+   * Load-window only. Same contract as {@link CtxCommands.onClientCommand} (on PluginContext).
+   */
+  onClientCommand(
+    name: string,
+    handler: (slot: number, argString: string) => HookResultValue | void,
+  ): void;
 };
 
 /** A parsed chat trigger: which command + args, and whether it was the silent (`/`) trigger. */

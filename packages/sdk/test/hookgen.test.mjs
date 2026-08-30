@@ -109,8 +109,8 @@ test("emitHookDts surfaces a books-gated EntityRef receiver as readonly, typed E
 
 test("emitHookDts emits one ctx interface per namespace + the PluginContext augmentation", () => {
   const dts = emitHookDts(buildHookModel(GD));
-  assert.match(dts, /export interface CtxGameRules \{\n {2}onTerminateRound\(handler: \(view: OnTerminateRoundView\) => HookResultValue \| void\): void;\n\}/);
-  assert.match(dts, /export interface CtxPlayers \{\n {2}onRespawn\(handler: \(view: OnRespawnView\) => HookResultValue \| void\): void;\n\}/);
+  assert.match(dts, /export interface CtxGameRules \{\n {2}onTerminateRound\(handler: \(view: OnTerminateRoundView\) => HookResultValue \| void\): void;\n\}\n\nexport declare const gameRules: CtxGameRules;/);
+  assert.match(dts, /export interface CtxPlayers \{\n {2}onRespawn\(handler: \(view: OnRespawnView\) => HookResultValue \| void\): void;\n\}\n\nexport declare const players: CtxPlayers;/);
   assert.match(dts, /declare module "@s2script\/sdk\/plugin" \{\n {2}interface PluginContext \{\n {4}readonly gameRules: CtxGameRules;\n {4}readonly players: CtxPlayers;\n {2}\}\n\}/);
 });
 

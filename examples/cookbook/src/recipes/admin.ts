@@ -1,5 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { ADMFLAG } from "@s2script/sdk/admin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * `ctx.commands` has three registration methods that differ only in WHO may reach the handler —
@@ -22,18 +23,18 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 export const adminRecipe: Recipe = {
   name: "admin",
   describe: "register vs registerServer vs registerAdmin (sm_adminflags / sm_adminflags_server / sm_adminflags_gated)",
-  register(ctx) {
-    ctx.commands.register("sm_adminflags", (cmd) => {
+  register() {
+    command("sm_adminflags", (cmd) => {
       cmd.reply("sm_adminflags: anyone can run this (ctx.commands.register). Now try sm_adminflags_server from " +
         "an in-game console (refused) vs the SERVER console (works), and sm_adminflags_gated as a non-admin " +
         "(refused, no code here decided that).");
     });
 
-    ctx.commands.registerServer("sm_adminflags_server", (cmd) => {
+    command.server("sm_adminflags_server", (cmd) => {
       cmd.reply("sm_adminflags_server: reached the handler — this command only exists for the server console/rcon.");
     });
 
-    ctx.commands.registerAdmin("sm_adminflags_gated", ADMFLAG.GENERIC, (cmd) => {
+    command.admin("sm_adminflags_gated", ADMFLAG.GENERIC, (cmd) => {
       cmd.reply("sm_adminflags_gated: you passed the ADMFLAG.GENERIC gate (or you're the server console).");
     });
   },

@@ -1,5 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import type { DamageInfo } from "@s2script/sdk/damage";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * ctx.entities.onDamage is the SDKHooks-equivalent pre-hook (SM's OnTakeDamage):
@@ -20,10 +22,10 @@ import type { DamageInfo } from "@s2script/sdk/damage";
 export const damageRecipe: Recipe = {
   name: "damage",
   describe: "toggle a damage pre-hook that halves incoming damage (sm_damage)",
-  register(ctx) {
+  register() {
     let halving = false;
 
-    ctx.entities.onDamage((info: DamageInfo) => {
+    hook.damage((info: DamageInfo) => {
       const atk = info.attacker;
       const vic = info.victim;
       console.log("[cookbook] damage onPre: damage=" + info.damage + " type=" + info.damageType
@@ -33,7 +35,7 @@ export const damageRecipe: Recipe = {
       if (halving) info.damage = info.damage / 2;
     });
 
-    ctx.commands.register("sm_damage", (cmd) => {
+    command("sm_damage", (cmd) => {
       halving = !halving;
       cmd.reply(halving
         ? "damage hook now HALVING incoming damage — see server log"

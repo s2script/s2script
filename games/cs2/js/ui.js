@@ -505,4 +505,7 @@
       };
     }
   });
+  if (typeof globalThis.__s2_game_ns === "function" && globalThis.__s2pkg_cs2) {
+    globalThis.__s2pkg_cs2.ui = globalThis.__s2_game_ns("ui");
+  }
 })();

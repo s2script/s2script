@@ -1,7 +1,7 @@
-import { plugin } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
-export default plugin((ctx) => {
-  ctx.commands.register("ws_alpha", (cmd) => {
+export function OnPluginStart(): void {
+  command("ws_alpha", (cmd) => {
     cmd.reply("alpha");
   });
-});
+}

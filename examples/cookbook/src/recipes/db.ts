@@ -1,5 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Database } from "@s2script/sdk/db";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * The same @s2script/db API drives SQLite, MySQL, and Postgres alike — only
@@ -16,11 +18,11 @@ import { Database } from "@s2script/sdk/db";
 export const dbRecipe: Recipe = {
   name: "db",
   describe: "round-trip SQLite (sm_db) or operator-configured mysql/postgres (sm_db_remote)",
-  register(ctx) {
+  register() {
     let frames = 0;
-    ctx.server.onGameFrame(() => { frames += 1; });
+    hook.gameFrame(() => { frames += 1; });
 
-    ctx.commands.register("sm_db", (cmd) => {
+    command("sm_db", (cmd) => {
       cmd.reply("querying SQLite…");
       (async () => {
         try {
@@ -57,7 +59,7 @@ export const dbRecipe: Recipe = {
       }
     }
 
-    ctx.commands.register("sm_db_remote", (cmd) => {
+    command("sm_db_remote", (cmd) => {
       cmd.reply("exercising mysql + postgres — watch the log");
       exercise("stats", "INT AUTO_INCREMENT PRIMARY KEY"); // mysql
       exercise("prefs", "SERIAL PRIMARY KEY");              // postgres

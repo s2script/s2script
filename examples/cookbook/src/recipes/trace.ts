@@ -2,6 +2,7 @@ import type { Recipe } from "../recipe.ts";
 import { Trace } from "@s2script/sdk/trace";
 import { Vector } from "@s2script/sdk/math";
 import { Pawn } from "@s2script/cs2";
+import { command } from "@s2script/sdk/commands";
 
 function fmt(v: { x: number; y: number; z: number }): string {
   return "(" + v.x.toFixed(1) + "," + v.y.toFixed(1) + "," + v.z.toFixed(1) + ")";
@@ -17,8 +18,8 @@ function fmt(v: { x: number; y: number; z: number }): string {
 export const traceRecipe: Recipe = {
   name: "trace",
   describe: "ray-cast down, up, and along a pawn's aim (sm_trace)",
-  register(ctx) {
-    ctx.commands.register("sm_trace", (cmd) => {
+  register() {
+    command("sm_trace", (cmd) => {
       let pawn: ReturnType<typeof Pawn.forSlot> = null;
       for (let slot = 0; slot < 12; slot++) {
         const pw = Pawn.forSlot(slot);

@@ -1,6 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Chat } from "@s2script/sdk/chat";
 import { ChatColors } from "@s2script/cs2";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * Chat.toSlot / Chat.toAll print to player chat (SM's PrintToChat / PrintToChatAll). Colors are
@@ -17,8 +18,8 @@ import { ChatColors } from "@s2script/cs2";
 export const chatRecipe: Recipe = {
   name: "chat",
   describe: "print to chat, plain and multi-color inline (sm_saycolor)",
-  register(ctx) {
-    ctx.commands.register("sm_saycolor", (cmd) => {
+  register() {
+    command("sm_saycolor", (cmd) => {
       if (cmd.callerSlot < 0) { cmd.reply("run in-game — chat has no console channel"); return; }
 
       // Plain — no control byte at all; renders in the client's default chat color.

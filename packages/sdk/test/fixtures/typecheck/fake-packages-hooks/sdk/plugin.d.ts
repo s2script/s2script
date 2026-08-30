@@ -4,6 +4,3 @@
 export interface PluginContext {
   readonly id: string;
 }
-export type PluginFactory = (ctx: PluginContext) => void;
-export interface PluginDefinition { readonly __s2plugin: 1; }
-export declare function plugin(factory: PluginFactory): PluginDefinition;

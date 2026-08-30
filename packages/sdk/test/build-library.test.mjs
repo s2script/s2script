@@ -112,23 +112,21 @@ test("buildLibrary refuses an @s2script/*-scoped s2script.libraries entry", asyn
 // Fix round (final review), finding #4: `buildLibrary` never ran the B2 residual-rule lint gate —
 // nothing linted library source ANYWHERE (lint.ts's own directory walk skips dot-directories and
 // scopes to a CONSUMER's plugin dir, so a vendored or sibling library is out of its range either
-// way). `no-ctx-escape` is used here (not `no-bigint-in-interface-payloads`/`no-await-in-raw-view`,
-// which need a real inter-plugin proxy/raw-view type in scope) purely as the simplest pinned-rule
-// violation to trigger; the point is that ANY of the four now fails a library build.
+// way). `no-floating-promise-in-factory` is used here (not `no-ctx-escape`, which needs a leftover
+// `plugin()` factory the public types no longer export) as the simplest pinned-rule violation that
+// still typechecks; the point is that ANY of the four now fails a library build.
 // ---------------------------------------------------------------------------
 
-test("buildLibrary lints library source — a ctx escape fails the build", async () => {
+test("buildLibrary lints library source — a floating promise in OnPluginStart fails the build", async () => {
   const dir = libDir();
   writeFileSync(
     join(dir, "src", "index.ts"),
-    'import { plugin } from "@s2script/sdk/plugin";\n\n' +
-      'export default plugin((ctx) => {\n' +
-      '  ctx.commands.register("late", (cmd) => {\n' +
-      '    ctx.events.on("player_death", () => { cmd.reply("someone died"); });\n' +
-      '  });\n' +
-      '});\n',
+    'import { Database } from "@s2script/sdk/db";\n\n' +
+      "export async function OnPluginStart(): Promise<void> {\n" +
+      '  Database.open("prefs");\n' +
+      "}\n",
   );
-  await assert.rejects(() => buildLibrary(dir), /lint failed[\s\S]*no-ctx-escape/);
+  await assert.rejects(() => buildLibrary(dir), /lint failed[\s\S]*no-floating-promise-in-factory/);
 });
 
 test("@s2script/* imports stay external — the consumer's context resolves them", async () => {

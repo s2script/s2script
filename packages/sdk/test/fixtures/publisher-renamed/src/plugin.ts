@@ -1,11 +1,11 @@
-import { plugin } from "@s2script/sdk/plugin";
 import type { OtherName } from "../api";
+import { publish } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const impl: OtherName = {
     pong(): boolean {
       return true;
     },
   };
-  ctx.publish("@demo/other-name", impl);
-});
+  publish("@demo/other-name", impl);
+}

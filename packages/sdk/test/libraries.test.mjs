@@ -296,11 +296,11 @@ function vendoredLibraryPlugin() {
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(
     join(dir, "src", "plugin.ts"),
-    'import { plugin } from "@s2script/sdk/plugin";\n' +
+    'import { command } from "@s2script/sdk/commands";\n' +
       'import { hello } from "@fixture/vendored-lib";\n\n' +
-      "export default plugin((ctx) => {\n" +
-      '  ctx.commands.register("fixture_libv", (cmd) => { cmd.reply(hello()); });\n' +
-      "});\n",
+      "export function OnPluginStart(): void {\n" +
+      '  command("fixture_libv", (cmd) => { cmd.reply(hello()); });\n' +
+      "}\n",
   );
   const libDir = join(dir, ".s2script", "libs", "@fixture", "vendored-lib");
   mkdirSync(libDir, { recursive: true });
@@ -338,11 +338,11 @@ function siblingLibraryWorkspace() {
   );
   writeFileSync(
     join(consumerDir, "src", "plugin.ts"),
-    'import { plugin } from "@s2script/sdk/plugin";\n' +
+    'import { command } from "@s2script/sdk/commands";\n' +
       'import { hello } from "@fixture/sibling-lib";\n\n' +
-      "export default plugin((ctx) => {\n" +
-      '  ctx.commands.register("fixture_libs", (cmd) => { cmd.reply(hello()); });\n' +
-      "});\n",
+      "export function OnPluginStart(): void {\n" +
+      '  command("fixture_libs", (cmd) => { cmd.reply(hello()); });\n' +
+      "}\n",
   );
   // Directory name deliberately does NOT match the package name (same proof as the unit tests
   // above) — resolution must be name-matched, not directory-matched.
@@ -422,11 +422,11 @@ function siblingLibraryInPluginsGlobWorkspace() {
   );
   writeFileSync(
     join(consumerDir, "src", "plugin.ts"),
-    'import { plugin } from "@s2script/sdk/plugin";\n' +
+    'import { command } from "@s2script/sdk/commands";\n' +
       'import { hello } from "@fixture/lib-in-plugins";\n\n' +
-      "export default plugin((ctx) => {\n" +
-      '  ctx.commands.register("fixture_libinplugins", (cmd) => { cmd.reply(hello()); });\n' +
-      "});\n",
+      "export function OnPluginStart(): void {\n" +
+      '  command("fixture_libinplugins", (cmd) => { cmd.reply(hello()); });\n' +
+      "}\n",
   );
   const libraryDir = join(root, "plugins", "lib-in-plugins");
   mkdirSync(join(libraryDir, "src"), { recursive: true });

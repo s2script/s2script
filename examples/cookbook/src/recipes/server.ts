@@ -2,6 +2,8 @@ import type { Recipe } from "../recipe.ts";
 import { Server } from "@s2script/sdk/server";
 import { Clients } from "@s2script/sdk/clients";
 import { Player } from "@s2script/cs2";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * Server ties together three primitives: a plugin-owned ConVar (register at
@@ -14,12 +16,12 @@ import { Player } from "@s2script/cs2";
 export const serverRecipe: Recipe = {
   name: "server",
   describe: "a registered cvar, OnMapStart, and the connected client list (sm_server)",
-  register(ctx) {
+  register() {
     // Server.onCvarChange — SourceMod HookConVarChange parity. Notify-only: the engine applies the
     // value first, so a handler cannot veto it. "*" watches every cvar; the name argument says which.
     let watching = false;
     let watch: { dispose(): void } | null = null;
-    ctx.commands.register("sm_cvarwatch", (cmd) => {
+    command("sm_cvarwatch", (cmd) => {
       const name = cmd.arg(0) ?? "*";
       if (watching) { watch?.dispose(); watch = null; watching = false;
         cmd.reply("[cookbook] server: cvar watch OFF"); return; }
@@ -35,11 +37,11 @@ export const serverRecipe: Recipe = {
     });
     console.log(`[cookbook] server: registerCvar s2_demo_mode -> ${ok} value=${Server.getCvar("s2_demo_mode")}`);
 
-    ctx.server.onMapStart((map) => {
+    hook.mapStart((map) => {
       console.log(`[cookbook] server: onMapStart: ${map}`);
     });
 
-    ctx.commands.register("sm_server", (cmd) => {
+    command("sm_server", (cmd) => {
       const cs = Clients.all();
       cmd.reply(`[cookbook] server: clients=${cs.length} players=${Player.allConnected().length} map=${Server.mapName}`);
       for (const c of cs) {

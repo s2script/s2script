@@ -5,19 +5,20 @@
 //   2. player.respawn runs Events.onPre("player_spawn") BEFORE respawn returns
 //
 // Prefix [REENTRYGATE]. Drive: re_give, re_respawn, re_report.
-import { plugin } from "@s2script/sdk/plugin";
 import { HookResult } from "@s2script/sdk/events";
 import { nextTick } from "@s2script/sdk/timers";
 import { Server } from "@s2script/sdk/server";
-import { CsItem, Player } from "@s2script/cs2";
+import { CsItem, Player, items } from "@s2script/cs2";
+import { hook } from "@s2script/sdk/plugin";
+import { command } from "@s2script/sdk/commands";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[REENTRYGATE] ${m}`);
   L("loaded");
 
   let acqDuringGive = false;
   let acqCount = 0;
-  ctx.items.onCanAcquire((acq) => {
+  items.onCanAcquire((acq) => {
     if (acq.defIndex !== 28) return;
     acqCount += 1;
     acqDuringGive = true;
@@ -27,23 +28,23 @@ export default plugin((ctx) => {
 
   let preDuringRespawn = false;
   let preCount = 0;
-  ctx.events.onPre("player_spawn", () => {
+  hook.event("player_spawn", () => {
     preCount += 1;
     preDuringRespawn = true;
     L(`onPre player_spawn #${preCount}`);
     return HookResult.Continue;
-  });
+  }, "pre");
 
   let deathDuringSlay = false;
   let deathCount = 0;
-  ctx.events.onPre("player_death", () => {
+  hook.event("player_death", () => {
     deathCount += 1;
     deathDuringSlay = true;
     L(`onPre player_death #${deathCount}`);
     return HookResult.Continue;
-  });
+  }, "pre");
 
-  ctx.commands.registerServer("re_give", () => {
+  command.server("re_give", () => {
     const p = Player.all()[0];
     const pawn = p?.pawn;
     L(`re_give: players=${Player.all().length} pawn=${pawn ? "yes" : "null"}`);
@@ -53,7 +54,7 @@ export default plugin((ctx) => {
     L(`re_give: returned=${w ? "weapon" : "null"} onCanAcquireDuringCall=${acqDuringGive} PASS=${acqDuringGive}`);
   });
 
-  ctx.commands.registerServer("re_respawn", async () => {
+  command.server("re_respawn", async () => {
     let p = Player.all()[0];
     L(`re_respawn: players=${Player.all().length} slot=${p ? p.slot : "none"} pawn=${p?.pawn ? "yes" : "null"} pawnIsAlive=${p ? p.pawnIsAlive : "none"}`);
     if (!p) return;
@@ -79,7 +80,7 @@ export default plugin((ctx) => {
     L(`re_respawn: returned=${r} pawnIsAliveAfter=${p.pawnIsAlive} onPreDuringCall=${preDuringRespawn} PASS=${preDuringRespawn}`);
   });
 
-  ctx.commands.registerServer("re_cvar", () => {
+  command.server("re_cvar", () => {
     let during = false;
     const sub = Server.onCvarChange("sv_gravity", (name, next, prev) => {
       during = true;
@@ -93,9 +94,11 @@ export default plugin((ctx) => {
     sub.dispose();
   });
 
-  ctx.commands.registerServer("re_report", () => {
+  command.server("re_report", () => {
     L(`REPORT acqCount=${acqCount} preCount=${preCount} deathCount=${deathCount}`);
   });
+}
 
-  return { onUnload() { L("unloading"); } };
-});
+export function OnPluginEnd(): void {
+  console.log("[REENTRYGATE] unloading");
+}

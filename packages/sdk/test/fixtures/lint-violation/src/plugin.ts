@@ -1,9 +1,5 @@
-import { plugin } from "@s2script/sdk/plugin";
+import { Database } from "@s2script/sdk/db";
 
-export default plugin((ctx) => {
-  ctx.commands.register("late", (cmd) => {
-    ctx.events.on("player_death", () => {
-      cmd.reply("someone died");
-    });
-  });
-});
+export async function OnPluginStart(): Promise<void> {
+  Database.open("prefs");
+}

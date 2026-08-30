@@ -49,3 +49,6 @@ declare module "@s2script/sdk/plugin" {
     readonly items: CtxItems;
   }
 }
+
+/** Load-window pickup gates. Same object as the former `ctx.items`. Throws after settle. */
+export declare const items: CtxItems;

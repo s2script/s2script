@@ -1,3 +1,4 @@
+import { tryUse } from "@s2script/sdk/plugin";
 import type { Recipe } from "../recipe.ts";
 import type { Zones, ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "@s2script/zones";
 import { Player } from "@s2script/cs2";
@@ -17,8 +18,8 @@ import { Player } from "@s2script/cs2";
 export const zonesRecipe: Recipe = {
   name: "zones",
   describe: "react to zone enter/leave/stay/created/deleted from the zones plugin (optional dep)",
-  register(ctx) {
-    const zones = ctx.tryUse<Zones>("@s2script/zones");
+  register() {
+    const zones = tryUse<Zones>("@s2script/zones");
     if (!zones) {
       console.log("[cookbook] zones recipe idle — @s2script/zones is not loaded");
       return;

@@ -1,5 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { Translations } from "@s2script/sdk/translations";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * Translations.load seeds a phrase set (the built-in English default);
@@ -9,10 +10,10 @@ import { Translations } from "@s2script/sdk/translations";
 export const translationsRecipe: Recipe = {
   name: "translations",
   describe: "seed phrases, positional {1} formatting, and a language switch (sm_translations)",
-  register(ctx) {
+  register() {
     Translations.load("trdemo", { Greeting: "Hello {1}", Bye: "Goodbye {1}", OnlyEn: "English only" });
 
-    ctx.commands.register("sm_translations", (cmd) => {
+    command("sm_translations", (cmd) => {
       // default (root / English) — slot -1 uses the server default ("" = root)
       console.log(`[cookbook] translations en: ${Translations.translate(-1, "Greeting", "world")}`);       // Hello world
       console.log(`[cookbook] translations en missing-key: ${Translations.translate(-1, "Nope")}`);         // Nope (fallback)

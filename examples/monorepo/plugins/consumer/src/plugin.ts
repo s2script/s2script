@@ -11,21 +11,22 @@
 // is, so `s2s build` typechecks against the producer's real contract and hashes THOSE SAME bytes
 // into manifest.compiledAgainst — equal to the producer's own typesSha256 by construction, not by
 // a copy kept in sync by hand.
-import { plugin } from "@s2script/sdk/plugin";
 import type { Greeter } from "@monorepo-example/producer";
 import { Tally, shout } from "@monorepo-example/shared";
+import { command } from "@s2script/sdk/commands";
+import { use } from "@s2script/sdk/plugin";
 
-export default plugin((ctx) => {
+export function OnPluginStart(): void {
   // ctx.use returns a proxy that throws InterfaceUnavailable while the producer is unloaded, so a
   // producer reload degrades this command instead of crashing the plugin.
-  const producer = ctx.use<Greeter>("@monorepo-example/producer");
+  const producer = use<Greeter>("@monorepo-example/producer");
 
   // This plugin's OWN Tally, from the SAME @monorepo-example/shared source the producer bundles.
   // Each build inlines its own copy — see packages/shared/src/index.ts — so this counter and the
   // producer's are two independent instances, never the same object across the plugin boundary.
   const asked = new Tally();
 
-  ctx.commands.register("sm_greet", (cmd) => {
+  command("sm_greet", (cmd) => {
     asked.bump();
     const name = cmd.arg(0) || "world";
     try {
@@ -41,4 +42,4 @@ export default plugin((ctx) => {
   // shout() is called here too, straight from this plugin's own bundled copy of @monorepo-example/
   // shared — proof it never touches the producer's copy of the same source.
   console.log(`[consumer] loaded — try sm_greet (${shout("consumer")})`);
-});
+}

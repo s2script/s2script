@@ -1,6 +1,8 @@
+import { tryUse } from "@s2script/sdk/plugin";
 import type { Recipe } from "../recipe.ts";
 import type { WorkshopService } from "@s2script/sdk/contracts/workshop";
 import type { EconService } from "@s2script/cs2/econ";
+import { command } from "@s2script/sdk/commands";
 
 /**
  * Standard interface contracts — consuming a capability the framework deliberately does NOT ship.
@@ -16,16 +18,16 @@ export const contractsRecipe: Recipe = {
   name: "contracts",
   describe: "consume optional community interfaces: sm_econ, sm_workshop",
 
-  register(ctx) {
+  register() {
     // Optional deps: null while unpublished, so every call site stays guarded. A HARD dep
     // (ctx.use) would instead hand back a proxy that throws once the producer unloads.
-    const econ = ctx.tryUse<EconService>("econ");
-    const workshop = ctx.tryUse<WorkshopService>("workshop");
+    const econ = tryUse<EconService>("econ");
+    const workshop = tryUse<WorkshopService>("workshop");
 
     console.log(`[cookbook] contracts: econ=${econ ? "available" : "not installed"} ` +
       `workshop=${workshop ? "available" : "not installed"}`);
 
-    ctx.commands.register("sm_econ", (cmd) => {
+    command("sm_econ", (cmd) => {
       if (!econ) {
         cmd.reply("[cookbook] contracts: no econ plugin published — install one that implements " +
           "@s2script/cs2's EconService, or see packages/sdk/contracts/README.md");
@@ -38,7 +40,7 @@ export const contractsRecipe: Recipe = {
         : `[cookbook] contracts: slot ${slot} has no stored loadout`);
     });
 
-    ctx.commands.register("sm_workshop", (cmd) => {
+    command("sm_workshop", (cmd) => {
       if (!workshop) {
         cmd.reply("[cookbook] contracts: no workshop plugin published — see " +
           "packages/sdk/contracts/README.md");
