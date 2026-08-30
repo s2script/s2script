@@ -166,3 +166,7 @@
     ops.hook_read_u16_at_q = &S2_HookReadU16AtQ;
     // --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self ---
     ops.hook_self_matches_field = &S2_HookSelfMatchesField;
+    // --- SDKHooks VP — install per-entity SourceHook ---
+    ops.sdkhook_vp_add = &s2_sdkhook_vp_add;
+    ops.sdkhook_vp_remove = &s2_sdkhook_vp_remove;
+    ops.sdkhook_vp_drop = &s2_sdkhook_vp_drop;

@@ -133,6 +133,12 @@ int s2script_core_replay_game_event(const char* name);
 // Slice 6.6 Stage 2: run the Damage.onPre subscribers over the current CTakeDamageInfo (set by the shim
 // detour). Handlers read/modify the live info in place (setting damage to 0 = block).
 void s2script_core_dispatch_damage(void);
+/* Shim -> core: a per-entity SDKHook VP virtual fired (Touch family). `type` is the wiki name
+ * including Post (`Touch` / `TouchPost`). `other_handle` is a packed CEntityHandle ToInt(), or -1
+ * for none. Returns the collapsed HookResult (0 Continue .. 3 Stop); the caller SUPERCEDEs the
+ * original virtual when >= Handled (2) on the pre-hook. Post always IGNORED. catch_unwind -> 0. */
+int s2script_core_dispatch_sdkhook_touch(int thisIndex, int thisSerial, int otherHandle, int post,
+                                        const char* type);
 /* Shim -> core: called by the FireOutputInternal detour (entity-I/O slice) with the firing entity's
  * classname, the output name, packed activator/caller CEntityHandle ints (-1 = none), the output's
  * value as a string, and the delay. Runs the matching Entity.onOutput subscribers SYNCHRONOUSLY

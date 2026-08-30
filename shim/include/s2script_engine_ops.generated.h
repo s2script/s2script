@@ -140,6 +140,9 @@ typedef int (*s2_entity_set_model_scale_fn)(int index, int serial, float scale);
 typedef int (*s2_cvar_set_fn)(const char* name, const char* value);
 typedef int (*s2_hook_read_u16_at_q_fn)(void* argView, int qslot, int offset, uint16_t* out);
 typedef int (*s2_hook_self_matches_field_fn)(void* argView, int index, int serial, int offset);
+typedef int (*s2_sdkhook_vp_add_fn)(int index, int serial, const char* type, int post);
+typedef int (*s2_sdkhook_vp_remove_fn)(int index, int serial, const char* type, int post);
+typedef int (*s2_sdkhook_vp_drop_fn)(int index, int serial);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -309,4 +312,8 @@ typedef struct {
     s2_hook_read_u16_at_q_fn hook_read_u16_at_q;
     /* --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self --- */
     s2_hook_self_matches_field_fn hook_self_matches_field;
+    /* --- SDKHooks VP — install per-entity SourceHook --- */
+    s2_sdkhook_vp_add_fn sdkhook_vp_add;
+    s2_sdkhook_vp_remove_fn sdkhook_vp_remove;
+    s2_sdkhook_vp_drop_fn sdkhook_vp_drop;
 } S2EngineOps;
