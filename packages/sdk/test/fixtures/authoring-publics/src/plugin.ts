@@ -10,7 +10,7 @@ export function OnPluginStart(): void {
   void Object.groupBy(["kicked", "halved"], (s) => s.length);
   translations.load("common");
   command.admin("sm_kick", ADMFLAG.KICK, kick);
-  hook.damage(halve);
+  hook.entity.onDamage(halve);
   hook.topmenu.addCategory("Server Commands");
 }
 

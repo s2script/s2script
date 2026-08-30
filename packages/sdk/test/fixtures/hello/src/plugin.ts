@@ -6,7 +6,7 @@ import { delay } from "@s2script/sdk/timers";
 import { hook } from "@s2script/sdk/plugin";
 
 export function OnPluginStart(): void {
-  hook.gameFrame(() => {
+  hook.server.onGameFrame(() => {
     console.log("frame tick");
   });
   void (async () => {

@@ -1969,62 +1969,70 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     __s2_load_ctx_or_throw("command.onClientCommand()").commands.onClientCommand(name, handler);
   };
   var hook = {
-    damage: function (h) { __s2_load_ctx_or_throw("hook.damage()").entities.onDamage(h); },
     event: function (name, handler, phase) {
       var c = __s2_load_ctx_or_throw("hook.event()");
       if (phase === "pre") c.events.onPre(name, handler);
       else c.events.on(name, handler);
     },
-    output: function (classname, output, handler) {
-      __s2_load_ctx_or_throw("hook.output()").entities.onOutput(classname, output, handler);
+    client: {
+      onConnect: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onConnect()").clients.onConnect(handler);
+      },
+      onPutInServer: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onPutInServer()").clients.onPutInServer(handler);
+      },
+      onActive: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onActive()").clients.onActive(handler);
+      },
+      onFullyConnected: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onFullyConnected()").clients.onFullyConnect(handler);
+      },
+      onDisconnect: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onDisconnect()").clients.onDisconnect(handler);
+      },
+      onSettingsChanged: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onSettingsChanged()").clients.onSettingsChanged(handler);
+      },
+      onVoice: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onVoice()").clients.onVoice(handler);
+      },
+      onCookiesCached: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onCookiesCached()").clients.onCookiesCached(handler);
+      },
+      onSay: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onSay()").clients.onSay(handler);
+      },
+      onRunCmd: function (handler) {
+        __s2_load_ctx_or_throw("hook.client.onRunCmd()").clients.onRunCmd(handler);
+      },
     },
-    create: function (className, handler) {
-      __s2_load_ctx_or_throw("hook.create()").entities.onCreate(className, handler);
+    entity: {
+      onCreate: function (className, handler) {
+        __s2_load_ctx_or_throw("hook.entity.onCreate()").entities.onCreate(className, handler);
+      },
+      onSpawn: function (className, handler) {
+        __s2_load_ctx_or_throw("hook.entity.onSpawn()").entities.onSpawn(className, handler);
+      },
+      onDelete: function (className, handler) {
+        __s2_load_ctx_or_throw("hook.entity.onDelete()").entities.onDelete(className, handler);
+      },
+      onOutput: function (classname, output, handler) {
+        __s2_load_ctx_or_throw("hook.entity.onOutput()").entities.onOutput(classname, output, handler);
+      },
+      onDamage: function (h) {
+        __s2_load_ctx_or_throw("hook.entity.onDamage()").entities.onDamage(h);
+      },
     },
-    spawn: function (className, handler) {
-      __s2_load_ctx_or_throw("hook.spawn()").entities.onSpawn(className, handler);
-    },
-    delete: function (className, handler) {
-      __s2_load_ctx_or_throw("hook.delete()").entities.onDelete(className, handler);
-    },
-    precache: function (handler) {
-      __s2_load_ctx_or_throw("hook.precache()").server.onPrecache(handler);
-    },
-    gameFrame: function (fn, opts) {
-      __s2_load_ctx_or_throw("hook.gameFrame()").server.onGameFrame(fn, opts);
-    },
-    mapStart: function (handler) {
-      __s2_load_ctx_or_throw("hook.mapStart()").server.onMapStart(handler);
-    },
-    runcmd: function (handler) {
-      __s2_load_ctx_or_throw("hook.runcmd()").clients.onRunCmd(handler);
-    },
-    connect: function (handler) {
-      __s2_load_ctx_or_throw("hook.connect()").clients.onConnect(handler);
-    },
-    putInServer: function (handler) {
-      __s2_load_ctx_or_throw("hook.putInServer()").clients.onPutInServer(handler);
-    },
-    active: function (handler) {
-      __s2_load_ctx_or_throw("hook.active()").clients.onActive(handler);
-    },
-    fullyConnect: function (handler) {
-      __s2_load_ctx_or_throw("hook.fullyConnect()").clients.onFullyConnect(handler);
-    },
-    disconnect: function (handler) {
-      __s2_load_ctx_or_throw("hook.disconnect()").clients.onDisconnect(handler);
-    },
-    settingsChanged: function (handler) {
-      __s2_load_ctx_or_throw("hook.settingsChanged()").clients.onSettingsChanged(handler);
-    },
-    voice: function (handler) {
-      __s2_load_ctx_or_throw("hook.voice()").clients.onVoice(handler);
-    },
-    cookiesCached: function (handler) {
-      __s2_load_ctx_or_throw("hook.cookiesCached()").clients.onCookiesCached(handler);
-    },
-    say: function (handler) {
-      __s2_load_ctx_or_throw("hook.say()").clients.onSay(handler);
+    server: {
+      onPrecache: function (handler) {
+        __s2_load_ctx_or_throw("hook.server.onPrecache()").server.onPrecache(handler);
+      },
+      onGameFrame: function (fn, opts) {
+        __s2_load_ctx_or_throw("hook.server.onGameFrame()").server.onGameFrame(fn, opts);
+      },
+      onMapStart: function (handler) {
+        __s2_load_ctx_or_throw("hook.server.onMapStart()").server.onMapStart(handler);
+      },
     },
   };
   function previous() { return __s2_load_ctx_or_throw("previous()").previous; }

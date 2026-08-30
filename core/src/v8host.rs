@@ -8401,14 +8401,14 @@ pub(crate) mod frame_tests {
             "cmdapi",
             r#"
             (function () {
-                try { globalThis.__hook.damage(function () {}); return "no"; }
+                try { globalThis.__hook.entity.onDamage(function () {}); return "no"; }
                 catch (e) { return String(e && e.message || e); }
             })()
         "#,
         );
         assert!(
             hook_threw.contains("outside the load window"),
-            "hook.damage() after settle must throw, got: {}",
+            "hook.entity.onDamage() after settle must throw, got: {}",
             hook_threw
         );
         shutdown();
@@ -8778,7 +8778,8 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// hook.create / hook.gameFrame register during OnPluginStart and throw after settle.
+    /// hook.entity.onCreate / hook.server.onGameFrame / hook.client.onFullyConnected
+    /// register during OnPluginStart and throw after settle.
     #[test]
     fn hook_create_and_game_frame_register_during_on_plugin_start() {
         init(dummy_logger()).unwrap();
@@ -8787,8 +8788,9 @@ pub(crate) mod frame_tests {
             r#"
             module.exports.OnPluginStart = function () {
                 var p = globalThis.__s2_require("@s2script/sdk/plugin");
-                p.hook.create("*", function () { globalThis.__created = (globalThis.__created|0)+1; });
-                p.hook.gameFrame(function () { globalThis.__frames = (globalThis.__frames|0)+1; });
+                p.hook.entity.onCreate("*", function () { globalThis.__created = (globalThis.__created|0)+1; });
+                p.hook.server.onGameFrame(function () { globalThis.__frames = (globalThis.__frames|0)+1; });
+                p.hook.client.onFullyConnected(function () { globalThis.__full = (globalThis.__full|0)+1; });
                 globalThis.__hook = p.hook;
             };
             "#,
@@ -8799,29 +8801,43 @@ pub(crate) mod frame_tests {
             "hookmore",
             r#"
             (function () {
-                try { globalThis.__hook.create("*", function () {}); return "no"; }
+                try { globalThis.__hook.entity.onCreate("*", function () {}); return "no"; }
                 catch (e) { return String(e && e.message || e); }
             })()
             "#,
         );
         assert!(
             threw.contains("outside the load window"),
-            "hook.create after settle must throw, got: {}",
+            "hook.entity.onCreate after settle must throw, got: {}",
             threw
         );
         let frame_threw = eval_in_context_string(
             "hookmore",
             r#"
             (function () {
-                try { globalThis.__hook.gameFrame(function () {}); return "no"; }
+                try { globalThis.__hook.server.onGameFrame(function () {}); return "no"; }
                 catch (e) { return String(e && e.message || e); }
             })()
             "#,
         );
         assert!(
             frame_threw.contains("outside the load window"),
-            "hook.gameFrame after settle must throw, got: {}",
+            "hook.server.onGameFrame after settle must throw, got: {}",
             frame_threw
+        );
+        let client_threw = eval_in_context_string(
+            "hookmore",
+            r#"
+            (function () {
+                try { globalThis.__hook.client.onFullyConnected(function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+            "#,
+        );
+        assert!(
+            client_threw.contains("outside the load window"),
+            "hook.client.onFullyConnected after settle must throw, got: {}",
+            client_threw
         );
         shutdown();
     }

@@ -39,15 +39,15 @@ export function OnPluginStart(): void {
   // gracefully skipped by design (never a crash). Trigger a round restart to
   // watch the loggers fire for real.
   let created = 0, spawned = 0, deleted = 0;
-  hook.create("*", (_e, cls) => { if (++created <= 10) console.log(`[ent] created ${cls}`); });
-  hook.spawn("*", (e, cls) => { if (++spawned <= 10) console.log(`[ent] spawned ${cls} valid=${!!e?.isValid()}`); });
-  hook.delete("*", (_e, cls) => { if (++deleted <= 10) console.log(`[ent] deleted ${cls}`); });
+  hook.entity.onCreate("*", (_e, cls) => { if (++created <= 10) console.log(`[ent] created ${cls}`); });
+  hook.entity.onSpawn("*", (e, cls) => { if (++spawned <= 10) console.log(`[ent] spawned ${cls} valid=${!!e?.isValid()}`); });
+  hook.entity.onDelete("*", (_e, cls) => { if (++deleted <= 10) console.log(`[ent] deleted ${cls}`); });
 
   // Hook a named output on a class. Return a HookResult to suppress it.
-  hook.output("logic_relay", "OnTrigger", (ev) => {
+  hook.entity.onOutput("logic_relay", "OnTrigger", (ev) => {
     console.log(`[ent] OnTrigger caller=${ev.caller ? `valid=${ev.caller.isValid()}` : "null"}`);
   });
-  hook.output("math_counter", "OnHitMax", () => {
+  hook.entity.onOutput("math_counter", "OnHitMax", () => {
     console.log("[ent] OnHitMax — the counter reached the max its keyvalues set");
   });
 

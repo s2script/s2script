@@ -13,7 +13,7 @@ export const soundRecipe: Recipe = {
   name: "sound",
   describe: "precache and emit a sound (sm_sound [name] [slot])",
   register() {
-    hook.precache((pc) => {
+    hook.server.onPrecache((pc) => {
       const ok = pc.add("soundevents/soundevents_s2script_demo.vsndevts");
       console.log(`[cookbook] precache add() -> ${ok}`);
     });

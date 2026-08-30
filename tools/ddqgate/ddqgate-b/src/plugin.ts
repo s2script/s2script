@@ -17,7 +17,7 @@ export function OnPluginStart(): void {
   L("loaded");
 
   let frame = 0;
-  hook.gameFrame(() => { frame += 1; });
+  hook.server.onGameFrame(() => { frame += 1; });
 
   let seen = 0, thrown = 0, selftests = 0;
   hook.event("player_changename", (e) => {

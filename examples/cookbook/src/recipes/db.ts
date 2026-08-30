@@ -20,7 +20,7 @@ export const dbRecipe: Recipe = {
   describe: "round-trip SQLite (sm_db) or operator-configured mysql/postgres (sm_db_remote)",
   register() {
     let frames = 0;
-    hook.gameFrame(() => { frames += 1; });
+    hook.server.onGameFrame(() => { frames += 1; });
 
     command("sm_db", (cmd) => {
       cmd.reply("querying SQLite…");

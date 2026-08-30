@@ -25,7 +25,7 @@ export const damageRecipe: Recipe = {
   register() {
     let halving = false;
 
-    hook.damage((info: DamageInfo) => {
+    hook.entity.onDamage((info: DamageInfo) => {
       const atk = info.attacker;
       const vic = info.victim;
       console.log("[cookbook] damage onPre: damage=" + info.damage + " type=" + info.damageType

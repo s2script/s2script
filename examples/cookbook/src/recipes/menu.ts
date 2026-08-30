@@ -58,7 +58,7 @@ export const menuRecipe: Recipe = {
 
     // Prove the WASD input primitive live: log a bot's button mask changing (bots press buttons).
     let frames = 0;
-    hook.gameFrame(() => {
+    hook.server.onGameFrame(() => {
       if (!verbose) return;
       if (++frames % 128 !== 0) return;               // ~ every 2s
       const p = Player.fromSlot(0); if (!p) return;

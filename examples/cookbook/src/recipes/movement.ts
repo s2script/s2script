@@ -74,7 +74,7 @@ export const movementRecipe: Recipe = {
     // Registered ONCE at load — the framework refuses a frame registration from inside a command
     // handler ("registration outside the load window"), and rightly so: it would leak a handler
     // per invocation. The command only flips `sampling`.
-    hook.gameFrame(() => {
+    hook.server.onGameFrame(() => {
       if (!sampling || !sample) return;
       const pawn = Player.fromSlot(sample.slot)?.pawn;
       const v = pawn?.absVelocity;

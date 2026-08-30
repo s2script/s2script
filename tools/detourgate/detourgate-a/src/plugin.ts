@@ -7,9 +7,9 @@
 // So this subscribes to all four PRE-EXISTING detours and counts them. A count that stays 0 for a
 // detour whose traffic definitely occurred is the regression this fixture exists to catch.
 //
-//   ProcessUsercmds     -> hook.runcmd            (bots generate usercmds every tick)
-//   FireOutputInternal  -> hook.output            (map logic fires outputs each round)
-//   DispatchTraceAttack -> hook.damage            (bots shoot each other)
+//   ProcessUsercmds     -> hook.client.onRunCmd            (bots generate usercmds every tick)
+//   FireOutputInternal  -> hook.entity.onOutput            (map logic fires outputs each round)
+//   DispatchTraceAttack -> hook.entity.onDamage            (bots shoot each other)
 //   HostSay             -> chat trigger           (needs a human; see the report note)
 //
 // Prefix [DETOURGATE] so `docker logs | grep DETOURGATE` reads as a transcript.
@@ -25,17 +25,17 @@ export function OnPluginStart(): void {
   let outputs = 0;
   let damages = 0;
 
-  hook.gameFrame(() => { frames += 1; });
+  hook.server.onGameFrame(() => { frames += 1; });
 
   // ProcessUsercmds. Lazy-installed on FIRST subscribe, so this subscription is what triggers the
   // install — the boot log should show it taking the near (E9) tier.
-  hook.runcmd(() => { usercmds += 1; });
+  hook.client.onRunCmd(() => { usercmds += 1; });
 
   // FireOutputInternal. A wildcard-ish subscription: round logic fires outputs on these every round.
-  hook.output("*", "*", () => { outputs += 1; });
+  hook.entity.onOutput("*", "*", () => { outputs += 1; });
 
   // DispatchTraceAttack.
-  hook.damage(() => { damages += 1; });
+  hook.entity.onDamage(() => { damages += 1; });
 
   command.server("detour_report", () => {
     L(`REPORT frames=${frames} usercmds=${usercmds} outputs=${outputs} damages=${damages}`);

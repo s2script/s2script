@@ -13,7 +13,7 @@ export const wsRecipe: Recipe = {
   describe: "connect a websocket without blocking the tick (sm_ws)",
   register() {
     let frames = 0;
-    hook.gameFrame(() => { frames += 1; });
+    hook.server.onGameFrame(() => { frames += 1; });
 
     command("sm_ws", (cmd) => {
       const start = frames;

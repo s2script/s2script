@@ -21,7 +21,7 @@ export function OnPluginStart(): void {
     console.log(`[consumer] event greeted: slot=${p.slot} tick=${p.tick}`));
 
   let ticks = 0;
-  hook.gameFrame(() => {
+  hook.server.onGameFrame(() => {
     if (ticks++ % 256 !== 0) return;
     try {
       console.log(`[consumer] greet -> ${greeter.greet(0)}`);
