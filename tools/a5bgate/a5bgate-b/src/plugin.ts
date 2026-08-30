@@ -13,15 +13,14 @@ import { Player, GameRules } from "@s2script/cs2";
 import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
+let frame = 0;
+
 export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[A5B-B] ${m}`);
   L("loaded");
 
-  let frame = 0;
-  hook.server.onGameFrame(() => { frame += 1; });
-
   // The coordination channel: a fires this, b acts on the same target in the same dispatch.
-  hook.events.onPre("player_changename", (e) => {
+  hook.onPre("player_changename", (e) => {
     const tag = e.getString("oldname");
     if (tag === "a5b-dupe-respawn") {
       const slot = Number(e.getString("newname"));
@@ -35,14 +34,14 @@ export function OnPluginStart(): void {
   // The counters that answer G4/G5. Post-dispatch (Events.on) IS delivered — deferred one frame by
   // the deferred-dispatch queue when the call re-enters.
   let spawns = 0, roundEnds = 0;
-  hook.events.on("player_spawn", () => { spawns += 1; L(`player_spawn #${spawns} frame=${frame}`); });
-  hook.events.on("round_end", () => { roundEnds += 1; L(`round_end #${roundEnds} frame=${frame}`); });
+  hook.on("player_spawn", () => { spawns += 1; L(`player_spawn #${spawns} frame=${frame}`); });
+  hook.on("round_end", () => { roundEnds += 1; L(`round_end #${roundEnds} frame=${frame}`); });
 
   // G6: expected NOT to run for the round_end that terminateRound fires — pre-hooks cannot be
   // deferred, so a re-entrant pre-dispatch is skipped. If this DOES log, the regression the review
   // documented is not real and spec §9.2 should be corrected.
   let pres = 0;
-  hook.events.on("round_end", () => {
+  hook.on("round_end", () => {
     pres += 1;
     L(`onPre round_end #${pres} RAN (unexpected — pre-hooks were documented as skipped here)`);
     return HookResult.Continue;
@@ -51,6 +50,10 @@ export function OnPluginStart(): void {
   command.server("a5b_report_b", () => {
     L(`REPORT spawns=${spawns} roundEnds=${roundEnds} onPre=${pres} frame=${frame}`);
   });
+}
+
+export function OnGameFrame(): void {
+  frame += 1;
 }
 
 export function OnPluginEnd(): void {

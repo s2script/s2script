@@ -6,15 +6,13 @@
 // Every line is prefixed [A5B-A] so `docker logs | grep A5B` reads as a transcript.
 import { Events } from "@s2script/sdk/events";
 import { Player, GameRules } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
+
+let frame = 0;
 
 export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[A5B-A] ${m}`);
   L("loaded");
-
-  let frame = 0;
-  hook.server.onGameFrame(() => { frame += 1; });
 
   const liveVictim = () => Player.all().find((p) => (p.pawn?.health ?? 0) > 0);
   const anyPlayer = () => Player.all()[0];
@@ -84,6 +82,10 @@ export function OnPluginStart(): void {
   command.server("a5b_round", () => {
     L(`round: terminateRound(8) -> ${GameRules.terminateRound(8)} frame=${frame}`);
   });
+}
+
+export function OnGameFrame(): void {
+  frame += 1;
 }
 
 export function OnPluginEnd(): void {

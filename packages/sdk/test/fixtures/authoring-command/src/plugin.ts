@@ -1,4 +1,3 @@
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 import type { CommandInvocation } from "@s2script/sdk/commands";
 import type { DamageInfo } from "@s2script/sdk/damage";
@@ -7,13 +6,12 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 
 export function OnPluginStart(): void {
   command.admin("sm_kick", ADMFLAG.KICK, kick);
-  hook.entity.onDamage(halve);
 }
 
 function kick(cmd: CommandInvocation): HookResultValue | void {
   cmd.reply("kicked");
 }
 
-function halve(info: DamageInfo): void {
+export function OnTakeDamage(info: DamageInfo): void {
   info.damage = info.damage / 2;
 }

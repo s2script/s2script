@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
 import { WebSocket } from "@s2script/sdk/ws";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 /**
@@ -8,13 +7,13 @@ import { command } from "@s2script/sdk/commands";
  * marshalled back onto a game frame. The frame counter proves the tick keeps
  * advancing while the socket connects and echoes.
  */
+let frames = 0;
+
 export const wsRecipe: Recipe = {
   name: "ws",
   describe: "connect a websocket without blocking the tick (sm_ws)",
+  onGameFrame() { frames += 1; },
   register() {
-    let frames = 0;
-    hook.server.onGameFrame(() => { frames += 1; });
-
     command("sm_ws", (cmd) => {
       const start = frames;
       cmd.reply("connecting…");

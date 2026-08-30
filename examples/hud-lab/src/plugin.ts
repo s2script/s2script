@@ -43,6 +43,7 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 import { config } from "@s2script/sdk/config";
 import { Chat } from "@s2script/sdk/chat";
 import { Player, Pawn, ui } from "@s2script/cs2";
+import type { Hud } from "@s2script/cs2";
 import { LIVE_HUD, LIVE_PANELS } from "./livehud";
 import { LiveDemo } from "./livedemo";
 import type { CommandInvocation } from "@s2script/sdk/commands";
@@ -56,6 +57,7 @@ import { DemoHud, sendOnce } from "./demohud";
 import { LAYOUT, STATE, LAYOUT_SIZE, globalStateField } from "./offsets";
 import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
+import type { Client } from "@s2script/sdk/clients";
 import {
   readLayoutInfo, isInputCaptureEnabled, setInputCaptureEnabled, dumpWindow, probeLayout,
   readPlayerClasses, setPlayerClassStatus, playerStateCount,
@@ -65,15 +67,21 @@ import {
 /** Prefix every log line so a live server's console stays greppable. */
 const TAG = "[hud-lab]";
 
+function log(line: string): void {
+  console.log(`${TAG} ${line}`);
+}
+
+let kitHud!: Hud;
+let hud!: DemoHud;
+let demo!: LiveDemo;
+
 /** Standing eye height above the pawn origin. The camera spawns here rather than at the feet so
  *  that "the view did not change" is a real signal instead of an obvious offset. */
 const EYE_HEIGHT = 64;
 
 export function OnPluginStart(): void {
-  const log = (line: string): void => console.log(`${TAG} ${line}`);
-
   /** Shipped workshop kit driven through the game-package ctx.ui API. */
-  const kitHud = ui.hud();
+  kitHud = ui.hud();
 
   kitHud.onClick("s2_btn_3", (slot) => {
     kitHud.hide(slot, "s2_dialog");
@@ -91,7 +99,7 @@ export function OnPluginStart(): void {
   });
 
   // The working centre-panel HTML HUD (separate from custom_hud_layout).
-  const hud = new DemoHud();
+  hud = new DemoHud();
 
   bomb.install(log);
 
@@ -384,10 +392,10 @@ export function OnPluginStart(): void {
   });
 
   // ── The live demo: HUD driven by real game state ─────────────────────────────────────────────
-  const demo = new LiveDemo(liveHud, log);
+  demo = new LiveDemo(liveHud, log);
 
   // Kill feed from the real event. `player_death` carries the slots; the weapon is a string field.
-  hook.events.on("player_death", (ev) => {
+  hook.on("player_death", (ev) => {
     if (demo.count === 0) return;                       // nobody watching — do no work at all
     const aSlot = ev.getPlayerSlot("attacker");
     const vSlot = ev.getPlayerSlot("userid");
@@ -398,14 +406,6 @@ export function OnPluginStart(): void {
       headshot: ev.getBool("headshot"),
     });
   });
-
-  // A disconnecting player must not leave diff-cache entries behind.
-  hook.client.onDisconnect((client) => { demo.stop(client.slot); demo.forget(client.slot); });
-
-  // Collapse the live layout for every player as they become active. The panels default VISIBLE in
-  // the markup, so without this they render (empty) the moment anything touches the layout for that
-  // player — which is why the HUD appeared before anyone ran sm_hud.
-  hook.client.onActive((client) => { demo.hideAll(client.slot); });
 
   command.admin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return; }
@@ -504,12 +504,6 @@ export function OnPluginStart(): void {
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_hide [target]`); return; }
     const err = kitHud.hide(slot, "s2_dialog");
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} hidden for slot ${slot}`);
-  });
-
-  hook.client.onActive((client) => {
-    if (!config.getBool("auto_show")) return;
-    const err = kitHud.show(client.slot, "s2_dialog", { cursor: true });
-    log(err ? `auto-show refused for slot ${client.slot}: ${err}` : `auto-shown for slot ${client.slot}`);
   });
 
   // ── The NATIVE panel: drive a map-authored custom_hud_layout with no engine call ───────────
@@ -637,4 +631,23 @@ export function OnPluginStart(): void {
     const targets = Player.target(token, cmd.callerSlot);
     return targets.length > 0 ? targets[0].slot : -1;
   }
+}
+
+/** Post-simulation paint: health/movetype after the engine re-derives them this tick. */
+export function OnGameFramePost(): void {
+  hud.tick();
+}
+
+/** A disconnecting player must not leave diff-cache entries behind. */
+export function OnClientDisconnect(client: Client): void {
+  demo.stop(client.slot);
+  demo.forget(client.slot);
+}
+
+/** Collapse the live layout as players become active (panels default VISIBLE in the markup). */
+export function OnClientActive(client: Client): void {
+  demo.hideAll(client.slot);
+  if (!config.getBool("auto_show")) return;
+  const err = kitHud.show(client.slot, "s2_dialog", { cursor: true });
+  log(err ? `auto-show refused for slot ${client.slot}: ${err}` : `auto-shown for slot ${client.slot}`);
 }

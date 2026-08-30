@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
 import { Database } from "@s2script/sdk/db";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 /**
@@ -15,13 +14,13 @@ import { command } from "@s2script/sdk/commands";
  *                  (postgres) connections; checks a BIGINT reads back as a
  *                  decimal string.
  */
+let frames = 0;
+
 export const dbRecipe: Recipe = {
   name: "db",
   describe: "round-trip SQLite (sm_db) or operator-configured mysql/postgres (sm_db_remote)",
+  onGameFrame() { frames += 1; },
   register() {
-    let frames = 0;
-    hook.server.onGameFrame(() => { frames += 1; });
-
     command("sm_db", (cmd) => {
       cmd.reply("querying SQLite…");
       (async () => {

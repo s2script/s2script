@@ -2,7 +2,6 @@ import type { Recipe } from "../recipe.ts";
 import { Server } from "@s2script/sdk/server";
 import { Clients } from "@s2script/sdk/clients";
 import { Player } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 /**
@@ -16,6 +15,9 @@ import { command } from "@s2script/sdk/commands";
 export const serverRecipe: Recipe = {
   name: "server",
   describe: "a registered cvar, OnMapStart, and the connected client list (sm_server)",
+  onMapStart(map: string) {
+    console.log(`[cookbook] server: onMapStart: ${map}`);
+  },
   register() {
     // Server.onCvarChange — SourceMod HookConVarChange parity. Notify-only: the engine applies the
     // value first, so a handler cannot veto it. "*" watches every cvar; the name argument says which.
@@ -36,10 +38,6 @@ export const serverRecipe: Recipe = {
       type: "int", default: 42, help: "cookbook clientlist/convar/mapstart demo cvar", min: 0, max: 100,
     });
     console.log(`[cookbook] server: registerCvar s2_demo_mode -> ${ok} value=${Server.getCvar("s2_demo_mode")}`);
-
-    hook.server.onMapStart((map) => {
-      console.log(`[cookbook] server: onMapStart: ${map}`);
-    });
 
     command("sm_server", (cmd) => {
       const cs = Clients.all();

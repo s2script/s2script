@@ -1,4 +1,4 @@
-import { hook, topmenu, translations } from "@s2script/sdk/plugin";
+import { topmenu, translations } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 import type { Command } from "@s2script/sdk/commands";
 import type { DamageInfo } from "@s2script/sdk/damage";
@@ -10,7 +10,6 @@ export function OnPluginStart(): void {
   void Object.groupBy(["kicked", "halved"], (s) => s.length);
   translations.load("common");
   command.admin("sm_kick", ADMFLAG.KICK, kick);
-  hook.entity.onDamage(halve);
   topmenu.addCategory("Server Commands");
 }
 
@@ -18,6 +17,6 @@ function kick(cmd: Command): HookResultValue | void {
   cmd.reply("kicked");
 }
 
-function halve(info: DamageInfo): void {
+export function OnTakeDamage(info: DamageInfo): void {
   info.damage = info.damage / 2;
 }

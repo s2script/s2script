@@ -17,14 +17,14 @@ import { command } from "@s2script/sdk/commands";
 // the code below has to prove it is there before calling it — which is also the gate's first check.
 declare const __s2_defer_selftest: (() => number) | undefined;
 
+let frame = 0;
+
 export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[DDQ-A] ${m}`);
   L("loaded");
 
   // A frame counter, so the log proves WHEN the deferred delivery lands relative to the defer.
   // The spec says one frame later (§4) — not the same frame, and not never.
-  let frame = 0;
-  hook.server.onGameFrame(() => { frame += 1; });
 
   // ------------------------------------------------------------------ check 1 + 2
   // The outer handler fires an inner event from INSIDE a dispatch. The engine dispatches that
@@ -50,7 +50,7 @@ export function OnPluginStart(): void {
 
   let armedSlay = false;
   // The slay happens INSIDE this handler, i.e. inside dispatch_game_event's borrow.
-  hook.events.on("player_changename", () => {
+  hook.on("player_changename", () => {
     if (!armedSlay) return;
     armedSlay = false;
     const victim = Player.all().find((p) => (p.pawn?.health ?? 0) > 0);
@@ -60,7 +60,7 @@ export function OnPluginStart(): void {
     L("slay: returned — player_death should have deferred");
   });
 
-  hook.events.on("round_start", () => {
+  hook.on("round_start", () => {
     L(`round_start at frame=${frame}`);
     fireInner("round_start");
   });
@@ -136,6 +136,10 @@ export function OnPluginStart(): void {
   command.server("ddq_report", () => {
     L(`REPORT fired=${fired} selftests=${selftests} frame=${frame}`);
   });
+}
+
+export function OnGameFrame(): void {
+  frame += 1;
 }
 
 export function OnPluginEnd(): void {

@@ -28,7 +28,7 @@ export function OnPluginStart(): void {
 
   let preDuringRespawn = false;
   let preCount = 0;
-  hook.events.onPre("player_spawn", () => {
+  hook.onPre("player_spawn", () => {
     preCount += 1;
     preDuringRespawn = true;
     L(`onPre player_spawn #${preCount}`);
@@ -37,7 +37,7 @@ export function OnPluginStart(): void {
 
   let deathDuringSlay = false;
   let deathCount = 0;
-  hook.events.on("player_death", () => {
+  hook.on("player_death", () => {
     deathCount += 1;
     deathDuringSlay = true;
     L(`onPre player_death #${deathCount}`);

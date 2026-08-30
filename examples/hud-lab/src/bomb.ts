@@ -52,7 +52,7 @@ export function setWatching(on: boolean): boolean {
  */
 export function install(log: (line: string) => void): void {
   for (const name of WATCHED_EVENTS) {
-    hook.events.on(name, (ev) => {
+    hook.on(name, (ev) => {
       if (!watching) return;
       const slot = ev.getPlayerSlot("userid");
       const who = slot >= 0 ? (Player.fromSlot(slot)?.playerName ?? `slot ${slot}`) : "<none>";

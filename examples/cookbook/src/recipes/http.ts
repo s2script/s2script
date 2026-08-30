@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
 import { fetch } from "@s2script/sdk/http";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 /**
@@ -9,13 +8,13 @@ import { command } from "@s2script/sdk/commands";
  * concurrent requests; the frame counter proves the tick keeps advancing the
  * whole time they're in flight. Bodies are capped at 10MB.
  */
+let frames = 0;
+
 export const httpRecipe: Recipe = {
   name: "http",
   describe: "fire concurrent fetch()es without blocking the tick (sm_http)",
+  onGameFrame() { frames += 1; },
   register() {
-    let frames = 0;
-    hook.server.onGameFrame(() => { frames += 1; });
-
     command("sm_http", (cmd) => {
       const start = frames;
       const N = 10;

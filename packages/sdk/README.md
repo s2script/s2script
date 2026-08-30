@@ -20,14 +20,19 @@ re-drop to hot-reload, delete to unload. No restart.
 
 ```ts
 import { command, hook } from "@s2script/sdk";
+import type { Client } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command("hello", (cmd) => {
     cmd.reply("hello from s2script");
   });
-  hook.client.onFullyConnected((client) => {
-    client.chat("welcome");
+  hook.on("player_spawn", (ev) => {
+    console.log("spawned", ev.getPlayerSlot("userid"));
   });
+}
+
+export function OnClientPostAdminCheck(client: Client): void {
+  client.chat("welcome");
 }
 ```
 

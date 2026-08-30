@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
 import { Net } from "@s2script/sdk/net";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 const dec = (b: Uint8Array) => Array.from(b).map((c) => String.fromCharCode(c)).join("");
@@ -18,13 +17,13 @@ const A2S_INFO = new Uint8Array([
  * off-thread on the shared tokio runtime; the frame counter proves the tick
  * keeps advancing while they're in flight.
  */
+let frames = 0;
+
 export const netRecipe: Recipe = {
   name: "net",
   describe: "TCP + UDP round trip without blocking the tick (sm_net)",
+  onGameFrame() { frames += 1; },
   register() {
-    let frames = 0;
-    hook.server.onGameFrame(() => { frames += 1; });
-
     async function tcp(): Promise<void> {
       try {
         const before = frames;

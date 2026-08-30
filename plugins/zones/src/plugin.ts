@@ -5,11 +5,11 @@
 // DETECTION BACKEND: REAL ENGINE TRIGGERS. Each zone is a runtime `trigger_multiple` whose collision is an
 // arbitrary box built from the zone bounds (createEntity -> SetModel registers the touch aggregate ->
 // SetSolid(SOLID_BBOX) reshapes it to the box). The engine's own touch system fires OnStartTouch/OnEndTouch,
-// which we hook via hook.entity.onOutput -> enter/leave. This replaces the previous ~8Hz origin-polling
+// which we hook via onOutput -> enter/leave. This replaces the previous ~8Hz origin-polling
 // backend: engine-accurate edges, no per-frame position math, and it can see non-player entities too. A tiny
 // poll remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
 // engine-maintained inside-set).
-import { command, hook, translations, publish, createScope, ADMFLAG, Database, Server, config, Vector, Chat, Translations } from "@s2script/sdk";
+import { command, onOutput, translations, publish, createScope, ADMFLAG, Database, Server, config, Vector, Chat, Translations } from "@s2script/sdk";
 import type { PublishHandle } from "@s2script/sdk";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
 import type { Zones } from "../api";
@@ -303,9 +303,9 @@ export async function OnPluginStart(): Promise<void> {
   iface = publish<Zones>("@s2script/zones", zonesImpl);
   console.log("[zones] publishing @s2script/zones");
 
-  // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. hook.entity.onOutput fires for
+  // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. onOutput fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.
-  hook.entity.onOutput("trigger_multiple", "OnStartTouch", (ev) => {
+  onOutput("trigger_multiple", "OnStartTouch", (ev) => {
     if (!ev.caller || !ev.activator || !iface) return;
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;
@@ -314,7 +314,7 @@ export async function OnPluginStart(): Promise<void> {
     z.inside.add(who.slot);
     iface.emit("enter", { zone: z.name, slot: who.slot, userId: who.userId });
   });
-  hook.entity.onOutput("trigger_multiple", "OnEndTouch", (ev) => {
+  onOutput("trigger_multiple", "OnEndTouch", (ev) => {
     if (!ev.caller || !ev.activator || !iface) return;
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;

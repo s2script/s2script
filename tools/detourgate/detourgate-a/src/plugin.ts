@@ -7,35 +7,26 @@
 // So this subscribes to all four PRE-EXISTING detours and counts them. A count that stays 0 for a
 // detour whose traffic definitely occurred is the regression this fixture exists to catch.
 //
-//   ProcessUsercmds     -> hook.client.onRunCmd            (bots generate usercmds every tick)
-//   FireOutputInternal  -> hook.entity.onOutput            (map logic fires outputs each round)
-//   DispatchTraceAttack -> hook.entity.onDamage            (bots shoot each other)
+//   ProcessUsercmds     -> OnPlayerRunCmd            (bots generate usercmds every tick)
+//   FireOutputInternal  -> onOutput                  (map logic fires outputs each round)
+//   DispatchTraceAttack -> OnTakeDamage              (bots shoot each other)
 //   HostSay             -> chat trigger           (needs a human; see the report note)
 //
 // Prefix [DETOURGATE] so `docker logs | grep DETOURGATE` reads as a transcript.
-import { hook } from "@s2script/sdk/plugin";
+import { onOutput } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
+
+let frames = 0;
+let usercmds = 0;
+let outputs = 0;
+let damages = 0;
 
 export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[DETOURGATE] ${m}`);
   L("loaded — subscribing to all four pre-existing detours");
 
-  let frames = 0;
-  let usercmds = 0;
-  let outputs = 0;
-  let damages = 0;
-
-  hook.server.onGameFrame(() => { frames += 1; });
-
-  // ProcessUsercmds. Lazy-installed on FIRST subscribe, so this subscription is what triggers the
-  // install — the boot log should show it taking the near (E9) tier.
-  hook.client.onRunCmd(() => { usercmds += 1; });
-
   // FireOutputInternal. A wildcard-ish subscription: round logic fires outputs on these every round.
-  hook.entity.onOutput("*", "*", () => { outputs += 1; });
-
-  // DispatchTraceAttack.
-  hook.entity.onDamage(() => { damages += 1; });
+  onOutput("*", "*", () => { outputs += 1; });
 
   command.server("detour_report", () => {
     L(`REPORT frames=${frames} usercmds=${usercmds} outputs=${outputs} damages=${damages}`);
@@ -45,6 +36,15 @@ export function OnPluginStart(): void {
     L(`  HostSay            : not provable without a human client (see docs/superpowers deferred-live-tests)`);
   });
 }
+
+export function OnGameFrame(): void { frames += 1; }
+
+// ProcessUsercmds. Lazy-installed on FIRST subscribe, so this public is what triggers the
+// install — the boot log should show it taking the near (E9) tier.
+export function OnPlayerRunCmd(): void { usercmds += 1; }
+
+// DispatchTraceAttack.
+export function OnTakeDamage(): void { damages += 1; }
 
 export function OnPluginEnd(): void {
   console.log("[DETOURGATE] unloading");

@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 /**
@@ -15,18 +14,37 @@ import { command } from "@s2script/sdk/commands";
  * These writes are NOT flagged for replication — see the note on the `MovementServices` interface.
  * The server reads them during movement, so gameplay effects apply immediately.
  */
+const original = new Map<number, number>();
+let sampling = false;
+let sample: { slot: number; remaining: number; ticks: number; peak: number;
+              peakByPos: number; last: { x: number; y: number } | null } | null = null;
+
 export const movementRecipe: Recipe = {
   name: "movement",
   describe: "writable movement fields: sm_speed <slot> <mult>, sm_movement <slot>",
 
-  register() {
-    // Remember each slot's original maxspeed so sm_speed can restore it, rather than assuming
-    // 260 — the base value depends on the active weapon.
-    const original = new Map<number, number>();
-    let sampling = false;   // one sampler at a time
-    let sample: { slot: number; remaining: number; ticks: number; peak: number;
-                  peakByPos: number; last: { x: number; y: number } | null } | null = null;
+  onGameFrame() {
+    if (!sampling || !sample) return;
+    const pawn = Player.fromSlot(sample.slot)?.pawn;
+    const v = pawn?.absVelocity;
+    if (v) sample.peak = Math.max(sample.peak, Math.hypot(v.x, v.y));
+    const o = pawn?.origin;
+    if (o) {
+      if (sample.last) {
+        const d = Math.hypot(o.x - sample.last.x, o.y - sample.last.y) * 64;
+        sample.peakByPos = Math.max(sample.peakByPos, d);
+      }
+      sample.last = { x: o.x, y: o.y };
+    }
+    if (--sample.remaining <= 0) {
+      sampling = false;
+      console.log(`[cookbook] movement slot=${sample.slot} over ${sample.ticks} frames: ` +
+        `peak absVelocity=${sample.peak.toFixed(1)} u/s, peak by position delta=` +
+        `${sample.peakByPos.toFixed(1)} u/s`);
+    }
+  },
 
+  register() {
     command("sm_movement", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const pawn = slot >= 0 ? Player.fromSlot(slot)?.pawn : null;
@@ -70,31 +88,5 @@ export const movementRecipe: Recipe = {
       sampling = true;
       cmd.reply(`[cookbook] movement: sampling slot ${slot} for ${ticks} frames…`);
     });
-
-    // Registered ONCE at load — the framework refuses a frame registration from inside a command
-    // handler ("registration outside the load window"), and rightly so: it would leak a handler
-    // per invocation. The command only flips `sampling`.
-    hook.server.onGameFrame(() => {
-      if (!sampling || !sample) return;
-      const pawn = Player.fromSlot(sample.slot)?.pawn;
-      const v = pawn?.absVelocity;
-      if (v) sample.peak = Math.max(sample.peak, Math.hypot(v.x, v.y));
-      // Position delta is the ground truth: if the bot moves but absVelocity reads 0, the field is
-      // wrong, not the movement. 64 ticks/s, so delta*64 is u/s.
-      const o = pawn?.origin;
-      if (o) {
-        if (sample.last) {
-          const d = Math.hypot(o.x - sample.last.x, o.y - sample.last.y) * 64;
-          sample.peakByPos = Math.max(sample.peakByPos, d);
-        }
-        sample.last = { x: o.x, y: o.y };
-      }
-      if (--sample.remaining <= 0) {
-        sampling = false;
-        console.log(`[cookbook] movement slot=${sample.slot} over ${sample.ticks} frames: ` +
-          `peak absVelocity=${sample.peak.toFixed(1)} u/s, peak by position delta=` +
-          `${sample.peakByPos.toFixed(1)} u/s`);
-      }
-    }, { priority: "monitor" });
   },
 };
