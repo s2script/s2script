@@ -22,29 +22,52 @@ Authors porting SM plugins write the wiki names. A type CS2 does not implement *
 
 ## Locked authoring surface
 
-`SDKHook` / `SDKUnhook` / `SDKHookType` stay as shipped. `HookResult` stays SM `Action`. No `Action`
-type. No `SDKHookEx` name. Boolean return is the Ex semantic. Multiple callbacks per `(entity, type)`
-still run (subscribe order) — we do not copy SM’s “same hook twice is blocked.”
+Every wiki **hook type** — including every `Action` callback (`Think`, `Spawn`, `Touch`, `SetTransmit`,
+`Use`, weapon hooks, remaining damage types, …) — is still the same three-arg register call as
+OnTakeDamage. The callback is the third argument. Wiki `Action` is `HookResult`. Omit the return
+(`void` = `Continue`); return `HookResult.Handled` / `Stop` to skip the original virtual (and, for
+`Stop`, later callbacks).
+
+```ts
+import { SDKHook, SDKHookType, HookResult } from "@s2script/sdk";
+import type { EntityRef, DamageInfo } from "@s2script/sdk";
+
+export function OnEntityCreated(entity: EntityRef | null, className: string): void {
+  if (!entity) return;
+  SDKHook(entity, SDKHookType.Think, onThink);
+  SDKHook(entity, SDKHookType.OnTakeDamage, onTakeDamage);
+}
+
+function onThink(entity: EntityRef) {
+  // wiki: Action (int entity). Same register shape as OnTakeDamage.
+  if (/* skip this entity's Think this tick */) return HookResult.Handled;
+}
+
+function onTakeDamage(info: DamageInfo) {
+  info.damage /= 2;
+}
+```
+
+Not `SDKHooks.think()`. Not a named public `OnThink`. `SDKHookType.Think` is the wiki name without the
+`SDKHook_` prefix.
+
+`SDKHook` / `SDKUnhook` / `SDKHookType` stay as shipped. No `Action` type. No `SDKHookEx` name. Boolean
+return is the Ex semantic. Multiple callbacks per `(entity, type)` still run (subscribe order) — we do
+not copy SM’s “same hook twice is blocked.”
 
 ### Natives are a namespace, not `SDKHooks_*`
 
-SourceMod’s underscore natives become a PascalCase namespace with camelCase methods, same pattern as
-`Transmit.setVisibleTo` / `Entity.findByClass`:
+`SDKHooks.takeDamage` / `SDKHooks.dropWeapon` are **not** hooks. They are SourceMod’s two underscore
+**natives** (`SDKHooks_TakeDamage`, `SDKHooks_DropWeapon`) — functions that apply damage / drop a
+weapon. The `.` is only this namespace (`Transmit.setVisibleTo` / `Entity.findByClass` pattern). Hook
+registration never moves onto it (`SDKHooks.think` / `SDKHooks.hook` do not exist).
 
 ```ts
-import { SDKHook, SDKHookType, SDKHooks, Entity } from "@s2script/sdk";
-import type { EntityRef } from "@s2script/sdk";
-import type { Client } from "@s2script/sdk/clients";
-import type { Vector } from "@s2script/sdk/math";
-
 SDKHooks.takeDamage(victim, inflictor, attacker, 50);
 SDKHooks.dropWeapon(client, weapon);
 ```
 
 Not `SDKHooks_TakeDamage`. Not `takeDamage` as a free function. Not methods on `Pawn`.
-
-`SDKHook` / `SDKUnhook` stay free functions — those SM names have no underscore prefix. Do not nest
-them as `SDKHooks.hook`.
 
 `bypassHooks` defaults **true** (SM). When true, that invocation does not re-enter the matching
 SDKHook types (TakeDamage family / WeaponDrop). Implementation is a thread-local latch, same idea as
