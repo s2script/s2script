@@ -823,6 +823,16 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     StartTouch: "StartTouch", Touch: "Touch", EndTouch: "EndTouch", Blocked: "Blocked",
     StartTouchPost: "StartTouchPost", TouchPost: "TouchPost",
     EndTouchPost: "EndTouchPost", BlockedPost: "BlockedPost",
+    Spawn: "Spawn", SpawnPost: "SpawnPost",
+    Think: "Think", ThinkPost: "ThinkPost",
+    PreThink: "PreThink", PreThinkPost: "PreThinkPost",
+    PostThink: "PostThink", PostThinkPost: "PostThinkPost",
+    Use: "Use", UsePost: "UsePost",
+    GetMaxHealth: "GetMaxHealth",
+    ShouldCollide: "ShouldCollide",
+    VPhysicsUpdate: "VPhysicsUpdate", VPhysicsUpdatePost: "VPhysicsUpdatePost",
+    GroundEntChangedPost: "GroundEntChangedPost",
+    CanBeAutobalanced: "CanBeAutobalanced",
   };
   // Assigned after the literal so a parallel lifecycle PR can append members inside the object.
   SDKHookType.SetTransmit = "SetTransmit";
@@ -842,7 +852,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     if (typeof callback !== "function") throw new TypeError("s2script: SDKUnhook callback must be a function");
     return __s2_sdkunhook(entity.index, entity.id, type, callback);
   }
-  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHookType: SDKHookType };
+  var UseType = { Off: 0, On: 1, Set: 2, Toggle: 3 };
+  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHookType: SDKHookType, UseType: UseType };
   // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
   //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
   //     Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)

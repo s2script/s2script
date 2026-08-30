@@ -139,6 +139,26 @@ void s2script_core_dispatch_damage(void);
  * original virtual when >= Handled (2) on the pre-hook. Post always IGNORED. catch_unwind -> 0. */
 int s2script_core_dispatch_sdkhook_touch(int thisIndex, int thisSerial, int otherHandle, int post,
                                         const char* type);
+/* Shim -> core: this-only SDKHook VP virtuals (Spawn/Think/PreThink/PostThink/VPhysicsUpdate/
+ * GroundEntChangedPost). `type` is the wiki name including Post. Returns collapsed HookResult
+ * 0..=3; SUPERCEDE the original when >= Handled (2) on Spawn/Think pre. Void types always IGNORED.
+ * catch_unwind -> 0. */
+int s2script_core_dispatch_sdkhook_this(int thisIndex, int thisSerial, int post, const char* type);
+/* Shim -> core: Use / UsePost. activator/caller are packed CEntityHandle ToInt(), or -1.
+ * CS2 ABI: (CEntityInstance *activator, CEntityInstance *caller, int useType, float value).
+ * Returns collapsed HookResult; SUPERCEDE when >= Handled on pre. catch_unwind -> 0. */
+int s2script_core_dispatch_sdkhook_use(int thisIndex, int thisSerial, int activatorHandle,
+                                      int callerHandle, int useType, float value, int post,
+                                      const char* type);
+/* Shim -> core: GetMaxHealth. Mutates *inoutMax. Returns collapsed HookResult; SUPERCEDE when
+ * >= Handled (2). catch_unwind -> 0. */
+int s2script_core_dispatch_sdkhook_getmaxhealth(int thisIndex, int thisSerial, int* inoutMax);
+/* Shim -> core: ShouldCollide. Returns 0/1 (last defined boolean; default orig). catch_unwind -> orig. */
+int s2script_core_dispatch_sdkhook_shouldcollide(int thisIndex, int thisSerial, int collisionGroup,
+                                                int contentsMask, int orig);
+/* Shim -> core: CanBeAutobalanced. Returns 0/1 (last defined boolean; default orig). No Client for
+ * the hooked entity -> skip callbacks, return orig. Never invents slot 0. catch_unwind -> orig. */
+int s2script_core_dispatch_sdkhook_canbeautobalanced(int thisIndex, int thisSerial, int orig);
 /* Shim -> core: called by the FireOutputInternal detour (entity-I/O slice) with the firing entity's
  * classname, the output name, packed activator/caller CEntityHandle ints (-1 = none), the output's
  * value as a string, and the delay. Runs the matching Entity.onOutput subscribers SYNCHRONOUSLY

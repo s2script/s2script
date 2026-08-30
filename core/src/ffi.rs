@@ -332,6 +332,114 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_touch(
     .unwrap_or(0)
 }
 
+/// Shim → core: this-only SDKHook VP virtuals (Spawn/Think/PreThink/PostThink/VPhysics/GroundEnt).
+/// `type` is the wiki name including Post. Returns collapsed `HookResult` 0..=3.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_sdkhook_this(
+    this_index: c_int,
+    this_serial: c_int,
+    post: c_int,
+    type_name: *const c_char,
+) -> c_int {
+    catch_unwind(|| {
+        if type_name.is_null() {
+            return 0;
+        }
+        let Ok(t) = (unsafe { CStr::from_ptr(type_name) }).to_str() else {
+            return 0;
+        };
+        crate::sdkhooks::dispatch_this(this_index, this_serial, post, t)
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: `Use` / `UsePost`. Activator/caller packed handles (`-1` = null).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_sdkhook_use(
+    this_index: c_int,
+    this_serial: c_int,
+    activator_handle: c_int,
+    caller_handle: c_int,
+    use_type: c_int,
+    value: f32,
+    post: c_int,
+    type_name: *const c_char,
+) -> c_int {
+    catch_unwind(|| {
+        if type_name.is_null() {
+            return 0;
+        }
+        let Ok(t) = (unsafe { CStr::from_ptr(type_name) }).to_str() else {
+            return 0;
+        };
+        crate::sdkhooks::dispatch_use(
+            this_index,
+            this_serial,
+            activator_handle,
+            caller_handle,
+            use_type,
+            value,
+            post,
+            t,
+        )
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: GetMaxHealth. Mutates `*inout_max`. Returns collapsed `HookResult`; SUPERCEDE when `>= 2`.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_sdkhook_getmaxhealth(
+    this_index: c_int,
+    this_serial: c_int,
+    inout_max: *mut c_int,
+) -> c_int {
+    catch_unwind(|| {
+        if inout_max.is_null() {
+            return 0;
+        }
+        let mut max = unsafe { *inout_max };
+        let r = crate::sdkhooks::dispatch_getmaxhealth(this_index, this_serial, &mut max);
+        unsafe {
+            *inout_max = max;
+        }
+        r
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: ShouldCollide. Returns 0/1 (last defined boolean; default `orig`).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_sdkhook_shouldcollide(
+    this_index: c_int,
+    this_serial: c_int,
+    collision_group: c_int,
+    contents_mask: c_int,
+    orig: c_int,
+) -> c_int {
+    catch_unwind(|| {
+        crate::sdkhooks::dispatch_shouldcollide(
+            this_index,
+            this_serial,
+            collision_group,
+            contents_mask,
+            orig,
+        )
+    })
+    .unwrap_or(orig)
+}
+
+/// Shim → core: CanBeAutobalanced. Returns 0/1 (last defined boolean; default `orig`).
+/// No Client for the hooked entity → skip callbacks, return `orig`.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_sdkhook_canbeautobalanced(
+    this_index: c_int,
+    this_serial: c_int,
+    orig: c_int,
+) -> c_int {
+    catch_unwind(|| crate::sdkhooks::dispatch_canbeautobalanced(this_index, this_serial, orig))
+        .unwrap_or(orig)
+}
+
 /// Usercmd primitive Task 2/3: called by the (Task 3) shim's per-tick input-processing detour, once per player per
 /// batched tick, with the firing player's `slot`. Runs the `UserCmd.onRun` subscribers SYNCHRONOUSLY
 /// over the shim's current `CUserCmd` (read/modified in place via the Task-3 `usercmd_read`/`_write`

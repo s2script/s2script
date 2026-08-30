@@ -7,9 +7,10 @@
 use crate::dispatch::{fan_out_collapsing, Instrument, StopAt};
 use crate::multiplexer::HookResult;
 use crate::v8host::{
-    build_entity_ref, current_plugin, engine_ops, next_sub_id, plugin_generation, set_native,
+    build_entity_ref, clone_plugin_context, current_plugin, engine_ops, log_warn, next_sub_id,
+    owner_is_live, plugin_generation, set_native, with_host_isolate,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -38,7 +39,7 @@ fn packed_handle(index: i32, serial: i32) -> i32 {
     ((serial as u32) << bits | ((index as u32) & ((1u32 << bits) - 1))) as i32
 }
 
-/// Wiki Touch-family name → (gamedata / VP type without Post, post flag).
+/// Wiki VP name → (gamedata / VP type without Post, post flag).
 fn vp_kind(kind: &str) -> Option<(&'static str, c_int)> {
     match kind {
         "StartTouch" => Some(("StartTouch", 0)),
@@ -49,6 +50,22 @@ fn vp_kind(kind: &str) -> Option<(&'static str, c_int)> {
         "EndTouchPost" => Some(("EndTouch", 1)),
         "Blocked" => Some(("Blocked", 0)),
         "BlockedPost" => Some(("Blocked", 1)),
+        "Spawn" => Some(("Spawn", 0)),
+        "SpawnPost" => Some(("Spawn", 1)),
+        "Think" => Some(("Think", 0)),
+        "ThinkPost" => Some(("Think", 1)),
+        "PreThink" => Some(("PreThink", 0)),
+        "PreThinkPost" => Some(("PreThink", 1)),
+        "PostThink" => Some(("PostThink", 0)),
+        "PostThinkPost" => Some(("PostThink", 1)),
+        "Use" => Some(("Use", 0)),
+        "UsePost" => Some(("Use", 1)),
+        "GetMaxHealth" => Some(("GetMaxHealth", 0)),
+        "ShouldCollide" => Some(("ShouldCollide", 0)),
+        "VPhysicsUpdate" => Some(("VPhysicsUpdate", 0)),
+        "VPhysicsUpdatePost" => Some(("VPhysicsUpdate", 1)),
+        "GroundEntChangedPost" => Some(("GroundEntChangedPost", 1)),
+        "CanBeAutobalanced" => Some(("CanBeAutobalanced", 0)),
         _ => None,
     }
 }
@@ -357,6 +374,313 @@ pub(crate) fn dispatch_touch(
     result as c_int
 }
 
+/// `Spawn` / `Think` / `Use` pre collapse at `Stop`; void types (PreThink, VPhysics, *Post, …)
+/// never read the return.
+fn collapsing_stop(type_name: &str) -> StopAt {
+    match type_name {
+        "Spawn" | "Think" | "Use" => StopAt::Stop,
+        _ => StopAt::Never,
+    }
+}
+
+fn handle_to_ref<'s>(tc: &mut v8::PinScope<'s, '_>, handle: i32) -> v8::Local<'s, v8::Value> {
+    if handle < 0 {
+        return v8::null(tc).into();
+    }
+    let (oi, os) = crate::entity::decode_handle(handle as u32);
+    match crate::entity_live::adopt(oi, os) {
+        Some(oid) => build_entity_ref(tc, oi, oid),
+        None => v8::null(tc).into(),
+    }
+}
+
+fn hook_result_from_ret(tc: &mut v8::PinScope, ret: v8::Local<v8::Value>) -> HookResult {
+    if !ret.is_number() {
+        return HookResult::Continue;
+    }
+    match ret.uint32_value(tc).unwrap_or(0) {
+        1 => HookResult::Changed,
+        2 => HookResult::Handled,
+        3 => HookResult::Stop,
+        _ => HookResult::Continue,
+    }
+}
+
+/// Walk the snapshot on the host isolate. `build_args` runs inside the per-handler TryCatch;
+/// `after` sees the same Locals plus the return (None on throw). Used by GetMaxHealth / boolean
+/// types that must inspect the return Local after the call.
+fn each_handler<A, R>(
+    snap: &[(String, u64, v8::Global<v8::Function>)],
+    label: &str,
+    stop_at: StopAt,
+    mut build_args: A,
+    mut after: R,
+) -> HookResult
+where
+    A: for<'s> FnMut(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
+    R: for<'s> FnMut(
+        &mut v8::PinScope<'s, '_>,
+        &[v8::Local<'s, v8::Value>],
+        Option<v8::Local<'s, v8::Value>>,
+    ) -> HookResult,
+{
+    if snap.is_empty() {
+        return HookResult::Continue;
+    }
+    match with_host_isolate(|isolate| {
+        let mut result = HookResult::Continue;
+        for (owner, generation, handler_g) in snap {
+            if stop_at != StopAt::Never {
+                let truncated = match stop_at {
+                    StopAt::Stop => result == HookResult::Stop,
+                    StopAt::Handled => result >= HookResult::Handled,
+                    StopAt::Never => false,
+                };
+                if truncated {
+                    break;
+                }
+            }
+            if !owner_is_live(owner, *generation) {
+                continue;
+            }
+            let Some(g_ctx) = clone_plugin_context(owner) else {
+                continue;
+            };
+            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, label);
+            let mut hs_storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx_local = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+            let mut tc_storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+            let tc = &mut tc;
+            let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+            let Some(args) = build_args(tc) else {
+                continue;
+            };
+            let func = v8::Local::new(tc, handler_g);
+            let ret = match func.call(tc, recv, &args) {
+                Some(ret) => Some(ret),
+                None => {
+                    let msg = tc
+                        .exception()
+                        .map(|e| e.to_rust_string_lossy(&*tc))
+                        .unwrap_or_else(|| "handler threw".into());
+                    log_warn(&format!("WARN: {label}: handler '{owner}': {msg}"));
+                    None
+                }
+            };
+            let hr = after(tc, &args, ret);
+            if hr > result {
+                result = hr;
+            }
+        }
+        result
+    }) {
+        Ok(r) => r,
+        Err(_) => HookResult::Continue,
+    }
+}
+
+/// This-only VP virtuals (Spawn/Think/PreThink/PostThink/VPhysics/GroundEntChangedPost).
+pub(crate) fn dispatch_this(this_index: i32, this_serial: i32, post: c_int, type_name: &str) -> c_int {
+    let _ = post;
+    let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
+        return HookResult::Continue as c_int;
+    };
+    let snap = snapshot_kind(this_id, type_name);
+    if snap.is_empty() {
+        return HookResult::Continue as c_int;
+    }
+    let label = format!("sdkhook:{type_name}");
+    let result = fan_out_collapsing(
+        &snap,
+        &label,
+        Instrument::breadcrumb(&label),
+        collapsing_stop(type_name),
+        |tc| Some(vec![build_entity_ref(tc, this_index, this_id)]),
+    );
+    result as c_int
+}
+
+/// `Use` / `UsePost`. `activator_handle` / `caller_handle` are packed `CEntityHandle` ints (`-1` = null).
+pub(crate) fn dispatch_use(
+    this_index: i32,
+    this_serial: i32,
+    activator_handle: i32,
+    caller_handle: i32,
+    use_type: i32,
+    value: f32,
+    post: c_int,
+    type_name: &str,
+) -> c_int {
+    let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
+        return HookResult::Continue as c_int;
+    };
+    let snap = snapshot_kind(this_id, type_name);
+    if snap.is_empty() {
+        return HookResult::Continue as c_int;
+    }
+    let stop_at = if post != 0 { StopAt::Never } else { collapsing_stop(type_name) };
+    let label = format!("sdkhook:{type_name}");
+    let result = fan_out_collapsing(
+        &snap,
+        &label,
+        Instrument::breadcrumb(&label),
+        stop_at,
+        |tc| {
+            let this_ref = build_entity_ref(tc, this_index, this_id);
+            let act = handle_to_ref(tc, activator_handle);
+            let caller = handle_to_ref(tc, caller_handle);
+            let ty = v8::Integer::new(tc, use_type).into();
+            let val = v8::Number::new(tc, value as f64).into();
+            Some(vec![this_ref, act, caller, ty, val])
+        },
+    );
+    result as c_int
+}
+
+/// GetMaxHealth: mutate `{ maxHealth }` in place. SUPERCEDE when collapsed result `>= Handled`.
+pub(crate) fn dispatch_getmaxhealth(this_index: i32, this_serial: i32, max_health: &mut i32) -> c_int {
+    let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
+        return HookResult::Continue as c_int;
+    };
+    let snap = snapshot_kind(this_id, "GetMaxHealth");
+    if snap.is_empty() {
+        return HookResult::Continue as c_int;
+    }
+    let current = Cell::new(*max_health);
+    let result = each_handler(
+        &snap,
+        "sdkhook:GetMaxHealth",
+        StopAt::Stop,
+        |tc| {
+            let obj = v8::Object::new(tc);
+            let key = v8::String::new(tc, "maxHealth")?;
+            let val = v8::Integer::new(tc, current.get());
+            obj.set(tc, key.into(), val.into());
+            Some(vec![obj.into()])
+        },
+        |tc, args, ret| {
+            if let Some(arg) = args.first() {
+                if let Ok(obj) = v8::Local::<v8::Object>::try_from(*arg) {
+                    if let Some(k) = v8::String::new(tc, "maxHealth") {
+                        if let Some(v) = obj.get(tc, k.into()) {
+                            if let Some(n) = v.int32_value(tc) {
+                                current.set(n);
+                            }
+                        }
+                    }
+                }
+            }
+            match ret {
+                Some(r) => hook_result_from_ret(tc, r),
+                None => HookResult::Continue,
+            }
+        },
+    );
+    *max_health = current.get();
+    result as c_int
+}
+
+/// ShouldCollide: last defined boolean wins; default `orig` (1/0). Not HookResult collapse.
+pub(crate) fn dispatch_shouldcollide(
+    this_index: i32,
+    this_serial: i32,
+    collision_group: i32,
+    contents_mask: i32,
+    orig: c_int,
+) -> c_int {
+    let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
+        return orig;
+    };
+    let snap = snapshot_kind(this_id, "ShouldCollide");
+    if snap.is_empty() {
+        return orig;
+    }
+    let out = Cell::new(orig != 0);
+    each_handler(
+        &snap,
+        "sdkhook:ShouldCollide",
+        StopAt::Never,
+        |tc| {
+            let this_ref = build_entity_ref(tc, this_index, this_id);
+            let group = v8::Integer::new(tc, collision_group).into();
+            let mask = v8::Integer::new(tc, contents_mask).into();
+            let orig_v = v8::Boolean::new(tc, orig != 0).into();
+            Some(vec![this_ref, group, mask, orig_v])
+        },
+        |_tc, _args, ret| {
+            if let Some(ret) = ret {
+                if ret.is_boolean() {
+                    out.set(ret.is_true());
+                }
+            }
+            HookResult::Continue
+        },
+    );
+    if out.get() { 1 } else { 0 }
+}
+
+/// Source 2 player controllers sit at entity index `slot + 1` (1..=64). Never invent slot 0.
+fn client_slot_for_entity(index: i32) -> Option<i32> {
+    const MAX_CLIENTS: i32 = 64;
+    if !(1..=MAX_CLIENTS).contains(&index) {
+        return None;
+    }
+    let slot = index - 1;
+    let ops = engine_ops()?;
+    let f = ops.client_valid?;
+    (f(slot) != 0).then_some(slot)
+}
+
+fn build_client<'s>(scope: &mut v8::PinScope<'s, '_>, slot: i32) -> Option<v8::Local<'s, v8::Value>> {
+    let global = scope.get_current_context().global(scope);
+    let pkg_key = v8::String::new(scope, "__s2pkg_clients")?;
+    let pkg = global.get(scope, pkg_key.into())?;
+    let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+    let ctor_key = v8::String::new(scope, "Client")?;
+    let ctor_val = pkg.get(scope, ctor_key.into())?;
+    let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+    let slot_v = v8::Integer::new(scope, slot);
+    ctor.new_instance(scope, &[slot_v.into()]).map(|o| o.into())
+}
+
+/// CanBeAutobalanced: last defined boolean wins. No Client → skip callbacks, return `orig`.
+pub(crate) fn dispatch_canbeautobalanced(this_index: i32, this_serial: i32, orig: c_int) -> c_int {
+    let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
+        return orig;
+    };
+    let Some(slot) = client_slot_for_entity(this_index) else {
+        return orig;
+    };
+    let snap = snapshot_kind(this_id, "CanBeAutobalanced");
+    if snap.is_empty() {
+        return orig;
+    }
+    let out = Cell::new(orig != 0);
+    each_handler(
+        &snap,
+        "sdkhook:CanBeAutobalanced",
+        StopAt::Never,
+        |tc| {
+            let client = build_client(tc, slot)?;
+            let orig_v = v8::Boolean::new(tc, orig != 0).into();
+            Some(vec![client, orig_v])
+        },
+        |_tc, _args, ret| {
+            if let Some(ret) = ret {
+                if ret.is_boolean() {
+                    out.set(ret.is_true());
+                }
+            }
+            HookResult::Continue
+        },
+    );
+    if out.get() { 1 } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +699,7 @@ mod tests {
         static VP_REMOVES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static VP_DROPS: RefCell<Vec<(i32, i32)>> = const { RefCell::new(Vec::new()) };
         static VP_ADD_OK: Cell<i32> = const { Cell::new(1) };
+        static CLIENT_VALID: Cell<i32> = const { Cell::new(-1) };
     }
     static DMG_WRITE_REC: Mutex<Option<(i32, f32)>> = Mutex::new(None);
 
@@ -858,6 +1183,349 @@ mod tests {
         dispatch_touch(5, 1, other_h, 0, "Touch");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__idx)"), "5");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__other)"), "6");
+        shutdown();
+    }
+
+    fn hook_named(index: i32, id: u64, kind: &str) -> String {
+        format!(r#"String(__s2_sdkhook({index}, {id}, "{kind}", function () {{}}))"#)
+    }
+
+    #[test]
+    fn sdkhook_spawn_first_add_calls_op() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", &hook_named(5, id, "Spawn")), "true");
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds, vec!["Spawn:0:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_spawn_second_add_same_does_not() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        eval_in_context_string("p", &hook_named(5, id, "Spawn"));
+        eval_in_context_string("p", &hook_named(5, id, "Spawn"));
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds.len(), 1, "second Spawn callback must not re-install SourceHook");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_spawn_missing_op_returns_false() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        create_plugin_context("p");
+        assert_eq!(
+            eval_in_context_string("p", &hook_named(5, id, "Spawn")),
+            "false",
+            "wiki Spawn with no VP op degrades to false"
+        );
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_think_first_add_calls_op() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", &hook_named(5, id, "Think")), "true");
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds, vec!["Think:0:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_think_post_add_is_post_flag() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", &hook_named(5, id, "ThinkPost")), "true");
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds, vec!["Think:1:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_use_first_add_calls_op() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", &hook_named(5, id, "Use")), "true");
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds, vec!["Use:0:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_getmaxhealth_first_add_calls_op() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", &hook_named(5, id, "GetMaxHealth")), "true");
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds, vec!["GetMaxHealth:0:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_shouldcollide_first_add_calls_op() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", &hook_named(5, id, "ShouldCollide")), "true");
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds, vec!["ShouldCollide:0:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_canbeautobalanced_first_add_calls_op() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(
+            eval_in_context_string("p", &hook_named(5, id, "CanBeAutobalanced")),
+            "true",
+            "SDKHook may record CanBeAutobalanced even when the instance is not a Client"
+        );
+        let adds = VP_ADDS.with(|v| v.borrow().clone());
+        assert_eq!(adds, vec!["CanBeAutobalanced:0:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_prelude_think_without_op_returns_false() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        create_plugin_context("p");
+        assert_eq!(
+            eval_in_context_string(
+                "p",
+                &format!(r#"String(__s2pkg_sdkhooks.SDKHook({{index:5,id:{id}}}, "Think", function () {{}}))"#),
+            ),
+            "false",
+            "wiki Think with no VP op degrades to false (does not throw)"
+        );
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_spawn_handled_supercede() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0;").unwrap();
+        eval_in_context_string(
+            "p",
+            &format!(
+                r#"
+                globalThis.__h1 = function () {{ globalThis.__a++; return HookResult.Handled; }};
+                globalThis.__h2 = function () {{ globalThis.__b++; }};
+                String(__s2_sdkhook(5, {id}, "Spawn", globalThis.__h1) && __s2_sdkhook(5, {id}, "Spawn", globalThis.__h2))
+            "#
+            ),
+        );
+        let r = dispatch_this(5, 1, 0, "Spawn");
+        assert_eq!(r, HookResult::Handled as c_int, "Handled SUPERCEDEs the original Spawn virtual");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "1");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_think_handled_supercede() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0;").unwrap();
+        eval_in_context_string(
+            "p",
+            &format!(
+                r#"
+                globalThis.__h1 = function () {{ globalThis.__a++; return HookResult.Handled; }};
+                globalThis.__h2 = function () {{ globalThis.__b++; }};
+                String(__s2_sdkhook(5, {id}, "Think", globalThis.__h1) && __s2_sdkhook(5, {id}, "Think", globalThis.__h2))
+            "#
+            ),
+        );
+        let r = dispatch_this(5, 1, 0, "Think");
+        assert_eq!(r, HookResult::Handled as c_int, "Handled SUPERCEDEs the original Think virtual");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "1");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_use_passes_args() {
+        let _ = init(dummy_logger());
+        crate::entity_live::reset_for_tests();
+        let id = crate::entity_live::on_created(5, 1);
+        let _act = crate::entity_live::on_created(6, 2);
+        let _caller = crate::entity_live::on_created(7, 3);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        eval_in_context(
+            "p",
+            r#"
+            globalThis.__seen = "";
+            globalThis.__cb = function (ent, act, caller, type, value) {
+                globalThis.__seen = [ent.index, act && act.index, caller && caller.index, type, value].join(",");
+                return HookResult.Handled;
+            };
+            "#,
+        )
+        .unwrap();
+        eval_in_context_string("p", &format!(r#"String(__s2_sdkhook(5, {id}, "Use", globalThis.__cb))"#));
+        let r = dispatch_use(5, 1, packed_handle(6, 2), packed_handle(7, 3), 1, 0.5, 0, "Use");
+        assert_eq!(r, HookResult::Handled as c_int);
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__seen)"), "5,6,7,1,0.5");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_getmaxhealth_mutates_and_supercede() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        eval_in_context_string(
+            "p",
+            &format!(
+                r#"
+                globalThis.__cb = function (info) {{ info.maxHealth = 50; return HookResult.Handled; }};
+                String(__s2_sdkhook(5, {id}, "GetMaxHealth", globalThis.__cb))
+            "#
+            ),
+        );
+        let mut max = 100;
+        let r = dispatch_getmaxhealth(5, 1, &mut max);
+        assert_eq!(r, HookResult::Handled as c_int);
+        assert_eq!(max, 50, "mutated maxHealth is read back after fan-out");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_shouldcollide_last_boolean_wins() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__n=0;").unwrap();
+        eval_in_context_string(
+            "p",
+            &format!(
+                r#"
+                globalThis.__h1 = function () {{ globalThis.__n++; return true; }};
+                globalThis.__h2 = function () {{ globalThis.__n++; return false; }};
+                String(__s2_sdkhook(5, {id}, "ShouldCollide", globalThis.__h1) && __s2_sdkhook(5, {id}, "ShouldCollide", globalThis.__h2))
+            "#
+            ),
+        );
+        let r = dispatch_shouldcollide(5, 1, 2, 3, 1);
+        assert_eq!(r, 0, "last defined boolean return wins (false)");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "2");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_shouldcollide_void_keeps_original() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        eval_in_context_string(
+            "p",
+            &format!(
+                r#"
+                globalThis.__cb = function () {{}};
+                String(__s2_sdkhook(5, {id}, "ShouldCollide", globalThis.__cb))
+            "#
+            ),
+        );
+        let r = dispatch_shouldcollide(5, 1, 0, 0, 1);
+        assert_eq!(r, 1, "void return keeps the original result");
+        shutdown();
+    }
+
+    extern "C" fn fake_client_valid(slot: c_int) -> c_int {
+        CLIENT_VALID.with(|c| if c.get() == slot { 1 } else { 0 })
+    }
+
+    fn ops_with_vp_client() -> S2EngineOps {
+        let mut ops = ops_with_vp();
+        ops.client_valid = Some(fake_client_valid);
+        ops
+    }
+
+    #[test]
+    fn sdkhook_canbeautobalanced_passes_client() {
+        let _ = init(dummy_logger());
+        // Controller entity index = slot + 1. Slot 3 → index 4.
+        let id = seed(4, 1);
+        CLIENT_VALID.with(|c| c.set(3));
+        set_engine_ops(Some(ops_with_vp_client()));
+        create_plugin_context("p");
+        eval_in_context(
+            "p",
+            r#"
+            globalThis.__slot = -1;
+            globalThis.__orig = null;
+            globalThis.__cb = function (client, orig) {
+                globalThis.__slot = client.slot;
+                globalThis.__orig = orig;
+                return false;
+            };
+            "#,
+        )
+        .unwrap();
+        eval_in_context_string(
+            "p",
+            &format!(r#"String(__s2_sdkhook(4, {id}, "CanBeAutobalanced", globalThis.__cb))"#),
+        );
+        let r = dispatch_canbeautobalanced(4, 1, 1);
+        assert_eq!(r, 0);
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__slot)"), "3");
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__orig)"), "true");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_canbeautobalanced_skips_without_client() {
+        let _ = init(dummy_logger());
+        let id = seed(99, 1);
+        CLIENT_VALID.with(|c| c.set(-1));
+        set_engine_ops(Some(ops_with_vp_client()));
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__n=0;").unwrap();
+        eval_in_context_string(
+            "p",
+            &format!(
+                r#"
+                globalThis.__cb = function () {{ globalThis.__n++; return false; }};
+                String(__s2_sdkhook(99, {id}, "CanBeAutobalanced", globalThis.__cb))
+            "#
+            ),
+        );
+        let r = dispatch_canbeautobalanced(99, 1, 1);
+        assert_eq!(r, 1, "no Client → skip callbacks and return origRet");
+        assert_eq!(
+            eval_in_context_string("p", "String(globalThis.__n)"),
+            "0",
+            "must not invent Client(0) when the hooked entity has no client"
+        );
         shutdown();
     }
 }

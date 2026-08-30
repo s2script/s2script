@@ -8,13 +8,18 @@
 // custom/ entry supplies a pattern but no `validate`, the SHIPPED validator is CARRIED FORWARD
 // onto it and the boot banner says so. To disarm the gate, write `"validate": {}` explicitly.
 //
-// Owner: sdkhooks — first-party SDKHooks virtuals (wiki type names: Touch, StartTouch, …).
+// Owner: sdkhooks — first-party SDKHooks virtuals (wiki type names: Touch, Spawn, Think, Use, …).
 // Target: CS2 — "game": "csgo". Every signature below scans CS2's libserver.so.
 //
 // Keys are wiki type names (Touch, not CBaseEntity_Touch). Pre/Post twins share one signature.
 // The class for the RTTI gate is `validate.vtable-member`. Do NOT ship a borrowed vtable slot
 // as `offsets` — the boot resolver derives the slot from the unique signature + vtable walk
 // and prints `gamedata OK Touch (slot N)`.
+//
+// Lifecycle keys (PR B): Spawn, Think, PreThink, PostThink, Use, GetMaxHealth, ShouldCollide,
+// VPhysicsUpdate, GroundEntChangedPost, CanBeAutobalanced. Empty until self-resolved against
+// OUR libserver.so (docs/re-strategy.md). Missing row = skip without boot FAIL; vp_add returns 0.
+// CSSharp/SM slot numbers are HINTS only.
 //
 // A type with no row here is not attempted: SDKHook returns false (named degrade is the
 // missing OK line, not a crash). Rows land when self-resolved against OUR libserver.so

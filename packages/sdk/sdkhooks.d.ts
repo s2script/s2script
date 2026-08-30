@@ -9,6 +9,41 @@ import type { Client } from "./clients";
 
 type TouchCallback = (entity: EntityRef, other: EntityRef | null) => HookResultValue | void;
 type TouchPostCallback = (entity: EntityRef, other: EntityRef | null) => void;
+type ThisCallback = (entity: EntityRef) => HookResultValue | void;
+type ThisVoidCallback = (entity: EntityRef) => void;
+type UseCallback = (
+  entity: EntityRef,
+  activator: EntityRef | null,
+  caller: EntityRef | null,
+  type: UseTypeValue,
+  value: number,
+) => HookResultValue | void;
+type UsePostCallback = (
+  entity: EntityRef,
+  activator: EntityRef | null,
+  caller: EntityRef | null,
+  type: UseTypeValue,
+  value: number,
+) => void;
+
+/**
+ * `CBaseEntity::Use` use-type (`USE_OFF` / `USE_ON` / `USE_SET` / `USE_TOGGLE`).
+ */
+export type UseTypeValue = 0 | 1 | 2 | 3;
+
+/**
+ * `CBaseEntity::Use` use-type constants (wiki `USE_*`).
+ */
+export declare const UseType: {
+  /** `USE_OFF` — turn off. */
+  readonly Off: 0;
+  /** `USE_ON` — turn on. */
+  readonly On: 1;
+  /** `USE_SET` — set to `value`. */
+  readonly Set: 2;
+  /** `USE_TOGGLE` — toggle. */
+  readonly Toggle: 3;
+};
 
 /**
  * Shipped SDKHook types. Wiki names without the `SDKHook_` prefix. A wiki name whose engine
@@ -40,6 +75,38 @@ export declare const SDKHookType: {
   readonly EndTouchPost: "EndTouchPost";
   /** `Blocked` post. Return is ignored. */
   readonly BlockedPost: "BlockedPost";
+  /** `CBaseEntity::Spawn` pre. `Handled` / `Stop` skip the original virtual. */
+  readonly Spawn: "Spawn";
+  /** `Spawn` post. Return is ignored. */
+  readonly SpawnPost: "SpawnPost";
+  /** `CBaseEntity::Think` pre. `Handled` / `Stop` skip the original virtual. */
+  readonly Think: "Think";
+  /** `Think` post. Return is ignored. */
+  readonly ThinkPost: "ThinkPost";
+  /** Player `PreThink`. Return is ignored. */
+  readonly PreThink: "PreThink";
+  /** `PreThink` post. Return is ignored. */
+  readonly PreThinkPost: "PreThinkPost";
+  /** Player `PostThink`. Return is ignored. */
+  readonly PostThink: "PostThink";
+  /** `PostThink` post. Return is ignored. */
+  readonly PostThinkPost: "PostThinkPost";
+  /** `CBaseEntity::Use` pre. `Handled` / `Stop` skip the original virtual. */
+  readonly Use: "Use";
+  /** `Use` post. Return is ignored. */
+  readonly UsePost: "UsePost";
+  /** `GetMaxHealth`. Mutate `info.maxHealth`. `Handled` / `Stop` SUPERCEDE the original. */
+  readonly GetMaxHealth: "GetMaxHealth";
+  /** `ShouldCollide`. Return a boolean (not {@link HookResultValue}); last defined wins. */
+  readonly ShouldCollide: "ShouldCollide";
+  /** `VPhysicsUpdate`. Return is ignored. */
+  readonly VPhysicsUpdate: "VPhysicsUpdate";
+  /** `VPhysicsUpdate` post. Return is ignored. */
+  readonly VPhysicsUpdatePost: "VPhysicsUpdatePost";
+  /** `GroundEntChanged` post. Return is ignored. */
+  readonly GroundEntChangedPost: "GroundEntChangedPost";
+  /** `CanBeAutobalanced`. Return a boolean (not {@link HookResultValue}); last defined wins. */
+  readonly CanBeAutobalanced: "CanBeAutobalanced";
 };
 
 /**
@@ -91,6 +158,89 @@ export declare function SDKHook(
   type: "StartTouchPost" | "TouchPost" | "EndTouchPost" | "BlockedPost",
   callback: TouchPostCallback,
 ): boolean;
+/**
+ * Spawn / Think pre-hook. Callback is `(entity)`. Omit return = Continue.
+ * `Handled` / `Stop` SUPERCEDE the original virtual (`Stop` also skips later callbacks).
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "Spawn" | "Think",
+  callback: ThisCallback,
+): boolean;
+/**
+ * Void this-only hooks (Posts, PreThink/PostThink, VPhysicsUpdate, GroundEntChangedPost).
+ * Return is ignored.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type:
+    | "SpawnPost"
+    | "ThinkPost"
+    | "PreThink"
+    | "PreThinkPost"
+    | "PostThink"
+    | "PostThinkPost"
+    | "VPhysicsUpdate"
+    | "VPhysicsUpdatePost"
+    | "GroundEntChangedPost",
+  callback: ThisVoidCallback,
+): boolean;
+/**
+ * `Use` pre-hook. `Handled` / `Stop` SUPERCEDE the original virtual.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "Use",
+  callback: UseCallback,
+): boolean;
+/**
+ * `Use` post-hook. Return is ignored.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "UsePost",
+  callback: UsePostCallback,
+): boolean;
+/**
+ * `GetMaxHealth`. Mutate `info.maxHealth` in place. `Handled` / `Stop` SUPERCEDE with the new value.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "GetMaxHealth",
+  callback: (info: { maxHealth: number }) => HookResultValue | void,
+): boolean;
+/**
+ * `ShouldCollide`. Return a boolean (not HookResult); last defined return wins, default original.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "ShouldCollide",
+  callback: (
+    entity: EntityRef,
+    collisionGroup: number,
+    contentsMask: number,
+    originalResult: boolean,
+  ) => boolean,
+): boolean;
+/**
+ * `CanBeAutobalanced`. Return a boolean (not HookResult); last defined return wins, default original.
+ * Callback is skipped when the hooked entity has no {@link Client} — never a raw slot `0`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "CanBeAutobalanced",
+  callback: (client: Client, origRet: boolean) => boolean,
+): boolean;
+/**
+ * SetTransmit. Callback is `(entity, client)`. Omit return = Continue.
+ * `Handled` / `Stop` hide this entity from this viewer (AND-merge with `Transmit.setVisibleTo`;
+ * cannot un-hide a native mask clear). `Stop` also skips later SetTransmit callbacks on that pair.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "SetTransmit",
+  callback: (entity: EntityRef, client: Client) => HookResultValue | void,
+): boolean;
 
 /**
  * Remove one matching `(entity, type, callback)` hook. Callback identity is the function reference.
@@ -113,16 +263,61 @@ export declare function SDKUnhook(
   type: "StartTouchPost" | "TouchPost" | "EndTouchPost" | "BlockedPost",
   callback: TouchPostCallback,
 ): boolean;
-
-/**
- * SetTransmit. Callback is `(entity, client)`. Omit return = Continue.
- * `Handled` / `Stop` hide this entity from this viewer (AND-merge with `Transmit.setVisibleTo`;
- * cannot un-hide a native mask clear). `Stop` also skips later SetTransmit callbacks on that pair.
- */
-export declare function SDKHook(
+/** Remove a Spawn / Think pre-hook. */
+export declare function SDKUnhook(
   entity: EntityRef | null,
-  type: "SetTransmit",
-  callback: (entity: EntityRef, client: Client) => HookResultValue | void,
+  type: "Spawn" | "Think",
+  callback: ThisCallback,
+): boolean;
+/** Remove a void this-only hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type:
+    | "SpawnPost"
+    | "ThinkPost"
+    | "PreThink"
+    | "PreThinkPost"
+    | "PostThink"
+    | "PostThinkPost"
+    | "VPhysicsUpdate"
+    | "VPhysicsUpdatePost"
+    | "GroundEntChangedPost",
+  callback: ThisVoidCallback,
+): boolean;
+/** Remove a `Use` pre-hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "Use",
+  callback: UseCallback,
+): boolean;
+/** Remove a `Use` post-hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "UsePost",
+  callback: UsePostCallback,
+): boolean;
+/** Remove a `GetMaxHealth` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "GetMaxHealth",
+  callback: (info: { maxHealth: number }) => HookResultValue | void,
+): boolean;
+/** Remove a `ShouldCollide` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "ShouldCollide",
+  callback: (
+    entity: EntityRef,
+    collisionGroup: number,
+    contentsMask: number,
+    originalResult: boolean,
+  ) => boolean,
+): boolean;
+/** Remove a `CanBeAutobalanced` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "CanBeAutobalanced",
+  callback: (client: Client, origRet: boolean) => boolean,
 ): boolean;
 /** Remove a SetTransmit hook. */
 export declare function SDKUnhook(
