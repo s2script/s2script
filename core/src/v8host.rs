@@ -8495,7 +8495,7 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// hook.event / hook.topmenu / createScope register during OnPluginStart and throw after settle.
+    /// hook.events.on / topmenu / createScope register during OnPluginStart and throw after settle.
     #[test]
     fn sm_publics_hook_event_and_create_scope() {
         init(dummy_logger()).unwrap();
@@ -8504,10 +8504,11 @@ pub(crate) mod frame_tests {
             r#"
             module.exports.OnPluginStart = function () {
                 var p = globalThis.__s2_require("@s2script/sdk/plugin");
-                p.hook.event("round_start", function () { globalThis.__hits = (globalThis.__hits|0)+1; });
-                p.hook.topmenu.addCategory("Server Commands");
+                p.hook.events.on("round_start", function () { globalThis.__hits = (globalThis.__hits|0)+1; });
+                p.topmenu.addCategory("Server Commands");
                 globalThis.__scope = p.createScope();
                 globalThis.__hook = p.hook;
+                globalThis.__topmenu = p.topmenu;
                 globalThis.__createScope = p.createScope;
             };
             "#,
@@ -8520,15 +8521,43 @@ pub(crate) mod frame_tests {
             "smhook",
             r#"
             (function () {
-                try { globalThis.__hook.event("x", function () {}); return "no"; }
+                try { globalThis.__hook.events.on("x", function () {}); return "no"; }
                 catch (e) { return String(e && e.message || e); }
             })()
             "#,
         );
         assert!(
             threw.contains("outside the load window"),
-            "hook.event after settle must throw, got: {}",
+            "hook.events.on after settle must throw, got: {}",
             threw
+        );
+        let pre_threw = eval_in_context_string(
+            "smhook",
+            r#"
+            (function () {
+                try { globalThis.__hook.events.onPre("x", function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+            "#,
+        );
+        assert!(
+            pre_threw.contains("outside the load window"),
+            "hook.events.onPre after settle must throw, got: {}",
+            pre_threw
+        );
+        let top_threw = eval_in_context_string(
+            "smhook",
+            r#"
+            (function () {
+                try { globalThis.__topmenu.addCategory("x"); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+            "#,
+        );
+        assert!(
+            top_threw.contains("outside the load window"),
+            "topmenu after settle must throw, got: {}",
+            top_threw
         );
         let scope_threw = eval_in_context_string(
             "smhook",

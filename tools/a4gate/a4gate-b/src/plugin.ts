@@ -26,7 +26,7 @@ export function OnPluginStart(): void {
     L(`dmg#${dmg} B RAN saw=${info.damage}`);
   });
 
-  hook.event("player_spawn", () => { pre += 1; if (pre <= 3) L(`onPre player_spawn #${pre}`); }, "pre");
+  hook.events.onPre("player_spawn", () => { pre += 1; if (pre <= 3) L(`onPre player_spawn #${pre}`); });
   hook.entity.onCreate("*", () => { created += 1; });
   hook.client.onRunCmd(() => { runcmd += 1; if (runcmd === 1) L("onRunCmd FIRED (first)"); });
 

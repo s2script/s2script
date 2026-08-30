@@ -50,8 +50,8 @@ export function OnPluginStart(): void {
   // "never installs" — i.e. the whole-store is_empty() sample landing AFTER subscribe_into, which would
   // leave the feature silently dead. So: does each of these fire at all.
   pre = 0; post = 0; created = 0; runcmd = 0;
-  hook.event("player_spawn", () => { pre += 1; if (pre <= 3) L(`onPre  player_spawn #${pre}`); }, "pre");
-  hook.event("player_spawn", () => { post += 1; if (post <= 3) L(`onPost player_spawn #${post}`); });
+  hook.events.onPre("player_spawn", () => { pre += 1; if (pre <= 3) L(`onPre  player_spawn #${pre}`); });
+  hook.events.on("player_spawn", () => { post += 1; if (post <= 3) L(`onPost player_spawn #${post}`); });
   hook.entity.onCreate("*", (e, cls) => {
     created += 1;
     if (created <= 5) L(`onCreate #${created} ${cls} idx=${e?.index ?? -1}`);

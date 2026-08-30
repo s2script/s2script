@@ -1,5 +1,5 @@
 import {
-  command, hook, translations, TopMenu, Menu, MenuStyle, Admin, ADMFLAG, Translations,
+  command, topmenu, translations, TopMenu, Menu, MenuStyle, Admin, ADMFLAG, Translations,
 } from "@s2script/sdk";
 import type { PhraseKey } from "@s2script/sdk";
 
@@ -41,9 +41,9 @@ export function OnPluginStart(): void {
   // Fix the standard category order (items land in these; a plugin may add more). These strings are
   // a cross-plugin matching key (basebans/playercommands/basecomm/basevotes addItem against the same
   // literals) and must stay English/untranslated here — see categoryLabel above for the display side.
-  hook.topmenu.addCategory("Player Commands");
-  hook.topmenu.addCategory("Server Commands");
-  hook.topmenu.addCategory("Voting Commands");
+  topmenu.addCategory("Player Commands");
+  topmenu.addCategory("Server Commands");
+  topmenu.addCategory("Voting Commands");
 
   command("sm_admin", (cmd) => {
     const slot = cmd.callerSlot;

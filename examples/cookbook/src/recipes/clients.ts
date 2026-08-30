@@ -62,13 +62,13 @@ export const clientsRecipe: Recipe = {
       }
     });
 
-    hook.event("player_spawn", (ev) => { // clear on respawn
+    hook.events.on("player_spawn", (ev) => { // clear on respawn
       const slot = ev.getPlayerSlot("userid");
       const c = Clients.fromSlot(slot);
       if (c && c.voiceMuted) { c.voiceMuted = false; console.log("[cookbook] voice unmuted slot " + slot + " on spawn"); }
     });
 
-    hook.event("round_end", () => { // clear all at round end
+    hook.events.on("round_end", () => { // clear all at round end
       for (const c of Clients.all()) if (c.voiceMuted) c.voiceMuted = false;
       console.log("[cookbook] voice round_end — unmuted all");
     });

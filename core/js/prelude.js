@@ -1969,10 +1969,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     __s2_load_ctx_or_throw("command.onClientCommand()").commands.onClientCommand(name, handler);
   };
   var hook = {
-    event: function (name, handler, phase) {
-      var c = __s2_load_ctx_or_throw("hook.event()");
-      if (phase === "pre") c.events.onPre(name, handler);
-      else c.events.on(name, handler);
+    events: {
+      on: function (name, handler) {
+        __s2_load_ctx_or_throw("hook.events.on()").events.on(name, handler);
+      },
+      onPre: function (name, handler) {
+        __s2_load_ctx_or_throw("hook.events.onPre()").events.onPre(name, handler);
+      },
     },
     client: {
       onConnect: function (handler) {
@@ -2061,7 +2064,6 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     addCategory: function (n) { __s2_load_ctx_or_throw("topmenu.addCategory()").topmenu.addCategory(n); },
     addItem: function (c, i) { __s2_load_ctx_or_throw("topmenu.addItem()").topmenu.addItem(c, i); },
   };
-  hook.topmenu = topmenu;
   var translations = {
     load: function () {
       var c = __s2_load_ctx_or_throw("translations.load()");

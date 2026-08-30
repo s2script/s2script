@@ -1,4 +1,4 @@
-import { hook, translations } from "@s2script/sdk/plugin";
+import { hook, topmenu, translations } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 import type { Command } from "@s2script/sdk/commands";
 import type { DamageInfo } from "@s2script/sdk/damage";
@@ -11,7 +11,7 @@ export function OnPluginStart(): void {
   translations.load("common");
   command.admin("sm_kick", ADMFLAG.KICK, kick);
   hook.entity.onDamage(halve);
-  hook.topmenu.addCategory("Server Commands");
+  topmenu.addCategory("Server Commands");
 }
 
 function kick(cmd: Command): HookResultValue | void {

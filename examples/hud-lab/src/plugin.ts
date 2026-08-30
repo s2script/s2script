@@ -387,7 +387,7 @@ export function OnPluginStart(): void {
   const demo = new LiveDemo(liveHud, log);
 
   // Kill feed from the real event. `player_death` carries the slots; the weapon is a string field.
-  hook.event("player_death", (ev) => {
+  hook.events.on("player_death", (ev) => {
     if (demo.count === 0) return;                       // nobody watching — do no work at all
     const aSlot = ev.getPlayerSlot("attacker");
     const vSlot = ev.getPlayerSlot("userid");

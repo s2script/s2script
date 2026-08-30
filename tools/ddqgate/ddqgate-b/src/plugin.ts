@@ -20,7 +20,7 @@ export function OnPluginStart(): void {
   hook.server.onGameFrame(() => { frame += 1; });
 
   let seen = 0, thrown = 0, selftests = 0;
-  hook.event("player_changename", (e) => {
+  hook.events.on("player_changename", (e) => {
     const oldname = e.getString("oldname");
     const newname = e.getString("newname");
 
@@ -67,7 +67,7 @@ export function OnPluginStart(): void {
   // The deferred delivery that matters: player_death fired by an engine call made from inside a
   // dispatch. A lost payload reads userid=0 here.
   let deaths = 0;
-  hook.event("player_death", (e) => {
+  hook.events.on("player_death", (e) => {
     deaths += 1;
     L(`player_death #${deaths}: userid=${e.getInt("userid")} attacker=${e.getInt("attacker")} weapon="${e.getString("weapon")}" nowFrame=${frame}`);
   });

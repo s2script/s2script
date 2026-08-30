@@ -1,4 +1,4 @@
-import { hook, command, translations, Admin, ADMFLAG, Server, Plugins, Menu, MenuStyle, Translations } from "@s2script/sdk";
+import { hook, command, topmenu, translations, Admin, ADMFLAG, Server, Plugins, Menu, MenuStyle, Translations } from "@s2script/sdk";
 import type { Command, DamageInfo } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
@@ -84,7 +84,7 @@ export function OnPluginStart(): void {
   // fresh per onSelect and can use the calling admin's own language — it can only ever resolve at
   // the server default language (-1); still an operator-configurable string via
   // translations/basecommands.phrases.json, just not a per-viewer one.
-  hook.topmenu.addItem("Server Commands", { id: "basecommands:map", name: Translations.translate(-1, "Change Map Item"), flags: ADMFLAG.CHANGEMAP,
+  topmenu.addItem("Server Commands", { id: "basecommands:map", name: Translations.translate(-1, "Change Map Item"), flags: ADMFLAG.CHANGEMAP,
     onSelect: adminSlot => {
       const m = new Menu(Translations.translate(adminSlot, "Change Map Title"));
       m.style = MenuStyle.Center;
