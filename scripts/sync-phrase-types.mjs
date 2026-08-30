@@ -7,7 +7,8 @@
  * declaration lists key NAMES so `cmd.replyT` and `Translations.translate` check them, and contains
  * no phrase text. It is gitignored and regenerated, in the spirit of `.svelte-kit/types`.
  *
- * WHICH files a plugin gets is read from its own `ctx.translations.load("a", "b")` call. Nothing is
+ * WHICH files a plugin gets is read from its own `ctx.translations.load("a", "b")` or
+ * `translations.load("a", "b")` call (load-window free API). Nothing is
  * loaded automatically, so a key from a file the plugin did not load is a compile error rather than
  * raw key text printed to a player — SourceMod's rule, caught at build instead of at runtime.
  *
@@ -85,7 +86,8 @@ ${entries}
 }
 
 /**
- * The phrase-file names a plugin declares, from `ctx.translations.load("a", "b")`.
+ * The phrase-file names a plugin declares, from `ctx.translations.load("a", "b")` or
+ * identifier `translations.load("a", "b")` (the ctx-free load-window form).
  *
  * Parsed with the TypeScript compiler API, not a regex: a regex matches the same text inside a
  * comment or a string, and a conversion like this leaves commented-out calls behind. Only literal
@@ -105,11 +107,14 @@ function declaredSets(srcDir) {
         if (
           ts.isCallExpression(node) &&
           ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === "load" &&
-          ts.isPropertyAccessExpression(node.expression.expression) &&
-          node.expression.expression.name.text === "translations"
+          node.expression.name.text === "load"
         ) {
-          for (const a of node.arguments) if (ts.isStringLiteralLike(a)) names.push(a.text);
+          const recv = node.expression.expression;
+          const fromCtx = ts.isPropertyAccessExpression(recv) && recv.name.text === "translations";
+          const fromIdent = ts.isIdentifier(recv) && recv.text === "translations";
+          if (fromCtx || fromIdent) {
+            for (const a of node.arguments) if (ts.isStringLiteralLike(a)) names.push(a.text);
+          }
         }
         ts.forEachChild(node, visit);
       };

@@ -203,29 +203,33 @@ export function fileDevDeps(packagesDir: string, game: GameChoice): Record<strin
 
 function pluginSource(game: GameChoice): string {
   if (game === "cs2") {
-    return `import { plugin } from "@s2script/sdk/plugin";
+    return `import { command } from "@s2script/sdk/commands";
+import type { CommandInvocation } from "@s2script/sdk/commands";
 import { Chat } from "@s2script/sdk/chat";
 
-export default plugin((ctx) => {
-  ctx.commands.register("hello", (cmd) => {
-    cmd.reply("hello from s2script");
-    if (cmd.callerSlot >= 0) {
-      Chat.toSlot(cmd.callerSlot, "hello from s2script");
-    }
-  });
-});
+export function OnPluginStart(): void {
+  command("hello", hello);
+}
+
+function hello(cmd: CommandInvocation): void {
+  cmd.reply("hello from s2script");
+  if (cmd.callerSlot >= 0) {
+    Chat.toSlot(cmd.callerSlot, "hello from s2script");
+  }
+}
 `;
   }
-  return `import { plugin } from "@s2script/sdk/plugin";
-import { delay } from "@s2script/sdk/timers";
+  return `import { delay } from "@s2script/sdk/timers";
 
-export default plugin((ctx) => {
-  let n = 0;
-  ctx.server.onGameFrame(() => {
-    n += 1;
-  });
+let n = 0;
+
+export function OnPluginStart(): void {
   void delay(1000).then(() => console.log("s2script plugin alive; frames so far:", n));
-});
+}
+
+export function OnGameFrame(): void {
+  n += 1;
+}
 `;
 }
 

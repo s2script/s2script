@@ -221,13 +221,16 @@ export interface PluginHooks {
  * {@link PluginHooks}. May be async (the load waits for it to settle).
  */
 export type PluginFactory = (ctx: PluginContext) => void | PluginHooks | Promise<void | PluginHooks>;
-/** The opaque artifact {@link plugin} returns; a module must `export default` it to be a valid plugin. */
+/** The opaque artifact {@link plugin} returns; a module may `export default` it to be a valid plugin.
+ *  `export function OnPluginStart` is the other valid artifact (no default export required). */
 export interface PluginDefinition {
   /** Brand tag proving this object came from {@link plugin} (host-checked at load). */
   readonly __s2plugin: 1;
 }
 /**
  * Define a plugin from its factory. `export default` the result — the host calls the factory once at load.
+ * Alternative: `export function OnPluginStart()` (SourceMod-shaped publics; no `plugin()` wrapper).
+ * Either form is a valid artifact; both may appear (factory first, then publics).
  * @example
  * import { plugin } from "@s2script/sdk/plugin";
  * // examples/greeter-plugin/src/plugin.ts:8
@@ -267,3 +270,16 @@ export declare function use<T extends object>(name: string): InterfaceHandle<T>;
  * Load-window only. Same contract as {@link PluginContext.tryUse}.
  */
 export declare function tryUse<T extends object>(name: string): InterfaceHandle<T> | null;
+
+/**
+ * Load-window TopMenu contribution. Same contract as {@link PluginContext.topmenu}.
+ * Throws after settle.
+ */
+export declare const topmenu: CtxTopMenu;
+
+/**
+ * Load-window phrase-file declaration. Same contract as {@link PluginContext.translations}.
+ * Throws after settle. `s2s build` / `sync-phrase-types.mjs` collect `translations.load(...)`
+ * the same way they collect `ctx.translations.load(...)`.
+ */
+export declare const translations: CtxTranslations;

@@ -5699,8 +5699,8 @@ fn resolve_db(
 enum LoadStart {
     /// The artifact was valid; the factory was driven and an in-flight `LOADING` entry registered.
     Started,
-    /// The bundle is not a `plugin()` artifact (legacy `onLoad` shape or a malformed default export)
-    /// — fail loud, tear down the fresh context (never run it).
+    /// The bundle is not a `plugin()` artifact and has no `OnPluginStart` (or is a legacy `onLoad`
+    /// shape) — fail loud, tear down the fresh context (never run it).
     Refused(String),
     /// Host not initialized / context missing — nothing to do.
     Aborted,
@@ -5711,10 +5711,12 @@ enum LoadStart {
 /// Steps: (1) `create_plugin_context(id)` — a fresh per-plugin context with the full injected API
 /// (`__s2require` + the engine-generic prelude + any registered game preludes); (2) evaluate the CJS
 /// wrapper `(function(require,module,exports){…})(require, module, module.exports)` in that context
-/// and CAPTURE the RETURNED `module.exports`; (3) require `module.exports.default` to be a `plugin()`
-/// definition (`{ __s2plugin: 1, factory }`) — fail LOUD otherwise (locked decision #5); (4) register
-/// an in-flight `LOADING` entry and drive `globalThis.__s2_run_factory(def)`. The factory runs against
-/// a load-scoped `ctx`; its settle (`__s2_load_settled`/`__s2_load_failed`) marks the `LOADING` state,
+/// and CAPTURE the RETURNED `module.exports`; (3) require either `module.exports.default` to be a
+/// `plugin()` definition (`{ __s2plugin: 1, factory }`) or `module.exports.OnPluginStart` to be a
+/// function (or both) — fail LOUD if neither (reason names `OnPluginStart`); a legacy `onLoad` export
+/// is still refused; (4) register an in-flight `LOADING` entry and drive
+/// `globalThis.__s2_run_factory(def, exports)` (factory first, then publics). The load-scoped `ctx` is
+/// stashed at `globalThis.__s2_load_ctx`; settle (`__s2_load_settled`/`__s2_load_failed`) marks the `LOADING` state,
 /// and `finalize_loading_plugins` performs the actual arm-at-Active / teardown-on-Failed transition —
 /// inline here for a synchronous factory (the whole base suite), or on a later drain for an async one.
 ///
@@ -5795,7 +5797,7 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                 break 'blk LoadStart::Refused("module.exports is not an object".into());
             };
 
-            // (3) The artifact: module.exports.default must be a plugin() definition (spec §1.1).
+            // (3) The artifact: plugin() default AND/OR export function OnPluginStart.
             let def_obj: Option<v8::Local<v8::Object>> = v8::String::new(tc, "default")
                 .and_then(|k| exports.get(tc, k.into()))
                 .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok());
@@ -5813,9 +5815,13 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                     tag_ok && factory_ok
                 })
                 .unwrap_or(false);
+            let has_on_plugin_start = v8::String::new(tc, "OnPluginStart")
+                .and_then(|k| exports.get(tc, k.into()))
+                .map(|v| v.is_function())
+                .unwrap_or(false);
 
-            if !is_plugin {
-                // Fail loud (locked decision #5): a legacy onLoad shape or a malformed default export.
+            if !is_plugin && !has_on_plugin_start {
+                // Fail loud: a legacy onLoad shape, or neither plugin() nor OnPluginStart.
                 let has_legacy = v8::String::new(tc, "onLoad")
                     .and_then(|k| exports.get(tc, k.into()))
                     .map(|v| v.is_function())
@@ -5823,13 +5829,18 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                 let reason = if has_legacy {
                     "legacy plugin shape (export onLoad) - rebuild with @s2script/sdk >= 0.2: export default plugin(factory)"
                 } else {
-                    "default export is not a plugin() definition"
+                    "no plugin() factory or export function OnPluginStart"
                 };
                 log_warn(&format!("WARN: load('{}'): {}", id, reason));
                 crate::crash::report_js_error(id, "load", reason, "");
                 break 'blk LoadStart::Refused(reason.to_string());
             }
-            let def = def_obj.expect("is_plugin implies def_obj is Some");
+            let def_val: v8::Local<v8::Value> = if is_plugin {
+                def_obj.expect("is_plugin implies def_obj is Some").into()
+            } else {
+                v8::undefined(tc).into()
+            };
+            let exports_val: v8::Local<v8::Value> = exports.into();
 
             // Register the in-flight load BEFORE running the factory (a SYNC settle mutates this entry).
             LOADING.with(|l| {
@@ -5843,16 +5854,15 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
                 )
             });
 
-            // Drive the factory: globalThis.__s2_run_factory(def). It builds the load-scoped ctx,
-            // stashes it at globalThis.__s2_load_ctx (so free command/hook/publish/use bind to it),
-            // calls def.factory(ctx), and settles via __s2_load_settled / __s2_load_failed.
+            // Drive factory + publics: globalThis.__s2_run_factory(def, exports).
+            // def may be undefined when the artifact is publics-only.
             let global = tc.get_current_context().global(tc);
             let run_ok = v8::String::new(tc, "__s2_run_factory")
                 .and_then(|k| global.get(tc, k.into()))
                 .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
                 .map(|run_f| {
                     let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                    run_f.call(tc, recv, &[def.into()]).is_some()
+                    run_f.call(tc, recv, &[def_val, exports_val]).is_some()
                 })
                 .unwrap_or(false);
             if !run_ok {
@@ -8375,6 +8385,59 @@ pub(crate) mod frame_tests {
             "hook.damage() after settle must throw, got: {}",
             hook_threw
         );
+        shutdown();
+    }
+
+    /// `export function OnPluginStart` (no plugin() default) is a valid artifact. Load-window
+    /// `command()` registers during OnPluginStart and throws after settle.
+    #[test]
+    fn on_plugin_start_public_is_a_valid_artifact() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "pubstart",
+            r#"
+            module.exports.OnPluginStart = function () {
+                var command = globalThis.__s2_require("@s2script/sdk/commands").command;
+                command("sm_x", function (cmd) {
+                    globalThis.__slot = cmd.callerSlot;
+                    return HookResult.Handled;
+                });
+                globalThis.__command = command;
+            };
+            "#,
+            "{}",
+        );
+        assert_eq!(plugin_phase("pubstart"), Some(crate::plugin::Phase::Active));
+        dispatch_concommand("sm_x", -1, "", ReplySource::from_slot(-1));
+        assert_eq!(eval_in_context_string("pubstart", "String(globalThis.__slot)"), "-1");
+        let threw = eval_in_context_string(
+            "pubstart",
+            r#"
+            (function () {
+                try { globalThis.__command("sm_late", function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+        "#,
+        );
+        assert!(
+            threw.contains("outside the load window"),
+            "command() after OnPluginStart settle must throw, got: {}",
+            threw
+        );
+        shutdown();
+    }
+
+    /// Neither plugin() nor OnPluginStart → refused, reason names OnPluginStart.
+    #[test]
+    fn missing_plugin_and_on_plugin_start_refused() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js("nopub", "module.exports.foo = 1;", "{}");
+        assert!(
+            FAILED_PLUGINS.with(|f| f.borrow().get("nopub").map(|r| r.contains("OnPluginStart")).unwrap_or(false)),
+            "missing both must refuse naming OnPluginStart, got {:?}",
+            FAILED_PLUGINS.with(|f| f.borrow().get("nopub").cloned())
+        );
+        assert!(!PLUGINS.with(|p| p.borrow().contains_key("nopub")));
         shutdown();
     }
 
