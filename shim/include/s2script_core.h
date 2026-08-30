@@ -219,6 +219,14 @@ void s2script_core_crash_set_identity(const char* gamedata_fingerprint,
                                       int gamedata_fail_count,
                                       const char* spool_dir);
 
+/* SDKHook SetTransmit — CheckTransmit POST mux (AND-merge hide-only with Transmit.setVisibleTo).
+ * active() is a cheap scan: 0 means skip JS entirely (today's CheckTransmit cost). dispatch
+ * returns collapsed HookResult 0..=3; the shim Clears the viewer's bit when >= 2 (Handled).
+ * snapshot fills unique (index, serial) pairs up to cap. catch_unwind -> 0 (fail-open). */
+int s2script_core_sdkhook_settransmit_active(void);
+int s2script_core_dispatch_sdkhook_settransmit(int thisIndex, int thisSerial, int viewerSlot);
+int s2script_core_sdkhook_settransmit_snapshot(int* idx, int* ser, int cap);
+
 #ifdef __cplusplus
 }
 #endif

@@ -15,6 +15,7 @@ use std::ffi::CString;
 use std::os::raw::c_int;
 
 const KIND_ON_TAKE_DAMAGE: &str = "OnTakeDamage";
+pub(crate) const KIND_SET_TRANSMIT: &str = "SetTransmit";
 
 struct Entry {
     owner: String,
@@ -53,7 +54,7 @@ fn vp_kind(kind: &str) -> Option<(&'static str, c_int)> {
 }
 
 fn is_known_kind(kind: &str) -> bool {
-    kind == KIND_ON_TAKE_DAMAGE || vp_kind(kind).is_some()
+    kind == KIND_ON_TAKE_DAMAGE || kind == KIND_SET_TRANSMIT || vp_kind(kind).is_some()
 }
 
 fn vp_add(index: i32, serial: i32, ty: &str, post: c_int) -> bool {
@@ -131,12 +132,31 @@ pub(crate) fn snapshot_ontakedamage() -> Vec<(String, u64, v8::Global<v8::Functi
     })
 }
 
-fn snapshot_kind(entity_id: u64, kind: &str) -> Vec<(String, u64, v8::Global<v8::Function>)> {
+pub(crate) fn snapshot_kind(entity_id: u64, kind: &str) -> Vec<(String, u64, v8::Global<v8::Function>)> {
     HOOKS.with(|h| {
         h.borrow()
             .iter()
             .filter(|e| e.entity_id == entity_id && e.kind == kind)
             .map(|e| (e.owner.clone(), e.generation, e.handler.clone()))
+            .collect()
+    })
+}
+
+pub(crate) fn kind_active(kind: &str) -> bool {
+    HOOKS.with(|h| h.borrow().iter().any(|e| e.kind == kind))
+}
+
+/// Unique `(index, engine_serial)` pairs for `kind`, subscribe order.
+pub(crate) fn snapshot_kind_entities(kind: &str) -> Vec<(i32, i32)> {
+    HOOKS.with(|h| {
+        let mut seen = HashSet::new();
+        h.borrow()
+            .iter()
+            .filter(|e| e.kind == kind)
+            .filter_map(|e| {
+                seen.insert((e.entity_index, e.engine_serial))
+                    .then_some((e.entity_index, e.engine_serial))
+            })
             .collect()
     })
 }

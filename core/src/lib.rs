@@ -55,6 +55,7 @@ pub(crate) mod crash;
 mod schema;
 mod schema_catalog;
 mod sdkhooks;
+mod sdkhooks_transmit;
 mod sqldb;
 mod usermsg;
 mod v8host;

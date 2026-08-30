@@ -5,6 +5,7 @@
 import type { EntityRef } from "./entity";
 import type { DamageInfo } from "./damage";
 import type { HookResultValue } from "./events";
+import type { Client } from "./clients";
 
 type TouchCallback = (entity: EntityRef, other: EntityRef | null) => HookResultValue | void;
 type TouchPostCallback = (entity: EntityRef, other: EntityRef | null) => void;
@@ -17,6 +18,12 @@ type TouchPostCallback = (entity: EntityRef, other: EntityRef | null) => void;
 export declare const SDKHookType: {
   /** Pre-apply damage (`DispatchTraceAttack`). Mutate {@link DamageInfo.damage} in place. */
   readonly OnTakeDamage: "OnTakeDamage";
+  /**
+   * CheckTransmit mux (wiki `SDKHook_SetTransmit`). `Handled` / `Stop` hide this entity from this
+   * viewer. AND-merge with `Transmit.setVisibleTo`: either API can hide; SetTransmit cannot
+   * un-hide a native mask clear. There is no `SetTransmitPost`.
+   */
+  readonly SetTransmit: "SetTransmit";
   /** `CBaseEntity::StartTouch` pre. `Handled` / `Stop` skip the original virtual. */
   readonly StartTouch: "StartTouch";
   /** `CBaseEntity::Touch` pre. `Handled` / `Stop` skip the original virtual. */
@@ -105,4 +112,21 @@ export declare function SDKUnhook(
   entity: EntityRef | null,
   type: "StartTouchPost" | "TouchPost" | "EndTouchPost" | "BlockedPost",
   callback: TouchPostCallback,
+): boolean;
+
+/**
+ * SetTransmit. Callback is `(entity, client)`. Omit return = Continue.
+ * `Handled` / `Stop` hide this entity from this viewer (AND-merge with `Transmit.setVisibleTo`;
+ * cannot un-hide a native mask clear). `Stop` also skips later SetTransmit callbacks on that pair.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "SetTransmit",
+  callback: (entity: EntityRef, client: Client) => HookResultValue | void,
+): boolean;
+/** Remove a SetTransmit hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "SetTransmit",
+  callback: (entity: EntityRef, client: Client) => HookResultValue | void,
 ): boolean;
