@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
-import { Net } from "@s2script/sdk/net";
-import { command } from "@s2script/sdk/commands";
+import { Net, command, HookResult } from "@s2script/sdk";
 
 const dec = (b: Uint8Array) => Array.from(b).map((c) => String.fromCharCode(c)).join("");
 
@@ -65,6 +64,7 @@ export const netRecipe: Recipe = {
       cmd.reply("firing TCP + UDP round trips…");
       tcp();
       a2s();
+      return HookResult.Handled;
     });
   },
 };

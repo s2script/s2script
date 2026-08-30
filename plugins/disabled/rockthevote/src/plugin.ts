@@ -374,9 +374,8 @@ export async function OnPluginStart(): Promise<void> {
 
   command.admin("sm_forcertv", ADMFLAG.CHANGEMAP, (cmd) => {
     cmd.replyT(startVote(true) ? "Rtv Forced" : "Rtv Forced Already Running");
+    return HookResult.Handled;
   });
-
-  console.log("[rockthevote] onLoad — sm_forcertv + rtv registered");
 }
 
 export function OnGameFrame(): void {

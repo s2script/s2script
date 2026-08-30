@@ -10,10 +10,8 @@
  *   sm_ec_burn <target> set a player on fire via the declared CBaseModelEntity::Ignite
  */
 import { Engine } from "@s2script/sdk/unsafe";
-import { Entity } from "@s2script/sdk/entity";
-import { ADMFLAG } from "@s2script/sdk/admin";
+import { Entity, ADMFLAG, command, HookResult } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /** How long a burn lasts, in seconds. Passed as the call's `flFlameLifetime` float. */
 const BURN_SECONDS = 10.0;
@@ -60,17 +58,18 @@ export function OnPluginStart(): void {
           "addons/s2script/configs/permissions.json, then reload."
       );
     }
+    return HookResult.Handled;
   });
 
   command.admin("sm_ec_burn", ADMFLAG.SLAY, (cmd) => {
     if (!ignite) {
       cmd.reply(`[engine-call-demo] sm_ec_burn unavailable: ${Engine.status("ignite")}`);
-      return;
+      return HookResult.Handled;
     }
     const targets = Player.target(cmd.arg(0) ?? "@me", cmd.callerSlot);
     if (targets.length === 0) {
       cmd.reply("[engine-call-demo] usage: sm_ec_burn <target>  (no match)");
-      return;
+      return HookResult.Handled;
     }
 
     // Count flames BEFORE and AFTER, rather than reporting how many pawns we called on.
@@ -93,5 +92,6 @@ export function OnPluginStart(): void {
       `[engine-call-demo] called ignite on ${called} pawn(s); entityflame ${before} -> ${after} ` +
         (after > before ? "(EFFECT CONFIRMED)" : "(NO EFFECT — the call resolved but did nothing)")
     );
+    return HookResult.Handled;
   });
 }

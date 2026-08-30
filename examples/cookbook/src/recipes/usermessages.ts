@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { UserMessages } from "@s2script/sdk/usermessages";
-import { HookResult, type HookResultValue } from "@s2script/sdk/events";
-import { command } from "@s2script/sdk/commands";
+import { UserMessages, HookResult, command } from "@s2script/sdk";
+import type { HookResultValue } from "@s2script/sdk";
 
 /**
  * UserMessages.onPre intercepts an outbound user message before delivery:
@@ -45,8 +44,9 @@ export const usermessagesRecipe: Recipe = {
       const what = cmd.arg(0), on = cmd.arg(1) !== "0";
       if (what === "radio") blockRadio = on;
       else if (what === "shots") blockShots = on;
-      else { cmd.reply("[cookbook] usage: sm_usermsg <radio|shots> <0|1>"); return; }
+      else { cmd.reply("[cookbook] usage: sm_usermsg <radio|shots> <0|1>"); return HookResult.Handled; }
       cmd.reply("[cookbook] usermsg: block " + what + " = " + on);
+      return HookResult.Handled;
     });
   },
 };

@@ -8,7 +8,7 @@
  *
  * Every write here is gated on {@link probeLayout} first — see `offsets.ts` for why that matters.
  */
-import type { EntityRef } from "@s2script/sdk/entity";
+import type { EntityRef } from "@s2script/sdk";
 import { LAYOUT, STATE, VEC, LAYOUT_SIZE, STATE_SIZE, globalStateField } from "./offsets";
 
 /** Highest element count we will believe from a raw vector read. A real layout declares tens of

@@ -9,7 +9,7 @@
 //   DEFERRED: sm_burn (an ignite game-function, no framework sig to port),
 //   sm_beacon (a particle/temp-entity subsystem). Both are documented follow-ups.
 
-import { command, translations, ADMFLAG, delay, Translations } from "@s2script/sdk";
+import { command, translations, ADMFLAG, delay, Translations, HookResult } from "@s2script/sdk";
 import type { Command, PhraseKey } from "@s2script/sdk";
 import { Player, Pawn, Fade } from "@s2script/cs2";
 
@@ -60,6 +60,7 @@ export function OnPluginStart(): void {
       pw.gravityScale = factor;
       pw.actualGravityScale = factor;
     }, true);
+    return HookResult.Handled;
   });
 
   // sm_blind <target> [seconds] — full black-screen fade (CUserMessageFade) via the generic
@@ -70,6 +71,7 @@ export function OnPluginStart(): void {
     forEachPawn(cmd, "Usage Blind", "Blinded Player", "Blinded Players", (p, _pw) => {
       Fade.blind(p.slot, durMs);
     }, true);
+    return HookResult.Handled;
   });
 
   // sm_noclip <target> — toggle noclip (WALK <-> NOCLIP).
@@ -77,6 +79,7 @@ export function OnPluginStart(): void {
     forEachPawn(cmd, "Usage Noclip", "Toggled Noclip For Player", "Toggled Noclip For Players", (_p, pw) => {
       pw.moveType = pw.moveType === NOCLIP ? WALK : NOCLIP;
     }, true);
+    return HookResult.Handled;
   });
 
   // sm_freeze <target> [seconds] — freeze in place; auto-unfreeze after [seconds] (0 = until sm_unfreeze).
@@ -92,6 +95,7 @@ export function OnPluginStart(): void {
         });
       }
     }, true);
+    return HookResult.Handled;
   });
 
   // sm_unfreeze <target> — restore movement.
@@ -99,7 +103,6 @@ export function OnPluginStart(): void {
     forEachPawn(cmd, "Usage Unfreeze", "Unfroze Player", "Unfroze Players", (_p, pw) => {
       pw.moveType = WALK;
     }, false);
+    return HookResult.Handled;
   });
-
-  console.log("[funcommands] onLoad — gravity/noclip/freeze/unfreeze/blind registered (burn/beacon deferred)");
 }

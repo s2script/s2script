@@ -6,11 +6,12 @@
 // libs/greeter/src/index.ts and the change is picked up immediately, exactly like editing this
 // file's own source.
 import { greet } from "@ws-example/greeter";
-import { command } from "@s2script/sdk/commands";
+import { command, HookResult } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command("sm_greet", (cmd) => {
     const name = cmd.argsFrom(0) || "world";
     cmd.reply(greet(name));
+    return HookResult.Handled;
   });
 }

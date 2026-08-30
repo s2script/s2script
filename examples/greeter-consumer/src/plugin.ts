@@ -1,8 +1,8 @@
-// Consumer: hard-deps @demo/greeter. ctx.use returns a proxy that throws
+// Consumer: hard-deps @demo/greeter. `use()` returns a proxy that throws
 // InterfaceUnavailable while the producer is unloaded, so calls are wrapped —
 // a producer reload degrades gracefully instead of crashing this plugin.
 // (For a dependency you can live without, declare it under
-// optionalPluginDependencies and use ctx.tryUse, which returns null instead.)
+// optionalPluginDependencies and use `tryUse()`, which returns null instead.)
 //
 // Types come from the verified contract copy at
 // .s2script/types/@demo/greeter/index.d.ts — a byte-copy of the producer's
@@ -10,8 +10,8 @@
 // contract is refused at load rather than marshalled across. Refresh with:
 //   cp examples/greeter-plugin/api.d.ts examples/greeter-consumer/.s2script/types/@demo/greeter/index.d.ts
 import type { Greeter } from "@demo/greeter";
-import { use } from "@s2script/sdk/plugin";
-import type { InterfaceHandle } from "@s2script/sdk/plugin";
+import { use } from "@s2script/sdk";
+import type { InterfaceHandle } from "@s2script/sdk";
 
 let greeter!: InterfaceHandle<Greeter>;
 let ticks = 0;

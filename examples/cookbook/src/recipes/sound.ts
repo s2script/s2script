@@ -1,7 +1,7 @@
 import type { Recipe } from "../recipe.ts";
-import { Sound, type PrecacheContext } from "@s2script/sdk/sound";
+import { Sound, command, HookResult } from "@s2script/sdk";
+import type { PrecacheContext } from "@s2script/sdk";
 import { Pawn, Sounds } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * Sounds must be registered during the precache window — emitting an
@@ -22,12 +22,13 @@ export const soundRecipe: Recipe = {
       if (cmd.args.length > 1) {
         const slot = parseInt(cmd.args[1], 10);
         const pawn = Pawn.forSlot(Number.isNaN(slot) ? -1 : slot);
-        if (!pawn) { cmd.reply(`no pawn at slot ${cmd.args[1]}`); return; }
+        if (!pawn) { cmd.reply(`no pawn at slot ${cmd.args[1]}`); return HookResult.Handled; }
         cmd.reply(`emitSound('${name}') from slot ${slot} -> guid=${pawn.emitSound(name, { recipients: [slot] })}`);
-        return;
+        return HookResult.Handled;
       }
       // Without: a global broadcast from the world.
       cmd.reply(`Sound.emit('${name}') broadcast -> guid=${Sound.emit(name)}`);
+      return HookResult.Handled;
     });
   },
 };

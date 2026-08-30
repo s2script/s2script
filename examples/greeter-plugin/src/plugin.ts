@@ -10,8 +10,8 @@
 // the whole payload.
 import { Pawn } from "@s2script/cs2";
 import type { Greeter } from "../api";
-import { publish } from "@s2script/sdk/plugin";
-import type { PublishHandle } from "@s2script/sdk/interfaces";
+import { publish } from "@s2script/sdk";
+import type { PublishHandle } from "@s2script/sdk";
 
 let handle!: PublishHandle;
 let ticks = 0;

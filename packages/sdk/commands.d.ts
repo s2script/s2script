@@ -57,7 +57,7 @@ export interface CommandInvocation {
    *
    * @example
    * // `!help` answers in chat; `sm_help` typed at a console answers in that console.
-   * ctx.commands.register("sm_help", (cmd) => cmd.reply("[SM] Commands: …"));
+   * command("sm_help", (cmd) => { cmd.reply("[SM] Commands: …"); return HookResult.Handled; });
    */
   reply(message: string): void;
   /**
@@ -98,13 +98,12 @@ export type CommandHandler = (
 
 /**
  * Register a public command in the load window (SourceMod `RegConsoleCmd`).
- * Callable only while the plugin factory (or `OnPluginStart`) is running — throws after settle.
+ * Callable only while `OnPluginStart` is running — throws after settle.
  *
  * `.admin` / `.server` are the `RegAdminCmd` / `RegServerCmd` shapes: name the handler anything.
  *
  * @example
- * import { command } from "@s2script/sdk/commands";
- * import { ADMFLAG } from "@s2script/sdk/admin";
+ * import { command, ADMFLAG, HookResult } from "@s2script/sdk";
  * export function OnPluginStart(): void {
  *   command.admin("sm_kick", ADMFLAG.KICK, kick);
  * }
@@ -141,10 +140,9 @@ export interface ChatTrigger {
 
 /**
  * Command-registry utilities: dispatch by name, parse/route chat triggers, and enumerate the global
- * registry. Commands themselves are registered in the load window via {@link command} or
- * `ctx.commands.register*`.
+ * registry. Commands themselves are registered in the load window via {@link command}.
  * @example
- * import { Commands } from "@s2script/sdk/commands";
+ * import { Commands } from "@s2script/sdk";
  * // sm_help backend: every registered command + its required admin flag mask.
  * const cmds = Commands.list().slice().sort((a, b) => (a.name < b.name ? -1 : 1));
  */
@@ -171,7 +169,7 @@ export declare const Commands: {
   /**
    * Observe a CLIENT command by name — SourceMod's `AddCommandListener`.
    *
-   * Unlike {@link register}, which CREATES a command, this hooks one that already exists — including
+   * Unlike {@link command}, which CREATES a command, this hooks one that already exists — including
    * commands the engine itself owns (`player_ping`, `jointeam`, `drop`, `buy`). Registering a
    * ConCommand of an engine-owned name fails outright ("unable to link multiple ConCommands named
    * X"), so this is the only way to see those.
@@ -182,7 +180,7 @@ export declare const Commands: {
    *
    * @example
    * // Middle-mouse ping opens the shop, and still places the ping.
-   * ctx.commands.onClientCommand("player_ping", (slot) => { openShop(slot); });
+   * command.onClientCommand("player_ping", (slot) => { openShop(slot); });
    */
   onClientCommand(name: string, handler: (slot: number, argString: string) => HookResultValue | void): void;
   /** Every globally-registered command with its required admin `flags`: `0` = anyone, `-1` = console/server-only,

@@ -5,7 +5,7 @@
 // time, same as examples/monorepo-plugin used to inline packages/core into its one plugin.
 import { Tally, shout } from "@monorepo-example/shared";
 import type { Greeter } from "../api";
-import { publish } from "@s2script/sdk/plugin";
+import { publish } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   // This plugin's OWN copy of Tally — bundling is a build-time COPY, not a runtime share.

@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
-import { delay } from "@s2script/sdk/timers";
-import { command } from "@s2script/sdk/commands";
+import { delay, command, HookResult } from "@s2script/sdk";
 
 // Two different operations, easy to confuse:
 //   changeTeam  — the engine's ChangeTeam: jointeam semantics, usually kills the pawn
@@ -25,15 +24,15 @@ export const teamRecipe: Recipe = {
             p.changeTeam(team);
             cmd.reply(`unspec slot=${p.slot} uid=${p.userId}: Spectator -> ${TEAM_NAME(team)}`);
             console.log(`[cookbook] changeteam moved slot=${p.slot} Spectator -> ${TEAM_NAME(team)}`);
-            return;
+            return HookResult.Handled;
           }
         }
         cmd.reply("changeteam: no spectators to move");
-        return;
+        return HookResult.Handled;
       }
 
       const ps = Player.all(); // in-game (pawn-gated)
-      if (!ps.length) { cmd.reply("changeteam: no in-game players"); return; }
+      if (!ps.length) { cmd.reply("changeteam: no in-game players"); return HookResult.Handled; }
       const p = ps[0];
       const uid = p.userId;
       const before = p.teamNum ?? -1;
@@ -45,6 +44,7 @@ export const teamRecipe: Recipe = {
         const t = after ? (after.teamNum ?? -1) : -1;
         console.log(`[cookbook] changeteam slot=${p.slot} uid=${uid} teamNum after=${t} (${TEAM_NAME(t)}) — expect Spectator(1)`);
       });
+      return HookResult.Handled;
     });
 
     // --- switchTeam: non-lethal, keeps the player alive and armed ----------
@@ -55,7 +55,7 @@ export const teamRecipe: Recipe = {
         const dead = Player.allConnected().find(
           (p) => p.pawnIsAlive === false && (p.teamNum === 2 || p.teamNum === 3)
         );
-        if (!dead) { cmd.reply("switchteam: no dead T/CT player (slay one first)"); return; }
+        if (!dead) { cmd.reply("switchteam: no dead T/CT player (slay one first)"); return HookResult.Handled; }
         const uid = dead.userId;
         const before = dead.teamNum ?? -1;
         const target = before === 2 ? 3 : 2;
@@ -68,7 +68,7 @@ export const teamRecipe: Recipe = {
           console.log(`[cookbook] switchteam deadtest AFTER team=${TEAM_NAME(after ? after.teamNum : null)} ` +
                       `pawnIsAlive=${after ? after.pawnIsAlive : null} — expect ${TEAM_NAME(target)} + false`);
         });
-        return;
+        return HookResult.Handled;
       }
 
       if (sub === "revealtest") {
@@ -78,11 +78,11 @@ export const teamRecipe: Recipe = {
         }
         cmd.reply(`revealtest: moved ${n} T player(s) -> CT (round-end reveal shape)`);
         console.log(`[cookbook] switchteam revealtest moved ${n} players T->CT in one frame`);
-        return;
+        return HookResult.Handled;
       }
 
       const ps = Player.all(); // in-game (pawn-gated) — alive players
-      if (!ps.length) { cmd.reply("switchteam: no in-game players"); return; }
+      if (!ps.length) { cmd.reply("switchteam: no in-game players"); return HookResult.Handled; }
       const p = ps[0];
       const uid = p.userId;
       const before = p.teamNum ?? -1;
@@ -105,6 +105,7 @@ export const teamRecipe: Recipe = {
                     `weapons=${pawn ? pawn.weapons.length : -1} pawnRef=${refAfter} respawned=${refAfter !== refBefore} ` +
                     `— expect team=${TEAM_NAME(target)}, alive=true, weapons kept`);
       });
+      return HookResult.Handled;
     });
   },
 };

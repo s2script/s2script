@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { Chat } from "@s2script/sdk/chat";
+import { Chat, command, HookResult } from "@s2script/sdk";
 import { ChatColors } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * Chat.toSlot / Chat.toAll print to player chat (SM's PrintToChat / PrintToChatAll). Colors are
@@ -20,7 +19,7 @@ export const chatRecipe: Recipe = {
   describe: "print to chat, plain and multi-color inline (sm_saycolor)",
   register() {
     command("sm_saycolor", (cmd) => {
-      if (cmd.callerSlot < 0) { cmd.reply("run in-game — chat has no console channel"); return; }
+      if (cmd.callerSlot < 0) { cmd.reply("run in-game — chat has no console channel"); return HookResult.Handled; }
 
       // Plain — no control byte at all; renders in the client's default chat color.
       Chat.toSlot(cmd.callerSlot, "[cookbook] plain message, no color byte.");
@@ -35,6 +34,7 @@ export const chatRecipe: Recipe = {
 
       Chat.toAll("[cookbook] sm_saycolor ran — everyone sees this one.");
       cmd.reply("sent 3 chat lines — check chat");
+      return HookResult.Handled;
     });
   },
 };

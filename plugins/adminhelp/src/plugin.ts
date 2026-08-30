@@ -2,7 +2,7 @@
 // requires, paginated. Reads Commands.list() (the core command registry + flag mask) and maps each
 // flag mask to human names via ADMFLAG. No engine work beyond the core __s2_commands_list native.
 
-import { command, translations, Commands, ADMFLAG, Translations } from "@s2script/sdk";
+import { command, translations, Commands, ADMFLAG, Translations, HookResult } from "@s2script/sdk";
 
 const PER_PAGE = 10;
 
@@ -38,7 +38,6 @@ export function OnPluginStart(): void {
       cmd.replyT("Command Row", c.name, flagsToLabel(c.flags, cmd.callerSlot));
     }
     if (page < pages) cmd.replyT("Next Page", page + 1);
+    return HookResult.Handled;
   });
-
-  console.log("[adminhelp] onLoad - sm_help registered");
 }

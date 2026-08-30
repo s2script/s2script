@@ -1,6 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import type { DamageInfo } from "@s2script/sdk/damage";
-import { command } from "@s2script/sdk/commands";
+import { command, HookResult } from "@s2script/sdk";
+import type { DamageInfo } from "@s2script/sdk";
 
 /**
  * SDKHook OnTakeDamage is the SDKHooks pre-hook: every point of incoming damage on the
@@ -36,6 +36,7 @@ export const damageRecipe: Recipe = {
       cmd.reply(halving
         ? "damage hook now HALVING incoming damage — see server log"
         : "damage hook back to logging only");
+      return HookResult.Handled;
     });
   },
 };

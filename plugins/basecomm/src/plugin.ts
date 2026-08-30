@@ -62,18 +62,30 @@ export function OnPluginStart(): void {
   // English) the first hit wins, so this order makes a plugin's own phrase beat a shared one at
   // the same tier.
 
-  command.admin("sm_gag", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Gag", "Gagged Player", "Gagged Players", (p) => setGag(p, true), true));
-  command.admin("sm_ungag", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Ungag", "Ungagged Player", "Ungagged Players", (p) => setGag(p, false), false));
-  command.admin("sm_mute", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Mute", "Muted Player", "Muted Players", (p) => setMute(p, true), true));
-  command.admin("sm_unmute", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unmute", "Unmuted Player", "Unmuted Players", (p) => setMute(p, false), false));
-  command.admin("sm_silence", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Silence", "Silenced Player", "Silenced Players", (p) => { setGag(p, true); setMute(p, true); }, true));
-  command.admin("sm_unsilence", ADMFLAG.CHAT, (cmd) =>
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unsilence", "Unsilenced Player", "Unsilenced Players", (p) => { setGag(p, false); setMute(p, false); }, false));
+  command.admin("sm_gag", ADMFLAG.CHAT, (cmd) => {
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Gag", "Gagged Player", "Gagged Players", (p) => setGag(p, true), true);
+    return HookResult.Handled;
+  });
+  command.admin("sm_ungag", ADMFLAG.CHAT, (cmd) => {
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Ungag", "Ungagged Player", "Ungagged Players", (p) => setGag(p, false), false);
+    return HookResult.Handled;
+  });
+  command.admin("sm_mute", ADMFLAG.CHAT, (cmd) => {
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Mute", "Muted Player", "Muted Players", (p) => setMute(p, true), true);
+    return HookResult.Handled;
+  });
+  command.admin("sm_unmute", ADMFLAG.CHAT, (cmd) => {
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unmute", "Unmuted Player", "Unmuted Players", (p) => setMute(p, false), false);
+    return HookResult.Handled;
+  });
+  command.admin("sm_silence", ADMFLAG.CHAT, (cmd) => {
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Silence", "Silenced Player", "Silenced Players", (p) => { setGag(p, true); setMute(p, true); }, true);
+    return HookResult.Handled;
+  });
+  command.admin("sm_unsilence", ADMFLAG.CHAT, (cmd) => {
+    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unsilence", "Unsilenced Player", "Unsilenced Players", (p) => { setGag(p, false); setMute(p, false); }, false);
+    return HookResult.Handled;
+  });
 
   // adminmenu — Gag proof item, same ADMFLAG as sm_gag, via pickPlayer + the shared setGag routine.
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
@@ -81,8 +93,6 @@ export function OnPluginStart(): void {
   // per-viewer.
   topmenu.addItem("Player Commands", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
     onSelect: adminSlot => pickPlayer(adminSlot, t => setGag(t, true)) });
-
-  console.log("[basecomm] onLoad - gag/ungag/mute/unmute/silence/unsilence registered");
 }
 
 // Suppress chat from a gagged speaker (both say and say_team route through Host_Say).

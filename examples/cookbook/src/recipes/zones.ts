@@ -1,4 +1,4 @@
-import { tryUse } from "@s2script/sdk/plugin";
+import { tryUse } from "@s2script/sdk";
 import type { Recipe } from "../recipe.ts";
 import type { Zones, ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "@s2script/zones";
 import { Player } from "@s2script/cs2";
@@ -7,7 +7,7 @@ import { Player } from "@s2script/cs2";
  * Consuming another PLUGIN's interface (not an SDK module). @s2script/zones is
  * published by plugins/zones. Declared under optionalPluginDependencies, so
  * tryUse() returns null when that plugin isn't loaded and the cookbook still
- * works — a hard dep (ctx.use) would refuse to load the whole plugin instead.
+ * works — a hard dep (use()) would refuse to load the whole plugin instead.
  *
  * Types come from the verified contract copy at
  * .s2script/types/@s2script/zones/index.d.ts — a byte-copy of the producer's

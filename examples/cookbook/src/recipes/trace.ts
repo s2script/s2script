@@ -1,8 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { Trace } from "@s2script/sdk/trace";
-import { Vector } from "@s2script/sdk/math";
+import { Trace, Vector, command, HookResult } from "@s2script/sdk";
 import { Pawn } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 function fmt(v: { x: number; y: number; z: number }): string {
   return "(" + v.x.toFixed(1) + "," + v.y.toFixed(1) + "," + v.z.toFixed(1) + ")";
@@ -25,7 +23,7 @@ export const traceRecipe: Recipe = {
         const pw = Pawn.forSlot(slot);
         if (pw && pw.origin) { pawn = pw; break; }
       }
-      if (!pawn) { console.log("[cookbook] trace: no live pawn via forSlot(0..11)"); cmd.reply("no live pawn"); return; }
+      if (!pawn) { console.log("[cookbook] trace: no live pawn via forSlot(0..11)"); cmd.reply("no live pawn"); return HookResult.Handled; }
       const o = pawn.origin!;
       console.log("[cookbook] trace: pawn origin=" + fmt(o));
 
@@ -44,6 +42,7 @@ export const traceRecipe: Recipe = {
         " normal=" + fmt(aim.normal) + " ent=" + (aim.entity ? aim.entity.index : "null") +
         " fraction=" + aim.fraction.toFixed(3)) : "null"));
       cmd.reply("trace done — see server log");
+      return HookResult.Handled;
     });
   },
 };

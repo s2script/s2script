@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
-import { Translations } from "@s2script/sdk/translations";
-import { command } from "@s2script/sdk/commands";
+import { Translations, command, HookResult } from "@s2script/sdk";
 
 /**
  * Translations.load seeds a phrase set (the built-in English default);
@@ -27,6 +26,7 @@ export const translationsRecipe: Recipe = {
       Translations.setDefaultLanguage("");
 
       cmd.replyT("Greeting", "admin");
+      return HookResult.Handled;
     });
   },
 };

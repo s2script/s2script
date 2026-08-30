@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
-import { Database } from "@s2script/sdk/db";
-import { command } from "@s2script/sdk/commands";
+import { Database, command, HookResult } from "@s2script/sdk";
 
 /**
  * The same @s2script/db API drives SQLite, MySQL, and Postgres alike — only
@@ -38,6 +37,7 @@ export const dbRecipe: Recipe = {
           cmd.reply("sqlite ERROR: " + String(e));
         }
       })();
+      return HookResult.Handled;
     });
 
     // sid is a BIGINT literal (not a bound string): Postgres is strictly typed and rejects a
@@ -61,7 +61,8 @@ export const dbRecipe: Recipe = {
     command("sm_db_remote", (cmd) => {
       cmd.reply("exercising mysql + postgres — watch the log");
       exercise("stats", "INT AUTO_INCREMENT PRIMARY KEY"); // mysql
-      exercise("prefs", "SERIAL PRIMARY KEY");              // postgres
+      exercise("prefs", "SERIAL PRIMARY KEY");
+      return HookResult.Handled;              // postgres
     });
   },
 };

@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { Voice } from "@s2script/sdk/voice";
+import { Voice, command, HookResult } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /** Highest slot the hearability mask can address (the receiver set is a uint64). */
 const MAX_SLOT = 63;
@@ -30,7 +29,7 @@ export const voiceRecipe: Recipe = {
       const receiver = cmd.argInt(1, -1);
       if (sender < 0 || sender > MAX_SLOT || receiver < 0 || receiver > MAX_SLOT) {
         cmd.reply(`[cookbook] usage: sm_voice_only <sender 0-${MAX_SLOT}> <receiver 0-${MAX_SLOT}>`);
-        return;
+        return HookResult.Handled;
       }
       const ok = Voice.setAudibleTo(sender, [receiver]);
       cmd.reply(
@@ -38,13 +37,14 @@ export const voiceRecipe: Recipe = {
           ? `[cookbook] voice: slot ${sender} is now audible ONLY to slot ${receiver}`
           : `[cookbook] voice: rule rejected (voice control degraded, or a slot out of range)`
       );
+      return HookResult.Handled;
     });
 
     command("sm_voice_solo", (cmd) => {
       const keep = cmd.argInt(0, -1);
       if (keep < 0 || keep > MAX_SLOT) {
         cmd.reply(`[cookbook] usage: sm_voice_solo <slot 0-${MAX_SLOT}>`);
-        return;
+        return HookResult.Handled;
       }
       // Everyone except `keep` becomes audible to nobody. `keep` gets its rule dropped so the
       // engine decides for them again.
@@ -54,22 +54,25 @@ export const voiceRecipe: Recipe = {
         if (Voice.setAudibleTo(p.slot, [])) silenced++;
       }
       cmd.reply(`[cookbook] voice: silenced ${silenced} sender(s); slot ${keep} still audible`);
+      return HookResult.Handled;
     });
 
     command("sm_voice_reset", (cmd) => {
       Voice.resetAll();
       cmd.reply("[cookbook] voice: dropped this plugin's hearability rules");
+      return HookResult.Handled;
     });
 
     command("sm_voice_stats", (cmd) => {
       const s = Voice.stats();
-      if (!s) { cmd.reply("[cookbook] voice: stats unavailable (shim predates this capability)"); return; }
+      if (!s) { cmd.reply("[cookbook] voice: stats unavailable (shim predates this capability)"); return HookResult.Handled; }
       // `rewrites` counts hearability denials ONLY — a basecomm gag does not move it, so this stays a
       // clean signal that YOUR rules are the thing taking effect.
       cmd.reply(
         `[cookbook] voice: calls=${s.calls} entries=${s.entries} rewrites=${s.rewrites}` +
           (s.rewrites > 0 ? " (rules ARE taking effect)" : " (no rewrites yet — nobody has spoken)")
       );
+      return HookResult.Handled;
     });
   },
 };

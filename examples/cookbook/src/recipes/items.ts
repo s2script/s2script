@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { CsItem, Pawn } from "@s2script/cs2";
-import { Server } from "@s2script/sdk/server";
-import { command } from "@s2script/sdk/commands";
+import { Server, command, HookResult } from "@s2script/sdk";
 
 // Acts on every LIVE pawn via Pawn.forSlot rather than SM-style Player.target()
 // name/team resolution — the client-list offsets that back target()/allConnected()
@@ -52,6 +51,7 @@ export const itemsRecipe: Recipe = {
           cmd.reply("[items] " + slot + " has " + pawn.weapons.length + " weapon(s)");
         }
       }
+      return HookResult.Handled;
     });
 
     command("sm_weapon", (cmd) => {
@@ -81,6 +81,7 @@ export const itemsRecipe: Recipe = {
           cmd.reply("[wpn] slot=" + slot + " active=" + active + " count=" + pawn.weapons.length);
         }
       }
+      return HookResult.Handled;
     });
   },
 };

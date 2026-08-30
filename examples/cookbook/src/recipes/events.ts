@@ -1,9 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { Events } from "@s2script/sdk/events";
-import { Server } from "@s2script/sdk/server";
+import { Events, Server, hook, command, HookResult } from "@s2script/sdk";
 import { GameRules, Teams, RoundEndReason, WinPanelFinalEvent } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * GameRules.terminateRound() queues a round end for the next GameFrame — the
@@ -56,16 +53,18 @@ export const eventsRecipe: Recipe = {
       const ok = GameRules.terminateRound(reason, delay);
       if (!ok) lastTerminateReason = null;
       cmd.reply(`[cookbook] round: endround reason=${reason} delay=${delay} queued=${ok} (round_end log follows next frame if queued)`);
+      return HookResult.Handled;
     });
 
     command("sm_round_settime", (cmd) => {
       const sec = cmd.argInt(0, 60);
       const gr = GameRules.get();
       const ok = gr ? gr.setTimeRemaining(sec) : false;
-      if (!gr) { cmd.reply("[cookbook] round: settime: no gamerules"); return; }
+      if (!gr) { cmd.reply("[cookbook] round: settime: no gamerules"); return HookResult.Handled; }
       const rt = gr.roundTime, rst = gr.roundStartTime, now = Server.gameTime;
       const hud = (rt !== null && rst !== null) ? rt - (now - rst) : null;
       cmd.reply(`[cookbook] round: settime ${sec}: ok=${ok} roundTime=${rt} timeRemaining=${gr.timeRemaining} | freezeTime=${gr.freezeTime} roundStartTime=${rst} gameTime=${now} timeElapsed=${gr.timeElapsed} hud(rt-(now-rst))=${hud}`);
+      return HookResult.Handled;
     });
 
     command("sm_round_addtime", (cmd) => {
@@ -73,6 +72,7 @@ export const eventsRecipe: Recipe = {
       const gr = GameRules.get();
       const ok = gr ? gr.addTimeRemaining(sec) : false;
       cmd.reply(`[cookbook] round: addtime ${sec}: ok=${ok} roundTime=${gr ? gr.roundTime : null} timeRemaining=${gr ? gr.timeRemaining : null}`);
+      return HookResult.Handled;
     });
 
     command("sm_round_teamscore", (cmd) => {
@@ -80,12 +80,14 @@ export const eventsRecipe: Recipe = {
       const score = cmd.argInt(1, 10);
       const ok = Teams.setScore(team, score);
       cmd.reply(`[cookbook] round: teamscore team=${team} -> ${score}: ok=${ok} readback=${Teams.getScore(team)}`);
+      return HookResult.Handled;
     });
 
     command("sm_round_winpanel", (cmd) => {
       const fe = cmd.argInt(0, WinPanelFinalEvent.TerroristsWin);
       const fired = Events.fire("cs_win_panel_round", { final_event: fe }, false);
       cmd.reply(`[cookbook] round: winpanel final_event=${fe} fired=${fired} (client-visible panel is the check; our own JS logger will NOT fire — expected)`);
+      return HookResult.Handled;
     });
   },
 };

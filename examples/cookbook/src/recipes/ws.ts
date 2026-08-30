@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
-import { WebSocket } from "@s2script/sdk/ws";
-import { command } from "@s2script/sdk/commands";
+import { WebSocket, command, HookResult } from "@s2script/sdk";
 
 /**
  * WebSockets run off-thread on the shared tokio runtime; callbacks are
@@ -29,6 +28,7 @@ export const wsRecipe: Recipe = {
           cmd.reply("connected + sent — watch the log for the echo");
         })
         .catch((e: unknown) => cmd.reply(`connect failed: ${String(e)}`));
+      return HookResult.Handled;
     });
   },
 };

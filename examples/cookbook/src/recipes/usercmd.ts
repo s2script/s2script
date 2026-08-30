@@ -1,8 +1,7 @@
 import type { Recipe } from "../recipe.ts";
-import type { UserCmdView } from "@s2script/sdk/usercmd";
+import { HookResult, command } from "@s2script/sdk";
+import type { UserCmdView } from "@s2script/sdk";
 import { Pawn } from "@s2script/cs2";
-import { HookResult } from "@s2script/sdk/events";
-import { command } from "@s2script/sdk/commands";
 
 type Mode = "off" | "jump" | "side" | "block";
 const IN_JUMP = 2n; // buttons is a bigint
@@ -11,7 +10,7 @@ let logN = 0;
 let verbose = false;
 
 /**
- * ctx.clients.onRunCmd reads a player's live per-tick input (7 fields) before
+ * OnPlayerRunCmd reads a player's live per-tick input (7 fields) before
  * the engine processes it, and can modify or block it by returning a
  * HookResult. Gated behind sm_usercmd so it doesn't fight normal movement
  * until a player opts in:
@@ -58,12 +57,13 @@ export const usercmdRecipe: Recipe = {
       if (arg === "verbose") {
         verbose = !verbose;
         cmd.reply(`usercmd verbose logging = ${verbose ? "on" : "off"}`);
-        return;
+        return HookResult.Handled;
       }
-      if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
+      if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return HookResult.Handled; }
       const mode: Mode = arg === "jump" || arg === "side" || arg === "block" ? arg : "off";
       modeBySlot.set(cmd.callerSlot, mode);
       cmd.reply(`usercmd mode = ${mode}`);
+      return HookResult.Handled;
     });
   },
 };

@@ -8,11 +8,7 @@
  * Commands are prefixed `sm_` so the whole cookbook is greppable in a console
  * autocomplete.
  */
-import type { Client } from "@s2script/sdk/clients";
-import type { DamageInfo } from "@s2script/sdk/damage";
-import type { HookResultValue } from "@s2script/sdk/events";
-import type { PrecacheContext } from "@s2script/sdk/sound";
-import type { UserCmdView } from "@s2script/sdk/usercmd";
+import type { Client, DamageInfo, HookResultValue, PrecacheContext, UserCmdView } from "@s2script/sdk";
 
 export interface Recipe {
   /** Short id, matching the file name (e.g. "http"). */

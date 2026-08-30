@@ -1,6 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { after, every, delay, type Timer } from "@s2script/sdk/timers";
-import { command } from "@s2script/sdk/commands";
+import { after, every, delay, command, HookResult } from "@s2script/sdk";
+import type { Timer } from "@s2script/sdk";
 
 /**
  * @s2script/timers — cancellable callback timers (SourceMod `CreateTimer` / `KillTimer`).
@@ -21,6 +21,7 @@ export const timersRecipe: Recipe = {
       const ms = cmd.argInt(0, 3000);
       const t = after(ms, () => console.log(`[cookbook] timers: one-shot fired after ${ms}ms`));
       cmd.reply(`[cookbook] timers: armed a one-shot for ${ms}ms (alive=${t.alive})`);
+      return HookResult.Handled;
     });
 
     command("sm_timer_repeat", (cmd) => {
@@ -34,15 +35,18 @@ export const timersRecipe: Recipe = {
         if (ticks >= 5) { ticker?.kill(); console.log("[cookbook] timers: self-killed at 5 ticks"); }
       });
       cmd.reply(`[cookbook] timers: repeating every ${ms}ms, self-kills after 5 ticks`);
+      return HookResult.Handled;
     });
 
     command("sm_timer_stop", (cmd) => {
       const killed = ticker?.kill() ?? false;
       cmd.reply(`[cookbook] timers: kill() -> ${killed} (false = already dead; it is idempotent)`);
+      return HookResult.Handled;
     });
 
     command("sm_timer_status", (cmd) => {
       cmd.reply(`[cookbook] timers: ticks=${ticks} alive=${ticker?.alive ?? false}`);
+      return HookResult.Handled;
     });
 
     // A 0ms repeat would re-arm every drain and starve the frame, so it throws rather than degrade.
@@ -53,12 +57,14 @@ export const timersRecipe: Recipe = {
       } catch (e) {
         cmd.reply(`[cookbook] timers: every(0) correctly threw ${(e as Error).constructor.name}`);
       }
+      return HookResult.Handled;
     });
 
     // delay() still exists for the await-able case; shown so the two are contrasted in one place.
     command("sm_timer_delay", (cmd) => {
       cmd.reply("[cookbook] timers: awaiting delay(1000)…");
       delay(1000).then(() => console.log("[cookbook] timers: delay(1000) resolved (not cancellable)"));
+      return HookResult.Handled;
     });
   },
 };

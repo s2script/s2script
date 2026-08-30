@@ -1,6 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
+import { command, HookResult } from "@s2script/sdk";
 
 /**
  * Writable movement-services fields — `pawn.movementServices` gained setters for a curated
@@ -49,10 +49,11 @@ export const movementRecipe: Recipe = {
       const slot = cmd.argInt(0, -1);
       const pawn = slot >= 0 ? Player.fromSlot(slot)?.pawn : null;
       const ms = pawn?.movementServices;
-      if (!ms) { cmd.reply(`[cookbook] movement: no live pawn/movementServices for slot ${slot}`); return; }
+      if (!ms) { cmd.reply(`[cookbook] movement: no live pawn/movementServices for slot ${slot}`); return HookResult.Handled; }
       cmd.reply(
         `[cookbook] movement slot=${slot} maxspeed=${ms.maxspeed} stamina=${ms.stamina} ` +
         `friction=${ms.surfaceFriction} ducked=${ms.ducked} duckAmount=${ms.duckAmount}`);
+      return HookResult.Handled;
     });
 
     // The live gate: bots move under server-side movement code, so a maxspeed change is
@@ -62,18 +63,19 @@ export const movementRecipe: Recipe = {
       const mult = parseFloat(cmd.arg(1) ?? "");
       if (slot < 0 || slot > 63 || !isFinite(mult) || mult <= 0) {
         cmd.reply("[cookbook] usage: sm_speed <slot 0-63> <multiplier>   (1 = restore)");
-        return;
+        return HookResult.Handled;
       }
       const ms = Player.fromSlot(slot)?.pawn?.movementServices;
-      if (!ms) { cmd.reply(`[cookbook] movement: no live pawn for slot ${slot}`); return; }
+      if (!ms) { cmd.reply(`[cookbook] movement: no live pawn for slot ${slot}`); return HookResult.Handled; }
 
       const base = original.get(slot) ?? ms.maxspeed;
-      if (base === null) { cmd.reply(`[cookbook] movement: maxspeed unreadable for slot ${slot}`); return; }
+      if (base === null) { cmd.reply(`[cookbook] movement: maxspeed unreadable for slot ${slot}`); return HookResult.Handled; }
       original.set(slot, base);
 
       const before = ms.maxspeed;
       ms.maxspeed = base * mult;          // <- the write this slice exists for
       cmd.reply(`[cookbook] movement slot=${slot} maxspeed ${before} -> ${ms.maxspeed} (base ${base} x ${mult})`);
+      return HookResult.Handled;
     });
 
     // sm_speedsample <slot> <ticks> — peak horizontal speed over N frames. Reading maxspeed back
@@ -82,11 +84,12 @@ export const movementRecipe: Recipe = {
     command("sm_speedsample", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const ticks = Math.min(Math.max(cmd.argInt(1, 128), 1), 2048);
-      if (slot < 0 || slot > 63) { cmd.reply("[cookbook] usage: sm_speedsample <slot 0-63> [ticks]"); return; }
-      if (sampling) { cmd.reply("[cookbook] movement: a sample is already running"); return; }
+      if (slot < 0 || slot > 63) { cmd.reply("[cookbook] usage: sm_speedsample <slot 0-63> [ticks]"); return HookResult.Handled; }
+      if (sampling) { cmd.reply("[cookbook] movement: a sample is already running"); return HookResult.Handled; }
       sample = { slot, remaining: ticks, ticks, peak: 0, peakByPos: 0, last: null };
       sampling = true;
       cmd.reply(`[cookbook] movement: sampling slot ${slot} for ${ticks} frames…`);
+      return HookResult.Handled;
     });
   },
 };

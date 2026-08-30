@@ -1,8 +1,7 @@
 import type { Recipe } from "../recipe.ts";
 import { Engine } from "@s2script/sdk/unsafe";
-import { Entity } from "@s2script/sdk/entity";
+import { Entity, command, HookResult } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * `@s2script/sdk/unsafe` — call an engine function the core does not wrap, declared in this plugin's
@@ -41,18 +40,19 @@ export const unsafeRecipe: Recipe = {
           : `[cookbook] unsafe: ignite unavailable (${status}). If this says "not permitted", add ` +
             `"@example/cookbook" under "engine:calls" in addons/s2script/configs/permissions.json.`
       );
+      return HookResult.Handled;
     });
 
     command("cb_unsafe_burn", (cmd) => {
       if (!ignite) {
         cmd.reply(`[cookbook] unsafe: ignite unavailable (${Engine.status("ignite")})`);
-        return;
+        return HookResult.Handled;
       }
       const targets = cmd.argCount > 0 ? Player.target(cmd.arg(0), cmd.callerSlot) : [];
       const chosen = targets.length > 0 ? targets : Player.allConnected().filter((p) => p.slot === cmd.callerSlot);
       if (chosen.length === 0) {
         cmd.reply("[cookbook] usage: cb_unsafe_burn [target] (run from a client to burn yourself)");
-        return;
+        return HookResult.Handled;
       }
       // Count flames BEFORE, so the reply proves the call had an EFFECT rather than merely that it
       // was dispatched. That distinction is the whole point: a declared call that resolves but passes
@@ -74,6 +74,7 @@ export const unsafeRecipe: Recipe = {
         `[cookbook] unsafe: called ignite on ${called} pawn(s); entityflame ${before} -> ${after}` +
           (after > before ? " (EFFECT CONFIRMED)" : " (NO EFFECT — resolved but did nothing)")
       );
+      return HookResult.Handled;
     });
   },
 };

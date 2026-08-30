@@ -18,8 +18,8 @@
  * read/write `m_bIsEnabled` / the angle-control flag directly the way hudstate.ts does — plus find
  * the pawn's camera handle field to implement `CSPlayerPawn.GetCamera`.
  */
-import { createEntity, Entity } from "@s2script/sdk/entity";
-import type { EntityRef } from "@s2script/sdk/entity";
+import { createEntity, Entity } from "@s2script/sdk";
+import type { EntityRef } from "@s2script/sdk";
 
 export const CAMERA_CLASS = "cs_player_camera";
 export const OWNED_TARGETNAME = "s2_hudlab_camera";

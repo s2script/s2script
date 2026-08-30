@@ -1,7 +1,5 @@
 import type { Recipe } from "../recipe.ts";
-import { Database } from "@s2script/sdk/db";
-import { Cookies } from "@s2script/sdk/cookies";
-import { command } from "@s2script/sdk/commands";
+import { Database, Cookies, command, HookResult } from "@s2script/sdk";
 
 declare function __s2_cookie_load(steamid: string, name: string, value: string, updated?: number): void;
 declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
@@ -61,6 +59,7 @@ export const cookiesRecipe: Recipe = {
         console.log("[cookbook] cookies ERROR: " + String(e));
         cmd.reply(`[cookbook] cookies ERROR: ${String(e)}`);
       }
+      return HookResult.Handled;
     });
   },
 };

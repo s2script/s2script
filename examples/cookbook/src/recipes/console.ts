@@ -1,6 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { console } from "@s2script/sdk/console";
-import { command } from "@s2script/sdk/commands";
+import { command, HookResult } from "@s2script/sdk";
 
 /**
  * The engine also injects `console` as an ambient global (see globals.d.ts —
@@ -22,6 +22,7 @@ export const consoleRecipe: Recipe = {
       console.warn("[cookbook] console.warn — flagged at warning severity");
       console.error("[cookbook] console.error — flagged at error severity");
       cmd.reply("wrote one line at each console severity — see server log");
+      return HookResult.Handled;
     });
   },
 };

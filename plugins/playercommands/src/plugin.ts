@@ -1,4 +1,4 @@
-import { command, topmenu, translations, ADMFLAG, Translations } from "@s2script/sdk";
+import { command, topmenu, translations, ADMFLAG, Translations, HookResult } from "@s2script/sdk";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
@@ -14,7 +14,6 @@ function slapPlayer(p: Player, damage: number): boolean {
   if (hpBefore !== null && damage > 0) pawn.health = Math.max(1, hpBefore - damage);
   const v = pawn.absVelocity;
   if (v) pawn.setVelocity(v.x + 200, v.y + 200, v.z + 300);
-  console.log("[playercommands] slap slot=" + p.slot + " dmg=" + damage + " hp " + hpBefore + " -> " + pawn.health);
   return true;
 }
 
@@ -23,7 +22,6 @@ function slayPlayer(p: Player): boolean {
   const pawn = p.pawn;
   if (!pawn) return false;
   pawn.slay();
-  console.log("[playercommands] slay slot=" + p.slot);
   return true;
 }
 
@@ -37,39 +35,38 @@ function pickLoop(adminSlot: number, action: (t: Player) => void): void {
 export function OnPluginStart(): void {
   translations.load("playercommands", "common");
 
-  // Slice 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY).
   command.admin("sm_slap", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.replyT("Usage Slap"); return; }
+    if (!targetStr) { cmd.replyT("Usage Slap"); return HookResult.Handled; }
     const damage = Math.max(0, cmd.argInt(1, 0));
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return HookResult.Handled; }
     let n = 0;
     for (const p of targets) if (slapPlayer(p, damage)) n++;
     cmd.replyT(n === 1 ? "Slapped Player" : "Slapped Players", n, damage);
+    return HookResult.Handled;
   });
 
-  // Slice 6.14 — sm_slay <target> (ADMFLAG.SLAY).
   command.admin("sm_slay", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.replyT("Usage Slay"); return; }
+    if (!targetStr) { cmd.replyT("Usage Slay"); return HookResult.Handled; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return HookResult.Handled; }
     let n = 0;
     for (const p of targets) if (slayPlayer(p)) n++;
     cmd.replyT(n === 1 ? "Slayed Player" : "Slayed Players", n);
+    return HookResult.Handled;
   });
 
-  // Slice 6.14 — sm_rename <target> <newname> (ADMFLAG.SLAY). Single-target only (reject ambiguous multi).
   command.admin("sm_rename", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
     const rawName = cmd.argsFrom(1).trim();
-    if (!targetStr || !rawName) { cmd.replyT("Usage Rename"); return; }
+    if (!targetStr || !rawName) { cmd.replyT("Usage Rename"); return HookResult.Handled; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return HookResult.Handled; }
     if (targets.length > 1) {
       cmd.replyT("Rename Ambiguous Target", targets.length);
-      return;
+      return HookResult.Handled;
     }
     const p = targets[0];
     // Strip control chars AND braces. The brace strip isn't for injection (a name never reaches the
@@ -78,12 +75,12 @@ export function OnPluginStart(): void {
     // collateral, so a raw "{green}X" here would be SET as-is but ECHOED as "greenX" — a stripped-here
     // name keeps the stored and reported values identical.
     const newname = rawName.replace(/[\x00-\x1F{}]/g, "").slice(0, 127);
-    if (!newname) { cmd.replyT("Invalid Rename"); return; }
+    if (!newname) { cmd.replyT("Invalid Rename"); return HookResult.Handled; }
     const oldname = p.playerName ?? "";
-    if (!p.setName(newname)) { cmd.replyT("Rename Failed"); return; }
+    if (!p.setName(newname)) { cmd.replyT("Rename Failed"); return HookResult.Handled; }
     Events.fire("player_changename", { userid: p.userId, oldname, newname });
-    console.log("[playercommands] sm_rename slot=" + p.slot + " '" + oldname + "' -> '" + newname + "'");
     cmd.replyT("Renamed", oldname, newname);
+    return HookResult.Handled;
   });
 
   // adminmenu items — the SAME action functions the text commands use (no re-implementation). pickLoop
@@ -95,6 +92,4 @@ export function OnPluginStart(): void {
     onSelect: adminSlot => pickLoop(adminSlot, t => slapPlayer(t, 5)) });   // menu default: 5 damage + knockback
   topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slayPlayer(t)) });
-
-  console.log("[playercommands] onLoad — slap/slay/rename registered");
 }

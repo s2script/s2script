@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
-import { command } from "@s2script/sdk/commands";
+import { hook, command, HookResult } from "@s2script/sdk";
 
 /**
  * Player.respawn() calls CCSPlayerController::Respawn on this call, so the
@@ -37,10 +36,11 @@ export const playerStateRecipe: Recipe = {
     command("sm_respawn", (cmd) => {
       const slot = cmd.argInt(0, -1);
       const p = slot >= 0 ? Player.fromSlot(slot) : null;
-      if (!p) { cmd.reply("sm_respawn: no player in slot " + slot); return; }
+      if (!p) { cmd.reply("sm_respawn: no player in slot " + slot); return HookResult.Handled; }
       const ok = p.respawn();
       cmd.reply("sm_respawn slot=" + slot + " -> " +
         (ok ? "ok" : "no-op (already alive / stale ref / degraded descriptor)"));
+      return HookResult.Handled;
     });
 
     // sm_respawn_all — respawn every dead in-game player in one dispatch.
@@ -50,6 +50,7 @@ export const playerStateRecipe: Recipe = {
         if (p.respawn()) ok++; else skipped++;
       }
       cmd.reply("sm_respawn_all: ok=" + ok + " skipped=" + skipped);
+      return HookResult.Handled;
     });
   },
 };

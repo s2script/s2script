@@ -6,13 +6,8 @@
 // This is a DEMO plugin: it registers a lot of commands and is not part of the
 // shipped release. Copy a recipe into your own plugin rather than loading this.
 import { RECIPES } from "./recipes/index.ts";
-import { command } from "@s2script/sdk/commands";
-import { SDKHook, SDKHookType, Entity } from "@s2script/sdk";
-import type { Client } from "@s2script/sdk/clients";
-import type { DamageInfo, EntityRef } from "@s2script/sdk";
-import type { HookResultValue } from "@s2script/sdk/events";
-import type { PrecacheContext } from "@s2script/sdk/sound";
-import type { UserCmdView } from "@s2script/sdk/usercmd";
+import { command, SDKHook, SDKHookType, Entity, HookResult } from "@s2script/sdk";
+import type { Client, DamageInfo, EntityRef, HookResultValue, PrecacheContext, UserCmdView } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   for (const recipe of RECIPES) {
@@ -22,6 +17,7 @@ export function OnPluginStart(): void {
   command("sm_list", (cmd) => {
     cmd.reply(`${RECIPES.length} recipes:`);
     for (const r of RECIPES) cmd.reply(`  sm_${r.name} — ${r.describe}`);
+    return HookResult.Handled;
   });
 
   console.log(`[cookbook] loaded ${RECIPES.length} recipes — run sm_list`);

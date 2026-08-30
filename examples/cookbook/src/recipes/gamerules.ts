@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { Entity } from "@s2script/sdk/entity";
+import { Entity, command, HookResult } from "@s2script/sdk";
 import { GameRules, Fade } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * GameRules.get() re-finds the live cs_gamerules proxy each call and returns
@@ -16,9 +15,10 @@ export const gamerulesRecipe: Recipe = {
     command("sm_gamerules", (cmd) => {
       const gr = GameRules.get();
       const proxies = Entity.findByClass("cs_gamerules").length;
-      if (!gr) { cmd.reply(`[cookbook] gamerules: no cs_gamerules proxy (findByClass=${proxies})`); return; }
+      if (!gr) { cmd.reply(`[cookbook] gamerules: no cs_gamerules proxy (findByClass=${proxies})`); return HookResult.Handled; }
       cmd.reply(`[cookbook] gamerules: warmup=${gr.warmupPeriod} freeze=${gr.freezePeriod} roundTime=${gr.roundTime} ` +
                 `rounds=${gr.totalRoundsPlayed} phase=${gr.gamePhase} proxies=${proxies}`);
+      return HookResult.Handled;
     });
 
     command("sm_gamerules_blind", (cmd) => {
@@ -26,6 +26,7 @@ export const gamerulesRecipe: Recipe = {
       const slot = cmd.args.length > 0 ? parseInt(cmd.args[0], 10) : (cmd.callerSlot >= 0 ? cmd.callerSlot : 0);
       const ok = Fade.blind(slot, 1500);
       cmd.reply(`[cookbook] gamerules: Fade.blind(slot=${slot}) -> ${ok}`);
+      return HookResult.Handled;
     });
   },
 };

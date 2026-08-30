@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
-import { fetch } from "@s2script/sdk/http";
-import { command } from "@s2script/sdk/commands";
+import { fetch, command, HookResult } from "@s2script/sdk";
 
 /**
  * fetch() runs off-thread on the shared tokio runtime and resolves back on a
@@ -34,6 +33,7 @@ export const httpRecipe: Recipe = {
         // since taken that slot, this reply lands on the new occupant instead.
         cmd.reply(`${ok}/${N} ok — tick advanced ${elapsed} frames meanwhile (see log)`);
       });
+      return HookResult.Handled;
     });
   },
 };

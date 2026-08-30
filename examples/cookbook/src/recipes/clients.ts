@@ -1,15 +1,13 @@
 import type { Recipe } from "../recipe.ts";
-import { Clients } from "@s2script/sdk/clients";
-import type { Client } from "@s2script/sdk/clients";
+import { Clients, hook, command, HookResult } from "@s2script/sdk";
+import type { Client } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * @s2script/clients — the engine-generic client handle: six lifecycle events
  * plus live-read fields (steamId/name/userId/isBot/signonState). sm_clients
  * snapshots every currently-connected client; sm_voice demonstrates
- * ctx.clients.onVoice with a lazy dead-player mute.
+ * OnClientVoice with a lazy dead-player mute.
  *
  * onVoice fires per-frame while a client is talking, so its per-packet log line is opt-in via
  * `sm_voice verbose` (off by default) — same reasoning as recipes/damage.ts defaulting its effect
@@ -60,6 +58,7 @@ export const clientsRecipe: Recipe = {
       for (const c of all) {
         cmd.reply(`  slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} signonState=${c.signonState}`);
       }
+      return HookResult.Handled;
     });
 
     hook.on("player_spawn", (ev) => {
@@ -82,13 +81,14 @@ export const clientsRecipe: Recipe = {
       const rest = cmd.argsFrom(1);
       if (slot < 0 || slot > 63 || !rest) {
         cmd.reply("[cookbook] usage: sm_clientcmd <slot 0-63> <command...>");
-        return;
+        return HookResult.Handled;
       }
       const c = Clients.fromSlot(slot);
-      if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return; }
+      if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return HookResult.Handled; }
       const ok = c.command(rest);
       cmd.reply(`[cookbook] clients: command(slot ${slot}, ${JSON.stringify(rest)}) -> ${ok}` +
         (c.isBot ? " (bot — expect no visible effect: no console)" : ""));
+      return HookResult.Handled;
     });
 
     command("sm_fakecmd", (cmd) => {
@@ -96,15 +96,16 @@ export const clientsRecipe: Recipe = {
       const rest = cmd.argsFrom(1);
       if (slot < 0 || slot > 63 || !rest) {
         cmd.reply("[cookbook] usage: sm_fakecmd <slot 0-63> <command...>");
-        return;
+        return HookResult.Handled;
       }
       const c = Clients.fromSlot(slot);
-      if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return; }
+      if (!c) { cmd.reply(`[cookbook] clients: no client in slot ${slot}`); return HookResult.Handled; }
       const ok = c.fakeCommand(rest);
       cmd.reply(`[cookbook] clients: fakeCommand(slot ${slot}, ${JSON.stringify(rest)}) -> ${ok}` +
         (c.isBot ? " (bot — this one DOES work server-side)" : "") +
         "  [try: sm_fakecmd <slot> say hi — engine commands run; another PLUGIN's command is " +
         "dispatched but its handler is re-entrancy-skipped, use a cross-plugin interface instead]");
+      return HookResult.Handled;
     });
 
     // sm_voice verbose — toggle the per-packet onVoice log (see the toggle note above).
@@ -113,14 +114,15 @@ export const clientsRecipe: Recipe = {
       if (cmd.arg(0) === "verbose") {
         voiceVerbose = !voiceVerbose;
         cmd.reply("[cookbook] voice verbose logging = " + (voiceVerbose ? "on" : "off"));
-        return;
+        return HookResult.Handled;
       }
       const slot = parseInt(cmd.arg(0), 10);
       const on = cmd.arg(1) !== "0";
       const c = Clients.fromSlot(isNaN(slot) ? -1 : slot);
-      if (!c) { cmd.reply("[cookbook] no client in slot '" + cmd.arg(0) + "'"); return; }
+      if (!c) { cmd.reply("[cookbook] no client in slot '" + cmd.arg(0) + "'"); return HookResult.Handled; }
       c.voiceMuted = on;
       cmd.reply("[cookbook] slot " + slot + " (" + c.name + ") voiceMuted=" + c.voiceMuted);
+      return HookResult.Handled;
     });
   },
 };

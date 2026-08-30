@@ -22,8 +22,7 @@
  * The panel is one flowing text block with no reserved regions, so layout is line-budgeted: a fixed
  * number of `<br>`-separated rows. Exceed the budget and rows push off the bottom of the screen.
  */
-import { Events } from "@s2script/sdk/events";
-import { createScope } from "@s2script/sdk/plugin";
+import { Events, createScope } from "@s2script/sdk";
 import { Player, GameRules } from "@s2script/cs2";
 import type { Pawn as PawnType } from "@s2script/cs2";
 

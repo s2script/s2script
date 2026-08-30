@@ -1,5 +1,6 @@
 import {
   command, topmenu, translations, TopMenu, Menu, MenuStyle, Admin, ADMFLAG, Translations,
+  HookResult,
 } from "@s2script/sdk";
 import type { PhraseKey } from "@s2script/sdk";
 
@@ -47,20 +48,19 @@ export function OnPluginStart(): void {
 
   command("sm_admin", (cmd) => {
     const slot = cmd.callerSlot;
-    if (slot < 0) { cmd.replyT("Must Be In Game"); return; }
+    if (slot < 0) { cmd.replyT("Must Be In Game"); return HookResult.Handled; }
     const admin = Admin.forSlot(slot);
-    if (!admin) { cmd.replyT("No access"); return; }
+    if (!admin) { cmd.replyT("No access"); return HookResult.Handled; }
     const snap = TopMenu.snapshot();
     // Only categories with >=1 visible item.
     const cats = snap.categories.filter(c => itemsFor(c, admin.flags).length > 0);
-    if (cats.length === 0) { cmd.replyT("No Admin Actions Available"); return; }
+    if (cats.length === 0) { cmd.replyT("No Admin Actions Available"); return HookResult.Handled; }
     const m = new Menu(Translations.translate(slot, "Admin Menu Title"));
     m.style = MenuStyle.Center;
     m.freezePlayer = true;   // WASD nav — freeze movement while the menu is open
     for (const c of cats) m.addItem(c, categoryLabel(slot, c));
     m.onSelect(e => { showCategory(slot, e.info, admin.flags); });
     m.display(slot, 30);
+    return HookResult.Handled;
   });
-
-  console.log("[adminmenu] onLoad — sm_admin registered");
 }

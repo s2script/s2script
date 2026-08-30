@@ -1,8 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { Server } from "@s2script/sdk/server";
-import { Clients } from "@s2script/sdk/clients";
+import { Server, Clients, command, HookResult } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * Server ties together three primitives: a plugin-owned ConVar (register at
@@ -26,12 +24,13 @@ export const serverRecipe: Recipe = {
     command("sm_cvarwatch", (cmd) => {
       const name = cmd.arg(0) ?? "*";
       if (watching) { watch?.dispose(); watch = null; watching = false;
-        cmd.reply("[cookbook] server: cvar watch OFF"); return; }
+        cmd.reply("[cookbook] server: cvar watch OFF"); return HookResult.Handled; }
       watch = Server.onCvarChange(name, (n, next, prev) => {
         console.log(`[cookbook] server: cvar ${n}: ${JSON.stringify(prev)} -> ${JSON.stringify(next)}`);
       });
       watching = true;
       cmd.reply(`[cookbook] server: watching ${JSON.stringify(name)} — change it and watch the console`);
+      return HookResult.Handled;
     });
 
     const ok = Server.registerCvar("s2_demo_mode", {
@@ -47,6 +46,7 @@ export const serverRecipe: Recipe = {
         cmd.reply(`  slot=${c.slot} name=${c.name} userId=${c.userId} signon=${c.signonState} ` +
                   `steamid=${c.steamId} fromUserId->slot=${back ? back.slot : -1}`);
       }
+      return HookResult.Handled;
     });
   },
 };

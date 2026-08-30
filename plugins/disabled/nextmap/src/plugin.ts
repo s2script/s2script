@@ -7,7 +7,7 @@
 // Task 2 (this file, current state): round_end (mp_maxrounds) + mp_timelimit detection, and the
 // real changeToNext body (delayed, validated changelevel/host_workshop_map).
 
-import { command, hook, translations, ADMFLAG, Server, config, delay, Chat, Translations } from "@s2script/sdk";
+import { command, hook, translations, ADMFLAG, Server, config, delay, Chat, Translations, HookResult } from "@s2script/sdk";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative). */
 interface MapEntry { name: string; workshopId: string | null; }
@@ -103,7 +103,7 @@ function changeToNext(): void {
   }).catch(logErr);
 }
 
-// Plugins persist across a changelevel — the shim has no level-init reload hook, so onLoad fires
+// Plugins persist across a changelevel — the shim has no level-init reload hook, so OnPluginStart fires
 // once per plugin-load, NOT per map. Poll Server.mapName (throttled) to catch map transitions and
 // reset all per-map state, reseeding nextlevel from the rotation (mirrors the rockthevote pattern).
 function pollTick(): void {
@@ -136,20 +136,20 @@ export function OnPluginStart(): void {
 
   command.admin("sm_setnextmap", ADMFLAG.CHANGEMAP, cmd => {
     const m = cmd.arg(0);
-    if (!m) { cmd.replyT("Usage Setnextmap"); return; }
+    if (!m) { cmd.replyT("Usage Setnextmap"); return HookResult.Handled; }
     const inList = loadPool().find(e => e.name === m);
     const entry = inList ?? (Server.isMapValid(m) ? { name: m, workshopId: null } : null);
-    if (!entry) { cmd.replyT("Invalid Map", m); return; }
-    if (!isValidEntry(entry)) { cmd.replyT("Invalid Map Name"); return; }
+    if (!entry) { cmd.replyT("Invalid Map", m); return HookResult.Handled; }
+    if (!isValidEntry(entry)) { cmd.replyT("Invalid Map Name"); return HookResult.Handled; }
     override = entry;
     Server.setCvar("nextlevel", entry.name);
     cmd.replyT("Next Map Set", entry.name);
+    return HookResult.Handled;
   });
 
   // DESCOPED: SM's sm_maphistory (list the recently-played maps) is intentionally not implemented —
   // it would require reading the map_history the nominations plugin owns in the shared mapvote DB,
   // coupling standalone nextmap back to nominations. nextmap tracks no play history of its own.
-  console.log("[nextmap] onLoad — sm_setnextmap registered");
 }
 
 export function OnGameFrame(): void {
