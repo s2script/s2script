@@ -7,8 +7,9 @@
 // shipped release. Copy a recipe into your own plugin rather than loading this.
 import { RECIPES } from "./recipes/index.ts";
 import { command } from "@s2script/sdk/commands";
+import { SDKHook, SDKHookType, Entity } from "@s2script/sdk";
 import type { Client } from "@s2script/sdk/clients";
-import type { DamageInfo } from "@s2script/sdk/damage";
+import type { DamageInfo, EntityRef } from "@s2script/sdk";
 import type { HookResultValue } from "@s2script/sdk/events";
 import type { PrecacheContext } from "@s2script/sdk/sound";
 import type { UserCmdView } from "@s2script/sdk/usercmd";
@@ -24,6 +25,10 @@ export function OnPluginStart(): void {
   });
 
   console.log(`[cookbook] loaded ${RECIPES.length} recipes — run sm_list`);
+
+  for (const pawn of Entity.findByClass("player")) {
+    SDKHook(pawn, SDKHookType.OnTakeDamage, onTakeDamage);
+  }
 }
 
 export function OnGameFrame(): void {
@@ -38,7 +43,12 @@ export function OnPrecache(pc: PrecacheContext): void {
   for (const r of RECIPES) r.onPrecache?.(pc);
 }
 
-export function OnTakeDamage(info: DamageInfo): HookResultValue | void {
+export function OnEntityCreated(entity: EntityRef | null, className: string): void {
+  if (!entity || className !== "player") return;
+  SDKHook(entity, SDKHookType.OnTakeDamage, onTakeDamage);
+}
+
+function onTakeDamage(info: DamageInfo) {
   let acc: number | undefined;
   for (const r of RECIPES) {
     const v = r.onTakeDamage?.(info);

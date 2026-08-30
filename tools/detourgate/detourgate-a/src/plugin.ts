@@ -9,12 +9,14 @@
 //
 //   ProcessUsercmds     -> OnPlayerRunCmd            (bots generate usercmds every tick)
 //   FireOutputInternal  -> onOutput                  (map logic fires outputs each round)
-//   DispatchTraceAttack -> OnTakeDamage              (bots shoot each other)
+//   DispatchTraceAttack -> SDKHook OnTakeDamage      (bots shoot each other)
 //   HostSay             -> chat trigger           (needs a human; see the report note)
 //
 // Prefix [DETOURGATE] so `docker logs | grep DETOURGATE` reads as a transcript.
+import { SDKHook, SDKHookType, Entity } from "@s2script/sdk";
 import { onOutput } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
+import type { EntityRef } from "@s2script/sdk/entity";
 
 let frames = 0;
 let usercmds = 0;
@@ -27,6 +29,10 @@ export function OnPluginStart(): void {
 
   // FireOutputInternal. A wildcard-ish subscription: round logic fires outputs on these every round.
   onOutput("*", "*", () => { outputs += 1; });
+
+  for (const pawn of Entity.findByClass("player")) {
+    SDKHook(pawn, SDKHookType.OnTakeDamage, onTakeDamage);
+  }
 
   command.server("detour_report", () => {
     L(`REPORT frames=${frames} usercmds=${usercmds} outputs=${outputs} damages=${damages}`);
@@ -43,8 +49,12 @@ export function OnGameFrame(): void { frames += 1; }
 // install — the boot log should show it taking the near (E9) tier.
 export function OnPlayerRunCmd(): void { usercmds += 1; }
 
-// DispatchTraceAttack.
-export function OnTakeDamage(): void { damages += 1; }
+export function OnEntityCreated(entity: EntityRef | null, className: string): void {
+  if (!entity || className !== "player") return;
+  SDKHook(entity, SDKHookType.OnTakeDamage, onTakeDamage);
+}
+
+function onTakeDamage(): void { damages += 1; }
 
 export function OnPluginEnd(): void {
   console.log("[DETOURGATE] unloading");

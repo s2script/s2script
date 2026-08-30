@@ -1,5 +1,5 @@
-import { command, topmenu, translations, Admin, ADMFLAG, Server, Plugins, Menu, MenuStyle, Translations } from "@s2script/sdk";
-import type { Command, DamageInfo } from "@s2script/sdk";
+import { command, topmenu, translations, Admin, ADMFLAG, Server, Plugins, Menu, MenuStyle, Translations, SDKHook, SDKHookType, Entity } from "@s2script/sdk";
+import type { Command, DamageInfo, EntityRef } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
 // adminmenu — Change Map proof item (Server Commands, ADMFLAG.CHANGEMAP), a curated map picker filtered
@@ -93,6 +93,10 @@ export function OnPluginStart(): void {
     } });
 
   console.log("[basecommands] onLoad — kick/map/who/rcon/exec/cvar/sm registered");
+
+  for (const pawn of Entity.findByClass("player")) {
+    SDKHook(pawn, SDKHookType.OnTakeDamage, onTakeDamage);
+  }
 }
 
 // 6.3 — sm_kick <target> [reason] (ADMFLAG.KICK). Resolves the SM target string (#userid/name/@all/@me)
@@ -248,9 +252,15 @@ function sm(cmd: Command): void {
   cmd.replyT("Sm Unknown Subcommand", sub);
 }
 
-// 6.6 — damage pre-hook (SDKHooks-equivalent). Logs the damage/attacker/type; halves damage as a demo of
-// in-place modify. Fires on real bullet damage; also proven via the shim's first-frame synthetic self-test.
-export function OnTakeDamage(info: DamageInfo): void {
+// 6.6 — damage pre-hook (SDKHook OnTakeDamage). Logs the damage/attacker/type; halves damage as a demo of
+// in-place modify. Fires on real bullet damage; also proven via the shim's first-frame synthetic self-test
+// when that victim is a player pawn this plugin hooked.
+export function OnEntityCreated(entity: EntityRef | null, className: string): void {
+  if (!entity || className !== "player") return;
+  SDKHook(entity, SDKHookType.OnTakeDamage, onTakeDamage);
+}
+
+function onTakeDamage(info: DamageInfo) {
   const atk = info.attacker;
   const vic = info.victim;
   console.log("[basecommands] damage onPre: damage=" + info.damage + " type=" + info.damageType

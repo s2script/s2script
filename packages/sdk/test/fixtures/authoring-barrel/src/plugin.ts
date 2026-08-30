@@ -8,8 +8,11 @@ import {
   Plugins,
   Menu,
   MenuStyle,
+  SDKHook,
+  SDKHookType,
+  Entity,
 } from "@s2script/sdk";
-import type { Command, Client, DamageInfo } from "@s2script/sdk";
+import type { Command, Client, DamageInfo, EntityRef } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command.admin("sm_kick", ADMFLAG.KICK, kick);
@@ -19,6 +22,9 @@ export function OnPluginStart(): void {
     flags: ADMFLAG.CHANGEMAP,
     onSelect: openMapMenu,
   });
+  for (const pawn of Entity.findByClass("player")) {
+    SDKHook(pawn, SDKHookType.OnTakeDamage, onTakeDamage);
+  }
 }
 
 function kick(cmd: Command): typeof HookResult.Handled {
@@ -26,9 +32,13 @@ function kick(cmd: Command): typeof HookResult.Handled {
   return HookResult.Handled;
 }
 
-export function OnTakeDamage(info: DamageInfo): typeof HookResult.Changed {
+export function OnEntityCreated(entity: EntityRef | null, className: string): void {
+  if (!entity || className !== "player") return;
+  SDKHook(entity, SDKHookType.OnTakeDamage, onTakeDamage);
+}
+
+function onTakeDamage(info: DamageInfo) {
   info.damage = info.damage / 2;
-  return HookResult.Changed;
 }
 
 function openMapMenu(adminSlot: number): void {
