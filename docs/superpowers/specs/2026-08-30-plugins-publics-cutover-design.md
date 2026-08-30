@@ -50,4 +50,4 @@ export function OnClientSayCommand(…): HookResult { … }
 
 - Changing live-gate behavior, phrase keys, or kick/ban copy
 - Rewriting examples (next slice)
-- Cookbook subpath imports (coverage corpus)
+- Cookbook subpath imports (coverage corpus). A root barrel import in this slice's plugins also covers every module `index.d.ts` re-exports; `@s2script/sdk/unsafe` still needs a subpath consumer.

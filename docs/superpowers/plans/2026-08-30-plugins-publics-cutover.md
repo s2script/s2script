@@ -7,6 +7,6 @@
 ## Verify
 
 - `bash scripts/check-plugins-typecheck.sh`
-- `bash scripts/check-examples-coverage.sh` (cookbook still on subpaths)
+- `bash scripts/check-examples-coverage.sh` (cookbook still on subpaths; barrel imports cover `index.d.ts` re-exports)
 - `bash scripts/check-antiflood-test.sh`
 - `bash scripts/build-base-plugins.sh` (if the SDK CLI is built)
