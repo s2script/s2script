@@ -190,7 +190,7 @@ There is **no** uninstall on last-unsubscribe: `s2detour::RemoveAll()` at Unload
 path, because unpatching a live detour races the engine calling through it (SourceMod doesn't do it
 either) — an installed hook slot outlives that plugin's own reload and is reused for the same
 address on the next subscribe. Mutation is a block-scoped view over the thunk's stack args, exactly
-like `Damage.onPre`'s `info` — no pointer crosses into JS, and the view cannot outlive the dispatch
+like an OnTakeDamage `DamageInfo` — no pointer crosses into JS, and the view cannot outlive the dispatch
 (`s2script_core_dispatch_hook` in `core/src/ffi.rs`).
 
 **`engine:hooks` is a separate permission from `engine:calls`.** A hook is strictly more dangerous

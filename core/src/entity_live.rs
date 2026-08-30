@@ -38,13 +38,17 @@ pub fn on_spawned(index: i32, engine_serial: i32) {
 
 /// OnEntityDeleted: remove ONLY when the stored serial matches — a stale delete must
 /// not evict a newer same-index entity. (A wrongly-kept entry still fails closed at
-/// the slot-validation stage.)
-pub fn on_deleted(index: i32, engine_serial: i32) {
+/// the slot-validation stage.) Returns the evicted host id so SDKHooks can unhook.
+pub fn on_deleted(index: i32, engine_serial: i32) -> Option<u64> {
     LIVE.with(|t| {
         let mut t = t.borrow_mut();
         let matches = t.get(&index).map_or(false, |(_, s)| *s == engine_serial);
-        if matches { t.remove(&index); }
-    });
+        if matches {
+            t.remove(&index).map(|(id, _)| id)
+        } else {
+            None
+        }
+    })
 }
 
 pub fn lookup(index: i32) -> Option<(u64, i32)> {

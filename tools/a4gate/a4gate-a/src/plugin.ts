@@ -6,7 +6,7 @@
 //
 // Every line is prefixed [A4GATE-A#<load>] so `docker logs | grep A4GATE` reads as a transcript and the
 // load counter makes a hot reload visible.
-import { HookResult } from "@s2script/sdk/events";
+import { HookResult, SDKHook, SDKHookType } from "@s2script/sdk";
 import { createEntity } from "@s2script/sdk/entity";
 import type { EntityRef } from "@s2script/sdk/entity";
 import type { DamageInfo } from "@s2script/sdk/damage";
@@ -24,11 +24,10 @@ export function OnPluginStart(): void {
   L("loaded");
 
   // ---------------------------------------------------------------- check 2
-  // Two damage handlers in ONE context, so their relative order is registration order and therefore
-  // deterministic (cross-plugin order is not). h1 cycles Handled -> Stop -> Continue across the three
-  // synthetic dispatches the shim fires at frames 300/900/1800 under S2_DAMAGE_SELFTEST, so one boot
-  // exercises all three collapse outcomes with no rcon race. One plugin module can export OnTakeDamage
-  // once — compose both handlers here so Stop still skips h2.
+  // Two OnTakeDamage SDKHooks so relative order is registration order. h1 cycles
+  // Handled -> Stop -> Continue across the three synthetic dispatches the shim fires at
+  // frames 300/900/1800 under S2_DAMAGE_SELFTEST. Hook every OnEntityCreated entity so the
+  // self-test's first live victim (often not a player) still hits.
   dmg = 0;
 
   // ---------------------------------------------------------------- check 1
@@ -62,12 +61,11 @@ export function OnPluginStart(): void {
   });
 }
 
-export function OnTakeDamage(info: DamageInfo): typeof HookResult.Handled | typeof HookResult.Stop | typeof HookResult.Continue {
+function h1(info: DamageInfo) {
   dmg += 1;
   if (dmg === 1) {
     L(`dmg#1 h1 saw=${info.damage} -> zeroing, return Handled`);
     info.damage = 0;
-    L(`dmg#${dmg} h2 RAN saw=${info.damage}`);
     return HookResult.Handled;   // must NOT truncate: h2 and b must still run (this is the B2 fix)
   }
   if (dmg === 2) {
@@ -75,13 +73,19 @@ export function OnTakeDamage(info: DamageInfo): typeof HookResult.Handled | type
     return HookResult.Stop;      // must truncate: h2 and b must NOT run
   }
   L(`dmg#${dmg} h1 saw=${info.damage} -> return Continue`);
-  L(`dmg#${dmg} h2 RAN saw=${info.damage}`);
   return HookResult.Continue;
+}
+
+function h2(info: DamageInfo) {
+  L(`dmg#${dmg} h2 RAN saw=${info.damage}`);
 }
 
 export function OnEntityCreated(e: EntityRef | null, cls: string): void {
   created += 1;
   if (created <= 5) L(`onCreate #${created} ${cls} idx=${e?.index ?? -1}`);
+  if (!e) return;
+  SDKHook(e, SDKHookType.OnTakeDamage, h1);
+  SDKHook(e, SDKHookType.OnTakeDamage, h2);
 }
 
 export function OnPlayerRunCmd(): void {

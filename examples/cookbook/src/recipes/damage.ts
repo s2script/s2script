@@ -3,20 +3,18 @@ import type { DamageInfo } from "@s2script/sdk/damage";
 import { command } from "@s2script/sdk/commands";
 
 /**
- * ctx.entities.onDamage is the SDKHooks-equivalent pre-hook (SM's OnTakeDamage):
- * every point of incoming damage passes through it before the engine applies
- * it. DamageInfo is a block-scoped view of that one event — attacker,
- * inflictor, and victim are readonly EntityRef | null (resolve them, don't
- * mutate them); damage and damageType are readable, but only `damage` is
- * actually writable — assigning it (including 0, to block the hit outright)
- * changes what the engine applies. damageType is the raw bit-flag mask, kept
- * numeric here rather than decoded, since which bits mean what is engine
- * data, not something this recipe should hardcode.
+ * SDKHook OnTakeDamage is the SDKHooks pre-hook: every point of incoming damage on the
+ * hooked entity passes through it before the engine applies it. DamageInfo is a
+ * block-scoped view of that one event — attacker, inflictor, and victim are readonly
+ * EntityRef | null (resolve them, don't mutate them); damage and damageType are readable,
+ * but only `damage` is actually writable — assigning it (including 0, to block the hit
+ * outright) changes what the engine applies. damageType is the raw bit-flag mask, kept
+ * numeric here rather than decoded, since which bits mean what is engine data, not
+ * something this recipe should hardcode.
  *
- * The hook is a subscription, so it's registered unconditionally at
- * register() time, as it must be. sm_damage only toggles whether the handler
- * actually *modifies* anything, so loading this recipe doesn't quietly start
- * halving damage on a live server.
+ * The cookbook plugin SDKHooks player pawns and folds into this recipe. sm_damage only
+ * toggles whether the handler actually *modifies* anything, so loading this recipe
+ * doesn't quietly start halving damage on a live server.
  */
 let halving = false;
 

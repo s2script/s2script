@@ -6,9 +6,11 @@
 //   - check 3: be the reload subject. It holds a live subscription on a per-tick channel
 //     (OnGameFrame), so touching its .s2sp exercises the generation token A4d folded into the handler
 //     type while dispatch is actively running.
+import { SDKHook, SDKHookType } from "@s2script/sdk";
 import { hook, previous } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 import type { DamageInfo } from "@s2script/sdk/damage";
+import type { EntityRef } from "@s2script/sdk/entity";
 
 interface State { load: number; }
 
@@ -29,13 +31,14 @@ export function OnPluginStart(): void {
   });
 }
 
-export function OnTakeDamage(info: DamageInfo): void {
+function onTakeDamage(info: DamageInfo) {
   dmg += 1;
   L(`dmg#${dmg} B RAN saw=${info.damage}`);
 }
 
-export function OnEntityCreated(): void {
+export function OnEntityCreated(e: EntityRef | null): void {
   created += 1;
+  if (e) SDKHook(e, SDKHookType.OnTakeDamage, onTakeDamage);
 }
 
 export function OnPlayerRunCmd(): void {

@@ -54,6 +54,7 @@ pub mod process_singletons;
 pub(crate) mod crash;
 mod schema;
 mod schema_catalog;
+mod sdkhooks;
 mod sqldb;
 mod usermsg;
 mod v8host;

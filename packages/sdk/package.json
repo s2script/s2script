@@ -95,6 +95,9 @@
     "./plugins": {
       "types": "./plugins.d.ts"
     },
+    "./sdkhooks": {
+      "types": "./sdkhooks.d.ts"
+    },
     "./server": {
       "types": "./server.d.ts"
     },
