@@ -10,7 +10,11 @@
     "types": [],
     "allowImportingTsExtensions": true,
     "baseUrl": "packages",
-    "paths": { "@s2script/sdk/*": ["sdk/*.d.ts"], "@s2script/*": ["*/index.d.ts"] },
+    "paths": {
+      "@s2script/sdk": ["sdk/index.d.ts"],
+      "@s2script/sdk/*": ["sdk/*.d.ts"],
+      "@s2script/*": ["*/index.d.ts"]
+    },
     "skipLibCheck": true
   }
 }

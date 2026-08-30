@@ -1453,11 +1453,12 @@ pub(crate) fn log_warn(msg: &str) {
 /// Native `__s2require(name) -> object|null` — resolves first-party builtin specifiers to their
 /// per-context module globals under BOTH spellings: the consolidated `@s2script/sdk/<cap>` and the
 /// legacy `@s2script/<cap>` (e.g. `"@s2script/sdk/frame"` or `"@s2script/frame"` → `globalThis.__s2pkg_frame`).
-/// ORDER IS LOAD-BEARING: `@s2script/sdk/` is stripped BEFORE the shorter `@s2script/`, which also
-/// matches `@s2script/sdk/<cap>` and would strip to the garbage cap `sdk/<cap>`. Non-`@s2script/`
-/// specifiers → `null` (the JS `__s2_require` shim resolves those as inter-plugin deps).  A
-/// retired/unknown name (global undefined) → `null`. Engine-generic: no module list hardcoded;
-/// `@s2script/cs2` maps to `__s2pkg_cs2` via the plain `@s2script/` strip.
+/// Bare `@s2script/sdk` (no capability) maps to `globalThis.__s2pkg_sdk`, the engine-generic
+/// authoring barrel. ORDER IS LOAD-BEARING: `@s2script/sdk/` is stripped BEFORE the shorter
+/// `@s2script/`, which also matches `@s2script/sdk/<cap>` and would strip to the garbage cap
+/// `sdk/<cap>`. Non-`@s2script/` specifiers → `null` (the JS `__s2_require` shim resolves those as
+/// inter-plugin deps).  A retired/unknown name (global undefined) → `null`. Engine-generic: no
+/// module list hardcoded; `@s2script/cs2` maps to `__s2pkg_cs2` via the plain `@s2script/` strip.
 ///
 /// Like every native, the body runs under `catch_unwind` (no panic may cross the FFI boundary).
 fn s2require(
@@ -1480,9 +1481,8 @@ fn s2require(
         // ORDER IS LOAD-BEARING: the shorter `@s2script/` also matches `@s2script/sdk/entity`
         // and would strip to `sdk/entity` → `__s2pkg_sdk/entity` garbage — try `@s2script/sdk/`
         // FIRST. Bare `@s2script/sdk` (no capability) falls to the plain strip → `__s2pkg_sdk`,
-        // which never exists → null (the flat barrel is rejected; the typecheck gate, not
-        // s2require, enforces the namespace split). Still generic — no module list hardcoded;
-        // `@s2script/cs2` keeps riding the plain `@s2script/` strip.
+        // the engine-generic authoring barrel (populated by the prelude). Still generic — no
+        // module list hardcoded; `@s2script/cs2` keeps riding the plain `@s2script/` strip.
         let Some(rest) = name
             .strip_prefix("@s2script/sdk/")
             .or_else(|| name.strip_prefix("@s2script/"))
@@ -8700,14 +8700,43 @@ pub(crate) mod frame_tests {
         assert!(eval_in_context_bool("dualpfx",
             r#"typeof __s2require("@s2script/sdk/entity").EntityRef === "function""#),
             "@s2script/sdk/entity must expose EntityRef");
-        // Bare `@s2script/sdk` (no capability — the rejected flat barrel) → null at runtime:
-        // it falls through to the plain `@s2script/` strip → `__s2pkg_sdk`, which never exists.
+        // Bare `@s2script/sdk` (no capability) → the authoring barrel (`__s2pkg_sdk`).
         assert!(eval_in_context_bool("dualpfx",
-            r#"__s2require("@s2script/sdk") === null"#),
-            "bare @s2script/sdk must resolve to null");
+            r#"typeof __s2require("@s2script/sdk").command === "function""#),
+            "bare @s2script/sdk must expose command");
+        assert!(eval_in_context_bool("dualpfx",
+            r#"__s2require("@s2script/sdk").hook === __s2require("@s2script/sdk/plugin").hook"#),
+            "barrel hook must be the same object as @s2script/sdk/plugin.hook");
+        assert!(eval_in_context_bool("dualpfx",
+            r#"__s2require("@s2script/sdk").HookResult.Handled === 2"#),
+            "barrel must re-export HookResult");
         // A non-s2script specifier is still null (handled by the JS interop shim).
         assert!(eval_in_context_bool("dualpfx",
             r#"__s2require("@other/x") === null"#));
+        shutdown();
+    }
+
+    /// `require("@s2script/sdk")` (the CJS spelling esbuild emits for the root barrel) registers
+    /// `command` during OnPluginStart.
+    #[test]
+    fn sdk_barrel_command_registers_during_on_plugin_start() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "sdkbar",
+            r#"
+            module.exports.OnPluginStart = function () {
+                var sdk = globalThis.__s2_require("@s2script/sdk");
+                sdk.command("sm_x", function (cmd) {
+                    globalThis.__slot = cmd.callerSlot;
+                    return sdk.HookResult.Handled;
+                });
+            };
+            "#,
+            "{}",
+        );
+        assert_eq!(plugin_phase("sdkbar"), Some(crate::plugin::Phase::Active));
+        dispatch_concommand("sm_x", -1, "", ReplySource::from_slot(-1));
+        assert_eq!(eval_in_context_string("sdkbar", "String(globalThis.__slot)"), "-1");
         shutdown();
     }
 

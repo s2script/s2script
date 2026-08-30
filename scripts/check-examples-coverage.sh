@@ -13,7 +13,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Shipped capability modules = packages/sdk/<cap>.d.ts, minus globals.d.ts
-# (ambient declarations, not importable as a module). This matches
+# (ambient declarations, not importable as a module) and index.d.ts (the root
+# barrel, which re-exports those same modules). This matches
 # packages/sdk/package.json's `exports` map exactly (verified by hand when this
 # gate was written) — that map is the authoritative list of what's importable,
 # but reading it back out of package.json here would mean parsing JSON in bash
@@ -25,7 +26,7 @@ while IFS= read -r __line; do [ -n "$__line" ] && modules+=("$__line"); done < <
   # `-exec basename` rather than `-printf`: -printf is a GNU extension that BSD/macOS find lacks.
   find packages/sdk -maxdepth 1 -name '*.d.ts' -exec basename {} \; \
     | sed 's/\.d\.ts$//' \
-    | grep -vx -e globals \
+    | grep -vx -e globals -e index \
     | sort
 )
 

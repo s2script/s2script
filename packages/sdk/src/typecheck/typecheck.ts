@@ -66,7 +66,8 @@ function declaredModules(dtsFiles: string[]): Set<string> {
 }
 
 /** Typecheck a plugin dir (full strict) against the shipped engine .d.ts.
- *  @s2script/sdk/* -> packagesDir/sdk/<cap>.d.ts; @s2script/cs2 -> packagesDir/cs2/index.d.ts;
+ *  `@s2script/sdk` → packagesDir/sdk/index.d.ts; `@s2script/sdk/*` → packagesDir/sdk/<cap>.d.ts;
+ *  `@s2script/cs2` → packagesDir/cs2/index.d.ts;
  *  the global `console` -> packagesDir/sdk/globals.d.ts; each declared pluginDependency that is not
  *  always-resolved -> an ambient `declare module "<dep>";` (any). Never emits.
  *
@@ -98,7 +99,7 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   // `.s2script/types/<iface>/index.d.ts` (see examples/cookbook's zones recipe for the pattern;
   // design spec 2026-07-15 §4.6, plan 2, landed as B1).
   const isAlwaysResolved = (d: string): boolean =>
-    d.startsWith("@s2script/sdk/") || d === "@s2script/cs2" || d.startsWith("@s2script/cs2/");
+    d === "@s2script/sdk" || d.startsWith("@s2script/sdk/") || d === "@s2script/cs2" || d.startsWith("@s2script/cs2/");
 
   // A plugin's OWN .d.ts files are part of its typecheck. They carry ambient declarations for
   // interfaces it consumes (see examples/*-consumer). Before this they were compiled only by the
@@ -177,10 +178,12 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
     ...sharedProgramOptions(ts),
     baseUrl: packagesDir,
     paths: {
-      // Builtins are `@s2script/sdk/<cap>` → packages/sdk/<cap>.d.ts. The `@s2script/*` fallback
-      // now serves only @s2script/cs2 → packages/cs2/index.d.ts (the legacy per-package builtin
-      // dirs are deleted). tsc picks the longest matching prefix, so `@s2script/sdk/*` wins for
-      // sdk imports.
+      // Builtins: the root barrel `@s2script/sdk` → packages/sdk/index.d.ts; subpaths
+      // `@s2script/sdk/<cap>` → packages/sdk/<cap>.d.ts. The `@s2script/*` fallback serves
+      // @s2script/cs2 → packages/cs2/index.d.ts (and would also hit sdk/index.d.ts; the exact
+      // `@s2script/sdk` entry makes the barrel obvious). tsc picks the longest matching prefix,
+      // so `@s2script/sdk/*` wins for capability imports.
+      "@s2script/sdk": ["sdk/index.d.ts"],
       "@s2script/sdk/*": ["sdk/*.d.ts"],
       // Game-package SUBPATHS (e.g. @s2script/cs2/econ -> packages/cs2/econ.d.ts). Needed because
       // the `@s2script/*` fallback below maps to `<pkg>/index.d.ts`, which cannot express a

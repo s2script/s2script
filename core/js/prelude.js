@@ -1999,6 +1999,31 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_plugin.createScope = createScope;
   globalThis.__s2pkg_plugin.topmenu = topmenu;
   globalThis.__s2pkg_plugin.translations = translations;
+  // Root barrel: `__s2require("@s2script/sdk")` strips to `__s2pkg_sdk`. Copy each
+  // capability's named exports (command/hook are already bound). First writer wins
+  // on a colliding key so events' HookResult beats the usercmd duplicate. Unsafe,
+  // console, and frame stay subpath-only (no type re-export on the barrel).
+  (function () {
+    var sdk = {};
+    var names = [
+      "__s2pkg_plugin", "__s2pkg_commands", "__s2pkg_admin", "__s2pkg_server",
+      "__s2pkg_plugins", "__s2pkg_menu", "__s2pkg_events", "__s2pkg_clients",
+      "__s2pkg_damage", "__s2pkg_chat", "__s2pkg_config", "__s2pkg_topmenu",
+      "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
+      "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http",
+      "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
+      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_usermessages",
+      "__s2pkg_usercmd", "__s2pkg_interfaces",
+    ];
+    for (var i = 0; i < names.length; i++) {
+      var src = globalThis[names[i]];
+      if (!src) continue;
+      for (var k in src) {
+        if (Object.prototype.hasOwnProperty.call(src, k) && sdk[k] === undefined) sdk[k] = src[k];
+      }
+    }
+    globalThis.__s2pkg_sdk = sdk;
+  })();
   globalThis.__s2_on_all_plugins_loaded = null;
   globalThis.__s2_fire_all_plugins_loaded = function () {
     var fn = globalThis.__s2_on_all_plugins_loaded;

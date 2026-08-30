@@ -17,6 +17,11 @@ test("no-ctx-escape", () => {
          const scope = ctx.createScope();
          ctx.commands.register("edit", () => { scope.clear(); });
        });`,
+      // Same factory, `plugin` imported from the root barrel.
+      `import { plugin } from "@s2script/sdk";
+       export default plugin((ctx) => {
+         ctx.events.on("player_death", () => {});
+       });`,
       // Not a plugin entry at all (no plugin() default export) — rule is inert.
       `const ctx = { events: { on() {} } };
        export function helper() { ctx.events.on("x", () => {}); }`,
@@ -31,6 +36,15 @@ test("no-ctx-escape", () => {
     invalid: [
       {
         code: `import { plugin } from "@s2script/sdk/plugin";
+               export default plugin((ctx) => {
+                 ctx.commands.register("late", () => {
+                   ctx.events.on("player_death", () => {});
+                 });
+               });`,
+        errors: [{ messageId: "escaped" }],
+      },
+      {
+        code: `import { plugin } from "@s2script/sdk";
                export default plugin((ctx) => {
                  ctx.commands.register("late", () => {
                    ctx.events.on("player_death", () => {});

@@ -35,6 +35,9 @@
     "contracts"
   ],
   "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
     "./admin": {
       "types": "./admin.d.ts"
     },
