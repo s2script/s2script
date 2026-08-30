@@ -81,6 +81,38 @@ export interface CommandInvocation {
    * never in the way. */
   replyT(key: PhraseKey, ...args: (string | number)[]): void;
 }
+
+/**
+ * A command callback: the parsed invocation, plus an optional {@link HookResultValue}.
+ * Omit the return (`void`) to continue — the same as returning {@link HookResult}.Continue.
+ * Engine SUPERCEDE-on-Continue is not this API; chat `!` vs `/` suppress is unchanged.
+ */
+export type CommandHandler = (
+  cmd: CommandInvocation,
+) => HookResultValue | void | Promise<HookResultValue | void>;
+
+/**
+ * Register a public command in the load window (SourceMod `RegConsoleCmd`).
+ * Callable only while the plugin factory (or `OnPluginStart`) is running — throws after settle.
+ *
+ * `.admin` / `.server` are the `RegAdminCmd` / `RegServerCmd` shapes: name the handler anything.
+ *
+ * @example
+ * import { command } from "@s2script/sdk/commands";
+ * import { ADMFLAG } from "@s2script/sdk/admin";
+ * export default plugin(() => {
+ *   command.admin("sm_kick", ADMFLAG.KICK, kick);
+ * });
+ * function kick(cmd: CommandInvocation): HookResultValue | void { cmd.reply("kicked"); }
+ */
+export declare const command: {
+  (name: string, handler: CommandHandler): void;
+  /** Register an admin command gated by `flags` (an `ADMFLAG` bitmask). */
+  admin(name: string, flags: number, handler: CommandHandler): void;
+  /** Register a server-only command (console/rcon, not client-runnable). */
+  server(name: string, handler: CommandHandler): void;
+};
+
 /** A parsed chat trigger: which command + args, and whether it was the silent (`/`) trigger. */
 export interface ChatTrigger {
   /** `true` = the silent trigger (`/`, hidden); `false` = the public trigger (`!`). */
@@ -93,7 +125,8 @@ export interface ChatTrigger {
 
 /**
  * Command-registry utilities: dispatch by name, parse/route chat triggers, and enumerate the global
- * registry. Commands themselves are registered through the plugin context (`ctx.commands.register*`).
+ * registry. Commands themselves are registered in the load window via {@link command} or
+ * `ctx.commands.register*`.
  * @example
  * import { Commands } from "@s2script/sdk/commands";
  * // sm_help backend: every registered command + its required admin flag mask.

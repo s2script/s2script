@@ -43,6 +43,31 @@ test("build produces a .s2sp with derived manifest + cjs plugin.js", async () =>
   );
 });
 
+test("authoring-command typechecks and bundles command/hook as externals", async () => {
+  const out = await buildPlugin(join(here, "fixtures", "authoring-command"), packagesDir);
+  const js = openZip(out).readAsText("plugin.js");
+  assert.match(js, /require\(["']@s2script\/sdk\/commands["']\)/);
+  assert.match(js, /require\(["']@s2script\/sdk\/plugin["']\)/);
+});
+
+test("consumer-import externalizes the producer and does not warn never-used", async () => {
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (...a) => { warns.push(a.map(String).join(" ")); };
+  let out;
+  try {
+    out = await buildPlugin(join(here, "fixtures", "consumer-import"), packagesDir);
+  } finally {
+    console.warn = orig;
+  }
+  const js = openZip(out).readAsText("plugin.js");
+  assert.match(js, /require\(["']@demo\/greeter["']\)/);
+  assert.ok(
+    !warns.some((w) => /never ctx\.use|never imported/.test(w)),
+    `unexpected never-used warning: ${warns.join(" | ")}`,
+  );
+});
+
 test("consumer manifest carries both dep maps and externalizes the inter-plugin dep", async () => {
   const out = await buildPlugin(join(here, "fixtures", "consumer"), packagesDir);
   const zip = openZip(out);
