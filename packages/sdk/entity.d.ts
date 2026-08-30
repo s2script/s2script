@@ -220,7 +220,7 @@ export type EntityKeyValueMap = { [key: string]: string | number | boolean };
  */
 export declare function createEntity(className: string, keyvalues?: EntityKeyValueMap): EntityRef | null;
 
-/** The payload delivered to an `Entity.onOutput` handler. */
+/** The payload delivered to an `onOutput` handler. */
 export interface OutputEvent {
   /** The output's name (e.g. "OnTrigger", "OnPressed", "OnStartTouch"). */
   output: string;

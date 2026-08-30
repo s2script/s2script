@@ -452,7 +452,7 @@ export interface TriggerZoneHandle {
 /** Create arbitrary-box touch zones at runtime (a runtime trigger_multiple). */
 export declare const TriggerZone: {
   /** Create a runtime engine trigger_multiple whose touch volume is the arbitrary box [min,max].
-   *  Fires OnStartTouch/OnEndTouch (hook via Entity.onOutput). Non-solid (pass-through). */
+   *  Fires OnStartTouch/OnEndTouch (hook via `onOutput` from `@s2script/sdk`). Non-solid (pass-through). */
   create(min: ZoneBox, max: ZoneBox, opts?: { model?: string; spawnflags?: number }): TriggerZoneHandle | null;
 };
 
