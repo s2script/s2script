@@ -96,6 +96,10 @@ test("create --yes scaffolds a CS2 plugin that typechecks against monorepo packa
   assert.equal(result.game, "cs2");
   assert.equal(result.skippedInstall, true);
   assert.ok(existsSync(join(tmp, "src", "plugin.ts")));
+  const createdSrc = readFileSync(join(tmp, "src", "plugin.ts"), "utf8");
+  assert.match(createdSrc, /OnPluginStart/);
+  assert.match(createdSrc, /command\("hello"/);
+  assert.doesNotMatch(createdSrc, /export default plugin/);
   assert.ok(existsSync(join(tmp, "package.json")));
   assert.ok(existsSync(join(tmp, "tsconfig.json")));
 
@@ -139,8 +143,10 @@ test("create --game none scaffolds an engine-generic plugin", async () => {
     yes: true,
   });
   const src = (await import("node:fs")).readFileSync(join(tmp, "src", "plugin.ts"), "utf8");
-  assert.match(src, /ctx\.server\.onGameFrame/);
+  assert.match(src, /OnPluginStart/);
+  assert.match(src, /OnGameFrame/);
   assert.match(src, /delay/);
+  assert.doesNotMatch(src, /export default plugin/);
   const tc = typecheckPlugin(tmp, { packagesDir });
   assert.equal(tc.ok, true, JSON.stringify(tc.diagnostics));
   rmSync(tmp, { recursive: true, force: true });

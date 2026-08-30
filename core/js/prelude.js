@@ -1948,9 +1948,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return ctx;
   }
 
-  // Load-window free APIs (SourceMod-shaped). Bound to the current factory ctx via
-  // globalThis.__s2_load_ctx — set for the factory run, cleared at settle. command/hook
-  // throw after settle; publish/use/tryUse share the same window.
+  // Load-window free APIs (SourceMod-shaped). Bound to the current factory / OnPluginStart
+  // ctx via globalThis.__s2_load_ctx — set for the load run, cleared at settle. command/hook
+  // throw after settle; publish/use/tryUse/topmenu/translations share the same window.
   function __s2_load_ctx_or_throw(api) {
     var ctx = globalThis.__s2_load_ctx;
     if (!ctx) throw new Error("s2script: " + api + " outside the load window");
@@ -1971,13 +1971,28 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function publish(name, impl) { return __s2_load_ctx_or_throw("publish()").publish(name, impl); }
   function use(name) { return __s2_load_ctx_or_throw("use()").use(name); }
   function tryUse(name) { return __s2_load_ctx_or_throw("tryUse()").tryUse(name); }
+  var topmenu = {
+    addCategory: function (n) { __s2_load_ctx_or_throw("topmenu.addCategory()").topmenu.addCategory(n); },
+    addItem: function (c, i) { __s2_load_ctx_or_throw("topmenu.addItem()").topmenu.addItem(c, i); },
+  };
+  var translations = {
+    load: function () {
+      var c = __s2_load_ctx_or_throw("translations.load()");
+      return c.translations.load.apply(c.translations, arguments);
+    },
+  };
   globalThis.__s2pkg_commands.command = command;
   globalThis.__s2pkg_plugin.hook = hook;
   globalThis.__s2pkg_plugin.publish = publish;
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;
+  globalThis.__s2pkg_plugin.topmenu = topmenu;
+  globalThis.__s2pkg_plugin.translations = translations;
 
-  globalThis.__s2_run_factory = function (def) {
+  // def = plugin() artifact or undefined; exports = module.exports (named publics).
+  // Order: factory if present → OnGameFrame/OnMapStart subscribe → OnPluginStart() →
+  // OnPluginEnd attached as hooks.onUnload. Load window stays open until settle.
+  globalThis.__s2_run_factory = function (def, exports) {
     var ctx = __s2_make_ctx();
     globalThis.__s2_load_ctx = ctx;
     function done(hooks) {
@@ -1988,13 +2003,39 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       globalThis.__s2_load_ctx = null;
       __s2_load_failed(String((e && e.stack) || e));
     }
+    function afterFactory(hooks) {
+      var exp = exports || {};
+      var startOut;
+      try {
+        if (typeof exp.OnGameFrame === "function") ctx.server.onGameFrame(exp.OnGameFrame);
+        if (typeof exp.OnMapStart === "function") ctx.server.onMapStart(exp.OnMapStart);
+        if (typeof exp.OnPluginStart === "function") startOut = exp.OnPluginStart();
+        if (typeof exp.OnPluginEnd === "function") {
+          var prevUnload = hooks && hooks.onUnload;
+          var prevState = hooks && hooks.state;
+          hooks = {
+            onUnload: function () {
+              try { if (typeof prevUnload === "function") prevUnload(); }
+              finally { exp.OnPluginEnd(); }
+            },
+          };
+          if (typeof prevState === "function") hooks.state = prevState;
+        }
+      } catch (e) { fail(e); return; }
+      if (startOut && typeof startOut.then === "function") {
+        startOut.then(function () { done(hooks); }, fail);
+      } else {
+        done(hooks);
+      }
+    }
     var out;
-    try { out = def.factory(ctx); }
-    catch (e) { fail(e); return; }
+    try {
+      if (def && typeof def.factory === "function") out = def.factory(ctx);
+    } catch (e) { fail(e); return; }
     if (out && typeof out.then === "function") {
-      out.then(done, fail);
+      out.then(afterFactory, fail);
     } else {
-      done(out);
+      afterFactory(out);
     }
   };
 })();
