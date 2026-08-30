@@ -308,6 +308,12 @@ pub extern "C" fn s2script_core_dispatch_damage() {
     let _ = catch_unwind(|| v8host::dispatch_damage());
 }
 
+/// `OnTakeDamagePost` — after the original DispatchTraceAttack ran. Info pointer still live.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_damage_post() {
+    let _ = catch_unwind(|| v8host::dispatch_damage_post());
+}
+
 /// Shim → core: a per-entity SDKHook VP virtual (Touch family). `type` is the wiki name
 /// (`Touch` / `TouchPost`). `other_handle` is a packed `CEntityHandle` (`ToInt()`), or `-1`.
 /// Returns collapsed `HookResult` 0..=3; shim SUPERCEDEs the original when `>= Handled` on pre.

@@ -3488,15 +3488,40 @@ fn zero_current_damage() {
 }
 
 pub(crate) fn dispatch_damage() {
-    let snap = crate::sdkhooks::snapshot_ontakedamage();
+    // Handled zeroes live damage AFTER the collapse (does not skip later observers). Stop truncates.
+    dispatch_damage_kind(
+        crate::sdkhooks::snapshot_ontakedamage(),
+        "dispatch_damage",
+        "damage:onPre",
+        StopAt::Stop,
+        true,
+    );
+}
+
+/// `OnTakeDamagePost` — after the original DTA ran. Return is ignored; Handled does not zero.
+pub(crate) fn dispatch_damage_post() {
+    dispatch_damage_kind(
+        crate::sdkhooks::snapshot_ontakedamage_post(),
+        "dispatch_damage_post",
+        "damage:onPost",
+        StopAt::Never,
+        false,
+    );
+}
+
+fn dispatch_damage_kind(
+    snap: Vec<(String, u64, v8::Global<v8::Function>)>,
+    label: &'static str,
+    breadcrumb: &'static str,
+    stop_at: StopAt,
+    zero_on_handled: bool,
+) {
     let result = fan_out_collapsing(
         &snap,
-        "dispatch_damage",
-        Instrument::breadcrumb("damage:onPre"),
-        StopAt::Stop,
+        label,
+        Instrument::breadcrumb(breadcrumb),
+        stop_at,
         |tc| {
-            // Construct new DamageInfo(): globalThis.__s2pkg_damage.DamageInfo. A failure yields
-            // `undefined` rather than skipping the subscriber (pre-fan_out behaviour).
             let info: Option<v8::Local<v8::Value>> = (|| {
                 let global = tc.get_current_context().global(tc);
                 let pkg_key = v8::String::new(tc, "__s2pkg_damage")?;
@@ -3510,16 +3535,7 @@ pub(crate) fn dispatch_damage() {
             Some(vec![info.unwrap_or_else(|| v8::undefined(tc).into())])
         },
     );
-    // Block power: a handler returning >= Handled zeroes the live damage. Applied AFTER the collapse
-    // rather than mid-loop.
-    //
-    // This is the B2 fix. The old loop `break`ed at >= Handled, so ONE plugin's Handled silently
-    // denied every other plugin's OnTakeDamage handler its dispatch for that hit. That contradicts
-    // ARCHITECTURE.md:78 — "`Stop` short-circuits. `Handled` does NOT short-circuit (a later
-    // observer may still want the event)" — and multiplexer.rs's own `handled_does_not_short_circuit`
-    // test. The block is a decision about the DAMAGE, not a veto over other observers; a handler that
-    // genuinely wants to end the chain returns `Stop`, which `StopAt::Stop` honours.
-    if result >= HookResult::Handled {
+    if zero_on_handled && result >= HookResult::Handled {
         zero_current_damage();
     }
 }

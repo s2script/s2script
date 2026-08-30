@@ -820,6 +820,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_damage = { DamageInfo: DamageInfo };
   var SDKHookType = {
     OnTakeDamage: "OnTakeDamage",
+    OnTakeDamagePost: "OnTakeDamagePost",
+    OnTakeDamageAlive: "OnTakeDamageAlive",
+    OnTakeDamageAlivePost: "OnTakeDamageAlivePost",
+    TraceAttack: "TraceAttack",
+    TraceAttackPost: "TraceAttackPost",
+    FireBulletsPost: "FireBulletsPost",
     StartTouch: "StartTouch", Touch: "Touch", EndTouch: "EndTouch", Blocked: "Blocked",
     StartTouchPost: "StartTouchPost", TouchPost: "TouchPost",
     EndTouchPost: "EndTouchPost", BlockedPost: "BlockedPost",
@@ -833,6 +839,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     VPhysicsUpdate: "VPhysicsUpdate", VPhysicsUpdatePost: "VPhysicsUpdatePost",
     GroundEntChangedPost: "GroundEntChangedPost",
     CanBeAutobalanced: "CanBeAutobalanced",
+    Reload: "Reload", ReloadPost: "ReloadPost",
+    WeaponCanUse: "WeaponCanUse", WeaponCanUsePost: "WeaponCanUsePost",
+    WeaponCanSwitchTo: "WeaponCanSwitchTo", WeaponCanSwitchToPost: "WeaponCanSwitchToPost",
+    WeaponDrop: "WeaponDrop", WeaponDropPost: "WeaponDropPost",
+    WeaponEquip: "WeaponEquip", WeaponEquipPost: "WeaponEquipPost",
+    WeaponSwitch: "WeaponSwitch", WeaponSwitchPost: "WeaponSwitchPost",
   };
   // Assigned after the literal so a parallel lifecycle PR can append members inside the object.
   SDKHookType.SetTransmit = "SetTransmit";

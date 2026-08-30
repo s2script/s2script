@@ -754,10 +754,12 @@ static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, voi
     META_CONPRINTF("[s2script] DTA fired: this=%p a2.dmg=%.1f a3.dmg=%.1f\n", thisptr, rd(a2), rd(a3));
     s_currentDamageInfo = a2;                     // block-scoped: valid only across this dispatch
     s_currentDamageVictim = thisptr;              // the victim entity (this)
-    s2script_core_dispatch_damage();              // run Damage.onPre (read/modify the live info in place)
+    s2script_core_dispatch_damage();              // OnTakeDamage (read/modify the live info in place)
+    int64_t ret = g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;
+    s2script_core_dispatch_damage_post();         // OnTakeDamagePost (info still live)
     s_currentDamageInfo = nullptr;
     s_currentDamageVictim = nullptr;
-    return g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;  // original uses any modified damage
+    return ret;
 }
 
 // Slice 5D.3: Events.fire creates an event and retargets s_currentEvent to it (save/restore on
@@ -5397,7 +5399,7 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
     S2Defer_Drain();
     // Slice 6.6 Stage-2 self-test: fire a synthetic damage dispatch over a fake CTakeDamageInfo
     // (m_flDamage@68 = 42) to prove detour->core mux->JS handler->schema read end-to-end (combat is
-    // un-generatable on the bots-only gate). GATED OFF by default: it fires plugins' Damage.onPre handlers
+    // un-generatable on the bots-only gate). GATED OFF by default: it fires plugins' OnTakeDamage handlers
     // with FAKE data, so it must NOT run in production — set S2_DAMAGE_SELFTEST=1 to opt in for verification.
     // Fired at a few LATER frames (frame 1 caught the plugin mid boot-reload with no live subscriber).
     static bool s_dmgSelfTestOn = (getenv("S2_DAMAGE_SELFTEST") != nullptr);
@@ -5412,6 +5414,7 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
         META_CONPRINTF("[s2script] damage self-test (frame %ld): synthetic damage (m_flDamage=42, victim=%p, raw=%d)\n",
                        s_frameNo, victimEnt, s2_damage_victim());
         s2script_core_dispatch_damage();
+        s2script_core_dispatch_damage_post();
         s_currentDamageInfo = nullptr;
         s_currentDamageVictim = nullptr;
     }
