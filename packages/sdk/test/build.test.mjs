@@ -56,6 +56,7 @@ test("authoring-publics typechecks OnPluginStart and bundles named exports", asy
   assert.match(js, /OnPluginStart/);
   assert.match(js, /require\(["']@s2script\/sdk\/commands["']\)/);
   assert.match(js, /require\(["']@s2script\/sdk\/plugin["']\)/);
+  assert.match(js, /groupBy/);
   assert.doesNotMatch(js, /__s2plugin/);
 });
 
