@@ -5,7 +5,9 @@
  * The cookbook plugin is the only loadable entry (`src/plugin.ts`). It imports
  * every recipe and fans each public — a plugin may export each public once.
  * Copy one recipe file to your plugin's `src/plugin.ts` and it typechecks and
- * loads on its own; `name` / `describe` are unused in that case.
+ * loads on its own; `name` / `describe` are unused in that case. `unsafe` also
+ * needs this plugin's gamedata; `zones` needs the verified `@s2script/zones`
+ * contract copy.
  *
  * Recipes must be side-effect-light at start — register commands and `hook.on`
  * subscriptions, do not start work. Commands are prefixed `sm_` so the whole
