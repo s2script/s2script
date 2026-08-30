@@ -9,7 +9,7 @@ import type { GameEvent, HookResultValue } from "./events";
 import type { Client } from "./clients";
 import type { EntityRef, OutputEvent } from "./entity";
 import type { DamageInfo } from "./damage";
-import type { CommandInvocation } from "./commands";
+import type { CommandHandler } from "./commands";
 import type { Config } from "./config";
 import type { PublishHandle } from "./interfaces";
 import type { TopMenuItem } from "./topmenu";
@@ -97,11 +97,11 @@ export interface CtxServer {
 /** Console/chat command registration on this plugin's load-scope ({@link PluginContext.commands}). */
 export interface CtxCommands {
   /** Register a public command (any client may run it). */
-  register(name: string, handler: (cmd: CommandInvocation) => void): void;
+  register(name: string, handler: CommandHandler): void;
   /** Register a server-only command (console/rcon, not client-runnable). */
-  registerServer(name: string, handler: (cmd: CommandInvocation) => void): void;
+  registerServer(name: string, handler: CommandHandler): void;
   /** Register an admin command gated by `flags` (an `ADMFLAG` bitmask; fail-safe default-deny). */
-  registerAdmin(name: string, flags: number, handler: (cmd: CommandInvocation) => void): void;
+  registerAdmin(name: string, flags: number, handler: CommandHandler): void;
   /**
    * Observe an existing CLIENT command by name — SourceMod's `AddCommandListener`.
    *
@@ -237,3 +237,33 @@ export interface PluginDefinition {
  * });
  */
 export declare function plugin(factory: PluginFactory): PluginDefinition;
+
+/**
+ * Load-window damage (and later, other) hooks bound to the current factory / `OnPluginStart` ctx.
+ * Throws after settle — the same window as {@link command}.
+ *
+ * @example
+ * import { hook } from "@s2script/sdk/plugin";
+ * export default plugin(() => { hook.damage((info) => { info.damage = info.damage / 2; }); });
+ */
+export declare const hook: {
+  /** Damage pre-hook (SDKHooks-equivalent): same contract as {@link CtxEntities.onDamage}. */
+  damage(handler: (info: DamageInfo) => HookResultValue | void): void;
+};
+
+/**
+ * Publish this plugin's manifest-declared interface. Load-window only (buffered, armed at Active).
+ * Same contract as {@link PluginContext.publish}.
+ */
+export declare function publish<T extends object>(name: string, impl: T): PublishHandle;
+/**
+ * Resolve a HARD dep (must be in `pluginDependencies`). Load-window only.
+ * Same contract as {@link PluginContext.use}. Prefer `import { greet } from "@demo/greeter"` for
+ * the producer-as-import form; `use()` remains the explicit load-window form and the optional-dep path.
+ */
+export declare function use<T extends object>(name: string): InterfaceHandle<T>;
+/**
+ * Resolve an OPTIONAL dep (must be in `optionalPluginDependencies`); null while unpublished.
+ * Load-window only. Same contract as {@link PluginContext.tryUse}.
+ */
+export declare function tryUse<T extends object>(name: string): InterfaceHandle<T> | null;

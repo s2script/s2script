@@ -5844,6 +5844,7 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
             });
 
             // Drive the factory: globalThis.__s2_run_factory(def). It builds the load-scoped ctx,
+            // stashes it at globalThis.__s2_load_ctx (so free command/hook/publish/use bind to it),
             // calls def.factory(ctx), and settles via __s2_load_settled / __s2_load_failed.
             let global = tc.get_current_context().global(tc);
             let run_ok = v8::String::new(tc, "__s2_run_factory")
@@ -8321,6 +8322,59 @@ pub(crate) mod frame_tests {
         let _ = eval_in_context("seal",
             "try { LEAK.events.on('x', function(){}); globalThis.T='no' } catch(e) { globalThis.T='threw' }");
         assert_eq!(eval_in_context_string("seal", "String(globalThis.T)"), "threw");
+        shutdown();
+    }
+
+    /// Free `command()` (bound to the factory ctx via `__s2_load_ctx`) registers during the factory
+    /// and throws after settle. The JS wrapper returns the handler's HookResult (engine SUPERCEDE
+    /// is not this slice).
+    #[test]
+    fn command_api_registers_during_factory_and_throws_after() {
+        init(dummy_logger()).unwrap();
+        load_body(
+            "cmdapi",
+            r#"
+            var command = globalThis.__s2_require("@s2script/sdk/commands").command;
+            command("sm_x", function (cmd) {
+                globalThis.__slot = cmd.callerSlot;
+                return HookResult.Handled;
+            });
+            globalThis.__command = command;
+            globalThis.__hook = globalThis.__s2_require("@s2script/sdk/plugin").hook;
+        "#,
+            "{}",
+        );
+        assert_eq!(plugin_phase("cmdapi"), Some(crate::plugin::Phase::Active));
+        dispatch_concommand("sm_x", -1, "", ReplySource::from_slot(-1));
+        assert_eq!(eval_in_context_string("cmdapi", "String(globalThis.__slot)"), "-1");
+        let threw = eval_in_context_string(
+            "cmdapi",
+            r#"
+            (function () {
+                try { globalThis.__command("sm_late", function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+        "#,
+        );
+        assert!(
+            threw.contains("outside the load window"),
+            "command() after settle must throw, got: {}",
+            threw
+        );
+        let hook_threw = eval_in_context_string(
+            "cmdapi",
+            r#"
+            (function () {
+                try { globalThis.__hook.damage(function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+        "#,
+        );
+        assert!(
+            hook_threw.contains("outside the load window"),
+            "hook.damage() after settle must throw, got: {}",
+            hook_threw
+        );
         shutdown();
     }
 

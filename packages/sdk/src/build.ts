@@ -263,17 +263,23 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     ...Object.keys(pluginDependencies),
     ...Object.keys(optionalPluginDependencies),
   ]);
+  // use()/tryUse of an undeclared name throws at load. Imports of a non-dep are bundled (libraries,
+  // workspace siblings) and are not this warning — producer-as-import still has to be declared to
+  // be esbuild-external, which is the other row below.
   for (const used of scan.useNames) {
     if (!declaredDeps.has(used)) {
       console.warn(
-        `WARN: ctx.use/tryUse(${JSON.stringify(used)}) is not declared under s2script.pluginDependencies/` +
+        `WARN: use()/tryUse(${JSON.stringify(used)}) is not declared under s2script.pluginDependencies/` +
           `optionalPluginDependencies — it will throw at runtime`,
       );
     }
   }
+  const referenced = new Set([...scan.useNames, ...scan.importNames]);
   for (const dep of declaredDeps) {
-    if (!scan.useNames.includes(dep)) {
-      console.warn(`WARN: dependency ${JSON.stringify(dep)} is declared but never ctx.use()d`);
+    if (!referenced.has(dep)) {
+      console.warn(
+        `WARN: dependency ${JSON.stringify(dep)} is declared but never ctx.use()d or imported`,
+      );
     }
   }
 

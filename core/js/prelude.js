@@ -1029,27 +1029,27 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2cmd_triggers = { public: "!", silent: "/" };   // SM PublicChatTrigger / SilentChatTrigger; mutable
   var __s2_commands = {
     register: function (name, handler) {
-      __s2cmd_add(name, function (slot, a, src) { handler(__s2cmd_ctx(slot, a, src)); }, 0);   // 0 = anyone
+      __s2cmd_add(name, function (slot, a, src) { return handler(__s2cmd_ctx(slot, a, src)); }, 0);   // 0 = anyone
     },
     registerServer: function (name, handler) {
       __s2cmd_add(name, function (slot, a, src) {
         var ctx = __s2cmd_ctx(slot, a, src);
-        if (ctx.callerSlot < 0) { handler(ctx); }
-        else { ctx.reply("[SM] This command can only be run from the server console."); }
+        if (ctx.callerSlot < 0) { return handler(ctx); }
+        ctx.reply("[SM] This command can only be run from the server console.");
       }, -1);   // -1 = console/server-only sentinel
     },
     registerAdmin: function (name, flags, handler) {
       __s2cmd_add(name, function (slot, a, src) {
         var ctx = __s2cmd_ctx(slot, a, src);
-        if (ctx.callerSlot < 0) { handler(ctx); return; }        // server / rcon = root
+        if (ctx.callerSlot < 0) { return handler(ctx); }        // server / rcon = root
         var check = globalThis.__s2_admin_check;
         if (typeof check !== "function") {
           if (!globalThis.__s2cmd_warnedNoAdmin) { globalThis.__s2cmd_warnedNoAdmin = true;
             console.log("[s2script] WARN: registerAdmin('" + name + "') used without @s2script/admin — denying non-server callers"); }
           ctx.reply("[SM] You do not have access to this command."); return;
         }
-        if (check(ctx.callerSlot, flags | 0, name)) { handler(ctx); }
-        else { ctx.reply("[SM] You do not have access to this command."); }
+        if (check(ctx.callerSlot, flags | 0, name)) { return handler(ctx); }
+        ctx.reply("[SM] You do not have access to this command.");
       }, flags | 0);   // the ADMFLAG mask this command requires
     },
     // Slice 6.11: invoke a registered command by name (same context, synchronous — the wrapper applies
@@ -1948,16 +1948,53 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return ctx;
   }
 
+  // Load-window free APIs (SourceMod-shaped). Bound to the current factory ctx via
+  // globalThis.__s2_load_ctx — set for the factory run, cleared at settle. command/hook
+  // throw after settle; publish/use/tryUse share the same window.
+  function __s2_load_ctx_or_throw(api) {
+    var ctx = globalThis.__s2_load_ctx;
+    if (!ctx) throw new Error("s2script: " + api + " outside the load window");
+    return ctx;
+  }
+  function command(name, handler) {
+    __s2_load_ctx_or_throw("command()").commands.register(name, handler);
+  }
+  command.admin = function (name, flags, handler) {
+    __s2_load_ctx_or_throw("command.admin()").commands.registerAdmin(name, flags, handler);
+  };
+  command.server = function (name, handler) {
+    __s2_load_ctx_or_throw("command.server()").commands.registerServer(name, handler);
+  };
+  var hook = {
+    damage: function (h) { __s2_load_ctx_or_throw("hook.damage()").entities.onDamage(h); },
+  };
+  function publish(name, impl) { return __s2_load_ctx_or_throw("publish()").publish(name, impl); }
+  function use(name) { return __s2_load_ctx_or_throw("use()").use(name); }
+  function tryUse(name) { return __s2_load_ctx_or_throw("tryUse()").tryUse(name); }
+  globalThis.__s2pkg_commands.command = command;
+  globalThis.__s2pkg_plugin.hook = hook;
+  globalThis.__s2pkg_plugin.publish = publish;
+  globalThis.__s2pkg_plugin.use = use;
+  globalThis.__s2pkg_plugin.tryUse = tryUse;
+
   globalThis.__s2_run_factory = function (def) {
     var ctx = __s2_make_ctx();
+    globalThis.__s2_load_ctx = ctx;
+    function done(hooks) {
+      globalThis.__s2_load_ctx = null;
+      __s2_load_settled(hooks);
+    }
+    function fail(e) {
+      globalThis.__s2_load_ctx = null;
+      __s2_load_failed(String((e && e.stack) || e));
+    }
     var out;
     try { out = def.factory(ctx); }
-    catch (e) { __s2_load_failed(String((e && e.stack) || e)); return; }
+    catch (e) { fail(e); return; }
     if (out && typeof out.then === "function") {
-      out.then(function (hooks) { __s2_load_settled(hooks); },
-               function (e) { __s2_load_failed(String((e && e.stack) || e)); });
+      out.then(done, fail);
     } else {
-      __s2_load_settled(out);
+      done(out);
     }
   };
 })();
