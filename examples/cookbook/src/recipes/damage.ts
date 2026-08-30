@@ -1,6 +1,5 @@
 import type { Recipe } from "../recipe.ts";
 import type { DamageInfo } from "@s2script/sdk/damage";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 /**
@@ -19,22 +18,21 @@ import { command } from "@s2script/sdk/commands";
  * actually *modifies* anything, so loading this recipe doesn't quietly start
  * halving damage on a live server.
  */
+let halving = false;
+
 export const damageRecipe: Recipe = {
   name: "damage",
   describe: "toggle a damage pre-hook that halves incoming damage (sm_damage)",
+  onTakeDamage(info: DamageInfo) {
+    const atk = info.attacker;
+    const vic = info.victim;
+    console.log("[cookbook] damage onPre: damage=" + info.damage + " type=" + info.damageType
+      + " victim=" + (vic ? vic.index + "/" + vic.id : "none")
+      + " attacker=" + (atk ? atk.index + "/" + atk.id : "none")
+      + (halving ? " -> halved" : ""));
+    if (halving) info.damage = info.damage / 2;
+  },
   register() {
-    let halving = false;
-
-    hook.entity.onDamage((info: DamageInfo) => {
-      const atk = info.attacker;
-      const vic = info.victim;
-      console.log("[cookbook] damage onPre: damage=" + info.damage + " type=" + info.damageType
-        + " victim=" + (vic ? vic.index + "/" + vic.id : "none")
-        + " attacker=" + (atk ? atk.index + "/" + atk.id : "none")
-        + (halving ? " -> halved" : ""));
-      if (halving) info.damage = info.damage / 2;
-    });
-
     command("sm_damage", (cmd) => {
       halving = !halving;
       cmd.reply(halving

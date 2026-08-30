@@ -5,20 +5,21 @@
 //
 // __s2_schema_dump is a dev/treadmill native (drives the shim's schema_enumerate SDK walk). It is
 // NOT part of the typed @s2script/* surface, so we declare it ambiently here.
-import { hook } from "@s2script/sdk/plugin";
 declare const __s2_schema_dump: (path: string, enumsPath?: string) => boolean;
+
+let done = false;
+let ticks = 0;
 
 export function OnPluginStart(): void {
   console.log("[schema-dump] onLoad — will dump once the schema is live");
-  let done = false;
-  let ticks = 0;
-  hook.server.onGameFrame(() => {
-    if (done) return;
-    if (ticks++ < 128) return;                 // let a map load + the schema populate
-    // Path is relative to the server process CWD; the native writes it and returns true only when
-    // the schema is warm (classes enumerated) AND the file was written. Retries until then.
-    const ok = __s2_schema_dump("/tmp/schema-catalog.json", "/tmp/schema-enums.json");
-    console.log("[schema-dump] dump " + (ok ? "OK -> /tmp/schema-catalog.json + /tmp/schema-enums.json" : "not ready, retrying"));
-    if (ok) done = true;
-  });
+}
+
+export function OnGameFrame(): void {
+  if (done) return;
+  if (ticks++ < 128) return;                 // let a map load + the schema populate
+  // Path is relative to the server process CWD; the native writes it and returns true only when
+  // the schema is warm (classes enumerated) AND the file was written. Retries until then.
+  const ok = __s2_schema_dump("/tmp/schema-catalog.json", "/tmp/schema-enums.json");
+  console.log("[schema-dump] dump " + (ok ? "OK -> /tmp/schema-catalog.json + /tmp/schema-enums.json" : "not ready, retrying"));
+  if (ok) done = true;
 }

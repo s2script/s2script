@@ -1969,75 +1969,16 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     __s2_load_ctx_or_throw("command.onClientCommand()").commands.onClientCommand(name, handler);
   };
   var hook = {
-    events: {
-      on: function (name, handler) {
-        __s2_load_ctx_or_throw("hook.events.on()").events.on(name, handler);
-      },
-      onPre: function (name, handler) {
-        __s2_load_ctx_or_throw("hook.events.onPre()").events.onPre(name, handler);
-      },
+    on: function (name, handler) {
+      __s2_load_ctx_or_throw("hook.on()").events.on(name, handler);
     },
-    client: {
-      onConnect: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onConnect()").clients.onConnect(handler);
-      },
-      onPutInServer: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onPutInServer()").clients.onPutInServer(handler);
-      },
-      onActive: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onActive()").clients.onActive(handler);
-      },
-      onFullyConnected: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onFullyConnected()").clients.onFullyConnect(handler);
-      },
-      onDisconnect: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onDisconnect()").clients.onDisconnect(handler);
-      },
-      onSettingsChanged: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onSettingsChanged()").clients.onSettingsChanged(handler);
-      },
-      onVoice: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onVoice()").clients.onVoice(handler);
-      },
-      onCookiesCached: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onCookiesCached()").clients.onCookiesCached(handler);
-      },
-      onSay: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onSay()").clients.onSay(handler);
-      },
-      onRunCmd: function (handler) {
-        __s2_load_ctx_or_throw("hook.client.onRunCmd()").clients.onRunCmd(handler);
-      },
-    },
-    entity: {
-      onCreate: function (className, handler) {
-        __s2_load_ctx_or_throw("hook.entity.onCreate()").entities.onCreate(className, handler);
-      },
-      onSpawn: function (className, handler) {
-        __s2_load_ctx_or_throw("hook.entity.onSpawn()").entities.onSpawn(className, handler);
-      },
-      onDelete: function (className, handler) {
-        __s2_load_ctx_or_throw("hook.entity.onDelete()").entities.onDelete(className, handler);
-      },
-      onOutput: function (classname, output, handler) {
-        __s2_load_ctx_or_throw("hook.entity.onOutput()").entities.onOutput(classname, output, handler);
-      },
-      onDamage: function (h) {
-        __s2_load_ctx_or_throw("hook.entity.onDamage()").entities.onDamage(h);
-      },
-    },
-    server: {
-      onPrecache: function (handler) {
-        __s2_load_ctx_or_throw("hook.server.onPrecache()").server.onPrecache(handler);
-      },
-      onGameFrame: function (fn, opts) {
-        __s2_load_ctx_or_throw("hook.server.onGameFrame()").server.onGameFrame(fn, opts);
-      },
-      onMapStart: function (handler) {
-        __s2_load_ctx_or_throw("hook.server.onMapStart()").server.onMapStart(handler);
-      },
+    onPre: function (name, handler) {
+      __s2_load_ctx_or_throw("hook.onPre()").events.onPre(name, handler);
     },
   };
+  function onOutput(classname, output, handler) {
+    __s2_load_ctx_or_throw("onOutput()").entities.onOutput(classname, output, handler);
+  }
   function previous() { return __s2_load_ctx_or_throw("previous()").previous; }
   function pluginId() { return __s2_load_ctx_or_throw("pluginId()").id; }
   // Game-package ctx namespaces (ui / gameRules / players / items) as load-window
@@ -2072,6 +2013,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   globalThis.__s2pkg_commands.command = command;
   globalThis.__s2pkg_plugin.hook = hook;
+  globalThis.__s2pkg_plugin.onOutput = onOutput;
   globalThis.__s2pkg_plugin.publish = publish;
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;
@@ -2133,6 +2075,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var startOut;
       try {
         if (typeof exp.OnGameFrame === "function") ctx.server.onGameFrame(exp.OnGameFrame);
+        if (typeof exp.OnPrecache === "function") ctx.server.onPrecache(exp.OnPrecache);
         var hasMapStart = typeof exp.OnMapStart === "function";
         var hasMapEnd = typeof exp.OnMapEnd === "function";
         var hasConfigs = typeof exp.OnConfigsExecuted === "function";
@@ -2151,6 +2094,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         if (typeof exp.OnClientPostAdminCheck === "function") ctx.clients.onFullyConnect(exp.OnClientPostAdminCheck);
         if (typeof exp.OnClientDisconnect === "function") ctx.clients.onDisconnect(exp.OnClientDisconnect);
         if (typeof exp.OnClientSayCommand === "function") ctx.clients.onSay(exp.OnClientSayCommand);
+        if (typeof exp.OnClientSettingsChanged === "function") ctx.clients.onSettingsChanged(exp.OnClientSettingsChanged);
+        if (typeof exp.OnClientVoice === "function") ctx.clients.onVoice(exp.OnClientVoice);
+        if (typeof exp.OnClientCookiesCached === "function") ctx.clients.onCookiesCached(exp.OnClientCookiesCached);
+        if (typeof exp.OnPlayerRunCmd === "function") ctx.clients.onRunCmd(exp.OnPlayerRunCmd);
+        if (typeof exp.OnEntityCreated === "function") ctx.entities.onCreate("*", exp.OnEntityCreated);
+        if (typeof exp.OnEntitySpawned === "function") ctx.entities.onSpawn("*", exp.OnEntitySpawned);
+        if (typeof exp.OnEntityDestroyed === "function") ctx.entities.onDelete("*", exp.OnEntityDestroyed);
+        if (typeof exp.OnTakeDamage === "function") ctx.entities.onDamage(exp.OnTakeDamage);
         if (typeof exp.OnAllPluginsLoaded === "function") {
           globalThis.__s2_on_all_plugins_loaded = exp.OnAllPluginsLoaded;
         }

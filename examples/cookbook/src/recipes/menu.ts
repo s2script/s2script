@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { Menu, MenuStyle } from "@s2script/sdk/menu";
 import { Player } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 function showMenu(slot: number, style: MenuStyle): void {
@@ -34,12 +33,20 @@ function showMenu(slot: number, style: MenuStyle): void {
  * this cookbook registers unconditionally at load must not spam the console
  * on its own.
  */
+let verbose = false;
+let frames = 0;
+
 export const menuRecipe: Recipe = {
   name: "menu",
   describe: "show a center or chat menu (sm_menu / sm_menu_chat / sm_menu verbose)",
+  onGameFrame() {
+    if (!verbose) return;
+    if (++frames % 128 !== 0) return;
+    const p = Player.fromSlot(0); if (!p) return;
+    const pawn = p.pawn; if (!pawn) return;
+    console.log(`[cookbook] menu frame=${frames} bot0 movementServices=${pawn.movementServices ? "live" : "null"}`);
+  },
   register() {
-    let verbose = false;
-
     command("sm_menu", cmd => {
       if (cmd.arg(0) === "verbose") {
         verbose = !verbose;
@@ -54,18 +61,6 @@ export const menuRecipe: Recipe = {
       if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
       showMenu(cmd.callerSlot, MenuStyle.Chat);
       cmd.reply("chat menu shown — type the number");
-    });
-
-    // Prove the WASD input primitive live: log a bot's button mask changing (bots press buttons).
-    let frames = 0;
-    hook.server.onGameFrame(() => {
-      if (!verbose) return;
-      if (++frames % 128 !== 0) return;               // ~ every 2s
-      const p = Player.fromSlot(0); if (!p) return;
-      const pawn = p.pawn; if (!pawn) return;
-      // read the same button mask the center renderer uses (offsets resolved in pawn.js are internal;
-      // here we just confirm the pawn/movementServices is live by logging a nav field)
-      console.log(`[cookbook] menu frame=${frames} bot0 movementServices=${pawn.movementServices ? "live" : "null"}`);
     });
   },
 };

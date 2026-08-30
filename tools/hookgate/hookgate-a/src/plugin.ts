@@ -9,15 +9,13 @@
 // Prefix [HOOKGATE] so `docker logs | grep HOOKGATE` reads as a transcript.
 import { HookResult } from "@s2script/sdk/events";
 import { GameRules, RoundEndReason, gameRules, players } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
+
+let frame = 0;
 
 export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[HOOKGATE] ${m}`);
   L("loaded");
-
-  let frame = 0;
-  hook.server.onGameFrame(() => { frame += 1; });
 
   // What the next onTerminateRound should do. Set by the commands below so one boot can exercise
   // observe / suppress / mutate without a reload.
@@ -76,6 +74,10 @@ export function OnPluginStart(): void {
 
   command.server("hook_suppress", () => { mode = "suppress"; L("armed: next onTerminateRound returns Handled"); });
   command.server("hook_mutate",   () => { mode = "mutate";   L("armed: next onTerminateRound rewrites reason+delay"); });
+}
+
+export function OnGameFrame(): void {
+  frame += 1;
 }
 
 export function OnPluginEnd(): void {

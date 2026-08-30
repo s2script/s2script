@@ -6,11 +6,13 @@ import { delay } from "@s2script/sdk/timers";
 import { hook } from "@s2script/sdk/plugin";
 
 export function OnPluginStart(): void {
-  hook.server.onGameFrame(() => {
-    console.log("frame tick");
-  });
+  hook.on("round_start", () => {});
   void (async () => {
     await delay(100);
     console.log("hello from @demo/hello");
   })();
+}
+
+export function OnGameFrame(): void {
+  console.log("frame tick");
 }

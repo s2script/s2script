@@ -1,4 +1,4 @@
-import { hook, command, topmenu, translations, Admin, ADMFLAG, Server, Plugins, Menu, MenuStyle, Translations } from "@s2script/sdk";
+import { command, topmenu, translations, Admin, ADMFLAG, Server, Plugins, Menu, MenuStyle, Translations } from "@s2script/sdk";
 import type { Command, DamageInfo } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
@@ -66,8 +66,6 @@ export function OnPluginStart(): void {
   // 6.12 — PUBLIC command (command(), not command.admin): `sm`/`version`/`credits`/`plugins list`
   // are available to everyone. Mutating `plugins load|unload|reload` is gated inline (ROOT).
   command("sm", sm);
-
-  hook.entity.onDamage(halve);
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
   Admin.add("76561199000000009", ADMFLAG.KICK | ADMFLAG.CHAT);   // runtime tier
@@ -252,7 +250,7 @@ function sm(cmd: Command): void {
 
 // 6.6 — damage pre-hook (SDKHooks-equivalent). Logs the damage/attacker/type; halves damage as a demo of
 // in-place modify. Fires on real bullet damage; also proven via the shim's first-frame synthetic self-test.
-function halve(info: DamageInfo): void {
+export function OnTakeDamage(info: DamageInfo): void {
   const atk = info.attacker;
   const vic = info.victim;
   console.log("[basecommands] damage onPre: damage=" + info.damage + " type=" + info.damageType

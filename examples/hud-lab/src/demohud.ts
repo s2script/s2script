@@ -15,7 +15,7 @@
  * TWO THINGS THAT LOOK LIKE BUGS AND ARE NOT:
  *
  *  1. CS2 paints `loc_token` for ONE FRAME. The panel must be re-sent every tick or it vanishes.
- *     That is why this owns an `OnGameFrame` subscription rather than sending once.
+ *     That is why this owns a post-phase `onGameFrame` subscription rather than sending once.
  *  2. The client filters the event on `userid`. Sending without the target's real userid silently
  *     shows nothing, so every send carries `Player.userId` — not the field's zero default.
  *
@@ -23,7 +23,7 @@
  * number of `<br>`-separated rows. Exceed the budget and rows push off the bottom of the screen.
  */
 import { Events } from "@s2script/sdk/events";
-import { hook } from "@s2script/sdk/plugin";
+import { createScope } from "@s2script/sdk/plugin";
 import { Player, GameRules } from "@s2script/cs2";
 import type { Pawn as PawnType } from "@s2script/cs2";
 
@@ -142,8 +142,8 @@ function render(m: HudModel): string {
 /**
  * The live HUD: a set of viewer slots, one shared per-frame repaint.
  *
- * `ctx.server.onGameFrame` returns `void`, not a disposable handle, so the subscription cannot be
- * armed and torn down as viewers come and go — it is registered once at load and the tick returns
+ * SourceMod has only `OnGameFrame` (before simulation). Post-simulation paint is the Metamod
+ * post hook, subscribed here via `createScope().server.onGameFrame` — not a fake SM public. The tick returns
  * immediately while the viewer set is empty. That check is a `Set.size` test per frame, which is
  * nothing next to the work it guards (a schema read and an event send per viewer).
  */
@@ -154,7 +154,7 @@ export class DemoHud {
     // "post" phase: the model reads fields the engine re-derives during simulation (health after
     // damage, movetype after a move). Reading in "pre" would paint last tick's values.
     // "low" priority: a HUD must never delay gameplay work in the same frame.
-    hook.server.onGameFrame(() => this.tick(), { phase: "post", priority: "low" });
+    createScope().server.onGameFrame(() => this.tick(), { phase: "post", priority: "low" });
   }
 
   /** Whether `slot` currently has the HUD up. */

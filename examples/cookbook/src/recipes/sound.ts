@@ -1,7 +1,6 @@
 import type { Recipe } from "../recipe.ts";
-import { Sound } from "@s2script/sdk/sound";
+import { Sound, type PrecacheContext } from "@s2script/sdk/sound";
 import { Pawn, Sounds } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 /**
@@ -12,12 +11,11 @@ import { command } from "@s2script/sdk/commands";
 export const soundRecipe: Recipe = {
   name: "sound",
   describe: "precache and emit a sound (sm_sound [name] [slot])",
+  onPrecache(pc: PrecacheContext) {
+    const ok = pc.add("soundevents/soundevents_s2script_demo.vsndevts");
+    console.log(`[cookbook] precache add() -> ${ok}`);
+  },
   register() {
-    hook.server.onPrecache((pc) => {
-      const ok = pc.add("soundevents/soundevents_s2script_demo.vsndevts");
-      console.log(`[cookbook] precache add() -> ${ok}`);
-    });
-
     command("sm_sound", (cmd) => {
       const name = cmd.args[0] || Sounds.Ping;
       // With a slot: emit from that slot's pawn, to that slot only.

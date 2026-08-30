@@ -28,9 +28,9 @@ export const eventsRecipe: Recipe = {
   register() {
     let lastTerminateReason: number | null = null;
 
-    // Post-fire. Pre-phase is hook.events.onPre(name, fn) — return HookResult.Handled
-    // to suppress the client broadcast. Frame phase stays hook.server.onGameFrame(fn, { phase }).
-    hook.events.on("round_end", (e) => {
+    // Post-fire. Pre-phase is hook.onPre(name, fn) — return HookResult.Handled
+    // to suppress the client broadcast. Frame work is export function OnGameFrame.
+    hook.on("round_end", (e) => {
       const reason = e.getInt("reason");
       const winner = e.getInt("winner");
       const ours = lastTerminateReason !== null;
@@ -39,11 +39,11 @@ export const eventsRecipe: Recipe = {
       lastTerminateReason = null;
     });
 
-    hook.events.on("cs_win_panel_round", (e) => {
+    hook.on("cs_win_panel_round", (e) => {
       console.log(`[cookbook] round: cs_win_panel_round final_event=${e.getInt("final_event")} (expect ${WinPanelFinalEvent.CTsWin}=CT / ${WinPanelFinalEvent.TerroristsWin}=T on a natural end)`);
     });
 
-    hook.events.on("round_start", () => {
+    hook.on("round_start", () => {
       const gr = GameRules.get();
       if (!gr) { console.log("[cookbook] round: round_start: no gamerules proxy"); return; }
       console.log(`[cookbook] round: round_start roundTime=${gr.roundTime} roundStartTime=${gr.roundStartTime} gameTime=${Server.gameTime} timeElapsed=${gr.timeElapsed} timeRemaining=${gr.timeRemaining}`);

@@ -17,6 +17,8 @@ capability inventory + current focus in `CLAUDE.md`.
 
 ## Current state (full history)
 
+**`hook` is game events only (2026-08-30) — COMPLETE offline.** `hook.on` / `hook.onPre` are the game-event catalog. Lifecycle is named publics (`OnMapEnd`, `OnTakeDamage`, `OnGameFrame`, `OnEntityCreated`, …). `hook.client` / `hook.entity` / `hook.server` / `hook.events` are deleted. Filtered entity I/O is the free `onOutput`. SourceMod has only `OnGameFrame` (before simulation) — post-simulation paint is `createScope().server.onGameFrame(fn, { phase: "post" })`, not a named public. Stacked on hook-events. Isolate tests: `hook.on` / `onPre` / `onOutput` throw after settle; `OnGameFrame` / `OnTakeDamage` increment on dispatch.
+
 **`hook.events.on` / `onPre` (2026-08-30) — COMPLETE offline.** Game-event listen is `hook.events.on(name, fn)` (post) and `hook.events.onPre(name, fn)` (pre; `Handled`/`Stop` suppress the client broadcast). The old `hook.event(name, fn, phase?)` overload is gone. `topmenu` is a free load-window export only — it is not a `hook` subject. Stacked on nest-hook-subjects. Isolate tests: `hook.events.on` / `onPre` / `topmenu` throw after settle.
 
 **Nest `hook` by subject (2026-08-30) — COMPLETE offline.** `hook` is `hook.client` / `hook.entity` / `hook.server` (plus top-level `hook.event` / `hook.topmenu`). Client lifecycle still maps to Source 2 mux names (`connect` / `putinserver` / `active` / `fullyconnect` / `disconnect` / `settingschanged`) plus voice, cookies, say, and usercmd. `hook.client.onFullyConnected` is the public name for engine `fullyconnect` (SM analog `OnClientPostAdminCheck`). Flat aliases deleted (0.x minor). Isolate tests: nested paths throw after settle.

@@ -14,14 +14,19 @@ the framework owns every engine touchpoint and multiplexes all plugins onto it.
 
 ```ts
 import { command, hook } from "@s2script/sdk";
+import type { Client } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command("hello", (cmd) => {
     cmd.reply("hello from s2script");
   });
-  hook.client.onFullyConnected((client) => {
-    client.chat("welcome");
+  hook.on("player_spawn", (ev) => {
+    console.log("spawned", ev.getPlayerSlot("userid"));
   });
+}
+
+export function OnClientPostAdminCheck(client: Client): void {
+  client.chat("welcome");
 }
 ```
 

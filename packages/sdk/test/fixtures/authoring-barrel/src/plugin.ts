@@ -1,6 +1,5 @@
 import {
   command,
-  hook,
   topmenu,
   HookResult,
   ADMFLAG,
@@ -14,7 +13,6 @@ import type { Command, Client, DamageInfo } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command.admin("sm_kick", ADMFLAG.KICK, kick);
-  hook.entity.onDamage(halve);
   topmenu.addItem("Server Commands", {
     id: "demo:map",
     name: "Change Map",
@@ -28,7 +26,7 @@ function kick(cmd: Command): typeof HookResult.Handled {
   return HookResult.Handled;
 }
 
-function halve(info: DamageInfo): typeof HookResult.Changed {
+export function OnTakeDamage(info: DamageInfo): typeof HookResult.Changed {
   info.damage = info.damage / 2;
   return HookResult.Changed;
 }

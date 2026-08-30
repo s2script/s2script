@@ -18,7 +18,7 @@ export const playerStateRecipe: Recipe = {
   name: "player-state",
   describe: "respawn a player and observe the resulting player_spawn (sm_respawn / sm_respawn_all)",
   register() {
-    hook.events.on("player_spawn", (e) => {
+    hook.on("player_spawn", (e) => {
       const slot = e.getPlayerSlot("userid");
       const p = Player.fromSlot(slot);
       const pawn = p ? p.pawn : null;
@@ -29,7 +29,7 @@ export const playerStateRecipe: Recipe = {
       );
     });
 
-    hook.events.on("player_death", (e) => {
+    hook.on("player_death", (e) => {
       console.log("[cookbook] player-state: player_death slot=" + e.getPlayerSlot("userid"));
     });
 

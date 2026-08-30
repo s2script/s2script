@@ -10,31 +10,34 @@
 // contract is refused at load rather than marshalled across. Refresh with:
 //   cp examples/greeter-plugin/api.d.ts examples/greeter-consumer/.s2script/types/@demo/greeter/index.d.ts
 import type { Greeter } from "@demo/greeter";
-import { hook, use } from "@s2script/sdk/plugin";
+import { use } from "@s2script/sdk/plugin";
+import type { InterfaceHandle } from "@s2script/sdk/plugin";
+
+let greeter!: InterfaceHandle<Greeter>;
+let ticks = 0;
 
 export function OnPluginStart(): void {
   console.log("[consumer] onLoad");
-  const greeter = use<Greeter>("@demo/greeter");
+  greeter = use<Greeter>("@demo/greeter");
 
   // A forwarded event from the producer.
   greeter.on("greeted", (p: { slot: number; tick: number }) =>
     console.log(`[consumer] event greeted: slot=${p.slot} tick=${p.tick}`));
+}
 
-  let ticks = 0;
-  hook.server.onGameFrame(() => {
-    if (ticks++ % 256 !== 0) return;
-    try {
-      console.log(`[consumer] greet -> ${greeter.greet(0)}`);
+export function OnGameFrame(): void {
+  if (ticks++ % 256 !== 0) return;
+  try {
+    console.log(`[consumer] greet -> ${greeter.greet(0)}`);
 
-      // An EntityRef received ACROSS the plugin boundary. isValid() checks it
-      // against the SHARED entity system: true while the pawn lives, false once
-      // it dies. That flip is cross-plugin host-invalidation, and it needs no
-      // schema offset on this side — pawnHealth is the producer's read.
-      const ref = greeter.pawnRef(0);
-      const alive = ref ? ref.isValid() : false;
-      console.log(`[consumer] pawn ref valid=${alive} health=${alive ? greeter.pawnHealth(0) : "null"}`);
-    } catch (e) {
-      console.log(`[consumer] degraded (producer unloaded?): ${String(e)}`);
-    }
-  });
+    // An EntityRef received ACROSS the plugin boundary. isValid() checks it
+    // against the SHARED entity system: true while the pawn lives, false once
+    // it dies. That flip is cross-plugin host-invalidation, and it needs no
+    // schema offset on this side — pawnHealth is the producer's read.
+    const ref = greeter.pawnRef(0);
+    const alive = ref ? ref.isValid() : false;
+    console.log(`[consumer] pawn ref valid=${alive} health=${alive ? greeter.pawnHealth(0) : "null"}`);
+  } catch (e) {
+    console.log(`[consumer] degraded (producer unloaded?): ${String(e)}`);
+  }
 }

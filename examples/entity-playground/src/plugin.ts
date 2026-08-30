@@ -11,16 +11,31 @@
 // never a raw pointer. Reads return `T | null`: if the entity died, you get
 // null, not garbage and not a crash. Hold refs across time freely.
 import { createEntity, Entity } from "@s2script/sdk/entity";
+import type { EntityRef } from "@s2script/sdk/entity";
 import { Server } from "@s2script/sdk/server";
 import { Beam } from "@s2script/cs2";
 import { Vector } from "@s2script/sdk/math";
 import { delay } from "@s2script/sdk/timers";
-import { hook } from "@s2script/sdk/plugin";
+import { onOutput } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
 // Schema offsets are resolved live from the engine's SchemaSystem — never
 // hardcoded. A field moving in a CS2 patch must not require a code change.
 declare const __s2_schema_offset: (cls: string, field: string) => number;
+
+let created = 0, spawned = 0, deleted = 0;
+
+export function OnEntityCreated(_e: EntityRef | null, cls: string): void {
+  if (++created <= 10) console.log(`[ent] created ${cls}`);
+}
+
+export function OnEntitySpawned(e: EntityRef | null, cls: string): void {
+  if (++spawned <= 10) console.log(`[ent] spawned ${cls} valid=${!!e?.isValid()}`);
+}
+
+export function OnEntityDestroyed(_e: EntityRef | null, cls: string): void {
+  if (++deleted <= 10) console.log(`[ent] deleted ${cls}`);
+}
 
 export function OnPluginStart(): void {
   // --- Lifecycle listeners -------------------------------------------------
@@ -38,16 +53,12 @@ export function OnPluginStart(): void {
   // engine's onCreate/onSpawn callbacks re-enter that dispatch and are
   // gracefully skipped by design (never a crash). Trigger a round restart to
   // watch the loggers fire for real.
-  let created = 0, spawned = 0, deleted = 0;
-  hook.entity.onCreate("*", (_e, cls) => { if (++created <= 10) console.log(`[ent] created ${cls}`); });
-  hook.entity.onSpawn("*", (e, cls) => { if (++spawned <= 10) console.log(`[ent] spawned ${cls} valid=${!!e?.isValid()}`); });
-  hook.entity.onDelete("*", (_e, cls) => { if (++deleted <= 10) console.log(`[ent] deleted ${cls}`); });
 
   // Hook a named output on a class. Return a HookResult to suppress it.
-  hook.entity.onOutput("logic_relay", "OnTrigger", (ev) => {
+  onOutput("logic_relay", "OnTrigger", (ev) => {
     console.log(`[ent] OnTrigger caller=${ev.caller ? `valid=${ev.caller.isValid()}` : "null"}`);
   });
-  hook.entity.onOutput("math_counter", "OnHitMax", () => {
+  onOutput("math_counter", "OnHitMax", () => {
     console.log("[ent] OnHitMax — the counter reached the max its keyvalues set");
   });
 

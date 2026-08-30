@@ -1,16 +1,36 @@
 /**
  * One cookbook recipe: a self-contained demonstration of a single API,
- * registered from the cookbook's OnPluginStart.
+ * registered from the cookbook's named publics.
  *
  * Recipes must be side-effect-light at registration — register commands and
- * subscriptions, do not start work. Commands are prefixed `sm_` so the whole
- * cookbook is greppable in a console autocomplete.
+ * `hook.on` subscriptions, do not start work. Engine callbacks are optional
+ * methods the cookbook plugin fans out from `export function OnGameFrame` etc.
+ * Commands are prefixed `sm_` so the whole cookbook is greppable in a console
+ * autocomplete.
  */
+import type { Client } from "@s2script/sdk/clients";
+import type { DamageInfo } from "@s2script/sdk/damage";
+import type { HookResultValue } from "@s2script/sdk/events";
+import type { PrecacheContext } from "@s2script/sdk/sound";
+import type { UserCmdView } from "@s2script/sdk/usercmd";
+
 export interface Recipe {
   /** Short id, matching the file name (e.g. "http"). */
   readonly name: string;
   /** One line shown by `sm_list`. */
   readonly describe: string;
-  /** Register this recipe's commands and subscriptions. */
+  /** Register this recipe's commands and game-event subscriptions. */
   register(): void;
+  onGameFrame?(): void;
+  onMapStart?(map: string): void;
+  onPrecache?(pc: PrecacheContext): void;
+  onTakeDamage?(info: DamageInfo): HookResultValue | void;
+  onPlayerRunCmd?(cmd: UserCmdView, info: { slot: number }): HookResultValue | void;
+  onClientConnected?(c: Client): void | Promise<void>;
+  onClientPutInServer?(c: Client): void | Promise<void>;
+  onClientActive?(c: Client): void | Promise<void>;
+  onClientPostAdminCheck?(c: Client): void | Promise<void>;
+  onClientDisconnect?(c: Client): void;
+  onClientSettingsChanged?(c: Client): void;
+  onClientVoice?(c: Client): void;
 }

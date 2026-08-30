@@ -10,7 +10,11 @@
 // the whole payload.
 import { Pawn } from "@s2script/cs2";
 import type { Greeter } from "../api";
-import { hook, publish } from "@s2script/sdk/plugin";
+import { publish } from "@s2script/sdk/plugin";
+import type { PublishHandle } from "@s2script/sdk/interfaces";
+
+let handle!: PublishHandle;
+let ticks = 0;
 
 export function OnPluginStart(): void {
   console.log("[greeter] onLoad — publishing @demo/greeter");
@@ -31,11 +35,10 @@ export function OnPluginStart(): void {
     },
   };
 
-  const handle = publish("@demo/greeter", impl);
+  handle = publish("@demo/greeter", impl);
+}
 
+export function OnGameFrame(): void {
   // Forwarded events: the consumer's on("greeted") fires from here.
-  let ticks = 0;
-  hook.server.onGameFrame(() => {
-    if (ticks++ % 256 === 0) handle.emit("greeted", { slot: 0, tick: ticks });
-  });
+  if (ticks++ % 256 === 0) handle.emit("greeted", { slot: 0, tick: ticks });
 }

@@ -12,15 +12,14 @@
 import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
 
+let frame = 0;
+
 export function OnPluginStart(): void {
   const L = (m: string) => console.log(`[DDQ-B] ${m}`);
   L("loaded");
 
-  let frame = 0;
-  hook.server.onGameFrame(() => { frame += 1; });
-
   let seen = 0, thrown = 0, selftests = 0;
-  hook.events.on("player_changename", (e) => {
+  hook.on("player_changename", (e) => {
     const oldname = e.getString("oldname");
     const newname = e.getString("newname");
 
@@ -67,7 +66,7 @@ export function OnPluginStart(): void {
   // The deferred delivery that matters: player_death fired by an engine call made from inside a
   // dispatch. A lost payload reads userid=0 here.
   let deaths = 0;
-  hook.events.on("player_death", (e) => {
+  hook.on("player_death", (e) => {
     deaths += 1;
     L(`player_death #${deaths}: userid=${e.getInt("userid")} attacker=${e.getInt("attacker")} weapon="${e.getString("weapon")}" nowFrame=${frame}`);
   });
@@ -75,6 +74,10 @@ export function OnPluginStart(): void {
   command.server("ddq_report_b", () => {
     L(`REPORT seen=${seen} selftests=${selftests} thrown=${thrown} deaths=${deaths} frame=${frame}`);
   });
+}
+
+export function OnGameFrame(): void {
+  frame += 1;
 }
 
 export function OnPluginEnd(): void {

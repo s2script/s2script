@@ -1,5 +1,6 @@
 import type { Recipe } from "../recipe.ts";
 import { Clients } from "@s2script/sdk/clients";
+import type { Client } from "@s2script/sdk/clients";
 import { Player } from "@s2script/cs2";
 import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
@@ -14,31 +15,45 @@ import { command } from "@s2script/sdk/commands";
  * `sm_voice verbose` (off by default) — same reasoning as recipes/damage.ts defaulting its effect
  * off: loading the cookbook must not spam the console on its own.
  */
+let voiceVerbose = false;
+
 export const clientsRecipe: Recipe = {
   name: "clients",
   describe: "list connected clients + lifecycle state (sm_clients) and onVoice (sm_voice / sm_voice verbose)",
+  onClientConnected(c: Client) {
+    console.log(`[cookbook] clients connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} ip=${c.ip}`);
+    c.print("s2script cookbook: connected");
+    console.log(`[cookbook] kickWithReason surface: typeof=${typeof c.kickWithReason}`);
+  },
+  onClientPutInServer(c: Client) {
+    console.log(`[cookbook] clients putInServer slot=${c.slot} name=${c.name}`);
+  },
+  onClientActive(c: Client) {
+    console.log(`[cookbook] clients active slot=${c.slot} name=${c.name}`);
+  },
+  onClientPostAdminCheck(c: Client) {
+    console.log(`[cookbook] clients fullyConnect slot=${c.slot} name=${c.name}`);
+  },
+  onClientDisconnect(c: Client) {
+    console.log(`[cookbook] clients disconnect slot=${c.slot} name=${c.name} steamId=${c.steamId}`);
+  },
+  onClientSettingsChanged(c: Client) {
+    console.log(`[cookbook] clients settingsChanged slot=${c.slot} name=${c.name}`);
+  },
+  onClientVoice(c: Client) {
+    if (voiceVerbose) {
+      console.log("[cookbook] clients onVoice slot=" + c.slot + " name=" + c.name + " muted=" + c.voiceMuted);
+    }
+    const p = Player.fromSlot(c.slot);
+    const pawn = p ? p.pawn : null;
+    const dead = !pawn || (pawn.health ?? 0) <= 0;
+    if (dead && !c.voiceMuted) {
+      c.voiceMuted = true;
+      c.chat("[cookbook] Dead players are muted until you respawn.");
+      console.log("[cookbook] voice lazy-muted dead talker slot=" + c.slot);
+    }
+  },
   register() {
-    let voiceVerbose = false;
-    // --- lifecycle listeners: fire for clients connecting AFTER Active. To
-    // cover already-connected clients, seed explicitly with Clients.all() —
-    // there is no framework replay of these events.
-    hook.client.onConnect((c) => {
-      console.log(`[cookbook] clients connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} ip=${c.ip}`);
-      c.print("s2script cookbook: connected");
-      console.log(`[cookbook] kickWithReason surface: typeof=${typeof c.kickWithReason}`);
-    });
-    hook.client.onPutInServer((c) =>
-      console.log(`[cookbook] clients putInServer slot=${c.slot} name=${c.name}`));
-    hook.client.onActive((c) =>
-      console.log(`[cookbook] clients active slot=${c.slot} name=${c.name}`));
-    hook.client.onFullyConnected((c) =>
-      console.log(`[cookbook] clients fullyConnect slot=${c.slot} name=${c.name}`));
-    hook.client.onDisconnect((c) =>
-      console.log(`[cookbook] clients disconnect slot=${c.slot} name=${c.name} steamId=${c.steamId}`));
-    hook.client.onSettingsChanged((c) =>
-      console.log(`[cookbook] clients settingsChanged slot=${c.slot} name=${c.name}`));
-
-    // sm_clients — snapshot every currently-connected client (bots included).
     command("sm_clients", (cmd) => {
       const all = Clients.all();
       cmd.reply(`${all.length} connected client(s):`);
@@ -47,28 +62,13 @@ export const clientsRecipe: Recipe = {
       }
     });
 
-    // --- voice: lazy mute-on-talk for DEAD players, unmute on spawn/round_end.
-    hook.client.onVoice((c) => {
-      if (voiceVerbose) {
-        console.log("[cookbook] clients onVoice slot=" + c.slot + " name=" + c.name + " muted=" + c.voiceMuted);
-      }
-      const p = Player.fromSlot(c.slot);
-      const pawn = p ? p.pawn : null;
-      const dead = !pawn || (pawn.health ?? 0) <= 0;
-      if (dead && !c.voiceMuted) { // lazily mute on the talk attempt, once
-        c.voiceMuted = true;
-        c.chat("[cookbook] Dead players are muted until you respawn.");
-        console.log("[cookbook] voice lazy-muted dead talker slot=" + c.slot);
-      }
-    });
-
-    hook.events.on("player_spawn", (ev) => { // clear on respawn
+    hook.on("player_spawn", (ev) => {
       const slot = ev.getPlayerSlot("userid");
       const c = Clients.fromSlot(slot);
       if (c && c.voiceMuted) { c.voiceMuted = false; console.log("[cookbook] voice unmuted slot " + slot + " on spawn"); }
     });
 
-    hook.events.on("round_end", () => { // clear all at round end
+    hook.on("round_end", () => { // clear all at round end
       for (const c of Clients.all()) if (c.voiceMuted) c.voiceMuted = false;
       console.log("[cookbook] voice round_end — unmuted all");
     });

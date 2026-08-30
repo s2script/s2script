@@ -219,91 +219,45 @@ export interface PluginHooks {
   state?(): unknown;
 }
 
-/** Load-window client lifecycle + input. Same contracts as {@link CtxClients}. */
-export interface HookClient {
-  /** A client began connecting (pre-auth). SM `OnClientConnected`. */
-  onConnect(handler: (client: Client) => void | Promise<void>): void;
-  /** A client's entity was put in the server. SM `OnClientPutInServer`. */
-  onPutInServer(handler: (client: Client) => void | Promise<void>): void;
-  /** A client became fully active (in-game, receiving snapshots). SM `OnClientActive`. */
-  onActive(handler: (client: Client) => void | Promise<void>): void;
-  /**
-   * Steam ticket validated (engine `fullyconnect`). Closest SM analog is
-   * `OnClientPostAdminCheck` — admin cache is host-global.
-   */
-  onFullyConnected(handler: (client: Client) => void | Promise<void>): void;
-  /** A client disconnected. SM `OnClientDisconnect`. */
-  onDisconnect(handler: (client: Client) => void): void;
-  /** A client's convars/settings changed. */
-  onSettingsChanged(handler: (client: Client) => void): void;
-  /** A client sent a voice packet (per-frame while speaking). */
-  onVoice(handler: (client: Client) => void): void;
-  /** A client's persisted cookies finished loading. */
-  onCookiesCached(handler: (client: Client) => void): void;
-  /** A client sent chat: return a {@link HookResultValue} to suppress it. */
-  onSay(handler: (slot: number, text: string, teamonly: boolean) => HookResultValue | void): void;
-  /** Per-tick usercmd hook (SM `OnPlayerRunCmd`). */
-  onRunCmd(handler: (cmd: UserCmdView, info: { slot: number }) => HookResultValue | void): void;
-}
+/**
+ * Named publics the host finds on `module.exports` (missing export = not subscribed):
+ *
+ * Plugin: `OnPluginStart` / `OnPluginEnd` / `OnPluginState` / `OnAllPluginsLoaded` / `OnConfigsExecuted`
+ * Map/frame: `OnMapStart(map)` / `OnMapEnd()` / `OnGameFrame()` / `OnPrecache(pc)`
+ * Client: `OnClientConnected` / `PutInServer` / `Active` / `PostAdminCheck` / `Disconnect` /
+ *   `SayCommand` / `SettingsChanged` / `Voice` / `CookiesCached` / `OnPlayerRunCmd`
+ * Entity: `OnEntityCreated` / `OnEntitySpawned` / `OnEntityDestroyed` / `OnTakeDamage`
+ *
+ * `OnGameFrame` is SourceMod's public (before simulation). Post-simulation paint is
+ * {@link Scope}'s `server.onGameFrame(fn, { phase: "post" })` — Metamod's post hook, not a SM public.
+ * Filtered entity I/O is {@link onOutput}, not a public — SourceMod `HookEntityOutput`.
+ */
 
-/** Load-window entity lifecycle + damage + I/O. Same contracts as {@link CtxEntities}. */
-export interface HookEntity {
-  /** Entity created (not yet spawned). `className` is a match, or `"*"` for all. */
-  onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /** Entity spawned (post-`DispatchSpawn`). */
-  onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /** Entity is being deleted; the ref goes stale right after. */
-  onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /** Entity I/O pre-hook: same contract as {@link CtxEntities.onOutput}. */
-  onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
-  /** Damage pre-hook (SDKHooks-equivalent): same contract as {@link CtxEntities.onDamage}. */
-  onDamage(handler: (info: DamageInfo) => HookResultValue | void): void;
-}
-
-/** Load-window server / map / frame hooks. Same contracts as {@link CtxServer}. */
-export interface HookServer {
-  /** Precache window — register models/sounds to precache for the current map. */
-  onPrecache(handler: (pc: PrecacheContext) => void): void;
-  /**
-   * Run `fn` every game frame. Prefer this over `export function OnGameFrame` when you need
-   * `phase` / `priority` (HUD paint in `"post"`).
-   */
-  onGameFrame(
-    fn: () => void,
-    opts?: { priority?: "high" | "normal" | "low" | "monitor"; phase?: "pre" | "post" },
-  ): void;
-  /** A new map became live; `mapName` is the BSP name. */
-  onMapStart(handler: (mapName: string) => void): void;
-}
-
-/** Load-window game-event subscriptions. Same contracts as {@link CtxEvents}. */
-export interface HookEvents {
-  /** Post-phase (`ctx.events.on`). The {@link GameEvent} is valid only synchronously. */
+/**
+ * Game-event catalog. Load-window only — throws after settle (same window as {@link command}).
+ *
+ * `hook.on` is post-fire; `hook.onPre` is pre (`Handled`/`Stop` suppress the client broadcast).
+ * The {@link GameEvent} is valid only synchronously.
+ */
+export declare const hook: {
+  /** Post-phase (`ctx.events.on`). */
   on(name: string, handler: (ev: GameEvent) => void): void;
   /**
    * Pre-phase (`ctx.events.onPre`). Return {@link HookResultValue} `Handled`/`Stop` to suppress
-   * the client broadcast. The {@link GameEvent} is valid only synchronously.
+   * the client broadcast.
    */
   onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
-}
+};
 
 /**
- * The load-window subscription surface. Throws after settle — the same window as {@link command}.
- *
- * Named publics (`OnGameFrame`, `OnClientConnected`, …) remain the SourceMod-shaped path for a
- * single plugin module. Use `hook.<subject>.*` when registering from `OnPluginStart` (cookbook
- * recipes, multiple subscriptions with options).
+ * Load-window entity I/O subscribe (SourceMod `HookEntityOutput`). Keyed by `(classname, output)`
+ * at the native mux — use `"*"` for either side. Throws after settle.
  */
-export declare const hook: {
-  /** Game-event catalog. Pre vs post is `on` / `onPre`, not a phase flag. */
-  readonly events: HookEvents;
-  /** Client lifecycle, chat, voice, and usercmd. */
-  readonly client: HookClient;
-  /** Entity create/spawn/delete, I/O, and damage. */
-  readonly entity: HookEntity;
-  /** Game frame, map start, and precache. */
-  readonly server: HookServer;
-};
+export declare function onOutput(
+  classname: string,
+  output: string,
+  handler: (ev: OutputEvent) => HookResultValue | void,
+): void;
 
 /**
  * The revived hot-reload handoff (the previous instance's `OnPluginState` return), or `undefined`.

@@ -364,7 +364,7 @@ export async function OnPluginStart(): Promise<void> {
     },
   });
 
-  hook.events.on("round_end", () => {
+  hook.on("round_end", () => {
     if (!pendingMap) return;
     const m = pendingMap;
     // The workshop/stock split is load-bearing — see buildBallot's nomination resolution.

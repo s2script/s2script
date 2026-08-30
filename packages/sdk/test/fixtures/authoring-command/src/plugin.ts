@@ -7,13 +7,13 @@ import { ADMFLAG } from "@s2script/sdk/admin";
 
 export function OnPluginStart(): void {
   command.admin("sm_kick", ADMFLAG.KICK, kick);
-  hook.entity.onDamage(halve);
+  hook.on("round_start", () => {});
 }
 
 function kick(cmd: CommandInvocation): HookResultValue | void {
   cmd.reply("kicked");
 }
 
-function halve(info: DamageInfo): void {
+export function OnTakeDamage(info: DamageInfo): void {
   info.damage = info.damage / 2;
 }
