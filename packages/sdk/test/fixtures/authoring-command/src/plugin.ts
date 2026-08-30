@@ -1,6 +1,6 @@
 import { hook } from "@s2script/sdk/plugin";
 import { command } from "@s2script/sdk/commands";
-import { SDKHook, SDKHookType, Entity } from "@s2script/sdk";
+import { SDKHook, SDKHookType, Entity, HookResult } from "@s2script/sdk";
 import type { CommandInvocation } from "@s2script/sdk/commands";
 import type { DamageInfo, EntityRef } from "@s2script/sdk";
 import type { HookResultValue } from "@s2script/sdk/events";
@@ -14,8 +14,9 @@ export function OnPluginStart(): void {
   }
 }
 
-function kick(cmd: CommandInvocation): HookResultValue | void {
+function kick(cmd: CommandInvocation): HookResultValue {
   cmd.reply("kicked");
+  return HookResult.Handled;
 }
 
 export function OnEntityCreated(entity: EntityRef | null, className: string): void {
