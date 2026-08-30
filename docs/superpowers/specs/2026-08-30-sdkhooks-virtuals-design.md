@@ -221,13 +221,13 @@ Three install styles, chosen per type — not one global detour for Think/Touch 
    `(entity, type)` drops (destroy, `SDKUnhook`, plugin unload). The shim owns the C++ thunk; core owns
    the JS table already in `sdkhooks.rs`.
 
-Vtable indices are **derived on our `libserver.so`** (`docs/re-strategy.md` Rule 1): find the function by
-signature or string-xref, find the class vtable via RTTI, scan for the pointer, store the index in
-`gamedata/core/game.cs2.jsonc` (shim/core name the keys). Validate at load: slot pointer in `.text`. A
-borrowed SM/CSSharp slot number is a hint, never the shipped fact.
+Vtable indices are **derived on our `libserver.so` at load** (`docs/re-strategy.md` Rule 1): find the
+function by signature, find the class vtable via RTTI, scan for the pointer, **cache the slot in
+memory**. The committed gamedata is the signature + `vtable-member` class, never the slot number. A
+borrowed SM/CSSharp slot is a HINT for which function to look at offline, never a shipped fact.
 
-A missing or failed slot **disables that `SDKHookType` only**. `SDKHook` returns `false`. The rest of
-the catalog keeps running.
+A missing or failed signature **disables that `SDKHookType` only**. `SDKHook` returns `false`. The
+rest of the catalog keeps running.
 
 Weapon\* / `Reload` / `CanBeAutobalanced` may have moved to item services or disappeared on CS2. If the
 virtual is not on the hooked instance’s class, that type degrades by name. Authors still write
@@ -238,13 +238,84 @@ pawn, not the controller. Hooking the wrong class is `false`, not a crash.
 
 ## Gamedata
 
-Keys live under **core** until a second owner is justified (`check-gamedata-owners.sh`: whoever names it
-in source). Do not stand up `gamedata/sdkhooks/` empty. Per-type offsets/signatures are named after the
-virtual (`CBaseEntity_Touch`, …), validated at load, fail that type only.
+SourceMod ships `gamedata/sdkhooks.games/` as a table of **vtable slot numbers** (`Touch` linux 104,
+…). We do not copy that file. A bare index is the `sm_slay` / slot-400 failure class: `.text`-valid
+and the wrong function. Layout is data; the data we ship is a **byte signature**, not a slot.
 
-`SDKHooks.takeDamage` reuses `DispatchTraceAttack` / `CTakeDamageInfo` schema. `SDKHooks.dropWeapon`
-needs a **self-resolved** DropWeapon (or ItemServices equivalent) signature — the borrowed vtable index
-24 is a GiveNamedItem thunk and must not be called.
+### Owner: `core`, not `gamedata/sdkhooks/`
+
+A5 reserved an extension-tier `gamedata/sdkhooks/` owner and left it empty until a capability
+needed its own namespace. That owner is still the wrong home.
+
+`scripts/check-gamedata-owners.sh`: a key in `gamedata/<other>/` must **not** appear as a string
+literal in `shim/src` or `core/src`. `core/src/sdkhooks.rs` already names `"OnTakeDamage"` and will
+name `"Touch"`, `"Think"`, …. The shim VP installer will name the signature keys
+(`"CBaseEntity_Touch"`). Those strings make every fact **core-owned**. Standing up
+`gamedata/sdkhooks/` would fail the gate the moment the table lands.
+
+SM’s `sdkhooks` owner existed because SDKHooks was an extension with its own `LoadGameConfigFile`.
+Ours is first-party in shim+core, same as Transmit / DTA. The npm path `@s2script/sdk/sdkhooks` is
+types; it does not own gamedata.
+
+Target stays CS2: `gamedata/core/game.cs2.jsonc` (core owner, `game: csgo` target). A second Source 2
+game is a sibling `game.<mod>.jsonc` with the same key set.
+
+To keep ~40 signatures from drowning Teleport / DTA / CheckTransmit, core’s master lists a **sibling
+file** — `gamedata/core/game.cs2.sdkhooks.jsonc`, same `"game": "csgo"` condition. Same owner, same
+`custom/` hot-fix channel (`gamedata/core/custom/`). No new loader owner. No new JSON section until
+one is forced.
+
+### What a VP type stores
+
+Signatures named after the C++ virtual, plus the existing `vtable-member` validator (Respawn’s
+gate). Mapping `SDKHookType` → signature / thunk shape / pre-vs-post is **code** (CLAUDE.md: name
+mappings in reviewed code).
+
+```jsonc
+"signatures": {
+  "CBaseEntity_Touch": {
+    "linuxsteamrt64": {
+      "module": "libserver.so",
+      "pattern": "55 48 89 E5 …",
+      "resolve": "direct",
+      "validate": { "vtable-member": "CBaseEntity" }
+    }
+  }
+}
+```
+
+Load, per signature in the VP table:
+
+1. Unique match in `libserver.so` + `.text` (existing `ResolveSigValidated`).
+2. `vtable-member`: that address is a slot of the named class’s RTTI primary vtable
+   (`s2vtable::GetVTableByName`). Unique-but-wrong dies here.
+3. Scan the vtable for the address → derived slot. Cache it. Banner
+   `gamedata OK CBaseEntity_Touch (slot N)`.
+4. Any step fails → `GAMEDATA descriptor 'CBaseEntity_Touch' FAILED: <reason>`, that type (and its
+   Post twin) disabled, `SDKHook` returns `false`.
+
+SourceHook `SH_ADD_MANUALHOOK` consumes the **cached** slot, not a number from git. Pre and Post
+wiki types share one signature (`Touch` + `TouchPost` = one virtual, two SourceHook modes).
+
+Do not add an `sdkhooks` JSON section of type names. That would duplicate the C++ table and put
+authoring names in layout data.
+
+### What does not get a new signature
+
+| Type family | Engine fact | Already lives |
+|-------------|-------------|----------------|
+| `OnTakeDamage` / Post / Alive | `DispatchTraceAttack` | `gamedata/core/game.cs2.jsonc` `signatures` |
+| `SetTransmit` | `ISource2GameEntities::CheckTransmit` + `CheckTransmitInfo_clientEntityIndex` | same file, `interfaces` / `offsets` |
+| `SDKHooks.takeDamage` | reuse DTA | none new |
+| `SDKHooks.dropWeapon` | ItemServices (or equivalent) **signature**, `vtable-member` on the real class | new key in the sdkhooks sibling file; borrowed vtable index 24 stays forbidden |
+
+`TraceAttack` / `FireBulletsPost` get a signature row in the sibling file if RE finds a distinct
+virtual; they do not borrow DTA’s slot by default.
+
+Plugins do not ship SDKHooks gamedata. Operator hot-fix is `gamedata/core/custom/*.jsonc`, same as
+every other core fact. A type with no resolvable virtual on this CS2 build simply never gets a
+signature row until an RE slice finds one — `SDKHookType` may still list it; `SDKHook` returns
+`false`.
 
 ## Implementation stack (atomic PRs on `cursor/sdkhooks-a8c9`)
 
