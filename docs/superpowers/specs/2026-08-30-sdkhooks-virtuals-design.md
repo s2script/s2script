@@ -239,41 +239,74 @@ pawn, not the controller. Hooking the wrong class is `false`, not a crash.
 ## Gamedata
 
 SourceMod ships `gamedata/sdkhooks.games/` as a table of **vtable slot numbers** (`Touch` linux 104,
-…). We do not copy that file. A bare index is the `sm_slay` / slot-400 failure class: `.text`-valid
-and the wrong function. Layout is data; the data we ship is a **byte signature**, not a slot.
+…). We do not copy those numbers. A bare index is the `sm_slay` / slot-400 failure class: `.text`-valid
+and the wrong function. The **owner split** we do copy.
 
-### Owner: `core`, not `gamedata/sdkhooks/`
+### Owner: `gamedata/sdkhooks/` — you were right
 
-A5 reserved an extension-tier `gamedata/sdkhooks/` owner and left it empty until a capability
-needed its own namespace. That owner is still the wrong home.
+A5 reserved the extension-tier owner and left it empty “until a capability needs its own namespace.”
+This is that capability. The previous draft stuffed the catalog into `gamedata/core/` (even a sibling
+`game.cs2.sdkhooks.jsonc`) because `check-gamedata-owners.sh` says: *if shim/core contains the string,
+the key is core-owned.* That grep is a **category error** for a first-party extension.
 
-`scripts/check-gamedata-owners.sh`: a key in `gamedata/<other>/` must **not** appear as a string
-literal in `shim/src` or `core/src`. `core/src/sdkhooks.rs` already names `"OnTakeDamage"` and will
-name `"Touch"`, `"Think"`, …. The shim VP installer will name the signature keys
-(`"CBaseEntity_Touch"`). Those strings make every fact **core-owned**. Standing up
-`gamedata/sdkhooks/` would fail the gate the moment the table lands.
+SourceMod 1.5 rolled SDKHooks *into* the sourcemod binary and **still** loads `gamedata/sdkhooks.games/`,
+not `core.games`. The C++ calls `GetOffset("Touch")` on the sdkhooks GameConfig. “The engine layer
+names the key” did not mean “merge the file into core.” Our gate was written to keep **game-package**
+keys (`gamedata/cs2/`, `Respawn`, `GiveNamedItem`) from leaking back into shim after A5b retired those
+ops. Applying the same rule to `sdkhooks` forced a workaround (a fake sibling file under core) that
+will not scale to SDKTools leftovers, a second game, or an operator who expects `gamedata/sdkhooks/`.
 
-SM’s `sdkhooks` owner existed because SDKHooks was an extension with its own `LoadGameConfigFile`.
-Ours is first-party in shim+core, same as Transmit / DTA. The npm path `@s2script/sdk/sdkhooks` is
-types; it does not own gamedata.
+**What stays in the shim (do not move “outside core”):** SourceHook install, the per-entity table,
+`HookResult` collapse, ledger, DTA mux, CheckTransmit mux. Those are engine touchpoints. A JS plugin
+or a second Metamod binary must not own them — that is the unification product. `@s2script/sdk/sdkhooks`
+stays types. Familiar to SM: the extension’s *gamedata* is separate; the extension’s *code* lives in
+the runtime.
 
-Target stays CS2: `gamedata/core/game.cs2.jsonc` (core owner, `game: csgo` target). A second Source 2
-game is a sibling `game.<mod>.jsonc` with the same key set.
+**Amended owners rule** (gate + `kGamedataOwners` grow a kind):
 
-To keep ~40 signatures from drowning Teleport / DTA / CheckTransmit, core’s master lists a **sibling
-file** — `gamedata/core/game.cs2.sdkhooks.jsonc`, same `"game": "csgo"` condition. Same owner, same
-`custom/` hot-fix channel (`gamedata/core/custom/`). No new loader owner. No new JSON section until
-one is forced.
+| Kind | Today | Shim may name keys? |
+|------|--------|---------------------|
+| `core` | `gamedata/core/` | yes — via `s_gdCore` |
+| `game` | `gamedata/cs2/` (future `gamedata/<game>/`) | **no** — descriptors / game-package JS only |
+| `extension` | `gamedata/sdkhooks/` (future leftovers, not this stack) | **yes** — via that owner’s `GameConfig`, never `s_gdCore` |
 
-### What a VP type stores
+`sdkhooks` keys therefore look like SM (`"Touch"`) and may appear as string literals in
+`sdkhooks.rs` / the VP installer. They must not be read out of `s_gdCore`. The first
+implementation PR amends `check-gamedata-owners.sh` and adds `{ "sdkhooks", …, Extension }` to
+the loader table. An owner directory with no loader row still fails the gate.
 
-Signatures named after the C++ virtual, plus the existing `vtable-member` validator (Respawn’s
-gate). Mapping `SDKHookType` → signature / thunk shape / pre-vs-post is **code** (CLAUDE.md: name
-mappings in reviewed code).
+Tree:
+
+```
+gamedata/sdkhooks/
+  master.gamedata.jsonc          # { file: game.cs2.jsonc, game: csgo }
+  game.cs2.jsonc                 # signatures for this CS2 build
+  custom/                        # operator hot-fix, same as every owner
+```
+
+Second Source 2 game: `gamedata/sdkhooks/game.<mod>.jsonc`, same keys, different bytes. Do not put
+those bytes in `gamedata/cs2/` — that owner is `@s2script/cs2`’s descriptors, not this catalog.
+
+### Validation stays — it is not why SM skipped it
+
+SM did not load-validate offsets because Source 1 Linux often had **symbols** (`@RoundRespawn`), a
+large gamedata army, and a culture of “wrong slot = crash / weird.” We do not have the first two.
+We already paid for the third: `sm_slay`’s borrowed 400, ChangeTeam’s unique-but-wrong signature.
+`vtable-member` + unique-match is the treadmill, not a workaround for the owner grep. Stripping it
+would make 40 virtuals fail the same silent way one slay did.
+
+What we will **not** do: invent extra JSON sections, ship slot numbers as the source of truth, or
+treat `.text`-range alone as enough (that is what green-lit slot 400).
+
+What we **will** make easier: gamedata looks like SM’s Signatures block, keyed by the **wiki type
+name** (`Touch`, not `CBaseEntity_Touch`). The class for the RTTI gate is `validate.vtable-member`.
+The boot banner prints the **derived** slot so an SM developer can grep logs the way they grep
+offsets. Mapping type → thunk shape / pre-vs-post stays code (closed shape vocabulary). Pre and
+Post twins share one signature.
 
 ```jsonc
 "signatures": {
-  "CBaseEntity_Touch": {
+  "Touch": {
     "linuxsteamrt64": {
       "module": "libserver.so",
       "pattern": "55 48 89 E5 …",
@@ -284,38 +317,30 @@ mappings in reviewed code).
 }
 ```
 
-Load, per signature in the VP table:
+Load, per wiki type that uses a VP hook:
 
-1. Unique match in `libserver.so` + `.text` (existing `ResolveSigValidated`).
-2. `vtable-member`: that address is a slot of the named class’s RTTI primary vtable
-   (`s2vtable::GetVTableByName`). Unique-but-wrong dies here.
-3. Scan the vtable for the address → derived slot. Cache it. Banner
-   `gamedata OK CBaseEntity_Touch (slot N)`.
-4. Any step fails → `GAMEDATA descriptor 'CBaseEntity_Touch' FAILED: <reason>`, that type (and its
-   Post twin) disabled, `SDKHook` returns `false`.
+1. Unique match in `libserver.so` + `.text` (`ResolveSigValidated` on the **sdkhooks** GameConfig).
+2. `vtable-member`: that address is a slot of the named class’s RTTI primary vtable.
+3. Scan the vtable → derived slot. Cache it. Banner `gamedata OK Touch (slot N)`.
+4. Failure disables that type and its Post twin. `SDKHook` returns `false`. Framework keeps running.
 
-SourceHook `SH_ADD_MANUALHOOK` consumes the **cached** slot, not a number from git. Pre and Post
-wiki types share one signature (`Touch` + `TouchPost` = one virtual, two SourceHook modes).
+SourceHook `SH_ADD_MANUALHOOK` consumes the cached slot, not a number from git. A CSSharp/SM slot in
+a comment is a HINT for the offline RE, never the shipped fact.
 
-Do not add an `sdkhooks` JSON section of type names. That would duplicate the C++ table and put
-authoring names in layout data.
+### What does not get an sdkhooks signature
 
-### What does not get a new signature
-
-| Type family | Engine fact | Already lives |
-|-------------|-------------|----------------|
-| `OnTakeDamage` / Post / Alive | `DispatchTraceAttack` | `gamedata/core/game.cs2.jsonc` `signatures` |
-| `SetTransmit` | `ISource2GameEntities::CheckTransmit` + `CheckTransmitInfo_clientEntityIndex` | same file, `interfaces` / `offsets` |
+| Type family | Engine fact | Owner |
+|-------------|-------------|--------|
+| `OnTakeDamage` / Post / Alive | `DispatchTraceAttack` | **core** (damage mux; existed before this catalog) |
+| `SetTransmit` | `CheckTransmit` + `CheckTransmitInfo_clientEntityIndex` | **core** (`Transmit.setVisibleTo` owns this hook) |
 | `SDKHooks.takeDamage` | reuse DTA | none new |
-| `SDKHooks.dropWeapon` | ItemServices (or equivalent) **signature**, `vtable-member` on the real class | new key in the sdkhooks sibling file; borrowed vtable index 24 stays forbidden |
+| `SDKHooks.dropWeapon` | ItemServices (or equivalent) signature + `vtable-member` | **sdkhooks** |
+| `TraceAttack` / `FireBulletsPost` | own signature if RE finds a distinct virtual | **sdkhooks** |
 
-`TraceAttack` / `FireBulletsPost` get a signature row in the sibling file if RE finds a distinct
-virtual; they do not borrow DTA’s slot by default.
-
-Plugins do not ship SDKHooks gamedata. Operator hot-fix is `gamedata/core/custom/*.jsonc`, same as
-every other core fact. A type with no resolvable virtual on this CS2 build simply never gets a
-signature row until an RE slice finds one — `SDKHookType` may still list it; `SDKHook` returns
-`false`.
+DTA and CheckTransmit stay core because other capabilities already consume them, not because of the
+grep. Plugins do not ship SDKHooks gamedata. Operator hot-fix is `gamedata/sdkhooks/custom/*.jsonc`.
+A type with no resolvable virtual on this CS2 build has no signature row until an RE slice finds
+one; `SDKHookType` may still list it; `SDKHook` returns `false`.
 
 ## Implementation stack (atomic PRs on `cursor/sdkhooks-a8c9`)
 
@@ -323,7 +348,8 @@ One wiki-complete product; several merge-safe PRs. Each PR is green `make ci` on
 type in `SDKHookType` without the degrade-or-dispatch path in the same PR.
 
 1. **VP-hook primitive + Touch family** (`StartTouch` / `Touch` / `EndTouch` / `Blocked` + Posts).
-   Proves install/teardown, ledger, destroy-unhook, `HookResult` collapse on a virtual.
+   Stand up `gamedata/sdkhooks/` + amend the owners gate for extension owners. Proves install/teardown,
+   ledger, destroy-unhook, `HookResult` collapse on a virtual.
 2. **Entity lifecycle virtuals** — Spawn, Think, Use, GetMaxHealth, ShouldCollide, GroundEntChangedPost,
    VPhysicsUpdate, PreThink/PostThink, CanBeAutobalanced.
 3. **SetTransmit** — CheckTransmit mux + AND-merge with `Transmit.setVisibleTo`.
@@ -342,8 +368,8 @@ type in `SDKHookType` without the degrade-or-dispatch path in the same PR.
   `@s2script/sdk/trace` / schema accessors cover the helpers that used to live in
   `sdktools_functions.inc`. Remaining SDKTools-shaped gaps (classic `TE_*` tempents if CS2 still has
   an `ITempEnts` equivalent; `IgniteEntity`) are their own slices, not a `SDKTools` namespace bolted
-  onto this catalog. Do not stand up `gamedata/sdktools/` for the same owners-gate reason as
-  `gamedata/sdkhooks/`.
+  onto this catalog. A later leftover slice would use `gamedata/sdktools/` as an **extension** owner
+  (same kind as `sdkhooks`), not `gamedata/core/`.
 - DHooks / plugin-authored detour layouts
 - `SDKHookEx` as a second name
 - `Action` / `HookResult as Action`
