@@ -39,6 +39,17 @@ imported=$( (grep -rhoE 'from "@s2script/(sdk/)?[a-z0-9-]+"' \
              | sed -E 's|from "@s2script/(sdk/)?||; s|"||' \
              | sort -u )
 
+# A root barrel import (`from "@s2script/sdk"`, not a subpath) typechecks every
+# `export *` in index.d.ts, so those modules count as covered. `unsafe` is not
+# re-exported and still needs a subpath consumer.
+# The closing quote must follow `sdk` immediately — `from "@s2script/sdk/bans"`
+# is a subpath and must not trip this.
+if grep -rqE "from \"@s2script/sdk\"" examples plugins tools --include='*.ts' 2>/dev/null; then
+  barrel=$(grep -oE 'export \* from "\./[a-z0-9-]+"' packages/sdk/index.d.ts \
+             | sed -E 's|export \* from "\./||; s|"||')
+  imported=$(printf '%s\n%s\n' "$imported" "$barrel" | sort -u)
+fi
+
 fail=0
 for m in "${modules[@]}"; do
   if ! grep -qx "$m" <<<"$imported"; then

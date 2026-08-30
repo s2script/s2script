@@ -8,12 +8,8 @@
 //   timeleft uses mp_timelimit (cvar) + Server.gameTime (map time / curtime), which includes warmup/freeze
 //   so it can differ from the HUD by the warmup — approximate, fine for an info trigger.
 
-import { plugin } from "@s2script/sdk/plugin";
-import { Chat } from "@s2script/sdk/chat";
-import { Server } from "@s2script/sdk/server";
-import { HookResult } from "@s2script/sdk/events";
-import { nextFrame } from "@s2script/sdk/timers";
-import { Translations } from "@s2script/sdk/translations";
+import { translations, Chat, Server, HookResult, nextFrame, Translations } from "@s2script/sdk";
+import type { HookResultValue } from "@s2script/sdk";
 
 // Every trigger answer is broadcast (Chat.toAll) to the whole server, not replied to just the
 // asker — there's no single "recipient" slot to translate for, so these resolve at the server
@@ -46,24 +42,24 @@ function nextMap(): string {
   return Translations.translate(-1, "Next Map", next ? next : "Pending");
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("basetriggers", "common");
-
-  ctx.clients.onSay((_slot, text, _teamonly) => {
-    const t = text.trim().toLowerCase();
-    let answer: string | null = null;
-    if (t === "timeleft") answer = timeLeft();
-    else if (t === "thetime") answer = theTime();
-    else if (t === "currentmap" || t === "map") answer = currentMap();
-    else if (t === "nextmap") answer = nextMap();
-    if (answer !== null) {
-      const a = answer;
-      // ctx.clients.onSay is a PRE-hook (runs before the say is broadcast), so a synchronous reply would
-      // appear BEFORE the player's trigger word. Defer one frame so the word broadcasts first, then the answer.
-      nextFrame().then(() => Chat.toAll(a));
-    }
-    return HookResult.Continue; // never suppress — the player's trigger word still shows (SM behavior)
-  });
+export function OnPluginStart(): void {
+  translations.load("basetriggers", "common");
 
   console.log("[basetriggers] onLoad — timeleft/thetime/currentmap/nextmap");
-});
+}
+
+export function OnClientSayCommand(_slot: number, text: string, _teamonly: boolean): HookResultValue {
+  const t = text.trim().toLowerCase();
+  let answer: string | null = null;
+  if (t === "timeleft") answer = timeLeft();
+  else if (t === "thetime") answer = theTime();
+  else if (t === "currentmap" || t === "map") answer = currentMap();
+  else if (t === "nextmap") answer = nextMap();
+  if (answer !== null) {
+    const a = answer;
+    // OnClientSayCommand is a PRE-hook (runs before the say is broadcast), so a synchronous reply would
+    // appear BEFORE the player's trigger word. Defer one frame so the word broadcasts first, then the answer.
+    nextFrame().then(() => Chat.toAll(a));
+  }
+  return HookResult.Continue; // never suppress — the player's trigger word still shows (SM behavior)
+}

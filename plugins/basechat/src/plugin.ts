@@ -1,9 +1,6 @@
-import { plugin } from "@s2script/sdk/plugin";
-import { Chat } from "@s2script/sdk/chat";
-import { Admin, ADMFLAG } from "@s2script/sdk/admin";
+import { command, translations, Chat, Admin, ADMFLAG, HookResult, Translations } from "@s2script/sdk";
+import type { HookResultValue } from "@s2script/sdk";
 import { Player, Activity } from "@s2script/cs2";
-import { HookResult } from "@s2script/sdk/events";
-import { Translations } from "@s2script/sdk/translations";
 
 function actorName(slot: number): string {
   if (slot < 0) return "Console";
@@ -48,25 +45,25 @@ function resolveOne(pattern: string, callerSlot: number, reply: (m: string) => v
   return matches[0];
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("basechat", "common");
+export function OnPluginStart(): void {
+  translations.load("basechat", "common");
 
   // cmd.replyT(key) below: we hold a `cmd` context, so let it pick chat vs console for the reply.
-  // Above and further down (resolveOne, the @@ trigger in onSay) there is only a raw slot — no
+  // Above and further down (resolveOne, the @@ trigger in OnClientSayCommand) there is only a raw slot — no
   // `cmd` — so those call Translations.translate(slot, key) directly instead.
-  ctx.commands.registerAdmin("sm_say", ADMFLAG.CHAT, (cmd) => {
+  command.admin("sm_say", ADMFLAG.CHAT, (cmd) => {
     const msg = cmd.argString.trim();
     if (!msg) { cmd.replyT("Usage Say"); return; }
     doSay(cmd.callerSlot, msg);
   });
 
-  ctx.commands.registerAdmin("sm_chat", ADMFLAG.CHAT, (cmd) => {
+  command.admin("sm_chat", ADMFLAG.CHAT, (cmd) => {
     const msg = cmd.argString.trim();
     if (!msg) { cmd.replyT("Usage Chat"); return; }
     doAdminChat(cmd.callerSlot, msg);
   });
 
-  ctx.commands.registerAdmin("sm_psay", ADMFLAG.CHAT, (cmd) => {
+  command.admin("sm_psay", ADMFLAG.CHAT, (cmd) => {
     const s = cmd.argString.trim();
     const sp = s.indexOf(" ");
     if (sp < 0) { cmd.replyT("Usage Psay"); return; }
@@ -75,24 +72,24 @@ export default plugin((ctx) => {
     const t = resolveOne(targetPat, cmd.callerSlot, (m) => cmd.reply(m));
     if (t) doPsay(cmd.callerSlot, t, msg);
   });
+}
 
-  // SourceMod @ chat triggers, over the raw-chat subscriber.
-  ctx.clients.onSay((slot, text, teamonly) => {
-    if (text[0] !== "@") return HookResult.Continue;
-    const admin = Admin.forSlot(slot);
-    if (!admin || !admin.hasFlags(ADMFLAG.CHAT)) return HookResult.Continue; // non-admin @ = normal chat
-    if (text.startsWith("@@")) {
-      const rest = text.slice(2).trim();
-      const sp = rest.indexOf(" ");
-      if (sp < 0) { Chat.toSlot(slot, Translations.translate(slot, "Usage Psay Trigger")); return HookResult.Handled; }
-      const t = resolveOne(rest.slice(0, sp), slot, (m) => Chat.toSlot(slot, m));
-      if (t) doPsay(slot, t, rest.slice(sp + 1).trim());
-      return HookResult.Handled;
-    }
-    const body = text.slice(1).trim();
-    if (!body) return HookResult.Handled; // bare "@" with no message: consume, send nothing
-    if (teamonly) doAdminChat(slot, body);
-    else doSay(slot, body);
+// SourceMod @ chat triggers, over the raw-chat subscriber.
+export function OnClientSayCommand(slot: number, text: string, teamonly: boolean): HookResultValue {
+  if (text[0] !== "@") return HookResult.Continue;
+  const admin = Admin.forSlot(slot);
+  if (!admin || !admin.hasFlags(ADMFLAG.CHAT)) return HookResult.Continue; // non-admin @ = normal chat
+  if (text.startsWith("@@")) {
+    const rest = text.slice(2).trim();
+    const sp = rest.indexOf(" ");
+    if (sp < 0) { Chat.toSlot(slot, Translations.translate(slot, "Usage Psay Trigger")); return HookResult.Handled; }
+    const t = resolveOne(rest.slice(0, sp), slot, (m) => Chat.toSlot(slot, m));
+    if (t) doPsay(slot, t, rest.slice(sp + 1).trim());
     return HookResult.Handled;
-  });
-});
+  }
+  const body = text.slice(1).trim();
+  if (!body) return HookResult.Handled; // bare "@" with no message: consume, send nothing
+  if (teamonly) doAdminChat(slot, body);
+  else doSay(slot, body);
+  return HookResult.Handled;
+}

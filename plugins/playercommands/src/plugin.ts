@@ -1,7 +1,5 @@
-import { plugin } from "@s2script/sdk/plugin";
-import { ADMFLAG } from "@s2script/sdk/admin";
+import { command, hook, translations, ADMFLAG, Translations } from "@s2script/sdk";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
-import { Translations } from "@s2script/sdk/translations";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
 // item (two UIs over one action, never a re-implementation). Each returns whether it applied (a null
@@ -36,11 +34,11 @@ function pickLoop(adminSlot: number, action: (t: Player) => void): void {
   pickPlayer(adminSlot, t => { action(t); pickLoop(adminSlot, action); });
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("playercommands", "common");
+export function OnPluginStart(): void {
+  translations.load("playercommands", "common");
 
   // Slice 6.3 — sm_slap <target> [damage] (ADMFLAG.SLAY).
-  ctx.commands.registerAdmin("sm_slap", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_slap", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
     if (!targetStr) { cmd.replyT("Usage Slap"); return; }
     const damage = Math.max(0, cmd.argInt(1, 0));
@@ -52,7 +50,7 @@ export default plugin((ctx) => {
   });
 
   // Slice 6.14 — sm_slay <target> (ADMFLAG.SLAY).
-  ctx.commands.registerAdmin("sm_slay", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_slay", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
     if (!targetStr) { cmd.replyT("Usage Slay"); return; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
@@ -63,7 +61,7 @@ export default plugin((ctx) => {
   });
 
   // Slice 6.14 — sm_rename <target> <newname> (ADMFLAG.SLAY). Single-target only (reject ambiguous multi).
-  ctx.commands.registerAdmin("sm_rename", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_rename", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
     const rawName = cmd.argsFrom(1).trim();
     if (!targetStr || !rawName) { cmd.replyT("Usage Rename"); return; }
@@ -93,10 +91,10 @@ export default plugin((ctx) => {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
+  hook.topmenu.addItem("Player Commands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slapPlayer(t, 5)) });   // menu default: 5 damage + knockback
-  ctx.topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
+  hook.topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slayPlayer(t)) });
 
   console.log("[playercommands] onLoad — slap/slay/rename registered");
-});
+}

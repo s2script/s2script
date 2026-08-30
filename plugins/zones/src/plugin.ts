@@ -5,20 +5,13 @@
 // DETECTION BACKEND: REAL ENGINE TRIGGERS. Each zone is a runtime `trigger_multiple` whose collision is an
 // arbitrary box built from the zone bounds (createEntity -> SetModel registers the touch aggregate ->
 // SetSolid(SOLID_BBOX) reshapes it to the box). The engine's own touch system fires OnStartTouch/OnEndTouch,
-// which we hook via ctx.entities.onOutput -> enter/leave. This replaces the previous ~8Hz origin-polling
+// which we hook via hook.output -> enter/leave. This replaces the previous ~8Hz origin-polling
 // backend: engine-accurate edges, no per-frame position math, and it can see non-player entities too. A tiny
 // poll remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
 // engine-maintained inside-set).
-import { plugin } from "@s2script/sdk/plugin";
-import { ADMFLAG } from "@s2script/sdk/admin";
-import { Database } from "@s2script/sdk/db";
-import { Server } from "@s2script/sdk/server";
-import { config } from "@s2script/sdk/config";
-import type { PublishHandle } from "@s2script/sdk/interfaces";
+import { command, hook, translations, publish, createScope, ADMFLAG, Database, Server, config, Vector, Chat, Translations } from "@s2script/sdk";
+import type { PublishHandle } from "@s2script/sdk";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
-import { Vector } from "@s2script/sdk/math";
-import { Chat } from "@s2script/sdk/chat";
-import { Translations } from "@s2script/sdk/translations";
 import type { Zones } from "../api";
 
 interface Vec3 { x: number; y: number; z: number; }
@@ -27,6 +20,8 @@ interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set
 let currentMap = "";
 const zones = new Map<string, Zone>();
 let iface: PublishHandle | null = null;
+let db!: Database;
+let frame = 0;
 
 function emitCreated(z: Zone): void { if (iface) iface.emit("created", { zone: z.name, min: z.min, max: z.max, tags: z.tags }); }
 function emitDeleted(name: string): void { if (iface) iface.emit("deleted", { zone: name }); }
@@ -95,7 +90,7 @@ const IN_USE = 32;   // in_buttons.h (E)
 interface EditSession { name: string; cornerA: Vec3 | null; prevMask: number; expiresAt: number; preview: BeamHandle[]; }
 const edits = new Map<number, EditSession>();   // keyed by 0-based player slot
 
-// The editor poll lives on a ctx Scope, allocated + driven inside the factory; these module-level hooks let
+// The editor poll lives on a Scope, allocated + driven inside OnPluginStart; these module-level hooks let
 // the module-scoped session helpers (startMarking/cancelEdit) arm/idle that scope without reaching into it.
 let ensureEditPoll: () => void = () => {};
 let releaseEditPollIfIdle: () => void = () => {};
@@ -154,115 +149,163 @@ function playerByPawnIndex(idx: number): { slot: number; userId: number } | null
   return null;
 }
 
-export default plugin(async (ctx) => {
-  ctx.translations.load("zones", "common");
+async function loadMap(map: string): Promise<void> {
+  clearAllBeams();
+  clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
+  clearAllTriggers();
+  currentMap = map;
+  for (const name of zones.keys()) emitDeleted(name);   // map change: the old map's zones are cleared
+  zones.clear();
+  const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
+  for (const r of rows) {
+    const name = String(r.name);
+    zones.set(name, {
+      name,
+      min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
+      max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
+      tags: parseTags(r.tags),
+      inside: new Set<number>(),
+      trigger: null,
+    });
+    pendingTriggers.add(name);   // build on the next frame (entity system live)
+    emitCreated(zones.get(name)!);
+  }
+  console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
+}
+
+async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: string[]): Promise<void> {
+  const prev = zones.get(name);
+  const t = tags !== undefined ? tags : (prev ? prev.tags : []);
+  zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+  pendingTriggers.add(name);   // (re)build the trigger on the next frame
+  emitCreated(zones.get(name)!);
+  await db.execute(
+    "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, t.join(",")]);
+}
+
+function dropZone(name: string): void {
+  const z = zones.get(name);
+  if (z) removeTrigger(z);
+  zones.delete(name);
+  emitDeleted(name);
+  pendingTriggers.delete(name);
+  hideZone(name);
+  db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
+}
+
+const zonesImpl: Zones = {
+  createZone(name: string, min: Vec3, max: Vec3): boolean {
+    const nm = sanitizeName(name);
+    if (!nm || !min || !max) return false;
+    const box = normBox(min, max);
+    if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) return false;
+    const prev = zones.get(nm);
+    zones.set(nm, { name: nm, min: box.min, max: box.max, tags: prev ? prev.tags : [], inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+    pendingTriggers.add(nm);
+    upsertZone(nm, box).catch(() => {});   // durability, async (registry already updated)
+    return true;
+  },
+  deleteZone(name: string): boolean {
+    const nm = sanitizeName(name);
+    if (!zones.has(nm)) return false;
+    dropZone(nm);
+    return true;
+  },
+  getZones(): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
+    return Array.from(zones.values()).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
+  },
+  isInZone(slot: number, name: string): boolean {
+    const z = zones.get(sanitizeName(name));
+    return !!z && z.inside.has(slot);
+  },
+  zonesFor(slot: number): string[] {
+    const out: string[] = [];
+    for (const z of zones.values()) if (z.inside.has(slot)) out.push(z.name);
+    return out;
+  },
+  getZonesByTag(tag: string): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
+    return zonesByTag(String(tag ?? "")).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
+  },
+  setZoneTags(name: string, tags: string[]): boolean {
+    const nm = sanitizeName(name);
+    const z = zones.get(nm);
+    if (!z || !Array.isArray(tags)) return false;
+    const t = tags.map((x) => sanitizeTag(String(x))).filter((x) => x.length > 0);
+    z.tags = t;
+    db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [t.join(","), currentMap, nm]).catch(() => {});
+    return true;
+  },
+};
+
+// Rising-edge E detection + a live rubber-band preview. Runs only while `edits` is non-empty (the Scope is
+// cleared otherwise). Clearing the scope from inside its own handler is safe — __s2_scope_dispose only
+// prunes mux rows and the current dispatch snapshot already ran.
+function pollEditSessions(): void {
+  const now = Date.now();
+  for (const [slot, s] of edits) {
+    if (now >= s.expiresAt) { cancelEdit(slot, Translations.translate(slot, "Edit Timed Out")); continue; }
+    const pw = Pawn.forSlot(slot);
+    if (!pw) { cancelEdit(slot, Translations.translate(slot, "Edit No Pawn")); continue; }
+    const mask = pw.buttons;                     // 0 if unreadable — a momentary 0 can re-arm the edge; acceptable
+    const pressed = mask & ~s.prevMask;
+    s.prevMask = mask;
+    const origin = pw.origin;
+    // Live rubber-band: corner A set, corner B pending -> retarget the 12 preview beams to the walking box.
+    if (s.cornerA && s.preview.length === 12 && origin) {
+      const box = normBox(s.cornerA, origin);
+      const edges = box12(box.min, box.max);
+      for (let i = 0; i < 12; i++)
+        s.preview[i].update(new Vector(edges[i].a.x, edges[i].a.y, edges[i].a.z), new Vector(edges[i].b.x, edges[i].b.y, edges[i].b.z));
+    }
+    if (!(pressed & IN_USE)) continue;
+    if (!origin) { Chat.toSlot(slot, Translations.translate(slot, "Edit No Position Retry")); continue; }   // don't consume the press
+    if (!s.cornerA) {
+      // 1st press: pin corner A (a COPY — origin is a snapshot but never alias it) + create the preview collapsed at A.
+      s.cornerA = { x: origin.x, y: origin.y, z: origin.z };
+      for (const e of box12(s.cornerA, s.cornerA)) {
+        const b = Beam.draw(new Vector(e.a.x, e.a.y, e.a.z), new Vector(e.b.x, e.b.y, e.b.z), { color: [255, 165, 0, 255], width: 2 });
+        if (b) s.preview.push(b);
+      }
+      Chat.toSlot(slot, Translations.translate(slot, "Edit Corner1 Set"));
+    } else {
+      // 2nd press: normalize, reject zero-volume (keep the session), else save + swap preview for a timed showZone.
+      const box = normBox(s.cornerA, { x: origin.x, y: origin.y, z: origin.z });
+      if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) {
+        Chat.toSlot(slot, Translations.translate(slot, "Edit Zero Volume"));
+        continue;
+      }
+      const name = s.name;
+      cancelEdit(slot);   // end the session + remove the preview BEFORE the async save
+      upsertZone(name, box)
+        .then(() => {
+          const z = zones.get(name);
+          if (z) showZone(z, 10);   // timed confirmation wireframe of the SAVED box
+          Chat.toSlot(slot, Translations.translate(slot, "Edit Zone Saved", name));
+        })
+        .catch((e) => Chat.toSlot(slot, Translations.translate(slot, "Edit Save Failed", String(e))));
+    }
+  }
+}
+
+export async function OnPluginStart(): Promise<void> {
+  translations.load("zones", "common");
 
   // A DB failure now FAILS the load (fail-loud) rather than running a non-persistent, half-alive plugin.
-  const db = await Database.open("zones");
+  db = await Database.open("zones");
   await db.execute(
     "CREATE TABLE IF NOT EXISTS zones (map TEXT, name TEXT, minX REAL, minY REAL, minZ REAL, maxX REAL, maxY REAL, maxZ REAL, tags TEXT, PRIMARY KEY (map, name))");
   try { await db.execute("ALTER TABLE zones ADD COLUMN tags TEXT"); } catch { /* duplicate column name — already migrated */ }
 
-  async function loadMap(map: string): Promise<void> {
-    clearAllBeams();
-    clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
-    clearAllTriggers();
-    currentMap = map;
-    for (const name of zones.keys()) emitDeleted(name);   // map change: the old map's zones are cleared
-    zones.clear();
-    const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
-    for (const r of rows) {
-      const name = String(r.name);
-      zones.set(name, {
-        name,
-        min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
-        max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
-        tags: parseTags(r.tags),
-        inside: new Set<number>(),
-        trigger: null,
-      });
-      pendingTriggers.add(name);   // build on the next frame (entity system live)
-      emitCreated(zones.get(name)!);
-    }
-    console.log(`[zones] loaded ${zones.size} zone(s) for ${map}`);
-  }
-
-  async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: string[]): Promise<void> {
-    const prev = zones.get(name);
-    const t = tags !== undefined ? tags : (prev ? prev.tags : []);
-    zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
-    pendingTriggers.add(name);   // (re)build the trigger on the next frame
-    emitCreated(zones.get(name)!);
-    await db.execute(
-      "INSERT OR REPLACE INTO zones (map, name, minX, minY, minZ, maxX, maxY, maxZ, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [currentMap, name, box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z, t.join(",")]);
-  }
-
-  function dropZone(name: string): void {
-    const z = zones.get(name);
-    if (z) removeTrigger(z);
-    zones.delete(name);
-    emitDeleted(name);
-    pendingTriggers.delete(name);
-    hideZone(name);
-    db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
-  }
-
-  const zonesImpl: Zones = {
-    createZone(name: string, min: Vec3, max: Vec3): boolean {
-      const nm = sanitizeName(name);
-      if (!nm || !min || !max) return false;
-      const box = normBox(min, max);
-      if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) return false;
-      const prev = zones.get(nm);
-      zones.set(nm, { name: nm, min: box.min, max: box.max, tags: prev ? prev.tags : [], inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
-      pendingTriggers.add(nm);
-      upsertZone(nm, box).catch(() => {});   // durability, async (registry already updated)
-      return true;
-    },
-    deleteZone(name: string): boolean {
-      const nm = sanitizeName(name);
-      if (!zones.has(nm)) return false;
-      dropZone(nm);
-      return true;
-    },
-    getZones(): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
-      return Array.from(zones.values()).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
-    },
-    isInZone(slot: number, name: string): boolean {
-      const z = zones.get(sanitizeName(name));
-      return !!z && z.inside.has(slot);
-    },
-    zonesFor(slot: number): string[] {
-      const out: string[] = [];
-      for (const z of zones.values()) if (z.inside.has(slot)) out.push(z.name);
-      return out;
-    },
-    getZonesByTag(tag: string): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
-      return zonesByTag(String(tag ?? "")).map((z) => ({ name: z.name, min: z.min, max: z.max, tags: z.tags }));
-    },
-    setZoneTags(name: string, tags: string[]): boolean {
-      const nm = sanitizeName(name);
-      const z = zones.get(nm);
-      if (!z || !Array.isArray(tags)) return false;
-      const t = tags.map((x) => sanitizeTag(String(x))).filter((x) => x.length > 0);
-      z.tags = t;
-      db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [t.join(","), currentMap, nm]).catch(() => {});
-      return true;
-    },
-  };
-
   await loadMap(Server.mapName);
   console.log("[zones] onLoad — DB ready (real-trigger backend)");
 
-  ctx.server.onMapStart((map) => { loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`)); });
-
-  iface = ctx.publish<Zones>("@s2script/zones", zonesImpl);
+  iface = publish<Zones>("@s2script/zones", zonesImpl);
   console.log("[zones] publishing @s2script/zones");
 
-  // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. onOutput fires for
+  // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. hook.output fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.
-  ctx.entities.onOutput("trigger_multiple", "OnStartTouch", (ev) => {
+  hook.output("trigger_multiple", "OnStartTouch", (ev) => {
     if (!ev.caller || !ev.activator || !iface) return;
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;
@@ -271,7 +314,7 @@ export default plugin(async (ctx) => {
     z.inside.add(who.slot);
     iface.emit("enter", { zone: z.name, slot: who.slot, userId: who.userId });
   });
-  ctx.entities.onOutput("trigger_multiple", "OnEndTouch", (ev) => {
+  hook.output("trigger_multiple", "OnEndTouch", (ev) => {
     if (!ev.caller || !ev.activator || !iface) return;
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;
@@ -281,33 +324,10 @@ export default plugin(async (ctx) => {
     iface.emit("leave", { zone: z.name, slot: who.slot, userId: who.userId });
   });
 
-  // Per-frame: (1) build any queued triggers now that the entity system is live; (2) a light STAY re-emit
-  // for players the engine reports as currently inside (no position tests — just the engine-maintained set).
-  let frame = 0;
-  ctx.server.onGameFrame(() => {
-    if (shown.size > 0) {
-      const now = Date.now();
-      for (const [name, entry] of shown) if (entry.expiresAt > 0 && now >= entry.expiresAt) hideZone(name);
-    }
-    if (pendingTriggers.size > 0) {
-      for (const name of pendingTriggers) { const z = zones.get(name); if (z) buildTrigger(z); }
-      pendingTriggers.clear();
-    }
-    if ((frame++ & 7) !== 0 || !iface) return;
-    let any = false;
-    for (const z of zones.values()) if (z.inside.size > 0) { any = true; break; }
-    if (!any) return;
-    const uid = new Map<number, number>();
-    for (const p of Player.all()) uid.set(p.slot, p.userId);
-    for (const z of zones.values())
-      for (const slot of z.inside)
-        iface.emit("stay", { zone: z.name, slot, userId: uid.get(slot) ?? -1 });
-  });
-
   // Dedicated editor poll on a disposable Scope: it exists only while someone is editing. startMarking arms
   // it (ensureEditPoll); cancelEdit releases it when the last session ends (releaseEditPollIfIdle). This
   // replaces the old always-on second subscription that early-returned when no session was active.
-  const editPoll = ctx.createScope();
+  const editPoll = createScope();
   let editPollArmed = false;
   ensureEditPoll = () => {
     if (editPollArmed) return;
@@ -318,58 +338,8 @@ export default plugin(async (ctx) => {
     if (edits.size === 0 && editPollArmed) { editPoll.clear(); editPollArmed = false; }
   };
 
-  // Rising-edge E detection + a live rubber-band preview. Runs only while `edits` is non-empty (the Scope is
-  // cleared otherwise). Clearing the scope from inside its own handler is safe — __s2_scope_dispose only
-  // prunes mux rows and the current dispatch snapshot already ran.
-  function pollEditSessions(): void {
-    const now = Date.now();
-    for (const [slot, s] of edits) {
-      if (now >= s.expiresAt) { cancelEdit(slot, Translations.translate(slot, "Edit Timed Out")); continue; }
-      const pw = Pawn.forSlot(slot);
-      if (!pw) { cancelEdit(slot, Translations.translate(slot, "Edit No Pawn")); continue; }
-      const mask = pw.buttons;                     // 0 if unreadable — a momentary 0 can re-arm the edge; acceptable
-      const pressed = mask & ~s.prevMask;
-      s.prevMask = mask;
-      const origin = pw.origin;
-      // Live rubber-band: corner A set, corner B pending -> retarget the 12 preview beams to the walking box.
-      if (s.cornerA && s.preview.length === 12 && origin) {
-        const box = normBox(s.cornerA, origin);
-        const edges = box12(box.min, box.max);
-        for (let i = 0; i < 12; i++)
-          s.preview[i].update(new Vector(edges[i].a.x, edges[i].a.y, edges[i].a.z), new Vector(edges[i].b.x, edges[i].b.y, edges[i].b.z));
-      }
-      if (!(pressed & IN_USE)) continue;
-      if (!origin) { Chat.toSlot(slot, Translations.translate(slot, "Edit No Position Retry")); continue; }   // don't consume the press
-      if (!s.cornerA) {
-        // 1st press: pin corner A (a COPY — origin is a snapshot but never alias it) + create the preview collapsed at A.
-        s.cornerA = { x: origin.x, y: origin.y, z: origin.z };
-        for (const e of box12(s.cornerA, s.cornerA)) {
-          const b = Beam.draw(new Vector(e.a.x, e.a.y, e.a.z), new Vector(e.b.x, e.b.y, e.b.z), { color: [255, 165, 0, 255], width: 2 });
-          if (b) s.preview.push(b);
-        }
-        Chat.toSlot(slot, Translations.translate(slot, "Edit Corner1 Set"));
-      } else {
-        // 2nd press: normalize, reject zero-volume (keep the session), else save + swap preview for a timed showZone.
-        const box = normBox(s.cornerA, { x: origin.x, y: origin.y, z: origin.z });
-        if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) {
-          Chat.toSlot(slot, Translations.translate(slot, "Edit Zero Volume"));
-          continue;
-        }
-        const name = s.name;
-        cancelEdit(slot);   // end the session + remove the preview BEFORE the async save
-        upsertZone(name, box)
-          .then(() => {
-            const z = zones.get(name);
-            if (z) showZone(z, 10);   // timed confirmation wireframe of the SAVED box
-            Chat.toSlot(slot, Translations.translate(slot, "Edit Zone Saved", name));
-          })
-          .catch((e) => Chat.toSlot(slot, Translations.translate(slot, "Edit Save Failed", String(e))));
-      }
-    }
-  }
-
   // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)
-  ctx.commands.registerAdmin("sm_zone_add", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_add", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
     if (!name) { cmd.replyT("Usage Zone Add"); return; }
     let box: { min: Vec3; max: Vec3 } | null = null;
@@ -401,7 +371,7 @@ export default plugin(async (ctx) => {
   });
 
   // sm_zone_edit <name> — in-game: press E at two opposite corners; a live rubber-band box tracks between.
-  ctx.commands.registerAdmin("sm_zone_edit", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_edit", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.replyT("Zone Edit Ingame Only"); return; }
     const raw = cmd.args[0] || "";
     if (!raw || raw === "cancel") {
@@ -414,14 +384,14 @@ export default plugin(async (ctx) => {
     if (!startMarking(cmd.callerSlot, name)) cmd.replyT("No Position Spawn First");
   });
 
-  ctx.commands.registerAdmin("sm_zone_delete", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_delete", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
     if (!name || !zones.has(name)) { cmd.replyT("Zone Not Found", name); return; }
     dropZone(name);
     cmd.replyT("Zone Deleted", name);
   });
 
-  ctx.commands.registerAdmin("sm_zone_tag", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_tag", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
     const z = zones.get(name);
     if (!name || !z) { cmd.replyT("Zone Tag Not Found", name); return; }
@@ -431,7 +401,7 @@ export default plugin(async (ctx) => {
     cmd.replyT(tags.length > 0 ? "Zone Tags Set" : "Zone Tags Cleared", name, tags.join(", "));
   });
 
-  ctx.commands.registerAdmin("sm_zone_list", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_list", ADMFLAG.GENERIC, (cmd) => {
     const filter = cmd.args.length > 0 ? sanitizeTag(cmd.args[0]) : "";
     const list = filter ? zonesByTag(filter) : Array.from(zones.values());
     if (filter) cmd.replyT("Zone List Header Tagged", currentMap, filter, list.length);
@@ -453,14 +423,14 @@ export default plugin(async (ctx) => {
       );
   });
 
-  ctx.commands.registerAdmin("sm_zone_export", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_export", ADMFLAG.GENERIC, (cmd) => {
     const out: Record<string, { min: number[]; max: number[]; tags: string[] }> = {};
     for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z], tags: z.tags };
     config.writeFile(zonesFile(currentMap), JSON.stringify(out, null, 2));
     cmd.replyT("Zone Export Done", zones.size, zonesFile(currentMap));
   });
 
-  ctx.commands.registerAdmin("sm_zone_import", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_import", ADMFLAG.GENERIC, (cmd) => {
     const raw = config.readFile(zonesFile(currentMap));
     if (!raw) { cmd.replyT("Zone Import No File", currentMap); return; }
     let parsed: Record<string, { min: number[]; max: number[]; tags?: string[] }>;
@@ -479,7 +449,7 @@ export default plugin(async (ctx) => {
     Promise.all(pend).then(() => cmd.replyT("Zone Import Done", n)).catch((err) => cmd.replyT("Zone Import Error", String(err)));
   });
 
-  ctx.commands.registerAdmin("sm_zone_show", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_show", ADMFLAG.GENERIC, (cmd) => {
     const arg = cmd.args[0] || "";
     if (!arg) { cmd.replyT("Usage Zone Show"); return; }
     const seconds = cmd.args.length > 1 ? Math.max(0, cmd.argFloat(1, 30)) : 30;
@@ -493,7 +463,7 @@ export default plugin(async (ctx) => {
     showZone(z, seconds);
     cmd.replyT(seconds > 0 ? "Zone Show One Timed" : "Zone Show One Persistent", z.name, seconds);
   });
-  ctx.commands.registerAdmin("sm_zone_hide", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_zone_hide", ADMFLAG.GENERIC, (cmd) => {
     const arg = cmd.args[0] || "all";
     if (arg === "all") { const n = shown.size; clearAllBeams(); cmd.replyT("Zone Hide All Done", n); return; }
     const name = sanitizeName(arg);
@@ -503,8 +473,38 @@ export default plugin(async (ctx) => {
   });
 
   console.log("[zones] onLoad — commands registered (real-trigger backend)");
+}
 
-  // Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
-  // (created entities are game-world-owned, not auto-ledgered). The next load rebuilds them from the DB.
-  return { onUnload() { clearAllBeams(); clearAllEdits(); clearAllTriggers(); } };
-});
+export function OnMapStart(map: string): void {
+  loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`));
+}
+
+// Per-frame: (1) build any queued triggers now that the entity system is live; (2) a light STAY re-emit
+// for players the engine reports as currently inside (no position tests — just the engine-maintained set).
+export function OnGameFrame(): void {
+  if (shown.size > 0) {
+    const now = Date.now();
+    for (const [name, entry] of shown) if (entry.expiresAt > 0 && now >= entry.expiresAt) hideZone(name);
+  }
+  if (pendingTriggers.size > 0) {
+    for (const name of pendingTriggers) { const z = zones.get(name); if (z) buildTrigger(z); }
+    pendingTriggers.clear();
+  }
+  if ((frame++ & 7) !== 0 || !iface) return;
+  let any = false;
+  for (const z of zones.values()) if (z.inside.size > 0) { any = true; break; }
+  if (!any) return;
+  const uid = new Map<number, number>();
+  for (const p of Player.all()) uid.set(p.slot, p.userId);
+  for (const z of zones.values())
+    for (const slot of z.inside)
+      iface.emit("stay", { zone: z.name, slot, userId: uid.get(slot) ?? -1 });
+}
+
+// Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
+// (created entities are game-world-owned, not auto-ledgered). The next load rebuilds them from the DB.
+export function OnPluginEnd(): void {
+  clearAllBeams();
+  clearAllEdits();
+  clearAllTriggers();
+}

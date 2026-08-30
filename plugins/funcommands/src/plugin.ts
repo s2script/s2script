@@ -9,13 +9,9 @@
 //   DEFERRED: sm_burn (an ignite game-function, no framework sig to port),
 //   sm_beacon (a particle/temp-entity subsystem). Both are documented follow-ups.
 
-import { plugin } from "@s2script/sdk/plugin";
-import { CommandInvocation } from "@s2script/sdk/commands";
-import { ADMFLAG } from "@s2script/sdk/admin";
+import { command, translations, ADMFLAG, delay, Translations } from "@s2script/sdk";
+import type { Command, PhraseKey } from "@s2script/sdk";
 import { Player, Pawn, Fade } from "@s2script/cs2";
-import { delay } from "@s2script/sdk/timers";
-import { Translations } from "@s2script/sdk/translations";
-import type { PhraseKey } from "@s2script/sdk/phrases";
 
 // MoveType_t (const.h)
 const WALK = 2;
@@ -32,7 +28,7 @@ const NONE = 0;
 // literal key argument to .replyT/.translate directly, and these arrive as arguments to this helper
 // instead, so they're invisible to that scan (same limitation as basecomm's forTargets, Task 7).
 function forEachPawn(
-  cmd: CommandInvocation,
+  cmd: Command,
   usageKey: PhraseKey,
   singularKey: PhraseKey,
   pluralKey: PhraseKey,
@@ -54,11 +50,11 @@ function forEachPawn(
   cmd.replyT(n === 1 ? singularKey : pluralKey, n);
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("funcommands", "common");
+export function OnPluginStart(): void {
+  translations.load("funcommands", "common");
 
   // sm_gravity <target> [factor] — factor multiplies the player's gravity (1 = normal, <1 floaty, >1 heavy).
-  ctx.commands.registerAdmin("sm_gravity", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_gravity", ADMFLAG.SLAY, (cmd) => {
     const factor = cmd.argFloat(1, 1.0);
     forEachPawn(cmd, "Usage Gravity", "Set Gravity For Player", "Set Gravity For Players", (_p, pw) => {
       pw.gravityScale = factor;
@@ -68,7 +64,7 @@ export default plugin((ctx) => {
 
   // sm_blind <target> [seconds] — full black-screen fade (CUserMessageFade) via the generic
   // @s2script/usermessages reflection path (Fade.blind). Replaces the flashbang-field approach.
-  ctx.commands.registerAdmin("sm_blind", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_blind", ADMFLAG.SLAY, (cmd) => {
     const secs = cmd.argFloat(1, 2);   // sm_blind <target> [seconds]: args[0]=target (forEachPawn), args[1]=seconds
     const durMs = (secs > 0 ? secs : 2) * 1000;
     forEachPawn(cmd, "Usage Blind", "Blinded Player", "Blinded Players", (p, _pw) => {
@@ -77,14 +73,14 @@ export default plugin((ctx) => {
   });
 
   // sm_noclip <target> — toggle noclip (WALK <-> NOCLIP).
-  ctx.commands.registerAdmin("sm_noclip", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_noclip", ADMFLAG.SLAY, (cmd) => {
     forEachPawn(cmd, "Usage Noclip", "Toggled Noclip For Player", "Toggled Noclip For Players", (_p, pw) => {
       pw.moveType = pw.moveType === NOCLIP ? WALK : NOCLIP;
     }, true);
   });
 
   // sm_freeze <target> [seconds] — freeze in place; auto-unfreeze after [seconds] (0 = until sm_unfreeze).
-  ctx.commands.registerAdmin("sm_freeze", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_freeze", ADMFLAG.SLAY, (cmd) => {
     const secs = cmd.argFloat(1, 0);
     forEachPawn(cmd, "Usage Freeze", "Froze Player", "Froze Players", (p, pw) => {
       pw.moveType = NONE;
@@ -99,11 +95,11 @@ export default plugin((ctx) => {
   });
 
   // sm_unfreeze <target> — restore movement.
-  ctx.commands.registerAdmin("sm_unfreeze", ADMFLAG.SLAY, (cmd) => {
+  command.admin("sm_unfreeze", ADMFLAG.SLAY, (cmd) => {
     forEachPawn(cmd, "Usage Unfreeze", "Unfroze Player", "Unfroze Players", (_p, pw) => {
       pw.moveType = WALK;
     }, false);
   });
 
   console.log("[funcommands] onLoad — gravity/noclip/freeze/unfreeze/blind registered (burn/beacon deferred)");
-});
+}

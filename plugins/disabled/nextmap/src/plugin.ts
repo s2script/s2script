@@ -7,13 +7,7 @@
 // Task 2 (this file, current state): round_end (mp_maxrounds) + mp_timelimit detection, and the
 // real changeToNext body (delayed, validated changelevel/host_workshop_map).
 
-import { plugin } from "@s2script/sdk/plugin";
-import { ADMFLAG } from "@s2script/sdk/admin";
-import { Server } from "@s2script/sdk/server";
-import { config } from "@s2script/sdk/config";
-import { delay } from "@s2script/sdk/timers";
-import { Chat } from "@s2script/sdk/chat";
-import { Translations } from "@s2script/sdk/translations";
+import { command, hook, translations, ADMFLAG, Server, config, delay, Chat, Translations } from "@s2script/sdk";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative). */
 interface MapEntry { name: string; workshopId: string | null; }
@@ -127,21 +121,20 @@ function pollTick(): void {
   }
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("nextmap", "common");
+export function OnPluginStart(): void {
+  translations.load("nextmap", "common");
 
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the
                 // rotation before the first map-end — nextmap owns this, independent of nominations.
-  ctx.server.onGameFrame(pollTick);
 
-  ctx.events.on("round_end", () => {
+  hook.event("round_end", () => {
     if (changing) return;
     roundsPlayed++;
     const max = parseInt(Server.getCvar("mp_maxrounds"), 10);
     if (max > 0 && roundsPlayed >= max) changeToNext();
   });
 
-  ctx.commands.registerAdmin("sm_setnextmap", ADMFLAG.CHANGEMAP, cmd => {
+  command.admin("sm_setnextmap", ADMFLAG.CHANGEMAP, cmd => {
     const m = cmd.arg(0);
     if (!m) { cmd.replyT("Usage Setnextmap"); return; }
     const inList = loadPool().find(e => e.name === m);
@@ -157,4 +150,8 @@ export default plugin((ctx) => {
   // it would require reading the map_history the nominations plugin owns in the shared mapvote DB,
   // coupling standalone nextmap back to nominations. nextmap tracks no play history of its own.
   console.log("[nextmap] onLoad — sm_setnextmap registered");
-});
+}
+
+export function OnGameFrame(): void {
+  pollTick();
+}
