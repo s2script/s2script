@@ -13,8 +13,8 @@
 ## Shape
 
 ```ts
-import { SDKHook, SDKHookType, HookResult, Entity } from "@s2script/sdk";
-import type { EntityRef, DamageInfo, HookResultValue } from "@s2script/sdk";
+import { SDKHook, SDKHookType, Entity } from "@s2script/sdk";
+import type { EntityRef, DamageInfo } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   for (const pawn of Entity.findByClass("player")) {
@@ -27,13 +27,14 @@ export function OnEntityCreated(entity: EntityRef | null, className: string): vo
   SDKHook(entity, SDKHookType.OnTakeDamage, onTakeDamage);
 }
 
-function onTakeDamage(info: DamageInfo): HookResultValue | void {
+function onTakeDamage(info: DamageInfo) {
   info.damage /= 2;
-  return HookResult.Changed;
 }
 ```
 
-Handlers return `HookResultValue | void`, same as `hook.onPre` and command handlers. Omit the annotation, or write that union. Do **not** annotate returns as `typeof HookResult.Changed` (or `typeof HookResult.Handled | …`).
+No return type, no `HookResult` import. Writes to `info.damage` are live. A named function needs `info: DamageInfo` (`noImplicitAny`); an inline callback needs nothing: `SDKHook(entity, SDKHookType.OnTakeDamage, (info) => { info.damage /= 2; })`.
+
+`HookResult` is only for the exception cases, and JSDoc on `SDKHook` is how you learn them: `HookResult.Handled` zeroes the hit, `HookResult.Stop` also skips later hooks. The `.d.ts` callback is `(info: DamageInfo) => HookResultValue | void` so omitting the return typechecks — authors do not copy that union, and do not write `typeof HookResult.Changed`.
 
 `SDKHook` is **not** load-window-only. You call it from `OnEntityCreated`, `OnClientPutInServer`, `OnPluginStart` (ents already live), or any other time you hold a live `EntityRef`. That is the SDKHooks exception to “register at load.” `hook.on` / `command` stay load-window.
 
@@ -46,6 +47,7 @@ export declare const SDKHookType: {
   readonly OnTakeDamage: "OnTakeDamage";
 };
 
+/** Mutate `info` in place. Return `HookResult.Handled` to block, `HookResult.Stop` to block and skip later hooks. */
 export declare function SDKHook(
   entity: EntityRef | null,
   type: "OnTakeDamage",
