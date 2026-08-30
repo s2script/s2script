@@ -31,7 +31,7 @@ export const usercmdRecipe: Recipe = {
     let logN = 0;
     let verbose = false;
 
-    hook.runcmd((cmd: UserCmdView, info: { slot: number }) => {
+    hook.client.onRunCmd((cmd: UserCmdView, info: { slot: number }) => {
       const slot = info.slot;
       // Read proof (throttled ~1/64 cmds): all 7 fields + cross-check buttons against the SCHEMA source
       // (pawn.buttons = m_pButtonStates[0], a different read path) and the decoded slot vs the pawn's.

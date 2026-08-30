@@ -23,7 +23,7 @@ export const netRecipe: Recipe = {
   describe: "TCP + UDP round trip without blocking the tick (sm_net)",
   register() {
     let frames = 0;
-    hook.gameFrame(() => { frames += 1; });
+    hook.server.onGameFrame(() => { frames += 1; });
 
     async function tcp(): Promise<void> {
       try {

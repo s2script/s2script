@@ -219,63 +219,84 @@ export interface PluginHooks {
   state?(): unknown;
 }
 
+/** Load-window client lifecycle + input. Same contracts as {@link CtxClients}. */
+export interface HookClient {
+  /** A client began connecting (pre-auth). SM `OnClientConnected`. */
+  onConnect(handler: (client: Client) => void | Promise<void>): void;
+  /** A client's entity was put in the server. SM `OnClientPutInServer`. */
+  onPutInServer(handler: (client: Client) => void | Promise<void>): void;
+  /** A client became fully active (in-game, receiving snapshots). SM `OnClientActive`. */
+  onActive(handler: (client: Client) => void | Promise<void>): void;
+  /**
+   * Steam ticket validated (engine `fullyconnect`). Closest SM analog is
+   * `OnClientPostAdminCheck` — admin cache is host-global.
+   */
+  onFullyConnected(handler: (client: Client) => void | Promise<void>): void;
+  /** A client disconnected. SM `OnClientDisconnect`. */
+  onDisconnect(handler: (client: Client) => void): void;
+  /** A client's convars/settings changed. */
+  onSettingsChanged(handler: (client: Client) => void): void;
+  /** A client sent a voice packet (per-frame while speaking). */
+  onVoice(handler: (client: Client) => void): void;
+  /** A client's persisted cookies finished loading. */
+  onCookiesCached(handler: (client: Client) => void): void;
+  /** A client sent chat: return a {@link HookResultValue} to suppress it. */
+  onSay(handler: (slot: number, text: string, teamonly: boolean) => HookResultValue | void): void;
+  /** Per-tick usercmd hook (SM `OnPlayerRunCmd`). */
+  onRunCmd(handler: (cmd: UserCmdView, info: { slot: number }) => HookResultValue | void): void;
+}
+
+/** Load-window entity lifecycle + damage + I/O. Same contracts as {@link CtxEntities}. */
+export interface HookEntity {
+  /** Entity created (not yet spawned). `className` is a match, or `"*"` for all. */
+  onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /** Entity spawned (post-`DispatchSpawn`). */
+  onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /** Entity is being deleted; the ref goes stale right after. */
+  onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  /** Entity I/O pre-hook: same contract as {@link CtxEntities.onOutput}. */
+  onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
+  /** Damage pre-hook (SDKHooks-equivalent): same contract as {@link CtxEntities.onDamage}. */
+  onDamage(handler: (info: DamageInfo) => HookResultValue | void): void;
+}
+
+/** Load-window server / map / frame hooks. Same contracts as {@link CtxServer}. */
+export interface HookServer {
+  /** Precache window — register models/sounds to precache for the current map. */
+  onPrecache(handler: (pc: PrecacheContext) => void): void;
+  /**
+   * Run `fn` every game frame. Prefer this over `export function OnGameFrame` when you need
+   * `phase` / `priority` (HUD paint in `"post"`).
+   */
+  onGameFrame(
+    fn: () => void,
+    opts?: { priority?: "high" | "normal" | "low" | "monitor"; phase?: "pre" | "post" },
+  ): void;
+  /** A new map became live; `mapName` is the BSP name. */
+  onMapStart(handler: (mapName: string) => void): void;
+}
+
 /**
  * The load-window subscription surface. Throws after settle — the same window as {@link command}.
  *
  * Named publics (`OnGameFrame`, `OnClientConnected`, …) remain the SourceMod-shaped path for a
- * single plugin module. Use `hook.*` when registering from `OnPluginStart` (cookbook recipes,
- * multiple subscriptions with options).
+ * single plugin module. Use `hook.<subject>.*` when registering from `OnPluginStart` (cookbook
+ * recipes, multiple subscriptions with options).
  */
 export declare const hook: {
-  /** Damage pre-hook (SDKHooks-equivalent): same contract as {@link CtxEntities.onDamage}. */
-  damage(handler: (info: DamageInfo) => HookResultValue | void): void;
   /**
    * Game-event subscription. Default is post (`ctx.events.on`). Pass `"pre"` for `onPre`
    * (`Handled`/`Stop` suppress the client broadcast). The {@link GameEvent} is valid only synchronously.
    */
   event(name: string, handler: (ev: GameEvent) => HookResultValue | void, phase?: "pre" | "post"): void;
-  /** Entity I/O pre-hook: same contract as {@link CtxEntities.onOutput}. */
-  output(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
   /** TopMenu contribution. Same object as the {@link topmenu} export. */
   readonly topmenu: CtxTopMenu;
-  /** Entity created (not yet spawned). `className` is a match, or `"*"` for all. */
-  create(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /** Entity spawned (post-`DispatchSpawn`). */
-  spawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /** Entity is being deleted; the ref goes stale right after. */
-  delete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
-  /** Precache window — register models/sounds to precache for the current map. */
-  precache(handler: (pc: PrecacheContext) => void): void;
-  /**
-   * Run `fn` every game frame. Prefer this over `export function OnGameFrame` when you need
-   * `phase` / `priority` (HUD paint in `"post"`).
-   */
-  gameFrame(
-    fn: () => void,
-    opts?: { priority?: "high" | "normal" | "low" | "monitor"; phase?: "pre" | "post" },
-  ): void;
-  /** A new map became live; `mapName` is the BSP name. */
-  mapStart(handler: (mapName: string) => void): void;
-  /** Per-tick usercmd hook (SM `OnPlayerRunCmd`). */
-  runcmd(handler: (cmd: UserCmdView, info: { slot: number }) => HookResultValue | void): void;
-  /** A client began connecting (pre-auth). */
-  connect(handler: (client: Client) => void | Promise<void>): void;
-  /** A client's entity was put in the server. */
-  putInServer(handler: (client: Client) => void | Promise<void>): void;
-  /** A client became fully active. */
-  active(handler: (client: Client) => void | Promise<void>): void;
-  /** A client finished authenticating (Steam ticket validated). */
-  fullyConnect(handler: (client: Client) => void | Promise<void>): void;
-  /** A client disconnected. */
-  disconnect(handler: (client: Client) => void): void;
-  /** A client's convars/settings changed. */
-  settingsChanged(handler: (client: Client) => void): void;
-  /** A client sent a voice packet (per-frame while speaking). */
-  voice(handler: (client: Client) => void): void;
-  /** A client's persisted cookies finished loading. */
-  cookiesCached(handler: (client: Client) => void): void;
-  /** A client sent chat: return a {@link HookResultValue} to suppress it. */
-  say(handler: (slot: number, text: string, teamonly: boolean) => HookResultValue | void): void;
+  /** Client lifecycle, chat, voice, and usercmd. */
+  readonly client: HookClient;
+  /** Entity create/spawn/delete, I/O, and damage. */
+  readonly entity: HookEntity;
+  /** Game frame, map start, and precache. */
+  readonly server: HookServer;
 };
 
 /**

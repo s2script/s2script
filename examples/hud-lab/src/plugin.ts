@@ -400,12 +400,12 @@ export function OnPluginStart(): void {
   });
 
   // A disconnecting player must not leave diff-cache entries behind.
-  hook.disconnect((client) => { demo.stop(client.slot); demo.forget(client.slot); });
+  hook.client.onDisconnect((client) => { demo.stop(client.slot); demo.forget(client.slot); });
 
   // Collapse the live layout for every player as they become active. The panels default VISIBLE in
   // the markup, so without this they render (empty) the moment anything touches the layout for that
   // player — which is why the HUD appeared before anyone ran sm_hud.
-  hook.active((client) => { demo.hideAll(client.slot); });
+  hook.client.onActive((client) => { demo.hideAll(client.slot); });
 
   command.admin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return; }
@@ -506,7 +506,7 @@ export function OnPluginStart(): void {
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} hidden for slot ${slot}`);
   });
 
-  hook.active((client) => {
+  hook.client.onActive((client) => {
     if (!config.getBool("auto_show")) return;
     const err = kitHud.show(client.slot, "s2_dialog", { cursor: true });
     log(err ? `auto-show refused for slot ${client.slot}: ${err}` : `auto-shown for slot ${client.slot}`);

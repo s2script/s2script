@@ -22,20 +22,20 @@ export const clientsRecipe: Recipe = {
     // --- lifecycle listeners: fire for clients connecting AFTER Active. To
     // cover already-connected clients, seed explicitly with Clients.all() —
     // there is no framework replay of these events.
-    hook.connect((c) => {
+    hook.client.onConnect((c) => {
       console.log(`[cookbook] clients connect slot=${c.slot} name=${c.name} steamId=${c.steamId} userId=${c.userId} isBot=${c.isBot} ip=${c.ip}`);
       c.print("s2script cookbook: connected");
       console.log(`[cookbook] kickWithReason surface: typeof=${typeof c.kickWithReason}`);
     });
-    hook.putInServer((c) =>
+    hook.client.onPutInServer((c) =>
       console.log(`[cookbook] clients putInServer slot=${c.slot} name=${c.name}`));
-    hook.active((c) =>
+    hook.client.onActive((c) =>
       console.log(`[cookbook] clients active slot=${c.slot} name=${c.name}`));
-    hook.fullyConnect((c) =>
+    hook.client.onFullyConnected((c) =>
       console.log(`[cookbook] clients fullyConnect slot=${c.slot} name=${c.name}`));
-    hook.disconnect((c) =>
+    hook.client.onDisconnect((c) =>
       console.log(`[cookbook] clients disconnect slot=${c.slot} name=${c.name} steamId=${c.steamId}`));
-    hook.settingsChanged((c) =>
+    hook.client.onSettingsChanged((c) =>
       console.log(`[cookbook] clients settingsChanged slot=${c.slot} name=${c.name}`));
 
     // sm_clients — snapshot every currently-connected client (bots included).
@@ -48,7 +48,7 @@ export const clientsRecipe: Recipe = {
     });
 
     // --- voice: lazy mute-on-talk for DEAD players, unmute on spawn/round_end.
-    hook.voice((c) => {
+    hook.client.onVoice((c) => {
       if (voiceVerbose) {
         console.log("[cookbook] clients onVoice slot=" + c.slot + " name=" + c.name + " muted=" + c.voiceMuted);
       }

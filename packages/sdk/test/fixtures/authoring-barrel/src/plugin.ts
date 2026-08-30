@@ -13,7 +13,7 @@ import type { Command, Client, DamageInfo } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command.admin("sm_kick", ADMFLAG.KICK, kick);
-  hook.damage(halve);
+  hook.entity.onDamage(halve);
   hook.topmenu.addItem("Server Commands", {
     id: "demo:map",
     name: "Change Map",

@@ -19,13 +19,16 @@ Copy the `.s2sp` into `addons/s2script/plugins/` on a running server and it load
 re-drop to hot-reload, delete to unload. No restart.
 
 ```ts
-import { plugin } from "@s2script/sdk/plugin";
+import { command, hook } from "@s2script/sdk";
 
-export default plugin((ctx) => {
-  ctx.commands.register("hello", (cmd) => {
+export function OnPluginStart(): void {
+  command("hello", (cmd) => {
     cmd.reply("hello from s2script");
   });
-});
+  hook.client.onFullyConnected((client) => {
+    client.chat("welcome");
+  });
+}
 ```
 
 This package is **types-only** — the engine injects the implementation at load time, and

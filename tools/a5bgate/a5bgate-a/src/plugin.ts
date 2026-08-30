@@ -14,7 +14,7 @@ export function OnPluginStart(): void {
   L("loaded");
 
   let frame = 0;
-  hook.gameFrame(() => { frame += 1; });
+  hook.server.onGameFrame(() => { frame += 1; });
 
   const liveVictim = () => Player.all().find((p) => (p.pawn?.health ?? 0) > 0);
   const anyPlayer = () => Player.all()[0];

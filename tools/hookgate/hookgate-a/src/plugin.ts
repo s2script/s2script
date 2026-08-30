@@ -17,7 +17,7 @@ export function OnPluginStart(): void {
   L("loaded");
 
   let frame = 0;
-  hook.gameFrame(() => { frame += 1; });
+  hook.server.onGameFrame(() => { frame += 1; });
 
   // What the next onTerminateRound should do. Set by the commands below so one boot can exercise
   // observe / suppress / mutate without a reload.

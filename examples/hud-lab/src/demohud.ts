@@ -154,7 +154,7 @@ export class DemoHud {
     // "post" phase: the model reads fields the engine re-derives during simulation (health after
     // damage, movetype after a move). Reading in "pre" would paint last tick's values.
     // "low" priority: a HUD must never delay gameplay work in the same frame.
-    hook.gameFrame(() => this.tick(), { phase: "post", priority: "low" });
+    hook.server.onGameFrame(() => this.tick(), { phase: "post", priority: "low" });
   }
 
   /** Whether `slot` currently has the HUD up. */

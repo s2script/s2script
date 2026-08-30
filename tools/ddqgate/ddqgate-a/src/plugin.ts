@@ -24,7 +24,7 @@ export function OnPluginStart(): void {
   // A frame counter, so the log proves WHEN the deferred delivery lands relative to the defer.
   // The spec says one frame later (§4) — not the same frame, and not never.
   let frame = 0;
-  hook.gameFrame(() => { frame += 1; });
+  hook.server.onGameFrame(() => { frame += 1; });
 
   // ------------------------------------------------------------------ check 1 + 2
   // The outer handler fires an inner event from INSIDE a dispatch. The engine dispatches that

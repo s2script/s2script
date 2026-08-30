@@ -27,7 +27,7 @@ export function OnPluginStart(): void {
   // synthetic dispatches the shim fires at frames 300/900/1800 under S2_DAMAGE_SELFTEST, so one boot
   // exercises all three collapse outcomes with no rcon race.
   dmg = 0;
-  hook.damage((info) => {
+  hook.entity.onDamage((info) => {
     dmg += 1;
     if (dmg === 1) {
       L(`dmg#1 h1 saw=${info.damage} -> zeroing, return Handled`);
@@ -41,7 +41,7 @@ export function OnPluginStart(): void {
     L(`dmg#${dmg} h1 saw=${info.damage} -> return Continue`);
     return HookResult.Continue;
   });
-  hook.damage((info) => {
+  hook.entity.onDamage((info) => {
     L(`dmg#${dmg} h2 RAN saw=${info.damage}`);
   });
 
@@ -52,11 +52,11 @@ export function OnPluginStart(): void {
   pre = 0; post = 0; created = 0; runcmd = 0;
   hook.event("player_spawn", () => { pre += 1; if (pre <= 3) L(`onPre  player_spawn #${pre}`); }, "pre");
   hook.event("player_spawn", () => { post += 1; if (post <= 3) L(`onPost player_spawn #${post}`); });
-  hook.create("*", (e, cls) => {
+  hook.entity.onCreate("*", (e, cls) => {
     created += 1;
     if (created <= 5) L(`onCreate #${created} ${cls} idx=${e?.index ?? -1}`);
   });
-  hook.runcmd(() => { runcmd += 1; if (runcmd === 1) L("onRunCmd FIRED (first)"); });
+  hook.client.onRunCmd(() => { runcmd += 1; if (runcmd === 1) L("onRunCmd FIRED (first)"); });
 
   // ---------------------------------------------------------------- check 4
   // A view-backed payload built by a lifted build_args body. The relay is created from a command
@@ -64,7 +64,7 @@ export function OnPluginStart(): void {
   // queued by the engine and fires from the engine's I/O queue on a later frame, outside our isolate
   // borrow, so the output dispatch does reach JS.
   outputs = 0;
-  hook.output("logic_relay", "OnTrigger", (ev) => {
+  hook.entity.onOutput("logic_relay", "OnTrigger", (ev) => {
     outputs += 1;
     L(`onOutput ${ev.output} caller=${ev.caller?.index ?? -1} activator=${ev.activator?.index ?? -1} value="${ev.value}" delay=${ev.delay}`);
   });

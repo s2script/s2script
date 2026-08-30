@@ -21,16 +21,16 @@ export function OnPluginStart(): void {
 
   dmg = 0; pre = 0; created = 0; runcmd = 0; frames = 0;
 
-  hook.damage((info) => {
+  hook.entity.onDamage((info) => {
     dmg += 1;
     L(`dmg#${dmg} B RAN saw=${info.damage}`);
   });
 
   hook.event("player_spawn", () => { pre += 1; if (pre <= 3) L(`onPre player_spawn #${pre}`); }, "pre");
-  hook.create("*", () => { created += 1; });
-  hook.runcmd(() => { runcmd += 1; if (runcmd === 1) L("onRunCmd FIRED (first)"); });
+  hook.entity.onCreate("*", () => { created += 1; });
+  hook.client.onRunCmd(() => { runcmd += 1; if (runcmd === 1) L("onRunCmd FIRED (first)"); });
 
-  hook.gameFrame(() => {
+  hook.server.onGameFrame(() => {
     frames += 1;
     if (frames % 512 === 0) L(`heartbeat frames=${frames} dmg=${dmg} pre=${pre} created=${created}`);
   });

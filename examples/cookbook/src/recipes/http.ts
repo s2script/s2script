@@ -14,7 +14,7 @@ export const httpRecipe: Recipe = {
   describe: "fire concurrent fetch()es without blocking the tick (sm_http)",
   register() {
     let frames = 0;
-    hook.gameFrame(() => { frames += 1; });
+    hook.server.onGameFrame(() => { frames += 1; });
 
     command("sm_http", (cmd) => {
       const start = frames;

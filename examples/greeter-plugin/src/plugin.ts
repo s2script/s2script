@@ -35,7 +35,7 @@ export function OnPluginStart(): void {
 
   // Forwarded events: the consumer's on("greeted") fires from here.
   let ticks = 0;
-  hook.gameFrame(() => {
+  hook.server.onGameFrame(() => {
     if (ticks++ % 256 === 0) handle.emit("greeted", { slot: 0, tick: ticks });
   });
 }

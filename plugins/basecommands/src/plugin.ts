@@ -67,7 +67,7 @@ export function OnPluginStart(): void {
   // are available to everyone. Mutating `plugins load|unload|reload` is gated inline (ROOT).
   command("sm", sm);
 
-  hook.damage(halve);
+  hook.entity.onDamage(halve);
 
   // 6.2 live-gate diagnostic: prove the admin cache works live (rcon-verifiable, no human client needed).
   Admin.add("76561199000000009", ADMFLAG.KICK | ADMFLAG.CHAT);   // runtime tier

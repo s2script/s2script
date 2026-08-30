@@ -37,7 +37,7 @@ export const serverRecipe: Recipe = {
     });
     console.log(`[cookbook] server: registerCvar s2_demo_mode -> ${ok} value=${Server.getCvar("s2_demo_mode")}`);
 
-    hook.mapStart((map) => {
+    hook.server.onMapStart((map) => {
       console.log(`[cookbook] server: onMapStart: ${map}`);
     });
 

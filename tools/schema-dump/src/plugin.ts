@@ -12,7 +12,7 @@ export function OnPluginStart(): void {
   console.log("[schema-dump] onLoad — will dump once the schema is live");
   let done = false;
   let ticks = 0;
-  hook.gameFrame(() => {
+  hook.server.onGameFrame(() => {
     if (done) return;
     if (ticks++ < 128) return;                 // let a map load + the schema populate
     // Path is relative to the server process CWD; the native writes it and returns true only when

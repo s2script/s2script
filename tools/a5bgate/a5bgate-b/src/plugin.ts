@@ -18,7 +18,7 @@ export function OnPluginStart(): void {
   L("loaded");
 
   let frame = 0;
-  hook.gameFrame(() => { frame += 1; });
+  hook.server.onGameFrame(() => { frame += 1; });
 
   // The coordination channel: a fires this, b acts on the same target in the same dispatch.
   hook.event("player_changename", (e) => {

@@ -13,13 +13,16 @@ single runtime every server plugin loads into. You write TypeScript against one 
 the framework owns every engine touchpoint and multiplexes all plugins onto it.
 
 ```ts
-import { plugin } from "@s2script/sdk/plugin";
+import { command, hook } from "@s2script/sdk";
 
-export default plugin((ctx) => {
-  ctx.commands.register("hello", (cmd) => {
+export function OnPluginStart(): void {
+  command("hello", (cmd) => {
     cmd.reply("hello from s2script");
   });
-});
+  hook.client.onFullyConnected((client) => {
+    client.chat("welcome");
+  });
+}
 ```
 
 ## → [s2script.com](https://s2script.com)
