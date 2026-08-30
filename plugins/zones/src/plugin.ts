@@ -85,7 +85,7 @@ function clearAllBeams(): void { for (const name of Array.from(shown.keys())) hi
 // --- in-game E-to-mark editor --------------------------------------------------------------------------
 // sm_zone_edit <name> starts a session: press E at two opposite corners (a live rubber-band box tracks the
 // walking position between the two presses). Rising-edge button polling (the menu system's technique), one
-// session per slot, 60s TTL. Cleanup: clearAllEdits() on map change + onUnload (removes the preview beams).
+// session per slot, 60s TTL. Cleanup: clearAllEdits() on map change + OnPluginEnd (removes the preview beams).
 const IN_USE = 32;   // in_buttons.h (E)
 interface EditSession { name: string; cornerA: Vec3 | null; prevMask: number; expiresAt: number; preview: BeamHandle[]; }
 const edits = new Map<number, EditSession>();   // keyed by 0-based player slot

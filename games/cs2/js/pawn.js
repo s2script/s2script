@@ -866,7 +866,7 @@
   // create -> configure collision schema -> spawn -> teleport -> Enable/activateCollision -> setModel ->
   // Enable/activateCollision (the arbitrary-box recipe: the post-spawn setModel builds the physics
   // aggregate and activateCollision(=SetCollisionBounds+SetSolid(BBOX)) reshapes it to the box, so the
-  // trigger fires OnStartTouch/OnEndTouch). Detection is the caller's (Entity.onOutput on those outputs).
+  // trigger fires OnStartTouch/OnEndTouch). Detection is the caller's (`onOutput` on those outputs).
   // Non-solid (players pass through). Game-world-owned; the caller owns remove().
   function collOffset(field) {
     var base = __s2_schema_offset("CBaseModelEntity", "m_Collision");   // embedded CCollisionProperty

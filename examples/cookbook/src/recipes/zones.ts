@@ -4,9 +4,14 @@ import { Player } from "@s2script/cs2";
 
 /**
  * Consuming another PLUGIN's interface (not an SDK module). @s2script/zones is
- * published by plugins/zones. Declared under optionalPluginDependencies, so
- * tryUse() returns null when that plugin isn't loaded and the cookbook still
- * works — a hard dep (use()) would refuse to load the whole plugin instead.
+ * published by plugins/zones.
+ *
+ * Hard-dep consumers prefer producer-as-import:
+ *   import { on, getZones } from "@s2script/zones";
+ * Cookbook declares it under optionalPluginDependencies so the demo still
+ * loads when the zones plugin isn't present — `tryUse()` returns null then.
+ * A hard dep (`use()` / the import form) would refuse to load the whole plugin
+ * instead.
  *
  * Types come from the verified contract copy at
  * .s2script/types/@s2script/zones/index.d.ts — a byte-copy of the producer's
