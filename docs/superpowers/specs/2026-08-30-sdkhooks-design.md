@@ -1,6 +1,6 @@
 # First-party SDKHooks — design spec
 
-**Status:** per-slice design. Lands as a GitHub-native stacked PR on `cursor/hook-only-events-a8c9`.
+**Status:** implemented. Lands as a GitHub-native stacked PR on `cursor/hook-only-events-a8c9`.
 **Date:** 2026-08-30.
 **Scope:** replace the fake `OnTakeDamage` named public with SourceMod-shaped `SDKHook` / `SDKUnhook`. First type: `OnTakeDamage`. 0.x **minor**.
 
